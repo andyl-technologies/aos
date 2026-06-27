@@ -880,7 +880,7 @@ mod tests {
     use super::*;
     use crucible::{
         Checkpoint, CheckpointKind, Decision, DeliveryOrderDecision, EventKey, GenesisCheckpoint,
-        ScenarioDef, Seed, VirtualTime, step,
+        NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Seed, VirtualTime, step,
     };
 
     #[test]
@@ -1408,9 +1408,24 @@ mod tests {
     }
 
     fn generated_decision(seed: u64) -> Decision {
+        let node = scheduler_node("control-plane");
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: seed },
-            order: vec![EventKey { sequence: seed }],
+            order: vec![EventKey::new(
+                VirtualTime { ticks: seed },
+                node.clone(),
+                node,
+                seed,
+            )],
         })
+    }
+
+    fn scheduler_node(name: &str) -> SchedulerNodeId {
+        SchedulerNodeId {
+            node: NodeId {
+                name: name.to_owned(),
+            },
+            kind: SchedulingNodeKind::ControlPlane,
+        }
     }
 }

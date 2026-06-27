@@ -370,6 +370,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerEventOrder";
       taskIds = ["T-SCHED-8"];
     };
+    schedulerOrderingLint = import ./phase3-scheduler-ordering-lint.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerOrderingLint";
+      taskIds = ["T-SCHED-9"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

@@ -192,6 +192,7 @@ fn harness_lint_rejects_banned_code_patterns() {
                 let _ = std::time::SystemTime::now();
                 let _ = rand::thread_rng();
                 let _ = std::collections::HashMap::<u8, u8>::new();
+                let _ = std::collections::hash_map::DefaultHasher::new();
                 tokio::select! { _ = async {} => {} }
             }
         "#,
@@ -200,6 +201,7 @@ fn harness_lint_rejects_banned_code_patterns() {
     assert_contains(&findings, "host wall-clock");
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
+    assert_contains(&findings, "default/random hasher");
     assert_contains(&findings, "nondeterministic select");
 }
 
@@ -220,12 +222,15 @@ fn harness_lint_rejects_spaced_paths_and_grouped_imports() {
     let findings = scan_content(
         Path::new("synthetic.rs"),
         r#"
+            use std::collections::hash_map::{DefaultHasher, RandomState};
             use std::collections::{HashMap, HashSet};
             use std::time::{Instant, SystemTime};
 
             fn bad() {
                 let _ = HashMap :: <u8, u8> :: new();
                 let _ = HashSet :: <u8> :: new();
+                let _ = DefaultHasher :: new();
+                let _ = RandomState :: new();
                 let _ = SystemTime :: now();
                 let _ = Instant :: now();
                 rand :: thread_rng();
@@ -239,6 +244,7 @@ fn harness_lint_rejects_spaced_paths_and_grouped_imports() {
     assert_contains(&findings, "host monotonic time");
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
+    assert_contains(&findings, "default/random hasher");
     assert_contains(&findings, "nondeterministic select");
 }
 
@@ -457,6 +463,7 @@ fn harness_lint_rejects_custom_static_analysis_drift() {
                 for item in map.iter() {
                     consume(item);
                 }
+                let _ = std::collections::hash_map::DefaultHasher::new();
                 let _ = map.keys();
                 let _ = map.values_mut();
                 let _ = map.into_values();
@@ -469,6 +476,7 @@ fn harness_lint_rejects_custom_static_analysis_drift() {
     );
 
     assert_contains(&findings, "unordered hash-container iteration");
+    assert_contains(&findings, "default/random hasher");
     assert_contains(&findings, "unordered select");
     assert_contains(&findings, "bare unsafe block");
 

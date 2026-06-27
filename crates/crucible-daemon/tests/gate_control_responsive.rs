@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use crucible::{
     Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
-    EventKey, GenesisCheckpoint, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
-    SchedulerError, Seed, TemporalGraph, VirtualTime, step,
+    EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
+    SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime, step,
 };
 use crucible_api::{
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
@@ -234,8 +234,23 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
 }
 
 fn generated_decision(seed: u64) -> Decision {
+    let node = control_node();
     Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: seed },
-        order: vec![EventKey { sequence: seed }],
+        order: vec![EventKey::new(
+            VirtualTime { ticks: seed },
+            node.clone(),
+            node,
+            seed,
+        )],
     })
+}
+
+fn control_node() -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: NodeId {
+            name: "control-plane".to_owned(),
+        },
+        kind: SchedulingNodeKind::ControlPlane,
+    }
 }

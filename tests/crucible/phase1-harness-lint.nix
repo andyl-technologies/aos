@@ -325,6 +325,7 @@
   requiredClippyTypes = [
     "std::collections::HashMap"
     "std::collections::HashSet"
+    "std::collections::hash_map::DefaultHasher"
     "std::collections::hash_map::RandomState"
   ];
   requiredClippyDenyLints = [
@@ -421,6 +422,16 @@
       pattern = "HashSet::";
       reason = "unordered map/set";
       rule = "unordered-map-set";
+    }
+    {
+      pattern = "DefaultHasher";
+      reason = "default/random hasher";
+      rule = "default-random-hasher";
+    }
+    {
+      pattern = "RandomState";
+      reason = "default/random hasher";
+      rule = "default-random-hasher";
     }
     {
       pattern = "tokio::select!";
@@ -967,6 +978,9 @@
       "package_dir.join(\"src\")"
       "custom_static_analysis_failures"
       "hash_container_iteration_failures"
+      "default_random_hasher_failures"
+      "default/random hasher"
+      "default-random-hasher"
       "unordered_select_failures"
       "select_macro_is_unordered"
       "bare_unsafe_block_failures"
@@ -1046,6 +1060,7 @@
         let _ = std::time::SystemTime::now();
         let _ = rand::thread_rng();
         let _ = std::collections::HashMap::<u8, u8>::new();
+        let _ = std::collections::hash_map::DefaultHasher::new();
         tokio::select! { _ = async {} => {} }
       }
     '';
@@ -1053,6 +1068,7 @@
       "host wall-clock"
       "thread/global RNG"
       "unordered map/set"
+      "default/random hasher"
       "nondeterministic select"
     ];
   in
@@ -1065,11 +1081,14 @@
   spacedPathRegressionFailures = let
     findings = scanContent "spaced-regression.rs" ''
       use std::collections::{HashMap, HashSet};
+      use std::collections::hash_map::{DefaultHasher, RandomState};
       use std::time::{Instant, SystemTime};
 
       fn bad() {
         let _ = HashMap :: <u8, u8> :: new();
         let _ = HashSet :: <u8> :: new();
+        let _ = DefaultHasher :: new();
+        let _ = RandomState :: new();
         let _ = SystemTime :: now();
         let _ = Instant :: now();
         rand :: thread_rng();
@@ -1082,6 +1101,7 @@
       "host monotonic time"
       "thread/global RNG"
       "unordered map/set"
+      "default/random hasher"
       "nondeterministic select"
     ];
   in
@@ -1213,13 +1233,24 @@
         let _value: Result<(), String> = Ok(());
       }
     '';
+    defaultHasherAllowedFindings = scanContent "default-hasher-allowed.rs" ''
+      fn allowed() {
+        // crucible-lint: allow default-random-hasher -- synthetic fixture proves annotated exceptions for non-identity hashing
+        let _hasher = std::collections::hash_map::DefaultHasher::new();
+      }
+    '';
+    defaultHasherUnannotatedFindings = scanContent "default-hasher-unannotated.rs" ''
+      fn bad() {
+        let _hasher = std::collections::hash_map::DefaultHasher::new();
+      }
+    '';
     stringlyUnannotatedFindings = scanErrorLoggingContent "stringly-unannotated.rs" false ''
       fn bad() {
         let _value: Result<(), String> = Ok(());
       }
     '';
   in
-    if allowedFindings == [] && unannotatedFindings != [] && malformedFindings != [] && malformedSyntaxFindings != [] && wrongRuleFindings != [] && multilineFindings != [] && stringlyAllowedFindings == [] && stringlyUnannotatedFindings != []
+    if allowedFindings == [] && unannotatedFindings != [] && malformedFindings != [] && malformedSyntaxFindings != [] && wrongRuleFindings != [] && multilineFindings != [] && stringlyAllowedFindings == [] && stringlyUnannotatedFindings != [] && defaultHasherAllowedFindings == [] && defaultHasherUnannotatedFindings != []
     then []
     else [
       "harness-lint regression failed to enforce annotated exception policy"
@@ -1360,6 +1391,10 @@
         rule = "unordered-map-set";
       }
       {
+        reason = "default/random hasher";
+        rule = "default-random-hasher";
+      }
+      {
         reason = "nondeterministic select";
         rule = "nondeterministic-select";
       }
@@ -1446,7 +1481,7 @@ in
             nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
-            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,unordered-select,immediate-safety-comments
+            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments
             exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface
             RESULT
           '';

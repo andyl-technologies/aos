@@ -273,8 +273,14 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
 }
 
 fn generated_decision(seed: u64) -> Decision {
+    let node = control_node();
     Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: seed },
-        order: vec![EventKey { sequence: seed }],
+        order: vec![EventKey::new(
+            VirtualTime { ticks: seed },
+            node.clone(),
+            node,
+            seed,
+        )],
     })
 }

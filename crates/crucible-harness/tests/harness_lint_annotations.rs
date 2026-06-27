@@ -41,6 +41,20 @@ fn harness_lint_enforces_annotated_exceptions() {
         "expected annotated map exception to pass, got {map_findings:?}"
     );
 
+    let default_hasher_findings = scan_content(
+        Path::new("synthetic.rs"),
+        r#"
+            fn allowed() {
+                // crucible-lint: allow default-random-hasher -- synthetic fixture proves annotated exceptions for non-identity hashing
+                let _hasher = std::collections::hash_map::DefaultHasher::new();
+            }
+        "#,
+    );
+    assert!(
+        default_hasher_findings.is_empty(),
+        "expected annotated default hasher exception to pass, got {default_hasher_findings:?}"
+    );
+
     let iteration_findings = custom_static_analysis_failures(
         Path::new("synthetic.rs"),
         r#"

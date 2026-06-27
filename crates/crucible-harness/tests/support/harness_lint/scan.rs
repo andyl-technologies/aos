@@ -92,6 +92,15 @@ pub(super) fn scan_content(path: &Path, content: &str) -> Vec<String> {
                 identifier,
                 "unordered-map-set",
             ),
+            "DefaultHasher" | "RandomState" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "default/random hasher",
+                identifier,
+                "default-random-hasher",
+            ),
             "select"
                 if next_is_bang(&tokens, index) && select_macro_is_unordered(&tokens, index) =>
             {
@@ -118,9 +127,37 @@ pub(super) fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec
     let hash_containers = hash_container_bindings(&tokens);
 
     let mut findings = hash_container_iteration_failures(path, content, &tokens, &hash_containers);
+    findings.extend(default_random_hasher_failures(path, content, &tokens));
     findings.extend(unordered_select_failures(path, content, &tokens));
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
     findings.extend(allow_annotation_failures(path, content));
+    findings
+}
+
+pub(super) fn default_random_hasher_failures(
+    path: &Path,
+    content: &str,
+    tokens: &[Token],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for token in tokens {
+        let Some(identifier) = token.kind.as_ident() else {
+            continue;
+        };
+        if matches!(identifier, "DefaultHasher" | "RandomState") {
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "default/random hasher",
+                identifier,
+                "default-random-hasher",
+            );
+        }
+    }
+
     findings
 }
 
