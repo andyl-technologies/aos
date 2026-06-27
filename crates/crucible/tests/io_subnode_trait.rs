@@ -41,7 +41,7 @@ fn completion_icount_is_derived_from_request_icount_latency_and_shift() {
 }
 
 #[test]
-fn completions_are_ordered_by_delivery_consumer_and_sequence() {
+fn completions_are_ordered_by_delivery_subnode_and_sequence() {
     let mut subnode = subnode("net", SchedulingNodeKind::Network, 8, 8);
     subnode
         .enqueue_request(request(2, "vm-b", 1, 4, None, b"b-later"))
@@ -234,7 +234,7 @@ fn response_outbox_remains_in_deterministic_order_across_advances() {
 
     assert_eq!(
         drained,
-        vec![(String::from("vm-a"), 2), (String::from("vm-b"), 1)]
+        vec![(String::from("vm-b"), 1), (String::from("vm-a"), 2)]
     );
 }
 
@@ -371,11 +371,13 @@ fn request(
 ) -> IoSubNodeRequest {
     IoSubNodeRequest {
         sequence,
+        expected_sub_node: None,
         requester: scheduler_node(requester, SchedulingNodeKind::Vm),
         request_icount: Icount {
             retired: request_icount,
         },
         modeled_latency: SimDuration { nanos: latency_ns },
+        expected_delivery_icount: None,
         rng_draw,
         payload: payload.to_vec(),
     }

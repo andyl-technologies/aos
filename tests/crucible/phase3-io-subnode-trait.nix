@@ -67,7 +67,7 @@
       }
       {
         label = "outbox ordering note";
-        needle = "response outbox sorted by delivery icount, requester, and sequence";
+        needle = "response outbox sorted by delivery icount, sub-node, and sequence";
       }
       {
         label = "invalid shift note";
@@ -235,7 +235,7 @@
       }
       {
         label = "ordering test";
-        needle = "completions_are_ordered_by_delivery_consumer_and_sequence";
+        needle = "completions_are_ordered_by_delivery_subnode_and_sequence";
       }
       {
         label = "backpressure test";

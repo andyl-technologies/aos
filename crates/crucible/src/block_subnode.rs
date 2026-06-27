@@ -6,7 +6,10 @@
 //! patching them there. Dirty pages are tracked in deterministic order for
 //! checkpoint deltas.
 
-use crate::{ContentAddressedBlobRef, ContentHash};
+use crate::{
+    ContentAddressedBlobRef, ContentHash, Icount, IoSubNodeRequest, SchedulerNodeId,
+    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, VirtualInstant,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -18,6 +21,186 @@ use std::{
 pub const BLOCK_OVERLAY_PAGE_SIZE: usize = 4096;
 
 const BLOCK_OVERLAY_PAGE_SIZE_U64: u64 = BLOCK_OVERLAY_PAGE_SIZE as u64;
+
+/// A block request operation that participates in deterministic latency modeling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlockSubNodeOperation {
+    /// Read bytes from the block overlay/base stack.
+    Read,
+    /// Write bytes into the copy-on-write overlay.
+    Write,
+    /// Flush the simulated block device.
+    Flush,
+    /// Query the simulated block device length.
+    GetLength,
+}
+
+/// Deterministic latency parameters for a block sub-node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BlockLatencyParameters {
+    /// Fixed read-operation latency.
+    pub read_base: SimDuration,
+    /// Fixed write-operation latency.
+    pub write_base: SimDuration,
+    /// Fixed flush-operation latency.
+    pub flush_base: SimDuration,
+    /// Fixed get-length-operation latency.
+    pub get_length_base: SimDuration,
+    /// Additional latency per requested byte.
+    pub per_byte: SimDuration,
+}
+
+impl BlockLatencyParameters {
+    /// Builds deterministic block latency parameters.
+    #[must_use]
+    pub const fn new(
+        read_base: SimDuration,
+        write_base: SimDuration,
+        flush_base: SimDuration,
+        get_length_base: SimDuration,
+        per_byte: SimDuration,
+    ) -> Self {
+        Self {
+            read_base,
+            write_base,
+            flush_base,
+            get_length_base,
+            per_byte,
+        }
+    }
+
+    /// Computes deterministic modeled latency for a block operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockCompletionError::LatencyOverflow`] when the fixed
+    /// operation latency and per-byte latency cannot fit in `u64` nanoseconds.
+    pub fn latency_for(
+        self,
+        operation: BlockSubNodeOperation,
+        count: u32,
+    ) -> Result<SimDuration, BlockCompletionError> {
+        let base = match operation {
+            BlockSubNodeOperation::Read => self.read_base,
+            BlockSubNodeOperation::Write => self.write_base,
+            BlockSubNodeOperation::Flush => self.flush_base,
+            BlockSubNodeOperation::GetLength => self.get_length_base,
+        };
+        let variable = self
+            .per_byte
+            .nanos
+            .checked_mul(u64::from(count))
+            .ok_or(BlockCompletionError::LatencyOverflow { operation, count })?;
+        let nanos = base
+            .nanos
+            .checked_add(variable)
+            .ok_or(BlockCompletionError::LatencyOverflow { operation, count })?;
+        Ok(SimDuration { nanos })
+    }
+}
+
+/// A block request ready for deterministic completion planning.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BlockCompletionRequest {
+    /// Device-local request sequence from the block ingress ring.
+    pub sequence: u64,
+    /// Disk sub-node that will produce the response.
+    pub sub_node: SchedulerNodeId,
+    /// VM scheduler node that will observe the response.
+    pub requester: SchedulerNodeId,
+    /// Block operation being modeled.
+    pub operation: BlockSubNodeOperation,
+    /// Requester's icount when the request became modeled input.
+    pub request_icount: Icount,
+    /// Operation byte count used by the deterministic latency model.
+    pub count: u32,
+    /// Deterministic response payload computed before visibility.
+    pub payload: Vec<u8>,
+}
+
+impl BlockCompletionRequest {
+    /// Computes the deterministic completion plan for this block request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockCompletionError`] when the producer is not a disk
+    /// sub-node, the requester is not a VM node, latency arithmetic overflows,
+    /// or icount/virtual-time conversion fails.
+    pub fn plan(
+        self,
+        shift: Shift,
+        latency: BlockLatencyParameters,
+    ) -> Result<BlockCompletionPlan, BlockCompletionError> {
+        if self.sub_node.kind != SchedulingNodeKind::Disk {
+            return Err(BlockCompletionError::InvalidNodeKind {
+                kind: self.sub_node.kind,
+            });
+        }
+        if self.requester.kind != SchedulingNodeKind::Vm {
+            return Err(BlockCompletionError::InvalidRequesterKind {
+                kind: self.requester.kind,
+            });
+        }
+        let modeled_latency = latency.latency_for(self.operation, self.count)?;
+        let delivery_icount = block_delivery_icount(shift, self.request_icount, modeled_latency)?;
+        Ok(BlockCompletionPlan {
+            sequence: self.sequence,
+            sub_node: self.sub_node,
+            requester: self.requester,
+            operation: self.operation,
+            request_icount: self.request_icount,
+            count: self.count,
+            modeled_latency,
+            delivery_icount,
+            payload: self.payload,
+        })
+    }
+}
+
+/// A deterministic completion selected for one block request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BlockCompletionPlan {
+    /// Device-local request sequence from the block ingress ring.
+    pub sequence: u64,
+    /// Disk sub-node that will produce the response.
+    pub sub_node: SchedulerNodeId,
+    /// VM scheduler node that will observe the response.
+    pub requester: SchedulerNodeId,
+    /// Block operation being modeled.
+    pub operation: BlockSubNodeOperation,
+    /// Requester's icount when the request became modeled input.
+    pub request_icount: Icount,
+    /// Operation byte count used by the deterministic latency model.
+    pub count: u32,
+    /// Modeled latency added to `request_icount` in virtual time.
+    pub modeled_latency: SimDuration,
+    /// Icount at which the block response becomes visible to the requester.
+    pub delivery_icount: Icount,
+    /// Deterministic response payload computed before visibility.
+    pub payload: Vec<u8>,
+}
+
+impl BlockCompletionPlan {
+    /// Converts the plan into the uniform I/O sub-node request shape.
+    #[must_use]
+    pub fn into_io_request(self) -> IoSubNodeRequest {
+        IoSubNodeRequest {
+            sequence: self.sequence,
+            expected_sub_node: Some(self.sub_node),
+            requester: self.requester,
+            request_icount: self.request_icount,
+            modeled_latency: self.modeled_latency,
+            expected_delivery_icount: Some(self.delivery_icount),
+            rng_draw: None,
+            payload: self.payload,
+        }
+    }
+}
+
+/// Sorts block completions in deterministic `(delivery_icount, src_node, seq)` order.
+pub fn sort_block_completion_plans(plans: &mut [BlockCompletionPlan]) {
+    plans.sort_by(block_completion_order);
+}
 
 /// An immutable, content-addressed base image for a block sub-node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -417,6 +600,92 @@ impl fmt::Display for BlockOverlayError {
 
 impl Error for BlockOverlayError {}
 
+/// An error raised while planning deterministic block completions.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BlockCompletionError {
+    /// The scheduler node kind is not a disk sub-node.
+    InvalidNodeKind {
+        /// Invalid node kind.
+        kind: SchedulingNodeKind,
+    },
+    /// The completion requester is not a VM scheduler node.
+    InvalidRequesterKind {
+        /// Invalid requester kind.
+        kind: SchedulingNodeKind,
+    },
+    /// The deterministic latency computation overflowed.
+    LatencyOverflow {
+        /// Operation whose latency overflowed.
+        operation: BlockSubNodeOperation,
+        /// Operation byte count that overflowed with the configured parameters.
+        count: u32,
+    },
+    /// Completion virtual-time computation overflowed.
+    CompletionTimeOverflow {
+        /// Request icount that overflowed after projection and latency.
+        request_icount: Icount,
+        /// Modeled latency that could not be added.
+        modeled_latency: SimDuration,
+    },
+    /// Virtual-time conversion failed.
+    TimeConversion(TimeConversionError),
+}
+
+impl fmt::Display for BlockCompletionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidNodeKind { kind } => {
+                write!(
+                    formatter,
+                    "scheduler node kind {kind:?} is not a disk sub-node"
+                )
+            }
+            Self::InvalidRequesterKind { kind } => {
+                write!(
+                    formatter,
+                    "block completion requester kind {kind:?} is not a VM node"
+                )
+            }
+            Self::LatencyOverflow { operation, count } => write!(
+                formatter,
+                "block {operation:?} latency overflowed for count {count}"
+            ),
+            Self::CompletionTimeOverflow {
+                request_icount,
+                modeled_latency,
+            } => write!(
+                formatter,
+                "block completion time overflow for request icount {} latency {}ns",
+                request_icount.retired, modeled_latency.nanos
+            ),
+            Self::TimeConversion(source) => {
+                write!(
+                    formatter,
+                    "block completion time conversion failed: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for BlockCompletionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TimeConversion(source) => Some(source),
+            Self::InvalidNodeKind { .. }
+            | Self::InvalidRequesterKind { .. }
+            | Self::LatencyOverflow { .. }
+            | Self::CompletionTimeOverflow { .. } => None,
+        }
+    }
+}
+
+impl From<TimeConversionError> for BlockCompletionError {
+    fn from(source: TimeConversionError) -> Self {
+        Self::TimeConversion(source)
+    }
+}
+
 type BlockOverlayPage = Box<[u8; BLOCK_OVERLAY_PAGE_SIZE]>;
 
 fn page_base(offset: u64) -> u64 {
@@ -439,6 +708,35 @@ fn validate_range(offset: u64, count: u64, length: u64) -> Result<(), BlockOverl
 
 fn checked_count_usize(count: u64) -> Result<usize, BlockOverlayError> {
     usize::try_from(count).map_err(|_| BlockOverlayError::RangeTooLarge { count })
+}
+
+fn block_delivery_icount(
+    shift: Shift,
+    request_icount: Icount,
+    modeled_latency: SimDuration,
+) -> Result<Icount, BlockCompletionError> {
+    let request_time = request_icount.to_virtual(shift)?;
+    let completion_time = request_time
+        .nanos
+        .checked_add(modeled_latency.nanos)
+        .ok_or(BlockCompletionError::CompletionTimeOverflow {
+            request_icount,
+            modeled_latency,
+        })?;
+    Ok(VirtualInstant {
+        nanos: completion_time,
+    }
+    .to_icount_ceil(shift)?)
+}
+
+fn block_completion_order(
+    left: &BlockCompletionPlan,
+    right: &BlockCompletionPlan,
+) -> std::cmp::Ordering {
+    left.delivery_icount
+        .cmp(&right.delivery_icount)
+        .then_with(|| left.sub_node.cmp(&right.sub_node))
+        .then_with(|| left.sequence.cmp(&right.sequence))
 }
 
 fn block_overlay_delta_bytes(delta: &BlockOverlayDelta) -> Vec<u8> {
