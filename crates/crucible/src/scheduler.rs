@@ -816,16 +816,43 @@ pub struct IoCompletion {
     pub payload: Vec<u8>,
 }
 
-/// A node-local exact event supplied by the backend while the node is idle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A node-local exact event supplied by host-held scheduler state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ExactLocalEvent {
-    /// The node has no armed guest timer.
+    /// The node has no exact local wakeup.
     NoArmedTimer,
     /// The node has an armed guest timer at an exact virtual-time point.
     TimerDeadline {
         /// The exact virtual-time deadline from the backend's virtual clock.
         virtual_time: SimInstant,
     },
+    /// The node has an in-flight deterministic I/O completion.
+    IoCompletion {
+        /// The exact virtual-time completion point.
+        virtual_time: SimInstant,
+        /// The sub-node that computed the deterministic completion.
+        sub_node: SchedulerNodeId,
+    },
+    /// The node has a locally scheduled fault activation.
+    FaultActivation {
+        /// The exact virtual-time activation point.
+        virtual_time: SimInstant,
+        /// The fault that will activate locally.
+        fault: FaultId,
+    },
+}
+
+impl ExactLocalEvent {
+    /// Returns this event's exact virtual-time point, if it has one.
+    #[must_use]
+    pub fn virtual_time(&self) -> Option<SimInstant> {
+        match self {
+            Self::NoArmedTimer => None,
+            Self::TimerDeadline { virtual_time }
+            | Self::IoCompletion { virtual_time, .. }
+            | Self::FaultActivation { virtual_time, .. } => Some(*virtual_time),
+        }
+    }
 }
 
 /// Converts an exact virtual timer deadline report into a scheduler local event.
@@ -843,6 +870,146 @@ pub fn exact_local_event_from_timer_deadline_ns(deadline_ns: Option<u64>) -> Exa
     }
 }
 
+/// Builds an exact local deterministic I/O completion event.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when `delivery_icount` cannot be
+/// converted under `shift`.
+pub fn exact_local_event_from_io_completion(
+    completion: &IoCompletion,
+    shift: Shift,
+) -> Result<ExactLocalEvent, SchedulerError> {
+    Ok(ExactLocalEvent::IoCompletion {
+        virtual_time: completion.delivery_icount.to_virtual(shift)?,
+        sub_node: completion.sub_node.clone(),
+    })
+}
+
+/// Extracts a target-local exact event from a scheduled event.
+///
+/// Backend input is intentionally excluded because guest-to-guest network input
+/// is the conservative lookahead term, not an exact local wakeup.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when an I/O completion delivery
+/// icount cannot be converted under `shift`, or
+/// [`SchedulerError::BoundaryViolation`] when a completion key disagrees with
+/// its payload target or delivery point.
+pub fn exact_local_event_from_scheduled_event(
+    node: &SchedulerNodeId,
+    event: &ScheduledEvent,
+    shift: Shift,
+) -> Result<Option<ExactLocalEvent>, SchedulerError> {
+    if event.key.consumer() != node {
+        return Ok(None);
+    }
+
+    match &event.payload {
+        ScheduledEventPayload::IoCompletion(completion) => {
+            if completion.target != node.node {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "I/O completion key consumer {} does not match payload target {}",
+                        node.node.name, completion.target.name
+                    ),
+                });
+            }
+            let exact = exact_local_event_from_io_completion(completion, shift)?;
+            let expected_time =
+                exact
+                    .virtual_time()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "I/O completion did not produce an exact local event",
+                        ),
+                    })?;
+            let key_time = SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            };
+            if key_time != expected_time {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "I/O completion key time {} does not match delivery icount time {}",
+                        key_time.nanos, expected_time.nanos
+                    ),
+                });
+            }
+            Ok(Some(exact))
+        }
+        ScheduledEventPayload::FaultActivation(fault) => {
+            Ok(Some(ExactLocalEvent::FaultActivation {
+                virtual_time: SimInstant {
+                    nanos: event.key.virtual_time().ticks,
+                },
+                fault: fault.clone(),
+            }))
+        }
+        ScheduledEventPayload::BackendInput(_) | ScheduledEventPayload::Control(_) => Ok(None),
+    }
+}
+
+/// Selects the earliest exact local event for `node`.
+///
+/// The inputs are exact, host-computed wakeups: an optional timer deadline plus
+/// scheduled deterministic I/O completions and locally scheduled faults.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::TimeConversion`] when an I/O completion delivery
+/// icount cannot be converted under `shift`, or
+/// [`SchedulerError::BoundaryViolation`] when an I/O completion key disagrees
+/// with its payload target or delivery point.
+pub fn next_exact_local_event(
+    node: &SchedulerNodeId,
+    timer_deadline: ExactLocalEvent,
+    scheduled_events: &[ScheduledEvent],
+    shift: Shift,
+) -> Result<ExactLocalEvent, SchedulerError> {
+    let mut candidates = Vec::new();
+    if !matches!(timer_deadline, ExactLocalEvent::NoArmedTimer) {
+        candidates.push(timer_deadline);
+    }
+
+    for event in scheduled_events {
+        if let Some(candidate) = exact_local_event_from_scheduled_event(node, event, shift)? {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        left.virtual_time()
+            .cmp(&right.virtual_time())
+            .then_with(|| exact_local_event_rank(left).cmp(&exact_local_event_rank(right)))
+            .then_with(|| {
+                exact_local_event_source_key(left).cmp(&exact_local_event_source_key(right))
+            })
+    });
+
+    Ok(candidates
+        .into_iter()
+        .next()
+        .unwrap_or(ExactLocalEvent::NoArmedTimer))
+}
+
+fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
+    match event {
+        ExactLocalEvent::NoArmedTimer => 0,
+        ExactLocalEvent::TimerDeadline { .. } => 1,
+        ExactLocalEvent::IoCompletion { .. } => 2,
+        ExactLocalEvent::FaultActivation { .. } => 3,
+    }
+}
+
+fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
+    match event {
+        ExactLocalEvent::NoArmedTimer | ExactLocalEvent::TimerDeadline { .. } => "",
+        ExactLocalEvent::IoCompletion { sub_node, .. } => &sub_node.node.name,
+        ExactLocalEvent::FaultActivation { fault, .. } => &fault.name,
+    }
+}
+
 /// The source that selected a scheduler horizon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SchedulerHorizonSource {
@@ -850,6 +1017,10 @@ pub enum SchedulerHorizonSource {
     NetworkLookahead,
     /// An exact local guest timer selected the horizon.
     ExactLocalTimer,
+    /// An exact local deterministic I/O completion selected the horizon.
+    ExactLocalIoCompletion,
+    /// An exact local scheduled fault selected the horizon.
+    ExactLocalFault,
 }
 
 /// A scheduler horizon and its matching icount ceiling.
@@ -964,31 +1135,32 @@ pub fn horizon_from_network_lookahead(
     shift: Shift,
 ) -> Result<SchedulerHorizon, SchedulerError> {
     let network_limit = network_horizon_from_lookahead(current_time, network_lookahead, shift)?;
-    match (exact_local_event, network_limit) {
-        (ExactLocalEvent::NoArmedTimer, SchedulerHorizonLimit::Infinite) => {
-            Ok(SchedulerHorizon::infinite_network())
-        }
-        (ExactLocalEvent::NoArmedTimer, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
-            SchedulerHorizon::finite(
-                virtual_time,
-                SchedulerHorizonSource::NetworkLookahead,
-                shift,
-            )
-        }
-        (ExactLocalEvent::TimerDeadline { virtual_time }, SchedulerHorizonLimit::Infinite) => {
-            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::ExactLocalTimer, shift)
-        }
+    let exact_time = exact_local_event.virtual_time();
+    match (exact_time, network_limit) {
+        (None, SchedulerHorizonLimit::Infinite) => Ok(SchedulerHorizon::infinite_network()),
+        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => SchedulerHorizon::finite(
+            virtual_time,
+            SchedulerHorizonSource::NetworkLookahead,
+            shift,
+        ),
+        (Some(virtual_time), SchedulerHorizonLimit::Infinite) => SchedulerHorizon::finite(
+            virtual_time,
+            exact_local_event_horizon_source(&exact_local_event),
+            shift,
+        ),
         (
-            ExactLocalEvent::TimerDeadline { virtual_time },
+            Some(virtual_time),
             SchedulerHorizonLimit::Finite {
                 virtual_time: network_time,
                 ..
             },
-        ) if virtual_time <= network_time => {
-            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::ExactLocalTimer, shift)
-        }
+        ) if virtual_time <= network_time => SchedulerHorizon::finite(
+            virtual_time,
+            exact_local_event_horizon_source(&exact_local_event),
+            shift,
+        ),
         (
-            ExactLocalEvent::TimerDeadline { .. },
+            Some(_),
             SchedulerHorizonLimit::Finite {
                 virtual_time: network_time,
                 ..
@@ -1001,12 +1173,21 @@ pub fn horizon_from_network_lookahead(
     }
 }
 
+fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> SchedulerHorizonSource {
+    match event {
+        ExactLocalEvent::TimerDeadline { .. } => SchedulerHorizonSource::ExactLocalTimer,
+        ExactLocalEvent::IoCompletion { .. } => SchedulerHorizonSource::ExactLocalIoCompletion,
+        ExactLocalEvent::FaultActivation { .. } => SchedulerHorizonSource::ExactLocalFault,
+        ExactLocalEvent::NoArmedTimer => SchedulerHorizonSource::NetworkLookahead,
+    }
+}
+
 /// Computes the scheduler horizon from network lookahead and the exact local event.
 ///
-/// The exact local timer deadline is consumed as a local horizon candidate. A
-/// node with no armed timer uses the conservative network horizon. The selected
-/// virtual-time horizon is converted to the node's target icount with
-/// `SimInstant::to_icount_ceil`.
+/// Exact local timer, I/O completion, and fault activation deadlines are
+/// consumed as local horizon candidates. A node with no exact local event uses
+/// the conservative network horizon. The selected virtual-time horizon is
+/// converted to the node's target icount with `SimInstant::to_icount_ceil`.
 ///
 /// # Errors
 ///
@@ -1036,7 +1217,7 @@ pub struct SchedulerScenarioNode {
     pub activity: SchedulerNodeActivity,
     /// The conservative cross-node lookahead for this node.
     pub network_lookahead: NetworkLookahead,
-    /// The exact local timer or idle report for this node.
+    /// The exact local timer, I/O completion, fault, or idle report for this node.
     pub exact_local_event: ExactLocalEvent,
 }
 
@@ -1371,10 +1552,16 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
     ) -> Result<AdvanceWindow, SchedulerError> {
+        let exact_local_event = next_exact_local_event(
+            &node.id,
+            node.exact_local_event.clone(),
+            &self.pending_events,
+            self.timeline.shift(),
+        )?;
         let horizon = horizon_from_network_lookahead(
             current_time,
             node.network_lookahead,
-            node.exact_local_event,
+            exact_local_event,
             self.timeline.shift(),
         )?;
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);

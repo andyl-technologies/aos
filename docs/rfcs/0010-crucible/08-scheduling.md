@@ -991,13 +991,23 @@ application of explorer-supplied preemption decisions
   keeps the conservative-PDES dependency guard downstream of the composed target.
   The focused tests cover finite `vt + lookahead`, exact-local precedence,
   infinite network lookahead with and without an exact local event, and live
-  scheduler runs for finite and unbounded network terms. Full multi-source
-  `next_exact_local_event` discovery remains T-SCHED-6, and the full PICK
-  projection over RUNNING, IDLE, HALTED, and DONE nodes remains T-SCHED-13.
-- [ ] **T-SCHED-6** Implement `next_exact_local_event(n)` as the earliest of the
+  scheduler runs for finite and unbounded network terms. The full PICK projection
+  over RUNNING, IDLE, HALTED, and DONE nodes remains T-SCHED-13.
+- [x] **T-SCHED-6** Implement `next_exact_local_event(n)` as the earliest of the
   node's next guest timer, earliest in-flight I/O completion (15), and next
   locally-scheduled fault (17). — satisfies [SCHED-9], [SCHED-10]; spec §8.4.1,
   §8.4.2.
+  Completed by `checks.crucible.phase3.schedulerExactLocalEvent`: the scheduler
+  now reduces the exact-local term from the node's timer report plus pending
+  deterministic I/O completions and local fault activations, excludes
+  guest-to-guest backend input from that local term, rejects malformed I/O
+  completion keys whose payload target or delivery icount disagrees with the
+  scheduled event key, and feeds the reduced event into `SingleScheduler` horizon
+  composition. The focused gate covers timer/I/O/fault minimum selection, shifted
+  I/O icount conversion, backend-input exclusion, malformed completion rejection,
+  horizon-source tagging for I/O and fault events, and live scheduler quanta that
+  stop on pending I/O and fault exact-local horizons. Deterministic total ordering
+  and full RESOLVE behavior remain T-SCHED-8 and T-SCHED-15 through T-SCHED-18.
 - [ ] **T-SCHED-7** Enforce the frequency/exactness decoupling: ordering is
   always exact, the rendezvous frequency is the only knob, and event delivery is
   frequency-independent; add a gate-backed test that two runs at different
