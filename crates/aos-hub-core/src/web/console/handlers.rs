@@ -2662,12 +2662,19 @@ pub(crate) async fn cache_pin_add(
             Ok(days) if days > 0 => Some(crate::clock::now_unix_secs() + days * 86_400),
             Ok(_) => None,
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, "expires must be a whole number of days")
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "expires must be a whole number of days",
+                )
                     .into_response()
             }
         },
     };
-    let notice = match deps.db.pin_cache_path(cache.id, &store_hash, expires_at).await {
+    let notice = match deps
+        .db
+        .pin_cache_path(cache.id, &store_hash, expires_at)
+        .await
+    {
         Ok(()) => match expires_at {
             Some(_) => format!("Pinned {store_hash} (expires set)."),
             None => format!("Pinned {store_hash} (unlimited)."),
@@ -4884,35 +4891,34 @@ pub(crate) async fn registry_cache_link(
     }
     let advertised = form.advertised.is_some();
     let roots_packages = form.roots_packages.is_some();
-    let outcome =
-        async {
-            let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
-                return Ok(Err("unknown cache".to_string()));
-            };
-            if cache.org_id != registry.org_id {
-                return Ok(Err("cache is not in this organization".to_string()));
-            }
-            let advisory = crate::service::assess_cache_link(
-                &cache.slug,
-                &cache.visibility,
-                &registry.slug,
-                &registry.visibility,
-                advertised,
-                roots_packages,
-            );
-            if let Some(reject) = advisory.reject {
-                return Ok(Err(reject));
-            }
-            deps.db
-                .link_cache(cache.id, registry.id, roots_packages, advertised)
-                .await?;
-            // A link is an operational association only (GC-root pinning + the
-            // config-editor autofill source); it never writes the registry's
-            // committed `registry.toml`. Advertising a cache to consumers is an
-            // explicit edit of the `[[caches]]` config — see Settings -> Config.
-            Ok::<Result<String, String>, anyhow::Error>(Ok("Cache link saved.".to_string()))
+    let outcome = async {
+        let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
+            return Ok(Err("unknown cache".to_string()));
+        };
+        if cache.org_id != registry.org_id {
+            return Ok(Err("cache is not in this organization".to_string()));
         }
-        .await;
+        let advisory = crate::service::assess_cache_link(
+            &cache.slug,
+            &cache.visibility,
+            &registry.slug,
+            &registry.visibility,
+            advertised,
+            roots_packages,
+        );
+        if let Some(reject) = advisory.reject {
+            return Ok(Err(reject));
+        }
+        deps.db
+            .link_cache(cache.id, registry.id, roots_packages, advertised)
+            .await?;
+        // A link is an operational association only (GC-root pinning + the
+        // config-editor autofill source); it never writes the registry's
+        // committed `registry.toml`. Advertising a cache to consumers is an
+        // explicit edit of the `[[caches]]` config — see Settings -> Config.
+        Ok::<Result<String, String>, anyhow::Error>(Ok("Cache link saved.".to_string()))
+    }
+    .await;
     match outcome {
         Ok(Ok(notice)) => {
             registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)

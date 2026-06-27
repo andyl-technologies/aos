@@ -130,8 +130,14 @@ mod tests {
 
     #[test]
     fn parse_or_default_is_lenient() {
-        assert_eq!(CrawlPolicy::parse_or_default("deny_all"), CrawlPolicy::DenyAll);
-        assert_eq!(CrawlPolicy::parse_or_default("garbage"), CrawlPolicy::AllowAll);
+        assert_eq!(
+            CrawlPolicy::parse_or_default("deny_all"),
+            CrawlPolicy::DenyAll
+        );
+        assert_eq!(
+            CrawlPolicy::parse_or_default("garbage"),
+            CrawlPolicy::AllowAll
+        );
         assert_eq!(CrawlPolicy::parse_or_default(""), CrawlPolicy::AllowAll);
     }
 

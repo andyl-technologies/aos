@@ -21,6 +21,9 @@
 //! - [`tag`] — signed tag payloads: channel partitions and release tags,
 //!   with name binding, built on [`tagobject`] and [`sshsig`].
 //! - [`refs`] — `info/refs` and `HEAD` parsing.
+//! - [`stack`] — the committed `[caches]` cache-stack node model
+//!   ([`StackNode`](stack::StackNode)): the nestable try/mirror expression
+//!   flattened into the priority list consumers resolve.
 //!
 //! The crate deliberately excludes the surface *transport* (the trait that
 //! fetches loose objects over `file://`/HTTP, or `fetch()` in a browser)
@@ -32,5 +35,6 @@ pub mod manifest;
 pub mod object;
 pub mod refs;
 pub mod sshsig;
+pub mod stack;
 pub mod tag;
 pub mod tagobject;

@@ -463,9 +463,10 @@
     sync();
   }
 
-  // The repeatable [[caches]] editor in the structured config form. Clones the
-  // last row to add another, and removes a row on its × button. No-JS fallback:
-  // the server renders the existing rows plus one blank, all editable.
+  // The ordered [caches] editor in the structured config form. Row order is
+  // preference (priority is derived from order). Clones the last row to add
+  // another, and removes a row on its × button. No-JS fallback: the server
+  // renders the existing rows plus one blank, all editable.
   function initCacheRows(form) {
     var container = form.querySelector("[data-cache-rows]");
     var addBtn = form.querySelector("[data-add-cache]");
@@ -479,7 +480,7 @@
           row.parentNode.removeChild(row);
         } else {
           row.querySelectorAll("input").forEach(function (i) {
-            i.value = i.classList.contains("cache-prio") ? "100" : "";
+            i.value = "";
           });
         }
       });
@@ -490,7 +491,7 @@
         var rows = container.querySelectorAll(".cache-row");
         var clone = rows[rows.length - 1].cloneNode(true);
         clone.querySelectorAll("input").forEach(function (i) {
-          i.value = i.classList.contains("cache-prio") ? "100" : "";
+          i.value = "";
         });
         bindDel(clone);
         container.appendChild(clone);

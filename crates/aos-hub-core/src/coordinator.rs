@@ -218,16 +218,25 @@ mod tests {
     #[tokio::test]
     async fn lease_held_by_first_holder_until_expiry() {
         let c = InMemoryCoordinator::new();
-        assert_eq!(c.acquire_lease("reg:1", "a", 300, 1000).await.unwrap(), None);
+        assert_eq!(
+            c.acquire_lease("reg:1", "a", 300, 1000).await.unwrap(),
+            None
+        );
         // Same holder refreshes.
-        assert_eq!(c.acquire_lease("reg:1", "a", 300, 1010).await.unwrap(), None);
+        assert_eq!(
+            c.acquire_lease("reg:1", "a", 300, 1010).await.unwrap(),
+            None
+        );
         // Different holder blocked while live.
         assert_eq!(
             c.acquire_lease("reg:1", "b", 300, 1020).await.unwrap(),
             Some("a".to_string())
         );
         // After the refresh deadline (1010 + 300) passes, b may take it.
-        assert_eq!(c.acquire_lease("reg:1", "b", 300, 1311).await.unwrap(), None);
+        assert_eq!(
+            c.acquire_lease("reg:1", "b", 300, 1311).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -240,16 +249,28 @@ mod tests {
             Some("a".to_string())
         );
         c.release_lease("reg:1", "a").await.unwrap();
-        assert_eq!(c.acquire_lease("reg:1", "b", 300, 1020).await.unwrap(), None);
+        assert_eq!(
+            c.acquire_lease("reg:1", "b", 300, 1020).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn floor_advances_only_upward() {
         let c = InMemoryCoordinator::new();
         assert!(c.advance_floor("chan:1", 5).await.unwrap(), "first set");
-        assert!(c.advance_floor("chan:1", 9).await.unwrap(), "strictly higher");
-        assert!(!c.advance_floor("chan:1", 9).await.unwrap(), "equal rejected");
-        assert!(!c.advance_floor("chan:1", 3).await.unwrap(), "lower rejected");
+        assert!(
+            c.advance_floor("chan:1", 9).await.unwrap(),
+            "strictly higher"
+        );
+        assert!(
+            !c.advance_floor("chan:1", 9).await.unwrap(),
+            "equal rejected"
+        );
+        assert!(
+            !c.advance_floor("chan:1", 3).await.unwrap(),
+            "lower rejected"
+        );
         // A different key is independent.
         assert!(c.advance_floor("chan:2", 1).await.unwrap());
     }
