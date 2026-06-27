@@ -165,7 +165,6 @@ pub async fn head_machine_path(
 // which both the native hub and the Worker route through so NAR/narinfo stream
 // identically (each shell's `SurfaceFetch::fetch_stream` supplies the stream).
 
-
 /// Render a shared-handler [`FacadeWrite`] outcome as the hub's HTTP response.
 ///
 /// Maps each variant to the byte-identical status (and `{"path": …}` JSON body on
@@ -181,11 +180,9 @@ fn render(outcome: FacadeWrite, path: &str) -> Response {
             Json(serde_json::json!({ "path": path })),
         )
             .into_response(),
-        FacadeWrite::Overwritten | FacadeWrite::Present => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "path": path })),
-        )
-            .into_response(),
+        FacadeWrite::Overwritten | FacadeWrite::Present => {
+            (StatusCode::OK, Json(serde_json::json!({ "path": path }))).into_response()
+        }
         FacadeWrite::NotFound => StatusCode::NOT_FOUND.into_response(),
         FacadeWrite::NotWritable(reason) => {
             (StatusCode::METHOD_NOT_ALLOWED, reason).into_response()

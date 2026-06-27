@@ -545,9 +545,9 @@ pub struct PackageMeta {
 // contracts and their inherent helpers moved.
 pub use aos_registry_surface::manifest::{
     AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta, CapabilityKind,
-    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass, ConfinementMeta,
-    CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta, HostPathMode,
-    HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
+    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass,
+    ConfinementMeta, CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    HostPathMode, HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
     RequiredCapabilityMeta, SyscallProfile,
 };
 

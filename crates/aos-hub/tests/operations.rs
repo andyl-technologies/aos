@@ -413,9 +413,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
 
     // The manifest carries the registry + members + token metadata, but no
     // hash/secret.
-    let manifest = aos_hub::export::export_org(&db, "acme")
-        .await
-        .unwrap();
+    let manifest = aos_hub::export::export_org(&db, "acme").await.unwrap();
     let json = serde_json::to_string(&manifest).unwrap();
     assert!(manifest
         .registries
@@ -578,7 +576,11 @@ async fn link_cache_rejects_advertising_a_less_visible_cache() {
     db.grant_membership("user", alice, "acme", "owner")
         .await
         .unwrap();
-    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+    let token = bearer(
+        Principal::user(alice),
+        "acme",
+        &[Permission::RegistryConfigure],
+    );
 
     let app = router(app_state(Arc::clone(&db)).await).await;
 
@@ -650,7 +652,11 @@ async fn keyed_cache_signs_uploaded_narinfo() {
     db.grant_membership("user", alice, "acme", "owner")
         .await
         .unwrap();
-    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+    let token = bearer(
+        Principal::user(alice),
+        "acme",
+        &[Permission::RegistryConfigure],
+    );
 
     let app = router(app_state(Arc::clone(&db)).await).await;
     let narinfo = "StorePath: /nix/store/aaaa-foo-1.0\nURL: nar/bbbb.nar.zst\n\
@@ -676,13 +682,18 @@ async fn keyed_cache_signs_uploaded_narinfo() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let text = String::from_utf8_lossy(&body);
     assert!(
         text.contains("Sig: acme-cache-key:"),
         "served narinfo must carry the hub signature: {text}"
     );
-    assert!(text.contains("StorePath: /nix/store/aaaa-foo-1.0"), "{text}");
+    assert!(
+        text.contains("StorePath: /nix/store/aaaa-foo-1.0"),
+        "{text}"
+    );
 
     // The signed cache's home page advertises its Nix public key to pin.
     let home = app
@@ -697,7 +708,9 @@ async fn keyed_cache_signs_uploaded_narinfo() {
         .await
         .unwrap();
     assert_eq!(home.status(), StatusCode::OK);
-    let home_body = axum::body::to_bytes(home.into_body(), 1 << 20).await.unwrap();
+    let home_body = axum::body::to_bytes(home.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let home_text = String::from_utf8_lossy(&home_body);
     assert!(
         home_text.contains("extra-trusted-public-keys = acme-cache-key:"),
@@ -766,7 +779,10 @@ async fn private_binding_cache_serves_presigned_302() {
         "presigned origin URL: {location}"
     );
     assert!(location.contains("X-Amz-Signature="), "{location}");
-    assert!(location.contains("X-Amz-Credential=AKIDEXAMPLE"), "{location}");
+    assert!(
+        location.contains("X-Amz-Credential=AKIDEXAMPLE"),
+        "{location}"
+    );
     // The secret never appears in the redirect.
     assert!(!location.contains("secretkey"), "secret leaked: {location}");
 
@@ -819,7 +835,10 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
                 let slice = body[start..=end].to_vec();
                 axum::response::Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+                    .header(
+                        header::CONTENT_RANGE,
+                        format!("bytes {start}-{end}/{total}"),
+                    )
                     .header(header::CONTENT_LENGTH, slice.len())
                     .body(Body::from(slice))
                     .unwrap()
@@ -869,7 +888,15 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
         .unwrap();
     // A primary, proxied frontend that opts into streaming engages the proxy path.
     let fe = db
-        .create_cache_frontend(cache, "ext-cache.example.com", "/", "proxied", true, 100, true)
+        .create_cache_frontend(
+            cache,
+            "ext-cache.example.com",
+            "/",
+            "proxied",
+            true,
+            100,
+            true,
+        )
         .await
         .unwrap();
     db.set_frontend_proxy(
@@ -902,8 +929,14 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
         StatusCode::OK,
         "streamed proxy serves bytes, not a redirect"
     );
-    let got = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-    assert_eq!(got.as_ref(), object.as_slice(), "proxied body matches origin");
+    let got = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        got.as_ref(),
+        object.as_slice(),
+        "proxied body matches origin"
+    );
 
     // Ranged read: the hub forwards the Range to the origin and relays its 206.
     let resp = app
@@ -917,7 +950,11 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT, "ranged proxy -> 206");
+    assert_eq!(
+        resp.status(),
+        StatusCode::PARTIAL_CONTENT,
+        "ranged proxy -> 206"
+    );
     let cr = resp
         .headers()
         .get(header::CONTENT_RANGE)
@@ -925,7 +962,9 @@ async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
         .unwrap_or_default()
         .to_string();
     assert_eq!(cr, format!("bytes 0-3/{total}"), "relayed Content-Range");
-    let got = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let got = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(got.as_ref(), &object[0..=3], "proxied ranged body");
 
     // The `max_body_bytes` guard rejects an origin object larger than the cap:
@@ -971,15 +1010,37 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
         .unwrap();
     let sealer = aos_hub::auth::oidc::dev_sealer();
     let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
-    db.set_storage_binding_access(binding, "private", Some("https://bucket.s3.example.com"), Some(&sealed))
-        .await
-        .unwrap();
-    db.create_cache(Some(org), "ext-cache", "Ext", Some(binding), "pfx", None, "public", 40, "zstd", true)
-        .await
-        .unwrap();
+    db.set_storage_binding_access(
+        binding,
+        "private",
+        Some("https://bucket.s3.example.com"),
+        Some(&sealed),
+    )
+    .await
+    .unwrap();
+    db.create_cache(
+        Some(org),
+        "ext-cache",
+        "Ext",
+        Some(binding),
+        "pfx",
+        None,
+        "public",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
     let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner").await.unwrap();
-    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+    db.grant_membership("user", alice, "acme", "owner")
+        .await
+        .unwrap();
+    let token = bearer(
+        Principal::user(alice),
+        "acme",
+        &[Permission::RegistryConfigure],
+    );
 
     let app = router(app_state(Arc::clone(&db)).await).await;
     let (status, body) = rpc(
@@ -990,8 +1051,14 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let url = body.get("uploadUrl").and_then(|v| v.as_str()).unwrap_or_default();
-    assert!(url.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"), "{url}");
+    let url = body
+        .get("uploadUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        url.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"),
+        "{url}"
+    );
     assert!(url.contains("X-Amz-Signature="), "{url}");
     assert!(!url.contains("secretkey"), "secret leaked: {url}");
 
@@ -1021,12 +1088,29 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
         .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
         .await
         .unwrap();
-    db.create_cache(Some(org), "gc-cache", "GC", Some(binding), "g", None, "public", 40, "zstd", true)
+    db.create_cache(
+        Some(org),
+        "gc-cache",
+        "GC",
+        Some(binding),
+        "g",
+        None,
+        "public",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner")
         .await
         .unwrap();
-    let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner").await.unwrap();
-    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+    let token = bearer(
+        Principal::user(alice),
+        "acme",
+        &[Permission::RegistryConfigure],
+    );
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Upload a rooted object (aaaa) and an unrooted object (dddd); each narinfo
@@ -1038,12 +1122,23 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
         )
     };
     for hash in ["aaaa", "dddd"] {
-        let (s, _) = put(&app, &format!("/gc-cache/{hash}.narinfo"), &token, narinfo(hash).into_bytes()).await;
+        let (s, _) = put(
+            &app,
+            &format!("/gc-cache/{hash}.narinfo"),
+            &token,
+            narinfo(hash).into_bytes(),
+        )
+        .await;
         assert!(s.is_success(), "upload {hash}: {s}");
     }
     // Pin aaaa as a manual GC root.
-    let (s, _) = rpc(&app, "CacheService/PinCachePath",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}), Some(&token)).await;
+    let (s, _) = rpc(
+        &app,
+        "CacheService/PinCachePath",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
+        Some(&token),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     // ttl=0 sweeps unrooted objects immediately (now - uploaded_at >= 0 always),
@@ -1063,8 +1158,13 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
     .unwrap();
 
     // Run GC: it scans both, retains the rooted closure, reclaims the unrooted.
-    let (s, body) = rpc(&app, "CacheService/RunCacheGc",
-        serde_json::json!({"cacheSlug": "gc-cache"}), Some(&token)).await;
+    let (s, body) = rpc(
+        &app,
+        "CacheService/RunCacheGc",
+        serde_json::json!({"cacheSlug": "gc-cache"}),
+        Some(&token),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(body["scanned"].as_i64(), Some(2), "{body}");
     assert_eq!(body["retained"].as_i64(), Some(1), "{body}");
@@ -1072,12 +1172,25 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
 
     // The rooted object survives; the unrooted one is reclaimed (GetCacheObject
     // returns 200 with a null `object` for a missing entry).
-    let (s, body) = rpc(&app, "CacheService/GetCacheObject",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}), Some(&token)).await;
+    let (s, body) = rpc(
+        &app,
+        "CacheService/GetCacheObject",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
+        Some(&token),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(body.get("object").is_some_and(|o| !o.is_null()), "rooted object must survive: {body}");
-    let (s, body) = rpc(&app, "CacheService/GetCacheObject",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "dddd"}), Some(&token)).await;
+    assert!(
+        body.get("object").is_some_and(|o| !o.is_null()),
+        "rooted object must survive: {body}"
+    );
+    let (s, body) = rpc(
+        &app,
+        "CacheService/GetCacheObject",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "dddd"}),
+        Some(&token),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert!(
         body.get("object").is_none_or(|o| o.is_null()),

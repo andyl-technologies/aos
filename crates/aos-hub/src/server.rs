@@ -309,31 +309,33 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // in-process limiter adapted to the core `RateLimiter` port and the native
     // surface provider (filesystem/HTTP fetchers chosen per a registry's storage
     // binding).
-    let rpc_service = Arc::new(aos_hub_core::service::RpcService::new(
-        Arc::clone(&state.db),
-        state.auth.jwt_keys.clone(),
-        state.external_url.clone(),
-        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        Arc::new(
-            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        Arc::new(
-            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        // The shared service's publish lease is the *same* in-memory lease the
-        // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
-        // pointer-flip serialization is process-wide whether a write arrives via
-        // the hub's `/{slug}/{*path}` route or (in principle) the shared facade
-        // route.
-        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-        Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
-        Some(Arc::clone(&state.sealer)),
-    )
-    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
-        state.http.clone(),
-    ))));
+    let rpc_service = Arc::new(
+        aos_hub_core::service::RpcService::new(
+            Arc::clone(&state.db),
+            state.auth.jwt_keys.clone(),
+            state.external_url.clone(),
+            Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+            Arc::new(
+                crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                    .with_sealer(Arc::clone(&state.sealer)),
+            ),
+            Arc::new(
+                crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                    .with_sealer(Arc::clone(&state.sealer)),
+            ),
+            // The shared service's publish lease is the *same* in-memory lease the
+            // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
+            // pointer-flip serialization is process-wide whether a write arrives via
+            // the hub's `/{slug}/{*path}` route or (in principle) the shared facade
+            // route.
+            Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+            Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+            Some(Arc::clone(&state.sealer)),
+        )
+        .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+            state.http.clone(),
+        ))),
+    );
     // The shared router owns `/aos.registry.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
     // the finished AppState-stated router below. The *facade-less* variant is
@@ -347,10 +349,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // Kept for the outermost domain-routing layer below (it captures the service
     // directly, independent of the AppState-typed router's state).
     let dispatch_service = Arc::clone(&rpc_service);
-    let rpc_router =
-        aos_hub_core::connect::rpc_browse_router(rpc_service).layer(
-            tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
-        );
+    let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service).layer(
+        tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
+    );
 
     // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
     // state up front so it merges into the AppState-typed router below.
@@ -411,8 +412,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // "configured at deploy time" when unset). Only the flat console router (which
     // serves the instance-settings page) needs it, so it is set here rather than
     // in the shared `console_deps` builder used by the nested dispatcher.
-    console_deps.default_storage_location =
-        state.db.default_storage_root().await.ok().flatten();
+    console_deps.default_storage_location = state.db.default_storage_root().await.ok().flatten();
     // Seed the editable site chrome (title/banner/footer) from D1 at startup so
     // the masthead reflects persisted branding; a branding save refreshes it
     // live via `set_site_chrome`.
@@ -425,6 +425,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
             s.privacy_url.as_deref(),
             s.support_url.as_deref(),
         );
+        aos_hub_core::web::console_render::set_caches_public(s.caches_public);
     }
     let console_router = aos_hub_core::web::console::console_router(console_deps);
     // Kept for the outermost client-IP injection layer below, which runs after
@@ -659,10 +660,9 @@ async fn inject_client_ip(
         .map(|ci| ci.0);
     let ip = client_ip_for(request.headers(), peer, state.trusted_proxy);
     if let Ok(value) = HeaderValue::from_str(&ip) {
-        request.headers_mut().insert(
-            aos_hub_core::web::console::CLIENT_IP_HEADER,
-            value,
-        );
+        request
+            .headers_mut()
+            .insert(aos_hub_core::web::console::CLIENT_IP_HEADER, value);
     } else {
         // A resolved IP is always header-safe ASCII, but if it somehow is not,
         // remove any inbound value so a client cannot smuggle a forged bucket.
@@ -672,7 +672,6 @@ async fn inject_client_ip(
     }
     next.run(request).await
 }
-
 
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries().await {
@@ -806,16 +805,10 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
     // loses a series, then any other state the index reports.
     for known in ["fresh", "indexing", "stale", "failed"] {
         let n = by_state.remove(known).unwrap_or(0);
-        let _ = writeln!(
-            out,
-            "aos_hub_registries_by_state{{state=\"{known}\"}} {n}"
-        );
+        let _ = writeln!(out, "aos_hub_registries_by_state{{state=\"{known}\"}} {n}");
     }
     for (extra, n) in &by_state {
-        let _ = writeln!(
-            out,
-            "aos_hub_registries_by_state{{state=\"{extra}\"}} {n}"
-        );
+        let _ = writeln!(out, "aos_hub_registries_by_state{{state=\"{extra}\"}} {n}");
     }
     let _ = writeln!(
         out,
@@ -997,7 +990,6 @@ fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
     out
 }
 
-
 /// Display cap for the "required by" reverse-dependency list.
 const REVERSE_DEP_CAP: usize = 100;
 
@@ -1146,8 +1138,7 @@ async fn machine_path(
                         if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
                             return *deny;
                         }
-                        let Some(root) =
-                            state.db.cache_surface_root(cache.id).await.ok().flatten()
+                        let Some(root) = state.db.cache_surface_root(cache.id).await.ok().flatten()
                         else {
                             return StatusCode::NOT_FOUND.into_response();
                         };
@@ -1848,7 +1839,6 @@ pub(crate) async fn authorize_registry_read(
     }
 }
 
-
 /// Whether the request's session user holds any membership covering `org_id`.
 /// Whether this caller may read `cache` — the cache analog of
 /// [`authorize_registry_read`]: a tombstoned cache or one under a suspended org
@@ -1914,7 +1904,9 @@ struct CappedWriter {
 impl std::io::Write for CappedWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         if self.buf.len() + data.len() > self.cap {
-            return Err(std::io::Error::other("decompressed NAR exceeds explorer size cap"));
+            return Err(std::io::Error::other(
+                "decompressed NAR exceeds explorer size cap",
+            ));
         }
         self.buf.extend_from_slice(data);
         Ok(data.len())
@@ -1978,9 +1970,10 @@ async fn nar_explore_page(slug: &str, root: &std::path::Path, rel: &str) -> Resp
 
     // Symlink containment: the resolved file must stay under the surface root
     // (the same guard `cache_serve_file` applies to the download path).
-    let (Ok(real_root), Ok(real_target)) =
-        (tokio::fs::canonicalize(root).await, tokio::fs::canonicalize(&target).await)
-    else {
+    let (Ok(real_root), Ok(real_target)) = (
+        tokio::fs::canonicalize(root).await,
+        tokio::fs::canonicalize(&target).await,
+    ) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if !real_target.starts_with(&real_root) {

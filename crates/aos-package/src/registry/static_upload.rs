@@ -220,7 +220,14 @@ async fn upload_phase_major(
     let mut immutable_ok = Vec::with_capacity(destinations.len());
 
     for (upload_url, backend) in destinations {
-        match upload_class(backend.as_ref(), files, StaticOriginClass::Immutable, no_skip).await {
+        match upload_class(
+            backend.as_ref(),
+            files,
+            StaticOriginClass::Immutable,
+            no_skip,
+        )
+        .await
+        {
             Ok(skipped) => {
                 skipped_files += skipped;
                 immutable_ok.push(true);
@@ -263,29 +270,26 @@ async fn upload_class(
     class: StaticOriginClass,
     no_skip: bool,
 ) -> Result<usize> {
-    let results = futures_util::stream::iter(
-        files
-            .iter()
-            .filter(|file| file.class == class)
-            .map(|file| async move {
-                if !no_skip
-                    && file.class == StaticOriginClass::Immutable
-                    && backend.exists(&file.relative_path).await?
-                {
-                    return Ok::<bool, anyhow::Error>(true);
-                }
-                backend
-                    .put_static_file(
-                        &file.relative_path,
-                        &file.source,
-                        Some(file.content_type),
-                        Some(file.cache_control),
-                    )
-                    .await
-                    .with_context(|| format!("uploading {}", file.relative_path))?;
-                Ok::<bool, anyhow::Error>(false)
-            }),
-    )
+    let results = futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
+        |file| async move {
+            if !no_skip
+                && file.class == StaticOriginClass::Immutable
+                && backend.exists(&file.relative_path).await?
+            {
+                return Ok::<bool, anyhow::Error>(true);
+            }
+            backend
+                .put_static_file(
+                    &file.relative_path,
+                    &file.source,
+                    Some(file.content_type),
+                    Some(file.cache_control),
+                )
+                .await
+                .with_context(|| format!("uploading {}", file.relative_path))?;
+            Ok::<bool, anyhow::Error>(false)
+        },
+    ))
     .buffer_unordered(UPLOAD_CONCURRENCY)
     .try_collect::<Vec<bool>>()
     .await?;

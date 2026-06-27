@@ -157,8 +157,7 @@ fn signed_abc_narinfo(nar_bytes: &[u8]) -> (String, String) {
     use base64::Engine as _;
 
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let trust_key =
-        aos_hub::surface::sshsig::trusted_key_line("demo", &key.verifying_key());
+    let trust_key = aos_hub::surface::sshsig::trusted_key_line("demo", &key.verifying_key());
 
     let mut secret = Vec::with_capacity(64);
     secret.extend_from_slice(&key.to_bytes());

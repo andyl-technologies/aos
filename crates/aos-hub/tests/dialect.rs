@@ -195,7 +195,13 @@ async fn exercise(db: &Database) {
     let usage = db.refresh_cache_usage(cache).await.unwrap();
     assert_eq!(usage.object_count, 1);
     assert_eq!(usage.used_bytes, 120);
-    assert_eq!(db.search_cache_objects(cache, "hello", 10).await.unwrap().len(), 1);
+    assert_eq!(
+        db.search_cache_objects(cache, "hello", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     let run = db.start_cache_gc_run(cache).await.unwrap();
     db.finish_cache_gc_run(run, "ok", None, 1, 1, 0, 0)
         .await

@@ -542,7 +542,10 @@ fn render_instance_settings(printer: &Printer, s: &aos_remote::InstanceSettings)
         "  session_lifetime_secs {}",
         s.session_lifetime_secs
     ));
-    printer.plain(&format!("  default_crawl_policy  {}", s.default_crawl_policy));
+    printer.plain(&format!(
+        "  default_crawl_policy  {}",
+        s.default_crawl_policy
+    ));
     printer.plain(&format!("  max_upload_bytes      {}", s.max_upload_bytes));
 }
 

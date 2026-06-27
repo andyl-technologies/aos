@@ -1528,9 +1528,9 @@ pub fn org_dashboard(
 
     // -- Binary caches -------------------------------------------------------
     if active == "caches" {
-        body.push_str("<h2>Binary caches</h2>\n");
+        body.push_str("<h2>Caches</h2>\n");
         if caches.is_empty() {
-            body.push_str("<p class=\"dim\">No binary caches.</p>\n");
+            body.push_str("<p class=\"dim\">No caches.</p>\n");
         } else {
             let rows: Vec<Vec<String>> = caches
                 .iter()
@@ -3936,6 +3936,11 @@ pub fn instance_settings_page(
     } else {
         ""
     };
+    let caches_pub = if settings.caches_public {
+        " checked"
+    } else {
+        ""
+    };
     let lifetime = settings
         .session_lifetime_secs
         .map(|s| s.to_string())
@@ -3953,6 +3958,9 @@ pub fn instance_settings_page(
          <span class=\"dim\">comma-separated; empty allows any domain</span></label>\n\
          <label><span class=\"lbl\">offer password login{pw_help}</span> \
          <input type=\"checkbox\" name=\"password_login\" value=\"1\"{pw}></label>\n\
+         <label><span class=\"lbl\">show caches to logged-out visitors</span> \
+         <input type=\"checkbox\" name=\"caches_public\" value=\"1\"{caches_pub}> \
+         <span class=\"dim\">off: the caches tab + cache pages require login</span></label>\n\
          <label><span class=\"lbl\">session lifetime (seconds){life_help}</span> \
          <input type=\"number\" name=\"session_lifetime_secs\" value=\"{lifetime}\" min=\"0\"> \
          <span class=\"dim\">empty uses the built-in default</span></label>\n\

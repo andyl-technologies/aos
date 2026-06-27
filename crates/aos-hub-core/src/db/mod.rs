@@ -1661,6 +1661,10 @@ pub struct InstanceSettings {
     /// Whether local password login is offered (else SSO/magic-link only).
     /// Defaults to `true`.
     pub password_login: bool,
+    /// Whether the binary-caches surface (the masthead caches tab, the global
+    /// caches list, and direct cache pages) is visible to logged-out visitors.
+    /// Defaults to `false` — caches are a signed-in-only surface.
+    pub caches_public: bool,
     /// Session absolute lifetime in seconds; `None` uses the built-in default.
     pub session_lifetime_secs: Option<i64>,
     /// Default `robots.txt` crawl policy new registries inherit
@@ -7813,6 +7817,10 @@ impl Database {
                 .await?
                 .map(|v| v != "off" && v != "false" && v != "0")
                 .unwrap_or(true),
+            caches_public: get("caches_public")
+                .await?
+                .map(|v| v == "on" || v == "true" || v == "1")
+                .unwrap_or(false),
             session_lifetime_secs: get("session_lifetime_secs")
                 .await?
                 .and_then(|v| v.parse().ok()),

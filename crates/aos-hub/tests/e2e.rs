@@ -201,8 +201,7 @@ async fn untrusted_key_fails_closed() {
     // committed roster must not rescue it: the roster only extends trust
     // after the commit itself verifies against pinned anchors.
     let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let wrong_anchor =
-        aos_hub::surface::sshsig::trusted_key_line("demo", &other.verifying_key());
+    let wrong_anchor = aos_hub::surface::sshsig::trusted_key_line("demo", &other.verifying_key());
 
     let db = Database::open_in_memory().await.unwrap();
     db.register_registry("demo", surface.to_str().unwrap(), &[wrong_anchor], true)

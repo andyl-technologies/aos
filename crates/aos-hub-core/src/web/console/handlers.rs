@@ -4423,6 +4423,8 @@ pub(crate) struct InstanceSettingsForm {
     #[serde(default)]
     password_login: Option<String>,
     #[serde(default)]
+    caches_public: Option<String>,
+    #[serde(default)]
     session_lifetime_secs: String,
 }
 
@@ -4460,6 +4462,16 @@ pub(crate) async fn instance_settings_action(
                 }),
             )
             .await?;
+        let caches_public = form.caches_public.is_some();
+        deps.db
+            .set_instance_config(
+                "caches_public",
+                Some(if caches_public { "on" } else { "off" }),
+            )
+            .await?;
+        // Refresh the live masthead/gating flag so the change takes effect for
+        // this serving process without a restart.
+        crate::web::console_render::set_caches_public(caches_public);
         deps.db
             .set_instance_config("session_lifetime_secs", Some(&form.session_lifetime_secs))
             .await?;

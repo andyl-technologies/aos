@@ -453,7 +453,14 @@ async fn create_registry_with_default_storage_needs_no_binding() {
     let csrf = csrf_for(&cookie);
 
     // With no bindings, the form still renders and offers the default option.
-    let resp = send(&app, "GET", "/-/org/acme/registries/new", Some(&cookie), None).await;
+    let resp = send(
+        &app,
+        "GET",
+        "/-/org/acme/registries/new",
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("Default storage"), "{}", resp.body);
 
@@ -582,7 +589,11 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(resp.body.contains("settings-nav"), "settings sidebar: {}", resp.body);
+    assert!(
+        resp.body.contains("settings-nav"),
+        "settings sidebar: {}",
+        resp.body
+    );
     assert!(
         resp.body.contains("/acme/infra/prod/cdn/-/settings/tokens"),
         "tokens link: {}",

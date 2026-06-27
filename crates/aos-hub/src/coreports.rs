@@ -67,9 +67,8 @@ async fn s3_surface_for(
     if !matches!(binding.kind.as_str(), "s3" | "r2") {
         return Ok(None);
     }
-    let sealer = sealer.context(
-        "an s3/r2 storage binding requires a configured secret sealer (HUB_SEAL_KEY)",
-    )?;
+    let sealer = sealer
+        .context("an s3/r2 storage binding requires a configured secret sealer (HUB_SEAL_KEY)")?;
     S3Surface::from_binding(&binding, sub_prefix, sealer.as_ref())
 }
 
@@ -251,7 +250,10 @@ impl HubSurfaceProvider {
 
 #[async_trait]
 impl core_fetch::SurfaceProvider for HubSurfaceProvider {
-    async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
+    async fn fetcher(
+        &self,
+        registry: &RegistryRecord,
+    ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
         if let Some(surface) = s3_surface_for(
             &self.db,
             self.sealer.as_ref(),
@@ -823,9 +825,9 @@ impl S3Fetch {
 #[async_trait]
 impl core_fetch::SurfaceFetch for S3Fetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        let url = self
-            .surface
-            .object_url(S3Method::Get, path, aos_hub_core::clock::now_unix_secs())?;
+        let url =
+            self.surface
+                .object_url(S3Method::Get, path, aos_hub_core::clock::now_unix_secs())?;
         let resp = self
             .http
             .get(&url)
@@ -857,9 +859,9 @@ impl core_fetch::SurfaceFetch for S3Fetch {
 
         // A presigned URL signs only the `Host` header, so a `Range` request
         // header may be added freely without invalidating the signature.
-        let url = self
-            .surface
-            .object_url(S3Method::Get, path, aos_hub_core::clock::now_unix_secs())?;
+        let url =
+            self.surface
+                .object_url(S3Method::Get, path, aos_hub_core::clock::now_unix_secs())?;
         let mut req = self.http.get(&url);
         if let Some((start, end)) = range {
             let spec = if end == u64::MAX {
@@ -887,7 +889,12 @@ impl core_fetch::SurfaceFetch for S3Fetch {
                 .and_then(parse_content_range)
                 .context("s3 206 without a parseable Content-Range")?;
             if cr.0 > cr.1 || cr.1 >= cr.2 {
-                bail!("s3 {path}: malformed Content-Range bytes {}-{}/{}", cr.0, cr.1, cr.2);
+                bail!(
+                    "s3 {path}: malformed Content-Range bytes {}-{}/{}",
+                    cr.0,
+                    cr.1,
+                    cr.2
+                );
             }
             served = Some((cr.0, cr.1));
             total = cr.2;
@@ -905,9 +912,9 @@ impl core_fetch::SurfaceFetch for S3Fetch {
     }
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
-        let url = self
-            .surface
-            .object_url(S3Method::Head, path, aos_hub_core::clock::now_unix_secs())?;
+        let url =
+            self.surface
+                .object_url(S3Method::Head, path, aos_hub_core::clock::now_unix_secs())?;
         let resp = self
             .http
             .head(&url)
@@ -952,9 +959,9 @@ impl S3Write {
 #[async_trait]
 impl core_sw::SurfaceWrite for S3Write {
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let url = self
-            .surface
-            .object_url(S3Method::Put, path, aos_hub_core::clock::now_unix_secs())?;
+        let url =
+            self.surface
+                .object_url(S3Method::Put, path, aos_hub_core::clock::now_unix_secs())?;
         let resp = self
             .http
             .put(&url)
@@ -969,9 +976,11 @@ impl core_sw::SurfaceWrite for S3Write {
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
-        let url = self
-            .surface
-            .object_url(S3Method::Delete, path, aos_hub_core::clock::now_unix_secs())?;
+        let url = self.surface.object_url(
+            S3Method::Delete,
+            path,
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
         let resp = self
             .http
             .delete(&url)

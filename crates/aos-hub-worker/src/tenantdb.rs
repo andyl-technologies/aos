@@ -53,10 +53,7 @@ pub enum SqlCommand {
         params: Vec<JsonValue>,
     },
     /// A non-`SELECT`: returns the affected row count.
-    Execute {
-        sql: String,
-        params: Vec<JsonValue>,
-    },
+    Execute { sql: String, params: Vec<JsonValue> },
 }
 
 /// A JSON-friendly mirror of a bound [`Value`] (the wire form of a parameter and

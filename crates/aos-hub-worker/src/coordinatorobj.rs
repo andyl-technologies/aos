@@ -225,7 +225,13 @@ impl WorkerCoordinator {
 
 #[async_trait(?Send)]
 impl Coordinator for WorkerCoordinator {
-    async fn admit(&self, class: &str, key: &str, window: i64, budget: i64) -> anyhow::Result<bool> {
+    async fn admit(
+        &self,
+        class: &str,
+        key: &str,
+        window: i64,
+        budget: i64,
+    ) -> anyhow::Result<bool> {
         let reply = self
             .call(&Command::Admit {
                 class: class.to_string(),
