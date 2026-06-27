@@ -1818,10 +1818,7 @@ impl PersistCache {
     /// be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
-        fs::create_dir_all(layout.root()).map_err(|source| PersistError::CreateDir {
-            path: layout.root().to_path_buf(),
-            source,
-        })?;
+        ensure_root_dir(layout.root())?;
         let layout = PersistLayout::new(fs::canonicalize(layout.root()).map_err(|source| {
             PersistError::CanonicalizeRoot {
                 path: layout.root().to_path_buf(),

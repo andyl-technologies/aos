@@ -17,7 +17,15 @@
 
 use super::*;
 
+use ratchet_cache::owned_paths::{OwnedPathError, OwnedPaths};
 use ratchet_cache::schema::{CacheSchema, CacheSchemaError};
+
+fn engine_owned_path_error_to_persist(error: OwnedPathError) -> PersistError {
+    match error {
+        OwnedPathError::CreateDir { path, source } => PersistError::CreateDir { path, source },
+        OwnedPathError::Remove { path, source } => PersistError::DiscardPayload { path, source },
+    }
+}
 
 fn engine_schema_error_to_persist(error: CacheSchemaError) -> PersistError {
     match error {
@@ -55,42 +63,20 @@ pub(super) fn update_persist_index_chunk(hasher: &mut blake3::Hasher, bytes: &[u
 }
 
 pub(super) fn ensure_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {
-    for path in [
+    OwnedPaths::new([
         layout.root().to_path_buf(),
         layout.nodes_dir(),
         layout.values_dir(),
         layout.files_dir(),
-    ] {
-        fs::create_dir_all(&path).map_err(|source| PersistError::CreateDir { path, source })?;
-    }
-    Ok(())
+    ])
+    .ensure_dirs()
+    .map_err(engine_owned_path_error_to_persist)
 }
 
 pub(super) fn discard_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {
-    for path in [layout.nodes_dir(), layout.values_dir(), layout.files_dir()] {
-        remove_path_if_exists(&path)?;
-    }
-    Ok(())
-}
-
-pub(super) fn remove_path_if_exists(path: &Path) -> Result<(), PersistError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(path).map_err(|source| PersistError::DiscardPayload {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
-        Ok(_) => fs::remove_file(path).map_err(|source| PersistError::DiscardPayload {
-            path: path.to_path_buf(),
-            source,
-        }),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PersistError::DiscardPayload {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
+    OwnedPaths::new([layout.nodes_dir(), layout.values_dir(), layout.files_dir()])
+        .discard_existing()
+        .map_err(engine_owned_path_error_to_persist)
 }
 
 pub(super) fn read_schema_version(layout: &PersistLayout) -> Result<Option<u32>, PersistError> {
@@ -100,11 +86,14 @@ pub(super) fn read_schema_version(layout: &PersistLayout) -> Result<Option<u32>,
 }
 
 pub(super) fn write_schema(layout: &PersistLayout) -> Result<(), PersistError> {
-    fs::create_dir_all(layout.root()).map_err(|source| PersistError::CreateDir {
-        path: layout.root().to_path_buf(),
-        source,
-    })?;
+    ensure_root_dir(layout.root())?;
     CacheSchema::new(layout.schema_path())
         .write_version(PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION)
         .map_err(engine_schema_error_to_persist)
+}
+
+pub(super) fn ensure_root_dir(path: &Path) -> Result<(), PersistError> {
+    OwnedPaths::new([path.to_path_buf()])
+        .ensure_dirs()
+        .map_err(engine_owned_path_error_to_persist)
 }

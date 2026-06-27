@@ -51,6 +51,35 @@ fn mismatched_schema_discards_payload_and_rewrites_version() {
 }
 
 #[test]
+fn mismatched_schema_discards_payload_symlink_without_following() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let external = root.join("external-nodes");
+    let external_file = sentinel(external.join("keep"));
+    fs::remove_dir_all(layout.nodes_dir()).expect("nodes dir removes");
+    std::os::unix::fs::symlink(&external, layout.nodes_dir()).expect("nodes symlink creates");
+    fs::write(
+        layout.schema_path(),
+        "format = \"aos-nix-eval-cache\"\nschema_version = 4\n",
+    )
+    .expect("schema downgrades");
+
+    PersistCache::open(&root).expect("mismatched schema opens");
+
+    assert!(external_file.is_file());
+    assert!(layout.nodes_dir().is_dir());
+    assert!(
+        !fs::symlink_metadata(layout.nodes_dir())
+            .expect("nodes metadata reads")
+            .file_type()
+            .is_symlink()
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn malformed_schema_errors_without_discarding_payload() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
