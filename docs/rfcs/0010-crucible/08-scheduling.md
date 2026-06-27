@@ -928,12 +928,24 @@ application of explorer-supplied preemption decisions
   at a quantum boundary, actor state is exposed only through a read-only snapshot
   reply, non-frontier quantum requests are rejected, and the scheduler yields to
   its inbox before each quantum. The existing scheduler-liveness gate retains the
-  no-lock-across-advance evidence. Full lookahead, conservative PDES, total-order
-  RESOLVE, seeded probabilistic RESOLVE draws, topology swaps, and RR/preemption
-  semantics remain the later unchecked T-SCHED-2 through T-SCHED-30 tasks.
-- [ ] **T-SCHED-2** Implement `lookahead(n)` as the minimum inbound link latency
+  no-lock-across-advance evidence. Conservative PDES, horizon integration,
+  total-order RESOLVE, seeded probabilistic RESOLVE draws, topology swaps, and
+  RR/preemption semantics remain the later unchecked T-SCHED-3 through
+  T-SCHED-30 tasks.
+- [x] **T-SCHED-2** Implement `lookahead(n)` as the minimum inbound link latency
   over the current effective topology, with `+∞` when a node has no inbound
   links. — satisfies [SCHED-6]; spec §8.3.
+  Completed by `checks.crucible.phase3.schedulerLookahead`: the scheduler now
+  exposes a canonical directed `SchedulerLookaheadGraph` over caller-supplied
+  effective edges, a VM-to-VM adapter for `World::static_topology()` lookahead
+  edges, and `NetworkLookahead::{Finite, Infinite}` so `lookahead(n)` is the
+  minimum inbound live-link latency or positive infinity when no inbound edge
+  targets the node. The focused tests cover min-inbound selection, directionality,
+  no-inbound infinity, canonical duplicate-stable edges, and the world-derived
+  jitter-reduced minimum latency. Conservative PDES horizon enforcement,
+  topology-change recompute, partition/heal edge swaps, and RESOLVE delivery
+  assertions remain the later unchecked T-SCHED-3, T-SCHED-5, and T-SCHED-18
+  through T-SCHED-24 tasks.
 - [ ] **T-SCHED-3** Implement the conservative-PDES advance rule (no node crosses
   an unresolved cross-node dependency; no rollback; no speculation). — satisfies
   [SCHED-5]; spec §8.3.

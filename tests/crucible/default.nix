@@ -340,6 +340,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerActor";
       taskIds = ["T-SCHED-1"];
     };
+    schedulerLookahead = import ./phase3-scheduler-lookahead.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerLookahead";
+      taskIds = ["T-SCHED-2"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

@@ -57,15 +57,17 @@ pub use model::{
     WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
-    ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerActor, SchedulerActorError, SchedulerActorHandle,
-    SchedulerActorReply, SchedulerActorStateSnapshot, SchedulerError, SchedulerHorizon,
-    SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerTerminal, SchedulingNodeKind, SharedTimeline, SharedTimelineKey, SingleScheduler,
+    ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NetworkLookahead,
+    NodeTimelineProjection, QuantumLoop, QuantumOutcome, QuantumRequest, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerActor, SchedulerActorError,
+    SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot, SchedulerError,
+    SchedulerHorizon, SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadGraph,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
+    SchedulingNodeKind, SharedTimeline, SharedTimelineKey, SingleScheduler,
     check_scheduler_liveness, exact_local_event_from_timer_deadline_ns,
-    horizon_from_exact_local_event, ordered_scheduled_events, ordered_timeline_keys,
+    horizon_from_exact_local_event, lookahead_for_node, ordered_scheduled_events,
+    ordered_timeline_keys,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{

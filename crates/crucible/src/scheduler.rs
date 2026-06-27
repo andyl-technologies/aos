@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use crate::{
     BackendError, BackendInput, Configuration, Decision, DecisionRngState, DeliveryOrderDecision,
     EventKey, FaultId, Icount, NodeCounter, NodeId, RngStreamId, RngStreamPosition, ScenarioDef,
-    Shift, SimInstant, TimeConversionError, VirtualTime, step,
+    Shift, SimDuration, SimInstant, TimeConversionError, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -324,6 +324,138 @@ pub enum SchedulingNodeKind {
     Network,
     /// The session actor boundary.
     ControlPlane,
+}
+
+/// Conservative network lookahead for one scheduler node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NetworkLookahead {
+    /// The node has at least one inbound live network edge.
+    Finite(SimDuration),
+    /// The node has no inbound live network edge and is network-unbounded.
+    Infinite,
+}
+
+impl NetworkLookahead {
+    /// Returns the finite duration when this lookahead is bounded by a network edge.
+    #[must_use]
+    pub fn finite_duration(self) -> Option<SimDuration> {
+        match self {
+            Self::Finite(duration) => Some(duration),
+            Self::Infinite => None,
+        }
+    }
+
+    /// Returns whether this lookahead is positive infinity.
+    #[must_use]
+    pub fn is_infinite(self) -> bool {
+        matches!(self, Self::Infinite)
+    }
+}
+
+/// One directed live edge used for scheduler network lookahead.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerLookaheadEdge {
+    /// The scheduler node that can produce a future network event.
+    pub from: SchedulerNodeId,
+    /// The scheduler node that can receive the future network event.
+    pub to: SchedulerNodeId,
+    /// The minimum one-way latency that bounds conservative network lookahead.
+    pub minimum_latency: SimDuration,
+}
+
+impl SchedulerLookaheadEdge {
+    /// Builds one directed scheduler lookahead edge.
+    #[must_use]
+    pub fn new(from: SchedulerNodeId, to: SchedulerNodeId, minimum_latency: SimDuration) -> Self {
+        Self {
+            from,
+            to,
+            minimum_latency,
+        }
+    }
+
+    /// Converts a static world lookahead edge into a VM-to-VM scheduler edge.
+    #[must_use]
+    pub fn from_world_edge(edge: &WorldLookaheadEdge) -> Self {
+        Self {
+            from: SchedulerNodeId {
+                node: edge.from.clone(),
+                kind: SchedulingNodeKind::Vm,
+            },
+            to: SchedulerNodeId {
+                node: edge.to.clone(),
+                kind: SchedulingNodeKind::Vm,
+            },
+            minimum_latency: edge.minimum_latency,
+        }
+    }
+}
+
+/// Canonical directed edge set used to compute scheduler network lookahead.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SchedulerLookaheadGraph {
+    edges: Vec<SchedulerLookaheadEdge>,
+}
+
+impl SchedulerLookaheadGraph {
+    /// Builds a canonical graph from the current effective scheduler edge set.
+    ///
+    /// The caller supplies the effective topology. This constructor only
+    /// canonicalizes directed edges and collapses exact duplicate edges; dynamic
+    /// topology recompute and partition/heal semantics are layered on top by the
+    /// later scheduler tasks.
+    #[must_use]
+    pub fn from_edges<I>(edges: I) -> Self
+    where
+        I: IntoIterator<Item = SchedulerLookaheadEdge>,
+    {
+        let mut edges = edges.into_iter().collect::<Vec<_>>();
+        edges.sort();
+        edges.dedup();
+        Self { edges }
+    }
+
+    /// Builds a scheduler graph from the static world lookahead graph.
+    ///
+    /// Static world edges are VM-to-VM edges. Faults and partitions may later
+    /// provide a smaller effective edge set before calling [`Self::from_edges`].
+    #[must_use]
+    pub fn from_world_edges(edges: &[WorldLookaheadEdge]) -> Self {
+        Self::from_edges(edges.iter().map(SchedulerLookaheadEdge::from_world_edge))
+    }
+
+    /// Returns the canonical effective edges used by this graph.
+    #[must_use]
+    pub fn edges(&self) -> &[SchedulerLookaheadEdge] {
+        &self.edges
+    }
+
+    /// Computes `lookahead(node)` as the minimum inbound live-link latency.
+    #[must_use]
+    pub fn lookahead(&self, node: &SchedulerNodeId) -> NetworkLookahead {
+        lookahead_for_node(&self.edges, node)
+    }
+}
+
+/// Computes `lookahead(node)` over an effective directed scheduler edge set.
+///
+/// Inbound edges from other scheduler nodes contribute their minimum one-way
+/// latency. When no inbound edge targets `node`, the result is
+/// [`NetworkLookahead::Infinite`].
+#[must_use]
+pub fn lookahead_for_node(
+    edges: &[SchedulerLookaheadEdge],
+    node: &SchedulerNodeId,
+) -> NetworkLookahead {
+    match edges
+        .iter()
+        .filter(|edge| &edge.to == node && &edge.from != node)
+        .map(|edge| edge.minimum_latency)
+        .min()
+    {
+        Some(duration) => NetworkLookahead::Finite(duration),
+        None => NetworkLookahead::Infinite,
+    }
 }
 
 /// Shared virtual-timeline projection used by scheduler ordering.
