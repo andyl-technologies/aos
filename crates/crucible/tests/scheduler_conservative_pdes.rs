@@ -3,10 +3,10 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     authorize_conservative_advance, unresolved_cross_node_dependencies,
 };
 
@@ -201,16 +201,14 @@ fn single_scheduler_rejects_due_cross_node_dependency_before_advance() {
 fn scenario_node(
     name: &str,
     counter: u64,
-    network_horizon: u64,
+    network_lookahead: u64,
     exact_local_event: ExactLocalEvent,
 ) -> SchedulerScenarioNode {
     SchedulerScenarioNode {
         id: scheduler_node(name),
         counter: NodeCounter { ticks: counter },
         activity: SchedulerNodeActivity::Runnable,
-        network_horizon: SimInstant {
-            nanos: network_horizon,
-        },
+        network_lookahead: finite_lookahead(network_lookahead),
         exact_local_event,
     }
 }
@@ -249,4 +247,8 @@ fn backend_event(
 
 fn shift(bits: u8) -> Shift {
     Shift::new(bits).expect("test shift should be valid")
+}
+
+fn finite_lookahead(nanos: u64) -> NetworkLookahead {
+    NetworkLookahead::Finite(SimDuration { nanos })
 }

@@ -3,10 +3,10 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, NodeCounter, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
+    QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimInstant,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant,
     SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 use std::fmt::Debug;
@@ -85,7 +85,7 @@ fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_orde
         SimInstant { nanos: 16 },
         vec![
             scenario_node("early-high-horizon", 0, 10, ExactLocalEvent::NoArmedTimer),
-            scenario_node("late-low-horizon", 3, 4, ExactLocalEvent::NoArmedTimer),
+            scenario_node("late-low-horizon", 3, 1, ExactLocalEvent::NoArmedTimer),
         ],
         Vec::new(),
     );
@@ -107,7 +107,7 @@ fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
         SimInstant { nanos: 16 },
         vec![
             scenario_node("node-b", 0, 5, ExactLocalEvent::NoArmedTimer),
-            scenario_node("node-a", 2, 5, ExactLocalEvent::NoArmedTimer),
+            scenario_node("node-a", 2, 3, ExactLocalEvent::NoArmedTimer),
         ],
         Vec::new(),
     );
@@ -198,7 +198,7 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
                 .map(|node_index| {
                     let start = u64::from((seed + node_index) % 3);
                     let span = u64::from(3 + ((seed * 7 + node_index * 5) % 6));
-                    let network_horizon = (start + span) * scale;
+                    let network_lookahead = span * scale;
                     let exact_local_event = if (seed + node_index) % 5 == 0 {
                         ExactLocalEvent::TimerDeadline {
                             virtual_time: SimInstant {
@@ -212,7 +212,7 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
                     scenario_node(
                         &format!("node-{node_index}"),
                         start,
-                        network_horizon,
+                        network_lookahead,
                         exact_local_event,
                     )
                 })
@@ -244,7 +244,16 @@ fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> V
             let producer = &nodes[(index + 1) % nodes.len()].id;
             let due_tick = node.counter.ticks + 1 + u64::from((seed + index as u32) % 2);
             let due_time = due_tick * scale;
-            let horizon = node.network_horizon.nanos;
+            let current_time = node
+                .counter
+                .to_virtual(shift_for_scale(scale))
+                .expect("generated counter should project");
+            let horizon = current_time.nanos
+                + node
+                    .network_lookahead
+                    .finite_duration()
+                    .expect("generated scenario uses finite lookahead")
+                    .nanos;
 
             (due_time <= horizon).then(|| {
                 backend_event(
@@ -280,16 +289,14 @@ fn drive_one_quantum(scenario: SchedulerLivenessScenario) -> QuantumOutcome {
 fn scenario_node(
     name: &str,
     counter: u64,
-    network_horizon: u64,
+    network_lookahead: u64,
     exact_local_event: ExactLocalEvent,
 ) -> SchedulerScenarioNode {
     SchedulerScenarioNode {
         id: scheduler_node(name, SchedulingNodeKind::Vm),
         counter: NodeCounter { ticks: counter },
         activity: SchedulerNodeActivity::Runnable,
-        network_horizon: SimInstant {
-            nanos: network_horizon,
-        },
+        network_lookahead: finite_lookahead(network_lookahead),
         exact_local_event,
     }
 }
@@ -297,10 +304,10 @@ fn scenario_node(
 fn idle_scenario_node(
     name: &str,
     counter: u64,
-    network_horizon: u64,
+    network_lookahead: u64,
     exact_local_event: ExactLocalEvent,
 ) -> SchedulerScenarioNode {
-    let mut node = scenario_node(name, counter, network_horizon, exact_local_event);
+    let mut node = scenario_node(name, counter, network_lookahead, exact_local_event);
     node.activity = SchedulerNodeActivity::Idle;
     node
 }
@@ -360,4 +367,13 @@ fn shift(bits: u8) -> Shift {
         Ok(shift) => shift,
         Err(error) => panic!("test shift should be valid: {error}"),
     }
+}
+
+fn shift_for_scale(scale: u64) -> Shift {
+    let bits = scale.trailing_zeros() as u8;
+    shift(bits)
+}
+
+fn finite_lookahead(nanos: u64) -> NetworkLookahead {
+    NetworkLookahead::Finite(SimDuration { nanos })
 }
