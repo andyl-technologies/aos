@@ -50,6 +50,7 @@ pub(crate) mod config_artifact;
 pub use config_artifact::render_package_config;
 pub(crate) mod credential;
 pub(crate) mod credential_artifact;
+pub mod config_eval;
 pub mod deps;
 pub mod desired;
 pub mod download;
@@ -484,6 +485,37 @@ pub enum PackageCommand {
         /// Use the system package profile
         #[arg(long)]
         system: bool,
+    },
+    /// Hidden: drive the RFC-0011 on-host resolve↔eval config fixpoint.
+    ///
+    /// Called only by `aos-eval.service`. Renders the working set into
+    /// `entry.nix`, runs the sandboxed stock-Nix evaluator, fetches missing
+    /// providers' config outputs, and — only on convergence — writes the
+    /// manifest. Failure-safe: a terminal error writes no manifest, so the
+    /// install step is a no-op and the box stays live on the gen-0 seed.
+    #[command(name = "__eval", hide = true)]
+    Eval {
+        /// The verified leaf host.nix store path
+        #[arg(long = "host-nix")]
+        host_nix: PathBuf,
+        /// The in-image module library store path
+        #[arg(long = "base-lib")]
+        base_lib: PathBuf,
+        /// The registry provides index (index/provides.json)
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// A desired.toml whose `packages` seed the working set
+        #[arg(long)]
+        desired: Option<PathBuf>,
+        /// The running image's base-lib module_abi
+        #[arg(long = "module-abi")]
+        module_abi: u32,
+        /// Where to write the converged manifest (only on success)
+        #[arg(long, default_value = config_eval::stock::DEFAULT_MANIFEST_PATH)]
+        out: PathBuf,
+        /// The eval root holding entry.nix
+        #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
+        eval_root: PathBuf,
     },
 }
 
@@ -1882,6 +1914,32 @@ pub async fn run(
         return ebpf_lsm::load_system_policies();
     }
 
+    // The on-host config-eval driver needs no apm config or profile: it reads
+    // the registry index and host.nix from disk and shells out to stock nix.
+    // Dispatch it before `ApmConfig::load` (mirrors the systemd-client vehicle).
+    if let PackageCommand::Eval {
+        host_nix,
+        base_lib,
+        index,
+        desired,
+        module_abi,
+        out,
+        eval_root,
+    } = command
+    {
+        let verbose = u8::from(printer.mode() == OutputMode::Verbose);
+        return config_eval::run_eval_command(&config_eval::EvalCommand {
+            host_nix: host_nix.clone(),
+            base_lib: base_lib.clone(),
+            index: index.clone(),
+            desired: desired.clone(),
+            module_abi: *module_abi,
+            out: out.clone(),
+            eval_root: eval_root.clone(),
+            verbose,
+        });
+    }
+
     if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
         return run_produce_package_attestation_quote(nonce, output_dir, printer);
     }
@@ -2232,6 +2290,9 @@ pub async fn run(
         }
         PackageCommand::LoadEbpfLsmPolicies { .. } => {
             unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
+        }
+        PackageCommand::Eval { .. } => {
+            unreachable!("Eval is handled before ApmConfig::load")
         }
     }
 }

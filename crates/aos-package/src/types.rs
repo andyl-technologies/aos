@@ -993,6 +993,49 @@ impl ProvidesIndex {
             .unwrap_or_default()
     }
 
+    /// Returns the providers of any option under shared root `root` that admit
+    /// base-lib ABI `abi`.
+    ///
+    /// This is the resolver's Case-B lookup (RFC-0011 build-spec §4): a read of
+    /// an *absent root* surfaces from stock Nix as a raw `attribute '<root>'
+    /// missing` error naming only the first path segment, so the driver cannot
+    /// resolve a full option path — it must ask which package owns the root.
+    /// Entries are deduplicated by `(package, version, platform)` and returned
+    /// in the index's stored order; ABI-incompatible entries are filtered out.
+    pub fn providers_for_root(&self, root: &str, abi: u32) -> Vec<&IndexEntry> {
+        let mut seen: std::collections::BTreeSet<(&str, &str, &str)> =
+            std::collections::BTreeSet::new();
+        let mut out: Vec<&IndexEntry> = Vec::new();
+        for entries in self.options.values() {
+            for entry in entries {
+                if entry.root != root || !entry.module_abi_compat.admits(abi) {
+                    continue;
+                }
+                let key = (
+                    entry.package.as_str(),
+                    entry.version.as_str(),
+                    entry.platform.as_str(),
+                );
+                if seen.insert(key) {
+                    out.push(entry);
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns whether any index entry declares an option under shared `root`,
+    /// regardless of ABI band.
+    ///
+    /// Used by the resolver to tell a genuinely unknown root (terminal
+    /// `NoProvider`) apart from a root that exists but whose every provider is
+    /// ABI-incompatible (terminal `AbiMismatch`).
+    pub fn declares_root(&self, root: &str) -> bool {
+        self.options
+            .values()
+            .any(|entries| entries.iter().any(|entry| entry.root == root))
+    }
+
     /// Returns the setters of capability `token` that admit base-lib ABI `abi`.
     pub fn capability_setters(&self, token: &str, abi: u32) -> Vec<&CapabilityProvider> {
         self.capabilities
