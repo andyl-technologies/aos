@@ -15,6 +15,7 @@ pub mod fmt;
 pub mod gc;
 pub mod graph;
 pub mod lint;
+pub mod metadata;
 pub mod package;
 pub mod prefetch;
 pub mod profile;
