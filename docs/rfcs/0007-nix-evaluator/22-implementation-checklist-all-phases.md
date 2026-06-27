@@ -1120,7 +1120,7 @@ alone (`M-1`/`Q-A`).
       parse-cache and file-content BLAKE3 renderings in hex, raw bytes, and Nix
       base32. This is selected current-substrate coverage only, not the full
       cached/uncached closure parity gate (`S-15`).
-- [x] Current hash-builtin cache-surface canaries:
+- [x] Current hash/fetch-builtin cache-surface canaries:
       `configured_import_cache_preserves_hash_builtin_surface` evaluates
       `builtins.hashString "sha256" (import file)` with import caching disabled,
       with configured parse/persist roots on a miss/write path, and with a later
@@ -1141,9 +1141,16 @@ alone (`M-1`/`Q-A`).
       scans both original and changed outputs for synthetic root
       parse-cache-key and payload-content BLAKE3 sentinels, actual
       guard/hashFile persistent force-cache trace/value canaries, and hot xxh3
-      canaries. These sample selected `hashString`/`hashFile` output surfaces
-      only; they do not prove the full hash/fetch builtin leak-invariant gate
-      (`S-15`).
+      canaries. `configured_import_cache_preserves_fetchurl_store_path_surface`
+      evaluates `builtins.fetchurl (import file)` over a local `file://`
+      fixed-output fetch with import caching disabled, with configured
+      parse/persist roots on a miss/write path, and with a later persistent-hit
+      path, requires identical returned store-path strings across all three
+      runs, and scans those fetchurl surfaces for root/import parse-cache
+      BLAKE3, imported-file content BLAKE3, a fetched-payload BLAKE3 sentinel,
+      and hot xxh3 canaries. These sample selected
+      `hashString`/`hashFile`/`fetchurl` output surfaces only; they do not prove
+      the full hash/fetch builtin leak-invariant gate (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
