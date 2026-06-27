@@ -222,6 +222,111 @@ fn topology_only_boundary_progress_does_not_deadlock_liveness() {
     assert!(report.advanced_nodes.is_empty());
 }
 
+#[test]
+fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
+    // Regression for the topology/horizon freeze deadlock (RFC-0010
+    // [SCHED-7]/[SCHED-8]). A node bound by the conservative network-lookahead
+    // term derived from a live effective topology is held at a *moving* cap
+    // (`vt(n) + lookahead(n)`), not a genuine local quiescence point. A 2-node
+    // ring with bidirectional latency-4 links and all-halted (no vCPU) nodes must
+    // climb by successive quanta to the time limit (iterative conservative-PDES
+    // advance), never park `Idle` at the first lookahead bound (frontier = 4).
+    //
+    // Before the fix, `advance_node_after_yield` parked each node `Idle` once it
+    // reached `vt + lookahead`; the only `Idle -> Runnable` re-promotion path
+    // (`effective_node_activity`) requires a non-halted or pending-input vCPU, so
+    // these nodes never re-PICKed and the run wrongly settled `Quiescent` at
+    // frontier 4. With the fix the run reaches the time limit at frontier 40.
+    let a = scheduler_node("a");
+    let b = scheduler_node("b");
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "network-bounded-ring-climbs-to-time-limit",
+        shift(0),
+        // Generous quantum budget so the *frontier* (40 vs the frozen 4), not the
+        // budget, is what terminates the run — the budget never bites with the fix.
+        1024,
+        SimInstant { nanos: 40 },
+        vec![
+            scenario_node("a", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
+            scenario_node("b", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
+        ],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![edge(&b, &a, 4), edge(&a, &b, 4)]);
+
+    let report =
+        check_scheduler_liveness(scenario).expect("network-bounded ring should not freeze");
+
+    assert_eq!(
+        report.terminal,
+        SchedulerTerminal::TimeLimitReached,
+        "a network-bounded ring must climb to the time limit, not freeze Quiescent \
+         at the first lookahead bound"
+    );
+    assert_eq!(
+        report.frontier,
+        VirtualTime { ticks: 40 },
+        "both ring nodes must climb all the way to the time limit (40), not park \
+         Idle at the moving network bound (4)"
+    );
+    // Each node is re-PICKed many times as the frontier rises (10 climbs of 4 to
+    // reach 40), proving the iterative advance rather than a single-quantum park.
+    let advanced_a = report
+        .advanced_nodes
+        .iter()
+        .filter(|node| **node == a)
+        .count();
+    let advanced_b = report
+        .advanced_nodes
+        .iter()
+        .filter(|node| **node == b)
+        .count();
+    assert!(
+        advanced_a > 1 && advanced_b > 1,
+        "each network-bounded node must be advanced repeatedly as the frontier \
+         rises: a={advanced_a}, b={advanced_b}"
+    );
+}
+
+#[test]
+fn topology_change_armed_in_the_past_is_rejected_at_enqueue() {
+    // The fallible arming porcelain rejects an activation time the run has already
+    // passed at enqueue time, rather than wedging the run with a repeating
+    // boundary error at apply time.
+    let producer = scheduler_node("producer");
+    let consumer = scheduler_node("consumer");
+    let scenario = base_scenario(
+        "topology-change-armed-in-past",
+        vec![scenario_node(
+            "consumer",
+            // Frontier starts at vt = 10; an activation armed at vt = 5 is in the
+            // past.
+            10,
+            SchedulerNodeActivity::Runnable,
+            finite_lookahead(20),
+        )],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    assert_eq!(scheduler.frontier(), VirtualTime { ticks: 10 });
+
+    let in_past = SchedulerTopologyChange::new(
+        1,
+        SchedulerTopologyChangeTrigger::LatencyChange,
+        vec![edge(&producer, &consumer, 5)],
+    )
+    .with_activation_time(SimInstant { nanos: 5 });
+
+    match scheduler.schedule_topology_change(in_past) {
+        Err(SchedulerError::TopologyActivationInPast { at, frontier }) => {
+            assert_eq!(at, 5);
+            assert_eq!(frontier, 10);
+        }
+        other => panic!("expected TopologyActivationInPast, got {other:?}"),
+    }
+}
+
 fn base_scenario(
     material: &str,
     nodes: Vec<SchedulerScenarioNode>,

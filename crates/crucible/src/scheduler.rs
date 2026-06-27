@@ -3688,9 +3688,54 @@ impl SingleScheduler {
     }
 
     /// Queues a topology change for the next quantum boundary.
+    ///
+    /// This is the infallible legacy entry point and is signature-compatible with
+    /// its prior form. A change armed at an activation virtual time the run has
+    /// already passed (`at < frontier`) cannot apply — its activation cap can never
+    /// reach an instant below the frontier. Rather than wedge the run with a vague,
+    /// repeating per-node "missed exact virtual time" boundary error at apply time,
+    /// such a change is still enqueued but the next boundary surfaces a clear,
+    /// localized [`SchedulerError::TopologyActivationInPast`] (see
+    /// [`SingleScheduler::apply_topology_changes_at_boundary`]). Callers that can
+    /// observe a `Result` should prefer [`SingleScheduler::schedule_topology_change`],
+    /// which rejects the same condition at enqueue time.
     pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
         self.topology_changes.push(change);
         self.topology_changes.sort_by(topology_change_order);
+    }
+
+    /// Schedules a topology change for the next quantum boundary, validating the
+    /// activation time at enqueue time.
+    ///
+    /// An activation-timed change is enqueued when `at` is at or above the current
+    /// frontier and applied at the next quantum boundary once every node has
+    /// converged on the activation instant (via the activation cap); it is rejected
+    /// at enqueue time when `at` is strictly below the frontier, since the
+    /// activation cap could never move a node backwards onto a passed instant.
+    /// Changes with no activation time are always enqueued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::TopologyActivationInPast`] when `change`'s
+    /// activation virtual time is strictly below the current frontier.
+    pub fn schedule_topology_change(
+        &mut self,
+        change: SchedulerTopologyChange,
+    ) -> Result<(), SchedulerError> {
+        if let Some(activation_time) = change.activation_time {
+            let frontier = SimInstant {
+                nanos: self.frontier.ticks,
+            };
+            if activation_time < frontier {
+                return Err(SchedulerError::TopologyActivationInPast {
+                    at: activation_time.nanos,
+                    frontier: frontier.nanos,
+                });
+            }
+        }
+        self.topology_changes.push(change);
+        self.topology_changes.sort_by(topology_change_order);
+        Ok(())
     }
 
     fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
@@ -3703,8 +3748,23 @@ impl SingleScheduler {
         let mut deferred = Vec::new();
         let mut applied = false;
 
+        let frontier = SimInstant {
+            nanos: self.frontier.ticks,
+        };
         for change in changes {
             if let Some(activation_time) = change.activation_time {
+                // Fail loud and localized for a change armed in the past. The
+                // infallible `queue_topology_change` entry point cannot reject at
+                // enqueue time, so an `at < frontier` change reaches here; surface a
+                // clear `TopologyActivationInPast` rather than deferring it forever
+                // (a silent wedge) or letting `topology_activation_ready` report a
+                // vague per-node skew error.
+                if activation_time < frontier {
+                    return Err(SchedulerError::TopologyActivationInPast {
+                        at: activation_time.nanos,
+                        frontier: frontier.nanos,
+                    });
+                }
                 if !self.topology_activation_ready(activation_time)? {
                     deferred.push(change);
                     continue;
@@ -4286,6 +4346,31 @@ impl SingleScheduler {
         }
 
         let mut quiescent_horizon = horizon.virtual_time();
+        // A node bound by the conservative network-lookahead term *derived from a
+        // live effective topology* is held at a *moving* cap (`vt(n) +
+        // lookahead(n)`), not a genuine local quiescence point: as the global
+        // frontier climbs, that bound climbs with it. Parking such a node `Idle` is
+        // the freeze defect of RFC-0010 [SCHED-7]/[SCHED-8] — the only
+        // `Idle -> Runnable` re-promotion path (`effective_node_activity`) requires
+        // a non-halted or pending-input vCPU, so a network/disk sub-node, or a VM
+        // whose vCPUs are all halted with no pending input, would never be re-PICKed
+        // and the run would freeze. Only a genuine local stop (an exact-local timer
+        // / I/O completion / fault, the same set that
+        // `horizon_source_allows_ceiling_past_target` admits) is a quiescence
+        // point. A node held at the moving network cap keeps no `quiescent_horizon`,
+        // so it stays `Runnable` and is re-PICKed for the next interval (iterative
+        // conservative-PDES advance, [SCHED-5]).
+        //
+        // The gate on a non-empty `effective_topology` mirrors the synthetic-
+        // liveness exemption: when no live edge set is installed, the per-node
+        // `network_lookahead` is a pre-supplied fixed parking point rather than a
+        // frontier-tracking CMB bound, so the legacy idle-on-reach behavior is
+        // retained.
+        let network_bounded = !self.effective_topology.edges().is_empty()
+            && horizon.source == SchedulerHorizonSource::NetworkLookahead;
+        if network_bounded {
+            quiescent_horizon = None;
+        }
         if let (Some(horizon_time), Some(activation_time)) =
             (quiescent_horizon, topology_activation_cap)
         {
@@ -5516,6 +5601,19 @@ pub enum SchedulerError {
     },
     /// Virtual-time conversion failed while computing a scheduler horizon.
     TimeConversion(TimeConversionError),
+    /// A topology change was armed at an activation virtual time the run has
+    /// already passed.
+    ///
+    /// The activation cap can never reach `at` because the frontier has already
+    /// advanced beyond it, so the change could never apply. Rejected at enqueue
+    /// time by [`SingleScheduler::schedule_topology_change`] rather than wedging
+    /// the run with a repeating boundary error at apply time.
+    TopologyActivationInPast {
+        /// The armed activation virtual time, in ticks.
+        at: u64,
+        /// The current frontier virtual time, in ticks.
+        frontier: u64,
+    },
 }
 
 impl fmt::Display for SchedulerError {
@@ -5529,6 +5627,11 @@ impl fmt::Display for SchedulerError {
             Self::TimeConversion(error) => {
                 write!(f, "scheduler virtual-time conversion failed: {error}")
             }
+            Self::TopologyActivationInPast { at, frontier } => write!(
+                f,
+                "topology change armed at activation virtual time {at} is in the past: \
+                 frontier already at {frontier}"
+            ),
         }
     }
 }
