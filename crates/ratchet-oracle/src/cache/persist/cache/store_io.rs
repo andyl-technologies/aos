@@ -36,6 +36,24 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_indexed_blob_read(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobIndexedReadError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistBlobIndexedReadError::AdvisoryReadLock {
+                store,
+                path,
+                source,
+            })?;
+        let read_guard = self
+            .root_locks
+            .lock_blob_store(store)
+            .map_err(|_| PersistBlobIndexedReadError::ReadLockPoisoned { store })?;
+        Ok((advisory_guard, read_guard))
+    }
+
     pub(super) fn lock_blob_pack_write(
         &self,
         store: PersistBlobStore,

@@ -50,17 +50,36 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
 }
 
 #[test]
-fn cache_blob_indexed_read_waits_for_store_lock() {
+fn cache_value_blob_indexed_read_waits_for_store_lock() {
+    assert_blob_indexed_read_waits_for_store_lock(
+        PersistBlobStore::Values,
+        b"locked indexed value payload",
+    );
+}
+
+#[test]
+fn cache_file_blob_indexed_read_waits_for_store_lock() {
+    assert_blob_indexed_read_waits_for_store_lock(
+        PersistBlobStore::Files,
+        b"locked indexed file payload",
+    );
+}
+
+fn assert_blob_indexed_read_waits_for_store_lock(store: PersistBlobStore, payload: &[u8]) {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let payload = b"locked indexed payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let layout = cache.layout().clone();
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let key = match store {
+        PersistBlobStore::Values => PersistBlobKey::for_value(hash),
+        PersistBlobStore::Files => PersistBlobKey::for_file(hash),
+    };
     cache
         .append_blob_indexed(key, payload)
         .expect("indexed blob appends");
     let guard = cache
-        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
-        .expect("value store lock acquired");
+        .lock_blob_materialization_for_tests(store)
+        .expect("store lock acquired");
     let reader = cache.clone();
     let (tx, rx) = mpsc::channel();
     let barrier = Arc::new(Barrier::new(2));
@@ -72,9 +91,10 @@ fn cache_blob_indexed_read_waits_for_store_lock() {
     });
 
     barrier.wait();
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(store));
     assert!(
         rx.recv_timeout(Duration::from_millis(50)).is_err(),
-        "indexed read should wait while the value store lock is held"
+        "indexed read should wait while the store lock is held"
     );
     drop(guard);
     let result = rx
@@ -84,6 +104,12 @@ fn cache_blob_indexed_read_waits_for_store_lock() {
         .expect("indexed blob exists");
     handle.join().expect("reader thread joins");
     assert_eq!(result.as_slice(), payload);
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.blob_store_lock_path(store),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("indexed read advisory lock releases after read");
+    drop(released_lock);
 
     let _ = fs::remove_dir_all(root);
 }

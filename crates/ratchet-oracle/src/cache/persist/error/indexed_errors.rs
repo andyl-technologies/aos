@@ -46,6 +46,16 @@ pub enum PersistBlobIndexedReadError {
         /// The selected blob store.
         store: PersistBlobStore,
     },
+    /// The advisory store read lock could not be acquired.
+    #[error("failed to acquire persistent indexed blob read advisory lock for {store:?} at {path}")]
+    AdvisoryReadLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The sidecar index lookup failed.
     #[error("failed to look up indexed persistent blob")]
     Lookup {

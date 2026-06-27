@@ -1463,11 +1463,13 @@ alone (`M-1`/`Q-A`).
       while holding the selected store's advisory file lock and same-process
       same-root blob-store write lock and records the returned location in the
       selected `PersistBlobIndex`, while `lookup_blob_location`/`read_blob_indexed`
-      scan the sidecar index and read/verify the indexed pack record, returning
-      `None` for misses. This is explicit non-transactional sidecar integration
-      only; automatic low-level append/read indexing, node metadata linkage,
-      mmap reads, writer batching, maintenance-writer coordination, CAS policy,
-      GC/repack, Attic transport, and harness proof remain open (`C-13`/`R-14`).
+      scan the sidecar index and read/verify the indexed pack record under the
+      selected store's shared advisory file lock plus same-process same-root
+      store lock, returning `None` for misses. This is explicit non-transactional
+      sidecar integration only; automatic low-level append/read indexing, raw
+      lower-level pack/index coordination, node metadata linkage, mmap reads,
+      writer batching, CAS policy, GC/repack, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current explicit blob-pack tail-GC helper:
       `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
       live roots (`values/` blob index entries, or `files/`
@@ -1678,7 +1680,7 @@ alone (`M-1`/`Q-A`).
       durable filesystem locks/CAS, automatic compaction, GC/repack, mmap
       reads, LMDB/redb indexes, and loom/harness proof remain open
       (`C-13`/`R-4`/`R-14`).
-- [x] Current same-process plus advisory blob-store writer lock precursor:
+- [x] Current same-process plus advisory blob-store access lock precursor:
       independently opened `PersistCache` handles in one process now store
       canonicalized layout paths and acquire their per-store blob mutexes through
       `ratchet-cache::root_locks::CacheRootLocks`, whose process-local weak
@@ -1693,16 +1695,21 @@ alone (`M-1`/`Q-A`).
       `.locks/files.lock`, then acquire the same-process store mutex while they
       write the pack and/or blob-index sidecar, truncate the pack tail, or stage
       and swap a compacted pack.
+      Cache-level indexed blob reads (`read_blob_indexed`) first acquire a shared
+      advisory lock for the selected store, then acquire the same-process store
+      mutex while they read the sidecar location and verify the referenced pack
+      record, so cooperating readers can share the advisory lock but serialize
+      against cache-level writers and maintenance.
       Simultaneous same-key materialization through separate opens of the same
       root shares the same `ensure_blob_indexed` critical section, and
-      cooperating cross-process cache-level blob writers, tail trims, and pack
-      repacks share the same advisory file. The initially-missing indexed case
+      cooperating cross-process cache-level blob readers, writers, tail trims,
+      and pack repacks share the same advisory file. The initially-missing indexed case
       collapses to one fresh verified pack record and newest sidecar entry for
       the selected store, poisoned same-root locks are mapped back into the
       existing oracle error surface before any cache-level raw append, indexed
-      append/index write, blob-index compaction/rebuild, blob-pack tail trim, or
-      blob-pack repack, and an opened symlink-root handle keeps writing the
-      canonical target it opened even if the symlink is retargeted.
+      append/index write, indexed read, blob-index compaction/rebuild, blob-pack
+      tail trim, or blob-pack repack, and an opened symlink-root handle keeps
+      writing the canonical target it opened even if the symlink is retargeted.
       Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users,
       cross-process pending artifact publication during file maintenance,
       different roots, two-machine misses, full filesystem-lock/CAS policy,
@@ -1807,15 +1814,16 @@ alone (`M-1`/`Q-A`).
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
       drop-time release; oracle root open now uses it for `.locks/open.lock`,
-      cache-level raw/indexed blob writes plus blob-index compaction/rebuild,
-      blob-pack tail trim, and blob-pack repack use it for `.locks/values.lock`
-      and `.locks/files.lock`, and cache-level file/parse artifact mapping
+      cache-level indexed blob reads, raw/indexed blob writes plus blob-index
+      compaction/rebuild, blob-pack tail trim, and blob-pack repack use it for
+      `.locks/values.lock` and `.locks/files.lock`, and cache-level file/parse artifact mapping
       writes plus file-pack maintenance phases use `.locks/file-artifacts.lock`
       and `.locks/parse-artifacts.lock`, cache-level node metadata writes plus
       metadata compaction use `.locks/node-metadata.lock`, and cache-level node
       trace writes plus trace compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected
-      cache-level blob-store/mapping/metadata/trace writes/maintenance only:
+      cache-level blob-store reads/writes/maintenance plus mapping/metadata/trace
+      writes/maintenance only:
       raw/lower-level pack/index/sidecar writers, cross-process pending
       artifact publication, mmap read leases, CAS protocols, mandatory locking,
       raw-writer enforcement, two-machine races, and loom/harness proof remain

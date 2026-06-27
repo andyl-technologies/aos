@@ -44,21 +44,22 @@ impl PersistCache {
 
     /// Reads a blob through the sidecar index selected by `key`.
     ///
-    /// Missing index entries return `Ok(None)`.
+    /// Missing index entries return `Ok(None)`. Same-root writers opened on
+    /// the same cache root and cooperating cross-process writers share the
+    /// selected store lock while this method reads the sidecar index and then
+    /// reads the referenced pack record.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexedReadError`] if the same-root store lock is
-    /// poisoned, if the selected index cannot be read/decoded, or if the
-    /// indexed pack location cannot be read and verified.
+    /// Returns [`PersistBlobIndexedReadError`] if the selected advisory lock
+    /// cannot be acquired, the same-root store lock is poisoned, if the
+    /// selected index cannot be read/decoded, or if the indexed pack location
+    /// cannot be read and verified.
     pub fn read_blob_indexed(
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
-        let _read_guard = self
-            .root_locks
-            .lock_blob_store(key.store())
-            .map_err(|_| PersistBlobIndexedReadError::ReadLockPoisoned { store: key.store() })?;
+        let (_advisory_guard, _read_guard) = self.lock_indexed_blob_read(key.store())?;
         let Some(location) = self
             .lookup_blob_location(key)
             .map_err(|source| PersistBlobIndexedReadError::Lookup { source })?
