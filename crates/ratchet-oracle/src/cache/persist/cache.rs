@@ -1798,19 +1798,35 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    fn lock_blob_pack_write(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobPackError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistBlobPackError::AdvisoryWriteLock {
+                store,
+                path,
+                source,
+            })?;
+        let write_guard = self.root_locks.lock_blob_pack(store)?;
+        Ok((advisory_guard, write_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the same-root blob-pack write lock
-    /// is poisoned, the selected packfile cannot be opened, validated, or
-    /// written, or if `payload` does not hash to `key.hash()`.
+    /// Returns [`PersistBlobPackError`] if the selected advisory lock cannot
+    /// be acquired, the same-root blob-pack write lock is poisoned, the
+    /// selected packfile cannot be opened, validated, or written, or if
+    /// `payload` does not hash to `key.hash()`.
     pub fn append_blob(
         &self,
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobLocation, PersistBlobPackError> {
-        let _write_guard = self.root_locks.lock_blob_pack(key.store())?;
+        let (_advisory_guard, _write_guard) = self.lock_blob_pack_write(key.store())?;
         self.append_blob_unlocked(key, payload)
     }
 
@@ -1828,7 +1844,7 @@ impl PersistCache {
         payload: &[u8],
         source: PersistBlobLiveRootSource,
     ) -> Result<PersistBlobLocation, PersistBlobPackError> {
-        let _write_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
+        let (_advisory_guard, _write_guard) = self.lock_blob_pack_write(PersistBlobStore::Files)?;
         let location = self.append_blob_unlocked(key, payload)?;
         self.root_locks
             .insert_pending_file_root(PersistBlobLiveRoot::new(source, key, location))?;
@@ -3751,9 +3767,10 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when `decision` is
-    /// [`MaterializationDecision::Materialize`] and the selected same-root blob
-    /// write lock is poisoned, the selected packfile cannot be opened,
-    /// validated, or written, or when `payload` does not hash to `key.hash()`.
+    /// [`MaterializationDecision::Materialize`] and the selected advisory lock
+    /// cannot be acquired, the selected same-root blob write lock is poisoned,
+    /// the selected packfile cannot be opened, validated, or written, or when
+    /// `payload` does not hash to `key.hash()`.
     pub fn materialize_blob(
         &self,
         key: PersistBlobKey,
@@ -3811,9 +3828,10 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when the signals choose
-    /// [`MaterializationDecision::Materialize`] and the selected same-root blob
-    /// write lock is poisoned, the selected packfile cannot be opened,
-    /// validated, or written, or when `payload` does not hash to `key.hash()`.
+    /// [`MaterializationDecision::Materialize`] and the selected advisory lock
+    /// cannot be acquired, the selected same-root blob write lock is poisoned,
+    /// the selected packfile cannot be opened, validated, or written, or when
+    /// `payload` does not hash to `key.hash()`.
     pub fn materialize_blob_with_signals(
         &self,
         key: PersistBlobKey,
@@ -3859,9 +3877,9 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when `decision` is
-    /// [`MaterializationDecision::Materialize`] and the same-root file-blob
-    /// write lock is poisoned or the `files/` pack cannot be opened, validated,
-    /// or written.
+    /// [`MaterializationDecision::Materialize`] and the advisory file-blob
+    /// write lock cannot be acquired, the same-root file-blob write lock is
+    /// poisoned, or the `files/` pack cannot be opened, validated, or written.
     pub fn materialize_file_artifact(
         &self,
         file_key: &ParseFileKey,
@@ -3953,9 +3971,9 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when `decision` is
-    /// [`MaterializationDecision::Materialize`] and the same-root file-blob
-    /// write lock is poisoned or the `files/` pack cannot be opened, validated,
-    /// or written.
+    /// [`MaterializationDecision::Materialize`] and the advisory file-blob
+    /// write lock cannot be acquired, the same-root file-blob write lock is
+    /// poisoned, or the `files/` pack cannot be opened, validated, or written.
     pub fn materialize_parse_artifact(
         &self,
         parse_key: ParseCacheKey,
@@ -4040,9 +4058,9 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when the signals choose
-    /// [`MaterializationDecision::Materialize`] and the same-root file-blob
-    /// write lock is poisoned or the `files/` pack cannot be opened, validated,
-    /// or written.
+    /// [`MaterializationDecision::Materialize`] and the advisory file-blob
+    /// write lock cannot be acquired, the same-root file-blob write lock is
+    /// poisoned, or the `files/` pack cannot be opened, validated, or written.
     pub fn materialize_file_artifact_with_signals(
         &self,
         file_key: &ParseFileKey,
@@ -4082,9 +4100,9 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] when the signals choose
-    /// [`MaterializationDecision::Materialize`] and the same-root file-blob
-    /// write lock is poisoned or the `files/` pack cannot be opened, validated,
-    /// or written.
+    /// [`MaterializationDecision::Materialize`] and the advisory file-blob
+    /// write lock cannot be acquired, the same-root file-blob write lock is
+    /// poisoned, or the `files/` pack cannot be opened, validated, or written.
     pub fn materialize_parse_artifact_with_signals(
         &self,
         parse_key: ParseCacheKey,
@@ -4679,8 +4697,9 @@ impl PersistCache {
     ///
     /// Returns [`PersistParseArtifactMaterializationError`] when `decision` is
     /// [`MaterializationDecision::Materialize`] and the source entry cannot be
-    /// read, the bundle payload cannot be encoded, the same-root file-blob
-    /// write lock is poisoned, or the `files/` pack cannot be written.
+    /// read, the bundle payload cannot be encoded, the advisory file-blob write
+    /// lock cannot be acquired, the same-root file-blob write lock is poisoned,
+    /// or the `files/` pack cannot be written.
     pub fn materialize_parse_artifact_entry(
         &self,
         file_key: &ParseFileKey,
@@ -4821,9 +4840,9 @@ impl PersistCache {
     ///
     /// Returns [`PersistParseArtifactMaterializationError`] when the signals
     /// choose [`MaterializationDecision::Materialize`] and the source entry
-    /// cannot be read, the bundle payload cannot be encoded, the same-root
-    /// file-blob write lock is poisoned, or the `files/` pack cannot be
-    /// written.
+    /// cannot be read, the bundle payload cannot be encoded, the advisory
+    /// file-blob write lock cannot be acquired, the same-root file-blob write
+    /// lock is poisoned, or the `files/` pack cannot be written.
     pub fn materialize_parse_artifact_entry_with_signals(
         &self,
         file_key: &ParseFileKey,

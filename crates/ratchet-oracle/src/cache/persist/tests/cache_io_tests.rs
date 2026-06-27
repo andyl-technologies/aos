@@ -3227,6 +3227,46 @@ fn cache_materialization_decision_appends_when_requested() {
 }
 
 #[test]
+fn cache_append_blob_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let payload = b"raw advisory payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .append_blob(key, payload)
+            .map(|location| location.record_offset())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("append result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let record_offset = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("raw append completes after same-process lock release")
+        .expect("raw append succeeds");
+    assert_eq!(record_offset, PERSIST_BLOB_PACK_HEADER_LEN as u64);
+    handle.join().expect("worker joins");
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.blob_store_lock_path(PersistBlobStore::Values),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("blob advisory lock releases after raw append");
+    drop(released_lock);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_indexed_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

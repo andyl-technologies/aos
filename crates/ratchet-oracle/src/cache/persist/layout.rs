@@ -37,7 +37,7 @@ impl PersistLayout {
         self.locks_dir().join("open.lock")
     }
 
-    /// Returns the advisory lock path for indexed blob-store writes.
+    /// Returns the advisory lock path for cache-level blob-store writes.
     pub fn blob_store_lock_path(&self, store: PersistBlobStore) -> PathBuf {
         let name = match store {
             PersistBlobStore::Values => "values.lock",

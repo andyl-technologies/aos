@@ -1376,6 +1376,16 @@ pub enum PersistBlobPackError {
         /// The selected blob store.
         store: PersistBlobStore,
     },
+    /// The advisory blob-pack write lock could not be acquired.
+    #[error("failed to acquire persistent blob pack advisory write lock for {store:?} at {path}")]
+    AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The packfile's parent directory could not be created.
     #[error("failed to create persistent blob pack parent directory {path}")]
     CreateParent {
