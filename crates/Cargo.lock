@@ -3741,6 +3741,7 @@ dependencies = [
  "miette",
  "nix-compat",
  "proptest",
+ "ratchet-cache",
  "ratchet-core",
  "ratchet-value",
  "regex",

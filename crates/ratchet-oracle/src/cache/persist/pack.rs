@@ -5,6 +5,10 @@
 
 use super::*;
 
+use ratchet_cache::blob_pack::{
+    BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash, BlobPackLocation,
+};
+
 const PERSIST_BLOB_SCAN_BUFFER_LEN: usize = 8 * 1024;
 
 /// Verified metadata for one immutable blob-pack record.
@@ -32,6 +36,73 @@ impl PersistBlobPackRecord {
     /// Returns this record as a typed blob lookup key for `store`.
     pub const fn key(self, store: PersistBlobStore) -> PersistBlobKey {
         PersistBlobKey::new(store, self.hash)
+    }
+}
+
+fn open_engine_blob_pack_appender(path: &Path) -> Result<BlobPackAppender, PersistBlobPackError> {
+    BlobPackAppender::open(path.to_path_buf()).map_err(engine_append_error_to_persist)
+}
+
+fn durable_hash_to_engine(hash: DurableBlake3Hash) -> BlobPackHash {
+    BlobPackHash::from_bytes(hash.as_bytes())
+}
+
+fn engine_hash_to_durable(hash: BlobPackHash) -> DurableBlake3Hash {
+    DurableBlake3Hash::from_bytes(hash.as_bytes())
+}
+
+fn engine_location_to_persist(location: BlobPackLocation) -> PersistBlobLocation {
+    PersistBlobLocation::new(location.record_offset(), location.payload_len())
+}
+
+fn engine_append_error_to_persist(error: BlobPackAppendError) -> PersistBlobPackError {
+    match error {
+        BlobPackAppendError::CreateParent { path, source } => {
+            PersistBlobPackError::CreateParent { path, source }
+        }
+        BlobPackAppendError::Open { path, source } => PersistBlobPackError::Open { path, source },
+        BlobPackAppendError::Metadata { path, source } => {
+            PersistBlobPackError::Metadata { path, source }
+        }
+        BlobPackAppendError::Seek { path, source } => PersistBlobPackError::Seek { path, source },
+        BlobPackAppendError::Read { path, source } => PersistBlobPackError::Read { path, source },
+        BlobPackAppendError::Write { path, source } => PersistBlobPackError::Write { path, source },
+        BlobPackAppendError::Format { path, source } => PersistBlobPackError::Format {
+            path,
+            source: engine_format_error_to_persist(source),
+        },
+        BlobPackAppendError::PayloadTooLarge { payload_len } => {
+            PersistBlobPackError::PayloadTooLarge { payload_len }
+        }
+        BlobPackAppendError::PayloadHashMismatch { expected, actual } => {
+            PersistBlobPackError::PayloadHashMismatch {
+                expected: engine_hash_to_durable(expected),
+                actual: engine_hash_to_durable(actual),
+            }
+        }
+        BlobPackAppendError::InvalidRecordOffset { record_offset } => {
+            PersistBlobPackError::InvalidRecordOffset { record_offset }
+        }
+    }
+}
+
+fn engine_format_error_to_persist(error: BlobPackFormatError) -> PersistPackFormatError {
+    match error {
+        BlobPackFormatError::ShortPackHeader { expected, actual } => {
+            PersistPackFormatError::ShortPackHeader { expected, actual }
+        }
+        BlobPackFormatError::InvalidPackMagic { actual } => {
+            PersistPackFormatError::InvalidPackMagic { actual }
+        }
+        BlobPackFormatError::UnsupportedPackVersion { version } => {
+            PersistPackFormatError::UnsupportedPackVersion { version }
+        }
+        BlobPackFormatError::InvalidPackHeaderLength { header_len } => {
+            PersistPackFormatError::InvalidPackHeaderLength { header_len }
+        }
+        BlobPackFormatError::ShortRecordHeader { expected, actual } => {
+            PersistPackFormatError::ShortRecordHeader { expected, actual }
+        }
     }
 }
 
@@ -117,7 +188,7 @@ impl PersistBlobPack {
     /// is invalid.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobPackError> {
         let path = path.into();
-        ensure_blob_pack_file(&path)?;
+        open_engine_blob_pack_appender(&path)?;
         Ok(Self { path })
     }
 
@@ -258,45 +329,11 @@ impl PersistBlobPack {
         hash: DurableBlake3Hash,
         payload: &[u8],
     ) -> Result<PersistBlobLocation, PersistBlobPackError> {
-        ensure_blob_pack_file(&self.path)?;
-        let actual = DurableBlake3Hash::for_bytes(payload);
-        if actual != hash {
-            return Err(PersistBlobPackError::PayloadHashMismatch {
-                expected: hash,
-                actual,
-            });
-        }
-        let payload_len =
-            u64::try_from(payload.len()).map_err(|_| PersistBlobPackError::PayloadTooLarge {
-                payload_len: payload.len() as u128,
-            })?;
-        let header = PersistBlobRecordHeader::new(hash, payload_len);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| PersistBlobPackError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let record_offset = file
-            .metadata()
-            .map_err(|source| PersistBlobPackError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        if record_offset < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
-            return Err(PersistBlobPackError::InvalidRecordOffset { record_offset });
-        }
-        file.write_all(&header.encode())
-            .and_then(|()| file.write_all(payload))
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistBlobPackError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
-        Ok(PersistBlobLocation::new(record_offset, payload_len))
+        let appender = open_engine_blob_pack_appender(&self.path)?;
+        appender
+            .append_payload(durable_hash_to_engine(hash), payload)
+            .map(engine_location_to_persist)
+            .map_err(engine_append_error_to_persist)
     }
 
     /// Validates record metadata for `location` and returns its payload window.

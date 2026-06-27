@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 aos-nix-compat = { workspace = true }
 aos-nix-syntax = { workspace = true }
 ratchet-core = { workspace = true }
+ratchet-cache = { workspace = true }
 aos-nix-dialect = { workspace = true }
 ratchet-value = { workspace = true }
 base64 = { workspace = true }
