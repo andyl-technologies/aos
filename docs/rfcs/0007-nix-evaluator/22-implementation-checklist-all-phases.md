@@ -1722,10 +1722,22 @@ alone (`M-1`/`Q-A`).
       interpreting oracle-specific trace payload semantics. The engine keeps
       payloads opaque, rejects truncated record headers and payloads, and
       returns newest entries in stable key order. This is an engine-side
-      migration target only and is not yet consumed by oracle trace storage;
-      LMDB/redb tables, writer batching, mmap reads, node-metadata/value
-      transactionality, cross-process coordination, and full storage-engine
-      harness proof remain open (`C-13`/`R-14`).
+      sidecar primitive now consumed by oracle trace storage; LMDB/redb tables,
+      writer batching, mmap reads, node-metadata/value transactionality,
+      cross-process coordination, and full storage-engine harness proof remain
+      open (`C-13`/`R-14`).
+- [x] Current oracle node-trace log migration:
+      `PersistNodeTraceLog` now wraps
+      `ratchet-cache::node_trace_log::NodeTraceLog` for open, append, physical
+      scans, newest-entry scans, and compaction rewrites while routing every
+      engine record back through the oracle key and payload codecs. Invalid
+      namespace tags, malformed payload bytes, and stale malformed records
+      therefore still fail through `PersistNodeTraceLogError`. Cross-crate
+      compatibility tests prove both writer directions and invalid generic
+      engine records. This is the append-only sidecar migration only; oracle
+      still owns same-root locks, node-metadata/value transactionality, and
+      cache policy, while LMDB/redb tables, writer batching, mmap reads, GC
+      policy, and cross-process coordination remain open (`C-13`/`R-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse
