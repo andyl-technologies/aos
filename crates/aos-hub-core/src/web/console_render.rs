@@ -174,6 +174,27 @@ fn footer_links_html() -> String {
     }
 }
 
+/// Whether the binary-caches surface (the masthead **caches** tab, the global
+/// caches list, and direct cache pages) is visible to **logged-out** visitors.
+///
+/// Seeded from the `caches_public` instance setting (default `false`: caches are
+/// a signed-in-only surface). Like [`SITE_CHROME`], a mutable cell so an admin's
+/// change takes effect immediately for the serving process. Signed-in users
+/// always see caches regardless of this flag.
+static CACHES_PUBLIC: RwLock<bool> = RwLock::new(false);
+
+/// Sets whether the caches surface is visible to anonymous visitors (the
+/// `caches_public` instance setting). Seeded at startup and updated on save.
+pub fn set_caches_public(public: bool) {
+    *CACHES_PUBLIC.write().unwrap_or_else(|e| e.into_inner()) = public;
+}
+
+/// Whether the caches surface is shown to logged-out visitors.
+#[must_use]
+pub fn caches_public() -> bool {
+    *CACHES_PUBLIC.read().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Set the footer application label once, at startup.
 ///
 /// The deploying shell (native hub or Worker) passes its own
@@ -280,6 +301,12 @@ impl SessionIndicator {
         }
     }
 
+    /// The anonymous session indicator (the home + log-in masthead).
+    #[must_use]
+    pub fn anonymous() -> Self {
+        Self { email: None }
+    }
+
     /// Renders the indicator as the right-hand masthead HTML fragment.
     ///
     /// It always leads with a "registries" home link (so there is always a
@@ -288,20 +315,25 @@ impl SessionIndicator {
     /// (the entry points to all management pages) plus the email and a
     /// log-out link; when anonymous it is the home link plus log-in.
     fn render(&self) -> String {
+        // Signed-in users always see the caches tab; logged-out visitors see it
+        // only when the instance opts caches into anonymous visibility.
+        let caches = "<a href=\"/-/caches\">caches</a> · ";
         match &self.email {
             Some(email) => format!(
                 "<span class=\"session\">\
-                 <a href=\"/\">registries</a> · \
+                 <a href=\"/\">registries</a> · {caches}\
                  <a href=\"/-/orgs\">organizations</a> · \
                  <a href=\"/-/account\">account</a> · \
                  <span class=\"who\">{}</span> · \
                  <a href=\"/logout\">log out</a></span>",
                 escape(email),
             ),
-            None => "<span class=\"session\">\
-                     <a href=\"/\">registries</a> · \
-                     <a href=\"/login\">log in</a></span>"
-                .to_string(),
+            None => format!(
+                "<span class=\"session\">\
+                 <a href=\"/\">registries</a> · {}\
+                 <a href=\"/login\">log in</a></span>",
+                if caches_public() { caches } else { "" },
+            ),
         }
     }
 }
@@ -1822,6 +1854,76 @@ pub fn org_dashboard(
 /// (already-linked ones are omitted). `pins` are the cache's manual GC pins
 /// (admin-only), each with its closure summary. `notice` renders the outcome of
 /// the last action (e.g. a GC sweep summary or a pin add/remove).
+/// One row of the global caches list ([`caches_page`]): a cache and its owning
+/// organization.
+pub struct CacheListRow {
+    /// Owning org slug (empty for an org-less / instance cache).
+    pub org_slug: String,
+    /// The cache slug.
+    pub slug: String,
+    /// The cache's display name (falls back to the slug when empty).
+    pub name: String,
+    /// Visibility: `public` | `internal` | `private`.
+    pub visibility: String,
+}
+
+/// The global binary-caches list — the masthead **caches** tab.
+///
+/// Lists every cache the viewer may see (a signed-in user: caches readable on
+/// their orgs, plus public caches; an anonymous viewer, only when the instance
+/// has opted caches public: public caches only), each linking to its cache page.
+/// `email` is `Some` for a signed-in viewer.
+#[must_use]
+pub fn caches_page(email: Option<&str>, caches: &[CacheListRow], started: Instant) -> String {
+    let mut body = String::from("<h1>Caches</h1>\n");
+    body.push_str("<p class=\"dim\">Binary caches across organizations.</p>\n");
+    if caches.is_empty() {
+        body.push_str("<p class=\"dim\">No caches.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = caches
+            .iter()
+            .map(|c| {
+                let label = if c.name.is_empty() {
+                    escape(&c.slug)
+                } else {
+                    escape(&c.name)
+                };
+                let link = format!(
+                    "<a href=\"/-/org/{org}/caches/{slug}\">{label}</a>",
+                    org = escape(&c.org_slug),
+                    slug = escape(&c.slug),
+                    label = label,
+                );
+                let org = if c.org_slug.is_empty() {
+                    "<span class=\"dim\">—</span>".to_string()
+                } else {
+                    format!(
+                        "<a href=\"/-/org/{org}\">{org}</a>",
+                        org = escape(&c.org_slug)
+                    )
+                };
+                vec![
+                    link,
+                    org,
+                    format!("<span class=\"chip\">{}</span>", escape(&c.visibility)),
+                ]
+            })
+            .collect();
+        body.push_str(&table(&["cache", "organization", "visibility"], &rows));
+    }
+    let session = match email {
+        Some(e) => indicator(e),
+        None => SessionIndicator::anonymous(),
+    };
+    page_with_session(
+        "caches",
+        &[(String::new(), "caches".to_string())],
+        &body,
+        &StateLine::timed(started),
+        &session,
+    )
+}
+
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn cache_page(
@@ -2586,27 +2688,27 @@ pub fn registry_settings_chrome(
 fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
     vec![
         SettingsTab::new(
-            "registries",
-            "Registries",
-            format!("/-/org/{org_slug}"),
-            active,
-        ),
-        SettingsTab::new(
             "projects",
             "Projects",
             format!("/-/org/{org_slug}/projects"),
             active,
         ),
         SettingsTab::new(
-            "members",
-            "Members",
-            format!("/-/org/{org_slug}/members"),
+            "registries",
+            "Registries",
+            format!("/-/org/{org_slug}"),
             active,
         ),
         SettingsTab::new(
             "caches",
-            "Binary caches",
+            "Caches",
             format!("/-/org/{org_slug}/caches"),
+            active,
+        ),
+        SettingsTab::new(
+            "members",
+            "Members",
+            format!("/-/org/{org_slug}/members"),
             active,
         ),
         SettingsTab::new(

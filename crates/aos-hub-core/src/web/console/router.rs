@@ -307,6 +307,14 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
+            "/-/caches",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                    send_bridge(handlers::caches(from_state(s), h, r))
+                },
+            ),
+        )
+        .route(
             "/-/org/{org}",
             get(
                 |State(s): State<SharedState>,

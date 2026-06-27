@@ -1560,6 +1560,74 @@ pub(crate) async fn orgs(
     }
 }
 
+/// `GET /-/caches` — the global binary-caches list (the masthead **caches** tab).
+///
+/// Caches are a signed-in surface: an anonymous visitor is redirected to log in
+/// unless the instance has opted caches into public visibility (`caches_public`),
+/// in which case only public caches are listed. A signed-in viewer sees public
+/// caches plus any cache readable on an org they belong to.
+pub(crate) async fn caches(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match resolve_session_from_headers(&deps.db, &headers).await {
+        Ok(Some(r)) => Some(Session {
+            secret: r.secret,
+            auth: r.auth,
+            email: r.email,
+        }),
+        Ok(None) => None,
+        Err(err) => return internal(err),
+    };
+    // Logged-out visitors only reach this surface when the instance opts in.
+    if session.is_none() && !console::caches_public() {
+        return Redirect::to("/login").into_response();
+    }
+    let result = async {
+        let grants = match &session {
+            Some(s) => s.grants(&deps.db).await?,
+            None => Vec::new(),
+        };
+        let org_slugs: std::collections::HashMap<i64, String> = deps
+            .db
+            .list_orgs()
+            .await?
+            .into_iter()
+            .map(|o| (o.id, o.slug))
+            .collect();
+        let mut rows = Vec::new();
+        for c in deps.db.list_caches().await? {
+            let org_slug = c
+                .org_id
+                .and_then(|id| org_slugs.get(&id).cloned())
+                .unwrap_or_default();
+            let readable = c.visibility == "public"
+                || (!org_slug.is_empty()
+                    && iam::allow(&grants, Permission::Read, &Scope::parse(&org_slug)));
+            if readable {
+                rows.push(console::CacheListRow {
+                    org_slug,
+                    slug: c.slug,
+                    name: c.name,
+                    visibility: c.visibility,
+                });
+            }
+        }
+        Ok::<_, anyhow::Error>(rows)
+    }
+    .await;
+    match result {
+        Ok(rows) => Html(console::caches_page(
+            session.as_ref().map(|s| s.email.as_str()),
+            &rows,
+            started,
+        ))
+        .into_response(),
+        Err(err) => internal(err),
+    }
+}
+
 /// Whether the instance signup policy permits `session`'s user to create an org.
 ///
 /// # Errors
