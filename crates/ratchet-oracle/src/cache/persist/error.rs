@@ -742,6 +742,18 @@ pub enum PersistBlobLiveRootError {
 /// Persistent blob-pack tail trimming failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackTrimError {
+    /// The advisory blob-pack tail-trim write lock could not be acquired.
+    #[error(
+        "failed to acquire persistent blob-pack tail-trim advisory write lock for {store:?} at {path}"
+    )]
+    AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The selected blob index could not be locked or snapshotted.
     #[error("failed to lock or snapshot persistent blob index before tail trim")]
     BlobIndex {

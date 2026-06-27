@@ -3853,6 +3853,117 @@ fn cache_blob_index_rebuild_reports_poisoned_same_root_lock() {
 }
 
 #[test]
+fn cache_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .trim_blob_pack_tail(PersistBlobStore::Values)
+            .map(|trim| trim.reclaimed_bytes())
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("tail-trim result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let reclaimed_bytes = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("blob-pack tail trim completes after same-process lock release")
+        .expect("blob-pack tail trim succeeds");
+    assert_eq!(reclaimed_bytes, 0);
+    handle.join().expect("worker joins");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let payload = b"rooted file artifact payload";
+    let materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let index_value = index_entry.value();
+    cache
+        .record_file_artifact(index_entry)
+        .expect("file artifact mapping records");
+    let tail_payload = b"unindexed file tail payload";
+    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_location = cache
+        .append_blob(tail_key, tail_payload)
+        .expect("unindexed file tail appends");
+    let expected_reclaimed = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + tail_payload.len() as u64;
+    let expected_bytes_after = index_value.location().record_offset()
+        + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+        + payload.len() as u64;
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Files)
+        .expect("file store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .trim_blob_pack_tail(PersistBlobStore::Files)
+            .map(|trim| {
+                (
+                    trim.live_entries(),
+                    trim.reclaimed_bytes(),
+                    trim.bytes_after(),
+                )
+            })
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file tail-trim result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Files));
+    drop(guard);
+
+    let (live_entries, reclaimed_bytes, bytes_after) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack tail trim completes after same-process lock release")
+        .expect("file blob-pack tail trim succeeds");
+    assert_eq!(live_entries, 1);
+    assert_eq!(reclaimed_bytes, expected_reclaimed);
+    assert_eq!(bytes_after, expected_bytes_after);
+    handle.join().expect("worker joins");
+    assert_eq!(
+        cache
+            .read_file_artifact(index_value)
+            .expect("rooted file artifact remains readable")
+            .as_slice(),
+        payload
+    );
+    assert!(
+        cache.read_blob(tail_key, tail_location).is_err(),
+        "unindexed file tail record should be truncated"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_tail_trim_reports_poisoned_same_root_blob_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

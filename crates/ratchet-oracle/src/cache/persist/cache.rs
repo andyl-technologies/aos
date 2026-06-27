@@ -1665,9 +1665,9 @@ impl PersistCache {
     /// It is sequential and non-transactional: work completed before a later
     /// phase fails remains committed. It does not implement an automatic GC
     /// policy, relocate live pack records, coordinate raw lower-level pack or
-    /// sidecar users, give advisory coverage to the tail-trim phase, or replace
-    /// the future LMDB/redb metadata engine. Only the blob-index compaction and
-    /// rebuild phases use the per-store advisory lock.
+    /// sidecar users, or replace the future LMDB/redb metadata engine. Only
+    /// the blob-index compaction/rebuild and blob-pack tail-trim phases use the
+    /// per-store advisory lock.
     ///
     /// # Errors
     ///
@@ -1846,6 +1846,24 @@ impl PersistCache {
             .root_locks
             .lock_blob_store(store)
             .map_err(|_| PersistBlobIndexRebuildError::WriteLockPoisoned { store })?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_blob_pack_tail_trim(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobPackTrimError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistBlobPackTrimError::AdvisoryWriteLock {
+                store,
+                path,
+                source,
+            })?;
+        let write_guard = self
+            .root_locks
+            .lock_blob_index(store)
+            .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
         Ok((advisory_guard, write_guard))
     }
 
@@ -2852,26 +2870,25 @@ impl PersistCache {
     /// entry. This can reclaim unindexed trailing records, including blobs left
     /// behind by non-transactional append paths, but it does not relocate live
     /// records or reclaim unindexed records that precede a live record.
-    /// Same-process writers opened on the same cache root share the selected
-    /// store's blob-index write lock while this method snapshots roots and
-    /// truncates the pack; `files/` trims also share the file-artifact and
-    /// parse-artifact mapping locks. Cross-process writers and raw lower-level
-    /// pack or sidecar users must still be excluded by the caller.
+    /// Cache-level writers opened on the same cache root share the selected
+    /// store's advisory lock file and same-process store lock while this method
+    /// snapshots roots and truncates the pack; `files/` trims also share the
+    /// file-artifact and parse-artifact mapping locks. Raw lower-level pack or
+    /// sidecar users and unrelated maintenance writers must still be excluded
+    /// by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackTrimError`] if a same-root root-sidecar lock is
-    /// poisoned, if a root sidecar cannot be snapshotted, if a blob-index entry
-    /// contains a key for a different store, if any latest live blob fails
-    /// verification, or if the pack cannot be inspected or truncated.
+    /// Returns [`PersistBlobPackTrimError`] if the selected advisory lock cannot
+    /// be acquired, if a same-root root-sidecar lock is poisoned, if a root
+    /// sidecar cannot be snapshotted, if a blob-index entry contains a key for a
+    /// different store, if any latest live blob fails verification, or if the
+    /// pack cannot be inspected or truncated.
     pub fn trim_blob_pack_tail(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobPackTrim, PersistBlobPackTrimError> {
-        let _blob_guard = self
-            .root_locks
-            .lock_blob_index(store)
-            .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
+        let (_advisory_guard, _blob_guard) = self.lock_blob_pack_tail_trim(store)?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
             Some(
                 self.root_locks
