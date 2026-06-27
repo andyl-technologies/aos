@@ -1,9 +1,23 @@
-//! Memory-mapped content-addressed blob packfiles.
+//! Content-addressed blob packfiles.
 //!
 //! RFC-0007 stores immutable `values/` and `files/` payloads in append-only
-//! packfiles. This module validates the stable pack header and record format
-//! from a read-only mapping, then returns borrowed payload bytes without
-//! copying them into an intermediate buffer.
+//! packfiles. This module owns the stable pack header and record format,
+//! append-only buffered writes, buffered integrity reads that return owned
+//! payload bytes, and memory-mapped reads that return borrowed payload slices.
+//!
+//! ```text
+//! pack = header || record*
+//!
+//! header:
+//!   magic:      16 bytes, "AOS-NIX-BLOBPACK"
+//!   version:    4-byte little-endian u32
+//!   header_len: 4-byte little-endian u32
+//!
+//! record:
+//!   hash:        32 bytes, BLAKE3 digest of payload
+//!   payload_len: 8-byte little-endian u64
+//!   payload:     payload_len bytes
+//! ```
 
 use std::fmt;
 use std::fs;
@@ -16,6 +30,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::store::{ReadOnlyMmap, ReadOnlyMmapError};
+
+const BLOB_PACK_SCAN_BUFFER_LEN: usize = 8 * 1024;
 
 /// The fixed magic bytes at the start of every blob packfile.
 pub const BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
@@ -220,6 +236,59 @@ impl BlobPackRecord {
     /// Returns this record's byte location in the packfile.
     pub const fn location(self) -> BlobPackLocation {
         self.location
+    }
+}
+
+/// A verified byte window for one blob-pack payload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlobPackPayloadWindow {
+    record: BlobPackRecord,
+    payload_start: u64,
+    payload_end: u64,
+}
+
+impl BlobPackPayloadWindow {
+    const fn new(record: BlobPackRecord, payload_start: u64, payload_end: u64) -> Self {
+        Self {
+            record,
+            payload_start,
+            payload_end,
+        }
+    }
+
+    /// Returns the record metadata that owns this payload window.
+    pub const fn record(self) -> BlobPackRecord {
+        self.record
+    }
+
+    /// Returns the content address declared by this record.
+    pub const fn hash(self) -> BlobPackHash {
+        self.record.hash()
+    }
+
+    /// Returns this record's byte location in the packfile.
+    pub const fn location(self) -> BlobPackLocation {
+        self.record.location()
+    }
+
+    /// Returns the byte offset where the payload starts.
+    pub const fn payload_start(self) -> u64 {
+        self.payload_start
+    }
+
+    /// Returns the byte offset one past the end of the payload.
+    pub const fn payload_end(self) -> u64 {
+        self.payload_end
+    }
+
+    /// Returns the payload length declared by this record.
+    pub const fn payload_len(self) -> u64 {
+        self.record.location().payload_len()
+    }
+
+    /// Returns the half-open byte range occupied by this payload.
+    pub fn payload_range(self) -> Range<u64> {
+        self.payload_start..self.payload_end
     }
 }
 
@@ -438,6 +507,404 @@ impl BlobPackAppender {
                 source,
             })?;
         Ok(BlobPackLocation::new(record_offset, payload_len))
+    }
+}
+
+/// A buffered read-only blob packfile handle.
+#[derive(Clone, Debug)]
+pub struct BlobPackReader {
+    path: PathBuf,
+}
+
+impl BlobPackReader {
+    /// Opens a read-only blob packfile at `path` and validates its header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened/read, or
+    /// if its existing header is malformed.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, BlobPackReadError> {
+        let path = path.into();
+        open_blob_pack_for_buffered_read(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this packfile's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the current packfile length after validating its header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened,
+    /// inspected, or if its header is malformed.
+    pub fn len(&self) -> Result<u64, BlobPackReadError> {
+        let file = open_blob_pack_for_buffered_read(&self.path)?;
+        file.metadata()
+            .map(|metadata| metadata.len())
+            .map_err(|source| BlobPackReadError::Metadata {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Returns whether the packfile has no bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if [`Self::len`] fails.
+    pub fn is_empty(&self) -> Result<bool, BlobPackReadError> {
+        self.len().map(|len| len == 0)
+    }
+
+    /// Returns all verified blob records in packfile order.
+    ///
+    /// The scan validates each record header, checks payload bounds, streams
+    /// payload bytes through BLAKE3, and returns only record metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if any record header is malformed or
+    /// truncated, if a record points past the current packfile length, if a
+    /// payload length cannot fit in memory, or if a payload hash does not match
+    /// the record header.
+    pub fn records(&self) -> Result<Vec<BlobPackRecord>, BlobPackReadError> {
+        let mut file = open_blob_pack_for_buffered_read(&self.path)?;
+        let pack_len = file
+            .metadata()
+            .map_err(|source| BlobPackReadError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        let mut offset = BLOB_PACK_HEADER_LEN as u64;
+        let mut records = Vec::new();
+        while offset < pack_len {
+            let window = self.payload_window_from_open_file(
+                &mut file,
+                BlobPackLocation::new(offset, 0),
+                None,
+            )?;
+            self.verify_payload_from_open_file(&mut file, window)?;
+            records.push(window.record());
+            offset = window.payload_end();
+        }
+        Ok(records)
+    }
+
+    /// Validates record metadata for `location` and returns its payload window.
+    ///
+    /// The record header's hash and length must match `expected_hash` and
+    /// `location`, and the resulting payload byte range must fit inside the
+    /// current packfile. This helper does not read or hash the payload bytes;
+    /// callers that materialize the payload must still verify its content, as
+    /// [`Self::read_payload`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if `location` is invalid, if record metadata
+    /// does not match the expected lookup, or if the declared payload window
+    /// falls outside the current packfile.
+    pub fn payload_window(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<BlobPackPayloadWindow, BlobPackReadError> {
+        let mut file = open_blob_pack_for_buffered_read(&self.path)?;
+        self.payload_window_from_open_file(&mut file, location, Some(expected_hash))
+    }
+
+    /// Verifies the payload at `location` without materializing it.
+    ///
+    /// This validates record metadata and pack bounds, then streams the payload
+    /// bytes through BLAKE3 and returns the verified byte window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if `location` is invalid, if record metadata
+    /// does not match the expected lookup, if the declared payload window falls
+    /// outside the current packfile, or if the payload hash does not verify.
+    pub fn verify_payload(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<BlobPackPayloadWindow, BlobPackReadError> {
+        let mut file = open_blob_pack_for_buffered_read(&self.path)?;
+        let window =
+            self.payload_window_from_open_file(&mut file, location, Some(expected_hash))?;
+        self.verify_payload_from_open_file(&mut file, window)?;
+        Ok(window)
+    }
+
+    /// Returns whether the verified payload equals `expected_payload`.
+    ///
+    /// This validates record metadata and pack bounds, streams the payload
+    /// bytes once, compares them with `expected_payload`, and still verifies
+    /// that the stored payload hashes to `expected_hash`. A length mismatch
+    /// after metadata validation returns `Ok(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened,
+    /// inspected, seeked, or read, if `location` is invalid, if record metadata
+    /// does not match the expected lookup, if the declared payload window falls
+    /// outside the current packfile, if `expected_payload` is too large to
+    /// compare with a pack record, or if the stored payload hash does not
+    /// verify.
+    pub fn payload_matches(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+        expected_payload: &[u8],
+    ) -> Result<bool, BlobPackReadError> {
+        let mut file = open_blob_pack_for_buffered_read(&self.path)?;
+        let window =
+            self.payload_window_from_open_file(&mut file, location, Some(expected_hash))?;
+        let expected_len = u64::try_from(expected_payload.len()).map_err(|_| {
+            BlobPackReadError::PayloadTooLarge {
+                payload_len: expected_payload.len() as u128,
+            }
+        })?;
+        if expected_len != window.payload_len() {
+            self.verify_payload_from_open_file(&mut file, window)?;
+            return Ok(false);
+        }
+        self.payload_matches_from_open_file(&mut file, window, expected_payload)
+    }
+
+    /// Reads and verifies a blob payload at `location`.
+    ///
+    /// The record header's hash and length must match `expected_hash` and
+    /// `location`, and the payload bytes must hash to `expected_hash`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadError`] if the packfile cannot be opened or read,
+    /// if `location` is invalid, if record metadata does not match the expected
+    /// lookup, if the payload cannot fit in memory, or if the payload hash does
+    /// not verify.
+    pub fn read_payload(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<Vec<u8>, BlobPackReadError> {
+        let mut file = open_blob_pack_for_buffered_read(&self.path)?;
+        let window =
+            self.payload_window_from_open_file(&mut file, location, Some(expected_hash))?;
+        let payload_len = usize::try_from(window.payload_len()).map_err(|_| {
+            BlobPackReadError::PayloadTooLarge {
+                payload_len: window.payload_len() as u128,
+            }
+        })?;
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(payload_len)
+            .map_err(|_| BlobPackReadError::PayloadTooLarge {
+                payload_len: window.payload_len() as u128,
+            })?;
+        payload.resize(payload_len, 0);
+        file.seek(SeekFrom::Start(window.payload_start()))
+            .map_err(|source| BlobPackReadError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.read_exact(&mut payload)
+            .map_err(|source| BlobPackReadError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let actual = BlobPackHash::for_bytes(&payload);
+        if actual != expected_hash {
+            return Err(BlobPackReadError::PayloadHashMismatch {
+                expected: expected_hash,
+                actual,
+            });
+        }
+        Ok(payload)
+    }
+
+    fn payload_window_from_open_file(
+        &self,
+        file: &mut fs::File,
+        location: BlobPackLocation,
+        expected_hash: Option<BlobPackHash>,
+    ) -> Result<BlobPackPayloadWindow, BlobPackReadError> {
+        if location.record_offset() < BLOB_PACK_HEADER_LEN as u64 {
+            return Err(BlobPackReadError::InvalidRecordOffset {
+                record_offset: location.record_offset(),
+            });
+        }
+        let pack_len = file
+            .metadata()
+            .map_err(|source| BlobPackReadError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        let record_end = location
+            .record_offset()
+            .checked_add(BLOB_RECORD_HEADER_LEN as u64)
+            .ok_or(BlobPackReadError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: location.payload_len(),
+            })?;
+        if record_end > pack_len {
+            return Err(BlobPackReadError::Format {
+                path: self.path.clone(),
+                source: BlobPackFormatError::ShortRecordHeader {
+                    expected: BLOB_RECORD_HEADER_LEN,
+                    actual: pack_len.saturating_sub(location.record_offset()) as usize,
+                },
+            });
+        }
+        file.seek(SeekFrom::Start(location.record_offset()))
+            .map_err(|source| BlobPackReadError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut record_header = [0; BLOB_RECORD_HEADER_LEN];
+        file.read_exact(&mut record_header)
+            .map_err(|source| BlobPackReadError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let record = BlobRecordHeader::decode(&record_header).map_err(|source| {
+            BlobPackReadError::Format {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        if let Some(expected_hash) = expected_hash {
+            if record.hash() != expected_hash {
+                return Err(BlobPackReadError::RecordHashMismatch {
+                    expected: expected_hash,
+                    actual: record.hash(),
+                });
+            }
+            if record.payload_len() != location.payload_len() {
+                return Err(BlobPackReadError::RecordLengthMismatch {
+                    expected: location.payload_len(),
+                    actual: record.payload_len(),
+                });
+            }
+        }
+        let payload_start = location
+            .record_offset()
+            .checked_add(BLOB_RECORD_HEADER_LEN as u64)
+            .ok_or(BlobPackReadError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            })?;
+        let payload_end = payload_start.checked_add(record.payload_len()).ok_or(
+            BlobPackReadError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            },
+        )?;
+        if payload_end > pack_len {
+            return Err(BlobPackReadError::RecordExtendsPastEnd {
+                payload_end,
+                pack_len,
+            });
+        }
+        Ok(BlobPackPayloadWindow::new(
+            BlobPackRecord::new(
+                record.hash(),
+                BlobPackLocation::new(location.record_offset(), record.payload_len()),
+            ),
+            payload_start,
+            payload_end,
+        ))
+    }
+
+    fn verify_payload_from_open_file(
+        &self,
+        file: &mut fs::File,
+        window: BlobPackPayloadWindow,
+    ) -> Result<(), BlobPackReadError> {
+        file.seek(SeekFrom::Start(window.payload_start()))
+            .map_err(|source| BlobPackReadError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut remaining = window.payload_len();
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0; BLOB_PACK_SCAN_BUFFER_LEN];
+        while remaining > 0 {
+            let chunk_len = usize::try_from(remaining.min(BLOB_PACK_SCAN_BUFFER_LEN as u64))
+                .map_err(|_| BlobPackReadError::PayloadTooLarge {
+                    payload_len: window.payload_len() as u128,
+                })?;
+            file.read_exact(&mut buffer[..chunk_len])
+                .map_err(|source| BlobPackReadError::Read {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            hasher.update(&buffer[..chunk_len]);
+            remaining -= chunk_len as u64;
+        }
+        let actual = BlobPackHash::from_bytes(*hasher.finalize().as_bytes());
+        if actual != window.hash() {
+            return Err(BlobPackReadError::PayloadHashMismatch {
+                expected: window.hash(),
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn payload_matches_from_open_file(
+        &self,
+        file: &mut fs::File,
+        window: BlobPackPayloadWindow,
+        expected_payload: &[u8],
+    ) -> Result<bool, BlobPackReadError> {
+        file.seek(SeekFrom::Start(window.payload_start()))
+            .map_err(|source| BlobPackReadError::Seek {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut remaining = window.payload_len();
+        let mut compared = 0usize;
+        let mut payload_matches = true;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0; BLOB_PACK_SCAN_BUFFER_LEN];
+        while remaining > 0 {
+            let chunk_len = usize::try_from(remaining.min(BLOB_PACK_SCAN_BUFFER_LEN as u64))
+                .map_err(|_| BlobPackReadError::PayloadTooLarge {
+                    payload_len: window.payload_len() as u128,
+                })?;
+            file.read_exact(&mut buffer[..chunk_len])
+                .map_err(|source| BlobPackReadError::Read {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            hasher.update(&buffer[..chunk_len]);
+            let next_compared =
+                compared
+                    .checked_add(chunk_len)
+                    .ok_or(BlobPackReadError::PayloadTooLarge {
+                        payload_len: window.payload_len() as u128,
+                    })?;
+            if payload_matches && buffer[..chunk_len] != expected_payload[compared..next_compared] {
+                payload_matches = false;
+            }
+            compared = next_compared;
+            remaining -= chunk_len as u64;
+        }
+        let actual = BlobPackHash::from_bytes(*hasher.finalize().as_bytes());
+        if actual != window.hash() {
+            return Err(BlobPackReadError::PayloadHashMismatch {
+                expected: window.hash(),
+                actual,
+            });
+        }
+        Ok(payload_matches)
     }
 }
 
@@ -929,6 +1396,110 @@ pub enum MappedBlobPackError {
     },
 }
 
+/// A buffered blob pack read operation failed.
+#[derive(Debug, Error)]
+pub enum BlobPackReadError {
+    /// The packfile could not be opened.
+    #[error("failed to open blob pack {path:?}")]
+    Open {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// File metadata could not be read.
+    #[error("failed to read blob pack metadata for {path:?}")]
+    Metadata {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be seeked.
+    #[error("failed to seek blob pack {path:?}")]
+    Seek {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be read.
+    #[error("failed to read blob pack {path:?}")]
+    Read {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile header or record metadata is invalid.
+    #[error("invalid blob pack format in {path:?}")]
+    Format {
+        /// The packfile path.
+        path: PathBuf,
+        /// The format error.
+        #[source]
+        source: BlobPackFormatError,
+    },
+    /// The record offset points before the initialized pack header.
+    #[error("invalid blob record offset {record_offset}")]
+    InvalidRecordOffset {
+        /// The invalid record offset.
+        record_offset: u64,
+    },
+    /// The payload is too large for the local address space.
+    #[error("blob payload length {payload_len} does not fit in memory")]
+    PayloadTooLarge {
+        /// The rejected payload length.
+        payload_len: u128,
+    },
+    /// Record offset plus payload length cannot be represented.
+    #[error(
+        "blob record bounds overflow at offset {record_offset} with payload length {payload_len}"
+    )]
+    RecordBoundsOverflow {
+        /// The record offset.
+        record_offset: u64,
+        /// The payload length.
+        payload_len: u64,
+    },
+    /// The record payload window extends past the packfile length.
+    #[error("blob record payload ends at {payload_end}, past pack length {pack_len}")]
+    RecordExtendsPastEnd {
+        /// The byte offset one past the payload end.
+        payload_end: u64,
+        /// The packfile length.
+        pack_len: u64,
+    },
+    /// The record header declares a different hash from the lookup key.
+    #[error("blob record hash mismatch: expected {expected}, got {actual}")]
+    RecordHashMismatch {
+        /// The expected content address.
+        expected: BlobPackHash,
+        /// The content address declared by the record header.
+        actual: BlobPackHash,
+    },
+    /// The record header declares a different payload length from the lookup.
+    #[error("blob record length mismatch: expected {expected}, got {actual}")]
+    RecordLengthMismatch {
+        /// The expected payload length.
+        expected: u64,
+        /// The payload length declared by the record header.
+        actual: u64,
+    },
+    /// The payload bytes do not hash to the expected content address.
+    #[error("blob payload hash mismatch: expected {expected}, got {actual}")]
+    PayloadHashMismatch {
+        /// The expected content address.
+        expected: BlobPackHash,
+        /// The hash computed from the payload bytes.
+        actual: BlobPackHash,
+    },
+}
+
 /// A blob pack append operation failed.
 #[derive(Debug, Error)]
 pub enum BlobPackAppendError {
@@ -1087,6 +1658,50 @@ fn open_validated_blob_pack_for_read(path: &Path) -> Result<fs::File, BlobPackAp
     Ok(file)
 }
 
+fn open_blob_pack_for_buffered_read(path: &Path) -> Result<fs::File, BlobPackReadError> {
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|source| BlobPackReadError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| BlobPackReadError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    validate_open_blob_pack_header_for_read(path, &mut file, len)?;
+    Ok(file)
+}
+
+fn validate_open_blob_pack_header_for_read(
+    path: &Path,
+    file: &mut fs::File,
+    len: u64,
+) -> Result<(), BlobPackReadError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| BlobPackReadError::Seek {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    let header_len = len.min(BLOB_PACK_HEADER_LEN as u64) as usize;
+    let mut bytes = vec![0; header_len];
+    file.read_exact(&mut bytes)
+        .map_err(|source| BlobPackReadError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    BlobPackHeader::decode(&bytes).map_err(|source| BlobPackReadError::Format {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 fn validate_open_blob_pack_header(
     path: &Path,
     file: &mut fs::File,
@@ -1147,7 +1762,7 @@ fn payload_end_for_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1323,6 +1938,222 @@ mod tests {
                 if expected == wrong_hash && actual == BlobPackHash::for_bytes(payload)
         ));
         assert_eq!(appender.len().expect("final pack length reads"), before_len);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_reads_and_verifies_buffered_payloads() {
+        let path = temp_path("reader-payloads");
+        let first = b"first payload".as_slice();
+        let second = b"second payload".as_slice();
+        let locations = write_pack(&path, &[first, second]);
+        let first_hash = BlobPackHash::for_bytes(first);
+        let second_hash = BlobPackHash::for_bytes(second);
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+
+        assert_eq!(reader.path(), path.as_path());
+        assert_eq!(
+            reader.len().expect("reader length reads"),
+            BLOB_PACK_HEADER_LEN as u64
+                + (BLOB_RECORD_HEADER_LEN as u64 * 2)
+                + first.len() as u64
+                + second.len() as u64
+        );
+        assert!(!reader.is_empty().expect("reader emptiness reads"));
+        assert_eq!(
+            reader.records().expect("records scan"),
+            [
+                BlobPackRecord::new(first_hash, locations[0]),
+                BlobPackRecord::new(second_hash, locations[1]),
+            ]
+        );
+
+        let window = reader
+            .payload_window(locations[0], first_hash)
+            .expect("payload window reads");
+        assert_eq!(
+            window.record(),
+            BlobPackRecord::new(first_hash, locations[0])
+        );
+        assert_eq!(
+            window.payload_range(),
+            locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64
+                ..locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64 + first.len() as u64
+        );
+        assert_eq!(
+            reader
+                .verify_payload(locations[0], first_hash)
+                .expect("payload verifies"),
+            window
+        );
+        assert!(
+            reader
+                .payload_matches(locations[0], first_hash, first)
+                .expect("payload match reads")
+        );
+        assert!(
+            !reader
+                .payload_matches(locations[0], first_hash, b"first payloae")
+                .expect("payload mismatch reads")
+        );
+        assert!(
+            !reader
+                .payload_matches(locations[0], first_hash, b"short")
+                .expect("payload length mismatch reads")
+        );
+        assert_eq!(
+            reader
+                .read_payload(locations[1], second_hash)
+                .expect("payload reads"),
+            second
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_rejects_corrupt_header_without_rewriting() {
+        let path = temp_path("reader-corrupt-header");
+        fs::write(&path, b"bad").expect("corrupt pack writes");
+
+        let error = BlobPackReader::open(path.clone()).expect_err("corrupt pack errors");
+
+        assert!(matches!(
+            error,
+            BlobPackReadError::Format {
+                source: BlobPackFormatError::ShortPackHeader { actual: 3, .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(&path).expect("corrupt pack reads").as_slice(),
+            b"bad"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_rejects_mismatched_lookup_metadata() {
+        let path = temp_path("reader-mismatch");
+        let payload = b"payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+        let hash = BlobPackHash::for_bytes(payload);
+        let wrong_hash = BlobPackHash::for_bytes(b"other");
+
+        assert!(matches!(
+            reader
+                .payload_window(locations[0], wrong_hash)
+                .expect_err("wrong hash errors"),
+            BlobPackReadError::RecordHashMismatch { expected, actual }
+                if expected == wrong_hash && actual == hash
+        ));
+        assert!(matches!(
+            reader
+                .payload_window(BlobPackLocation::new(
+                    locations[0].record_offset(),
+                    locations[0].payload_len() + 1
+                ), hash)
+                .expect_err("wrong length errors"),
+            BlobPackReadError::RecordLengthMismatch { expected, actual }
+                if expected == locations[0].payload_len() + 1 && actual == locations[0].payload_len()
+        ));
+        assert!(matches!(
+            reader
+                .read_payload(BlobPackLocation::new(0, locations[0].payload_len()), hash)
+                .expect_err("header offset errors"),
+            BlobPackReadError::InvalidRecordOffset { record_offset: 0 }
+        ));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_rejects_short_trailing_record_header() {
+        let path = temp_path("reader-short-tail");
+        write_pack(&path, &[b"payload"]);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("pack opens for corruption");
+        file.write_all(b"tail").expect("tail writes");
+        file.flush().expect("tail flushes");
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens by header");
+
+        let error = reader.records().expect_err("short tail errors");
+
+        assert!(matches!(
+            error,
+            BlobPackReadError::Format {
+                source: BlobPackFormatError::ShortRecordHeader { actual: 4, .. },
+                ..
+            }
+        ));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_rejects_record_payload_past_end() {
+        let path = temp_path("reader-past-end");
+        let hash = BlobPackHash::for_bytes(b"payload");
+        let mut file = fs::File::create(&path).expect("pack file creates");
+        file.write_all(&BlobPackHeader::current().encode())
+            .expect("pack header writes");
+        file.write_all(&BlobRecordHeader::new(hash, 7).encode())
+            .expect("record header writes");
+        file.write_all(b"pay").expect("partial payload writes");
+        file.flush().expect("partial payload flushes");
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens by header");
+
+        let error = reader.records().expect_err("past-end payload errors");
+
+        assert!(matches!(
+            error,
+            BlobPackReadError::RecordExtendsPastEnd {
+                payload_end,
+                pack_len,
+            } if payload_end == BLOB_PACK_HEADER_LEN as u64 + BLOB_RECORD_HEADER_LEN as u64 + 7
+                && pack_len == BLOB_PACK_HEADER_LEN as u64 + BLOB_RECORD_HEADER_LEN as u64 + 3
+        ));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_rejects_corrupt_payload_bytes() {
+        let path = temp_path("reader-corrupt-payload");
+        let payload = b"payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let hash = BlobPackHash::for_bytes(payload);
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("pack opens for corruption");
+        file.seek(SeekFrom::Start(
+            locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64,
+        ))
+        .expect("payload offset seeks");
+        file.write_all(b"X").expect("payload corrupts");
+        file.flush().expect("payload corruption flushes");
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens by header");
+
+        assert!(matches!(
+            reader
+                .records()
+                .expect_err("corrupt payload scan errors"),
+            BlobPackReadError::PayloadHashMismatch { expected, actual }
+                if expected == hash && actual == BlobPackHash::for_bytes(b"Xayload")
+        ));
+        assert!(matches!(
+            reader
+                .read_payload(locations[0], hash)
+                .expect_err("corrupt payload read errors"),
+            BlobPackReadError::PayloadHashMismatch { expected, actual }
+                if expected == hash && actual == BlobPackHash::for_bytes(b"Xayload")
+        ));
 
         let _ = fs::remove_file(path);
     }
