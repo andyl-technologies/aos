@@ -4,12 +4,14 @@
 //!
 //! This L3 crate defines the RFC-0010 execution-model vocabulary shared by the
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, event
-//! log, and VM backend adapters. The crate remains a safe reduction island: it
-//! declares the backend trait and core model signatures, while concrete VM
-//! drivers and driver-specific details live outside the engine crate.
+//! log, uniform I/O sub-node lifecycle, and VM backend adapters. The crate
+//! remains a safe reduction island: it declares the backend trait and core model
+//! signatures, while concrete VM drivers and driver-specific details live
+//! outside the engine crate.
 //!
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
-//! [`decision`] owns seeded decision recording, [`backend`] owns the VM backend
+//! [`decision`] owns seeded decision recording, [`io_subnode`] owns the
+//! deterministic I/O sub-node lifecycle, [`backend`] owns the VM backend
 //! boundary, [`scheduler`] owns the quantum-loop boundary, and `sim_backend`
 //! provides the gated in-process test double.
 
@@ -19,6 +21,7 @@
 
 pub mod backend;
 pub mod decision;
+pub mod io_subnode;
 pub mod model;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
@@ -28,6 +31,10 @@ pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
+pub use io_subnode::{
+    DeterministicIoSubNode, IoSubNode, IoSubNodeCompletion, IoSubNodeError, IoSubNodeQueue,
+    IoSubNodeRequest, IoSubNodeSnapshot,
+};
 pub use model::{
     AppRandomDecision, AssertionDef, AssertionId, Checkpoint, CheckpointKind, CheckpointMeta,
     ChoiceTag, ClockDriftRate, Configuration, ContentAddressedBlobRef, ContentHash, CowDeltaKind,

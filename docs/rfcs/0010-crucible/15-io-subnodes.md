@@ -705,13 +705,33 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the L1 shmem ABI and scheduler primitives and before any L3+ feature.
 
-- [ ] **T-IO-1** Define the uniform I/O sub-node trait (icount-derived clock,
+- [x] **T-IO-1** Define the uniform I/O sub-node trait (icount-derived clock,
   request inbox / response outbox over shmem, `advance_to(limit_icount)` draining
   due responses, snapshot/restore) shared by disk, 9p, and net-link nodes; make
   every completion time and probabilistic device choice a deterministic function of
   `(request icount, modeled latency, per-device RNG draw)` only, with no host
   wall-clock/scheduling/FS/inode dependence. — satisfies [IO-1], [IO-2], [IO-3],
   [IO-4]; spec §15.1.
+  Completed by `checks.crucible.phase3.ioSubnodeTrait`.
+  `IoSubNode` is the shared lifecycle contract for disk, 9p, and network-link
+  scheduling sub-nodes: `enqueue_request` computes deterministic completions from
+  request icount, modeled latency, fixed shift, and an already-recorded
+  per-device RNG draw; `advance_to(limit_icount)` drains only due responses into
+  the response outbox while monotonically advancing the sub-node clock;
+  `next_exact_local_event` reports the head in-flight delivery icount; and
+  `snapshot`/`restore` preserve and validate the current icount, in-flight
+  queue, and outbox state.
+  The reusable `DeterministicIoSubNode` gate model rejects non-I/O scheduler
+  nodes, invalid icount shifts, backward clock movement, forged snapshots, and
+  deterministic queue overflow without dropping or reordering work; keeps the
+  response outbox sorted by delivery icount, requester, and sequence across
+  multiple advances; converts completions into scheduler `IoCompletion` payloads
+  at exact delivery icounts; and has no host wall-clock, scheduling,
+  filesystem-order, or inode input in its completion calculation.
+  Summary: no host wall-clock, scheduling, filesystem-order, or inode input can
+  affect completion icounts, payload bytes, or ordering.
+  Summary: response outbox sorted by delivery icount, requester, and sequence
+  after every advance.
 - [ ] **T-IO-2** Implement the block sub-node base+overlay: read-only
   content-addressed base image, in-memory 4 KiB CoW page overlay, page-wise read
   (overlay-over-base) and write (copy-up to overlay), dirty-page tracking; assert

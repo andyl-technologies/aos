@@ -480,6 +480,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerAllVcpusIdle";
       taskIds = ["T-SCHED-30"];
     };
+    ioSubnodeTrait = import ./phase3-io-subnode-trait.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.ioSubnodeTrait";
+      taskIds = ["T-IO-1"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
