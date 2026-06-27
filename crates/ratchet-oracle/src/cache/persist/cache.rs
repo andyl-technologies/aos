@@ -1706,9 +1706,11 @@ impl PersistCache {
     /// records stay unrooted and can be omitted by the repack. It is sequential
     /// and non-transactional: sidecar compaction remains committed if a later
     /// pack repack fails, and value-pack rewrites may remain committed if the
-    /// file-pack repack fails. It does not implement an automatic GC policy,
-    /// coordinate with cross-process writers or raw lower-level pack or
-    /// sidecar users, or replace the future LMDB/redb metadata engine.
+    /// file-pack repack fails. The blob-pack repack phases use each selected
+    /// store's advisory lock file. It does not implement an automatic GC
+    /// policy, coordinate raw lower-level pack or sidecar users or non-blob
+    /// sidecar cross-process writers during file repack, or replace the future
+    /// LMDB/redb metadata engine.
     ///
     /// # Errors
     ///
@@ -1864,6 +1866,34 @@ impl PersistCache {
             .root_locks
             .lock_blob_index(store)
             .map_err(|source| PersistBlobPackTrimError::BlobIndex { source })?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_value_blob_pack_repack(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistValueBlobPackRepackError> {
+        let path = self.layout.blob_store_lock_path(PersistBlobStore::Values);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(
+                |source| PersistValueBlobPackRepackError::AdvisoryWriteLock { path, source },
+            )?;
+        let write_guard = self
+            .root_locks
+            .lock_blob_store(PersistBlobStore::Values)
+            .map_err(|_| PersistValueBlobPackRepackError::WriteLockPoisoned)?;
+        Ok((advisory_guard, write_guard))
+    }
+
+    fn lock_file_blob_pack_repack(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistFileBlobPackRepackError> {
+        let path = self.layout.blob_store_lock_path(PersistBlobStore::Files);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistFileBlobPackRepackError::AdvisoryWriteLock { path, source })?;
+        let write_guard = self
+            .root_locks
+            .lock_blob_store(PersistBlobStore::Files)
+            .map_err(|_| PersistFileBlobPackRepackError::WriteLockPoisoned)?;
         Ok((advisory_guard, write_guard))
     }
 
@@ -3086,28 +3116,25 @@ impl PersistCache {
     /// Rewrites the `values/` pack to the current live value roots.
     ///
     /// This explicit maintenance operation builds a value-pack repack plan
-    /// while holding the same-root value store write lock, stages a compacted
-    /// value pack and replacement value blob index, then swaps both files into
-    /// place with best-effort rollback for ordinary filesystem errors. It
-    /// preserves the latest indexed value roots and omits records that are not
-    /// live under the current value blob index. The cache is advisory: this
-    /// operation is not crash-transactional, does not prune node metadata,
-    /// coordinate with cross-process writers or raw lower-level users, or apply
-    /// the future full GC retention policy.
+    /// while holding the selected store's advisory lock file and same-root value
+    /// store write lock, stages a compacted value pack and replacement value
+    /// blob index, then swaps both files into place with best-effort rollback
+    /// for ordinary filesystem errors. It preserves the latest indexed value
+    /// roots and omits records that are not live under the current value blob
+    /// index. The cache is advisory: this operation is not crash-transactional,
+    /// does not prune node metadata, coordinate with raw lower-level users or
+    /// unrelated sidecar writers, or apply the future full GC retention policy.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistValueBlobPackRepackError`] if the same-root value
-    /// store write lock is poisoned, if repack planning fails, if the compacted
-    /// pack image cannot be written or swapped, or if the replacement value
-    /// index cannot be written or swapped.
+    /// Returns [`PersistValueBlobPackRepackError`] if the selected advisory lock
+    /// cannot be acquired, the same-root value store write lock is poisoned, if
+    /// repack planning fails, if the compacted pack image cannot be written or
+    /// swapped, or if the replacement value index cannot be written or swapped.
     pub fn repack_value_blob_pack(
         &self,
     ) -> Result<PersistBlobPackRepackPlan, PersistValueBlobPackRepackError> {
-        let _write_guard = self
-            .root_locks
-            .lock_blob_store(PersistBlobStore::Values)
-            .map_err(|_| PersistValueBlobPackRepackError::WriteLockPoisoned)?;
+        let (_advisory_guard, _write_guard) = self.lock_value_blob_pack_repack()?;
         let plan = self
             .plan_blob_pack_repack_unlocked(PersistBlobStore::Values)
             .map_err(|source| PersistValueBlobPackRepackError::Plan { source })?;
@@ -3144,31 +3171,28 @@ impl PersistCache {
     /// Rewrites the `files/` pack to the current artifact and blob-index roots.
     ///
     /// This explicit maintenance operation builds a file-pack repack plan while
-    /// holding the same-root file store, file-artifact, and parse-artifact
-    /// locks, stages a compacted file pack plus relocated file blob,
-    /// file-artifact, and parse-artifact sidecars, then swaps them into place
-    /// with best-effort rollback for ordinary filesystem errors. It refuses to
-    /// run while same-process pending non-indexed artifact roots exist because
-    /// those callers still hold old pack locations that would become invalid
-    /// after relocation. The cache is advisory: this operation is not
-    /// crash-transactional, does not coordinate with cross-process writers or
-    /// raw lower-level users, and does not apply the future full GC retention
-    /// policy.
+    /// holding the selected store's advisory lock file plus same-root file
+    /// store, file-artifact, and parse-artifact locks, stages a compacted file
+    /// pack plus relocated file blob, file-artifact, and parse-artifact
+    /// sidecars, then swaps them into place with best-effort rollback for
+    /// ordinary filesystem errors. It refuses to run while same-process pending
+    /// non-indexed artifact roots exist because those callers still hold old
+    /// pack locations that would become invalid after relocation. The cache is
+    /// advisory: this operation is not crash-transactional, does not coordinate
+    /// with raw lower-level users or non-blob sidecar cross-process writers, and
+    /// does not apply the future full GC retention policy.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileBlobPackRepackError`] if a same-root lock is
-    /// poisoned, if pending artifact roots exist, if repack planning fails, if
-    /// an artifact sidecar root has no planned relocation, if the compacted
-    /// pack image cannot be written or swapped, or if any replacement sidecar
-    /// cannot be written or swapped.
+    /// Returns [`PersistFileBlobPackRepackError`] if the selected advisory lock
+    /// cannot be acquired, if a same-root lock is poisoned, if pending artifact
+    /// roots exist, if repack planning fails, if an artifact sidecar root has no
+    /// planned relocation, if the compacted pack image cannot be written or
+    /// swapped, or if any replacement sidecar cannot be written or swapped.
     pub fn repack_file_blob_pack(
         &self,
     ) -> Result<PersistBlobPackRepackPlan, PersistFileBlobPackRepackError> {
-        let _file_guard = self
-            .root_locks
-            .lock_blob_store(PersistBlobStore::Files)
-            .map_err(|_| PersistFileBlobPackRepackError::WriteLockPoisoned)?;
+        let (_advisory_guard, _file_guard) = self.lock_file_blob_pack_repack()?;
         let _file_artifact_guard = self
             .root_locks
             .lock_file_artifacts()
@@ -3268,10 +3292,11 @@ impl PersistCache {
     /// This caller-driven maintenance helper runs
     /// [`Self::repack_value_blob_pack`] and then [`Self::repack_file_blob_pack`].
     /// It is sequential and non-transactional: if the file-pack repack fails,
-    /// the value-pack repack may already be committed. The method does not
-    /// compact unrelated sidecars, rebuild blob indexes from physical pack
-    /// scans before planning, coordinate with cross-process writers or raw
-    /// lower-level users, or apply the future full GC retention policy.
+    /// the value-pack repack may already be committed. Each pack repack holds
+    /// its selected store's advisory lock file. The method does not compact
+    /// unrelated sidecars, rebuild blob indexes from physical pack scans before
+    /// planning, coordinate raw lower-level users or non-blob sidecar
+    /// cross-process writers, or apply the future full GC retention policy.
     ///
     /// # Errors
     ///

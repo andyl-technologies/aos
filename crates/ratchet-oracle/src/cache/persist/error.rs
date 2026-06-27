@@ -865,6 +865,14 @@ pub enum PersistValueBlobPackRepackError {
     /// The same-root value blob-pack write lock was poisoned.
     #[error("persistent value blob-pack repack write lock is poisoned")]
     WriteLockPoisoned,
+    /// The advisory value blob-pack repack write lock could not be acquired.
+    #[error("failed to acquire persistent value blob-pack repack advisory write lock at {path}")]
+    AdvisoryWriteLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The value repack plan could not be produced.
     #[error("failed to plan persistent value blob-pack repack")]
     Plan {
@@ -891,6 +899,14 @@ pub enum PersistFileBlobPackRepackError {
     /// The same-root file blob-pack write lock was poisoned.
     #[error("persistent file blob-pack repack write lock is poisoned")]
     WriteLockPoisoned,
+    /// The advisory file blob-pack repack write lock could not be acquired.
+    #[error("failed to acquire persistent file blob-pack repack advisory write lock at {path}")]
+    AdvisoryWriteLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// In-flight non-indexed file artifacts still point at the current pack.
     #[error(
         "persistent file blob-pack repack cannot run while {roots} pending artifact roots exist"

@@ -3964,6 +3964,135 @@ fn cache_file_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_proce
 }
 
 #[test]
+fn cache_value_blob_pack_repack_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let unrooted_payload = b"unrooted value before repack";
+    let unrooted_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_location = cache
+        .append_blob(unrooted_key, unrooted_payload)
+        .expect("unrooted value appends");
+    let payload = b"indexed value after unrooted prefix";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    cache
+        .append_blob_indexed(key, payload)
+        .expect("indexed value appends");
+    let expected_reclaimed = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + unrooted_payload.len() as u64;
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .repack_value_blob_pack()
+            .map(|plan| (plan.reclaimable_bytes(), plan.record_relocations().len()))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("value repack result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    drop(guard);
+
+    let (reclaimed_bytes, relocated_records) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("value blob-pack repack completes after same-process lock release")
+        .expect("value blob-pack repack succeeds");
+    assert_eq!(reclaimed_bytes, expected_reclaimed);
+    assert_eq!(relocated_records, 1);
+    handle.join().expect("worker joins");
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed value reads")
+            .expect("indexed value exists")
+            .as_slice(),
+        payload
+    );
+    assert!(
+        cache.read_blob(unrooted_key, unrooted_location).is_err(),
+        "unrooted value record should be omitted by repack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_pack_repack_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let unrooted_payload = b"unrooted file before repack";
+    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_location = cache
+        .append_blob(unrooted_key, unrooted_payload)
+        .expect("unrooted file appends");
+    let source = b"let x = 1; in x";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let payload = b"rooted file artifact after unrooted prefix";
+    let materialized = cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let index_entry = materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    cache
+        .record_file_artifact(index_entry)
+        .expect("file artifact mapping records");
+    let expected_reclaimed = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + unrooted_payload.len() as u64;
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Files)
+        .expect("file store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .repack_file_blob_pack()
+            .map(|plan| (plan.reclaimable_bytes(), plan.record_relocations().len()))
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("file repack result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Files));
+    drop(guard);
+
+    let (reclaimed_bytes, relocated_records) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file blob-pack repack completes after same-process lock release")
+        .expect("file blob-pack repack succeeds");
+    assert_eq!(reclaimed_bytes, expected_reclaimed);
+    assert_eq!(relocated_records, 1);
+    handle.join().expect("worker joins");
+    let relocated = cache
+        .lookup_file_artifact(file_artifact_key)
+        .expect("file artifact lookup succeeds")
+        .expect("file artifact remains indexed");
+    assert_eq!(
+        cache
+            .read_file_artifact(relocated)
+            .expect("relocated file artifact reads")
+            .as_slice(),
+        payload
+    );
+    assert!(
+        cache.read_blob(unrooted_key, unrooted_location).is_err(),
+        "unrooted file record should be omitted by repack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_tail_trim_reports_poisoned_same_root_blob_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
