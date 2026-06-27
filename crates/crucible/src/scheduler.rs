@@ -168,19 +168,30 @@ pub enum SchedulerTopologyChangeTrigger {
     LatencyChange,
 }
 
-/// A boundary-applied replacement for the effective scheduler edge set.
+/// The topology effect applied at a scheduler quantum boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerTopologyChangeEffect {
+    /// Replaces the complete effective edge set.
+    ReplaceEffectiveEdges(Vec<SchedulerLookaheadEdge>),
+    /// Removes effective edges matching the listed directed endpoints.
+    RemoveEffectiveEdges(Vec<SchedulerLookaheadEdgeEndpoint>),
+    /// Restores effective edges into the current edge set.
+    RestoreEffectiveEdges(Vec<SchedulerLookaheadEdge>),
+}
+
+/// A boundary-applied effective-topology mutation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerTopologyChange {
     /// Session-local sequence number used to order same-boundary changes.
     pub sequence: u64,
     /// The reason this change requires a lookahead recompute.
     pub trigger: SchedulerTopologyChangeTrigger,
-    /// The complete effective edge set after this change is applied.
-    pub effective_edges: Vec<SchedulerLookaheadEdge>,
+    /// The effective-topology effect to apply at the boundary.
+    pub effect: SchedulerTopologyChangeEffect,
 }
 
 impl SchedulerTopologyChange {
-    /// Builds a topology change from a complete effective edge set.
+    /// Builds a topology change from a complete effective edge-set replacement.
     #[must_use]
     pub fn new(
         sequence: u64,
@@ -190,7 +201,27 @@ impl SchedulerTopologyChange {
         Self {
             sequence,
             trigger,
-            effective_edges,
+            effect: SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges),
+        }
+    }
+
+    /// Builds a partition change that removes directed effective edges.
+    #[must_use]
+    pub fn partition(sequence: u64, removed_edges: Vec<SchedulerLookaheadEdgeEndpoint>) -> Self {
+        Self {
+            sequence,
+            trigger: SchedulerTopologyChangeTrigger::FaultActivation,
+            effect: SchedulerTopologyChangeEffect::RemoveEffectiveEdges(removed_edges),
+        }
+    }
+
+    /// Builds a heal change that restores directed effective edges.
+    #[must_use]
+    pub fn heal(sequence: u64, restored_edges: Vec<SchedulerLookaheadEdge>) -> Self {
+        Self {
+            sequence,
+            trigger: SchedulerTopologyChangeTrigger::Heal,
+            effect: SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges),
         }
     }
 }
@@ -734,6 +765,23 @@ pub struct SchedulerLookaheadEdge {
     pub minimum_latency: SimDuration,
 }
 
+/// Directed endpoint identity for one scheduler lookahead edge.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerLookaheadEdgeEndpoint {
+    /// The scheduler node that can produce a future network event.
+    pub from: SchedulerNodeId,
+    /// The scheduler node that can receive the future network event.
+    pub to: SchedulerNodeId,
+}
+
+impl SchedulerLookaheadEdgeEndpoint {
+    /// Builds one directed scheduler lookahead edge endpoint.
+    #[must_use]
+    pub fn new(from: SchedulerNodeId, to: SchedulerNodeId) -> Self {
+        Self { from, to }
+    }
+}
+
 impl SchedulerLookaheadEdge {
     /// Builds one directed scheduler lookahead edge.
     #[must_use]
@@ -742,6 +790,15 @@ impl SchedulerLookaheadEdge {
             from,
             to,
             minimum_latency,
+        }
+    }
+
+    /// Returns this edge's directed endpoint identity.
+    #[must_use]
+    pub fn endpoint(&self) -> SchedulerLookaheadEdgeEndpoint {
+        SchedulerLookaheadEdgeEndpoint {
+            from: self.from.clone(),
+            to: self.to.clone(),
         }
     }
 
@@ -807,6 +864,32 @@ impl SchedulerLookaheadGraph {
         self.edges
             .iter()
             .any(|edge| &edge.from == from && &edge.to == to)
+    }
+
+    /// Removes all edges matching the listed directed endpoints.
+    #[must_use]
+    pub fn remove_effective_edges<I>(&self, endpoints: I) -> Self
+    where
+        I: IntoIterator<Item = SchedulerLookaheadEdgeEndpoint>,
+    {
+        let mut endpoints = endpoints.into_iter().collect::<Vec<_>>();
+        endpoints.sort();
+        endpoints.dedup();
+        Self::from_edges(
+            self.edges
+                .iter()
+                .filter(|edge| endpoints.binary_search(&edge.endpoint()).is_err())
+                .cloned(),
+        )
+    }
+
+    /// Restores directed edges into the current effective edge set.
+    #[must_use]
+    pub fn restore_effective_edges<I>(&self, restored_edges: I) -> Self
+    where
+        I: IntoIterator<Item = SchedulerLookaheadEdge>,
+    {
+        Self::from_edges(self.edges.iter().cloned().chain(restored_edges))
     }
 
     /// Computes `lookahead(node)` as the minimum inbound live-link latency.
@@ -2046,12 +2129,44 @@ fn topology_change_material(change: &SchedulerTopologyChange) -> String {
         "topology_change_trigger={}",
         topology_change_trigger_label(change.trigger)
     ));
-    let graph = SchedulerLookaheadGraph::from_edges(change.effective_edges.clone());
-    lines.push(format!(
-        "topology_change_effective_edges={}",
-        graph.edges().len()
-    ));
-    lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
+    match &change.effect {
+        SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
+            let graph = SchedulerLookaheadGraph::from_edges(effective_edges.clone());
+            lines.push(String::from(
+                "topology_change_effect=replace-effective-edges",
+            ));
+            lines.push(format!(
+                "topology_change_effective_edges={}",
+                graph.edges().len()
+            ));
+            lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
+        }
+        SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
+            let mut endpoints = endpoints.clone();
+            endpoints.sort();
+            endpoints.dedup();
+            lines.push(String::from(
+                "topology_change_effect=remove-effective-edges",
+            ));
+            lines.push(format!("topology_change_removed_edges={}", endpoints.len()));
+            lines.extend(
+                endpoints
+                    .iter()
+                    .map(scheduler_lookahead_edge_endpoint_material),
+            );
+        }
+        SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => {
+            let graph = SchedulerLookaheadGraph::from_edges(restored_edges.clone());
+            lines.push(String::from(
+                "topology_change_effect=restore-effective-edges",
+            ));
+            lines.push(format!(
+                "topology_change_restored_edges={}",
+                graph.edges().len()
+            ));
+            lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
+        }
+    }
     lines.join("\n")
 }
 
@@ -2069,6 +2184,14 @@ fn scheduler_node_material(node: &SchedulerNodeId) -> String {
         node.node.name.len(),
         node.node.name,
         scheduling_node_kind_label(node.kind),
+    )
+}
+
+fn scheduler_lookahead_edge_endpoint_material(endpoint: &SchedulerLookaheadEdgeEndpoint) -> String {
+    format!(
+        "edge_endpoint:\nedge_from:\n{}\nedge_to:\n{}",
+        scheduler_node_material(&endpoint.from),
+        scheduler_node_material(&endpoint.to),
     )
 }
 
@@ -2809,7 +2932,22 @@ impl SingleScheduler {
         });
 
         for change in changes {
-            let graph = SchedulerLookaheadGraph::from_edges(change.effective_edges);
+            let SchedulerTopologyChange {
+                sequence,
+                trigger,
+                effect,
+            } = change;
+            let graph = match effect {
+                SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
+                    SchedulerLookaheadGraph::from_edges(effective_edges)
+                }
+                SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
+                    self.effective_topology.remove_effective_edges(endpoints)
+                }
+                SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => self
+                    .effective_topology
+                    .restore_effective_edges(restored_edges),
+            };
             let mut updates = Vec::with_capacity(self.nodes.len());
             for node in &mut self.nodes {
                 let previous_lookahead = node.network_lookahead;
@@ -2831,8 +2969,8 @@ impl SingleScheduler {
             self.topology_change_applications
                 .push(SchedulerTopologyChangeApplication {
                     topology_epoch: self.topology_epoch,
-                    sequence: change.sequence,
-                    trigger: change.trigger,
+                    sequence,
+                    trigger,
                     updates,
                 });
         }

@@ -1232,9 +1232,9 @@ application of explorer-supplied preemption decisions
   apply lowered lookahead before the node is next PICKed past the new bound. —
   satisfies [SCHED-37]; spec §8.11.
   Completed by `checks.crucible.phase3.schedulerTopologyChange`.
-  `SchedulerTopologyChange` now carries a complete effective edge-set
-  replacement ordered by boundary sequence and trigger. `SingleScheduler`
-  applies queued topology changes at the quantum boundary before the next PICK,
+  `SchedulerTopologyChange` supports complete effective edge-set replacement
+  ordered by boundary sequence and trigger. `SingleScheduler` applies queued
+  topology changes at the quantum boundary before the next PICK,
   recomputes every runtime node's `NetworkLookahead` from the new
   `SchedulerLookaheadGraph`, records per-node `SchedulerTopologyLookaheadUpdate`
   evidence, and treats topology-only recomputes as scheduler progress.
@@ -1247,9 +1247,20 @@ application of explorer-supplied preemption decisions
   runtime and actor queueing, pending-change send freeze/unfreeze, no delivery
   of an in-flight frame under a stale horizon, topology-only liveness progress,
   and sim/QEMU outbound authorization.
-- [ ] **T-SCHED-23** Model partition/heal as effective-edge removal/restoration
+- [x] **T-SCHED-23** Model partition/heal as effective-edge removal/restoration
   with `min`-inbound-latency lookahead recompute over the current edge set
   (last-inbound-removed ⇒ `+∞`). — satisfies [SCHED-38]; spec §8.11.
+  Completed by `checks.crucible.phase3.schedulerPartitionHeal`.
+  `SchedulerTopologyChangeEffect` now distinguishes complete edge-set
+  replacement from partition and heal deltas. Partition changes remove directed
+  effective edges from the current graph at the boundary; heal changes restore
+  directed effective edges into the current graph at the boundary. Each applied
+  mutation recomputes every runtime node's lookahead from the resulting graph,
+  so the next bound is the minimum remaining inbound latency, and the lookahead
+  becomes `+∞` when the last inbound edge is removed. Focused regressions cover
+  next-minimum recompute after partial partition, last-inbound removal,
+  sequential partition-then-heal over the current graph, and send authorization
+  blocking/restoration across partition/heal.
 - [ ] **T-SCHED-24** Apply topology swaps atomically at a rendezvous (all nodes
   brought to the fault's exact activation virtual time), never mid-RUN and never
   shifted to the next arbitrary rendezvous tick. — satisfies [SCHED-39],
