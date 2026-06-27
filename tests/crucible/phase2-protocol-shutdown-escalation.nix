@@ -17,6 +17,11 @@
   shutdownTest = builtins.readFile ../../crates/crucible-qemu/tests/shutdown.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
+  controlResponsiveGate = import ./phase5-control-responsive.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase5.gates.controlResponsive";
+    taskIds = ["T-PLAN-3" "T-HARN-15"];
+  };
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -245,8 +250,8 @@
         needle = "protocolShutdownEscalation = import ./phase2-protocol-shutdown-escalation.nix";
       }
       {
-        label = "canonical control-responsive gate remains red";
-        needle = "controlResponsive = redGate {";
+        label = "canonical control-responsive gate is green";
+        needle = "controlResponsive = import ./phase5-control-responsive.nix";
       }
     ];
 in
@@ -259,6 +264,7 @@ in
       src = crucibleSrc;
 
       buildDeps = [
+        controlResponsiveGate
         pkgs.coreutils
         pkgs.grep
         pkgs.qemu-crucible
@@ -299,6 +305,7 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
+            grep -q 'gate=gate:control-responsive' "${controlResponsiveGate}/result"
             CRUCIBLE_QEMU_SHUTDOWN_TEST_BINARY="${pkgs.qemu-crucible}/bin/qemu-system-x86_64" \
             cargo test \
               --frozen \

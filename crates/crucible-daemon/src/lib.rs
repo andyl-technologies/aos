@@ -7,9 +7,18 @@
 //! diagnostics, but any run-affecting choice must enter through the engine's
 //! deterministic decision stream.
 //!
-//! Module map: the crate root currently reserves the daemon package boundary;
-//! future modules will split session hosting, API transport, and diagnostics.
+//! Module map: [`control_responsiveness`] forwards daemon-routed
+//! acknowledgement evidence to the API's quantum-counted control-responsive
+//! contract; future modules will split session hosting, API transport, and
+//! diagnostics.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+pub mod control_responsiveness;
+
+pub use control_responsiveness::{
+    DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
+    validate_daemon_control_responsiveness,
+};

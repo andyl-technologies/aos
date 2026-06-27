@@ -17,6 +17,11 @@
   setupFailureTest = builtins.readFile ../../crates/crucible-qemu/tests/setup_failure.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
+  controlResponsiveGate = import ./phase5-control-responsive.nix {
+    inherit pkgs lib;
+    attrPath = "checks.crucible.phase5.gates.controlResponsive";
+    taskIds = ["T-PLAN-3" "T-HARN-15"];
+  };
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -349,8 +354,8 @@
         needle = "protocolSetupFailure = import ./phase2-protocol-setup-failure.nix";
       }
       {
-        label = "control-responsive gate remains red";
-        needle = "controlResponsive = redGate {";
+        label = "control-responsive gate is green";
+        needle = "controlResponsive = import ./phase5-control-responsive.nix";
       }
     ];
 in
@@ -363,6 +368,7 @@ in
       src = crucibleSrc;
 
       buildDeps = [
+        controlResponsiveGate
         pkgs.coreutils
         pkgs.grep
         pkgs.qemu-crucible
@@ -403,6 +409,7 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
+            grep -q 'gate=gate:control-responsive' "${controlResponsiveGate}/result"
             if grep -q 'pub fn abort_failed_qemu_setup' crates/crucible-qemu/src/setup_failure.rs; then
               echo "setup failure gate requires source-driven abort API, not public kind-only abort"
               exit 1

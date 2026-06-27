@@ -77,6 +77,8 @@ pub enum ControlOperationKind {
     Snapshot,
     /// Fork from the boundary configuration.
     Fork,
+    /// Inject a control-plane fault or input at the boundary.
+    Inject,
     /// Query boundary state without mutating the engine.
     Query,
 }

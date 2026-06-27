@@ -150,14 +150,14 @@
       package = "crucible-api";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:control-responsive";
       package = "crucible-daemon";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:any-guest";
@@ -381,7 +381,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=7
+            placeholder_targets=4
             RESULT
           '';
         }

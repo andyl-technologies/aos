@@ -375,13 +375,10 @@ in {
   };
   phase5 = {
     gates = {
-      controlResponsive = redGate {
+      controlResponsive = import ./phase5-control-responsive.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase5.gates.controlResponsive";
-        gateName = "gate:control-responsive";
-        owner = "crucible-session";
-        phase = "phase5";
         taskIds = ["T-PLAN-3" "T-HARN-15"];
-        reason = "control-plane responsiveness gate is intentionally pending";
       };
     };
   };
