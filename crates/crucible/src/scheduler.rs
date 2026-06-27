@@ -78,6 +78,28 @@ pub struct SchedulerRunCeilingPublication {
     pub target_time: SimInstant,
 }
 
+/// The virtual-time clock value used for scheduler lookahead decisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerEffectiveClock {
+    /// The scheduler graph node whose clock was projected.
+    pub node: SchedulerNodeId,
+    /// The node's currently published virtual time.
+    pub current_time: SimInstant,
+    /// The effective clock used by the scheduler for lookahead and PICK.
+    pub effective_time: SimInstant,
+    /// The reason the effective clock has this value.
+    pub source: SchedulerEffectiveClockSource,
+}
+
+/// The source of a scheduler effective-clock projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerEffectiveClockSource {
+    /// The node's effective clock is its current virtual time.
+    Current,
+    /// An idle node's effective clock is its exact wake time.
+    IdleWake,
+}
+
 #[cfg(feature = "test-double")]
 impl SchedulerRunCeilingPublication {
     /// Converts this scheduler publication to the shared-memory ABI ceiling.
@@ -1857,6 +1879,23 @@ impl SingleScheduler {
         &self.ceiling_publications
     }
 
+    /// Returns per-node effective clocks in canonical scheduler-node order.
+    ///
+    /// Runnable, halted, and done nodes use their current virtual time. Idle nodes
+    /// with a finite exact wake project to that wake time, so they do not hold
+    /// back peers whose clocks are still behind the wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when projecting a node counter or reducing an
+    /// idle wake discovers inconsistent scheduler state.
+    pub fn effective_clocks(&self) -> Result<Vec<SchedulerEffectiveClock>, SchedulerError> {
+        self.nodes
+            .iter()
+            .map(|node| self.effective_clock_for_node(node))
+            .collect()
+    }
+
     /// Computes terminal quiescence from authoritative scheduler state only.
     ///
     /// The predicate is independent of host wall-clock time. A system is
@@ -2043,9 +2082,11 @@ impl SingleScheduler {
         node: &RuntimeSchedulerNode,
         rendezvous_cap: Option<SimInstant>,
     ) -> Result<EffectiveHorizonProjection, SchedulerError> {
-        let Some(mut wake_time) = self.idle_wake_time(node)? else {
+        let projection = self.effective_clock_for_node(node)?;
+        if projection.source != SchedulerEffectiveClockSource::IdleWake {
             return Ok(EffectiveHorizonProjection::Infinite);
-        };
+        }
+        let mut wake_time = projection.effective_time;
         wake_time = min_instant(wake_time, self.time_limit);
         if let Some(cap) = rendezvous_cap {
             wake_time = min_instant(wake_time, cap);
@@ -2055,6 +2096,31 @@ impl SingleScheduler {
             target_time: wake_time,
             quiescent_horizon: Some(wake_time),
             conservative_dependency: None,
+        })
+    }
+
+    fn effective_clock_for_node(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<SchedulerEffectiveClock, SchedulerError> {
+        let current_time = node.counter.to_virtual(self.timeline.shift())?;
+        let (effective_time, source) = match node.activity {
+            SchedulerNodeActivity::Idle => match self.idle_wake_time(node)? {
+                Some(wake_time) if wake_time > current_time => {
+                    (wake_time, SchedulerEffectiveClockSource::IdleWake)
+                }
+                _ => (current_time, SchedulerEffectiveClockSource::Current),
+            },
+            SchedulerNodeActivity::Runnable
+            | SchedulerNodeActivity::Halted
+            | SchedulerNodeActivity::Done => (current_time, SchedulerEffectiveClockSource::Current),
+        };
+
+        Ok(SchedulerEffectiveClock {
+            node: node.id.clone(),
+            current_time,
+            effective_time,
+            source,
         })
     }
 
