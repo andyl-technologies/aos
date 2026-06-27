@@ -326,6 +326,130 @@ pub enum SchedulingNodeKind {
     ControlPlane,
 }
 
+/// One unresolved cross-node dependency that can constrain conservative advance.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UnresolvedCrossNodeDependency {
+    /// The peer that produced the cross-node event.
+    pub producer: SchedulerNodeId,
+    /// The scheduler node that must consume the event.
+    pub consumer: SchedulerNodeId,
+    /// The exact virtual time at which the event becomes visible.
+    pub virtual_time: SimInstant,
+    /// The producer-local sequence number used for deterministic ordering.
+    pub sequence: u64,
+}
+
+impl UnresolvedCrossNodeDependency {
+    /// Extracts a cross-node dependency from a scheduled backend-input event.
+    #[must_use]
+    pub fn from_event(event: &ScheduledEvent) -> Option<Self> {
+        let producer = event.key.producer();
+        let consumer = event.key.consumer();
+        if producer == consumer || !matches!(event.payload, ScheduledEventPayload::BackendInput(_))
+        {
+            return None;
+        }
+
+        Some(Self {
+            producer: producer.clone(),
+            consumer: consumer.clone(),
+            virtual_time: SimInstant {
+                nanos: event.key.virtual_time().ticks,
+            },
+            sequence: event.key.sequence(),
+        })
+    }
+}
+
+/// The conservative-PDES authorization for one requested node advance.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ConservativeAdvanceAuthorization {
+    /// The node whose clock may advance.
+    pub node: SchedulerNodeId,
+    /// The node's current virtual time before the advance.
+    pub current_time: SimInstant,
+    /// The target requested by the horizon calculator.
+    pub requested_target: SimInstant,
+    /// The target authorized after applying unresolved cross-node dependencies.
+    pub authorized_target: SimInstant,
+    /// The dependency that capped the target, if any.
+    pub blocking_dependency: Option<UnresolvedCrossNodeDependency>,
+}
+
+/// Returns unresolved cross-node dependencies that target `node`.
+#[must_use]
+pub fn unresolved_cross_node_dependencies(
+    node: &SchedulerNodeId,
+    events: &[ScheduledEvent],
+) -> Vec<UnresolvedCrossNodeDependency> {
+    let mut dependencies = events
+        .iter()
+        .filter_map(UnresolvedCrossNodeDependency::from_event)
+        .filter(|dependency| &dependency.consumer == node)
+        .collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| {
+        left.virtual_time
+            .cmp(&right.virtual_time)
+            .then_with(|| left.consumer.cmp(&right.consumer))
+            .then_with(|| left.producer.cmp(&right.producer))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    });
+    dependencies
+}
+
+/// Authorizes one conservative-PDES node advance.
+///
+/// The returned target never crosses the earliest unresolved cross-node
+/// dependency for `node`. Rollback requests and already-due cross-node
+/// dependencies fail loudly instead of speculating.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when `requested_target` is
+/// before `current_time`, or when an unresolved cross-node dependency for `node`
+/// is already due at or before `current_time`.
+pub fn authorize_conservative_advance(
+    node: &SchedulerNodeId,
+    current_time: SimInstant,
+    requested_target: SimInstant,
+    pending_events: &[ScheduledEvent],
+) -> Result<ConservativeAdvanceAuthorization, SchedulerError> {
+    if requested_target < current_time {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "conservative PDES rejected rollback for {}:{:?}: current={} requested={}",
+                node.node.name, node.kind, current_time.nanos, requested_target.nanos
+            ),
+        });
+    }
+
+    let dependency = unresolved_cross_node_dependencies(node, pending_events)
+        .into_iter()
+        .next();
+    let (authorized_target, blocking_dependency) = match dependency {
+        Some(dependency) if dependency.virtual_time <= current_time => {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "conservative PDES rejected advance for {}:{:?}: unresolved cross-node dependency is due at {}",
+                    node.node.name, node.kind, dependency.virtual_time.nanos
+                ),
+            });
+        }
+        Some(dependency) if dependency.virtual_time <= requested_target => {
+            (dependency.virtual_time, Some(dependency))
+        }
+        _ => (requested_target, None),
+    };
+
+    Ok(ConservativeAdvanceAuthorization {
+        node: node.clone(),
+        current_time,
+        requested_target,
+        authorized_target,
+        blocking_dependency,
+    })
+}
+
 /// Conservative network lookahead for one scheduler node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NetworkLookahead {
@@ -615,6 +739,12 @@ impl ScheduledEventKey {
     #[must_use]
     pub fn consumer(&self) -> &SchedulerNodeId {
         &self.timeline.node
+    }
+
+    /// Returns the event producer.
+    #[must_use]
+    pub fn producer(&self) -> &SchedulerNodeId {
+        &self.producer
     }
 
     /// Returns the producer-local sequence number.
@@ -1098,6 +1228,7 @@ impl SingleScheduler {
                 .timeline_key(node.id.clone(), node.counter, index as u64)?,
             target_time: window.target_time,
             quiescent_horizon: window.quiescent_horizon,
+            conservative_dependency: window.conservative_dependency,
         }))
     }
 
@@ -1111,7 +1242,15 @@ impl SingleScheduler {
             node.exact_local_event,
             self.timeline.shift(),
         )?;
-        let mut target_time = min_instant(horizon.virtual_time, self.time_limit);
+        let requested_target = min_instant(horizon.virtual_time, self.time_limit);
+        let authorization = authorize_conservative_advance(
+            &node.id,
+            current_time,
+            requested_target,
+            &self.pending_events,
+        )?;
+        let mut target_time = authorization.authorized_target;
+        let conservative_dependency = authorization.blocking_dependency;
 
         for event in &self.pending_events {
             if event.key.consumer() == &node.id {
@@ -1127,6 +1266,7 @@ impl SingleScheduler {
         Ok(AdvanceWindow {
             target_time,
             quiescent_horizon: horizon.virtual_time,
+            conservative_dependency,
         })
     }
 
@@ -1417,12 +1557,14 @@ struct AdvanceCandidate {
     key: SharedTimelineKey,
     target_time: SimInstant,
     quiescent_horizon: SimInstant,
+    conservative_dependency: Option<UnresolvedCrossNodeDependency>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct AdvanceWindow {
     target_time: SimInstant,
     quiescent_horizon: SimInstant,
+    conservative_dependency: Option<UnresolvedCrossNodeDependency>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1460,6 +1602,23 @@ impl<'a> SchedulerCriticalSection<'a> {
             .target_time
             .to_icount_ceil(self.scheduler.timeline.shift())?
             .retired;
+        if let Some(dependency) = &candidate.conservative_dependency {
+            let projected_target = NodeCounter {
+                ticks: target_counter,
+            }
+            .to_virtual(self.scheduler.timeline.shift())?;
+            if projected_target > dependency.virtual_time {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "conservative PDES rejected icount ceiling overshoot for {}:{:?}: dependency_at={} projected_target={}",
+                        selected_node.node.name,
+                        selected_node.kind,
+                        dependency.virtual_time.nanos,
+                        projected_target.nanos
+                    ),
+                });
+            }
+        }
 
         Ok(AdvancePlan {
             index: selected_index,
