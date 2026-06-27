@@ -33,8 +33,9 @@ pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
 };
 pub use block_subnode::{
-    BLOCK_OVERLAY_PAGE_SIZE, BlockBaseImage, BlockDirtyPage, BlockOverlayDelta, BlockOverlayError,
-    BlockSubNodeOverlay,
+    BLOCK_OVERLAY_PAGE_SIZE, BlockBaseImage, BlockCompletionError, BlockCompletionPlan,
+    BlockCompletionRequest, BlockDirtyPage, BlockLatencyParameters, BlockOverlayDelta,
+    BlockOverlayError, BlockSubNodeOperation, BlockSubNodeOverlay, sort_block_completion_plans,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use io_subnode::{

@@ -495,6 +495,11 @@ in {
       attrPath = "checks.crucible.phase3.blockWireAbi";
       taskIds = ["T-IO-3"];
     };
+    blockCompletionModel = import ./phase3-block-completion-model.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.blockCompletionModel";
+      taskIds = ["T-IO-4"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

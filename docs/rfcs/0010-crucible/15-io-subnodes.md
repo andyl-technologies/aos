@@ -724,13 +724,13 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   The reusable `DeterministicIoSubNode` gate model rejects non-I/O scheduler
   nodes, invalid icount shifts, backward clock movement, forged snapshots, and
   deterministic queue overflow without dropping or reordering work; keeps the
-  response outbox sorted by delivery icount, requester, and sequence across
+  response outbox sorted by delivery icount, sub-node, and sequence across
   multiple advances; converts completions into scheduler `IoCompletion` payloads
   at exact delivery icounts; and has no host wall-clock, scheduling,
   filesystem-order, or inode input in its completion calculation.
   Summary: no host wall-clock, scheduling, filesystem-order, or inode input can
   affect completion icounts, payload bytes, or ordering.
-  Summary: response outbox sorted by delivery icount, requester, and sequence
+  Summary: response outbox sorted by delivery icount, sub-node, and sequence
   after every advance.
 - [x] **T-IO-2** Implement the block sub-node base+overlay: read-only
   content-addressed base image, in-memory 4 KiB CoW page overlay, page-wise read
@@ -768,10 +768,17 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   visibility by `delivery_icount <= consumer.current_icount`.
   Summary: block request/response frames use the versioned ABI exclusively over
   `SLOT_BLK_IO` shared-memory rings; no separate per-request IPC channel is used.
-- [ ] **T-IO-4** Implement the block deterministic completion model
+- [x] **T-IO-4** Implement the block deterministic completion model
   (`completion_vt = vt(request_icount) + latency(op, count, params)`, no host
   timing) and total-order delivery of coincident responses. — satisfies [IO-10],
   [IO-22]; spec §15.2.3.
+  Completed by `checks.crucible.phase3.blockCompletionModel`.
+  `BlockLatencyParameters` computes modeled latency as a deterministic function of operation, byte count, and configured latency parameters; no host measured I/O time or wall-clock input participates. `BlockCompletionRequest::plan`
+  implements `completion_vt = vt(request_icount) + latency(op, count, params)`
+  with the fixed `Shift` and [TIME-4] ceil map to produce `delivery_icount`, then
+  bridges the planned completion into the uniform `IoSubNodeRequest` path.
+  Coincident block responses are sorted in `(delivery_icount, src_node, seq)` order, and overflow, invalid shifts, non-disk producers, and non-VM requesters
+  fail loudly before a completion can be enqueued.
 - [ ] **T-IO-5** Implement block snapshot/restore as a CoW overlay delta over the
   parent plus device RNG position plus in-flight responses (never the base
   image), and the materialize-to-image hand-off for real-time QEMU. — satisfies

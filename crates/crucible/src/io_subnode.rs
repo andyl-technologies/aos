@@ -16,12 +16,16 @@ use std::{collections::VecDeque, error::Error, fmt};
 pub struct IoSubNodeRequest {
     /// Device-local request sequence from the shared-memory ingress ring.
     pub sequence: u64,
+    /// Optional planned producer sub-node that must receive this request.
+    pub expected_sub_node: Option<SchedulerNodeId>,
     /// Scheduler node that will observe the response.
     pub requester: SchedulerNodeId,
     /// Requester's icount when the request became modeled input.
     pub request_icount: Icount,
     /// Modeled device latency added to `request_icount` in virtual time.
     pub modeled_latency: SimDuration,
+    /// Optional planned delivery icount that must match the local completion calculation.
+    pub expected_delivery_icount: Option<Icount>,
     /// Optional already-recorded per-device RNG draw used by probabilistic devices.
     pub rng_draw: Option<u64>,
     /// Opaque request payload copied from the shared-memory request frame.
@@ -187,6 +191,14 @@ impl DeterministicIoSubNode {
         &self,
         request: IoSubNodeRequest,
     ) -> Result<IoSubNodeCompletion, IoSubNodeError> {
+        if let Some(expected_sub_node) = &request.expected_sub_node
+            && expected_sub_node != &self.node
+        {
+            return Err(IoSubNodeError::ExpectedSubNodeMismatch {
+                expected: expected_sub_node.clone(),
+                actual: self.node.clone(),
+            });
+        }
         if request.requester.kind != SchedulingNodeKind::Vm {
             return Err(IoSubNodeError::InvalidRequesterKind {
                 kind: request.requester.kind,
@@ -201,6 +213,14 @@ impl DeterministicIoSubNode {
             return Err(IoSubNodeError::CompletionBeforeClock {
                 current_icount: self.current_icount,
                 delivery_icount,
+            });
+        }
+        if let Some(expected_delivery_icount) = request.expected_delivery_icount
+            && expected_delivery_icount != delivery_icount
+        {
+            return Err(IoSubNodeError::ExpectedDeliveryMismatch {
+                expected: expected_delivery_icount,
+                actual: delivery_icount,
             });
         }
 
@@ -341,6 +361,20 @@ pub enum IoSubNodeError {
         /// Invalid requester kind.
         kind: SchedulingNodeKind,
     },
+    /// A planned request was sent to the wrong I/O sub-node.
+    ExpectedSubNodeMismatch {
+        /// Planned producer sub-node.
+        expected: SchedulerNodeId,
+        /// Actual producer sub-node.
+        actual: SchedulerNodeId,
+    },
+    /// A planned delivery icount did not match the sub-node's local calculation.
+    ExpectedDeliveryMismatch {
+        /// Planned delivery icount.
+        expected: Icount,
+        /// Locally computed delivery icount.
+        actual: Icount,
+    },
     /// A queue capacity was zero.
     ZeroCapacity {
         /// Queue whose capacity was invalid.
@@ -402,6 +436,16 @@ impl fmt::Display for IoSubNodeError {
             Self::InvalidRequesterKind { kind } => {
                 write!(formatter, "I/O requester kind {kind:?} is not a VM node")
             }
+            Self::ExpectedSubNodeMismatch { expected, actual } => write!(
+                formatter,
+                "I/O request expected sub-node {}:{:?} but reached {}:{:?}",
+                expected.node.name, expected.kind, actual.node.name, actual.kind
+            ),
+            Self::ExpectedDeliveryMismatch { expected, actual } => write!(
+                formatter,
+                "I/O request expected delivery icount {} but computed {}",
+                expected.retired, actual.retired
+            ),
             Self::ZeroCapacity { queue } => {
                 write!(formatter, "I/O sub-node {queue:?} capacity must be nonzero")
             }
@@ -456,6 +500,8 @@ impl Error for IoSubNodeError {
             Self::TimeConversion(source) => Some(source),
             Self::InvalidNodeKind { .. }
             | Self::InvalidRequesterKind { .. }
+            | Self::ExpectedSubNodeMismatch { .. }
+            | Self::ExpectedDeliveryMismatch { .. }
             | Self::ZeroCapacity { .. }
             | Self::Backpressure { .. }
             | Self::ClockRewind { .. }
@@ -618,8 +664,9 @@ fn completion_delivery_icount(
 fn completion_order(left: &IoSubNodeCompletion, right: &IoSubNodeCompletion) -> std::cmp::Ordering {
     left.delivery_icount
         .cmp(&right.delivery_icount)
-        .then_with(|| left.requester.cmp(&right.requester))
+        .then_with(|| left.sub_node.cmp(&right.sub_node))
         .then_with(|| left.sequence.cmp(&right.sequence))
+        .then_with(|| left.requester.cmp(&right.requester))
 }
 
 fn deterministic_response_payload(request_payload: &[u8], rng_draw: Option<u64>) -> Vec<u8> {
