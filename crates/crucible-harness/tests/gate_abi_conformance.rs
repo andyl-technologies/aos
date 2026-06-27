@@ -27,6 +27,7 @@ fn gate_abi_conformance_is_implemented_in_catalog_and_targets() {
             ("crucible-protocol", "gate_abi_conformance", false),
             ("crucible-api", "gate_abi_conformance", false),
             ("crucible-qemu-plugin", "gate_abi_conformance", false),
+            ("crucible", "ninep_wire_abi", false),
         ],
     );
 }

@@ -194,6 +194,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-qemu-plugin",
                 "gate_abi_conformance"
             ),
+            ("gate:abi-conformance", "crucible", "ninep_wire_abi"),
             ("gate:replay-oracle", "crucible", "gate_replay_oracle"),
             ("gate:content-address", "crucible", "gate_content_address"),
             (

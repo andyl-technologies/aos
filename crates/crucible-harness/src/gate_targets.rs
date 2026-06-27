@@ -135,6 +135,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible",
+        test_target: "ninep_wire_abi",
+        required_features: &["test-double"],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:replay-oracle",
         package: "crucible",
         test_target: "gate_replay_oracle",

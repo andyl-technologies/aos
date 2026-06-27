@@ -48,3 +48,8 @@ required-features = ["test-double"]
 name = "gate_scheduler_liveness"
 path = "tests/gate_scheduler_liveness.rs"
 required-features = ["test-double"]
+
+[[test]]
+name = "ninep_wire_abi"
+path = "tests/ninep_wire_abi.rs"
+required-features = ["test-double"]

@@ -811,9 +811,12 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Completed by `checks.crucible.phase3.ninePSessionLifecycle`.
   `NinePSession` handles the high-level Tversion/Tattach/Twalk/Tlopen/Tread/Treaddir/Tgetattr/Treadlink/Tclunk/Tstatfs/Tflush/Txattrwalk request set over `NinePServedTree`, derives modeled request sizes including minimum 9P2000.L fixed fields before the negotiated `msize` guard, rejects undersized negotiated/restored msize values, enforces negotiated `msize` before mutating fid state, clamps `Tread` payloads and `Treaddir` byte-budgeted entries to the negotiated message budget, rejects every `NinePMutatingMessage` with `NINEP_EROFS`, maps unknown requests to `NINEP_ENOSYS`, and maps malformed request bodies to `NINEP_EINVAL` or `NINEP_EIO`.
   `Tversion` deterministically resets the fid table. The fid table stores fid-to-path bindings plus open kind, keeps xattr fids as distinct empty file-like targets, caches sorted directory entries on `Tlopen`, and `NinePSessionSnapshot` persists negotiated msize plus fid snapshots while restore reconstructs file handles and directory caches from the read-only tree.
-- [ ] **T-IO-8** Add 9p wire-format golden vectors and a fuzzer (arbitrary bytes
+- [x] **T-IO-8** Add 9p wire-format golden vectors and a fuzzer (arbitrary bytes
   in: never panic, never OOB, always well-formed response or 9p error) feeding
   `gate:abi-conformance`. — satisfies [IO-18]; spec §15.3.2; forward-ref 24.
+  Completed by `checks.crucible.phase3.ninePWireAbi` and wired into canonical `gate:abi-conformance` through `checks.crucible.phase2.gates.abiConformance`.
+  `NinePSession::handle_wire_request` decodes raw 9P2000.L headers and bodies, rejects size mismatches or messages larger than the negotiated msize before dispatch, maps unknown message types to `Rlerror(ENOSYS)`, maps malformed supported messages to `Rlerror(EINVAL)`, and serializes every high-level response back into a well-formed 9p message.
+  The focused ABI test carries exact 9P2000.L wire golden vectors for version negotiation, unknown/mutating/malformed errors, and read data, plus deterministic arbitrary-byte fuzz coverage that catches panics and checks every output frame's declared size.
 - [ ] **T-IO-9** Implement the network-link sub-node model: base latency sets
   delivery icount; latency/jitter/reorder/bandwidth shift it; loss drops;
   duplicate emits a second frame; corrupt flips seeded payload bits — all over

@@ -515,6 +515,11 @@ in {
       attrPath = "checks.crucible.phase3.ninePSessionLifecycle";
       taskIds = ["T-IO-7"];
     };
+    ninePWireAbi = import ./phase3-ninep-wire-abi.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.ninePWireAbi";
+      taskIds = ["T-IO-8"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
