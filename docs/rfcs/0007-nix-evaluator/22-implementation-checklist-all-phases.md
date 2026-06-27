@@ -1193,6 +1193,18 @@ alone (`M-1`/`Q-A`).
       mmap-backed indexed hits, out-of-core rematerialization, cross-process
       writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
+- [x] Current lease-shaped mmap blob-pack API:
+      `blob_pack::BlobPackReadLease` is an unsafe-to-implement trait whose
+      `covers_file` contract states that a file is immutable for the borrowed
+      lease lifetime, and `MappedBlobPack::map_file_with_lease` returns
+      `LeasedMappedBlobPack<'lease>` so mapped payload borrows cannot outlive
+      that lease. Tests cover accepted leases and rejected non-covering leases.
+      This is a type-boundary substrate only; production cache-root lease
+      implementation, same-root lock migration into `ratchet-cache`,
+      cross-process/durable filesystem leases, `ratchet-oracle` integration,
+      automatic mmap-backed indexed hits, append-writer migration, LMDB/redb
+      offset indexes, out-of-core rematerialization, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current oracle-writer/mapped-reader compatibility canary:
       `aos-nix-harness` has an integration test that writes blob-pack records
       through the existing safe `ratchet-oracle::cache::PersistBlobPack`

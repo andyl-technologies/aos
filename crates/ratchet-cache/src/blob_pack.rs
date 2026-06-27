@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::fs;
+use std::marker::PhantomData;
 use std::ops::Range;
 
 use thiserror::Error;
@@ -202,6 +203,69 @@ pub struct MappedBlobPack {
     map: ReadOnlyMmap,
 }
 
+/// A lease that permits safe construction of a mapped blob pack.
+///
+/// The trait is unsafe to implement because [`MappedBlobPack::map_file_with_lease`]
+/// relies on implementors to uphold the same immutability invariant as
+/// [`MappedBlobPack::map_file`] without forcing callers of the leased API to use
+/// an unsafe block.
+///
+/// # Safety
+///
+/// When [`Self::covers_file`] returns `true`, the implementor must guarantee
+/// that the supplied file's bytes are not mutated for the entire lifetime of
+/// the borrowed lease. This includes appends, truncation, replacement, and
+/// writes through other file descriptors or processes. Returning `true` for a
+/// file that can be mutated while a mapped payload slice is alive violates the
+/// contract.
+pub unsafe trait BlobPackReadLease {
+    /// Returns whether this lease covers `file`.
+    fn covers_file(&self, file: &fs::File) -> bool;
+}
+
+/// A memory-mapped blob pack whose lifetime is tied to a read lease.
+#[derive(Debug)]
+pub struct LeasedMappedBlobPack<'lease> {
+    pack: MappedBlobPack,
+    _lease: PhantomData<&'lease ()>,
+}
+
+impl<'lease> LeasedMappedBlobPack<'lease> {
+    /// Returns the mapped packfile length.
+    pub const fn len(&self) -> usize {
+        self.pack.len()
+    }
+
+    /// Returns whether the mapped packfile is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.pack.is_empty()
+    }
+
+    /// Reads, validates, and returns a zero-copy payload view.
+    ///
+    /// The returned payload is borrowed from this leased mapping and cannot
+    /// outlive it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if the record offset is invalid, record
+    /// metadata does not match the expected lookup, the payload window falls
+    /// outside the mapping, or the payload bytes do not hash to
+    /// `expected_hash`.
+    pub fn payload(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<MappedBlobPayload<'_>, MappedBlobPackError> {
+        self.pack.payload(location, expected_hash)
+    }
+
+    /// Returns the underlying mapped pack.
+    pub fn as_mapped_pack(&self) -> &MappedBlobPack {
+        &self.pack
+    }
+}
+
 impl MappedBlobPack {
     /// Maps `file` and validates its blob packfile header.
     ///
@@ -226,6 +290,40 @@ impl MappedBlobPack {
         }
         .map_err(MappedBlobPackError::Map)?;
         Self::from_mmap(map)
+    }
+
+    /// Maps `file` after validating that `lease` covers it.
+    ///
+    /// The returned mapping is lifetime-bound to `lease`, so borrowed payload
+    /// slices cannot outlive the lease value that upholds the file immutability
+    /// contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if `lease` does not cover `file`, the
+    /// file cannot be memory-mapped, or its packfile header is malformed.
+    pub fn map_file_with_lease<'lease, L>(
+        file: &fs::File,
+        lease: &'lease L,
+    ) -> Result<LeasedMappedBlobPack<'lease>, MappedBlobPackError>
+    where
+        L: BlobPackReadLease + ?Sized,
+    {
+        if !lease.covers_file(file) {
+            return Err(MappedBlobPackError::LeaseRejected);
+        }
+        let pack = unsafe {
+            // SAFETY: `BlobPackReadLease` is unsafe to implement, and
+            // `covers_file` returning true promises that `file` remains
+            // immutable for the borrowed lease lifetime. The returned wrapper
+            // carries that lease lifetime, so mapped payload borrows cannot
+            // outlive the lease.
+            Self::map_file(file)
+        }?;
+        Ok(LeasedMappedBlobPack {
+            pack,
+            _lease: PhantomData,
+        })
     }
 
     /// Creates a mapped blob pack from an existing read-only mapping.
@@ -458,6 +556,9 @@ pub enum MappedBlobPackError {
     /// Blob pack bytes have an invalid format.
     #[error(transparent)]
     Format(#[from] BlobPackFormatError),
+    /// The supplied lease does not cover the file being mapped.
+    #[error("blob pack read lease does not cover the mapped file")]
+    LeaseRejected,
     /// The record offset points into the pack header.
     #[error("invalid blob record offset {record_offset}")]
     InvalidRecordOffset {
@@ -540,6 +641,26 @@ mod tests {
         0x9a, 0x93, 0xca, 0xe4, 0x1f, 0x32, 0x62, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
 
+    struct FrozenTestLease;
+
+    // SAFETY: Tests only use this lease after writing a temporary pack fully
+    // and perform no mutation until after the leased mapping is dropped.
+    unsafe impl BlobPackReadLease for FrozenTestLease {
+        fn covers_file(&self, _file: &fs::File) -> bool {
+            true
+        }
+    }
+
+    struct RejectingTestLease;
+
+    // SAFETY: This lease never covers any file, so it never asserts an
+    // immutability guarantee.
+    unsafe impl BlobPackReadLease for RejectingTestLease {
+        fn covers_file(&self, _file: &fs::File) -> bool {
+            false
+        }
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -601,6 +722,40 @@ mod tests {
         assert_eq!(payload.as_bytes(), b"");
 
         drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn mapped_blob_pack_with_read_lease_returns_payload_slices() {
+        let path = temp_path("leased-payloads");
+        let payload = b"leased payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let file = fs::File::open(&path).expect("pack opens read-only");
+        let lease = FrozenTestLease;
+        let pack =
+            MappedBlobPack::map_file_with_lease(&file, &lease).expect("lease maps blob pack");
+        let mapped_payload = pack
+            .payload(locations[0], BlobPackHash::for_bytes(payload))
+            .expect("leased payload reads");
+
+        assert_eq!(pack.len(), pack.as_mapped_pack().len());
+        assert_eq!(mapped_payload.as_bytes(), payload);
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn mapped_blob_pack_with_read_lease_rejects_uncovered_files() {
+        let path = temp_path("rejected-lease");
+        write_pack(&path, &[b"payload"]);
+        let file = fs::File::open(&path).expect("pack opens read-only");
+        let lease = RejectingTestLease;
+
+        let error = MappedBlobPack::map_file_with_lease(&file, &lease)
+            .expect_err("uncovered file is rejected");
+
+        assert!(matches!(error, MappedBlobPackError::LeaseRejected));
         let _ = fs::remove_file(path);
     }
 
