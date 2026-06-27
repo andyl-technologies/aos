@@ -797,6 +797,42 @@ impl PersistFileBlobReachabilityPlan {
     }
 }
 
+/// Applied repack plans for both persistent blob packs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistBlobPacksRepack {
+    value_blob_pack: PersistBlobPackRepackPlan,
+    file_blob_pack: PersistBlobPackRepackPlan,
+}
+
+impl PersistBlobPacksRepack {
+    fn new(
+        value_blob_pack: PersistBlobPackRepackPlan,
+        file_blob_pack: PersistBlobPackRepackPlan,
+    ) -> Self {
+        Self {
+            value_blob_pack,
+            file_blob_pack,
+        }
+    }
+
+    /// Returns the applied `values/` blob-pack repack plan.
+    pub const fn value_blob_pack(&self) -> &PersistBlobPackRepackPlan {
+        &self.value_blob_pack
+    }
+
+    /// Returns the applied `files/` blob-pack repack plan.
+    pub const fn file_blob_pack(&self) -> &PersistBlobPackRepackPlan {
+        &self.file_blob_pack
+    }
+
+    /// Returns total bytes reclaimed from both blob packs.
+    pub fn reclaimed_blob_bytes(&self) -> u64 {
+        self.value_blob_pack
+            .reclaimable_bytes()
+            .saturating_add(self.file_blob_pack.reclaimable_bytes())
+    }
+}
+
 /// Results from an explicit persistent storage maintenance sweep.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistStorageMaintenance {
@@ -3428,6 +3464,30 @@ impl PersistCache {
             rewrite_id,
         )?;
         Ok(plan)
+    }
+
+    /// Rewrites both persistent blob packs to their current live roots.
+    ///
+    /// This caller-driven maintenance helper runs
+    /// [`Self::repack_value_blob_pack`] and then [`Self::repack_file_blob_pack`].
+    /// It is sequential and non-transactional: if the file-pack repack fails,
+    /// the value-pack repack may already be committed. The method does not
+    /// compact unrelated sidecars, rebuild blob indexes from physical pack
+    /// scans before planning, coordinate with cross-process writers or raw
+    /// lower-level users, or apply the future full GC retention policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPacksRepackError`] identifying the pack whose
+    /// repack failed. Earlier pack rewrites may already be committed.
+    pub fn repack_blob_packs(&self) -> Result<PersistBlobPacksRepack, PersistBlobPacksRepackError> {
+        let value_blob_pack = self
+            .repack_value_blob_pack()
+            .map_err(|source| PersistBlobPacksRepackError::ValueBlobPack { source })?;
+        let file_blob_pack = self
+            .repack_file_blob_pack()
+            .map_err(|source| PersistBlobPacksRepackError::FileBlobPack { source })?;
+        Ok(PersistBlobPacksRepack::new(value_blob_pack, file_blob_pack))
     }
 
     /// Returns verified pack records as typed blob-index entries for `store`.

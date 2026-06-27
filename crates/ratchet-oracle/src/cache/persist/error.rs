@@ -1085,6 +1085,23 @@ pub enum PersistBlobIndexesRebuildError {
     },
 }
 
+/// Repacking all persistent blob-pack sidecars failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobPacksRepackError {
+    /// The `values/` blob pack could not be repacked.
+    #[error("failed to repack persistent value blob pack")]
+    ValueBlobPack {
+        /// The underlying value-pack repack error.
+        source: PersistValueBlobPackRepackError,
+    },
+    /// The `files/` blob pack could not be repacked.
+    #[error("failed to repack persistent file blob pack")]
+    FileBlobPack {
+        /// The underlying file-pack repack error.
+        source: PersistFileBlobPackRepackError,
+    },
+}
+
 /// Persistent storage maintenance failed.
 #[derive(Debug, Error)]
 pub enum PersistStorageMaintenanceError {
