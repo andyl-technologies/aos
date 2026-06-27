@@ -1613,6 +1613,7 @@ dependencies = [
 name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
+ "crucible",
  "crucible-protocol",
  "crucible-shmem",
  "libc",

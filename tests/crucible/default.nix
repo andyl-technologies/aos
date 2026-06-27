@@ -83,6 +83,7 @@ in {
     guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
     guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
+    hostObservableSchedule = import ./phase1-host-observable-schedule.nix {inherit pkgs lib;};
     icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
@@ -157,6 +158,11 @@ in {
       harnessLint = import ./phase1-harness-lint.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.harnessLint";
+      };
+      hostObservableSchedule = import ./phase1-host-observable-schedule.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
+        taskIds = ["T-HARN-4"];
       };
       layer0Determinism = import ./phase1-layer0-determinism.nix {
         inherit pkgs lib;

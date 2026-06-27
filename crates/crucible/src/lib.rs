@@ -69,8 +69,8 @@ pub use scheduler::{
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
     SimBackend, SimBackendState, SimDeliveredFrame, SimDouble, SimDoubleConfig,
-    SimDoubleControlEvent, SimDoubleError, SimInstructionScript, SimInstructionStep,
-    SimOutboundFrame,
+    SimDoubleControlEvent, SimDoubleError, SimDoubleHostScheduleEvent, SimInstructionScript,
+    SimInstructionStep, SimOutboundFrame,
 };
 
 #[cfg(test)]

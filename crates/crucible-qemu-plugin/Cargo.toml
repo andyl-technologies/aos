@@ -15,3 +15,7 @@ crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.
+crucible = { path = "../crucible", features = ["test-double"] }

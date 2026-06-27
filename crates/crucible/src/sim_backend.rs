@@ -330,6 +330,69 @@ pub struct SimDeliveredFrame {
     pub payload: Vec<u8>,
 }
 
+/// A canonical host-side ordering event observed while driving [`SimDouble`].
+///
+/// The event vocabulary deliberately excludes the synthetic guest fingerprint
+/// and other double-only state. It records only ordering visible to the host
+/// scheduler or shared-memory transport so tests can compare it with the real
+/// plugin path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SimDoubleHostScheduleEvent {
+    /// The host-authorized quantum advanced or paused at an earlier delivery.
+    HorizonAdvance {
+        /// Icount before the advance request.
+        from_icount: u64,
+        /// Icount requested by the host for this quantum.
+        requested_icount: u64,
+        /// Icount reached by the backend before returning control.
+        reached_icount: u64,
+        /// Backend result reported to the host.
+        outcome: AdvanceOutcome,
+    },
+    /// An inbound frame became visible to the guest through a shared SPSC ring.
+    FrameDelivery {
+        /// Source physical slot.
+        src_slot: u32,
+        /// Producer sequence number.
+        sequence: u32,
+        /// Consumer icount at which the frame became visible.
+        delivery_icount: u64,
+        /// Delivered payload bytes.
+        payload: Vec<u8>,
+    },
+    /// A guest-emitted frame was posted to an outbound shared SPSC ring.
+    FrameEmission {
+        /// Physical destination slot.
+        dst_slot: u32,
+        /// Producer sequence number stamped on the outbound frame.
+        sequence: u32,
+        /// Consumer icount at which the frame is deliverable.
+        delivery_icount: u64,
+        /// Emitted payload bytes.
+        payload: Vec<u8>,
+    },
+    /// A deterministic device callback completed host-side I/O.
+    IoCompletion {
+        /// Stable device or executor label.
+        device: String,
+        /// Completion sequence within the device stream.
+        sequence: u64,
+        /// Icount at which the completion became host-observable.
+        completion_icount: u64,
+        /// Completion payload or status bytes.
+        payload: Vec<u8>,
+    },
+    /// A host-visible snapshot was captured.
+    Snapshot {
+        /// Content-addressed checkpoint identifier.
+        checkpoint_id: ContentHash,
+        /// Execution fingerprint recorded in the checkpoint.
+        fingerprint: ContentHash,
+        /// Captured checkpoint representation.
+        kind: CheckpointKind,
+    },
+}
+
 /// An in-process QEMU plugin-side test double.
 ///
 /// `SimDouble` is the Phase-1 stand-in for one real QEMU plugin endpoint. It
@@ -346,6 +409,7 @@ pub struct SimDouble {
     next_inbound_sequence_by_source: BTreeMap<u32, u32>,
     delivered_frames: Vec<SimDeliveredFrame>,
     control_events: Vec<SimDoubleControlEvent>,
+    host_observable_schedule: Vec<SimDoubleHostScheduleEvent>,
 }
 
 impl SimDouble {
@@ -381,6 +445,7 @@ impl SimDouble {
             next_inbound_sequence_by_source: BTreeMap::new(),
             delivered_frames: Vec::new(),
             control_events: Vec::new(),
+            host_observable_schedule: Vec::new(),
         })
     }
 
@@ -412,6 +477,12 @@ impl SimDouble {
     #[must_use]
     pub fn delivered_frames(&self) -> &[SimDeliveredFrame] {
         &self.delivered_frames
+    }
+
+    /// Returns the canonical host-observable schedule recorded by the double.
+    #[must_use]
+    pub fn host_observable_schedule(&self) -> &[SimDoubleHostScheduleEvent] {
+        &self.host_observable_schedule
     }
 
     /// Encodes the plugin-side `Hello` frame with the real protocol codec.
@@ -572,6 +643,22 @@ impl SimDouble {
                 retired: target_icount,
             },
         })?;
+        let outcome = if target_icount == horizon.icount.retired {
+            AdvanceOutcome::ReachedHorizon
+        } else {
+            AdvanceOutcome::Paused {
+                at: Icount {
+                    retired: target_icount,
+                },
+            }
+        };
+        self.host_observable_schedule
+            .push(SimDoubleHostScheduleEvent::HorizonAdvance {
+                from_icount: current_icount,
+                requested_icount: horizon.icount.retired,
+                reached_icount: target_icount,
+                outcome,
+            });
         self.drain_deliverable_inbound_frames(target_icount)?;
         let reached_script_target = target_icount == script_target_icount;
         if reached_script_target {
@@ -580,15 +667,7 @@ impl SimDouble {
                 self.enqueue_outbound_frame(outbound)?;
             }
         }
-        if target_icount == horizon.icount.retired {
-            Ok(AdvanceOutcome::ReachedHorizon)
-        } else {
-            Ok(AdvanceOutcome::Paused {
-                at: Icount {
-                    retired: target_icount,
-                },
-            })
-        }
+        Ok(outcome)
     }
 
     /// Computes the deterministic synthetic execution fingerprint.
@@ -714,6 +793,13 @@ impl SimDouble {
                 },
                 payload,
             })?;
+            self.host_observable_schedule
+                .push(SimDoubleHostScheduleEvent::FrameDelivery {
+                    src_slot: delivered.src_slot,
+                    sequence: delivered.sequence,
+                    delivery_icount: delivered.delivery_icount,
+                    payload: delivered.payload.clone(),
+                });
             self.delivered_frames.push(delivered);
         }
         Ok(())
@@ -741,15 +827,26 @@ impl SimDouble {
 
     fn enqueue_outbound_frame(&mut self, outbound: SimOutboundFrame) -> Result<(), SimDoubleError> {
         let sequence = self.next_outbound_sequence;
-        self.next_outbound_sequence = self.next_outbound_sequence.wrapping_add(1);
-        let frame = FrameEntry::new(
-            outbound.delivery_icount,
-            self.slot_index,
-            sequence,
-            &outbound.payload,
-        )?;
+        let next_sequence = sequence
+            .checked_add(1)
+            .ok_or(SimDoubleError::OutboundSequenceOverflow { sequence })?;
+        let SimOutboundFrame {
+            dst_slot,
+            delivery_icount,
+            payload,
+        } = outbound;
+        let frame = FrameEntry::new(delivery_icount, self.slot_index, sequence, &payload)?;
         self.shmem
-            .enqueue_directed_frame(self.slot_index, outbound.dst_slot, &frame)
+            .enqueue_directed_frame(self.slot_index, dst_slot, &frame)?;
+        self.next_outbound_sequence = next_sequence;
+        self.host_observable_schedule
+            .push(SimDoubleHostScheduleEvent::FrameEmission {
+                dst_slot,
+                sequence,
+                delivery_icount,
+                payload,
+            });
+        Ok(())
     }
 }
 
@@ -835,6 +932,12 @@ pub enum SimDoubleError {
         /// Underlying node-slot error.
         #[from]
         source: NodeSlotError,
+    },
+    /// The outbound frame stream exhausted its real plugin sequence range.
+    #[error("sim double outbound sequence overflow at {sequence}")]
+    OutboundSequenceOverflow {
+        /// The sequence value that could not be advanced.
+        sequence: u32,
     },
     /// The lookahead ceiling rejected an advance.
     #[error("sim double advance ceiling rejected the requested horizon")]
@@ -1310,6 +1413,40 @@ mod tests {
         assert_eq!(
             payloads,
             vec![b"ninep".as_slice(), b"blk".as_slice(), b"net".as_slice()]
+        );
+    }
+
+    #[test]
+    fn sim_double_rejects_outbound_sequence_overflow_like_real_plugin_tx() {
+        let mut double = match SimDouble::new(SimDoubleConfig {
+            script: SimInstructionScript::new(vec![SimInstructionStep {
+                instruction_budget: 1,
+                outbound_frames: vec![SimOutboundFrame {
+                    dst_slot: crucible_shmem::SLOT_NET_ROUTER as u32,
+                    delivery_icount: 1,
+                    payload: b"overflow".to_vec(),
+                }],
+            }]),
+            ..SimDoubleConfig::default()
+        }) {
+            Ok(double) => double,
+            Err(error) => panic!("sim double should construct: {error}"),
+        };
+        complete_sim_double_setup(&mut double);
+        double.next_outbound_sequence = u32::MAX;
+
+        assert_eq!(
+            double.advance_scripted_quantum(ExecutionHorizon {
+                icount: Icount { retired: 1 },
+            }),
+            Err(SimDoubleError::OutboundSequenceOverflow { sequence: u32::MAX })
+        );
+        assert_eq!(double.next_outbound_sequence, u32::MAX);
+        assert!(
+            !double
+                .host_observable_schedule()
+                .iter()
+                .any(|event| matches!(event, SimDoubleHostScheduleEvent::FrameEmission { .. }))
         );
     }
 

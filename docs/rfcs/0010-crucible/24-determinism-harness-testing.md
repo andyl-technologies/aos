@@ -880,8 +880,17 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     src_node, seq)` key, advances by a deterministic instruction-budget script,
     and hashes a synthetic register/memory fingerprint with no wall-clock,
     thread RNG, or unordered map dependency.
-- [ ] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
+- [x] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
+  - Completed by `checks.crucible.phase1.hostObservableSchedule` and the
+    `host_observable_schedule_cross_checks_sim_double_against_real_plugin_path`
+    unit test: `crucible::SimDouble` now records a typed host-observable
+    schedule vocabulary for horizon advances, inbound SPSC frame deliveries,
+    outbound SPSC frame emissions, I/O completions, and snapshots; the QEMU
+    plugin test constructs the matching real-plugin projection through
+    `PluginIdleHotLoop`, `PluginVirtualClock`, `PluginNetworkRx`, and
+    `PluginNetworkTx` before asserting byte-for-byte schedule equality, with the
+    plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
