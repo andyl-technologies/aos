@@ -307,6 +307,14 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
+            "/-/caches",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                    send_bridge(handlers::caches(from_state(s), h, r))
+                },
+            ),
+        )
+        .route(
             "/-/org/{org}",
             get(
                 |State(s): State<SharedState>,
@@ -506,6 +514,32 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                 },
             ),
         )
+        // Cache settings tabs (each renders the cache chrome with its section
+        // active): Linked registries, GC & pins, and Danger.
+        .route(
+            "/-/org/{org}/caches/{slug}/links",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_links(from_state(s), h, r, p))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/pins",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_pins(from_state(s), h, r, p))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/danger",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_danger(from_state(s), h, r, p))
+                },
+            ),
+        )
         .route(
             "/-/org/{org}/caches/{slug}/link",
             post(
@@ -530,12 +564,25 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/caches/{slug}/storage",
-            post(
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_storage_tab(from_state(s), h, r, p))
+                },
+            )
+            .post(
                 |State(s): State<SharedState>,
                  h: HeaderMap,
                  p: Path<_>,
                  f: axum::extract::Form<_>| {
                     send_bridge(handlers::cache_change_storage(from_state(s), h, p, f))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/serving",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_serving_tab(from_state(s), h, r, p))
                 },
             ),
         )

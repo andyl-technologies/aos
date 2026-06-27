@@ -149,7 +149,7 @@ fn two_release_surface(surface: &Path) -> common::Fixture {
     // and tags it as 1.0.0; reconstruct those oids the same way it did.
     let registry_toml = fixture.put_blob(
         "[registry]\nname = \"demo\"\ndescription = \"Fixture registry\"\n\n\
-         [[caches]]\nurl = \"https://cache.example.com/\"\npriority = 40\n",
+         [caches]\nendpoint = \"https://cache.example.com/\"\n",
     );
     let keys_toml = fixture.put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{}\"\n",
@@ -282,10 +282,8 @@ async fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
     assert_eq!(key_id, "acme-release");
     assert_eq!(public, line);
     // The unsealed key's public line round-trips to the stored anchor.
-    let derived = aos_hub::surface::sshsig::trusted_key_line(
-        "acme-release",
-        &signing.verifying_key(),
-    );
+    let derived =
+        aos_hub::surface::sshsig::trusted_key_line("acme-release", &signing.verifying_key());
     assert_eq!(derived, line);
 
     // A duplicate key id in the same org is rejected.
@@ -459,7 +457,10 @@ async fn deferred_reindex_still_refuses_rollback() {
     .await
     .unwrap();
     assert_eq!(
-        db.channel_floor(registry.id, "stable").await.unwrap().as_deref(),
+        db.channel_floor(registry.id, "stable")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("1.1.0"),
         "the advance must raise the floor synchronously, without a re-index"
     );

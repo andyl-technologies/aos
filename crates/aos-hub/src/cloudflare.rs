@@ -228,7 +228,10 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // can show where unbound registries/caches push (the R2 binding itself is
     // opaque to the Worker runtime).
     if !cfg.bucket.is_empty() {
-        vars.push_str(&format!("HUB_DEFAULT_BUCKET = {}\n", toml_string(&cfg.bucket)));
+        vars.push_str(&format!(
+            "HUB_DEFAULT_BUCKET = {}\n",
+            toml_string(&cfg.bucket)
+        ));
     }
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
@@ -450,8 +453,8 @@ pub fn deploy_args(config: &Path) -> Vec<String> {
 /// Returns an error if the JSON cannot be parsed, has an unexpected shape, or
 /// contains no namespace whose `title` matches `title`.
 pub fn parse_kv_id(list_json: &str, title: &str) -> Result<String> {
-    let v: serde_json::Value = serde_json::from_str(list_json)
-        .context("parsing `wrangler kv namespace list` output")?;
+    let v: serde_json::Value =
+        serde_json::from_str(list_json).context("parsing `wrangler kv namespace list` output")?;
     let arr = json_array(&v).context("unexpected `wrangler kv namespace list` JSON shape")?;
     for ns in arr {
         if ns.get("title").and_then(serde_json::Value::as_str) == Some(title) {
@@ -855,12 +858,22 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
     let listed = run_wrangler(assets, &secret_list_args(&config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
 
-    let minted_jwt_secret =
-        apply_secret(assets, "HUB_JWT_SECRET", secrets.jwt_secret.as_deref(), &existing, &config)
-            .await?;
-    let minted_seal_key =
-        apply_secret(assets, "HUB_SEAL_KEY", secrets.seal_key.as_deref(), &existing, &config)
-            .await?;
+    let minted_jwt_secret = apply_secret(
+        assets,
+        "HUB_JWT_SECRET",
+        secrets.jwt_secret.as_deref(),
+        &existing,
+        &config,
+    )
+    .await?;
+    let minted_seal_key = apply_secret(
+        assets,
+        "HUB_SEAL_KEY",
+        secrets.seal_key.as_deref(),
+        &existing,
+        &config,
+    )
+    .await?;
     if let Some(tok) = &secrets.email_api_token {
         put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &config).await?;
     }
@@ -953,10 +966,7 @@ mod tests {
 
     #[test]
     fn argv_builders_match_wrangler_grammar() {
-        assert_eq!(
-            r2_create_args("bkt"),
-            ["r2", "bucket", "create", "bkt"]
-        );
+        assert_eq!(r2_create_args("bkt"), ["r2", "bucket", "create", "bkt"]);
         assert_eq!(
             kv_create_args("SESSIONS"),
             ["kv", "namespace", "create", "SESSIONS"]
@@ -1001,7 +1011,10 @@ mod tests {
         // Root bootstrap is CLI-driven now; the worker no longer reads it.
         assert!(parsed["vars"].get("HUB_ROOT_EMAIL").is_none());
         // The custom domain is bound via a custom_domain route.
-        assert_eq!(parsed["routes"][0]["pattern"].as_str(), Some("aos.example.com"));
+        assert_eq!(
+            parsed["routes"][0]["pattern"].as_str(),
+            Some("aos.example.com")
+        );
         assert_eq!(parsed["routes"][0]["custom_domain"].as_bool(), Some(true));
         // Placement is hardcoded `off` (never `smart`): the Worker runs at the
         // edge near each client and reads from the nearest D1 replica (RFC-0004
@@ -1038,8 +1051,7 @@ mod tests {
             head_sampling_rate: 0.25,
             logpush: true,
         };
-        let parsed: toml::Value =
-            toml::from_str(&render_wrangler_toml(&cfg)).expect("valid TOML");
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&cfg)).expect("valid TOML");
         // Disabled observability omits the block entirely; logpush is set.
         assert!(parsed.get("observability").is_none());
         assert_eq!(parsed["logpush"].as_bool(), Some(true));
@@ -1060,8 +1072,7 @@ mod tests {
             head_sampling_rate: 1.0,
             logpush: false,
         };
-        let parsed: toml::Value =
-            toml::from_str(&render_wrangler_toml(&cfg)).expect("valid TOML");
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&cfg)).expect("valid TOML");
         // The CDN-edge static-asset directory is bound, with literal matching so
         // non-asset paths still fall through to the Worker.
         assert_eq!(parsed["assets"]["directory"].as_str(), Some("./assets"));
@@ -1083,8 +1094,7 @@ mod tests {
             head_sampling_rate: 1.0,
             logpush: false,
         };
-        let parsed: toml::Value =
-            toml::from_str(&render_wrangler_toml(&base)).expect("valid TOML");
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&base)).expect("valid TOML");
         // The Email Service binding is emitted with the EMAIL name and remote=true.
         assert_eq!(parsed["send_email"][0]["name"].as_str(), Some("EMAIL"));
         assert_eq!(parsed["send_email"][0]["remote"].as_bool(), Some(true));
@@ -1099,8 +1109,7 @@ mod tests {
             email_from: None,
             ..base
         };
-        let parsed: toml::Value =
-            toml::from_str(&render_wrangler_toml(&none)).expect("valid TOML");
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&none)).expect("valid TOML");
         assert!(parsed.get("send_email").is_none());
         assert!(parsed["vars"].get("HUB_EMAIL_FROM").is_none());
     }
@@ -1109,5 +1118,4 @@ mod tests {
     fn toml_string_escapes_quotes_and_backslashes() {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
     }
-
 }

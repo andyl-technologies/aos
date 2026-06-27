@@ -204,6 +204,25 @@ pre {
   margin: 0.7rem 0 1.6rem;
 }
 
+/* Action buttons inside a table cell must never break their label
+ * character-by-character: the data-cell `word-break: break-word` rule (there to
+ * wrap long store-path hashes) would otherwise collapse a narrow action column
+ * into "un / pi / n". Keep buttons whole. */
+td button { white-space: nowrap; }
+
+/* A dim secondary line stacked under a table cell's primary value — the store
+ * hash under a pin's package name, the expiry under its age. Stacking related
+ * values keeps a table dense and wide enough to read instead of spreading the
+ * data across many narrow, squished columns. */
+.subline { color: var(--dim); font-size: 0.85rem; margin-top: 0.15rem; }
+.subline code { background: none; border: none; padding: 0; }
+/* The pins table keeps each cell's primary line on one row (the sub-lines stack
+ * beneath it), so columns size to their content rather than wrapping. */
+.pins td { white-space: nowrap; }
+/* The inline "expires in N days" editor is a compact field, not a full-width
+ * console input. */
+.pins input[type="number"] { width: 4.5em; }
+
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }

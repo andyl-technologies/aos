@@ -104,8 +104,8 @@ fn refs(nix: &NixRunner, printer: &Printer, package: &str, dependency: &str) -> 
     let pkg_path = resolve_target(nix, printer, package)?;
     let dep_path = resolve_target(nix, printer, dependency)?;
 
-    let dep_hash = scan::store_hash(&dep_path)
-        .with_context(|| format!("'{dep_path}' is not a store path"))?;
+    let dep_hash =
+        scan::store_hash(&dep_path).with_context(|| format!("'{dep_path}' is not a store path"))?;
     let mut targets = HashMap::new();
     targets.insert(dep_hash.to_string(), dep_path.clone());
 

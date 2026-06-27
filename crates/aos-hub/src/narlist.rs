@@ -52,7 +52,10 @@ struct NarReader<'a> {
 impl<'a> NarReader<'a> {
     fn read_u64(&mut self) -> Result<u64> {
         let end = self.pos.checked_add(8).context("nar: truncated length")?;
-        let bytes = self.data.get(self.pos..end).context("nar: truncated length")?;
+        let bytes = self
+            .data
+            .get(self.pos..end)
+            .context("nar: truncated length")?;
         self.pos = end;
         let mut buf = [0u8; 8];
         buf.copy_from_slice(bytes);
@@ -63,7 +66,10 @@ impl<'a> NarReader<'a> {
     fn read_bytes(&mut self) -> Result<&'a [u8]> {
         let len = usize::try_from(self.read_u64()?).context("nar: string too large")?;
         let end = self.pos.checked_add(len).context("nar: truncated string")?;
-        let bytes = self.data.get(self.pos..end).context("nar: truncated string")?;
+        let bytes = self
+            .data
+            .get(self.pos..end)
+            .context("nar: truncated string")?;
         // Advance past the bytes and the zero-padding to the next 8-byte boundary.
         let padded = len.div_ceil(8) * 8;
         self.pos = self
@@ -173,7 +179,11 @@ fn parse_node(
         }
         "directory" => {
             entries.push(NarEntry {
-                path: if path.is_empty() { "/".to_string() } else { path.clone() },
+                path: if path.is_empty() {
+                    "/".to_string()
+                } else {
+                    path.clone()
+                },
                 kind: "directory",
                 size: 0,
                 target: None,

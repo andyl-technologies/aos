@@ -1226,10 +1226,7 @@ async fn main() -> Result<()> {
             aos_hub::ui::render::set_brand(brand);
             // The console footer label is single-sourced in core; set it to this
             // binary's name + version so the footer reflects the serving hub.
-            aos_hub::ui::render::set_app_version(concat!(
-                "aos-hub ",
-                env!("CARGO_PKG_VERSION")
-            ));
+            aos_hub::ui::render::set_app_version(concat!("aos-hub ", env!("CARGO_PKG_VERSION")));
             let state = Arc::new(app_state);
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
@@ -1381,7 +1378,8 @@ async fn main() -> Result<()> {
                         Some(path) => {
                             let body = std::fs::read_to_string(&path)
                                 .with_context(|| format!("reading llms.txt from '{path}'"))?;
-                            db.set_registry_llms_txt(&registry.slug, Some(&body)).await?;
+                            db.set_registry_llms_txt(&registry.slug, Some(&body))
+                                .await?;
                             println!("set custom llms.txt for '{canonical}' ({path})");
                         }
                         None => {
@@ -1470,8 +1468,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 OrgCommand::Purge => {
-                    let purged =
-                        aos_hub::export::purge_expired_orgs(&db, now_secs()).await?;
+                    let purged = aos_hub::export::purge_expired_orgs(&db, now_secs()).await?;
                     if purged.is_empty() {
                         println!("no orgs past their grace window");
                     } else {
@@ -1605,8 +1602,7 @@ async fn main() -> Result<()> {
                         .with_context(|| format!("no registry '{canonical}'"))?;
                     let depth = parse_depth(&depth)?;
                     let summaries =
-                        aos_hub::validation::validate_registry(&db, &registry, depth)
-                            .await?;
+                        aos_hub::validation::validate_registry(&db, &registry, depth).await?;
                     for summary in &summaries {
                         println!(
                             "{}\tchecked={}\tmissing={}\tcorrupt={}\tcoverage={:.0}%\treachable={}",
@@ -1640,13 +1636,9 @@ async fn main() -> Result<()> {
                         external_url,
                     );
                     let client = aos_hub::fetch::hardened_client().await;
-                    let summary = aos_hub::validation::run_repairs(
-                        &db,
-                        &client,
-                        &registry,
-                        &authorizer,
-                    )
-                    .await?;
+                    let summary =
+                        aos_hub::validation::run_repairs(&db, &client, &registry, &authorizer)
+                            .await?;
                     println!(
                         "repairs: {} done, {} plan-only, {} failed",
                         summary.done, summary.plan_only, summary.failed,
@@ -1686,7 +1678,9 @@ async fn main() -> Result<()> {
                     path: binding_root,
                 } => {
                     aos_hub_core::binding::BindingKind::parse(&kind).with_context(|| {
-                        format!("unknown storage binding kind '{kind}' (expected local_fs, s3, or r2)")
+                        format!(
+                            "unknown storage binding kind '{kind}' (expected local_fs, s3, or r2)"
+                        )
                     })?;
                     let org_record = db
                         .org_by_slug(&org)
@@ -1695,7 +1689,9 @@ async fn main() -> Result<()> {
                     let id = db
                         .create_storage_binding(org_record.id, &name, &kind, &binding_root)
                         .await?;
-                    println!("created binding '{org}/{name}' (id {id}, kind {kind}) -> {binding_root}");
+                    println!(
+                        "created binding '{org}/{name}' (id {id}, kind {kind}) -> {binding_root}"
+                    );
                 }
                 BindingCommand::List { org } => {
                     let org_record = db
@@ -1998,7 +1994,8 @@ async fn main() -> Result<()> {
                         .await?
                         .with_context(|| format!("no cache '{cache}'"))?;
                     let expires_at = now_secs() + parse_duration_secs(&ttl)?;
-                    db.pin_cache_path(c.id, &store_hash, Some(expires_at)).await?;
+                    db.pin_cache_path(c.id, &store_hash, Some(expires_at))
+                        .await?;
                     println!("renewed pin {store_hash} in cache '{cache}' until {expires_at}");
                 }
                 CacheCommand::Unpin { cache, store_hash } => {
@@ -2007,7 +2004,14 @@ async fn main() -> Result<()> {
                         .await?
                         .with_context(|| format!("no cache '{cache}'"))?;
                     let removed = db.unpin_cache_path(c.id, &store_hash).await?;
-                    println!("{}", if removed { "unpinned" } else { "no such manual pin" });
+                    println!(
+                        "{}",
+                        if removed {
+                            "unpinned"
+                        } else {
+                            "no such manual pin"
+                        }
+                    );
                 }
                 CacheCommand::Roots { cache } => {
                     let c = db
@@ -2090,7 +2094,10 @@ async fn main() -> Result<()> {
                                         queue.push_back(r.clone());
                                     }
                                 }
-                                println!("{}\t{}\t{} bytes", o.store_hash, o.store_name, o.file_size);
+                                println!(
+                                    "{}\t{}\t{} bytes",
+                                    o.store_hash, o.store_name, o.file_size
+                                );
                             }
                             None => println!("{h}\t(missing)"),
                         }
@@ -2110,7 +2117,11 @@ async fn main() -> Result<()> {
                         std::sync::Arc::clone(&db),
                     );
                     let stats = aos_hub_core::gc::sweep_cache(
-                        db.as_ref(), &writers, &c, dry_run, now_secs(),
+                        db.as_ref(),
+                        &writers,
+                        &c,
+                        dry_run,
+                        now_secs(),
                     )
                     .await?;
                     println!(
@@ -2192,9 +2203,15 @@ async fn main() -> Result<()> {
                         .org_by_slug(&org)
                         .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    let sa_id = match db.service_account_by_name(org_rec.id, &service_account).await? {
+                    let sa_id = match db
+                        .service_account_by_name(org_rec.id, &service_account)
+                        .await?
+                    {
                         Some(id) => id,
-                        None => db.create_service_account(org_rec.id, &service_account).await?,
+                        None => {
+                            db.create_service_account(org_rec.id, &service_account)
+                                .await?
+                        }
                     };
                     let scope = scope.unwrap_or_else(|| org.clone());
                     db.grant_membership("service_account", sa_id, &scope, &role)
@@ -2397,7 +2414,8 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             // `init --target d1:` step).
             let seal = deploy_worker(&assets, args).await?;
             if let Some(email) = &args.root_email {
-                let plaintext = read_password(args.root_password.clone(), args.root_password_stdin)?;
+                let plaintext =
+                    read_password(args.root_password.clone(), args.root_password_stdin)?;
                 let Some(seal) = seal else {
                     anyhow::bail!(
                         "cannot bootstrap root: this deploy preserved an existing \
@@ -2408,10 +2426,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
                 };
                 if let Some(domain) = args.domains.first() {
                     let base = format!("https://{domain}");
-                    let id = aos_hub::cloudflare::bootstrap_root_remote(
-                        &base, &seal, email, &plaintext,
-                    )
-                    .await?;
+                    let id =
+                        aos_hub::cloudflare::bootstrap_root_remote(&base, &seal, email, &plaintext)
+                            .await?;
                     println!("root admin '{email}' ready (user id {id})");
                 } else {
                     println!(
@@ -2666,8 +2683,7 @@ async fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<(
                 .org_by_slug(&org)
                 .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            let secret =
-                secret.unwrap_or_else(|| aos_hub::auth::token::generate_token().0);
+            let secret = secret.unwrap_or_else(|| aos_hub::auth::token::generate_token().0);
             let id = db
                 .create_webhook(org_record.id, &url, &secret, &events)
                 .await?;
@@ -2723,9 +2739,7 @@ async fn run_hosted_key_command(
                 .org_by_slug(&org)
                 .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            let public = db
-                .create_hosted_key(sealer, org_record.id, &key_id)
-                .await?;
+            let public = db.create_hosted_key(sealer, org_record.id, &key_id).await?;
             println!("enrolled hosted key '{key_id}' in org '{org}'");
             println!("pin this trusted-key line as a registry anchor:");
             println!("{public}");
@@ -2793,8 +2807,7 @@ async fn run_channel_command(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            let surface_write =
-                aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(&db));
+            let surface_write = aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(&db));
             let reindexer = aos_hub::coreports::HubReindexer::new(Arc::clone(&db));
             let outcome = aos_hub::signing::advance_channel(
                 &db,

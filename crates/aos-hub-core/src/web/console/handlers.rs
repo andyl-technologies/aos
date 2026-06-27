@@ -1560,6 +1560,74 @@ pub(crate) async fn orgs(
     }
 }
 
+/// `GET /-/caches` — the global binary-caches list (the masthead **caches** tab).
+///
+/// Caches are a signed-in surface: an anonymous visitor is redirected to log in
+/// unless the instance has opted caches into public visibility (`caches_public`),
+/// in which case only public caches are listed. A signed-in viewer sees public
+/// caches plus any cache readable on an org they belong to.
+pub(crate) async fn caches(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match resolve_session_from_headers(&deps.db, &headers).await {
+        Ok(Some(r)) => Some(Session {
+            secret: r.secret,
+            auth: r.auth,
+            email: r.email,
+        }),
+        Ok(None) => None,
+        Err(err) => return internal(err),
+    };
+    // Logged-out visitors only reach this surface when the instance opts in.
+    if session.is_none() && !console::caches_public() {
+        return Redirect::to("/login").into_response();
+    }
+    let result = async {
+        let grants = match &session {
+            Some(s) => s.grants(&deps.db).await?,
+            None => Vec::new(),
+        };
+        let org_slugs: std::collections::HashMap<i64, String> = deps
+            .db
+            .list_orgs()
+            .await?
+            .into_iter()
+            .map(|o| (o.id, o.slug))
+            .collect();
+        let mut rows = Vec::new();
+        for c in deps.db.list_caches().await? {
+            let org_slug = c
+                .org_id
+                .and_then(|id| org_slugs.get(&id).cloned())
+                .unwrap_or_default();
+            let readable = c.visibility == "public"
+                || (!org_slug.is_empty()
+                    && iam::allow(&grants, Permission::Read, &Scope::parse(&org_slug)));
+            if readable {
+                rows.push(console::CacheListRow {
+                    org_slug,
+                    slug: c.slug,
+                    name: c.name,
+                    visibility: c.visibility,
+                });
+            }
+        }
+        Ok::<_, anyhow::Error>(rows)
+    }
+    .await;
+    match result {
+        Ok(rows) => Html(console::caches_page(
+            session.as_ref().map(|s| s.email.as_str()),
+            &rows,
+            started,
+        ))
+        .into_response(),
+        Err(err) => internal(err),
+    }
+}
+
 /// Whether the instance signup policy permits `session`'s user to create an org.
 ///
 /// # Errors
@@ -2004,6 +2072,7 @@ async fn render_cache_detail(
     org: &OrgRecord,
     cache: &crate::db::Cache,
     can_admin: bool,
+    active: &str,
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
@@ -2090,6 +2159,13 @@ async fn render_cache_detail(
                 });
             }
         }
+        // Recent GC runs back the GC tab's history; only the GC & pins tab renders
+        // them, so only fetch there.
+        let gc_runs = if can_admin && active == "pins" {
+            deps.db.list_cache_gc_runs(cache.id, 10).await?
+        } else {
+            Vec::new()
+        };
         Ok::<_, anyhow::Error>(console::cache_page(
             &session.email,
             &org.slug,
@@ -2101,8 +2177,10 @@ async fn render_cache_detail(
             &link_rows,
             &linkable,
             &pin_rows,
+            &gc_runs,
             can_admin,
             advertise_frontend,
+            active,
             notice,
             started,
         ))
@@ -2133,12 +2211,78 @@ async fn cache_in_org(
     Ok((org, cache))
 }
 
-/// `GET /-/org/{org}/caches/{slug}` — a cache's detail page.
+/// `GET /-/org/{org}/caches/{slug}` — a cache's **General** settings tab.
 pub(crate) async fn cache_detail(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "general").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/links` — the **Linked registries** tab.
+pub(crate) async fn cache_links(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "links").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/pins` — the **GC & pins** tab.
+pub(crate) async fn cache_pins(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "pins").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/danger` — the **Danger** (delete) tab.
+pub(crate) async fn cache_danger(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "danger").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/storage` — the **Storage** tab (binding +
+/// change storage). The same path's `POST` performs the storage move.
+pub(crate) async fn cache_storage_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "storage").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/serving` — the **Serving** tab (bucket-direct
+/// frontend advertisement).
+pub(crate) async fn cache_serving_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "serving").await
+}
+
+/// Shared body for the cache settings tabs: require a session + read on the org,
+/// load the `(org, cache)` pair, resolve admin authority, then render the
+/// `active` section within the cache settings chrome.
+async fn cache_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    org_slug: String,
+    cache_slug: String,
+    active: &str,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
@@ -2155,7 +2299,10 @@ pub(crate) async fn cache_detail(
     let can_admin = session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await;
-    render_cache_detail(&deps, &session, &org, &cache, can_admin, None, started).await
+    render_cache_detail(
+        &deps, &session, &org, &cache, can_admin, active, None, started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches` — create a managed binary cache.
@@ -2591,7 +2738,17 @@ pub(crate) async fn cache_gc(
             }
             Err(err) => format!("GC failed: {err:#}"),
         };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// Extract the store-path hash component from operator-entered text.
@@ -2680,7 +2837,17 @@ pub(crate) async fn cache_pin_add(
         },
         Err(err) => format!("Pin failed: {err:#}"),
     };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches/{slug}/pin/remove` — remove a manual GC pin.
@@ -2718,7 +2885,17 @@ pub(crate) async fn cache_pin_remove(
         Ok(false) => format!("No manual pin for {store_hash}."),
         Err(err) => format!("Unpin failed: {err:#}"),
     };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches/{slug}/delete` — soft-delete a cache (typed slug
@@ -4233,6 +4410,8 @@ pub(crate) struct InstanceSettingsForm {
     #[serde(default)]
     password_login: Option<String>,
     #[serde(default)]
+    caches_public: Option<String>,
+    #[serde(default)]
     session_lifetime_secs: String,
 }
 
@@ -4270,6 +4449,16 @@ pub(crate) async fn instance_settings_action(
                 }),
             )
             .await?;
+        let caches_public = form.caches_public.is_some();
+        deps.db
+            .set_instance_config(
+                "caches_public",
+                Some(if caches_public { "on" } else { "off" }),
+            )
+            .await?;
+        // Refresh the live masthead/gating flag so the change takes effect for
+        // this serving process without a restart.
+        crate::web::console_render::set_caches_public(caches_public);
         deps.db
             .set_instance_config("session_lifetime_secs", Some(&form.session_lifetime_secs))
             .await?;
