@@ -60,10 +60,11 @@ pub use model::{
 pub use scheduler::{
     ConservativeAdvanceAuthorization, ControlOperation, ControlOperationKind, ExactLocalEvent,
     IoCompletion, NetworkLookahead, NodeTimelineProjection, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerActor,
-    SchedulerActorError, SchedulerActorHandle, SchedulerActorReply, SchedulerActorStateSnapshot,
-    SchedulerEffectiveClock, SchedulerEffectiveClockSource, SchedulerError, SchedulerHorizon,
-    SchedulerHorizonLimit, SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerActor, SchedulerActorError, SchedulerActorHandle,
+    SchedulerActorReply, SchedulerActorStateSnapshot, SchedulerEffectiveClock,
+    SchedulerEffectiveClockSource, SchedulerError, SchedulerHorizon, SchedulerHorizonLimit,
+    SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadGraph,
     SchedulerNodeActivity, SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerRendezvous,
     SchedulerRunCeilingPublication, SchedulerScenarioNode, SchedulerTerminal, SharedTimeline,
@@ -73,6 +74,7 @@ pub use scheduler::{
     horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
     network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
     ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
+    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
     unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]

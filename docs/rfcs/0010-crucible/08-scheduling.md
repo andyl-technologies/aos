@@ -1138,10 +1138,22 @@ application of explorer-supplied preemption decisions
   regressions cover timer wake jumps, pending-delivery wake jumps, time-limit
   clamping, no-wake idle quanta, and a peer advancing while an idle node's
   effective clock is in the future.
-- [ ] **T-SCHED-16** Implement RESOLVE: process all due cross-node events (frame
+- [x] **T-SCHED-16** Implement RESOLVE: process all due cross-node events (frame
   delivery, I/O completion, fault activation) in total order, made visible at the
   exact delivery icount, transport-timing-independent. — satisfies [SCHED-29];
   spec §8.9.4.
+  Completed by `checks.crucible.phase3.schedulerResolve`.
+  `resolve_due_scheduled_events` now drains every event due for the advanced
+  consumer, validates the exact visibility point for frame/backend input, I/O
+  completion, and fault activation payloads, and returns the canonical
+  `(virtual_time, consumer node_id, producer node_id, sequence)` order regardless
+  of pending transport order. The quantum loop consumes that resolver directly
+  after RUN, so mixed due frame/I/O/fault events become visible at their delivery
+  icount before EMIT/STEP. Focused regressions cover mixed-class due sets,
+  pending-order independence, backend target mismatch rejection, and I/O
+  delivery-icount mismatch rejection. Seeded probabilistic RESOLVE choices remain
+  T-SCHED-17, late-delivery localization remains T-SCHED-18, and event-log
+  materialization remains T-SCHED-19.
 - [ ] **T-SCHED-17** Route every probabilistic RESOLVE choice through the seeded
   decision RNG in total order and record each as a `Decision` in the `Schedule`.
   — satisfies [SCHED-30]; spec §8.9.4.

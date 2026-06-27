@@ -153,7 +153,7 @@
       }
       {
         label = "RESOLVE due events";
-        needle = "self.resolve_events_for(&selected_node, after_time)";
+        needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
       }
       {
         label = "decision EMIT helper";
