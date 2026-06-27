@@ -1180,6 +1180,15 @@ alone (`M-1`/`Q-A`).
       returned store-path strings across all three runs, and scans those path
       surfaces for root/import parse-cache BLAKE3, imported-file content BLAKE3,
       a payload BLAKE3 sentinel, and hot xxh3 canaries.
+      `configured_import_cache_preserves_find_file_path_store_path_surface`
+      evaluates `builtins.path` over a path resolved by `builtins.findFile`
+      from imported search-root/prefix/lookup/name files with import caching
+      disabled, with configured parse/persist roots on a miss/write path, and
+      with a later persistent-hit path, requires identical returned store-path
+      strings across all three runs, and scans those findFile-fed path surfaces
+      for root/search-root/prefix/lookup/name parse-cache BLAKE3, imported-file
+      content BLAKE3, source-tree payload BLAKE3 sentinels, and hot xxh3
+      canaries.
       `configured_import_cache_preserves_filter_source_store_path_surface`
       evaluates `builtins.filterSource` over a local tree path imported from a
       file with import caching disabled, with configured parse/persist roots on
@@ -1194,11 +1203,12 @@ alone (`M-1`/`Q-A`).
       caching disabled, with configured parse/persist roots on a miss/write
       path, and with a later persistent-hit path, requires identical text-store
       path strings across all three runs, and scans those toFile surfaces for
-      root/name/content parse-cache BLAKE3, imported-file content BLAKE3, and
-      hot xxh3 canaries. These sample selected
+      root/name/content parse-cache BLAKE3, imported-file content BLAKE3, a
+      toFile body BLAKE3 sentinel, and hot xxh3 canaries. These sample selected
       `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
-      `builtins.path`/`filterSource`/`toFile` output surfaces only; they do not
-      prove the full hash/fetch/source/text-path leak-invariant gate (`S-15`).
+      `builtins.path`/`findFile`/`filterSource`/`toFile` output surfaces only;
+      they do not prove the full hash/fetch/source/text-path leak-invariant gate
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

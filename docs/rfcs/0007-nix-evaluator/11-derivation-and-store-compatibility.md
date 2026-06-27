@@ -889,6 +889,15 @@ harness, never cut for scope.
       returned store-path strings across all three runs, and scans those path
       surfaces for root/import parse-cache BLAKE3, imported-file content BLAKE3,
       a payload BLAKE3 sentinel, and hot xxh3 canaries.
+      `configured_import_cache_preserves_find_file_path_store_path_surface`
+      evaluates `builtins.path` over a path resolved by `builtins.findFile`
+      from imported search-root/prefix/lookup/name files with import caching
+      disabled, with configured parse/persist roots on a miss/write path, and
+      with a later persistent-hit path, requires identical returned store-path
+      strings across all three runs, and scans those findFile-fed path surfaces
+      for root/search-root/prefix/lookup/name parse-cache BLAKE3, imported-file
+      content BLAKE3, source-tree payload BLAKE3 sentinels, and hot xxh3
+      canaries.
       `configured_import_cache_preserves_filter_source_store_path_surface`
       evaluates `builtins.filterSource` over a local tree path imported from a
       file with import caching disabled, with configured parse/persist roots on
@@ -897,12 +906,20 @@ harness, never cut for scope.
       surface to differ from the unfiltered `builtins.path` surface, and scans
       those filterSource surfaces for root/import parse-cache BLAKE3,
       imported-file content BLAKE3, included/excluded file-content BLAKE3
-      sentinels, and hot xxh3 canaries. These are selected
+      sentinels, and hot xxh3 canaries.
+      `configured_import_cache_preserves_to_file_store_path_surface` evaluates
+      `builtins.toFile (import nameFile) (import contentsFile)` with import
+      caching disabled, with configured parse/persist roots on a miss/write
+      path, and with a later persistent-hit path, requires identical text-store
+      path strings across all three runs, and scans those toFile surfaces for
+      root/name/content parse-cache BLAKE3, imported-file content BLAKE3, a
+      toFile body BLAKE3 sentinel, and hot xxh3 canaries. These are selected
       `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
-      `builtins.path`/`filterSource` output-surface samples, not full hash/
-      fetch/source-path leak-invariant coverage
+      `builtins.path`/`findFile`/`filterSource`/`toFile` output-surface
+      samples, not full hash/fetch/source/text-path leak-invariant coverage
       ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2 precursor,
-      `S-15`; gate: focused hash/fetch/source-path cache-surface canary tests.
+      `S-15`; gate: focused hash/fetch/source/text-path cache-surface canary
+      tests.
 - [ ] Full type-enforced leak-invariant remains: introduce APIs/tests that prevent BLAKE3/xxh3 digests from reaching Nix-observed store-path/hash constructors across all future value/demand-cache paths, tighten store-path hashing behind the `nix-compat` adapter boundary where applicable, and run a leak-invariant harness across `.drv`/store/fetch/hash builtin surfaces ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2, `S-15`; gate: leak-invariant harness.
 
 ### Acceptance gate and RFC-0005/0006 tie-in
