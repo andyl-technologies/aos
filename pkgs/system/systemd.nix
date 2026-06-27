@@ -250,7 +250,7 @@ in
                     -Dtpm=true \
                     -Denvironment-d=false \
                     -Dbinfmt=false \
-                    -Drepart=disabled \
+                    -Drepart=enabled \
                     -Dcoredump=true \
                     -Dpstore=false \
                     -Doomd=true \
@@ -298,7 +298,7 @@ in
                     -Daudit=enabled \
                     -Dkmod=enabled \
                     -Dblkid=enabled \
-                    -Dfdisk=disabled \
+                    -Dfdisk=enabled \
                     -Dgnutls=disabled \
                     -Dopenssl=enabled \
                     -Dp11kit=disabled \

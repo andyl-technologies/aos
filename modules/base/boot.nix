@@ -20,6 +20,27 @@
     "mlx5_core"
     "mlx4_en"
   ];
+
+  # Base initrd module manifest. Set as a `config` def (below) rather than the
+  # option `default`, so other modules (e.g. modules/security/verity.nix adding
+  # `dm_verity`) can *append* to it — a list supplied only via `default` is
+  # suppressed wholesale by any def, which would silently drop the virtio/ext4
+  # drivers. `mkBefore` keeps this base ahead of appended entries for a stable,
+  # unchanged ordering on systems that add nothing.
+  baseInitrdModules =
+    [
+      "virtio_blk"
+      "virtio_pci"
+      "virtio_net"
+      "ext4"
+      "isofs"
+      "usb_storage"
+      "uas"
+      "overlay"
+      "dm-crypt"
+      "qemu_fw_cfg"
+    ]
+    ++ hardwareAutoloadedInitrdModules;
 in {
   options.aos.boot = {
     ## Kernel command line parameters.
@@ -78,20 +99,9 @@ in {
       ## Kernel modules to include in the initrd.
       modules = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default =
-          [
-            "virtio_blk"
-            "virtio_pci"
-            "virtio_net"
-            "ext4"
-            "isofs"
-            "usb_storage"
-            "uas"
-            "overlay"
-            "dm-crypt"
-            "qemu_fw_cfg"
-          ]
-          ++ hardwareAutoloadedInitrdModules;
+        # The base set is contributed as a `config` def (`mkBefore`, see
+        # `baseInitrdModules` above) so feature modules can append to it.
+        default = [];
         description = ''
           Kernel modules to include in the initrd module manifest. The
           initrd builder copies the active kernel's module tree; this
@@ -165,6 +175,10 @@ in {
       }
     ];
 
+    # Base initrd module manifest (see `baseInitrdModules` above). Contributed
+    # as a def with `mkBefore` so feature modules append after it.
+    aos.boot.initrd.modules = lib.mkBefore baseInitrdModules;
+
     # Base kernel command line — always present.
     aos.boot.kernelParams = [
       "console=ttyS0,115200"
@@ -185,8 +199,11 @@ in {
       # no kargs of its own), so without an explicit root= systemd
       # cannot synthesise sysroot.mount. Partition labels are stable
       # across disk renaming (vda vs. nvme0n1) and match what the
-      # image builder writes via sfdisk (name="root-a").
-      "root=/dev/disk/by-partlabel/root-a"
+      # image builder writes via sfdisk (name="root-a"). Driven off
+      # `aos.filesystems.rootDevice` (default = the root-a partlabel, so
+      # unchanged) so dm-verity (modules/security/verity.nix) can retarget
+      # it to /dev/mapper/root by setting rootDevice — no mkForce surgery.
+      "root=${config.aos.filesystems.rootDevice}"
       "ro"
       # Mask systemd-boot-random-seed.service: with efivarfs now built-in
       # (CONFIG_EFIVAR_FS=y, base.config) its ConditionPathExists is met,
