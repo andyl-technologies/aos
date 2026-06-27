@@ -211,17 +211,23 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
         placeholder: false,
     },
+    // The canonical adversarial-determinism gate is the crucible-side
+    // real-simulator test that drives the real `SingleScheduler` through the
+    // host-adversary matrix, not the harness-side mock corpus.
     GateTargetSpec {
         gate: "gate:adversarial-determinism",
-        package: "crucible-harness",
+        package: "crucible",
         test_target: "gate_adversarial_determinism",
         required_features: &[],
         placeholder: false,
     },
+    // The canonical e2e-determinism gate is the crucible-side real-simulator test
+    // that anchors serial-vs-concurrent driving to the authoritative `drive_quantum`
+    // path, not the harness-side mock artifact.
     GateTargetSpec {
         gate: "gate:e2e-determinism",
-        package: "crucible-harness",
-        test_target: "gate_e2e_determinism",
+        package: "crucible",
+        test_target: "gate_e2e_determinism_concurrency",
         required_features: &[],
         placeholder: false,
     },

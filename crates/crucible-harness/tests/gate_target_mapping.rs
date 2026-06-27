@@ -63,37 +63,34 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             ));
         }
 
-        if target.package == "crucible" && target.required_features != ["test-double"].as_slice() {
-            failures.push(format!(
-                "{}:{} must run with --features test-double",
-                target.package, target.test_target
-            ));
-        }
-
-        if target.package == "crucible"
-            && !manifest_test_target_requires_feature(
+        // Feature-gated `crucible` gate targets (those that exercise the
+        // `test-double` backend) must declare the feature both in the registry and
+        // in their `[[test]]` manifest entry, and pin an explicit path so the
+        // target is isolable. Crucible-side gate targets that run under default
+        // features (the real-simulator determinism gates) are auto-discovered and
+        // exempt.
+        if target.package == "crucible" && target.required_features == ["test-double"].as_slice() {
+            if !manifest_test_target_requires_feature(
                 &fs::read_to_string(&manifest_path)?.parse()?,
                 target.test_target,
                 "test-double",
-            )
-        {
-            failures.push(format!(
-                "{}:{} Cargo manifest must set required-features = [\"test-double\"]",
-                target.package, target.test_target
-            ));
-        }
+            ) {
+                failures.push(format!(
+                    "{}:{} Cargo manifest must set required-features = [\"test-double\"]",
+                    target.package, target.test_target
+                ));
+            }
 
-        if target.package == "crucible"
-            && !manifest_test_target_has_path(
+            if !manifest_test_target_has_path(
                 &fs::read_to_string(&manifest_path)?.parse()?,
                 target.test_target,
                 &format!("tests/{}.rs", target.test_target),
-            )
-        {
-            failures.push(format!(
-                "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
-                target.package, target.test_target, target.test_target
-            ));
+            ) {
+                failures.push(format!(
+                    "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
+                    target.package, target.test_target, target.test_target
+                ));
+            }
         }
     }
 
@@ -231,13 +228,13 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:adversarial-determinism",
-                "crucible-harness",
+                "crucible",
                 "gate_adversarial_determinism"
             ),
             (
                 "gate:e2e-determinism",
-                "crucible-harness",
-                "gate_e2e_determinism"
+                "crucible",
+                "gate_e2e_determinism_concurrency"
             ),
             (
                 "gate:e2e-determinism",
