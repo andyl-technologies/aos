@@ -94,15 +94,6 @@ pub fn card(key: &str) -> Option<HelpCard> {
             ],
         ),
         // -- cache <-> registry link ----------------------------------------
-        "link.advertised" => c(
-            "Advertise to consumers",
-            "link",
-            "Put this cache in the registry's published substituter list.",
-            &[
-                ("On", "consumers of the registry are told to pull binaries from this cache automatically."),
-                ("Off", "the link exists (e.g. for GC roots) but the cache is not advertised; consumers won't use it unless they add it themselves."),
-            ],
-        ),
         "link.roots_packages" => c(
             "Pin GC roots from packages",
             "link",
@@ -173,11 +164,11 @@ pub fn card(key: &str) -> Option<HelpCard> {
         "registry.caches" => c(
             "Binary caches",
             "registry",
-            "Substituters every consumer of this registry should use, highest priority first.",
+            "Substituters every consumer of this registry should use, in preference order (first is highest).",
             &[
                 ("URL", "the base URL of a binary cache the registry advertises to its consumers."),
-                ("Priority", "higher numbers are tried first; the default is 100."),
-                ("Advanced", "a registry may instead define a nestable [cache_stack]; that is preserved here and edited via raw TOML."),
+                ("Order", "rows are tried top to bottom; the first listed cache is highest priority."),
+                ("Advanced", "a registry may define a nestable [caches] stack (a mirror, or nesting); that is preserved here and edited via raw TOML."),
             ],
         ),
         "registry.trust_anchors" => c(

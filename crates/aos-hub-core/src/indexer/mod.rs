@@ -45,7 +45,7 @@ pub mod load;
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use aos_registry_surface::manifest::RegistryRootConfig;
+use aos_registry_surface::manifest::{self, RegistryRootConfig};
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
@@ -55,7 +55,6 @@ use sha2::{Digest, Sha256};
 
 use crate::db::{ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseRow};
 use crate::fetch::SurfaceFetch;
-use crate::stack;
 
 use self::load::{load_registry_tree, ObjectReader};
 
@@ -408,12 +407,11 @@ pub async fn index_registry(
         resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
     enforce_floors(db, registry.id, &channels).await?;
 
-    // A committed [cache_stack] (RFC-0004) is parsed into the nestable
-    // try/mirror model: its JSON is stored for stack-aware validation, and
-    // its flattened endpoints are folded into the [[caches]] union so
-    // stack-unaware clients and the display table keep working unchanged. A
-    // malformed stack is logged and ignored (the flat [[caches]] list still
-    // applies) rather than failing the whole index.
+    // The committed [caches] cache stack (RFC-0004) is flattened into the
+    // priority list stack-unaware clients and the display table resolve; when
+    // it is in stack form its JSON is also stored for stack-aware validation.
+    // A malformed stack flattens to an empty list (logged) rather than failing
+    // the whole index.
     let (caches, cache_stack) = resolve_cache_layout(registry, &tree.root);
 
     let snapshot = IndexSnapshot {
@@ -801,68 +799,53 @@ async fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummar
     Ok(())
 }
 
-/// Resolve a registry's committed cache layout into the `[[caches]]` union
-/// and the optional stored cache-stack JSON.
+/// Resolve a registry's committed `[caches]` cache stack into the flattened
+/// priority union and the optional stored cache-stack JSON.
 ///
-/// The flat committed `[[caches]]` entries always contribute. When a
-/// `[cache_stack]` section is present and parses, its flattened endpoints are
-/// merged in (the highest priority among the flat entry and the stack's
-/// descending order wins per URL), and the parsed stack is serialized to JSON
-/// for [`Database::registry_cache_stack`]. A malformed `[cache_stack]` is
-/// logged and ignored — the flat list still applies, so an authoring mistake
+/// The unified `[caches]` value is the single source of truth: its flattened
+/// `(url, priority)` entries always contribute. When `[caches]` is in stack
+/// form (a bare endpoint or a `kind`/`members` node) the parsed stack is also
+/// serialized to JSON for [`Database::registry_cache_stack`] so coverage
+/// validation can recover its mirror groups. A legacy `[[caches]]` array
+/// contributes its entries but has no stack JSON. A malformed `[caches]`
+/// stack flattens to an empty list (logged here), so an authoring mistake
 /// never strands a registry's index.
-///
-/// The stack's base priority is one above the highest flat `[[caches]]`
-/// priority (or its default when there are none), so a committed stack is
-/// consulted ahead of bare flat entries by a stack-unaware client.
 fn resolve_cache_layout(
     registry: &RegistryRecord,
     root: &RegistryRootConfig,
 ) -> (Vec<(String, u32)>, Option<String>) {
     use std::collections::BTreeMap;
 
-    // Start from the flat [[caches]] union, keeping the highest priority per
-    // URL.
+    // Flatten the unified [caches] value, keeping the highest priority per URL.
     let mut by_url: BTreeMap<String, u32> = BTreeMap::new();
-    for cache in &root.caches {
+    for cache in root.cache_entries() {
         by_url
-            .entry(cache.url.clone())
+            .entry(cache.url)
             .and_modify(|p| *p = (*p).max(cache.priority))
             .or_insert(cache.priority);
     }
-
-    let mut cache_stack_json = None;
-    if let Some(value) = &root.cache_stack {
-        match stack::parse_cache_stack(value.clone()) {
-            Ok(node) => {
-                let base = by_url
-                    .values()
-                    .copied()
-                    .max()
-                    .unwrap_or(100)
-                    .saturating_add(1);
-                for (url, priority) in stack::to_priority_caches(&node, base) {
-                    by_url
-                        .entry(url)
-                        .and_modify(|p| *p = (*p).max(priority))
-                        .or_insert(priority);
-                }
-                match node.to_json() {
-                    Ok(json) => cache_stack_json = Some(json),
-                    Err(err) => tracing::warn!(
-                        slug = %registry.slug,
-                        error = %format!("{err:#}"),
-                        "serializing committed cache_stack; storing flat caches only"
-                    ),
-                }
-            }
-            Err(err) => tracing::warn!(
-                slug = %registry.slug,
-                error = %format!("{err:#}"),
-                "ignoring malformed committed [cache_stack]; using flat [[caches]]"
-            ),
-        }
+    if matches!(root.caches, Some(manifest::CachesConfig::Stack(_))) && by_url.is_empty() {
+        tracing::warn!(
+            slug = %registry.slug,
+            "ignoring malformed committed [caches] stack; advertising no caches"
+        );
     }
+
+    // Persist the parsed stack JSON when [caches] is in stack form.
+    let cache_stack_json = match root.cache_stack() {
+        Some(node) => match node.to_json() {
+            Ok(json) => Some(json),
+            Err(err) => {
+                tracing::warn!(
+                    slug = %registry.slug,
+                    error = %format!("{err:#}"),
+                    "serializing committed [caches] stack; storing flat caches only"
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
     // Highest priority first, ties broken by URL for determinism.
     let mut caches: Vec<(String, u32)> = by_url.into_iter().collect();

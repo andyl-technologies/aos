@@ -2146,6 +2146,277 @@ impl RpcService {
         })
     }
 
+    /// `IamService.CreateServiceAccount` — create (or return) an org-owned
+    /// service account, a non-human principal for CI/automation.
+    ///
+    /// Idempotent: returns the existing account when one of that name already
+    /// exists in the org. Requires [`Permission::IamAdmin`] at the org scope (or
+    /// the instance root) — the same authority the console enforces.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
+    /// [`RpcError::PermissionDenied`] when the caller is not an org/instance
+    /// admin, [`RpcError::InvalidArgument`] for an unknown org, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn create_service_account(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateServiceAccountRequest,
+    ) -> Result<pb::CreateServiceAccountResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let org = self
+            .db
+            .org_by_slug(&req.org_slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::invalid(format!("no org '{}'", req.org_slug)))?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::parse(&req.org_slug))
+            .await?;
+        let id = match self
+            .db
+            .service_account_by_name(org.id, &req.name)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            Some(id) => id,
+            None => self
+                .db
+                .create_service_account(org.id, &req.name)
+                .await
+                .map_err(RpcError::internal)?,
+        };
+        Ok(pb::CreateServiceAccountResponse {
+            service_account: Some(pb::ServiceAccount {
+                id,
+                org_slug: req.org_slug,
+                name: req.name,
+            }),
+        })
+    }
+
+    /// Resolves a principal reference to its numeric id.
+    ///
+    /// A `"user"` ref is an email (created on first reference, matching the
+    /// invite/grant flow); a `"service_account"` ref is `"<org>/<name>"` and must
+    /// already exist.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::InvalidArgument`] for an unknown kind, a malformed
+    /// service-account ref, or an unknown org/service account; [`RpcError::Internal`]
+    /// on database failure.
+    async fn resolve_principal_id(&self, kind: &str, principal_ref: &str) -> Result<i64, RpcError> {
+        match kind {
+            "user" => self
+                .db
+                .find_or_create_user(principal_ref)
+                .await
+                .map_err(RpcError::internal),
+            "service_account" => {
+                let (org_slug, name) = principal_ref.split_once('/').ok_or_else(|| {
+                    RpcError::invalid("service_account ref must be '<org>/<name>'")
+                })?;
+                let org = self
+                    .db
+                    .org_by_slug(org_slug)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::invalid(format!("no org '{org_slug}'")))?;
+                self.db
+                    .service_account_by_name(org.id, name)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::invalid(format!("no service account '{principal_ref}'"))
+                    })
+            }
+            other => Err(RpcError::invalid(format!(
+                "unknown principal kind '{other}'"
+            ))),
+        }
+    }
+
+    /// `IamService.GrantMembership` — grant a role to a principal at a scope.
+    ///
+    /// Requires [`Permission::IamAdmin`] at the target scope.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth,
+    /// [`RpcError::InvalidArgument`] for an unknown role/principal, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn grant_membership(
+        &self,
+        auth: Option<&str>,
+        req: pb::GrantMembershipRequest,
+    ) -> Result<pb::GrantMembershipResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let role = Role::parse(&req.role)
+            .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?;
+        let principal_id = self
+            .resolve_principal_id(&req.principal_kind, &req.principal_ref)
+            .await?;
+        self.db
+            .grant_membership(
+                &req.principal_kind,
+                principal_id,
+                scope.as_str(),
+                role.as_str(),
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GrantMembershipResponse {})
+    }
+
+    /// `IamService.RevokeMembership` — revoke a principal's grant at a scope
+    /// (a no-op when none exists). Requires [`Permission::IamAdmin`] at the scope.
+    ///
+    /// # Errors
+    ///
+    /// Auth errors as [`grant_membership`](Self::grant_membership);
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn revoke_membership(
+        &self,
+        auth: Option<&str>,
+        req: pb::RevokeMembershipRequest,
+    ) -> Result<pb::RevokeMembershipResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let principal_id = self
+            .resolve_principal_id(&req.principal_kind, &req.principal_ref)
+            .await?;
+        self.db
+            .revoke_membership(&req.principal_kind, principal_id, scope.as_str())
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RevokeMembershipResponse {})
+    }
+
+    /// `IamService.MintToken` — mint a registry-scoped bearer token for `owner`.
+    ///
+    /// The token's permissions are intersected with the **owner's** effective
+    /// grants at the scope, so a token can never exceed its owner's authority.
+    /// The secret is returned exactly once. Requires [`Permission::IamAdmin`] at
+    /// the scope.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth,
+    /// [`RpcError::InvalidArgument`] for a malformed owner or unknown permission,
+    /// and [`RpcError::Internal`] on database failure.
+    pub async fn mint_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::MintTokenRequest,
+    ) -> Result<pb::MintTokenResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let scope = Scope::parse(&req.scope);
+        self.require_permission(&claims, Permission::IamAdmin, &scope)
+            .await?;
+        let (kind, principal_ref) = req.owner.split_once(':').ok_or_else(|| {
+            RpcError::invalid("owner must be 'user:<email>' or 'service_account:<org>/<name>'")
+        })?;
+        let owner_id = self.resolve_principal_id(kind, principal_ref).await?;
+        let owner = match kind {
+            "user" => crate::domain::Principal::user(owner_id),
+            "service_account" => crate::domain::Principal::service_account(owner_id),
+            other => return Err(RpcError::invalid(format!("unknown owner kind '{other}'"))),
+        };
+        let mut perms = Vec::new();
+        for verb in &req.permissions {
+            let perm = crate::auth::permission_from_str(verb)
+                .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))?;
+            perms.push(perm);
+        }
+        // A token can never exceed its owner's authority.
+        let grants = self
+            .db
+            .effective_scopes(owner)
+            .await
+            .map_err(RpcError::internal)?;
+        perms.retain(|p| iam::allow(&grants, *p, &scope));
+        let (token_id, secret) = self
+            .db
+            .create_token(
+                owner,
+                scope.as_str(),
+                &perms,
+                Some("minted via IamService"),
+                None,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::MintTokenResponse { token_id, secret })
+    }
+
+    /// `IamService.RevokeToken` — revoke a token by id.
+    ///
+    /// Requires [`Permission::IamAdmin`] at the instance root (an instance admin
+    /// may revoke any token); per-owner self-revoke remains the console's path.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`]/[`RpcError::PermissionDenied`] on auth;
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn revoke_token(
+        &self,
+        auth: Option<&str>,
+        req: pb::RevokeTokenRequest,
+    ) -> Result<pb::RevokeTokenResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+        self.db
+            .revoke_token(&req.token_id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::RevokeTokenResponse {})
+    }
+
+    /// `IamService.ListTokens` — the caller's own active tokens, filtered to
+    /// `scope` (empty `scope` lists all).
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT;
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_tokens(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListTokensRequest,
+    ) -> Result<pb::ListTokensResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let principal = claims_principal(&claims).ok_or_else(|| {
+            RpcError::internal(anyhow::anyhow!("bearer claims carry no principal"))
+        })?;
+        let want = Scope::parse(&req.scope);
+        let rows = self
+            .db
+            .list_tokens_for(principal)
+            .await
+            .map_err(RpcError::internal)?;
+        let owner = format!("{}:{}", principal.kind.as_str(), principal.id);
+        let tokens = rows
+            .into_iter()
+            .filter(|(_, scope, _)| req.scope.is_empty() || Scope::parse(scope) == want)
+            .map(|(token_id, scope, perms)| pb::TokenInfo {
+                token_id,
+                owner: owner.clone(),
+                scope,
+                permissions: perms.iter().map(|p| p.as_str().to_string()).collect(),
+                created_at: 0,
+                expires_at: 0,
+            })
+            .collect();
+        Ok(pb::ListTokensResponse { tokens })
+    }
+
     /// `ConfigService.ListChangesets` — change-sets at a scope, newest first.
     ///
     /// Reads require [`Permission::AuditRead`] on the scope (ConfigService
@@ -2893,54 +3164,6 @@ impl RpcService {
         Ok(pb::DeleteCacheResponse { deleted })
     }
 
-    /// The hub-served base URL a managed cache is reachable at
-    /// (`{external_url}/{slug}`) — the fallback when no direct frontend lets a
-    /// consumer reach the bucket without the hub in the path.
-    fn cache_advertise_url(&self, cache_slug: &str) -> String {
-        format!("{}/{}", self.external_url.trim_end_matches('/'), cache_slug)
-    }
-
-    /// The consumer-facing base URL to advertise for a managed cache.
-    ///
-    /// Prefers a **direct, advertised** frontend the cache is reachable at — its
-    /// own cache frontend (an operator override), else one **inherited from its
-    /// storage binding** (the bucket's public CDN origin, with the cache's
-    /// `prefix` appended) — so consumers pull NARs straight from the bucket and
-    /// the hub leaves the byte path (RFC-0004 §12). Falls back to the
-    /// hub-served [`cache_advertise_url`](Self::cache_advertise_url) when no such
-    /// frontend exists. An inherited frontend is honored only over a `public`
-    /// binding (the create gate already forbids a Direct frontend over a private
-    /// one; this re-checks defensively).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    async fn cache_consumer_url(&self, cache: &crate::db::Cache) -> Result<String, RpcError> {
-        let own = self
-            .db
-            .list_cache_frontends(cache.id)
-            .await
-            .map_err(RpcError::internal)?;
-        let advertise = self
-            .db
-            .cache_advertises_storage_frontend(cache.id)
-            .await
-            .map_err(RpcError::internal)?;
-        match self
-            .direct_consumer_url(
-                &own,
-                cache.storage_binding_id,
-                &cache.prefix,
-                FrontendSurface::Cache,
-                advertise,
-            )
-            .await?
-        {
-            Some(url) => Ok(url),
-            None => Ok(self.cache_advertise_url(&cache.slug)),
-        }
-    }
-
     /// The consumer-facing base URL for a registry's git surface.
     ///
     /// Prefers a **direct, advertised** git frontend the registry is reachable
@@ -2985,6 +3208,27 @@ impl RpcService {
                 registry.slug
             )),
         }
+    }
+
+    /// Resolve the consumer-facing base URL a binary cache is served at.
+    ///
+    /// Mirrors [`registry_consumer_url`](Self::registry_consumer_url) for the
+    /// Nix binary-cache surface: prefers a **direct, advertised** cache
+    /// frontend — the cache's own (an operator override), else one inherited
+    /// from its storage binding (the bucket's public CDN origin, with the
+    /// cache's `prefix` appended) — so substituters fetch `narinfo`/`nar`
+    /// straight from the bucket. Falls back to the hub-served
+    /// `{external_url}/{cache_slug}` when no such frontend exists. This is the
+    /// URL the `/-/settings/caches` reconciliation view matches against the
+    /// registry's committed `[caches]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_consumer_url(&self, cache: &crate::db::Cache) -> Result<String, RpcError> {
+        cache_consumer_url(&self.db, &self.external_url, cache)
+            .await
+            .map_err(RpcError::internal)
     }
 
     /// Resolve a direct, advertised frontend a surface is reachable at, deriving
@@ -3044,80 +3288,6 @@ impl RpcService {
         Ok(None)
     }
 
-    /// Reconcile a registry's committed `[[caches]]` with a cache's advertise
-    /// state by proposing a `registry.toml` change request, returning the new
-    /// change id (empty when none was needed).
-    ///
-    /// `advertise = true` proposes adding the cache's served URL; `false`
-    /// proposes removing it. Shared by [`link_cache`](Self::link_cache) and
-    /// [`unlink_cache`](Self::unlink_cache) so the committed advertised set —
-    /// the only cache list a consumer resolves — tracks the link (RFC-0004,
-    /// the write-through model). Idempotent: an already-correct committed file
-    /// yields no change request (empty id).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when advertising is requested but the hub has no signing
-    /// key, or when the change request cannot be built or written.
-    async fn advertise_cache_change(
-        &self,
-        claims: &Claims,
-        registry: &RegistryRecord,
-        cache_slug: &str,
-        advertise: bool,
-    ) -> Result<String, RpcError> {
-        let Some(sealer) = self.sealer.as_ref() else {
-            // No hub signing key: advertising can't author a change request;
-            // de-advertising is best-effort and silently skipped.
-            if advertise {
-                return Err(RpcError::internal(anyhow::anyhow!(
-                    "hub has no signing key configured; cannot propose a registry.toml \
-                     change to advertise the cache"
-                )));
-            }
-            return Ok(String::new());
-        };
-        let fetch = self
-            .surface
-            .fetcher(registry)
-            .await
-            .map_err(RpcError::internal)?;
-        let writer = self
-            .surface_write
-            .writer(registry)
-            .await
-            .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
-        // Advertise the bucket-direct URL when the cache has a direct frontend
-        // (its own or inherited from its storage binding); else the hub URL. A
-        // since-deleted cache (unadvertise path) falls back to the slug URL.
-        let url = match self
-            .db
-            .cache_by_slug(cache_slug)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            Some(cache) => self.cache_consumer_url(&cache).await?,
-            None => self.cache_advertise_url(cache_slug),
-        };
-        let label = format!("{}:{}", claims.owner_kind, claims.owner_id);
-        let proposed = crate::gitwrite::propose_cache_advertisement(
-            &self.db,
-            sealer.as_ref(),
-            fetch.as_ref(),
-            writer.as_ref(),
-            registry,
-            &url,
-            advertise,
-            &claims.owner_kind,
-            Some(claims.owner_id),
-            &label,
-            crate::clock::now_unix_secs(),
-        )
-        .await
-        .map_err(|err| RpcError::invalid(format!("{err:#}")))?;
-        Ok(proposed.map(|p| p.change_id.0).unwrap_or_default())
-    }
-
     /// `CacheService.LinkCache` — link (or update) a cache⇄registry association.
     ///
     /// # Errors
@@ -3162,12 +3332,14 @@ impl RpcService {
             .link_cache(c.id, r.id, req.roots_packages, req.advertised)
             .await
             .map_err(RpcError::internal)?;
-        // Write-through: reconcile the committed [[caches]] with the advertise
-        // flag (add when advertised, remove otherwise) as a change request.
-        let change_id = self
-            .advertise_cache_change(&claims, &r, &c.slug, req.advertised)
-            .await?;
-        Ok(pb::LinkCacheResponse { change_id })
+        // A link is a purely operational association (GC-root pinning + the
+        // autofill suggestion source); it never writes the registry's signed
+        // `registry.toml`. Advertising a cache to consumers is an explicit edit
+        // of the committed `[[caches]]` config (see the config editor), so there
+        // is no change request to promote here. `change_id` stays empty.
+        Ok(pb::LinkCacheResponse {
+            change_id: String::new(),
+        })
     }
 
     /// `CacheService.ChangeCacheStorage` — migrate a cache's surface to a
@@ -3235,11 +3407,14 @@ impl RpcService {
             .unlink_cache(c.id, r.id)
             .await
             .map_err(RpcError::internal)?;
-        // Remove any committed [[caches]] entry advertising this cache.
-        let change_id = self
-            .advertise_cache_change(&claims, &r, &c.slug, false)
-            .await?;
-        Ok(pb::UnlinkCacheResponse { removed, change_id })
+        // Unlinking only drops the operational association; it never rewrites the
+        // registry's committed `[[caches]]`. If the cache was advertised in the
+        // config, removing that entry is an explicit config edit. `change_id`
+        // stays empty.
+        Ok(pb::UnlinkCacheResponse {
+            removed,
+            change_id: String::new(),
+        })
     }
 
     /// `CacheService.ListCacheLinks` — a cache's registry links.
@@ -5663,6 +5838,51 @@ impl FrontendSurface {
 /// eligible row does. Used by [`RpcService::cache_consumer_url`] and
 /// [`RpcService::registry_consumer_url`] to advertise a bucket-direct URL when
 /// one exists (RFC-0004 §12).
+/// Resolve the consumer-facing base URL a binary cache is served at, over a
+/// bare [`Database`] handle and `external_url` (no [`RpcService`] needed).
+///
+/// Prefers a **direct, advertised** cache frontend — the cache's own, else one
+/// inherited from a public storage binding (with the cache's `prefix`
+/// appended), gated by the cache's per-binding advertise opt-out — and falls
+/// back to the hub-served `{external_url}/{cache_slug}`. The console's
+/// `/-/settings/caches` reconciliation view calls this to match a managed
+/// cache against a registry's committed `[caches]` URLs without constructing a
+/// full [`RpcService`]; [`RpcService::cache_consumer_url`] delegates here.
+///
+/// # Errors
+///
+/// Returns an error on database failure.
+pub async fn cache_consumer_url(
+    db: &Database,
+    external_url: &str,
+    cache: &crate::db::Cache,
+) -> anyhow::Result<String> {
+    let own = db.list_cache_frontends(cache.id).await?;
+    let advertise = db.cache_advertises_storage_frontend(cache.id).await?;
+    if let Some(f) = pick_direct_frontend(&own, FrontendSurface::Cache) {
+        return Ok(frontend_base_url(&f.domain, &f.base_path, ""));
+    }
+    if advertise {
+        let binding = match cache.storage_binding_id {
+            Some(id) => db.storage_binding(id).await?,
+            None => db.instance_default_binding().await?,
+        };
+        if let Some(binding) = binding {
+            if binding.access == "public" {
+                let inherited = db.list_storage_frontends(binding.id).await?;
+                if let Some(f) = pick_direct_frontend(&inherited, FrontendSurface::Cache) {
+                    return Ok(frontend_base_url(&f.domain, &f.base_path, &cache.prefix));
+                }
+            }
+        }
+    }
+    Ok(format!(
+        "{}/{}",
+        external_url.trim_end_matches('/'),
+        cache.slug
+    ))
+}
+
 fn pick_direct_frontend(
     frontends: &[FrontendRecord],
     surface: FrontendSurface,

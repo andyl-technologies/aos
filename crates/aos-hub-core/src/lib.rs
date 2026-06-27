@@ -17,8 +17,10 @@
 //! - [`auth`] — runtime-agnostic authentication primitives (Argon2id password
 //!   hashing, the token/session/magic/device secret generators, and the
 //!   permission-string parser; OIDC, sealing, and WebAuthn to follow).
-//! - [`stack`] — the cache-stack node model ([`StackNode`](stack::StackNode))
-//!   that round-trips losslessly through JSON.
+//! - [`stack`] — the committed `[caches]` cache-stack node model
+//!   ([`StackNode`](stack::StackNode)) that round-trips losslessly through JSON;
+//!   re-exported from `aos-registry-surface` so the wasm-clean indexer and the
+//!   `apm`/`apr` client share one flattener.
 //! - [`binding`] — storage-binding kinds ([`BindingKind`](binding::BindingKind))
 //!   and the per-runtime capability model ([`RuntimeKind`](binding::RuntimeKind))
 //!   that gates which kinds the serving runtime accepts.
@@ -83,7 +85,12 @@ pub mod s3surface;
 pub mod service;
 pub mod signing;
 pub mod sigv4;
-pub mod stack;
+/// Re-export of the cache-stack node model from `aos-registry-surface`.
+///
+/// The model lives in the shared wasm-clean surface crate so the `apm`/`apr`
+/// client can flatten a `[caches]` stack without depending on `aos-hub-core`;
+/// this alias keeps existing `crate::stack::…` paths compiling.
+pub use aos_registry_surface::stack;
 pub mod surface_write;
 pub mod url_guard;
 pub mod value;

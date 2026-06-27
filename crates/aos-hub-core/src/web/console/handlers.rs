@@ -2118,14 +2118,13 @@ async fn render_cache_detail(
                     &cache.visibility,
                     &registry.slug,
                     &registry.visibility,
-                    l.advertised,
+                    false,
                     l.roots_packages,
                 )
                 .warning;
                 link_rows.push(console::CacheLinkRow {
                     registry_slug: registry.slug.clone(),
                     roots_packages: l.roots_packages,
-                    advertised: l.advertised,
                     warning,
                 });
             }
@@ -2535,16 +2534,9 @@ pub(crate) async fn cache_link(
                 form.advertised.is_some(),
             )
             .await?;
-        // Write-through: reconcile the registry's committed [[caches]] with the
-        // advertise flag (same change-request flow as the registry-side route).
-        // Best-effort/non-fatal: the link is already saved, so a proposal failure
-        // (e.g. the registry isn't published/indexed yet) is logged, not a 500.
-        if let Err(e) =
-            propose_cache_advertise(&deps, &session, &registry, &cache.slug, form.advertised.is_some())
-                .await
-        {
-            tracing::warn!(error = %format!("{e:#}"), "cache-advertise write-through (org link) failed; link saved");
-        }
+        // A link is an operational association only — advertising the cache to
+        // consumers is an explicit edit of the registry's committed `[[caches]]`
+        // (Settings -> Config), never a write-through from linking.
         Ok::<_, anyhow::Error>(None)
     }
     .await;
@@ -2687,13 +2679,8 @@ pub(crate) async fn cache_unlink(
     let result = async {
         if let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
-            // Remove any committed [[caches]] entry advertising this cache.
-            // Best-effort/non-fatal (the unlink is already saved).
-            if let Err(e) =
-                propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await
-            {
-                tracing::warn!(error = %format!("{e:#}"), "cache de-advertise write-through (org unlink) failed; unlink saved");
-            }
+            // Unlinking only drops the operational association; the committed
+            // `[[caches]]` config is edited explicitly via Settings -> Config.
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -4870,6 +4857,33 @@ pub(crate) async fn registry_settings(
     registry_settings_view(&deps, &session, &registry, None, "general", started).await
 }
 
+/// Returns the committed `[caches]` priority for `url`, matching by URL with
+/// trailing slashes normalized so a frontend `https://c/` matches a committed
+/// `https://c`.
+fn committed_priority(
+    committed: &std::collections::BTreeMap<String, u32>,
+    url: &str,
+) -> Option<u32> {
+    let target = url.trim_end_matches('/');
+    committed
+        .iter()
+        .find(|(committed_url, _)| committed_url.trim_end_matches('/') == target)
+        .map(|(_, priority)| *priority)
+}
+
+/// Removes the committed-URL entry matching `url` (trailing-slash-normalized),
+/// so what remains is the set of committed URLs with no managed-cache match.
+fn remove_matching_url(committed: &mut std::collections::BTreeMap<String, u32>, url: &str) {
+    let target = url.trim_end_matches('/').to_string();
+    let key = committed
+        .keys()
+        .find(|committed_url| committed_url.trim_end_matches('/') == target)
+        .cloned();
+    if let Some(key) = key {
+        committed.remove(&key);
+    }
+}
+
 /// Render one registry settings section (`general` / `storage` / `caches` /
 /// `danger`) — the split of the former single dense settings page. All load the
 /// same data and differ only in which section `registry_settings_page` renders.
@@ -4906,36 +4920,44 @@ async fn registry_settings_view(
                 .unwrap_or_default(),
             None => String::new(),
         };
+        // The committed `[caches]` the indexer flattened — the single source of
+        // truth a consumer resolves. The reconciliation view below classifies
+        // each managed cache against this list by its consumer URL.
+        let committed = deps.db.list_advertised_caches(registry.id).await?;
+        let mut committed_unmatched: std::collections::BTreeMap<String, u32> =
+            committed.iter().map(|(u, p)| (u.clone(), *p)).collect();
+
         let mut caches = Vec::new();
         let mut linked_ids = std::collections::HashSet::new();
         for link in deps.db.cache_links_for_registry(registry.id).await? {
             linked_ids.insert(link.cache_id);
             if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
                 if cache.deleted_at.is_none() {
-                    // A cache less visible than the registry can't be advertised
-                    // (the shared link policy), so its toggle is greyed out.
-                    let can_advertise = crate::service::assess_cache_link(
-                        &cache.slug,
-                        &cache.visibility,
-                        &registry.slug,
-                        &registry.visibility,
-                        true,
-                        false,
-                    )
-                    .reject
-                    .is_none();
+                    let url =
+                        crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
+                            .await?;
+                    // Served-from-config when the cache's consumer URL appears
+                    // in the committed `[caches]` (compared trim-trailing-slash).
+                    let served = committed_priority(&committed_unmatched, &url);
+                    if served.is_some() {
+                        remove_matching_url(&mut committed_unmatched, &url);
+                    }
                     caches.push(console::RegistryCacheRow {
                         cache_slug: cache.slug,
-                        advertised: link.advertised,
+                        consumer_url: url,
                         roots_packages: link.roots_packages,
-                        can_advertise,
+                        config_priority: served,
                     });
                 }
             }
         }
+        // What is left in the committed list matches no linked managed cache:
+        // third-party or non-hosted URLs the registry advertises directly.
+        let mut external_caches: Vec<(String, u32)> = committed_unmatched.into_iter().collect();
+        external_caches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
         // Caches in this registry's org that aren't linked yet — the options for
-        // the "link a cache" control on the settings page, each with its
-        // visibility so the form can grey out advertise for a less-visible one.
+        // the "link a cache" control on the settings page.
         let mut linkable_caches = Vec::new();
         for c in deps.db.list_caches().await? {
             if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id)
@@ -4970,6 +4992,7 @@ async fn registry_settings_view(
             binding_ref,
             &binding_names,
             &caches,
+            &external_caches,
             &linkable_caches,
             can_delete,
             advertise_frontend,
@@ -5053,77 +5076,16 @@ pub(crate) struct RegistryCacheLinkForm {
     roots_packages: Option<String>,
 }
 
-/// Propose (or skip) a `registry.toml` `[[caches]]` change request reflecting a
-/// cache's advertise state, returning the change request when one was created.
-///
-/// The committed `[[caches]]` list is the only cache list a consumer resolves,
-/// so advertising a managed cache write-throughs to it (RFC-0004): `advertise`
-/// adds the cache's served URL, otherwise it is removed. Shared by the
-/// registry-side and cache-side link/unlink handlers. Returns `Ok(None)` when
-/// the committed file already matches (idempotent — no redundant change).
-///
-/// # Errors
-///
-/// Returns an error when the read/write surface cannot be resolved, the
-/// registry has no indexed config to advertise into, or writing the change
-/// request fails.
-async fn propose_cache_advertise(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    cache_slug: &str,
-    advertise: bool,
-) -> anyhow::Result<Option<crate::gitwrite::ProposedChange>> {
-    let fetch = deps.surface.fetcher(registry).await?;
-    let writer = deps.surface_write.writer(registry).await?;
-    let url = format!("{}/{}", deps.external_url.trim_end_matches('/'), cache_slug);
-    crate::gitwrite::propose_cache_advertisement(
-        &deps.db,
-        deps.sealer.as_ref(),
-        fetch.as_ref(),
-        writer.as_ref(),
-        registry,
-        &url,
-        advertise,
-        "user",
-        Some(session.auth.user_id),
-        &session.email,
-        crate::clock::now_unix_secs(),
-    )
-    .await
-}
-
-/// Build the settings-page notice for a just-proposed advertise change request,
-/// echoing the `apr change merge` command to promote it (`None` when no change
-/// was needed).
-fn cache_advertise_notice(
-    deps: &ConsoleDeps,
-    registry: &RegistryRecord,
-    proposed: Option<&crate::gitwrite::ProposedChange>,
-) -> Option<String> {
-    proposed.map(|p| {
-        let merge_url = format!(
-            "{}/{}",
-            deps.external_url.trim_end_matches('/'),
-            registry.slug
-        );
-        let cmd = crate::git::merge_command(&merge_url, &p.change_id);
-        format!(
-            "Cache-advertise change request {} created — promote it with: {cmd}",
-            p.change_id
-        )
-    })
-}
-
 /// `POST /{slug}/-/settings/cache-link` — link a cache to this registry, or
 /// update an existing link's flags, from the registry side.
 ///
 /// `link_cache` is an upsert, so this both creates a new link and edits an
 /// existing one's `advertised`/`roots_packages` flags. The cross-visibility
 /// policy is enforced through the shared [`assess_cache_link`] chokepoint, the
-/// same as the cache-side route and the RPC. Advertising additionally proposes
-/// a `registry.toml` `[[caches]]` change request via [`propose_cache_advertise`]
-/// so the cache reaches consumers.
+/// same as the cache-side route and the RPC. A link is an operational
+/// association only; advertising the cache to consumers is an explicit edit of
+/// the registry's committed `[[caches]]` config (Settings -> Config), never a
+/// write-through from linking.
 pub(crate) async fn registry_cache_link(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -5153,49 +5115,34 @@ pub(crate) async fn registry_cache_link(
     }
     let advertised = form.advertised.is_some();
     let roots_packages = form.roots_packages.is_some();
-    let outcome =
-        async {
-            let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
-                return Ok(Err("unknown cache".to_string()));
-            };
-            if cache.org_id != registry.org_id {
-                return Ok(Err("cache is not in this organization".to_string()));
-            }
-            let advisory = crate::service::assess_cache_link(
-                &cache.slug,
-                &cache.visibility,
-                &registry.slug,
-                &registry.visibility,
-                advertised,
-                roots_packages,
-            );
-            if let Some(reject) = advisory.reject {
-                return Ok(Err(reject));
-            }
-            deps.db
-                .link_cache(cache.id, registry.id, roots_packages, advertised)
-                .await?;
-            // Write-through: reconcile the committed [[caches]] with the advertise
-            // flag (add when advertised, remove otherwise) as a change request. This
-            // is best-effort and NON-FATAL: the link itself is already saved, so a
-            // proposal failure (most commonly: the registry has no published/indexed
-            // config to branch a change from) becomes an explanatory notice rather
-            // than a 500 that hides the successful link.
-            let notice =
-                match propose_cache_advertise(&deps, &session, &registry, &cache.slug, advertised)
-                    .await
-                {
-                    Ok(proposed) => cache_advertise_notice(&deps, &registry, proposed.as_ref())
-                        .unwrap_or_else(|| "Cache link saved.".to_string()),
-                    Err(e) => format!(
-                        "Cache link saved, but the registry.toml advertise change could not be \
-                 proposed: {e:#}. Publish or index the registry first, then re-save to \
-                 advertise the cache to consumers."
-                    ),
-                };
-            Ok::<Result<String, String>, anyhow::Error>(Ok(notice))
+    let outcome = async {
+        let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
+            return Ok(Err("unknown cache".to_string()));
+        };
+        if cache.org_id != registry.org_id {
+            return Ok(Err("cache is not in this organization".to_string()));
         }
-        .await;
+        let advisory = crate::service::assess_cache_link(
+            &cache.slug,
+            &cache.visibility,
+            &registry.slug,
+            &registry.visibility,
+            advertised,
+            roots_packages,
+        );
+        if let Some(reject) = advisory.reject {
+            return Ok(Err(reject));
+        }
+        deps.db
+            .link_cache(cache.id, registry.id, roots_packages, advertised)
+            .await?;
+        // A link is an operational association only (GC-root pinning + the
+        // config-editor autofill source); it never writes the registry's
+        // committed `registry.toml`. Advertising a cache to consumers is an
+        // explicit edit of the `[caches]` config — see Settings -> Config.
+        Ok::<Result<String, String>, anyhow::Error>(Ok("Cache link saved.".to_string()))
+    }
+    .await;
     match outcome {
         Ok(Ok(notice)) => {
             registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)
@@ -5244,24 +5191,11 @@ pub(crate) async fn registry_cache_unlink(
         return *deny;
     }
     let outcome = async {
-        let mut notice = "Cache unlinked.".to_string();
+        let notice = "Cache unlinked.".to_string();
         if let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? {
             deps.db.unlink_cache(cache.id, registry.id).await?;
-            // Remove any committed [[caches]] entry advertising this cache. Like
-            // the link path, this write-through is best-effort: the unlink is
-            // already saved, so a proposal failure becomes a notice, not a 500.
-            match propose_cache_advertise(&deps, &session, &registry, &cache.slug, false).await {
-                Ok(proposed) => {
-                    notice = cache_advertise_notice(&deps, &registry, proposed.as_ref())
-                        .unwrap_or(notice);
-                }
-                Err(e) => {
-                    notice = format!(
-                        "Cache unlinked, but the registry.toml de-advertise change could not \
-                         be proposed: {e:#}."
-                    );
-                }
-            }
+            // Unlinking only drops the operational association; the committed
+            // `[[caches]]` config is edited explicitly via Settings -> Config.
         }
         Ok::<String, anyhow::Error>(notice)
     }
@@ -7516,6 +7450,42 @@ pub(crate) async fn config_edit(
     config_edit_view(&deps, &session, &registry, None, started).await
 }
 
+/// Builds the config-editor autofill suggestions: the registry's DB-linked
+/// caches with each cache's consumer URL and whether it is already present in
+/// the form's current `[caches]` (matched trailing-slash-normalized).
+///
+/// # Errors
+///
+/// Returns an error on database failure or when resolving a cache's consumer
+/// URL fails.
+async fn linked_cache_suggestions(
+    deps: &ConsoleDeps,
+    registry: &RegistryRecord,
+    model: &crate::web::config_form::ConfigFormModel,
+) -> anyhow::Result<Vec<console::LinkedCacheSuggestion>> {
+    let present: std::collections::HashSet<String> = model
+        .caches
+        .iter()
+        .map(|row| row.url.trim_end_matches('/').to_string())
+        .collect();
+    let mut suggestions = Vec::new();
+    for link in deps.db.cache_links_for_registry(registry.id).await? {
+        if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
+            if cache.deleted_at.is_none() {
+                let url = crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
+                    .await?;
+                let present = present.contains(url.trim_end_matches('/'));
+                suggestions.push(console::LinkedCacheSuggestion {
+                    cache_slug: cache.slug,
+                    consumer_url: url,
+                    present,
+                });
+            }
+        }
+    }
+    Ok(suggestions)
+}
+
 /// Render the config-edit page, optionally with a just-created change-request
 /// `result` (its change id and merge command).
 async fn config_edit_view(
@@ -7538,16 +7508,26 @@ async fn config_edit_view(
     // the schema) and the read-only view both fall back to the raw-TOML page,
     // which shows the committed file verbatim so nothing is hidden or dropped.
     match crate::web::config_form::parse_model(&current) {
-        Some(model) if can_edit => Html(console::registry_config_form_page(
-            &session.email,
-            registry,
-            &session.csrf(),
-            &model,
-            can_edit,
-            result,
-            started,
-        ))
-        .into_response(),
+        Some(model) if can_edit => {
+            // Autofill suggestions: the registry's DB-linked caches, each with
+            // its consumer URL and whether that URL is already in the config the
+            // form currently shows.
+            let linked = match linked_cache_suggestions(deps, registry, &model).await {
+                Ok(linked) => linked,
+                Err(err) => return internal(err),
+            };
+            Html(console::registry_config_form_page(
+                &session.email,
+                registry,
+                &session.csrf(),
+                &model,
+                can_edit,
+                &linked,
+                result,
+                started,
+            ))
+            .into_response()
+        }
         _ => Html(console::config_edit_page(
             &session.email,
             registry,
@@ -7652,18 +7632,23 @@ pub(crate) async fn config_submit(
         }
         Err(err) => {
             // Re-render the form with the error and the user's preserved input;
-            // recover whether an advanced [cache_stack] exists from the file.
+            // recover whether an advanced [caches] stack exists from the file.
             let mut model =
                 crate::web::config_form::model_from_submission(&sub, format!("{err:#}"));
             model.has_cache_stack = crate::web::config_form::parse_model(&existing)
                 .map(|m| m.has_cache_stack)
                 .unwrap_or(false);
+            let linked = match linked_cache_suggestions(&deps, &registry, &model).await {
+                Ok(linked) => linked,
+                Err(err) => return internal(err),
+            };
             Html(console::registry_config_form_page(
                 &session.email,
                 &registry,
                 &session.csrf(),
                 &model,
                 true,
+                &linked,
                 None,
                 started,
             ))

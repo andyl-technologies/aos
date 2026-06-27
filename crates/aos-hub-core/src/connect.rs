@@ -1333,6 +1333,26 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         "/aos.registry.v1.ConfigService/RevertChangeset",
         revert_changeset
     );
+    // IamService — service-account / grant / token management (the machine API
+    // behind the console's identity settings; RFC-0004 ch.14).
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.IamService/CreateServiceAccount",
+        create_service_account
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.IamService/GrantMembership",
+        grant_membership
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.IamService/RevokeMembership",
+        revoke_membership
+    );
+    r = rpc_route!(r, "/aos.registry.v1.IamService/MintToken", mint_token);
+    r = rpc_route!(r, "/aos.registry.v1.IamService/RevokeToken", revoke_token);
+    r = rpc_route!(r, "/aos.registry.v1.IamService/ListTokens", list_tokens);
     // WebhookService
     r = rpc_route!(
         r,
