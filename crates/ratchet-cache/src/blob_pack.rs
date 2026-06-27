@@ -7,9 +7,11 @@
 
 use std::fmt;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -293,6 +295,126 @@ impl BlobPackFileIdentity {
             ctime_secs: metadata.ctime(),
             ctime_nanos: metadata.ctime_nsec(),
         })
+    }
+}
+
+/// An append-only writer for one blob packfile.
+///
+/// Empty packfiles are initialized with the current [`BlobPackHeader`].
+/// Non-empty packfiles must already contain a valid current header. Appends
+/// are ordinary buffered filesystem writes and do not provide writer
+/// coordination, index updates, or crash-durability guarantees beyond flushing
+/// the opened descriptor.
+#[derive(Clone, Debug)]
+pub struct BlobPackAppender {
+    path: PathBuf,
+}
+
+impl BlobPackAppender {
+    /// Opens or initializes the blob packfile at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if the parent directory or packfile
+    /// cannot be created/opened/read/written, or if an existing non-empty
+    /// packfile has an invalid header.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, BlobPackAppendError> {
+        let path = path.into();
+        ensure_blob_pack_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this packfile's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the current packfile length after validating its header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if the packfile cannot be opened,
+    /// inspected, or if its header is malformed.
+    pub fn len(&self) -> Result<u64, BlobPackAppendError> {
+        let file = open_validated_blob_pack_for_read(&self.path)?;
+        file.metadata()
+            .map(|metadata| metadata.len())
+            .map_err(|source| BlobPackAppendError::Metadata {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Returns whether the current packfile has no bytes.
+    ///
+    /// Opened packfiles should normally be at least [`BLOB_PACK_HEADER_LEN`]
+    /// bytes because [`Self::open`] initializes empty files with a header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if [`Self::len`] fails.
+    pub fn is_empty(&self) -> Result<bool, BlobPackAppendError> {
+        self.len().map(|len| len == 0)
+    }
+
+    /// Appends `payload` as a content-addressed immutable record.
+    ///
+    /// The payload is checked against `expected_hash` before any record bytes
+    /// are appended. Callers that need stable returned locations must serialize
+    /// writers around this method; this low-level writer does not perform
+    /// cache-root locking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if the packfile cannot be opened,
+    /// validated, or written, if `payload` is too large for the on-disk format,
+    /// or if `expected_hash` does not match `payload`.
+    pub fn append_payload(
+        &self,
+        expected_hash: BlobPackHash,
+        payload: &[u8],
+    ) -> Result<BlobPackLocation, BlobPackAppendError> {
+        ensure_blob_pack_file(&self.path)?;
+        let actual = BlobPackHash::for_bytes(payload);
+        if actual != expected_hash {
+            return Err(BlobPackAppendError::PayloadHashMismatch {
+                expected: expected_hash,
+                actual,
+            });
+        }
+
+        let payload_len =
+            u64::try_from(payload.len()).map_err(|_| BlobPackAppendError::PayloadTooLarge {
+                payload_len: payload.len() as u128,
+            })?;
+        let record_header = BlobRecordHeader::new(expected_hash, payload_len);
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| BlobPackAppendError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let record_offset = file
+            .metadata()
+            .map_err(|source| BlobPackAppendError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        if record_offset < BLOB_PACK_HEADER_LEN as u64 {
+            return Err(BlobPackAppendError::InvalidRecordOffset { record_offset });
+        }
+
+        file.write_all(&record_header.encode())
+            .and_then(|()| file.write_all(payload))
+            .and_then(|()| file.flush())
+            .map_err(|source| BlobPackAppendError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(BlobPackLocation::new(record_offset, payload_len))
     }
 }
 
@@ -731,6 +853,94 @@ pub enum MappedBlobPackError {
     },
 }
 
+/// A blob pack append operation failed.
+#[derive(Debug, Error)]
+pub enum BlobPackAppendError {
+    /// A parent directory could not be created.
+    #[error("failed to create blob pack parent directory {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be opened.
+    #[error("failed to open blob pack {path:?}")]
+    Open {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// File metadata could not be read.
+    #[error("failed to read blob pack metadata for {path:?}")]
+    Metadata {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be seeked.
+    #[error("failed to seek blob pack {path:?}")]
+    Seek {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be read.
+    #[error("failed to read blob pack {path:?}")]
+    Read {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be written.
+    #[error("failed to write blob pack {path:?}")]
+    Write {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile header is invalid.
+    #[error("invalid blob pack format in {path:?}")]
+    Format {
+        /// The packfile path.
+        path: PathBuf,
+        /// The format error.
+        #[source]
+        source: BlobPackFormatError,
+    },
+    /// The payload is too large for the on-disk record format.
+    #[error("blob payload length {payload_len} does not fit in u64")]
+    PayloadTooLarge {
+        /// The rejected payload length.
+        payload_len: u128,
+    },
+    /// The payload bytes do not hash to the expected content address.
+    #[error("blob payload hash mismatch: expected {expected}, got {actual}")]
+    PayloadHashMismatch {
+        /// The expected content address.
+        expected: BlobPackHash,
+        /// The hash computed from the supplied payload.
+        actual: BlobPackHash,
+    },
+    /// The record offset points before the initialized pack header.
+    #[error("invalid blob record offset {record_offset}")]
+    InvalidRecordOffset {
+        /// The invalid record offset.
+        record_offset: u64,
+    },
+}
+
 /// A blob pack file identity operation failed.
 #[derive(Debug, Error)]
 pub enum BlobPackFileIdentityError {
@@ -740,6 +950,90 @@ pub enum BlobPackFileIdentityError {
     /// The file descriptor does not refer to a regular file.
     #[error("blob pack file descriptor does not refer to a regular file")]
     NotRegularFile,
+}
+
+fn ensure_blob_pack_file(path: &Path) -> Result<(), BlobPackAppendError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| BlobPackAppendError::CreateParent {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| BlobPackAppendError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| BlobPackAppendError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if len == 0 {
+        file.write_all(&BlobPackHeader::current().encode())
+            .and_then(|()| file.flush())
+            .map_err(|source| BlobPackAppendError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        return Ok(());
+    }
+
+    validate_open_blob_pack_header(path, &mut file, len)
+}
+
+fn open_validated_blob_pack_for_read(path: &Path) -> Result<fs::File, BlobPackAppendError> {
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|source| BlobPackAppendError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| BlobPackAppendError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    validate_open_blob_pack_header(path, &mut file, len)?;
+    Ok(file)
+}
+
+fn validate_open_blob_pack_header(
+    path: &Path,
+    file: &mut fs::File,
+    len: u64,
+) -> Result<(), BlobPackAppendError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| BlobPackAppendError::Seek {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    let header_len = len.min(BLOB_PACK_HEADER_LEN as u64) as usize;
+    let mut bytes = vec![0; header_len];
+    file.read_exact(&mut bytes)
+        .map_err(|source| BlobPackAppendError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    BlobPackHeader::decode(&bytes).map_err(|source| BlobPackAppendError::Format {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {
@@ -832,6 +1126,115 @@ mod tests {
             MappedBlobPack::map_file(&file)
         }
         .expect("pack maps")
+    }
+
+    #[test]
+    fn blob_pack_appender_open_initializes_header() {
+        let root = temp_path("appender-open-root");
+        let path = root.join("values").join("pack.blob");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+
+        assert_eq!(appender.path(), path.as_path());
+        assert_eq!(
+            fs::read(&path).expect("pack header reads").as_slice(),
+            BlobPackHeader::current().encode().as_slice()
+        );
+        assert_eq!(
+            appender.len().expect("pack length reads"),
+            BLOB_PACK_HEADER_LEN as u64
+        );
+        assert!(!appender.is_empty().expect("pack emptiness reads"));
+        BlobPackAppender::open(path.clone()).expect("initialized appender reopens");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blob_pack_appender_rejects_corrupt_header_without_rewriting() {
+        let root = temp_path("appender-corrupt-root");
+        let path = root.join("values").join("pack.blob");
+        fs::create_dir_all(path.parent().expect("pack parent exists")).expect("parent creates");
+        fs::write(&path, b"bad").expect("corrupt pack writes");
+
+        let error = BlobPackAppender::open(path.clone()).expect_err("corrupt pack errors");
+
+        assert!(matches!(
+            error,
+            BlobPackAppendError::Format {
+                source: BlobPackFormatError::ShortPackHeader { actual: 3, .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(&path).expect("corrupt pack reads").as_slice(),
+            b"bad"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blob_pack_appender_appends_mapped_payloads() {
+        let path = temp_path("appender-payloads");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        let first = b"first payload".as_slice();
+        let second = b"second payload".as_slice();
+        let first_hash = BlobPackHash::for_bytes(first);
+        let second_hash = BlobPackHash::for_bytes(second);
+
+        let first_location = appender
+            .append_payload(first_hash, first)
+            .expect("first payload appends");
+        let second_location = appender
+            .append_payload(second_hash, second)
+            .expect("second payload appends");
+
+        assert_eq!(first_location.record_offset(), BLOB_PACK_HEADER_LEN as u64);
+        assert_eq!(first_location.payload_len(), first.len() as u64);
+        assert_eq!(
+            second_location.record_offset(),
+            BLOB_PACK_HEADER_LEN as u64 + BLOB_RECORD_HEADER_LEN as u64 + first.len() as u64
+        );
+        assert_eq!(second_location.payload_len(), second.len() as u64);
+
+        let pack = map_pack(&path);
+        assert_eq!(
+            pack.payload(first_location, first_hash)
+                .expect("first mapped payload reads")
+                .as_bytes(),
+            first
+        );
+        assert_eq!(
+            pack.payload(second_location, second_hash)
+                .expect("second mapped payload reads")
+                .as_bytes(),
+            second
+        );
+
+        drop(pack);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_rejects_payload_hash_mismatch_without_appending() {
+        let path = temp_path("appender-hash-mismatch");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        let payload = b"payload".as_slice();
+        let wrong_hash = BlobPackHash::for_bytes(b"wrong");
+        let before_len = appender.len().expect("initial pack length reads");
+
+        let error = appender
+            .append_payload(wrong_hash, payload)
+            .expect_err("hash mismatch errors");
+
+        assert!(matches!(
+            error,
+            BlobPackAppendError::PayloadHashMismatch { expected, actual }
+                if expected == wrong_hash && actual == BlobPackHash::for_bytes(payload)
+        ));
+        assert_eq!(appender.len().expect("final pack length reads"), before_len);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

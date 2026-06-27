@@ -5,10 +5,10 @@
 //! `ratchet-oracle` crate, including memory-mapped content-addressed stores,
 //! out-of-core value spill, and future demand-graph storage backends.
 //!
-//! The current crate contains the first mmap building block: a read-only file
-//! mapping wrapper used by later persistent packfile adapters. Higher-level
-//! cache formats remain in `ratchet-oracle` until they move behind this unsafe
-//! fence.
+//! The current crate contains read-only file mapping and content-addressed
+//! blob-pack building blocks used by later persistent packfile adapters.
+//! Higher-level cache formats remain in `ratchet-oracle` until they move
+//! behind this unsafe fence.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
