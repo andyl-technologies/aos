@@ -1031,10 +1031,21 @@ authority for its shape. The contract those files may rely on:
     `crates/crucible/src/lib.rs` covers authoring-order-insensitive topology
     hashes and link material changing scenario/bake identity;
     `checks.crucible.phase1.spatialWorldTopology` gates the task.
-- [ ] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
+- [x] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
   fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
   — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
+  - Completed by `crates/crucible/src/model.rs`: `WorldNode` and
+    `NodeTemplate` are the concrete NodeDef/VmDef-bearing model for this phase
+    and carry only launch-time inputs: `VmArchitecture`, content-addressed
+    kernel/root/initrd references, command line, memory size, fixed vCPU count,
+    fixed icount shift, ready point, and white-box opt-in. TOML, compact binary,
+    and canonical material include those fields, and parsing rejects host-path
+    image references. The focused
+    `world_node_launch_inputs_are_portable_and_identity_bearing` test and
+    `checks.crucible.phase1.spatialNodeLaunchInputs` gate cover field retention,
+    identity sensitivity, serialization round trips, fixed-memory validation, and
+    no host-path leakage.
 - [x] **T-SPAT-6** Implement the `ReadyPoint` policy set (fixed-icount /
   network-idle / console-marker / agent-signal) and gate white-box ready points
   behind the white-box opt-in. — satisfies [SPAT-9]; spec §3.1.

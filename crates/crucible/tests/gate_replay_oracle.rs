@@ -164,6 +164,9 @@ fn gate_replay_oracle_materialized_state_loadvm_branch_captures_resume_component
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 321 },
         },
@@ -211,6 +214,9 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 987 },
         },
@@ -267,6 +273,9 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 111 },
         },
@@ -335,6 +344,9 @@ fn gate_replay_oracle_loadvm_rejects_incomplete_materialized_state() -> Result<(
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 654 },
         },
@@ -458,6 +470,9 @@ fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 222 },
         },
@@ -522,6 +537,9 @@ fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node,
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 222 },
         },
@@ -571,6 +589,9 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     let node = oracle_node_id();
     let world = World::from_nodes(vec![WorldNode {
         id: node.clone(),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 222 },
         },

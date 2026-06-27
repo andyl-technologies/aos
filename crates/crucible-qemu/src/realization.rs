@@ -1778,6 +1778,9 @@ mod tests {
         };
         let world = match World::from_nodes(vec![WorldNode {
             id: node.clone(),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::ConsoleMarker {
                 marker: String::from("ready"),
             },
@@ -1813,6 +1816,9 @@ mod tests {
                 id: NodeId {
                     name: String::from("agent"),
                 },
+                arch: NodeTemplate::DEFAULT_ARCH,
+                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                cmdline: String::new(),
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -1960,6 +1966,9 @@ mod tests {
             id: NodeId {
                 name: String::from("qemu"),
             },
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: crucible::Icount { retired: 1 },
             },

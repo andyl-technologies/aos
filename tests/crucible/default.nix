@@ -131,6 +131,7 @@ in {
     spatialLogicalTopology = import ./phase1-spatial-logical-topology.nix {inherit pkgs lib;};
     spatialMembershipFaults = import ./phase1-spatial-membership-faults.nix {inherit pkgs lib;};
     spatialCanonicalization = import ./phase1-spatial-canonicalization.nix {inherit pkgs lib;};
+    spatialNodeLaunchInputs = import ./phase1-spatial-node-launch-inputs.nix {inherit pkgs lib;};
     spatialPlanComponent = import ./phase1-spatial-plan-component.nix {inherit pkgs lib;};
     spatialPlanValidation = import ./phase1-spatial-plan-validation.nix {inherit pkgs lib;};
     spatialPropertiesComponent = import ./phase1-spatial-properties-component.nix {inherit pkgs lib;};

@@ -53,8 +53,8 @@ pub use model::{
     TemporalGraphReferenceCounts, TemporalGraphRuntime, TemporalGraphSave, TemporalGraphSearch,
     TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError, TimerId, TimerRegistry,
     TimerState, TopologyShape, TopologySizeRange, VcpuId, VirtualInstant, VirtualTime,
-    VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake,
-    instantiate, reduce, step,
+    VmArchitecture, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode,
+    WorldStaticTopology, bake, instantiate, reduce, step,
 };
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
@@ -824,6 +824,192 @@ mod tests {
     }
 
     #[test]
+    fn world_node_launch_inputs_are_portable_and_identity_bearing() {
+        let blob_ref = |label: &str| {
+            ContentAddressedBlobRef::from_hash(ContentHash::from_canonical_material(
+                "crucible.test.node-launch-inputs.blob",
+                label,
+            ))
+        };
+        let kernel = blob_ref("kernel");
+        let root_image = blob_ref("root-image");
+        let initrd = blob_ref("initrd");
+        let ready_point = ReadyPoint::FixedIcount {
+            icount: Icount { retired: 77 },
+        };
+        let cmdline = "console=ttyS0 root=/dev/vda ro";
+        let base_node = WorldNode {
+            id: node_id("vm"),
+            arch: VmArchitecture::Aarch64,
+            memory_mib: 2048,
+            cmdline: cmdline.to_owned(),
+            ready_point: ready_point.clone(),
+            white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: 2,
+            icount_shift: 1,
+            kernel: Some(kernel),
+            root_image: Some(root_image),
+            initrd: Some(initrd),
+        };
+        let base_world = world_from_nodes(vec![base_node.clone()]);
+        let base_scenario = base_world.scenario_def();
+        let template_scenario = ScenarioBuilder::new()
+            .node(
+                "vm",
+                NodeTemplate::fixed_icount(Icount { retired: 77 })
+                    .arch(VmArchitecture::Aarch64)
+                    .memory_mib(2048)
+                    .cmdline(cmdline)
+                    .white_box(WhiteBoxPolicy::Enabled)
+                    .smp_vcpus(2)
+                    .icount_shift(1)
+                    .kernel(kernel)
+                    .root_image(root_image)
+                    .initrd(initrd),
+            )
+            .build()
+            .unwrap_or_else(|error| panic!("template scenario should be valid: {error}"));
+        let material = String::from_utf8(base_world.canonical_bytes())
+            .unwrap_or_else(|error| panic!("world material should be utf8: {error}"));
+        let toml = base_world
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("world TOML should serialize: {error}"));
+        let host_path_toml = toml.replacen(&kernel.to_uri(), "/nix/store/kernel", 1);
+        let round_trip_binary = World::from_compact_binary(&base_world.to_compact_binary())
+            .unwrap_or_else(|error| panic!("world binary should parse: {error}"));
+
+        assert_eq!(template_scenario, base_scenario);
+        assert_eq!(
+            base_world.id(),
+            ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        );
+        assert_eq!(base_world.nodes().len(), 1);
+        assert_eq!(base_world.nodes()[0].arch, VmArchitecture::Aarch64);
+        assert_eq!(base_world.nodes()[0].memory_mib, 2048);
+        assert_eq!(base_world.nodes()[0].cmdline, cmdline);
+        assert_eq!(base_world.nodes()[0].ready_point, ready_point);
+        assert_eq!(base_world.nodes()[0].white_box, WhiteBoxPolicy::Enabled);
+        assert_eq!(base_world.nodes()[0].smp_vcpus, 2);
+        assert_eq!(base_world.nodes()[0].icount_shift, 1);
+        assert_eq!(base_world.nodes()[0].kernel, Some(kernel));
+        assert_eq!(base_world.nodes()[0].root_image, Some(root_image));
+        assert_eq!(base_world.nodes()[0].initrd, Some(initrd));
+        assert_eq!(
+            World::from_canonical_toml(&toml)
+                .unwrap_or_else(|error| panic!("world TOML should parse: {error}")),
+            base_world
+        );
+        assert_eq!(round_trip_binary, base_world);
+        assert!(toml.contains("arch = \"aarch64\""));
+        assert!(toml.contains("memory_mib = 2048"));
+        assert!(toml.contains("cmdline = \"console=ttyS0 root=/dev/vda ro\""));
+        assert!(material.contains("arch=aarch64"));
+        assert!(material.contains("memory_mib=2048"));
+        assert!(material.contains(&format!("cmdline_len={}", cmdline.len())));
+        assert!(material.contains("cmdline=console=ttyS0 root=/dev/vda ro"));
+
+        let assert_identity_changes = |label: &str, node: WorldNode| {
+            let changed_world = world_from_nodes(vec![node]);
+            assert_ne!(base_world.id(), changed_world.id(), "{label}");
+            assert_ne!(
+                base_scenario.id(),
+                changed_world.scenario_def().id(),
+                "{label}"
+            );
+        };
+        assert_identity_changes(
+            "architecture must affect identity",
+            WorldNode {
+                arch: VmArchitecture::X86_64,
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "memory size must affect identity",
+            WorldNode {
+                memory_mib: 4096,
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "kernel command line must affect identity",
+            WorldNode {
+                cmdline: format!("{cmdline} quiet"),
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "kernel blob must affect identity",
+            WorldNode {
+                kernel: Some(blob_ref("kernel-v2")),
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "root image blob must affect identity",
+            WorldNode {
+                root_image: Some(blob_ref("root-image-v2")),
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "initrd blob must affect identity",
+            WorldNode {
+                initrd: Some(blob_ref("initrd-v2")),
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "fixed vCPU count must affect identity",
+            WorldNode {
+                smp_vcpus: 3,
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "fixed icount shift must affect identity",
+            WorldNode {
+                icount_shift: 2,
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "ready point must affect identity",
+            WorldNode {
+                ready_point: ReadyPoint::ConsoleMarker {
+                    marker: String::from("ready"),
+                },
+                ..base_node.clone()
+            },
+        );
+        assert_identity_changes(
+            "white-box opt-in must affect identity",
+            WorldNode {
+                white_box: WhiteBoxPolicy::Disabled,
+                ..base_node.clone()
+            },
+        );
+
+        assert!(matches!(
+            World::from_nodes(vec![WorldNode {
+                memory_mib: 0,
+                ..base_node
+            }]),
+            Err(EngineError::WorldNodeMemoryMibZero { node }) if node == node_id("vm")
+        ));
+        assert!(matches!(
+            ContentAddressedBlobRef::parse("kernel", "/nix/store/kernel"),
+            Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, value })
+                if field == "kernel" && value == "/nix/store/kernel"
+        ));
+        assert!(matches!(
+            World::from_canonical_toml(&host_path_toml),
+            Err(EngineError::ScenarioImageReferenceNotContentAddressed { field, value })
+                if field == "kernel" && value == "/nix/store/kernel"
+        ));
+    }
+
+    #[test]
     fn configuration_id_is_content_addressed_by_def_and_schedule() {
         let scenario =
             ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
@@ -1540,6 +1726,9 @@ mod tests {
         let node = node_id("node");
         let world = world_from_nodes(vec![WorldNode {
             id: node.clone(),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 10 },
             },
@@ -1615,6 +1804,9 @@ mod tests {
         let node = node_id("node");
         let world = world_from_nodes(vec![WorldNode {
             id: node.clone(),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 12 },
             },
@@ -1754,6 +1946,9 @@ mod tests {
         let node = node_id("node");
         let world = world_from_nodes(vec![WorldNode {
             id: node.clone(),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 13 },
             },
@@ -2005,6 +2200,9 @@ mod tests {
         );
         let agent = WorldNode {
             id: node_id("d"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -3095,6 +3293,9 @@ tag = "negative-time"
         );
         let white_box_ready_point_without_opt_in = World::from_nodes(vec![WorldNode {
             id: node_id("agent"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -3105,6 +3306,9 @@ tag = "negative-time"
         }]);
         let zero_vcpu_count = World::from_nodes(vec![WorldNode {
             id: node_id("zero-vcpu"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 1 },
             },
@@ -3117,6 +3321,9 @@ tag = "negative-time"
         }]);
         let icount_shift_too_large = World::from_nodes(vec![WorldNode {
             id: node_id("bad-shift"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 1 },
             },
@@ -3775,6 +3982,9 @@ tag = "negative-time"
                 ),
                 WorldNode {
                     id: node_id("agent"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
                     smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -3860,6 +4070,9 @@ tag = "negative-time"
             vec![
                 WorldNode {
                     id: node_id("a"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::FixedIcount {
                         icount: Icount { retired: 11 },
                     },
@@ -4464,6 +4677,9 @@ tag = "negative-time"
             ));
         let node_a = WorldNode {
             id: node_id("a"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::FixedIcount {
                 icount: Icount { retired: 1 },
             },
@@ -4476,6 +4692,9 @@ tag = "negative-time"
         };
         let node_b = WorldNode {
             id: node_id("b"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::NetworkIdle {
                 window: SimDuration { nanos: 12 },
             },
@@ -4488,6 +4707,9 @@ tag = "negative-time"
         };
         let node_c = WorldNode {
             id: node_id("c"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::ConsoleMarker {
                 marker: "ready".to_owned(),
             },
@@ -4854,15 +5076,15 @@ tag = "negative-time"
         assert_eq!(density.millionths(), 125_000);
         assert_eq!(
             authored_world.id().to_hex(),
-            "6b608a5f359126d4f982e63457be7b98fba6d9dbdbcd08648caded20acd06ad6"
+            "61ec12fd977d4673b7ab5b291831c52f391a4287a373f8198ace9eaf55ca8fb0"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.canonical_bytes()).to_hex(),
-            "254a02cbbc4631b6f34e6016c3bbab6a421a34725a11bf526b9fbe312f527d76"
+            "823a244bfbcf43723a7f21d7a96bc4271005dc0938ae39ce9fd70670486d7898"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
-            "be81ce79258b923f4e5e4946b1d691c87ba2a4b89629d4f101a5cf815754fff8"
+            "454d471d33c954cbc4d36617ffe9f666ef6761f25ed94482bf59448bbf47d208"
         );
         assert_eq!(
             authored_plan.content_hash().to_hex(),
@@ -4890,15 +5112,15 @@ tag = "negative-time"
         );
         assert_eq!(
             authored_form.id().to_hex(),
-            "4127da3550c97ed8fbcccca2963ff73114001001bd0644009ed42b3a825ced09"
+            "9af89ea579d9cba62209d8e8df73f316cfab3d3a7f98de05bb57aaedd5bde805"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-            "801fb1475d1c26e4b705bc418a7ad58955b8bf115451487d7af85e3cb84d19ab"
+            "6c4b2d2891da1aed1d336e43e35dd6186a02fd5df75a82e3603b3418857b8313"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-            "098479af7127a4272235783d0f7c1a6d2a21dac963cb5ce54cc10ac0bc60ed9c"
+            "b8cb69c893d97292f967e12373f53a03c4bd70e8efe8dbc2b9c15b3ba329e890"
         );
         assert_eq!(authored_world.id(), canonical_world.id());
         assert_eq!(authored_world.nodes(), canonical_world.nodes());
@@ -5214,6 +5436,9 @@ tag = "negative-time"
     fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         let invalid = World::from_nodes(vec![WorldNode {
             id: node_id("agent"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -5238,6 +5463,9 @@ tag = "negative-time"
         ]);
         let valid = World::from_nodes(vec![WorldNode {
             id: node_id("agent"),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -5285,6 +5513,9 @@ tag = "negative-time"
         for (index, (ready_point, white_box)) in policies.into_iter().enumerate() {
             let world = world_from_nodes(vec![WorldNode {
                 id: node_id(&format!("node-{index}")),
+                arch: NodeTemplate::DEFAULT_ARCH,
+                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                cmdline: String::new(),
                 ready_point,
                 white_box,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -5318,6 +5549,9 @@ tag = "negative-time"
                 "fixed-icount target",
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::FixedIcount {
                         icount: Icount { retired: 10 },
                     },
@@ -5330,6 +5564,9 @@ tag = "negative-time"
                 },
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::FixedIcount {
                         icount: Icount { retired: 11 },
                     },
@@ -5345,6 +5582,9 @@ tag = "negative-time"
                 "network-idle window",
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::NetworkIdle {
                         window: SimDuration { nanos: 250 },
                     },
@@ -5357,6 +5597,9 @@ tag = "negative-time"
                 },
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::NetworkIdle {
                         window: SimDuration { nanos: 251 },
                     },
@@ -5372,6 +5615,9 @@ tag = "negative-time"
                 "console marker",
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::ConsoleMarker {
                         marker: String::from("ready"),
                     },
@@ -5384,6 +5630,9 @@ tag = "negative-time"
                 },
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::ConsoleMarker {
                         marker: String::from("ready-v2"),
                     },
@@ -5399,6 +5648,9 @@ tag = "negative-time"
                 "agent-signal variant",
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::AgentSignal,
                     white_box: WhiteBoxPolicy::Enabled,
                     smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -5409,6 +5661,9 @@ tag = "negative-time"
                 },
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::ConsoleMarker {
                         marker: String::from("agent-ready"),
                     },
@@ -5424,6 +5679,9 @@ tag = "negative-time"
                 "white-box policy",
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::FixedIcount {
                         icount: Icount { retired: 10 },
                     },
@@ -5436,6 +5694,9 @@ tag = "negative-time"
                 },
                 WorldNode {
                     id: node_id("node"),
+                    arch: NodeTemplate::DEFAULT_ARCH,
+                    memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                    cmdline: String::new(),
                     ready_point: ReadyPoint::FixedIcount {
                         icount: Icount { retired: 10 },
                     },
@@ -5922,6 +6183,9 @@ tag = "negative-time"
     fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
         WorldNode {
             id: node_id(name),
+            arch: NodeTemplate::DEFAULT_ARCH,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,

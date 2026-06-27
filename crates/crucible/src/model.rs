@@ -27,6 +27,7 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Minimum one-way logical link latency in virtual nanoseconds.
 pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
 const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
+const MIN_WORLD_MEMORY_MIB: u32 = 1;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_FAMILY_FAULT_DENSITY_MILLIONTHS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
@@ -703,8 +704,8 @@ impl World {
     ///
     /// # Errors
     ///
-    /// Returns the same topology, ready-point, vCPU-count, and icount-shift
-    /// validation errors as [`World::from_nodes_and_links`].
+    /// Returns the same topology, ready-point, and launch-input validation
+    /// errors as [`World::from_nodes_and_links`].
     pub fn from_recorded_parts(
         id: ContentHash,
         nodes: Vec<WorldNode>,
@@ -746,9 +747,10 @@ impl World {
     /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
     /// a node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`]. Returns
-    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`],
+    /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// timing fields are invalid.
+    /// fields are invalid.
     pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
         Self::from_nodes_and_links(nodes, Vec::new())
     }
@@ -764,9 +766,10 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
-    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`],
+    /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// timing fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
@@ -799,9 +802,10 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
-    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`],
+    /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// timing fields are invalid, or a link validation error from
+    /// fields are invalid, or a link validation error from
     /// [`World::validate_topology`].
     pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
         self.validate_topology()
@@ -815,9 +819,10 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
-    /// [`EngineError::WorldNodeSmpVcpuCountZero`] or
+    /// [`EngineError::WorldNodeSmpVcpuCountZero`],
+    /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// timing fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
@@ -1025,6 +1030,9 @@ impl World {
 /// Reusable node settings for code-first scenario authoring.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeTemplate {
+    arch: VmArchitecture,
+    memory_mib: u32,
+    cmdline: String,
     ready_point: ReadyPoint,
     white_box: WhiteBoxPolicy,
     smp_vcpus: u16,
@@ -1035,6 +1043,10 @@ pub struct NodeTemplate {
 }
 
 impl NodeTemplate {
+    /// The default virtual-machine architecture for a world node.
+    pub const DEFAULT_ARCH: VmArchitecture = VmArchitecture::X86_64;
+    /// The default virtual-machine memory size in MiB.
+    pub const DEFAULT_MEMORY_MIB: u32 = 512;
     /// The default fixed vCPU count for a world node.
     pub const DEFAULT_SMP_VCPUS: u16 = 1;
     /// The default fixed icount shift for a world node.
@@ -1044,6 +1056,9 @@ impl NodeTemplate {
     #[must_use]
     pub fn new(ready_point: ReadyPoint) -> Self {
         Self {
+            arch: Self::DEFAULT_ARCH,
+            memory_mib: Self::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
@@ -1078,6 +1093,9 @@ impl NodeTemplate {
     #[must_use]
     pub fn agent_signal() -> Self {
         Self {
+            arch: Self::DEFAULT_ARCH,
+            memory_mib: Self::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
@@ -1092,6 +1110,9 @@ impl NodeTemplate {
     #[must_use]
     pub fn from_world_node(node: &WorldNode) -> Self {
         Self {
+            arch: node.arch,
+            memory_mib: node.memory_mib,
+            cmdline: node.cmdline.clone(),
             ready_point: node.ready_point.clone(),
             white_box: node.white_box,
             smp_vcpus: node.smp_vcpus,
@@ -1113,6 +1134,27 @@ impl NodeTemplate {
     #[must_use]
     pub fn white_box(mut self, white_box: WhiteBoxPolicy) -> Self {
         self.white_box = white_box;
+        self
+    }
+
+    /// Replaces the virtual-machine architecture.
+    #[must_use]
+    pub fn arch(mut self, arch: VmArchitecture) -> Self {
+        self.arch = arch;
+        self
+    }
+
+    /// Replaces the virtual-machine memory size in MiB.
+    #[must_use]
+    pub fn memory_mib(mut self, memory_mib: u32) -> Self {
+        self.memory_mib = memory_mib;
+        self
+    }
+
+    /// Replaces the guest kernel command line.
+    #[must_use]
+    pub fn cmdline(mut self, cmdline: impl Into<String>) -> Self {
+        self.cmdline = cmdline.into();
         self
     }
 
@@ -1154,6 +1196,9 @@ impl NodeTemplate {
     fn instantiate(&self, id: NodeId) -> WorldNode {
         WorldNode {
             id,
+            arch: self.arch,
+            memory_mib: self.memory_mib,
+            cmdline: self.cmdline.clone(),
             ready_point: self.ready_point.clone(),
             white_box: self.white_box,
             smp_vcpus: self.smp_vcpus,
@@ -3106,11 +3151,35 @@ pub struct NodeId {
     pub name: String,
 }
 
+/// A supported virtual-machine architecture for a spatial world node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VmArchitecture {
+    /// x86-64 guest machine architecture.
+    X86_64,
+    /// AArch64 guest machine architecture.
+    Aarch64,
+}
+
+impl VmArchitecture {
+    fn material(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+}
+
 /// One node's model-level ready-point configuration inside a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WorldNode {
     /// Stable node identity within the world.
     pub id: NodeId,
+    /// Guest virtual-machine architecture.
+    pub arch: VmArchitecture,
+    /// Guest virtual-machine memory in MiB.
+    pub memory_mib: u32,
+    /// Guest kernel command line.
+    pub cmdline: String,
     /// The deterministic point where this node reaches `t = 0`.
     pub ready_point: ReadyPoint,
     /// Whether this node opts into the white-box guest-host channel.
@@ -7166,6 +7235,11 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
+    /// A world node has no guest memory.
+    WorldNodeMemoryMibZero {
+        /// The invalid node.
+        node: NodeId,
+    },
     /// A world node has an unsupported fixed icount shift.
     WorldNodeIcountShiftTooLarge {
         /// The invalid node.
@@ -7398,6 +7472,9 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeSmpVcpuCountZero { .. } => {
                 f.write_str("world node fixed vCPU count must be at least one")
+            }
+            Self::WorldNodeMemoryMibZero { .. } => {
+                f.write_str("world node memory size must be at least one MiB")
             }
             Self::WorldNodeIcountShiftTooLarge { .. } => {
                 f.write_str("world node fixed icount shift is outside the legal range")
@@ -8373,6 +8450,11 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
                 node: node.id.clone(),
             });
         }
+        if node.memory_mib < MIN_WORLD_MEMORY_MIB {
+            return Err(EngineError::WorldNodeMemoryMibZero {
+                node: node.id.clone(),
+            });
+        }
         if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT {
             return Err(EngineError::WorldNodeIcountShiftTooLarge {
                 node: node.id.clone(),
@@ -8854,6 +8936,12 @@ struct WorldToml {
 #[serde(deny_unknown_fields)]
 struct WorldNodeToml {
     id: String,
+    #[serde(default = "default_vm_arch_toml")]
+    arch: VmArchitectureToml,
+    #[serde(default = "default_world_node_memory_mib")]
+    memory_mib: u32,
+    #[serde(default)]
+    cmdline: String,
     smp_vcpus: u16,
     icount_shift: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -8864,6 +8952,14 @@ struct WorldNodeToml {
     initrd: Option<String>,
     ready_point: ReadyPointToml,
     white_box: WhiteBoxToml,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum VmArchitectureToml {
+    X86_64,
+    Aarch64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -9099,6 +9195,9 @@ fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
 fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
     WorldNodeToml {
         id: node.id.name.clone(),
+        arch: vm_arch_to_toml(node.arch),
+        memory_mib: node.memory_mib,
+        cmdline: node.cmdline.clone(),
         smp_vcpus: node.smp_vcpus,
         icount_shift: node.icount_shift,
         kernel: node.kernel.map(ContentAddressedBlobRef::to_uri),
@@ -9115,6 +9214,9 @@ fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
     let initrd = parse_optional_blob_ref("initrd", toml.initrd)?;
     Ok(WorldNode {
         id: NodeId { name: toml.id },
+        arch: vm_arch_from_toml(toml.arch),
+        memory_mib: toml.memory_mib,
+        cmdline: toml.cmdline,
         ready_point: ready_point_from_toml(toml.ready_point),
         white_box: white_box_from_toml(toml.white_box),
         smp_vcpus: toml.smp_vcpus,
@@ -9123,6 +9225,28 @@ fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
         root_image,
         initrd,
     })
+}
+
+fn default_vm_arch_toml() -> VmArchitectureToml {
+    vm_arch_to_toml(NodeTemplate::DEFAULT_ARCH)
+}
+
+fn default_world_node_memory_mib() -> u32 {
+    NodeTemplate::DEFAULT_MEMORY_MIB
+}
+
+fn vm_arch_to_toml(arch: VmArchitecture) -> VmArchitectureToml {
+    match arch {
+        VmArchitecture::X86_64 => VmArchitectureToml::X86_64,
+        VmArchitecture::Aarch64 => VmArchitectureToml::Aarch64,
+    }
+}
+
+fn vm_arch_from_toml(toml: VmArchitectureToml) -> VmArchitecture {
+    match toml {
+        VmArchitectureToml::X86_64 => VmArchitecture::X86_64,
+        VmArchitectureToml::Aarch64 => VmArchitecture::Aarch64,
+    }
 }
 
 fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
@@ -9952,6 +10076,9 @@ fn read_world_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World, Eng
 
 fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&node.id.name);
+    write_vm_arch_binary(node.arch, writer);
+    writer.write_u32(node.memory_mib);
+    writer.write_string(&node.cmdline);
     writer.write_u32(u32::from(node.smp_vcpus));
     writer.write_u8(node.icount_shift);
     writer.write_optional_blob_ref(node.kernel);
@@ -9968,6 +10095,9 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
     let id = NodeId {
         name: reader.read_string()?,
     };
+    let arch = read_vm_arch_binary(reader)?;
+    let memory_mib = reader.read_u32()?;
+    let cmdline = reader.read_string()?;
     let smp_vcpus = u16::try_from(reader.read_u32()?)
         .map_err(|_error| scenario_serialization_error("world node vCPU count overflows u16"))?;
     let icount_shift = reader.read_u8()?;
@@ -9982,6 +10112,9 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
     };
     Ok(WorldNode {
         id,
+        arch,
+        memory_mib,
+        cmdline,
         ready_point,
         white_box,
         smp_vcpus,
@@ -9990,6 +10123,25 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
         root_image,
         initrd,
     })
+}
+
+fn write_vm_arch_binary(arch: VmArchitecture, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match arch {
+        VmArchitecture::X86_64 => 0,
+        VmArchitecture::Aarch64 => 1,
+    });
+}
+
+fn read_vm_arch_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<VmArchitecture, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(VmArchitecture::X86_64),
+        1 => Ok(VmArchitecture::Aarch64),
+        _ => Err(scenario_serialization_error(
+            "invalid virtual-machine architecture tag",
+        )),
+    }
 }
 
 fn write_ready_point_binary(ready_point: &ReadyPoint, writer: &mut ScenarioBinaryWriter) {
@@ -10987,9 +11139,13 @@ fn world_links_material(links: &[LinkDef]) -> String {
 
 fn world_node_material(node: &WorldNode) -> String {
     format!(
-        "node_id_len={}\nnode_id={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
+        "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
         node.id.name,
+        node.arch.material(),
+        node.memory_mib,
+        node.cmdline.len(),
+        node.cmdline,
         node.smp_vcpus,
         node.icount_shift,
         optional_blob_ref_material(node.kernel),
