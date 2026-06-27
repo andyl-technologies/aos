@@ -137,26 +137,24 @@ impl PersistCache {
     /// artifact materializers can publish those records without a blob-index
     /// entry. The returned byte counts are sidecar/pending-root diagnostics
     /// only; node metadata references, cross-process raw writers, and the
-    /// final RFC GC live-root model are outside this plan. The method does not
-    /// write sidecars, truncate packs, relocate records, or coordinate with
-    /// cross-process writers.
+    /// final RFC GC live-root model are outside this plan. The cache-level
+    /// call holds shared advisory reader locks while inspecting sidecars and
+    /// the selected pack, but it does not write sidecars, truncate packs, or
+    /// relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackLivenessPlanError`] if a same-root root-sidecar
-    /// lock is poisoned, if an artifact mapping advisory read lock cannot be
-    /// acquired, if roots cannot be snapshotted, if a blob-index entry targets
-    /// the wrong store, if any latest live root fails verification, or if the
-    /// selected pack cannot be fully scanned and verified.
+    /// Returns [`PersistBlobPackLivenessPlanError`] if a selected store or
+    /// artifact mapping advisory read lock cannot be acquired, if a same-root
+    /// root-sidecar lock is poisoned, if roots cannot be snapshotted, if a
+    /// blob-index entry targets the wrong store, if any latest live root fails
+    /// verification, or if the selected pack cannot be fully scanned and
+    /// verified.
     pub fn plan_blob_pack_liveness(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
-        let _blob_guard = self.root_locks.lock_blob_index(store).map_err(|source| {
-            PersistBlobPackLivenessPlanError::Roots {
-                source: PersistBlobLiveRootError::BlobIndex { source },
-            }
-        })?;
+        let (_blob_advisory_guard, _blob_guard) = self.lock_blob_liveness_plan_read(store)?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
             Some(self.lock_file_artifact_read().map_err(|source| {
                 PersistBlobPackLivenessPlanError::Roots {
@@ -246,10 +244,11 @@ impl PersistCache {
     /// This read-only diagnostic first builds [`Self::plan_blob_pack_liveness`],
     /// then assigns each verified rooted record a contiguous location in a
     /// fresh compacted pack while preserving current pack order. Unrooted
-    /// records are reported as omitted. The method does not write sidecars,
-    /// copy payload bytes, replace packfiles, choose a retention policy, or
-    /// coordinate with cross-process writers. For `files/`, the returned plan
-    /// can include same-process pending artifact roots, but applying such a
+    /// records are reported as omitted. The cache-level call shares the
+    /// liveness plan's advisory reader locks while inspecting current state,
+    /// but it does not write sidecars, copy payload bytes, replace packfiles,
+    /// or choose a retention policy. For `files/`, the returned plan can
+    /// include same-process pending artifact roots, but applying such a
     /// relocation still requires a writer-quiescence protocol because callers
     /// with in-flight artifact index entries hold old locations.
     ///

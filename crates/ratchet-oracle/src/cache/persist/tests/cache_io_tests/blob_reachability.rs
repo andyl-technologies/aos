@@ -3,6 +3,43 @@
 use super::*;
 
 #[test]
+fn cache_value_blob_reachability_plan_acquires_value_store_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_value_blob_reachability()
+            .map(|plan| plan.node_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("value reachability plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "value reachability planning should wait while the value store lock is held"
+    );
+    drop(guard);
+
+    let node_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("value reachability plan completes after value store lock release")
+        .expect("value reachability plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(node_roots, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_reachability_plan_classifies_value_records() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -385,6 +422,43 @@ fn cache_file_blob_reachability_plan_classifies_file_records() {
             .as_slice(),
         parse_payload
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_file_blob_reachability_plan_acquires_file_store_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Files)
+        .expect("file store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .plan_file_blob_reachability()
+            .map(|plan| plan.blob_index_roots().len())
+            .map_err(|error| error.to_string());
+        tx.send(result)
+            .expect("file reachability plan result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Files));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "file reachability planning should wait while the file store lock is held"
+    );
+    drop(guard);
+
+    let blob_index_roots = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("file reachability plan completes after file store lock release")
+        .expect("file reachability plan succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(blob_index_roots, 0);
 
     let _ = fs::remove_dir_all(root);
 }

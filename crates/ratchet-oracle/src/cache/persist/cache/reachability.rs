@@ -12,23 +12,22 @@ impl PersistCache {
     /// resolved pack records without materializing payloads. Metadata records
     /// without a value hash are ignored. Metadata
     /// links whose value hash is missing from the blob index are reported as
-    /// missing roots. The method does not rewrite sidecars, choose a retention
-    /// window, delete blobs, relocate records, or coordinate with cross-process
-    /// writers.
+    /// missing roots. The cache-level call holds the shared value-store
+    /// advisory reader lock while inspecting the value index and pack, but it
+    /// does not rewrite sidecars, choose a retention window, delete blobs, or
+    /// relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeValueRootPlanError`] if the same-root value-index
-    /// or node-metadata lock is poisoned, if either sidecar cannot be
-    /// snapshotted, or if a blob location selected by node metadata cannot be
-    /// verified against the linked value hash.
+    /// Returns [`PersistNodeValueRootPlanError`] if the value-store advisory
+    /// read lock cannot be acquired, if the same-root value-index or
+    /// node-metadata lock is poisoned, if either sidecar cannot be snapshotted,
+    /// or if a blob location selected by node metadata cannot be verified
+    /// against the linked value hash.
     pub fn plan_node_value_roots(
         &self,
     ) -> Result<PersistNodeValueRootPlan, PersistNodeValueRootPlanError> {
-        let _value_guard = self
-            .root_locks
-            .lock_blob_index(PersistBlobStore::Values)
-            .map_err(|source| PersistNodeValueRootPlanError::BlobIndex { source })?;
+        let (_value_advisory_guard, _value_guard) = self.lock_node_value_root_plan_read()?;
         let _metadata_guard = self
             .root_locks
             .lock_node_metadata()
@@ -71,20 +70,24 @@ impl PersistCache {
     /// scans the value pack, and classifies verified physical records as
     /// node-rooted, indexed without a current node root, or absent from the
     /// latest value index. Missing node value links are reported separately.
-    /// The method does not choose a retention window, prune metadata, rewrite
-    /// sidecars, delete blobs, relocate records, or coordinate with
-    /// cross-process writers.
+    /// The cache-level call holds the shared value-store advisory reader lock
+    /// while inspecting the value index and pack, but it does not choose a
+    /// retention window, prune metadata, rewrite sidecars, delete blobs, or
+    /// relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistValueBlobReachabilityPlanError`] if the same-root
-    /// value-index or node-metadata lock is poisoned, if either sidecar cannot
-    /// be snapshotted, if the value index contains a non-value key, if an
-    /// indexed value blob cannot be verified, or if the value pack cannot be
-    /// fully scanned and verified.
+    /// Returns [`PersistValueBlobReachabilityPlanError`] if the value-store
+    /// advisory read lock cannot be acquired, if the same-root value-index or
+    /// node-metadata lock is poisoned, if either sidecar cannot be snapshotted,
+    /// if the value index contains a non-value key, if an indexed value blob
+    /// cannot be verified, or if the value pack cannot be fully scanned and
+    /// verified.
     pub fn plan_value_blob_reachability(
         &self,
     ) -> Result<PersistValueBlobReachabilityPlan, PersistValueBlobReachabilityPlanError> {
+        let (_value_advisory_guard, _value_guard) =
+            self.lock_value_blob_reachability_plan_read()?;
         let metadata_entries = {
             let _metadata_guard = self
                 .root_locks
@@ -94,10 +97,6 @@ impl PersistCache {
                 .latest_entries()
                 .map_err(|source| PersistValueBlobReachabilityPlanError::Metadata { source })?
         };
-        let _value_guard = self
-            .root_locks
-            .lock_blob_index(PersistBlobStore::Values)
-            .map_err(|source| PersistValueBlobReachabilityPlanError::BlobIndex { source })?;
         let value_entries = self
             .value_index
             .latest_entries()
@@ -184,25 +183,24 @@ impl PersistCache {
     /// latest `files/` blob-index entries. It verifies every captured root,
     /// scans the file pack, and classifies verified physical records by the
     /// strongest root source: file artifact, parse artifact, pending artifact,
-    /// blob-index-only, or unindexed. The method does not choose a retention
-    /// window, rewrite sidecars, delete blobs, relocate records, or coordinate
-    /// with cross-process writers.
+    /// blob-index-only, or unindexed. The cache-level call holds the shared
+    /// file-store advisory reader lock while inspecting the file index and
+    /// pack, and holds shared artifact mapping advisory reader locks while
+    /// snapshotting artifact sidecars; it does not choose a retention window,
+    /// rewrite sidecars, delete blobs, or relocate records.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileBlobReachabilityPlanError`] if the same-root file
-    /// blob-index, file-artifact, or parse-artifact lock is poisoned, if an
-    /// artifact mapping advisory read lock cannot be acquired, if roots cannot
-    /// be snapshotted, if the file blob index contains a non-file key, if any
-    /// captured root cannot be verified, or if the file pack cannot be fully
-    /// scanned and verified.
+    /// Returns [`PersistFileBlobReachabilityPlanError`] if a file-store or
+    /// artifact mapping advisory read lock cannot be acquired, if the same-root
+    /// file blob-index, file-artifact, or parse-artifact lock is poisoned, if
+    /// roots cannot be snapshotted, if the file blob index contains a non-file
+    /// key, if any captured root cannot be verified, or if the file pack cannot
+    /// be fully scanned and verified.
     pub fn plan_file_blob_reachability(
         &self,
     ) -> Result<PersistFileBlobReachabilityPlan, PersistFileBlobReachabilityPlanError> {
-        let _file_guard = self
-            .root_locks
-            .lock_blob_index(PersistBlobStore::Files)
-            .map_err(|source| PersistFileBlobReachabilityPlanError::BlobIndex { source })?;
+        let (_file_advisory_guard, _file_guard) = self.lock_file_blob_reachability_plan_read()?;
         let pending_artifact_roots = self
             .root_locks
             .pending_file_roots()

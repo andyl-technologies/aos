@@ -1489,54 +1489,61 @@ alone (`M-1`/`Q-A`).
       latest live roots used by tail trimming plus same-process pending
       file/parse artifact roots, scans the selected pack, and classifies
       verified physical records as rooted or sidecar-unrooted with byte counts
-      for current tail-trim candidates. For `files/`, file/parse artifact
-      sidecar snapshots hold shared mapping advisory locks plus the same-root
-      mapping locks. This is diagnostic planning only, not the final RFC GC root
-      model: node metadata reachability is covered by the value reachability
-      plan below, applied pack rewriting is covered by the explicit repack
-      helpers below, and automatic GC policy, full cross-process/raw-writer
-      coordination, mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      for current tail-trim candidates while holding the selected store's
+      shared advisory lock plus same-root store lock. For `files`, file/parse
+      artifact sidecar snapshots also hold shared mapping advisory locks plus
+      the same-root mapping locks. This is diagnostic planning only, not the
+      final RFC GC root model: node metadata reachability is covered by the
+      value reachability plan below, applied pack rewriting is covered by the
+      explicit repack helpers below, and automatic GC policy, raw lower-level
+      writer coordination, mmap reads, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current read-only blob-pack repack plan:
       `PersistCache::plan_blob_pack_repack` builds the selected store's
       liveness plan, preserves verified live records in current pack order,
       assigns their contiguous locations in a fresh compacted pack, and reports
-      omitted unrooted records plus before/after byte counts. This is
-      relocation planning only; applying `files/` plans with pending artifact
-      roots, automatic GC policy, cross-process/raw-writer coordination, mmap
-      reads, Attic transport, and harness proof remain open
+      omitted unrooted records plus before/after byte counts. Public planning
+      holds the liveness plan's shared advisory read locks while inspecting
+      current state. This is relocation planning only; applying `files` plans
+      with pending artifact roots, automatic GC policy, raw lower-level writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current read-only node value-root plan:
       `PersistCache::plan_node_value_roots` snapshots latest node metadata,
-      resolves materialized value hashes through the `values/` blob index, and
+      resolves materialized value hashes through the `values` blob index, and
       verifies resolved value-pack records while reporting metadata links whose
-      value hash is missing from the blob index. This is diagnostic
-      node-to-value reachability only; retention windows, metadata pruning,
-      pack rewriting/deletion, live-record relocation, automatic GC policy,
-      cross-process/raw-writer coordination, mmap reads, Attic transport, and
-      harness proof remain open (`C-13`/`R-14`).
+      value hash is missing from the blob index. The value-index snapshot and
+      value-pack verification run under the shared `values` store advisory lock
+      plus same-root store lock. This is diagnostic node-to-value reachability
+      only; retention windows, metadata pruning, pack rewriting/deletion,
+      live-record relocation, automatic GC policy, raw lower-level writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current read-only value-pack reachability plan:
       `PersistCache::plan_value_blob_reachability` snapshots latest node
-      metadata and `values/` blob-index entries, verifies node-rooted records,
+      metadata and `values` blob-index entries, verifies node-rooted records,
       scans the value pack, and classifies physical records as node-rooted,
       indexed-without-node-root, or absent from latest index roots while
-      reporting missing node metadata links. This is diagnostic classification
-      only; retention windows, metadata pruning, sidecar repair, pack
-      rewriting/deletion, live-record relocation, automatic GC policy,
-      cross-process/raw-writer coordination, mmap reads, Attic transport, and
-      harness proof remain open (`C-13`/`R-14`).
+      reporting missing node metadata links. The value-index snapshot and
+      value-pack verification/scan run under the shared `values` store advisory
+      lock plus same-root store lock. This is diagnostic classification only;
+      retention windows, metadata pruning, sidecar repair, pack
+      rewriting/deletion, live-record relocation, automatic GC policy, raw
+      lower-level writer coordination, mmap reads, Attic transport, and harness
+      proof remain open (`C-13`/`R-14`).
 - [x] Current read-only file-pack reachability plan:
       `PersistCache::plan_file_blob_reachability` snapshots latest
-      file-artifact, parse-artifact, `files/` blob-index, and same-process
+      file-artifact, parse-artifact, `files` blob-index, and same-process
       pending artifact roots, verifies captured roots, scans the file pack, and
       classifies physical records as file-artifact-rooted,
       parse-artifact-rooted, pending-artifact-rooted, indexed-without-artifact,
-      or absent from all captured roots. File/parse artifact sidecar snapshots
-      hold shared mapping advisory locks plus the same-root mapping locks. This
-      is diagnostic classification only; retention windows, sidecar repair, pack
-      rewriting/deletion, live-record relocation, automatic GC policy, full
-      cross-process/raw-writer coordination, mmap reads, Attic transport, and
-      harness proof remain open (`C-13`/`R-14`).
+      or absent from all captured roots while holding the shared `files` store
+      advisory lock plus same-root store lock. File/parse artifact sidecar
+      snapshots also hold shared mapping advisory locks plus the same-root
+      mapping locks. This is diagnostic classification only; retention windows,
+      sidecar repair, pack rewriting/deletion, live-record relocation, automatic
+      GC policy, raw lower-level writer coordination, mmap reads, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` staged file-replacement primitive:
       `ratchet-cache::file_replace::FileReplacementSet` owns ordered staged
       file replacement with stale-backup removal, target-to-backup moves,
@@ -1697,25 +1704,30 @@ alone (`M-1`/`Q-A`).
       `.locks/files.lock`, then acquire the same-process store mutex while they
       write the pack and/or blob-index sidecar, truncate the pack tail, or stage
       and swap a compacted pack.
-      Cache-level indexed blob reads (`read_blob_indexed`) first acquire a shared
-      advisory lock for the selected store, then acquire the same-process store
-      mutex while they read the sidecar location and verify the referenced pack
-      record; indexed artifact hydration reads first acquire shared `files` store
-      and artifact-mapping advisory locks, then acquire the same-process store and
-      mapping mutexes while they read the sidecar mapping and verify the referenced
-      `files/` pack record. Cooperating readers can share advisory locks but
-      serialize against cache-level writers and maintenance.
+      Cache-level indexed blob reads and read-only pack planners
+      (`read_blob_indexed`, `plan_blob_pack_liveness`,
+      `plan_blob_pack_repack`, `plan_node_value_roots`,
+      `plan_value_blob_reachability`, and `plan_file_blob_reachability`) first
+      acquire a shared advisory lock for the selected store, then acquire the
+      same-process store mutex while they read sidecar locations and verify or
+      scan pack records; indexed artifact hydration reads first acquire shared
+      `files` store and artifact-mapping advisory locks, then acquire the
+      same-process store and mapping mutexes while they read the sidecar mapping
+      and verify the referenced `files` pack record. Cooperating readers can
+      share advisory locks but serialize against cache-level writers and
+      maintenance.
       Simultaneous same-key materialization through separate opens of the same
       root shares the same `ensure_blob_indexed` critical section, and
-      cooperating cross-process cache-level blob readers, artifact hydration
-      readers, writers, tail trims, and pack repacks share the same advisory
-      files. The initially-missing indexed case collapses to one fresh verified
+      cooperating cross-process cache-level blob readers, planners, artifact
+      hydration readers, writers, tail trims, and pack repacks share the same
+      advisory files. The initially-missing indexed case collapses to one fresh verified
       pack record and newest sidecar entry for the selected store, poisoned
       same-root locks are mapped back into the existing oracle error surface
       before any cache-level raw append, indexed append/index write, indexed
-      read, indexed hydration read, blob-index compaction/rebuild, blob-pack
-      tail trim, or blob-pack repack, and an opened symlink-root handle keeps
-      writing the canonical target it opened even if the symlink is retargeted.
+      read, indexed hydration read, liveness/reachability plan, blob-index
+      compaction/rebuild, blob-pack tail trim, or blob-pack repack, and an
+      opened symlink-root handle keeps writing the canonical target it opened
+      even if the symlink is retargeted.
       Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users,
       cross-process pending artifact publication during file maintenance,
       different roots, two-machine misses, full filesystem-lock/CAS policy,
@@ -1828,19 +1840,19 @@ alone (`M-1`/`Q-A`).
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
       drop-time release; oracle root open now uses it for `.locks/open.lock`,
-      cache-level indexed blob reads and indexed artifact hydration reads,
-      raw/indexed blob writes plus blob-index compaction/rebuild, blob-pack tail
-      trim, and blob-pack repack use it for `.locks/values.lock` and
-      `.locks/files.lock`, and cache-level file/parse artifact raw mapping
-      lookups, liveness/reachability sidecar snapshots, mapping writes, indexed
-      artifact hydration reads, and file-pack maintenance phases use
-      `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`, cache-level
-      node metadata writes plus metadata compaction use
+      cache-level indexed blob reads, read-only liveness/reachability planners,
+      indexed artifact hydration reads, raw/indexed blob writes plus blob-index
+      compaction/rebuild, blob-pack tail trim, and blob-pack repack use it for
+      `.locks/values.lock` and `.locks/files.lock`, and cache-level file/parse
+      artifact raw mapping lookups, liveness/reachability sidecar snapshots,
+      mapping writes, indexed artifact hydration reads, and file-pack maintenance
+      phases use `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`,
+      cache-level node metadata writes plus metadata compaction use
       `.locks/node-metadata.lock`, and cache-level node trace writes plus trace
       compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected
-      cache-level blob-store reads/writes/maintenance plus mapping/metadata/trace
-      writes/maintenance only:
+      cache-level blob-store reads/writes/planning/maintenance plus
+      mapping/metadata/trace writes/maintenance only:
       raw/lower-level pack/index/sidecar writers, cross-process pending
       artifact publication, mmap read leases, CAS protocols, mandatory locking,
       raw-writer enforcement, two-machine races, and loom/harness proof remain

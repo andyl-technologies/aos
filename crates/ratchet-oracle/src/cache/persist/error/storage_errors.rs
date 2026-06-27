@@ -156,6 +156,18 @@ impl From<PersistBlobLiveRootError> for PersistBlobPackTrimError {
 /// Persistent blob-pack liveness planning failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackLivenessPlanError {
+    /// The advisory blob-store read lock could not be acquired.
+    #[error(
+        "failed to acquire persistent blob-pack liveness advisory read lock for {store:?} at {path}"
+    )]
+    AdvisoryReadLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// Live roots could not be locked, snapshotted, or decoded.
     #[error("failed to collect persistent blob live roots before liveness planning")]
     Roots {
@@ -302,6 +314,18 @@ pub enum PersistFileBlobPackRepackError {
 /// Persistent node-metadata value-root planning failed.
 #[derive(Debug, Error)]
 pub enum PersistNodeValueRootPlanError {
+    /// The advisory value-store read lock could not be acquired.
+    #[error(
+        "failed to acquire persistent node value-root advisory read lock for {store:?} at {path}"
+    )]
+    AdvisoryReadLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// Node metadata roots could not be locked or snapshotted.
     #[error("failed to lock or snapshot persistent node metadata value roots")]
     Metadata {
@@ -325,6 +349,18 @@ pub enum PersistNodeValueRootPlanError {
 /// Persistent value-pack reachability planning failed.
 #[derive(Debug, Error)]
 pub enum PersistValueBlobReachabilityPlanError {
+    /// The advisory value-store read lock could not be acquired.
+    #[error(
+        "failed to acquire persistent value reachability advisory read lock for {store:?} at {path}"
+    )]
+    AdvisoryReadLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// Node metadata roots could not be locked or snapshotted.
     #[error("failed to lock or snapshot persistent node metadata for value reachability")]
     Metadata {
@@ -360,6 +396,18 @@ pub enum PersistValueBlobReachabilityPlanError {
 /// Persistent file-pack reachability planning failed.
 #[derive(Debug, Error)]
 pub enum PersistFileBlobReachabilityPlanError {
+    /// The advisory file-store read lock could not be acquired.
+    #[error(
+        "failed to acquire persistent file reachability advisory read lock for {store:?} at {path}"
+    )]
+    AdvisoryReadLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The file blob index could not be locked or snapshotted.
     #[error("failed to lock or snapshot persistent file blob index for reachability")]
     BlobIndex {

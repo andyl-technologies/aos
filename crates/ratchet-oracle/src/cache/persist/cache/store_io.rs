@@ -54,6 +54,85 @@ impl PersistCache {
         Ok((advisory_guard, read_guard))
     }
 
+    pub(super) fn lock_blob_liveness_plan_read(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobPackLivenessPlanError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(
+                |source| PersistBlobPackLivenessPlanError::AdvisoryReadLock {
+                    store,
+                    path,
+                    source,
+                },
+            )?;
+        let read_guard = self.root_locks.lock_blob_index(store).map_err(|source| {
+            PersistBlobPackLivenessPlanError::Roots {
+                source: PersistBlobLiveRootError::BlobIndex { source },
+            }
+        })?;
+        Ok((advisory_guard, read_guard))
+    }
+
+    pub(super) fn lock_node_value_root_plan_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeValueRootPlanError> {
+        let store = PersistBlobStore::Values;
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistNodeValueRootPlanError::AdvisoryReadLock {
+                store,
+                path,
+                source,
+            })?;
+        let read_guard = self
+            .root_locks
+            .lock_blob_index(store)
+            .map_err(|source| PersistNodeValueRootPlanError::BlobIndex { source })?;
+        Ok((advisory_guard, read_guard))
+    }
+
+    pub(super) fn lock_value_blob_reachability_plan_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistValueBlobReachabilityPlanError> {
+        let store = PersistBlobStore::Values;
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(
+                |source| PersistValueBlobReachabilityPlanError::AdvisoryReadLock {
+                    store,
+                    path,
+                    source,
+                },
+            )?;
+        let read_guard = self
+            .root_locks
+            .lock_blob_index(store)
+            .map_err(|source| PersistValueBlobReachabilityPlanError::BlobIndex { source })?;
+        Ok((advisory_guard, read_guard))
+    }
+
+    pub(super) fn lock_file_blob_reachability_plan_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistFileBlobReachabilityPlanError> {
+        let store = PersistBlobStore::Files;
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(
+                |source| PersistFileBlobReachabilityPlanError::AdvisoryReadLock {
+                    store,
+                    path,
+                    source,
+                },
+            )?;
+        let read_guard = self
+            .root_locks
+            .lock_blob_index(store)
+            .map_err(|source| PersistFileBlobReachabilityPlanError::BlobIndex { source })?;
+        Ok((advisory_guard, read_guard))
+    }
+
     pub(super) fn lock_blob_pack_write(
         &self,
         store: PersistBlobStore,
