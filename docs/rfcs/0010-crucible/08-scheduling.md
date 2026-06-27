@@ -1151,8 +1151,8 @@ application of explorer-supplied preemption decisions
   after RUN, so mixed due frame/I/O/fault events become visible at their delivery
   icount before EMIT/STEP. Focused regressions cover mixed-class due sets,
   pending-order independence, backend target mismatch rejection, and I/O
-  delivery-icount mismatch rejection. Late-delivery localization remains
-  T-SCHED-18, and event-log materialization remains T-SCHED-19.
+  delivery-icount mismatch rejection. Event-log materialization remains
+  T-SCHED-19.
 - [x] **T-SCHED-17** Route every probabilistic RESOLVE choice through the seeded
   decision RNG in total order and record each as a `Decision` in the `Schedule`.
   — satisfies [SCHED-30]; spec §8.9.4.
@@ -1168,9 +1168,18 @@ application of explorer-supplied preemption decisions
   transport order, repeated quanta hydrating the same stream from the prior
   schedule, and deterministic RESOLVE events producing no probabilistic
   decisions.
-- [ ] **T-SCHED-18** Enforce the lookahead guarantee in RESOLVE: a consumer that
+- [x] **T-SCHED-18** Enforce the lookahead guarantee in RESOLVE: a consumer that
   ran past a due event's delivery icount fails loudly and localizes; never
   deliver late. — satisfies [SCHED-31]; spec §8.9.4.
+  Completed by `checks.crucible.phase3.schedulerLateDelivery`.
+  `resolve_due_scheduled_events` now treats the reached frontier as an exact
+  RESOLVE boundary: events whose delivery time equals the frontier are drained in
+  canonical order, events ahead of the frontier remain queued, and any event for
+  the advanced consumer whose delivery time is behind the frontier raises a
+  localized `SchedulerError::BoundaryViolation` instead of being delivered late.
+  Focused regressions cover the pure resolver error path and a live scheduler
+  self-delivery case that previously was not covered by conservative cross-node
+  dependency rejection.
 - [ ] **T-SCHED-19** Implement EMIT (append ordered, content-addressed event-log
   entries for every resolved happening and Decision) and STEP (advance frontier,
   yield to control inbox). — satisfies [SCHED-32], [SCHED-33]; spec §8.9.5,

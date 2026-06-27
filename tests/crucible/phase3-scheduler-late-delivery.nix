@@ -1,8 +1,8 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase3.schedulerResolve",
-  taskIds ? ["T-SCHED-16"],
+  attrPath ? "checks.crucible.phase3.schedulerLateDelivery",
+  taskIds ? ["T-SCHED-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,7 +12,6 @@
   };
 
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   resolveTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -54,128 +53,74 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-16 checked off";
-        needle = "- [x] **T-SCHED-16**";
+        label = "T-SCHED-18 checked off";
+        needle = "- [x] **T-SCHED-18**";
       }
       {
-        label = "T-SCHED-16 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerResolve`";
+        label = "T-SCHED-18 completion note";
+        needle = "Completed by `checks.crucible.phase3.schedulerLateDelivery`";
       }
       {
-        label = "RESOLVE requirement";
-        needle = "Implement RESOLVE";
+        label = "late delivery requirement";
+        needle = "Enforce the lookahead guarantee in RESOLVE";
       }
       {
-        label = "transport independence requirement";
-        needle = "transport-timing-independent";
+        label = "never deliver late requirement";
+        needle = "never deliver the event late";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "resolve class enum";
-        needle = "pub enum ScheduledEventResolveClass";
+        label = "late delivery comparison";
+        needle = "delivery_time < advanced_to";
       }
       {
-        label = "frame delivery class";
-        needle = "FrameDelivery";
+        label = "late delivery error";
+        needle = "late scheduled event";
       }
       {
-        label = "resolve class helper";
-        needle = "pub fn scheduled_event_resolve_class";
+        label = "boundary violation";
+        needle = "return Err(SchedulerError::BoundaryViolation";
       }
       {
-        label = "delivery time helper";
-        needle = "pub fn scheduled_event_delivery_time";
+        label = "localized delivery diagnostic";
+        needle = "delivery={} advanced_to={}";
       }
       {
-        label = "due resolver helper";
-        needle = "pub fn resolve_due_scheduled_events";
+        label = "localized producer diagnostic";
+        needle = "event.key.producer().node.name";
       }
       {
-        label = "consumer filter";
-        needle = "event.key.consumer() == consumer";
-      }
-      {
-        label = "exact frontier due predicate";
+        label = "exact frontier resolve";
         needle = "delivery_time == advanced_to";
-      }
-      {
-        label = "canonical resolve order";
-        needle = "ordered_scheduled_events(&resolved)";
-      }
-      {
-        label = "backend target validation";
-        needle = "input.node != event.key.consumer().node";
-      }
-      {
-        label = "I/O exact delivery validation";
-        needle = "exact_local_event_from_scheduled_event(event.key.consumer(), event, shift)?";
-      }
-      {
-        label = "fault activation class";
-        needle = "ScheduledEventPayload::FaultActivation(_)";
-      }
-      {
-        label = "quantum uses due resolver";
-        needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
-      {
-        label = "resolve class export";
-        needle = "ScheduledEventResolveClass";
-      }
-      {
-        label = "due resolver export";
-        needle = "resolve_due_scheduled_events";
-      }
-      {
-        label = "delivery time export";
-        needle = "scheduled_event_delivery_time";
-      }
-      {
-        label = "resolve class helper export";
-        needle = "scheduled_event_resolve_class";
       }
     ]
     ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
       {
-        label = "mixed class quantum test";
-        needle = "resolve_quantum_processes_frame_io_and_fault_at_exact_delivery_icount_in_total_order";
+        label = "direct late resolver test";
+        needle = "resolve_rejects_late_event_before_advanced_frontier";
       }
       {
-        label = "transport order test";
-        needle = "resolve_due_events_are_independent_of_pending_transport_order";
+        label = "live scheduler late self-delivery test";
+        needle = "single_scheduler_rejects_self_delivery_that_would_be_late";
       }
       {
-        label = "backend target validation test";
-        needle = "resolve_rejects_backend_input_with_mismatched_payload_target";
+        label = "late message assertion";
+        needle = "late scheduled event";
       }
       {
-        label = "future event boundary test";
-        needle = "resolve_leaves_future_backend_input_unvalidated_until_due";
+        label = "delivery diagnostic assertion";
+        needle = "delivery=3";
       }
       {
-        label = "I/O delivery validation test";
-        needle = "resolve_rejects_io_completion_with_non_exact_delivery_icount";
-      }
-      {
-        label = "frame delivery assertion";
-        needle = "ScheduledEventResolveClass::FrameDelivery";
-      }
-      {
-        label = "I/O completion assertion";
-        needle = "ScheduledEventResolveClass::IoCompletion";
-      }
-      {
-        label = "fault activation assertion";
-        needle = "ScheduledEventResolveClass::FaultActivation";
+        label = "advanced frontier diagnostic assertion";
+        needle = "advanced_to=4";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase3 exposes scheduler resolve check";
-        needle = "schedulerResolve = import ./phase3-scheduler-resolve.nix";
+        label = "phase3 exposes scheduler late-delivery check";
+        needle = "schedulerLateDelivery = import ./phase3-scheduler-late-delivery.nix";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
@@ -198,10 +143,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase3 scheduler resolve check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase3 scheduler late-delivery check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase3-scheduler-resolve";
+      pname = "crucible-phase3-scheduler-late-delivery";
       version = "0";
       src = crucibleSrc;
 
@@ -238,7 +183,7 @@ in
           '';
         }
         {
-          name = "run-scheduler-resolve";
+          name = "run-scheduler-late-delivery";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
@@ -248,21 +193,21 @@ in
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
+              --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
               -p crucible \
               --test scheduler_resolve \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
+              --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
               -p crucible \
-              --test scheduler_exact_local_event \
+              --test scheduler_conservative_pdes \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
+              --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
               -p crucible \
               --features test-double \
               --test gate_scheduler_liveness \
@@ -279,10 +224,9 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-scheduler
-            resolve=due-events-total-order
-            visibility=exact-delivery-icount
-            payloads=frame-io-fault
-            transport_order_dependency=false
+            late_delivery=fail-loud-localized
+            exact_frontier_delivery=true
+            deliver_late=false
             RESULT
           '';
         }
