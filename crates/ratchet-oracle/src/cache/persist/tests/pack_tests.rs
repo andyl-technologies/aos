@@ -589,6 +589,48 @@ fn blob_pack_records_rejects_short_trailing_record_header() {
 }
 
 #[test]
+fn blob_pack_direct_lookup_rejects_short_record_header_as_format() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    pack.append_blob(hash, payload).expect("blob appends");
+    let record_offset = pack.len().expect("pack length reads");
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(pack.path())
+        .expect("pack opens for append");
+    file.write_all(&[0; PERSIST_BLOB_RECORD_HEADER_LEN - 1])
+        .expect("short header appends");
+    file.flush().expect("short header flushes");
+
+    let location = PersistBlobLocation::new(record_offset, 0);
+    let error = pack
+        .read_blob(location, hash)
+        .expect_err("short direct record header errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::Format {
+            source: PersistPackFormatError::ShortRecordHeader { actual, .. },
+            ..
+        } if actual == PERSIST_BLOB_RECORD_HEADER_LEN - 1
+    ));
+
+    let error = pack
+        .payload_window(location, hash)
+        .expect_err("short direct record header window errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::Format {
+            source: PersistPackFormatError::ShortRecordHeader { actual, .. },
+            ..
+        } if actual == PERSIST_BLOB_RECORD_HEADER_LEN - 1
+    ));
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_read_rejects_corrupt_payload() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");

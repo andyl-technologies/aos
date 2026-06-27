@@ -7,9 +7,8 @@ use super::*;
 
 use ratchet_cache::blob_pack::{
     BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash, BlobPackLocation,
+    BlobPackPayloadWindow, BlobPackReadError, BlobPackReader, BlobPackRecord,
 };
-
-const PERSIST_BLOB_SCAN_BUFFER_LEN: usize = 8 * 1024;
 
 /// Verified metadata for one immutable blob-pack record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +42,10 @@ fn open_engine_blob_pack_appender(path: &Path) -> Result<BlobPackAppender, Persi
     BlobPackAppender::open(path.to_path_buf()).map_err(engine_append_error_to_persist)
 }
 
+fn open_engine_blob_pack_reader(path: &Path) -> Result<BlobPackReader, PersistBlobPackError> {
+    BlobPackReader::open(path.to_path_buf()).map_err(engine_read_error_to_persist)
+}
+
 fn durable_hash_to_engine(hash: DurableBlake3Hash) -> BlobPackHash {
     BlobPackHash::from_bytes(hash.as_bytes())
 }
@@ -53,6 +56,25 @@ fn engine_hash_to_durable(hash: BlobPackHash) -> DurableBlake3Hash {
 
 fn engine_location_to_persist(location: BlobPackLocation) -> PersistBlobLocation {
     PersistBlobLocation::new(location.record_offset(), location.payload_len())
+}
+
+fn persist_location_to_engine(location: PersistBlobLocation) -> BlobPackLocation {
+    BlobPackLocation::new(location.record_offset(), location.payload_len())
+}
+
+fn engine_record_to_persist(record: BlobPackRecord) -> PersistBlobPackRecord {
+    PersistBlobPackRecord::new(
+        engine_hash_to_durable(record.hash()),
+        engine_location_to_persist(record.location()),
+    )
+}
+
+fn engine_payload_window_to_persist(window: BlobPackPayloadWindow) -> PersistBlobPayloadWindow {
+    PersistBlobPayloadWindow::new(
+        engine_record_to_persist(window.record()),
+        window.payload_start(),
+        window.payload_end(),
+    )
 }
 
 fn engine_append_error_to_persist(error: BlobPackAppendError) -> PersistBlobPackError {
@@ -82,6 +104,56 @@ fn engine_append_error_to_persist(error: BlobPackAppendError) -> PersistBlobPack
         }
         BlobPackAppendError::InvalidRecordOffset { record_offset } => {
             PersistBlobPackError::InvalidRecordOffset { record_offset }
+        }
+    }
+}
+
+fn engine_read_error_to_persist(error: BlobPackReadError) -> PersistBlobPackError {
+    match error {
+        BlobPackReadError::Open { path, source } => PersistBlobPackError::Open { path, source },
+        BlobPackReadError::Metadata { path, source } => {
+            PersistBlobPackError::Metadata { path, source }
+        }
+        BlobPackReadError::Seek { path, source } => PersistBlobPackError::Seek { path, source },
+        BlobPackReadError::Read { path, source } => PersistBlobPackError::Read { path, source },
+        BlobPackReadError::Format { path, source } => PersistBlobPackError::Format {
+            path,
+            source: engine_format_error_to_persist(source),
+        },
+        BlobPackReadError::InvalidRecordOffset { record_offset } => {
+            PersistBlobPackError::InvalidRecordOffset { record_offset }
+        }
+        BlobPackReadError::PayloadTooLarge { payload_len } => {
+            PersistBlobPackError::PayloadTooLarge { payload_len }
+        }
+        BlobPackReadError::RecordBoundsOverflow {
+            record_offset,
+            payload_len,
+        } => PersistBlobPackError::RecordBoundsOverflow {
+            record_offset,
+            payload_len,
+        },
+        BlobPackReadError::RecordExtendsPastEnd {
+            payload_end,
+            pack_len,
+        } => PersistBlobPackError::RecordExtendsPastEnd {
+            payload_end,
+            pack_len,
+        },
+        BlobPackReadError::RecordHashMismatch { expected, actual } => {
+            PersistBlobPackError::RecordHashMismatch {
+                expected: engine_hash_to_durable(expected),
+                actual: engine_hash_to_durable(actual),
+            }
+        }
+        BlobPackReadError::RecordLengthMismatch { expected, actual } => {
+            PersistBlobPackError::RecordLengthMismatch { expected, actual }
+        }
+        BlobPackReadError::PayloadHashMismatch { expected, actual } => {
+            PersistBlobPackError::PayloadHashMismatch {
+                expected: engine_hash_to_durable(expected),
+                actual: engine_hash_to_durable(actual),
+            }
         }
     }
 }
@@ -204,13 +276,8 @@ impl PersistBlobPack {
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
     /// inspected, or if its header is malformed.
     pub fn len(&self) -> Result<u64, PersistBlobPackError> {
-        let file = open_validated_blob_pack_for_read(&self.path)?;
-        file.metadata()
-            .map(|metadata| metadata.len())
-            .map_err(|source| PersistBlobPackError::Metadata {
-                path: self.path.clone(),
-                source,
-            })
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader.len().map_err(engine_read_error_to_persist)
     }
 
     /// Returns all verified blob records in packfile order.
@@ -228,92 +295,11 @@ impl PersistBlobPack {
     /// payload length cannot fit in memory, or if a payload hash does not match
     /// the record header.
     pub fn records(&self) -> Result<Vec<PersistBlobPackRecord>, PersistBlobPackError> {
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
-        let pack_len = file
-            .metadata()
-            .map_err(|source| PersistBlobPackError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        let mut offset = PERSIST_BLOB_PACK_HEADER_LEN as u64;
-        let mut records = Vec::new();
-        while offset < pack_len {
-            let remaining = pack_len - offset;
-            if remaining < PERSIST_BLOB_RECORD_HEADER_LEN as u64 {
-                return Err(PersistBlobPackError::Format {
-                    path: self.path.clone(),
-                    source: PersistPackFormatError::ShortRecordHeader {
-                        expected: PERSIST_BLOB_RECORD_HEADER_LEN,
-                        actual: remaining as usize,
-                    },
-                });
-            }
-            file.seek(SeekFrom::Start(offset))
-                .map_err(|source| PersistBlobPackError::Seek {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            let mut record_header = [0; PERSIST_BLOB_RECORD_HEADER_LEN];
-            file.read_exact(&mut record_header)
-                .map_err(|source| PersistBlobPackError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            let record = PersistBlobRecordHeader::decode(&record_header).map_err(|source| {
-                PersistBlobPackError::Format {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let payload_start = offset
-                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
-                .ok_or(PersistBlobPackError::RecordBoundsOverflow {
-                    record_offset: offset,
-                    payload_len: record.payload_len(),
-                })?;
-            let payload_end = payload_start.checked_add(record.payload_len()).ok_or(
-                PersistBlobPackError::RecordBoundsOverflow {
-                    record_offset: offset,
-                    payload_len: record.payload_len(),
-                },
-            )?;
-            if payload_end > pack_len {
-                return Err(PersistBlobPackError::RecordExtendsPastEnd {
-                    payload_end,
-                    pack_len,
-                });
-            }
-            let mut remaining = record.payload_len();
-            let mut hasher = blake3::Hasher::new();
-            let mut buffer = [0; PERSIST_BLOB_SCAN_BUFFER_LEN];
-            while remaining > 0 {
-                let chunk_len = usize::try_from(remaining.min(PERSIST_BLOB_SCAN_BUFFER_LEN as u64))
-                    .map_err(|_| PersistBlobPackError::PayloadTooLarge {
-                        payload_len: record.payload_len() as u128,
-                    })?;
-                file.read_exact(&mut buffer[..chunk_len])
-                    .map_err(|source| PersistBlobPackError::Read {
-                        path: self.path.clone(),
-                        source,
-                    })?;
-                hasher.update(&buffer[..chunk_len]);
-                remaining -= chunk_len as u64;
-            }
-            let actual = DurableBlake3Hash::from_bytes(hasher.finalize().into());
-            if actual != record.hash() {
-                return Err(PersistBlobPackError::PayloadHashMismatch {
-                    expected: record.hash(),
-                    actual,
-                });
-            }
-            records.push(PersistBlobPackRecord::new(
-                record.hash(),
-                PersistBlobLocation::new(offset, record.payload_len()),
-            ));
-            offset = payload_end;
-        }
-        Ok(records)
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader
+            .records()
+            .map(|records| records.into_iter().map(engine_record_to_persist).collect())
+            .map_err(engine_read_error_to_persist)
     }
 
     /// Appends `payload` as a content-addressed immutable blob.
@@ -357,8 +343,14 @@ impl PersistBlobPack {
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
-        self.payload_window_from_open_file(&mut file, location, expected_hash)
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader
+            .payload_window(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+            )
+            .map(engine_payload_window_to_persist)
+            .map_err(engine_read_error_to_persist)
     }
 
     /// Verifies the payload at `location` without materializing it.
@@ -380,10 +372,14 @@ impl PersistBlobPack {
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
-        let window = self.payload_window_from_open_file(&mut file, location, expected_hash)?;
-        self.verify_payload_from_open_file(&mut file, window)?;
-        Ok(window)
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader
+            .verify_payload(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+            )
+            .map(engine_payload_window_to_persist)
+            .map_err(engine_read_error_to_persist)
     }
 
     /// Returns whether the verified payload at `location` equals `expected_payload`.
@@ -407,18 +403,14 @@ impl PersistBlobPack {
         expected_hash: DurableBlake3Hash,
         expected_payload: &[u8],
     ) -> Result<bool, PersistBlobPackError> {
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
-        let window = self.payload_window_from_open_file(&mut file, location, expected_hash)?;
-        let expected_len = u64::try_from(expected_payload.len()).map_err(|_| {
-            PersistBlobPackError::PayloadTooLarge {
-                payload_len: expected_payload.len() as u128,
-            }
-        })?;
-        if expected_len != window.payload_len() {
-            self.verify_payload_from_open_file(&mut file, window)?;
-            return Ok(false);
-        }
-        self.payload_matches_from_open_file(&mut file, window, expected_payload)
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader
+            .payload_matches(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+                expected_payload,
+            )
+            .map_err(engine_read_error_to_persist)
     }
 
     /// Reads and verifies a blob at `location`.
@@ -436,38 +428,13 @@ impl PersistBlobPack {
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let mut file = open_validated_blob_pack_for_read(&self.path)?;
-        let window = self.payload_window_from_open_file(&mut file, location, expected_hash)?;
-        let payload_len = usize::try_from(window.payload_len()).map_err(|_| {
-            PersistBlobPackError::PayloadTooLarge {
-                payload_len: window.payload_len() as u128,
-            }
-        })?;
-        let mut payload = Vec::new();
-        payload.try_reserve_exact(payload_len).map_err(|_| {
-            PersistBlobPackError::PayloadTooLarge {
-                payload_len: window.payload_len() as u128,
-            }
-        })?;
-        payload.resize(payload_len, 0);
-        file.seek(SeekFrom::Start(window.payload_start()))
-            .map_err(|source| PersistBlobPackError::Seek {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.read_exact(&mut payload)
-            .map_err(|source| PersistBlobPackError::Read {
-                path: self.path.clone(),
-                source,
-            })?;
-        let actual = DurableBlake3Hash::for_bytes(&payload);
-        if actual != expected_hash {
-            return Err(PersistBlobPackError::PayloadHashMismatch {
-                expected: expected_hash,
-                actual,
-            });
-        }
-        Ok(payload)
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        reader
+            .read_payload(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+            )
+            .map_err(engine_read_error_to_persist)
     }
 
     /// Writes a compacted copy of the supplied records to `tmp_path`.
@@ -521,164 +488,6 @@ impl PersistBlobPack {
         }
         tmp_pack.len()?;
         Ok(tmp_pack)
-    }
-
-    fn payload_window_from_open_file(
-        &self,
-        file: &mut fs::File,
-        location: PersistBlobLocation,
-        expected_hash: DurableBlake3Hash,
-    ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
-        if location.record_offset() < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
-            return Err(PersistBlobPackError::InvalidRecordOffset {
-                record_offset: location.record_offset(),
-            });
-        }
-        file.seek(SeekFrom::Start(location.record_offset()))
-            .map_err(|source| PersistBlobPackError::Seek {
-                path: self.path.clone(),
-                source,
-            })?;
-        let mut record_header = [0; PERSIST_BLOB_RECORD_HEADER_LEN];
-        file.read_exact(&mut record_header)
-            .map_err(|source| PersistBlobPackError::Read {
-                path: self.path.clone(),
-                source,
-            })?;
-        let record = PersistBlobRecordHeader::decode(&record_header).map_err(|source| {
-            PersistBlobPackError::Format {
-                path: self.path.clone(),
-                source,
-            }
-        })?;
-        if record.hash() != expected_hash {
-            return Err(PersistBlobPackError::RecordHashMismatch {
-                expected: expected_hash,
-                actual: record.hash(),
-            });
-        }
-        if record.payload_len() != location.payload_len() {
-            return Err(PersistBlobPackError::RecordLengthMismatch {
-                expected: location.payload_len(),
-                actual: record.payload_len(),
-            });
-        }
-        let payload_start = location
-            .record_offset()
-            .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
-            .ok_or(PersistBlobPackError::RecordBoundsOverflow {
-                record_offset: location.record_offset(),
-                payload_len: record.payload_len(),
-            })?;
-        let payload_end = payload_start.checked_add(record.payload_len()).ok_or(
-            PersistBlobPackError::RecordBoundsOverflow {
-                record_offset: location.record_offset(),
-                payload_len: record.payload_len(),
-            },
-        )?;
-        let pack_len = file
-            .metadata()
-            .map_err(|source| PersistBlobPackError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        if payload_end > pack_len {
-            return Err(PersistBlobPackError::RecordExtendsPastEnd {
-                payload_end,
-                pack_len,
-            });
-        }
-        Ok(PersistBlobPayloadWindow::new(
-            PersistBlobPackRecord::new(record.hash(), location),
-            payload_start,
-            payload_end,
-        ))
-    }
-
-    fn verify_payload_from_open_file(
-        &self,
-        file: &mut fs::File,
-        window: PersistBlobPayloadWindow,
-    ) -> Result<(), PersistBlobPackError> {
-        file.seek(SeekFrom::Start(window.payload_start()))
-            .map_err(|source| PersistBlobPackError::Seek {
-                path: self.path.clone(),
-                source,
-            })?;
-        let mut remaining = window.payload_len();
-        let mut hasher = blake3::Hasher::new();
-        let mut buffer = [0; PERSIST_BLOB_SCAN_BUFFER_LEN];
-        while remaining > 0 {
-            let chunk_len = usize::try_from(remaining.min(PERSIST_BLOB_SCAN_BUFFER_LEN as u64))
-                .map_err(|_| PersistBlobPackError::PayloadTooLarge {
-                    payload_len: window.payload_len() as u128,
-                })?;
-            file.read_exact(&mut buffer[..chunk_len])
-                .map_err(|source| PersistBlobPackError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            hasher.update(&buffer[..chunk_len]);
-            remaining -= chunk_len as u64;
-        }
-        let actual = DurableBlake3Hash::from_bytes(hasher.finalize().into());
-        if actual != window.hash() {
-            return Err(PersistBlobPackError::PayloadHashMismatch {
-                expected: window.hash(),
-                actual,
-            });
-        }
-        Ok(())
-    }
-
-    fn payload_matches_from_open_file(
-        &self,
-        file: &mut fs::File,
-        window: PersistBlobPayloadWindow,
-        expected_payload: &[u8],
-    ) -> Result<bool, PersistBlobPackError> {
-        file.seek(SeekFrom::Start(window.payload_start()))
-            .map_err(|source| PersistBlobPackError::Seek {
-                path: self.path.clone(),
-                source,
-            })?;
-        let mut remaining = window.payload_len();
-        let mut compared = 0usize;
-        let mut payload_matches = true;
-        let mut hasher = blake3::Hasher::new();
-        let mut buffer = [0; PERSIST_BLOB_SCAN_BUFFER_LEN];
-        while remaining > 0 {
-            let chunk_len = usize::try_from(remaining.min(PERSIST_BLOB_SCAN_BUFFER_LEN as u64))
-                .map_err(|_| PersistBlobPackError::PayloadTooLarge {
-                    payload_len: window.payload_len() as u128,
-                })?;
-            file.read_exact(&mut buffer[..chunk_len])
-                .map_err(|source| PersistBlobPackError::Read {
-                    path: self.path.clone(),
-                    source,
-                })?;
-            hasher.update(&buffer[..chunk_len]);
-            let next_compared =
-                compared
-                    .checked_add(chunk_len)
-                    .ok_or(PersistBlobPackError::PayloadTooLarge {
-                        payload_len: window.payload_len() as u128,
-                    })?;
-            if payload_matches && buffer[..chunk_len] != expected_payload[compared..next_compared] {
-                payload_matches = false;
-            }
-            compared = next_compared;
-            remaining -= chunk_len as u64;
-        }
-        let actual = DurableBlake3Hash::from_bytes(hasher.finalize().into());
-        if actual != window.hash() {
-            return Err(PersistBlobPackError::PayloadHashMismatch {
-                expected: window.hash(),
-                actual,
-            });
-        }
-        Ok(payload_matches)
     }
 
     /// Truncates unneeded bytes after `end_offset`.

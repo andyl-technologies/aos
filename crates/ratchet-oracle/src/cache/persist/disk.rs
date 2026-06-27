@@ -252,21 +252,6 @@ pub(super) fn ensure_blob_pack_parent(path: &Path) -> Result<(), PersistBlobPack
     })
 }
 
-pub(super) fn open_validated_blob_pack_for_read(
-    path: &Path,
-) -> Result<std::fs::File, PersistBlobPackError> {
-    let mut file =
-        OpenOptions::new()
-            .read(true)
-            .open(path)
-            .map_err(|source| PersistBlobPackError::Open {
-                path: path.to_path_buf(),
-                source,
-            })?;
-    validate_blob_pack_header(path, &mut file)?;
-    Ok(file)
-}
-
 pub(super) fn validate_blob_pack_header(
     path: &Path,
     file: &mut std::fs::File,
