@@ -11291,29 +11291,42 @@ fn frontend_probe_url(domain: &str) -> String {
 /// Validate a frontend `domain` + `base_path`, returning the normalized
 /// `(domain, base_path)` to store.
 ///
-/// A frontend `domain` is a **bare host** — the request `Host` the dispatcher
-/// matches and the host consumer URLs are built from by string concatenation.
-/// An embedded scheme (`https://…`) or path would double-scheme or corrupt those
-/// URLs, so they are rejected here rather than stored. The host is additionally
-/// run through the SSRF guard ([`is_safe_remote_url`](crate::url_guard::is_safe_remote_url)).
-/// `base_path` must be empty or a rooted path (`/…`) with no scheme or `..`.
+/// A frontend `domain` is normally a **bare host** — the request `Host` the
+/// dispatcher matches and the host consumer URLs are built from by string
+/// concatenation. The default scheme is `https://`, but an explicit
+/// `http://`/`https://` prefix is honored and stored as-is for a plain-HTTP
+/// internal frontend (and the test harness): the probe and consumer-URL layers
+/// read the scheme back off the stored `domain` (see
+/// [`frontend_probe_url`] and `crate::probe`). Only the host part may carry a
+/// path — an embedded path would corrupt the built URLs — so it is rejected here
+/// rather than stored. The probe URL is additionally run through the SSRF guard
+/// ([`is_safe_remote_url`](crate::url_guard::is_safe_remote_url)). `base_path`
+/// must be empty or a rooted path (`/…`) with no scheme or `..`.
 ///
 /// # Errors
 ///
-/// Returns an error when `domain` carries a scheme/path/whitespace, is not a
-/// plausible host, fails the SSRF guard, or `base_path` is not a safe rooted
-/// path.
+/// Returns an error when `domain` carries a path/whitespace or a scheme other
+/// than `http://`/`https://`, is not a plausible host, fails the SSRF guard, or
+/// `base_path` is not a safe rooted path.
 fn validate_frontend_target(domain: &str, base_path: &str) -> Result<(String, String)> {
     let domain = domain.trim().to_ascii_lowercase();
-    if domain.contains("://") {
-        bail!("frontend domain '{domain}' must be a bare host with no scheme (drop the https://)");
+    // The stored domain keeps any explicit scheme (the probe reads it back), so
+    // validate the host part with the scheme stripped off.
+    let host = domain
+        .strip_prefix("https://")
+        .or_else(|| domain.strip_prefix("http://"))
+        .unwrap_or(&domain);
+    if host.contains("://") {
+        bail!(
+            "frontend domain '{domain}' must be a host, optionally prefixed with http:// or https://"
+        );
     }
-    if domain.contains('/') {
+    if host.contains('/') {
         bail!(
             "frontend domain '{domain}' must be a host only; put any path in the base path field"
         );
     }
-    if domain.is_empty() || domain.contains(char::is_whitespace) || !domain.contains('.') {
+    if host.is_empty() || host.contains(char::is_whitespace) || !host.contains('.') {
         bail!("frontend domain '{domain}' is not a valid host");
     }
     crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))

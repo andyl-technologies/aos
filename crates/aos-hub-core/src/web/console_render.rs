@@ -1440,10 +1440,15 @@ pub fn org_dashboard(
         .then(|| format!("registries_page={}", reg_pager.page()))
         .unwrap_or_default();
     let slug = &org.slug;
-    // No page-title <h1>: the selected sidebar tab names the section and the
-    // masthead crumbs name the org, so a "{org} · {section}" heading would just
-    // repeat them. Each section supplies its own descriptive <h2> below.
-    let mut body = format!("<p class=\"dim\"><code>{}</code></p>\n", escape(slug));
+    // No page-title <h1>: the selected sidebar tab names the section, so a
+    // "{org} · {section}" heading would just repeat it. This identity line names
+    // the org by display name then slug (matching the orgs list); each section
+    // supplies its own descriptive <h2> below.
+    let mut body = format!(
+        "<p class=\"dim\">{} · <code>{}</code></p>\n",
+        escape(&org.name),
+        escape(slug),
+    );
 
     // -- Registries (the default tab) ----------------------------------------
     if active == "registries" {
