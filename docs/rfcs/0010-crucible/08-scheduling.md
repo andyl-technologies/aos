@@ -1125,9 +1125,19 @@ application of explorer-supplied preemption decisions
   publication for a no-RUN quantum, target consumption from the published ceiling,
   and acceptance by the existing shared-memory slot publish API. Futex wake /
   inbound-queue ordering remains T-SCHED-21.
-- [ ] **T-SCHED-15** Implement idle fast-forward: jump an idle node's clock to its
+- [x] **T-SCHED-15** Implement idle fast-forward: jump an idle node's clock to its
   exact wake time at zero wall-clock cost; idle nodes use wake time as effective
   clock for peers' lookahead. — satisfies [SCHED-28]; spec §8.9.3.
+  Completed by `checks.crucible.phase3.schedulerIdleFastForward`.
+  `SingleScheduler::effective_clocks` now exposes the peer-facing effective clock
+  projection: runnable, halted, and done nodes use their current virtual time,
+  while idle nodes with a finite exact wake use that wake time as
+  `SchedulerEffectiveClockSource::IdleWake`. Idle candidate selection consumes
+  the same projection, clamps it by the configured time limit and rendezvous cap,
+  and advances the idle node without adding schedule decisions. Focused
+  regressions cover timer wake jumps, pending-delivery wake jumps, time-limit
+  clamping, no-wake idle quanta, and a peer advancing while an idle node's
+  effective clock is in the future.
 - [ ] **T-SCHED-16** Implement RESOLVE: process all due cross-node events (frame
   delivery, I/O completion, fault activation) in total order, made visible at the
   exact delivery icount, transport-timing-independent. — satisfies [SCHED-29];

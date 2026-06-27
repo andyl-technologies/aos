@@ -400,6 +400,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerRunCeiling";
       taskIds = ["T-SCHED-14"];
     };
+    schedulerIdleFastForward = import ./phase3-scheduler-idle-fast-forward.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerIdleFastForward";
+      taskIds = ["T-SCHED-15"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
