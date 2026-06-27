@@ -239,6 +239,44 @@ impl BlobPackRecord {
     }
 }
 
+/// A planned relocation of one verified blob-pack record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlobPackRecordRelocation {
+    hash: BlobPackHash,
+    old_location: BlobPackLocation,
+    new_location: BlobPackLocation,
+}
+
+impl BlobPackRecordRelocation {
+    /// Creates a planned relocation for `hash`.
+    pub const fn new(
+        hash: BlobPackHash,
+        old_location: BlobPackLocation,
+        new_location: BlobPackLocation,
+    ) -> Self {
+        Self {
+            hash,
+            old_location,
+            new_location,
+        }
+    }
+
+    /// Returns the content address that must verify at both locations.
+    pub const fn hash(self) -> BlobPackHash {
+        self.hash
+    }
+
+    /// Returns the source record location in the current pack.
+    pub const fn old_location(self) -> BlobPackLocation {
+        self.old_location
+    }
+
+    /// Returns the expected destination record location in the compacted pack.
+    pub const fn new_location(self) -> BlobPackLocation {
+        self.new_location
+    }
+}
+
 /// A verified byte window for one blob-pack payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlobPackPayloadWindow {
@@ -726,6 +764,76 @@ impl BlobPackReader {
             });
         }
         Ok(payload)
+    }
+
+    /// Writes a compacted pack containing `relocations` to `tmp_path`.
+    ///
+    /// Each relocation reads and verifies the payload from this source pack,
+    /// appends it to a fresh temporary pack, and checks that the append lands at
+    /// the caller-planned destination location. Any pre-existing `tmp_path` is
+    /// removed before writing. If copying fails, the temporary file is removed
+    /// on a best-effort basis before returning the original error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackRewriteError`] if `tmp_path` cannot be removed,
+    /// if it aliases this source pack, if it cannot be opened as a fresh pack,
+    /// appended to, or validated, if any source record cannot be read and
+    /// verified, or if a copied record lands at a different location than the
+    /// supplied relocation plan.
+    pub fn write_relocated_records_to(
+        &self,
+        tmp_path: impl Into<PathBuf>,
+        relocations: &[BlobPackRecordRelocation],
+    ) -> Result<BlobPackReader, BlobPackRewriteError> {
+        let tmp_path = tmp_path.into();
+        if blob_pack_paths_alias(&self.path, &tmp_path) {
+            return Err(BlobPackRewriteError::SourceEqualsTemp {
+                source_path: self.path.clone(),
+                tmp_path,
+            });
+        }
+        match fs::remove_file(&tmp_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(BlobPackRewriteError::RemoveTemp {
+                    path: tmp_path,
+                    source,
+                });
+            }
+        }
+
+        let tmp_pack = BlobPackAppender::open(tmp_path.clone())
+            .map_err(|source| BlobPackRewriteError::OpenTemp { source })?;
+        let copy_result = (|| {
+            for relocation in relocations {
+                let payload = self
+                    .read_payload(relocation.old_location(), relocation.hash())
+                    .map_err(|source| BlobPackRewriteError::ReadSource { source })?;
+                let copied = tmp_pack
+                    .append_payload(relocation.hash(), &payload)
+                    .map_err(|source| BlobPackRewriteError::AppendTemp { source })?;
+                if copied != relocation.new_location() {
+                    return Err(BlobPackRewriteError::RecordLocationMismatch {
+                        expected: relocation.new_location(),
+                        actual: copied,
+                    });
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = copy_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+
+        let reader = BlobPackReader::open(tmp_path)
+            .map_err(|source| BlobPackRewriteError::ValidateTemp { source })?;
+        reader
+            .len()
+            .map_err(|source| BlobPackRewriteError::ValidateTemp { source })?;
+        Ok(reader)
     }
 
     fn payload_window_from_open_file(
@@ -1500,6 +1608,64 @@ pub enum BlobPackReadError {
     },
 }
 
+/// A blob pack relocation rewrite failed.
+#[derive(Debug, Error)]
+pub enum BlobPackRewriteError {
+    /// The temporary path points at the source pack.
+    #[error("staged blob pack {tmp_path:?} aliases source blob pack {source_path:?}")]
+    SourceEqualsTemp {
+        /// The source pack path.
+        source_path: PathBuf,
+        /// The rejected temporary pack path.
+        tmp_path: PathBuf,
+    },
+    /// A stale temporary pack could not be removed before writing.
+    #[error("failed to remove staged blob pack {path:?}")]
+    RemoveTemp {
+        /// The temporary pack path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The temporary pack could not be opened.
+    #[error("failed to open staged blob pack")]
+    OpenTemp {
+        /// The append error reported by the temporary pack.
+        #[source]
+        source: BlobPackAppendError,
+    },
+    /// A source record could not be read and verified.
+    #[error("failed to read source blob record")]
+    ReadSource {
+        /// The read error reported by the source pack.
+        #[source]
+        source: BlobPackReadError,
+    },
+    /// A verified source payload could not be appended to the temporary pack.
+    #[error("failed to append staged blob record")]
+    AppendTemp {
+        /// The append error reported by the temporary pack.
+        #[source]
+        source: BlobPackAppendError,
+    },
+    /// The copied record did not land at the caller-planned location.
+    #[error("relocated blob record landed at {actual:?}, expected {expected:?}")]
+    RecordLocationMismatch {
+        /// The expected compacted record location.
+        expected: BlobPackLocation,
+        /// The actual appended record location.
+        actual: BlobPackLocation,
+    },
+    /// The completed temporary pack could not be validated.
+    #[error("failed to validate staged blob pack")]
+    ValidateTemp {
+        /// The read error reported by the completed temporary pack.
+        #[source]
+        source: BlobPackReadError,
+    },
+}
+
 /// A blob pack append operation failed.
 #[derive(Debug, Error)]
 pub enum BlobPackAppendError {
@@ -1637,6 +1803,16 @@ fn ensure_blob_pack_file(path: &Path) -> Result<(), BlobPackAppendError> {
     }
 
     validate_open_blob_pack_header(path, &mut file, len)
+}
+
+fn blob_pack_paths_alias(source_path: &Path, tmp_path: &Path) -> bool {
+    if source_path == tmp_path {
+        return true;
+    }
+    match (fs::canonicalize(source_path), fs::canonicalize(tmp_path)) {
+        (Ok(source), Ok(tmp)) => source == tmp,
+        _ => false,
+    }
 }
 
 fn open_validated_blob_pack_for_read(path: &Path) -> Result<fs::File, BlobPackAppendError> {
@@ -2008,6 +2184,189 @@ mod tests {
                 .expect("payload reads"),
             second
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_writes_relocated_records_to_temp_pack() {
+        let path = temp_path("reader-relocated-source");
+        let tmp_path = temp_path("reader-relocated-temp");
+        let first = b"first payload".as_slice();
+        let stale = b"stale payload".as_slice();
+        let second = b"second payload".as_slice();
+        let locations = write_pack(&path, &[first, stale, second]);
+        fs::write(&tmp_path, b"stale temp").expect("stale temp writes");
+        let first_hash = BlobPackHash::for_bytes(first);
+        let stale_hash = BlobPackHash::for_bytes(stale);
+        let second_hash = BlobPackHash::for_bytes(second);
+        let relocated_first =
+            BlobPackLocation::new(BLOB_PACK_HEADER_LEN as u64, first.len() as u64);
+        let relocated_second = BlobPackLocation::new(
+            BLOB_PACK_HEADER_LEN as u64 + BLOB_RECORD_HEADER_LEN as u64 + first.len() as u64,
+            second.len() as u64,
+        );
+        let relocations = [
+            BlobPackRecordRelocation::new(first_hash, locations[0], relocated_first),
+            BlobPackRecordRelocation::new(second_hash, locations[2], relocated_second),
+        ];
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+
+        let rewritten = reader
+            .write_relocated_records_to(tmp_path.clone(), &relocations)
+            .expect("records relocate");
+
+        assert_eq!(rewritten.path(), tmp_path.as_path());
+        assert_eq!(
+            rewritten.records().expect("rewritten records scan"),
+            [
+                BlobPackRecord::new(first_hash, relocated_first),
+                BlobPackRecord::new(second_hash, relocated_second),
+            ]
+        );
+        assert_eq!(
+            rewritten
+                .read_payload(relocated_first, first_hash)
+                .expect("relocated first reads"),
+            first
+        );
+        assert_eq!(
+            rewritten
+                .read_payload(relocated_second, second_hash)
+                .expect("relocated second reads"),
+            second
+        );
+        assert_eq!(
+            reader
+                .read_payload(locations[1], stale_hash)
+                .expect("source stale record remains"),
+            stale
+        );
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(tmp_path);
+    }
+
+    #[test]
+    fn blob_pack_reader_relocation_rejects_source_as_temp_path() {
+        let path = temp_path("reader-relocation-source-as-temp");
+        let payload = b"payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let hash = BlobPackHash::for_bytes(payload);
+        let relocation = BlobPackRecordRelocation::new(
+            hash,
+            locations[0],
+            BlobPackLocation::new(BLOB_PACK_HEADER_LEN as u64, payload.len() as u64),
+        );
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+
+        let error = reader
+            .write_relocated_records_to(path.clone(), &[relocation])
+            .expect_err("source path as temp errors");
+
+        assert!(matches!(
+            error,
+            BlobPackRewriteError::SourceEqualsTemp { source_path, tmp_path }
+                if source_path == path && tmp_path == path
+        ));
+        assert_eq!(
+            reader
+                .read_payload(locations[0], hash)
+                .expect("source remains readable after exact rejection"),
+            payload
+        );
+
+        let alias_path = path
+            .parent()
+            .expect("pack parent exists")
+            .join(".")
+            .join(path.file_name().expect("pack file name exists"));
+        let error = reader
+            .write_relocated_records_to(alias_path.clone(), &[relocation])
+            .expect_err("source alias as temp errors");
+        assert!(matches!(
+            error,
+            BlobPackRewriteError::SourceEqualsTemp { source_path, tmp_path }
+                if source_path == path && tmp_path == alias_path
+        ));
+        assert_eq!(
+            reader
+                .read_payload(locations[0], hash)
+                .expect("source remains readable after alias rejection"),
+            payload
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_relocation_cleans_temp_on_location_mismatch() {
+        let path = temp_path("reader-relocation-mismatch-source");
+        let tmp_path = temp_path("reader-relocation-mismatch-temp");
+        let payload = b"payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let hash = BlobPackHash::for_bytes(payload);
+        let wrong_location =
+            BlobPackLocation::new(BLOB_PACK_HEADER_LEN as u64 + 1, payload.len() as u64);
+        let relocations = [BlobPackRecordRelocation::new(
+            hash,
+            locations[0],
+            wrong_location,
+        )];
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+
+        let error = reader
+            .write_relocated_records_to(tmp_path.clone(), &relocations)
+            .expect_err("mismatched location errors");
+
+        assert!(matches!(
+            error,
+            BlobPackRewriteError::RecordLocationMismatch { expected, actual }
+                if expected == wrong_location
+                    && actual == BlobPackLocation::new(
+                        BLOB_PACK_HEADER_LEN as u64,
+                        payload.len() as u64
+                    )
+        ));
+        assert!(!tmp_path.exists());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_reader_relocation_cleans_temp_on_corrupt_source() {
+        let path = temp_path("reader-relocation-corrupt-source");
+        let tmp_path = temp_path("reader-relocation-corrupt-temp");
+        let payload = b"payload".as_slice();
+        let locations = write_pack(&path, &[payload]);
+        let hash = BlobPackHash::for_bytes(payload);
+        let payload_offset = locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("source opens for corruption");
+        file.seek(SeekFrom::Start(payload_offset))
+            .expect("payload offset seeks");
+        file.write_all(b"X").expect("payload corrupts");
+        file.flush().expect("payload corruption flushes");
+        let relocation = BlobPackRecordRelocation::new(
+            hash,
+            locations[0],
+            BlobPackLocation::new(BLOB_PACK_HEADER_LEN as u64, payload.len() as u64),
+        );
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens");
+
+        let error = reader
+            .write_relocated_records_to(tmp_path.clone(), &[relocation])
+            .expect_err("corrupt source errors");
+
+        assert!(matches!(
+            error,
+            BlobPackRewriteError::ReadSource {
+                source: BlobPackReadError::PayloadHashMismatch { .. }
+            }
+        ));
+        assert!(!tmp_path.exists());
 
         let _ = fs::remove_file(path);
     }
