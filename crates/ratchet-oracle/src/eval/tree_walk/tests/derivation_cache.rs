@@ -585,6 +585,70 @@ fn persistent_read_file_force_cache_hit_preserves_drv_surfaces() {
 }
 
 #[test]
+fn persistent_context_read_file_force_cache_hit_preserves_drv_surfaces() {
+    let root = unique_temp_dir("force-cache-context-read-file-drv-source");
+    let referenced_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source";
+    let contents = [
+        b"context prefix ".as_slice(),
+        referenced_path,
+        b"/suffix".as_slice(),
+    ]
+    .concat();
+    fs::write(root.join("input.txt"), &contents).expect("input file writes");
+    let root = fs::canonicalize(root).expect("source root canonicalizes");
+    let input_path = path_bytes(&root.join("input.txt"));
+    let source = r#"let
+             b = builtins;
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-context-read-file-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ (b.readFile ./input.txt) ];
+             };
+           }"#;
+    let ir = lower(source);
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_file(&input_path, &contents).expect("fingerprint builds"),
+    ];
+    let mut context_proof_options = TreeWalkOptions::new();
+    context_proof_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base configures");
+    let context_proof = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        context_proof_options,
+        EvalCacheRuntime::disabled(),
+    );
+    let parsed_derivation =
+        nix_compat::derivation::Derivation::from_aterm_bytes(context_proof.aterm.as_slice())
+            .expect("context readFile derivation ATerm parses");
+    let context_input = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source",
+    )
+    .expect("context input store path parses");
+    assert!(
+        parsed_derivation.input_sources.contains(&context_input),
+        "context-bearing readFile payload should add the referenced store path as a derivation input source"
+    );
+
+    assert_cacheable_impure_leaf_force_hit_preserves_drv_surface(
+        "force-cache-context-read-file-drv-surface-parity",
+        &ir,
+        source,
+        expected_trace,
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base configures");
+        },
+    );
+
+    fs::remove_dir_all(root).expect("source temp directory removes");
+}
+
+#[test]
 fn persistent_text_store_read_file_force_cache_hit_preserves_drv_surfaces() {
     let source = r#"let
              b = builtins;

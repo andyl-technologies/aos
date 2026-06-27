@@ -2285,18 +2285,21 @@ alone (`M-1`/`Q-A`).
 - [x] Current filesystem impure-leaf persistent force-value `.drv` surface
       parity canaries:
       `persistent_read_file_force_cache_hit_preserves_drv_surfaces`,
+      `persistent_context_read_file_force_cache_hit_preserves_drv_surfaces`,
       `persistent_read_dir_force_cache_hit_preserves_drv_surfaces`, and
       `persistent_read_file_type_force_cache_hit_preserves_drv_surfaces`
       evaluate derivation attr paths with eval cache disabled, with configured
       persistent force-cache demand/writeback on cold and materializing paths,
       and with fresh-runtime trace-verified persistent forced-value hits for
-      `builtins.readFile`, `builtins.readDir`, and `builtins.readFileType`
-      values used inside derivation `args`. They require identical `.drv` paths
-      and ATerm bytes across all runs, require final runs to report force-cache
-      hits and load the expected force-cache metadata keys, require
+      context-free `builtins.readFile`, `builtins.readDir`, and
+      `builtins.readFileType` values used inside derivation `args`, plus a
+      context-bearing `builtins.readFile` payload that must add the referenced
+      store path as a decoded derivation input source. They require identical
+      `.drv` paths and ATerm bytes across all runs, require final runs to report
+      force-cache hits and load the expected force-cache metadata keys, require
       materializing runs to persist the exact filesystem traces, and require
-      persistent-hit revalidation to replay the matching filesystem
-      fingerprints into the enclosing impure-input trace. The adjacent
+      persistent-hit revalidation to replay the matching filesystem fingerprints
+      into the enclosing impure-input trace. The adjacent
       `persistent_text_store_read_file_force_cache_hit_preserves_drv_surfaces`
       forces an immutable `builtins.toFile` payload before reading it through
       `readFile`, then requires the zero-input persistent trace to materialize
@@ -2305,8 +2308,9 @@ alone (`M-1`/`Q-A`).
       exercised trace
       identity/observation hashes plus persisted force-cache node/value/trace
       hashes in hex, raw bytes, and Nix base32. This samples the current
-      replayable filesystem impure-leaf and selected immutable text-store
-      `readFile` hit paths inside derivation input
+      replayable filesystem impure-leaf, including context-bearing `readFile`
+      payloads, and selected immutable text-store `readFile` hit paths inside
+      derivation input
       surfaces; it does not cover full cached-vs-uncached closure parity, the
       full leak invariant, derivationStrict-node SHA-256 early cutoff,
       stale-input miss surfaces beyond the canaries below, lazy replay payloads,
