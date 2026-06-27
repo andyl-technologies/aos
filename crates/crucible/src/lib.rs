@@ -59,10 +59,11 @@ pub use model::{
 pub use scheduler::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, IoCompletion, NodeTimelineProjection,
     QuantumLoop, QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerError, SchedulerHorizon, SchedulerHorizonSource,
-    SchedulerLivenessError, SchedulerLivenessReport, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal,
-    SchedulingNodeKind, SharedTimeline, SharedTimelineKey, SingleScheduler,
+    ScheduledEventPayload, SchedulerActor, SchedulerActorError, SchedulerActorHandle,
+    SchedulerActorReply, SchedulerActorStateSnapshot, SchedulerError, SchedulerHorizon,
+    SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulerTerminal, SchedulingNodeKind, SharedTimeline, SharedTimelineKey, SingleScheduler,
     check_scheduler_liveness, exact_local_event_from_timer_deadline_ns,
     horizon_from_exact_local_event, ordered_scheduled_events, ordered_timeline_keys,
 };

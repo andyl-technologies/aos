@@ -8,12 +8,16 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::{
-    BackendError, BackendInput, Configuration, Decision, DeliveryOrderDecision, EventKey, FaultId,
-    Icount, NodeCounter, NodeId, ScenarioDef, Shift, SimInstant, TimeConversionError, VirtualTime,
-    step,
+    BackendError, BackendInput, Configuration, Decision, DecisionRngState, DeliveryOrderDecision,
+    EventKey, FaultId, Icount, NodeCounter, NodeId, RngStreamId, RngStreamPosition, ScenarioDef,
+    Shift, SimInstant, TimeConversionError, VirtualTime, step,
 };
+
+const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
+const SCHEDULER_QUANTUM_STREAM: &str = "quantum";
 
 /// Advances the system by one scheduler quantum.
 ///
@@ -54,6 +58,221 @@ pub struct QuantumOutcome {
     /// Decisions appended by STEP in canonical order.
     pub decisions: Vec<Decision>,
 }
+
+/// A read-only copy of the state owned by the scheduler actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerActorStateSnapshot {
+    /// The current frontier configuration.
+    pub configuration: Configuration,
+    /// Per-node counters in canonical scheduler-node order.
+    pub node_counters: Vec<(SchedulerNodeId, NodeCounter)>,
+    /// Number of cross-node events still owned by the scheduler.
+    pub pending_event_count: usize,
+    /// Number of control operations waiting for the next quantum boundary.
+    pub pending_control_count: usize,
+    /// Decision-RNG cursor positions owned by the scheduler.
+    pub decision_rng_cursor: DecisionRngState,
+    /// Number of quantum boundaries at which the scheduler yielded to control.
+    pub boundary_yields: u64,
+}
+
+/// A message-only scheduler actor that owns the authoritative scheduler state.
+#[derive(Debug)]
+pub struct SchedulerActor {
+    scheduler: SingleScheduler,
+    inbox: Receiver<SchedulerActorMessage>,
+}
+
+/// A clonable sender for scheduler actor messages.
+#[derive(Clone, Debug)]
+pub struct SchedulerActorHandle {
+    inbox: Sender<SchedulerActorMessage>,
+}
+
+/// A typed reply receiver for scheduler actor requests.
+#[derive(Debug)]
+pub struct SchedulerActorReply<T> {
+    receiver: Receiver<T>,
+}
+
+enum SchedulerActorMessage {
+    QueueControl(ControlOperation),
+    DriveQuantum {
+        request: QuantumRequest,
+        reply: Sender<Result<QuantumOutcome, SchedulerError>>,
+    },
+    Snapshot {
+        reply: Sender<SchedulerActorStateSnapshot>,
+    },
+}
+
+impl fmt::Debug for SchedulerActorMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::QueueControl(operation) => formatter
+                .debug_tuple("QueueControl")
+                .field(operation)
+                .finish(),
+            Self::DriveQuantum { request, .. } => formatter
+                .debug_struct("DriveQuantum")
+                .field("request", request)
+                .finish_non_exhaustive(),
+            Self::Snapshot { .. } => formatter.debug_struct("Snapshot").finish_non_exhaustive(),
+        }
+    }
+}
+
+impl SchedulerActor {
+    /// Builds a scheduler actor and the handle used to send it messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the scheduler cannot be built from
+    /// `scenario`.
+    pub fn new(
+        scenario: SchedulerLivenessScenario,
+    ) -> Result<(SchedulerActorHandle, Self), SchedulerError> {
+        let (sender, receiver) = mpsc::channel();
+        Ok((
+            SchedulerActorHandle { inbox: sender },
+            Self {
+                scheduler: SingleScheduler::new(scenario)?,
+                inbox: receiver,
+            },
+        ))
+    }
+
+    /// Processes one queued actor message, if one is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError`] when the actor mailbox is closed or when
+    /// a caller drops a reply receiver before the actor sends the result.
+    pub fn run_once(&mut self) -> Result<bool, SchedulerActorError> {
+        match self.inbox.try_recv() {
+            Ok(message) => {
+                self.apply_message(message)?;
+                Ok(true)
+            }
+            Err(TryRecvError::Empty) => Ok(false),
+            Err(TryRecvError::Disconnected) => Err(SchedulerActorError::MailboxClosed),
+        }
+    }
+
+    /// Processes queued actor messages until the mailbox is temporarily empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError`] when the actor mailbox is closed or when
+    /// a caller drops a reply receiver before the actor sends the result.
+    pub fn run_until_idle(&mut self) -> Result<usize, SchedulerActorError> {
+        let mut processed = 0usize;
+        while self.run_once()? {
+            processed += 1;
+        }
+        Ok(processed)
+    }
+
+    fn apply_message(&mut self, message: SchedulerActorMessage) -> Result<(), SchedulerActorError> {
+        match message {
+            SchedulerActorMessage::QueueControl(operation) => {
+                self.scheduler.queue_control(operation);
+                Ok(())
+            }
+            SchedulerActorMessage::DriveQuantum { request, reply } => reply
+                .send(self.scheduler.drive_quantum(request))
+                .map_err(|_| SchedulerActorError::ReplyDropped),
+            SchedulerActorMessage::Snapshot { reply } => reply
+                .send(self.scheduler.actor_state_snapshot())
+                .map_err(|_| SchedulerActorError::ReplyDropped),
+        }
+    }
+}
+
+impl SchedulerActorHandle {
+    /// Queues a control operation for the scheduler actor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError::MailboxClosed`] when the actor has already
+    /// stopped receiving messages.
+    pub fn queue_control(&self, operation: ControlOperation) -> Result<(), SchedulerActorError> {
+        self.send(SchedulerActorMessage::QueueControl(operation))
+    }
+
+    /// Requests one scheduler quantum through the actor mailbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError::MailboxClosed`] when the actor has already
+    /// stopped receiving messages.
+    pub fn drive_quantum(
+        &self,
+        request: QuantumRequest,
+    ) -> Result<SchedulerActorReply<Result<QuantumOutcome, SchedulerError>>, SchedulerActorError>
+    {
+        let (sender, receiver) = mpsc::channel();
+        self.send(SchedulerActorMessage::DriveQuantum {
+            request,
+            reply: sender,
+        })?;
+        Ok(SchedulerActorReply { receiver })
+    }
+
+    /// Requests a read-only scheduler state snapshot through the actor mailbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError::MailboxClosed`] when the actor has already
+    /// stopped receiving messages.
+    pub fn snapshot(
+        &self,
+    ) -> Result<SchedulerActorReply<SchedulerActorStateSnapshot>, SchedulerActorError> {
+        let (sender, receiver) = mpsc::channel();
+        self.send(SchedulerActorMessage::Snapshot { reply: sender })?;
+        Ok(SchedulerActorReply { receiver })
+    }
+
+    fn send(&self, message: SchedulerActorMessage) -> Result<(), SchedulerActorError> {
+        self.inbox
+            .send(message)
+            .map_err(|_| SchedulerActorError::MailboxClosed)
+    }
+}
+
+impl<T> SchedulerActorReply<T> {
+    /// Receives a scheduler actor reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerActorError::ReplyDropped`] when the actor drops before
+    /// replying to the request.
+    pub fn recv(self) -> Result<T, SchedulerActorError> {
+        self.receiver
+            .recv()
+            .map_err(|_| SchedulerActorError::ReplyDropped)
+    }
+}
+
+/// An error produced by the scheduler actor mailbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchedulerActorError {
+    /// The actor mailbox is closed.
+    MailboxClosed,
+    /// A request reply was dropped before delivery.
+    ReplyDropped,
+}
+
+impl fmt::Display for SchedulerActorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MailboxClosed => formatter.write_str("scheduler actor mailbox is closed"),
+            Self::ReplyDropped => formatter.write_str("scheduler actor reply was dropped"),
+        }
+    }
+}
+
+impl Error for SchedulerActorError {}
 
 /// A control-plane operation admitted only at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -594,8 +813,11 @@ pub struct SingleScheduler {
     time_limit: SimInstant,
     nodes: Vec<RuntimeSchedulerNode>,
     pending_events: Vec<ScheduledEvent>,
+    control_inbox: Vec<ControlOperation>,
+    decision_rng_cursor: DecisionRngState,
     frontier: VirtualTime,
     quanta: u64,
+    boundary_yields: u64,
     lock_held: bool,
     last_advance: Option<NodeAdvance>,
 }
@@ -626,8 +848,11 @@ impl SingleScheduler {
             time_limit: scenario.time_limit,
             nodes,
             pending_events: scenario.pending_events,
+            control_inbox: Vec::new(),
+            decision_rng_cursor: DecisionRngState::empty(),
             frontier,
             quanta: 0,
+            boundary_yields: 0,
             lock_held: false,
             last_advance: None,
         })
@@ -649,6 +874,25 @@ impl SingleScheduler {
     #[must_use]
     pub fn quanta(&self) -> u64 {
         self.quanta
+    }
+
+    fn queue_control(&mut self, operation: ControlOperation) {
+        self.control_inbox.push(operation);
+    }
+
+    fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {
+        SchedulerActorStateSnapshot {
+            configuration: self.configuration.clone(),
+            node_counters: self
+                .nodes
+                .iter()
+                .map(|node| (node.id.clone(), node.counter))
+                .collect(),
+            pending_event_count: self.pending_events.len(),
+            pending_control_count: self.control_inbox.len(),
+            decision_rng_cursor: self.decision_rng_cursor.clone(),
+            boundary_yields: self.boundary_yields,
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -768,7 +1012,8 @@ impl SingleScheduler {
 
         self.last_advance = None;
 
-        let mut resolved_events = self.control_events(request.control);
+        self.yield_to_control_inbox(request.control);
+        let mut resolved_events = self.drain_control_events();
         let candidate = match self.pick_advanceable_node()? {
             Some(candidate) => candidate,
             None => {
@@ -803,6 +1048,7 @@ impl SingleScheduler {
                 })
                 .collect(),
         });
+        self.advance_decision_rng_cursor();
         let configuration = step(&self.configuration, decision.clone());
 
         self.configuration = configuration.clone();
@@ -824,8 +1070,13 @@ impl SingleScheduler {
         })
     }
 
-    fn control_events(&self, control: Vec<ControlOperation>) -> Vec<ScheduledEvent> {
-        let mut control = control;
+    fn yield_to_control_inbox(&mut self, control: Vec<ControlOperation>) {
+        self.control_inbox.extend(control);
+        self.boundary_yields = self.boundary_yields.saturating_add(1);
+    }
+
+    fn drain_control_events(&mut self) -> Vec<ScheduledEvent> {
+        let mut control = std::mem::take(&mut self.control_inbox);
         control.sort();
         let node = SchedulerNodeId {
             node: NodeId {
@@ -846,6 +1097,16 @@ impl SingleScheduler {
                 payload: ScheduledEventPayload::Control(operation),
             })
             .collect()
+    }
+
+    fn advance_decision_rng_cursor(&mut self) {
+        let stream = RngStreamId::new(SCHEDULER_ACTOR_RNG_DOMAIN, SCHEDULER_QUANTUM_STREAM);
+        let position = self
+            .decision_rng_cursor
+            .positions
+            .entry(stream)
+            .or_insert_with(|| RngStreamPosition::new(0));
+        position.draws = position.draws.saturating_add(1);
     }
 
     fn resolve_events_for(

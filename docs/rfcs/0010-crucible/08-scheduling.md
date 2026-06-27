@@ -914,11 +914,23 @@ application of explorer-supplied preemption decisions
 > They populate Phase 1 (the determinism / harness / transport foundation),
 > sequenced after the L0/L1 primitives and before any L3+ feature.
 
-- [ ] **T-SCHED-1** Implement the scheduler as a single yielding actor that owns
+- [x] **T-SCHED-1** Implement the scheduler as a single yielding actor that owns
   per-node virtual times, the pending cross-node event set, and the decision-RNG
   cursor; mutate that state only on its own task; yield to a control inbox at
   every quantum boundary. — satisfies [SCHED-1], [SCHED-2], [SCHED-3], [SCHED-4];
   spec §8.2.
+  Completed by `checks.crucible.phase3.schedulerActor`: `SchedulerActor` owns one
+  `SingleScheduler` core and exposes a message-only actor surface for control,
+  quantum, and read-only snapshot requests. The actor owns scheduler node
+  counters, pending events, a boundary-drained control inbox, and the
+  scheduler-owned decision-RNG cursor position. The focused actor tests verify
+  queued and per-request controls are admitted only through messages and drained
+  at a quantum boundary, actor state is exposed only through a read-only snapshot
+  reply, non-frontier quantum requests are rejected, and the scheduler yields to
+  its inbox before each quantum. The existing scheduler-liveness gate retains the
+  no-lock-across-advance evidence. Full lookahead, conservative PDES, total-order
+  RESOLVE, seeded probabilistic RESOLVE draws, topology swaps, and RR/preemption
+  semantics remain the later unchecked T-SCHED-2 through T-SCHED-30 tasks.
 - [ ] **T-SCHED-2** Implement `lookahead(n)` as the minimum inbound link latency
   over the current effective topology, with `+∞` when a node has no inbound
   links. — satisfies [SCHED-6]; spec §8.3.
