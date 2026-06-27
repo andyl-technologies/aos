@@ -1562,6 +1562,9 @@ dependencies = [
 [[package]]
 name = "crucible-cli"
 version = "0.1.0"
+dependencies = [
+ "clap",
+]
 
 [[package]]
 name = "crucible-daemon"

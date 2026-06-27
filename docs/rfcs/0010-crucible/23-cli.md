@@ -905,11 +905,20 @@ branch on the verdict without parsing output:
 > sync with the master plan's order/digest by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-CLI-1** Implement the `crucible` binary skeleton: the closed subcommand
-  set (run/verify/selftest/save/resume/fork/replay/search/fuzz/serve/completions)
+- [x] **T-CLI-1** Implement the `crucible` binary skeleton: the closed subcommand
+  set (run/verify/selftest/save/resume/fork/replay/search/fuzz/triage/debug/serve/completions)
   and the global flag block (§2), with derive-based parsing whose help text is
   authored as user-facing CLI copy (no container overview docs). — satisfies
   [CLI-3], [CLI-4], [CLI-6]; spec §2, §2.1.
+  Completed by `checks.crucible.phase5.cliSkeleton`: the `crucible` binary now
+  uses derive-based Clap parsing for the closed subcommand surface (`run`,
+  `verify`, `selftest`, `save`, `resume`, `fork`, `replay`, `search`, `fuzz`,
+  `triage`, `debug`, `serve`, `completions`) and the shared global flag block
+  (`--seed`, `--backend`, `--daemon`, `--qemu`, `--plugin`, `--store`,
+  `--format`, `--trace`, `--artifact-dir`, `-v/--verbose`, `-q/--quiet`). The
+  focused parser tests assert the closed command set, global flag parsing, and
+  unknown-command rejection; command execution and thin session/API dispatch
+  remain T-CLI-2 and later CLI tasks.
 - [ ] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
   into session commands (20 §4) / API calls (21); add a lint/test that the CLI
   holds no canonical run state and adds no control capability absent from 20/21. —
