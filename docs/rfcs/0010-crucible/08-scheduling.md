@@ -1078,10 +1078,24 @@ application of explorer-supplied preemption decisions
   deliveries are effective idle advance candidates, are clamped by the
   virtual-time limit, and are covered by focused no-deadlock and peer-priority
   regressions with no host-time API use.
-- [ ] **T-SCHED-12** Implement the quantum loop PICK / RUN / RESOLVE / EMIT /
+- [x] **T-SCHED-12** Implement the quantum loop PICK / RUN / RESOLVE / EMIT /
   STEP as the unit of `step`, ensuring the quantum sequence is a pure function of
   `(ScenarioDef, Seed, Schedule)`. — satisfies [SCHED-24], [SCHED-33]; spec §8.9,
   §8.9.7.
+  Completed by `checks.crucible.phase3.schedulerQuantumLoop`. `SingleScheduler`
+  now drives the authoritative quantum as PICK, RUN, RESOLVE, EMIT, STEP: it
+  drains boundary control, rejects non-frontier configuration requests, selects
+  one scheduler candidate, advances it once under the scheduler critical section,
+  resolves due events in canonical order, emits schedule decisions for those
+  deliveries, and applies them with `step` as the atomic quantum boundary. The
+  effective scenario identity now includes scheduler-owned node, pending-event,
+  and sequence-cursor material so the checked quantum sequence satisfies the
+  pure function of `(ScenarioDef, Seed, Schedule)` boundary. The focused
+  regressions cover one-boundary
+  PICK/RUN/RESOLVE/decision-EMIT/STEP behavior, identical-input replay purity,
+  scheduler-state contribution to scenario identity, control-only EMIT/STEP with
+  no runnable node, and fail-loud rejection of stale configuration input. Full
+  event-log EMIT materialization remains T-SCHED-19.
 - [ ] **T-SCHED-13** Implement PICK (global-minimum horizon, ties by node_id) and
   RUN (advance under `-icount` to horizon; never past it), taking the argmin over a
   single unified `effective_horizon(node)` projection (DONE/Halted → +∞, IDLE →

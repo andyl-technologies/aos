@@ -2,9 +2,10 @@
 //!
 //! The module owns the L3 interface that all virtual-time advancement and
 //! cross-node event resolution must pass through. It intentionally defines the
-//! boundary and ordering vocabulary without implementing the full scheduler
-//! algorithm; the detailed PICK/RUN/RESOLVE/EMIT/STEP behavior lands in the
-//! scheduler tasks that build on this API.
+//! boundary and ordering vocabulary, implements the authoritative
+//! PICK/RUN/RESOLVE/EMIT/STEP quantum boundary, and leaves backend transport and
+//! event-log materialization details to the scheduler tasks that build on this
+//! API.
 
 use std::error::Error;
 use std::fmt;
@@ -1321,6 +1322,8 @@ pub enum SchedulerNodeActivity {
 /// A finite scheduler scenario for checking quantum-loop liveness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchedulerLivenessScenario {
+    /// Author-supplied scenario material that names this generated scenario.
+    pub authored_material: String,
     /// The configuration whose schedule records scheduler decisions.
     pub configuration: Configuration,
     /// The fixed icount-to-virtual-time shift for every node in the scenario.
@@ -1354,10 +1357,12 @@ impl SchedulerLivenessScenario {
         nodes: Vec<SchedulerScenarioNode>,
         pending_events: Vec<ScheduledEvent>,
     ) -> Self {
-        Self {
-            configuration: Configuration::genesis(ScenarioDef::from_canonical_material(
-                "crucible.scheduler-liveness.scenario",
+        let mut scenario = Self {
+            authored_material: material.to_owned(),
+            configuration: Configuration::genesis(ScenarioDef::from_canonical_material_with_seed(
+                "crucible.scheduler-liveness.authored",
                 material,
+                crate::Seed::default(),
             )),
             shift,
             quantum_budget,
@@ -1366,6 +1371,21 @@ impl SchedulerLivenessScenario {
             nodes,
             pending_events,
             event_sequences: EventSequenceState::empty(),
+        };
+        scenario.refresh_configuration();
+        scenario
+    }
+
+    /// Builds the effective scheduler configuration from scenario-owned state.
+    #[must_use]
+    pub fn canonical_configuration(&self) -> Configuration {
+        Configuration {
+            def: ScenarioDef::from_canonical_material_with_seed(
+                "crucible.scheduler-liveness.scenario.v1",
+                &scheduler_liveness_scenario_material(self),
+                self.configuration.def.seed(),
+            ),
+            schedule: self.configuration.schedule.clone(),
         }
     }
 
@@ -1379,8 +1399,194 @@ impl SchedulerLivenessScenario {
         interval: SimDuration,
     ) -> Result<Self, SchedulerError> {
         self.rendezvous = SchedulerRendezvous::every(interval)?;
+        self.refresh_configuration();
         Ok(self)
     }
+
+    fn refresh_configuration(&mut self) {
+        self.configuration = self.canonical_configuration();
+    }
+}
+
+fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "authored_material_len={}",
+        scenario.authored_material.len()
+    ));
+    lines.push(format!("authored_material={}", scenario.authored_material));
+    lines.push(format!("shift_bits={}", scenario.shift.bits));
+    lines.push(format!("quantum_budget={}", scenario.quantum_budget));
+    lines.push(format!("time_limit_ns={}", scenario.time_limit.nanos));
+    let mut nodes = scenario.nodes.clone();
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    lines.push(format!("nodes={}", nodes.len()));
+    lines.extend(nodes.iter().map(scheduler_scenario_node_material));
+
+    let pending = ordered_scheduled_events(&scenario.pending_events);
+    lines.push(format!("pending_events={}", pending.len()));
+    lines.extend(pending.into_iter().map(scheduled_event_material));
+
+    lines.push(format!(
+        "event_sequences={}",
+        scenario.event_sequences.next.len()
+    ));
+    for (key, next) in &scenario.event_sequences.next {
+        lines.push(format!(
+            "sequence_producer:\n{}\nsequence_consumer:\n{}\nsequence_next={next}",
+            scheduler_node_material(&key.producer),
+            scheduler_node_material(&key.consumer),
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
+    format!(
+        "node:\n{}\ncounter_ticks={}\nactivity={}\n{}\n{}",
+        scheduler_node_material(&node.id),
+        node.counter.ticks,
+        scheduler_node_activity_label(node.activity),
+        network_lookahead_material(node.network_lookahead),
+        exact_local_event_material(&node.exact_local_event),
+    )
+}
+
+fn scheduler_node_material(node: &SchedulerNodeId) -> String {
+    format!(
+        "node_name_len={}\nnode_name={}\nnode_kind={}",
+        node.node.name.len(),
+        node.node.name,
+        scheduling_node_kind_label(node.kind),
+    )
+}
+
+fn scheduler_node_activity_label(activity: SchedulerNodeActivity) -> &'static str {
+    match activity {
+        SchedulerNodeActivity::Runnable => "runnable",
+        SchedulerNodeActivity::Idle => "idle",
+    }
+}
+
+fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+    match kind {
+        SchedulingNodeKind::Vm => "vm",
+        SchedulingNodeKind::Disk => "disk",
+        SchedulingNodeKind::NineP => "9p",
+        SchedulingNodeKind::Network => "network",
+        SchedulingNodeKind::ControlPlane => "control-plane",
+    }
+}
+
+fn network_lookahead_material(lookahead: NetworkLookahead) -> String {
+    match lookahead {
+        NetworkLookahead::Finite(duration) => {
+            format!(
+                "network_lookahead=finite\nnetwork_lookahead_ns={}",
+                duration.nanos
+            )
+        }
+        NetworkLookahead::Infinite => String::from("network_lookahead=infinite"),
+    }
+}
+
+fn exact_local_event_material(event: &ExactLocalEvent) -> String {
+    match event {
+        ExactLocalEvent::NoArmedTimer => String::from("exact_local_event=none"),
+        ExactLocalEvent::TimerDeadline { virtual_time } => {
+            format!(
+                "exact_local_event=timer\nexact_local_event_ns={}",
+                virtual_time.nanos
+            )
+        }
+        ExactLocalEvent::IoCompletion {
+            virtual_time,
+            sub_node,
+        } => format!(
+            "exact_local_event=io\nexact_local_event_ns={}\nexact_local_sub_node:\n{}",
+            virtual_time.nanos,
+            scheduler_node_material(sub_node),
+        ),
+        ExactLocalEvent::FaultActivation {
+            virtual_time,
+            fault,
+        } => format!(
+            "exact_local_event=fault\nexact_local_event_ns={}\nfault_name_len={}\nfault_name={}",
+            virtual_time.nanos,
+            fault.name.len(),
+            fault.name,
+        ),
+    }
+}
+
+fn scheduled_event_material(event: &ScheduledEvent) -> String {
+    format!(
+        "event:\n{}\n{}",
+        scheduled_event_key_material(&event.key),
+        scheduled_event_payload_material(&event.payload),
+    )
+}
+
+fn scheduled_event_key_material(key: &ScheduledEventKey) -> String {
+    format!(
+        "event_time={}\nevent_consumer:\n{}\nevent_producer:\n{}\nevent_sequence={}",
+        key.virtual_time().ticks,
+        scheduler_node_material(key.consumer()),
+        scheduler_node_material(key.producer()),
+        key.sequence(),
+    )
+}
+
+fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
+    match payload {
+        ScheduledEventPayload::BackendInput(input) => format!(
+            "payload=backend-input\npayload_node_len={}\npayload_node={}\npayload_bytes={}",
+            input.node.name.len(),
+            input.node.name,
+            hex_bytes(&input.payload),
+        ),
+        ScheduledEventPayload::IoCompletion(completion) => format!(
+            "payload=io-completion\npayload_sub_node:\n{}\npayload_target_len={}\npayload_target={}\npayload_delivery_icount={}\npayload_bytes={}",
+            scheduler_node_material(&completion.sub_node),
+            completion.target.name.len(),
+            completion.target.name,
+            completion.delivery_icount.retired,
+            hex_bytes(&completion.payload),
+        ),
+        ScheduledEventPayload::FaultActivation(fault) => format!(
+            "payload=fault-activation\npayload_fault_len={}\npayload_fault={}",
+            fault.name.len(),
+            fault.name,
+        ),
+        ScheduledEventPayload::Control(operation) => format!(
+            "payload=control\ncontrol_sequence={}\ncontrol_kind={}",
+            operation.sequence,
+            control_operation_kind_label(operation.kind),
+        ),
+    }
+}
+
+fn control_operation_kind_label(kind: ControlOperationKind) -> &'static str {
+    match kind {
+        ControlOperationKind::Pause => "pause",
+        ControlOperationKind::Resume => "resume",
+        ControlOperationKind::Step => "step",
+        ControlOperationKind::Snapshot => "snapshot",
+        ControlOperationKind::Fork => "fork",
+        ControlOperationKind::Inject => "inject",
+        ControlOperationKind::Query => "query",
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 /// The terminal scheduler condition reached by a liveness run.
@@ -1554,6 +1760,7 @@ impl SingleScheduler {
     /// shared virtual timeline.
     pub fn new(scenario: SchedulerLivenessScenario) -> Result<Self, SchedulerError> {
         let timeline = SharedTimeline::new(scenario.shift)?;
+        let configuration = scenario.canonical_configuration();
         let mut nodes = scenario
             .nodes
             .into_iter()
@@ -1564,7 +1771,7 @@ impl SingleScheduler {
         let frontier = frontier_for(&nodes, scenario.shift)?;
 
         Ok(Self {
-            configuration: scenario.configuration,
+            configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
             time_limit: scenario.time_limit,
@@ -1880,19 +2087,33 @@ impl SingleScheduler {
 
         self.yield_to_control_inbox(request.control);
         let mut resolved_events = self.drain_control_events()?;
+        // PICK phase: select the next effective-horizon candidate once.
         let candidate = match self.pick_global_minimum_horizon_node()? {
             Some(candidate) => candidate,
             None => {
+                // Control-only decision EMIT/STEP: no node RUN occurs.
+                let decisions = self.emit_quantum_decisions(
+                    &resolved_events,
+                    SimInstant {
+                        nanos: self.frontier.ticks,
+                    },
+                );
+                let configuration = self.step_quantum(&decisions);
+                if !decisions.is_empty() {
+                    self.configuration = configuration.clone();
+                    self.quanta = self.quanta.saturating_add(1);
+                }
                 return Ok(QuantumOutcome {
-                    configuration: self.configuration.clone(),
+                    configuration,
                     frontier: self.frontier,
                     advanced_node: None,
                     resolved_events,
-                    decisions: Vec::new(),
+                    decisions,
                 });
             }
         };
 
+        // RUN phase: compute one plan under the scheduler lock, then advance after yield.
         let plan = {
             let critical_section = SchedulerCriticalSection::enter(self);
             critical_section.advance_plan(candidate)?
@@ -1901,32 +2122,13 @@ impl SingleScheduler {
         let selected_node = plan.node.clone();
         let before = plan.before;
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
+        // RESOLVE phase: collect due events for the node that just advanced.
         resolved_events.extend(self.resolve_events_for(&selected_node, after_time));
 
-        let decisions = if resolved_events.is_empty() {
-            Vec::new()
-        } else {
-            let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-                at: VirtualTime {
-                    ticks: after_time.nanos,
-                },
-                order: resolved_events
-                    .iter()
-                    .map(|event| EventKey {
-                        virtual_time: event.key.virtual_time(),
-                        consumer: event.key.consumer().clone(),
-                        producer: event.key.producer().clone(),
-                        sequence: event.key.sequence(),
-                    })
-                    .collect(),
-            });
-            self.advance_decision_rng_cursor();
-            vec![decision]
-        };
-        let mut configuration = self.configuration.clone();
-        for decision in &decisions {
-            configuration = step(&configuration, decision.clone());
-        }
+        // Decision EMIT phase: convert resolved happenings into recorded decisions.
+        let decisions = self.emit_quantum_decisions(&resolved_events, after_time);
+        // STEP phase: apply the emitted decisions to the frontier configuration.
+        let configuration = self.step_quantum(&decisions);
 
         self.configuration = configuration.clone();
         self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
@@ -1945,6 +2147,39 @@ impl SingleScheduler {
             resolved_events,
             decisions,
         })
+    }
+
+    fn emit_quantum_decisions(
+        &mut self,
+        resolved_events: &[ScheduledEvent],
+        at: SimInstant,
+    ) -> Vec<Decision> {
+        if resolved_events.is_empty() {
+            return Vec::new();
+        }
+
+        let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
+            at: VirtualTime { ticks: at.nanos },
+            order: resolved_events
+                .iter()
+                .map(|event| EventKey {
+                    virtual_time: event.key.virtual_time(),
+                    consumer: event.key.consumer().clone(),
+                    producer: event.key.producer().clone(),
+                    sequence: event.key.sequence(),
+                })
+                .collect(),
+        });
+        self.advance_decision_rng_cursor();
+        vec![decision]
+    }
+
+    fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
+        let mut configuration = self.configuration.clone();
+        for decision in decisions {
+            configuration = step(&configuration, decision.clone());
+        }
+        configuration
     }
 
     fn yield_to_control_inbox(&mut self, control: Vec<ControlOperation>) {
