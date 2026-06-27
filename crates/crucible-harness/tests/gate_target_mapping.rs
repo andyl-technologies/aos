@@ -169,6 +169,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-shmem",
                 "gate_layer1_injection"
             ),
+            ("gate:layer1-injection", "crucible", "network_link_subnode"),
             (
                 "gate:abi-conformance",
                 "crucible-harness",

@@ -100,6 +100,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:layer1-injection",
+        package: "crucible",
+        test_target: "network_link_subnode",
+        required_features: &["test-double"],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:abi-conformance",
         package: "crucible-harness",
         test_target: "gate_abi_conformance",

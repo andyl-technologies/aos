@@ -207,6 +207,12 @@
       requiredFeatures = [];
     }
     {
+      gate = "gate:layer1-injection";
+      package = "crucible";
+      testTarget = "network_link_subnode";
+      requiredFeatures = ["test-double"];
+    }
+    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
@@ -358,8 +364,8 @@
     }
     {
       gate = "gate:layer1-injection";
-      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem"];
-      layers = ["L1"];
+      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem" "crucible"];
+      layers = ["L1" "L3"];
       shape = "observed-injection-icount-vectors";
       backend = "in-process";
     }
@@ -492,7 +498,7 @@
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness"];
+      gates = ["gate:layer0-determinism" "gate:layer1-injection" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness"];
     }
     {
       package = "crucible-session";

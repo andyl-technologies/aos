@@ -83,6 +83,13 @@
       placeholder = false;
     }
     {
+      gate = "gate:layer1-injection";
+      package = "crucible";
+      testTarget = "network_link_subnode";
+      requiredFeatures = ["test-double"];
+      placeholder = false;
+    }
+    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";

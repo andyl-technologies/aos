@@ -15,9 +15,10 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, TimeConversionError, VcpuId, VirtualTime, WorldLookaheadEdge, step,
+    Icount, NetworkLinkEffectiveFaults, NetworkLinkFrame, NetworkLinkSubNode, NodeCounter, NodeId,
+    PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
+    VcpuId, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -1759,6 +1760,40 @@ pub fn resolve_due_scheduled_events(
     *pending_events = pending;
 
     Ok(ordered)
+}
+
+/// Applies a network-link sub-node during RESOLVE and returns target events.
+///
+/// This is the scheduler-facing boundary for the `SLOT_NET_ROUTER` path: the
+/// caller supplies a VM-emitted frame and the effective fault table already
+/// selected for that directed link, and the helper returns the final
+/// [`ScheduledEventPayload::BackendInput`] events that may later be drained by
+/// [`resolve_due_scheduled_events`].
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the link model rejects the
+/// frame or cannot encode one of its resulting scheduler events.
+pub fn resolve_network_link_frame(
+    link: &NetworkLinkSubNode,
+    frame: NetworkLinkFrame,
+    faults: &NetworkLinkEffectiveFaults,
+) -> Result<Vec<ScheduledEvent>, SchedulerError> {
+    let plan =
+        link.plan_frame(frame, faults)
+            .map_err(|source| SchedulerError::BoundaryViolation {
+                message: format!("network link RESOLVE failed: {source}"),
+            })?;
+    plan.deliveries
+        .iter()
+        .map(|delivery| {
+            delivery
+                .to_scheduled_event(link)
+                .map_err(|source| SchedulerError::BoundaryViolation {
+                    message: format!("network link RESOLVE failed: {source}"),
+                })
+        })
+        .collect()
 }
 
 /// Records every probabilistic RESOLVE choice in canonical event order.

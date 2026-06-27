@@ -817,11 +817,27 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Completed by `checks.crucible.phase3.ninePWireAbi` and wired into canonical `gate:abi-conformance` through `checks.crucible.phase2.gates.abiConformance`.
   `NinePSession::handle_wire_request` decodes raw 9P2000.L headers and bodies, rejects size mismatches or messages larger than the negotiated msize before dispatch, maps unknown message types to `Rlerror(ENOSYS)`, maps malformed supported messages to `Rlerror(EINVAL)`, and serializes every high-level response back into a well-formed 9p message.
   The focused ABI test carries exact 9P2000.L wire golden vectors for version negotiation, unknown/mutating/malformed errors, and read data, plus deterministic arbitrary-byte fuzz coverage that catches panics and checks every output frame's declared size.
-- [ ] **T-IO-9** Implement the network-link sub-node model: base latency sets
+- [x] **T-IO-9** Implement the network-link sub-node model: base latency sets
   delivery icount; latency/jitter/reorder/bandwidth shift it; loss drops;
   duplicate emits a second frame; corrupt flips seeded payload bits — all over
   `SLOT_NET_ROUTER`, applied at RESOLVE per the effective fault table. —
   satisfies [IO-20]; spec §15.4.1; cross-ref 08, 17.
+  Completed by `checks.crucible.phase3.networkLinkSubnode` and wired into
+  canonical `gate:layer1-injection` through the `network_link_subnode` test
+  target.
+  `NetworkLinkSubNode` models directed inter-VM frames over the reserved
+  `SLOT_NET_ROUTER` network producer: source and target endpoints must be VM
+  scheduler nodes backed by the declared `LinkDef`, base latency is computed
+  from the source emit icount, bandwidth serialization delay, seeded link
+  jitter, effective extra latency, and seeded reorder delay shift the delivery
+  icount, and loss suppresses all output before duplicate/corruption are
+  applied.  Duplicate emits a second deterministic delivery with a distinct
+  event sequence, corruption flips a seeded payload bit, and the resulting
+  deliveries bridge to scheduler `BackendInput` events that preserve the source
+  VM as producer while passing through the modeled router slot.
+  Summary: latency, jitter, reorder, bandwidth, loss, duplicate, and corruption
+  are pure modeled perturbations of delivery icount and payload, with no host
+  timing, filesystem, or scheduling input.
 - [ ] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
   probabilistic device choice drawn from it in deterministic order and recorded
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
