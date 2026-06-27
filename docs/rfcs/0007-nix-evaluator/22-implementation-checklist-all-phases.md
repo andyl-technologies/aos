@@ -1148,9 +1148,18 @@ alone (`M-1`/`Q-A`).
       path, requires identical returned store-path strings across all three
       runs, and scans those fetchurl surfaces for root/import parse-cache
       BLAKE3, imported-file content BLAKE3, a fetched-payload BLAKE3 sentinel,
-      and hot xxh3 canaries. These sample selected
-      `hashString`/`hashFile`/`fetchurl` output surfaces only; they do not prove
-      the full hash/fetch builtin leak-invariant gate (`S-15`).
+      and hot xxh3 canaries.
+      `configured_import_cache_preserves_fetch_tarball_store_path_surface`
+      evaluates `builtins.fetchTarball (import file)` over a local `file://`
+      fixed-output tarball with import caching disabled, with configured
+      parse/persist roots on a miss/write path, and with a later persistent-hit
+      path, requires identical returned store-path strings across all three
+      runs, checks the unpacked tree materializes, and scans those fetchTarball
+      surfaces for root/import parse-cache BLAKE3, imported-file content BLAKE3,
+      an archive-bytes BLAKE3 sentinel, and hot xxh3 canaries. These sample
+      selected `hashString`/`hashFile`/`fetchurl`/`fetchTarball` output surfaces
+      only; they do not prove the full hash/fetch builtin leak-invariant gate
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
