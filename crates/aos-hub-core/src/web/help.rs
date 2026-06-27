@@ -94,15 +94,6 @@ pub fn card(key: &str) -> Option<HelpCard> {
             ],
         ),
         // -- cache <-> registry link ----------------------------------------
-        "link.advertised" => c(
-            "Advertise to consumers",
-            "link",
-            "Put this cache in the registry's published substituter list.",
-            &[
-                ("On", "consumers of the registry are told to pull binaries from this cache automatically."),
-                ("Off", "the link exists (e.g. for GC roots) but the cache is not advertised; consumers won't use it unless they add it themselves."),
-            ],
-        ),
         "link.roots_packages" => c(
             "Pin GC roots from packages",
             "link",

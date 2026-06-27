@@ -1344,8 +1344,6 @@ pub struct CacheLinkRow {
     pub registry_slug: String,
     /// The registry's live store paths pin GC roots in this cache.
     pub roots_packages: bool,
-    /// This cache's URL is advertised in the registry's cache stack.
-    pub advertised: bool,
     /// A non-blocking visibility warning for this link (e.g. a private
     /// registry's closures rooted into this more-visible cache), or `None`.
     pub warning: Option<String>,
@@ -1379,19 +1377,23 @@ pub struct CachePinRow {
     pub created_at: i64,
 }
 
-/// A linked binary cache shown on a *registry's* settings page (the reverse of
-/// [`CacheLinkRow`]).
+/// A linked binary cache classified against the registry's committed
+/// `[caches]`, shown on the registry's caches reconciliation tab.
 pub struct RegistryCacheRow {
     /// The linked cache's slug.
     pub cache_slug: String,
-    /// This cache is advertised in the registry's consumer cache stack.
-    pub advertised: bool,
+    /// The cache's consumer-facing URL (a bucket-direct frontend, else the
+    /// hub-served `{external_url}/{cache_slug}`) — what the committed `[caches]`
+    /// is matched against.
+    pub consumer_url: String,
     /// The registry's live store paths pin GC roots in this cache.
     pub roots_packages: bool,
-    /// Whether this cache *may* be advertised on the registry — false when the
-    /// cache is less visible than the registry (its consumers couldn't read it),
-    /// in which case the advertise toggle is greyed out.
-    pub can_advertise: bool,
+    /// The committed `[caches]` priority when this cache's [`consumer_url`] is
+    /// served from config, or `None` when the link exists but the cache is not
+    /// advertised in the committed config.
+    ///
+    /// [`consumer_url`]: Self::consumer_url
+    pub config_priority: Option<u32>,
 }
 
 /// The org dashboard: projects, registries, members, bindings, audit link.
@@ -1977,9 +1979,6 @@ pub fn cache_page(
             .iter()
             .map(|l| {
                 let mut flags: Vec<String> = Vec::new();
-                if l.advertised {
-                    flags.push("<span class=\"chip\">advertised</span>".to_string());
-                }
                 if l.roots_packages {
                     flags.push("<span class=\"chip\">gc roots</span>".to_string());
                 }
@@ -2012,15 +2011,14 @@ pub fn cache_page(
         body.push_str(&table(&["registry", "", ""], &rows));
     }
     if can_admin && !linkable.is_empty() {
-        // Each registry option carries its visibility, and the form this cache's,
-        // so the JS greys out advertise when the chosen registry is more visible
-        // than the cache (its consumers couldn't read the cache) — the same rule
-        // the server enforces.
+        // Linking is operational only (GC-root pinning + config autofill);
+        // advertising a cache to a registry's consumers is an explicit
+        // `[caches]` config edit on the registry, so no advertise toggle here.
         let mut reg_options = String::new();
         for (slug, vis) in linkable {
             let _ = write!(
                 reg_options,
-                "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
+                "<option value=\"{s}\">{s} · {v}</option>",
                 s = escape(slug),
                 v = escape(vis),
             );
@@ -2028,20 +2026,17 @@ pub fn cache_page(
         let _ = write!(
             body,
             "<h3>Link a registry</h3>\n\
-             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\" \
-             data-cache-link data-cache-visibility=\"{cachevis}\">{csrf}\
+             <p class=\"dim\">Pins GC roots and lists this cache for the registry's config \
+             autofill. It does not advertise the cache — do that in the registry's Config.</p>\n\
+             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\">{csrf}\
              <label>registry <select name=\"registry\">{regs}</select></label>\n\
-             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
-             <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
              <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
              <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
              <button>link</button>\n</form>\n",
             org = escape(org_slug),
             slug = escape(&cache.slug),
-            cachevis = escape(&cache.visibility),
             csrf = csrf_field(csrf),
             regs = reg_options,
-            adv_help = help::marker("link.advertised"),
             roots_help = help::marker("link.roots_packages"),
         );
     }
@@ -2578,6 +2573,9 @@ pub fn registry_settings_page(
     binding: Option<(&str, &str, &str)>,
     bindings: &[String],
     caches: &[RegistryCacheRow],
+    // Committed `[caches]` URLs that match no linked managed cache (third-party
+    // or non-hosted), as `(url, priority)`.
+    external_caches: &[(String, u32)],
     linkable_caches: &[(String, String)],
     can_delete: bool,
     // Whether this registry advertises its inherited storage-binding frontend
@@ -2757,78 +2755,137 @@ pub fn registry_settings_page(
 
     // -- Binary caches serving this registry ---------------------------------
     if active == "caches" {
-        // Binary caches serving this registry (the reverse of a cache's
-        // linked-registries list) — managed here from the registry side, and
-        // equivalently from each cache's own page. Both routes share the same
-        // upsert, so editing a link's flags works from either.
+        // A reconciliation view over the committed `[caches]` (the single source
+        // of truth a consumer resolves) versus the registry's DB cache links
+        // (operational: GC-root pinning + config-editor autofill). Caches are
+        // not advertised by linking — advertisement is an explicit `[caches]`
+        // config edit (Settings -> Config). Three groups are shown:
+        //   1. served from config (link present, URL in `[caches]`),
+        //   2. linked but not in config (link present, URL absent),
+        //   3. in config but external (URL present, no linked managed cache).
         body.push_str("<h2>Binary caches</h2>\n");
-        if caches.is_empty() {
-            body.push_str("<p class=\"dim\">No binary caches serve this registry yet.</p>\n");
+        body.push_str(
+            "<p class=\"dim\">The committed <code>[caches]</code> config is the source of \
+             truth for what this registry advertises. A cache serves the whole registry \
+             (all channels), not a single channel. Linking a cache is operational only \
+             (GC roots + config autofill); to advertise it, add its URL in \
+             <a href=\"config\">Settings · Config</a>.</p>\n",
+        );
+
+        let served: Vec<&RegistryCacheRow> = caches
+            .iter()
+            .filter(|c| c.config_priority.is_some())
+            .collect();
+        let unconfigured: Vec<&RegistryCacheRow> = caches
+            .iter()
+            .filter(|c| c.config_priority.is_none())
+            .collect();
+
+        let cache_label = |c: &RegistryCacheRow| {
+            if org_slug.is_empty() {
+                escape(&c.cache_slug)
+            } else {
+                format!(
+                    "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                    org = escape(org_slug),
+                    slug = escape(&c.cache_slug),
+                )
+            }
+        };
+
+        // 1. Served from config.
+        body.push_str("<h3>Served from config</h3>\n");
+        if served.is_empty() {
+            body.push_str(
+                "<p class=\"dim\">No linked cache's URL appears in the committed config.</p>\n",
+            );
         } else {
-            // An aligned table of linked caches. Each row is a single form (laid out
-            // across the shared grid via `display:contents`): toggle the link's flags
-            // and `save` (an upsert), or `unlink` (the same form re-submitted to the
-            // unlink route via `formaction`). The `?` help sits once in the header.
             body.push_str("<div class=\"linktable\">\n");
-            let _ = write!(
-                body,
+            body.push_str(
                 "<span class=\"linktable-h\">cache</span>\
-             <span class=\"linktable-h\">advertised{adv_help}</span>\
-             <span class=\"linktable-h\">gc roots{roots_help}</span>\
-             <span class=\"linktable-h\"></span>\n",
-                adv_help = help::marker("link.advertised"),
-                roots_help = help::marker("link.roots_packages"),
+                 <span class=\"linktable-h\">consumer URL</span>\
+                 <span class=\"linktable-h\">priority</span>\
+                 <span class=\"linktable-h\"></span>\n",
             );
-            for c in caches {
-                let label = if org_slug.is_empty() {
-                    escape(&c.cache_slug)
-                } else {
-                    format!(
-                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
-                        org = escape(org_slug),
-                        slug = escape(&c.cache_slug),
-                    )
-                };
-                let adv = if c.advertised { " checked" } else { "" };
-                let roots = if c.roots_packages { " checked" } else { "" };
-                // A cache less visible than the registry can't be advertised — grey
-                // out (disable) that toggle, with the reason on hover.
-                let adv_disabled = if c.can_advertise {
-                    ""
-                } else {
-                    " disabled title=\"a less-visible cache can't be advertised on this registry — its consumers couldn't read it\""
-                };
+            for c in &served {
                 let _ = write!(
-                body,
-                "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
-                 <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
-                 <span class=\"linkrow-name\">{label}</span>\
-                 <input type=\"checkbox\" name=\"advertised\" value=\"1\"{adv}{adv_disabled}>\
-                 <input type=\"checkbox\" name=\"roots_packages\" value=\"1\"{roots}>\
-                 <span class=\"linkrow-actions\"><button>save</button>\
-                 <button class=\"danger\" formaction=\"/{slug}/-/settings/cache-unlink\">unlink</button>\
-                 </span></form>\n",
-                slug = escape(slug),
-                csrf = csrf_field(csrf),
-                cache = escape(&c.cache_slug),
-                label = label,
-                adv = adv,
-                adv_disabled = adv_disabled,
-                roots = roots,
-            );
+                    body,
+                    "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-unlink\">{csrf}\
+                     <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
+                     <span class=\"linkrow-name\">{label}</span>\
+                     <span><code>{url}</code></span>\
+                     <span>{priority}</span>\
+                     <span class=\"linkrow-actions\">\
+                     <button class=\"danger\">unlink</button></span></form>\n",
+                    slug = escape(slug),
+                    csrf = csrf_field(csrf),
+                    cache = escape(&c.cache_slug),
+                    label = cache_label(c),
+                    url = escape(&c.consumer_url),
+                    priority = c.config_priority.unwrap_or(0),
+                );
             }
             body.push_str("</div>\n");
         }
-        // Link another of the org's caches to this registry. Each option carries its
-        // cache's visibility, and the form the registry's, so the JS greys out the
-        // advertise toggle when the chosen cache is less visible than the registry
-        // (it can't be advertised) — the same rule the rows and the server enforce.
+
+        // 2. Linked but not in config — offer a deep-link to the config editor.
+        body.push_str("<h3>Linked but not advertised</h3>\n");
+        if unconfigured.is_empty() {
+            body.push_str("<p class=\"dim\">Every linked cache is advertised in the config.</p>\n");
+        } else {
+            body.push_str("<div class=\"linktable\">\n");
+            body.push_str(
+                "<span class=\"linktable-h\">cache</span>\
+                 <span class=\"linktable-h\">consumer URL</span>\
+                 <span class=\"linktable-h\"></span>\
+                 <span class=\"linktable-h\"></span>\n",
+            );
+            for c in &unconfigured {
+                let _ = write!(
+                    body,
+                    "<form class=\"linkrow\" method=\"post\" action=\"/{slug}/-/settings/cache-unlink\">{csrf}\
+                     <input type=\"hidden\" name=\"cache\" value=\"{cache}\">\
+                     <span class=\"linkrow-name\">{label}</span>\
+                     <span><code>{url}</code></span>\
+                     <span><a href=\"config\">add to config</a></span>\
+                     <span class=\"linkrow-actions\">\
+                     <button class=\"danger\">unlink</button></span></form>\n",
+                    slug = escape(slug),
+                    csrf = csrf_field(csrf),
+                    cache = escape(&c.cache_slug),
+                    label = cache_label(c),
+                    url = escape(&c.consumer_url),
+                );
+            }
+            body.push_str("</div>\n");
+        }
+
+        // 3. In config but external (no linked managed cache).
+        if !external_caches.is_empty() {
+            body.push_str("<h3>In config, external</h3>\n");
+            body.push_str(
+                "<p class=\"dim\">Advertised in <code>[caches]</code> but not a linked managed \
+                 cache (third-party or non-hosted).</p>\n",
+            );
+            body.push_str("<ul class=\"dim\">\n");
+            for (url, priority) in external_caches {
+                let _ = write!(
+                    body,
+                    "<li><code>{url}</code> · priority {priority}</li>\n",
+                    url = escape(url),
+                    priority = priority,
+                );
+            }
+            body.push_str("</ul>\n");
+        }
+
+        // Link another of the org's caches to this registry (operational only).
         if !linkable_caches.is_empty() {
             let mut options = String::new();
             for (slug, vis) in linkable_caches {
                 let _ = write!(
                     options,
-                    "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
+                    "<option value=\"{s}\">{s} · {v}</option>",
                     s = escape(slug),
                     v = escape(vis),
                 );
@@ -2836,19 +2893,17 @@ pub fn registry_settings_page(
             let _ = write!(
                 body,
                 "<h3>Link a cache</h3>\n\
-             <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\" \
-             data-cache-link data-registry-visibility=\"{regvis}\">{csrf}\
-             <label>cache <select name=\"cache\">{options}</select></label>\n\
-             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
-             <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
-             <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
-             <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
-             <button>link</button>\n</form>\n",
+                 <p class=\"dim\">Pins GC roots and lists the cache for config autofill. \
+                 It does not advertise the cache — do that in \
+                 <a href=\"config\">Config</a>.</p>\n\
+                 <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/cache-link\">{csrf}\
+                 <label>cache <select name=\"cache\">{options}</select></label>\n\
+                 <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
+                 <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
+                 <button>link</button>\n</form>\n",
                 slug = escape(slug),
-                regvis = escape(&registry.visibility),
                 csrf = csrf_field(csrf),
                 options = options,
-                adv_help = help::marker("link.advertised"),
                 roots_help = help::marker("link.roots_packages"),
             );
         }
@@ -5304,5 +5359,75 @@ mod cache_render_tests {
         assert!(html.contains("Collected 5 objects"));
         // With no pins, the editor shows its empty-state hint.
         assert!(html.contains("No manual pins"));
+    }
+
+    fn settings_registry() -> RegistryRecord {
+        RegistryRecord {
+            id: 1,
+            slug: "demo".into(),
+            source_url: String::new(),
+            trust_keys: vec![],
+            require_signatures: true,
+            org_id: Some(1),
+            project_path: String::new(),
+            visibility: "public".into(),
+            storage_binding_id: None,
+            prefix: String::new(),
+            hosted_key_id: None,
+            crawl_policy: "allow_all".into(),
+            llms_txt_body: None,
+        }
+    }
+
+    #[test]
+    fn caches_tab_reconciles_config_against_links() {
+        let caches = [
+            RegistryCacheRow {
+                cache_slug: "served".into(),
+                consumer_url: "https://served.example.com".into(),
+                roots_packages: true,
+                config_priority: Some(100),
+            },
+            RegistryCacheRow {
+                cache_slug: "orphan".into(),
+                consumer_url: "https://orphan.example.com".into(),
+                roots_packages: false,
+                config_priority: None,
+            },
+        ];
+        let external = [("https://thirdparty.example.com".to_string(), 50u32)];
+        let html = registry_settings_page(
+            "a@b.com",
+            &settings_registry(),
+            "acme",
+            "csrf-tok",
+            None,
+            &[],
+            &caches,
+            &external,
+            &[("free".to_string(), "public".to_string())],
+            false,
+            true,
+            None,
+            "caches",
+            Instant::now(),
+        );
+        // The three reconciliation groups, with their wording.
+        assert!(html.contains("Served from config"));
+        assert!(html.contains("https://served.example.com"));
+        assert!(html.contains("Linked but not advertised"));
+        assert!(html.contains("add to config"));
+        assert!(html.contains("https://orphan.example.com"));
+        assert!(html.contains("In config, external"));
+        assert!(html.contains("https://thirdparty.example.com"));
+        // Registry-level advertisement note and the config deep-link.
+        assert!(html.contains("serves the whole registry"));
+        assert!(html.contains("href=\"config\""));
+        // The inert advertise toggle is gone from the link controls.
+        assert!(!html.contains("name=\"advertised\""));
+        assert!(!html.contains("advertise to consumers"));
+        // The operational "Link a cache" control still renders.
+        assert!(html.contains("/demo/-/settings/cache-link"));
+        assert!(html.contains("roots_packages"));
     }
 }
