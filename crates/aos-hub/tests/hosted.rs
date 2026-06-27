@@ -282,10 +282,8 @@ async fn enrollment_returns_a_valid_trusted_key_line_and_audits() {
     assert_eq!(key_id, "acme-release");
     assert_eq!(public, line);
     // The unsealed key's public line round-trips to the stored anchor.
-    let derived = aos_hub::surface::sshsig::trusted_key_line(
-        "acme-release",
-        &signing.verifying_key(),
-    );
+    let derived =
+        aos_hub::surface::sshsig::trusted_key_line("acme-release", &signing.verifying_key());
     assert_eq!(derived, line);
 
     // A duplicate key id in the same org is rejected.
@@ -459,7 +457,10 @@ async fn deferred_reindex_still_refuses_rollback() {
     .await
     .unwrap();
     assert_eq!(
-        db.channel_floor(registry.id, "stable").await.unwrap().as_deref(),
+        db.channel_floor(registry.id, "stable")
+            .await
+            .unwrap()
+            .as_deref(),
         Some("1.1.0"),
         "the advance must raise the floor synchronously, without a re-index"
     );

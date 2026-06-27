@@ -515,8 +515,11 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     // valid and http(s)). Only a *domain* host needs DNS here — a literal IP
     // host was fully validated against `is_global_ip` by the core guard above
     // (using `url::Host`, which classifies bracketed IPv6 literals correctly).
-    let url = url::Url::parse(raw)
-        .map_err(|err| fetch_err(format!("mirror/frontend URL '{raw}' is not a valid URL: {err}")))?;
+    let url = url::Url::parse(raw).map_err(|err| {
+        fetch_err(format!(
+            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
+        ))
+    })?;
     let host = match url.host() {
         Some(url::Host::Domain(host)) => host.to_string(),
         // A literal IP (already validated) or a hostless URL: nothing to resolve.

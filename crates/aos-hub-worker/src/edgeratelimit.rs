@@ -91,7 +91,10 @@ impl RateLimiter for EdgeRateLimiter {
             // Fail open: a limiter error must not wedge the hub (the metered
             // operations carry their own DB-enforced backstops).
             Err(err) => {
-                worker::console_error!("edge rate-limit failed ({}): {err}", CoordinatorRateLimiter::class_name(class));
+                worker::console_error!(
+                    "edge rate-limit failed ({}): {err}",
+                    CoordinatorRateLimiter::class_name(class)
+                );
                 RateDecision::Allowed
             }
         }

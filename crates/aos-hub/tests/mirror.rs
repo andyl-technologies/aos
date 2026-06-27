@@ -143,8 +143,7 @@ async fn full_mirror_refuses_untrusted_upstream() {
     // …but the mirror's trust anchor is a *different* key, so verification must
     // fail and nothing may be written.
     let other = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-    let wrong_anchor =
-        aos_hub::surface::sshsig::trusted_key_line("wrong", &other.verifying_key());
+    let wrong_anchor = aos_hub::surface::sshsig::trusted_key_line("wrong", &other.verifying_key());
     assert_ne!(wrong_anchor, fixture.trust_key);
 
     let binding_root = dir.path().join("binding");

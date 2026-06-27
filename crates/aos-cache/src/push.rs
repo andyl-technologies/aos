@@ -15,9 +15,9 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use futures::stream::{StreamExt, TryStreamExt};
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
-use futures::stream::{StreamExt, TryStreamExt};
 
 use aos_core::nar::info as narinfo;
 use aos_core::nar::pack::{self, PackPath};
@@ -173,8 +173,11 @@ pub async fn run_push(
             if limiter.is_active() {
                 limiter.acquire(file_size).await;
             }
-            let nar_filename =
-                format!("{}.{}", file_hash.replace(':', "-"), compression_ext(compression));
+            let nar_filename = format!(
+                "{}.{}",
+                file_hash.replace(':', "-"),
+                compression_ext(compression)
+            );
             let narinfo_text =
                 build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
 
@@ -306,16 +309,21 @@ async fn upload_one(
     let hash = narinfo::store_hash(&info.path).to_string();
     let path = info.path.clone();
     let comp = compression.to_string();
-    let compressed = tokio::task::spawn_blocking(move || streaming_compress(&path, &comp, compression_level))
-        .await
-        .context("compression task panicked")??;
+    let compressed =
+        tokio::task::spawn_blocking(move || streaming_compress(&path, &comp, compression_level))
+            .await
+            .context("compression task panicked")??;
 
     let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(&compressed)));
     let file_size = compressed.len() as u64;
     if limiter.is_active() {
         limiter.acquire(file_size).await;
     }
-    let nar_filename = format!("{}.{}", file_hash.replace(':', "-"), compression_ext(compression));
+    let nar_filename = format!(
+        "{}.{}",
+        file_hash.replace(':', "-"),
+        compression_ext(compression)
+    );
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
     let nar_url = format!("nar/{nar_filename}");
 

@@ -131,9 +131,9 @@ pub mod indexer;
 #[cfg(target_arch = "wasm32")]
 pub mod sqldobackend;
 #[cfg(target_arch = "wasm32")]
-pub mod tenantdb;
-#[cfg(target_arch = "wasm32")]
 pub mod surface;
+#[cfg(target_arch = "wasm32")]
+pub mod tenantdb;
 #[cfg(target_arch = "wasm32")]
 pub mod tracinglog;
 #[cfg(target_arch = "wasm32")]
@@ -165,8 +165,8 @@ mod entry {
 
     use wasm_bindgen::{JsCast, JsValue};
     use worker::{
-        durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response, Result,
-        ScheduleContext, ScheduledEvent, State,
+        durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response,
+        Result, ScheduleContext, ScheduledEvent, State,
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -386,6 +386,7 @@ mod entry {
                         s.privacy_url.as_deref(),
                         s.support_url.as_deref(),
                     );
+                    aos_hub_core::web::console_render::set_caches_public(s.caches_public);
                 }
             }
         }
@@ -638,7 +639,9 @@ mod entry {
     /// directory projection. Each step is best-effort and logged on failure.
     async fn run_cron(state: &State, env: &Env) {
         let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage().sql()))
+            Box::new(crate::sqldobackend::SqlDoBackend::new(
+                state.storage().sql(),
+            ))
         };
         // The AES-GCM sealer (from `HUB_SEAL_KEY`) unseals an external storage
         // binding's credentials so the indexer/GC can read off-bucket surfaces.
@@ -659,13 +662,15 @@ mod entry {
             }
         }
         if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
-            if let Err(err) = crate::indexer::rescan_all(make(), bucket, Arc::clone(&sealer)).await {
+            if let Err(err) = crate::indexer::rescan_all(make(), bucket, Arc::clone(&sealer)).await
+            {
                 worker::console_error!("cron rescan failed: {err:#}");
             }
         }
         if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
             let now = (worker::Date::now().as_millis() / 1000) as i64;
-            if let Err(err) = crate::indexer::gc_all(make(), bucket, now, Arc::clone(&sealer)).await {
+            if let Err(err) = crate::indexer::gc_all(make(), bucket, now, Arc::clone(&sealer)).await
+            {
                 worker::console_error!("cron gc failed: {err:#}");
             }
         }
@@ -683,7 +688,9 @@ mod entry {
     async fn run_job(job: &aos_hub_core::jobs::Job, state: &State, env: &Env) {
         use aos_hub_core::jobs::Job;
         let make = || -> Box<dyn aos_hub_core::backend::Backend> {
-            Box::new(crate::sqldobackend::SqlDoBackend::new(state.storage().sql()))
+            Box::new(crate::sqldobackend::SqlDoBackend::new(
+                state.storage().sql(),
+            ))
         };
         match job {
             Job::RebuildDirectory => {
@@ -703,8 +710,9 @@ mod entry {
                 let sealer = match env
                     .secret(HUB_SEAL_KEY)
                     .map_err(|err| format!("{err}"))
-                    .and_then(|s| sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}")))
-                {
+                    .and_then(|s| {
+                        sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}"))
+                    }) {
                     Ok(sealer) => sealer,
                     Err(err) => {
                         worker::console_error!("job reindex: {HUB_SEAL_KEY}: {err}");
@@ -774,13 +782,21 @@ mod entry {
             // secret, so an external caller forwarded through the worker cannot
             // reach them.
             {
-                let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
+                let path = req
+                    .url()
+                    .ok()
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_default();
                 if req.method() == Method::Post
                     && (path == "/_internal/cron"
                         || path == "/_internal/job"
                         || path == "/_admin/bootstrap-root")
                 {
-                    let want = self.env.secret(HUB_SEAL_KEY).map(|s| s.to_string()).unwrap_or_default();
+                    let want = self
+                        .env
+                        .secret(HUB_SEAL_KEY)
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
                     let got = req
                         .headers()
                         .get("x-hub-seal")
@@ -803,16 +819,19 @@ mod entry {
                         let body: BootstrapRoot = match req.json().await {
                             Ok(body) => body,
                             Err(err) => {
-                                return Response::error(format!("bootstrap-root decode: {err}"), 400)
+                                return Response::error(
+                                    format!("bootstrap-root decode: {err}"),
+                                    400,
+                                )
                             }
                         };
                         let db = Database::attach(Box::new(
                             crate::sqldobackend::SqlDoBackend::new(self.state.storage().sql()),
                         ));
                         return match db.bootstrap_root(&body.email, &body.password).await {
-                            Ok((email, user_id)) => {
-                                Response::from_json(&serde_json::json!({ "email": email, "user_id": user_id }))
-                            }
+                            Ok((email, user_id)) => Response::from_json(
+                                &serde_json::json!({ "email": email, "user_id": user_id }),
+                            ),
                             Err(err) => Response::error(format!("bootstrap-root: {err:#}"), 500),
                         };
                     }
@@ -830,9 +849,17 @@ mod entry {
             // `--features cutover-admin` only to run a migration.
             #[cfg(feature = "cutover-admin")]
             {
-                let path = req.url().ok().map(|u| u.path().to_string()).unwrap_or_default();
+                let path = req
+                    .url()
+                    .ok()
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_default();
                 if req.method() == Method::Post && path == "/_admin/sql" {
-                    let want = self.env.secret(HUB_SEAL_KEY).map(|s| s.to_string()).unwrap_or_default();
+                    let want = self
+                        .env
+                        .secret(HUB_SEAL_KEY)
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
                     let got = req
                         .headers()
                         .get("x-hub-seal")
