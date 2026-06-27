@@ -991,10 +991,22 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialScenarioDefValue` gate cover clone semantics,
     no-live-handle behavior, equal-content/equal-id cases, tuple-component
     identity sensitivity, host-path rejection, and wall-clock exclusion.
-- [ ] **T-SPAT-2** Enforce the four-layer orthogonality structurally (links in
+- [x] **T-SPAT-2** Enforce the four-layer orthogonality structurally (links in
   `World`, faults in `Plan`, assertions in `Properties`, entropy in `Seed`); add a
   lint/test that no layer is folded into another. — satisfies [SPAT-2], [SPAT-33];
   spec §1, §10.
+  - Completed by `crates/crucible/src/model.rs`: `ScenarioBuilder` stores world
+    nodes/links, plan entries, property assertions, and seed in separate fields,
+    exposes distinct entry points for each layer, and composes through
+    `World::from_nodes_and_links`, `Plan::from_entries_for_world`,
+    `Properties::from_assertions_for_world`, and
+    `World::scenario_def_with_plan_properties_and_seed`. The canonical scenario
+    material records only component refs plus seed material, so topology, faults,
+    assertions, and entropy are not folded into a boot/entrypoint event. The
+    focused `scenario_layers_stay_structurally_orthogonal` test and
+    `checks.crucible.phase1.spatialLayerOrthogonality` gate cover builder and
+    serialized-form layer separation, component identity isolation, wrong-layer
+    rejection, and static linting against boot-event/entrypoint folding APIs.
 - [ ] **T-SPAT-3** Implement independent BLAKE3 content-addressing for `World`,
   `Plan`, and `Properties`, and cross-reuse tests (one `World` across many defs; one
   `Plan`/`Properties` across many worlds). — satisfies [SPAT-3], [SPAT-5]; spec §2,
