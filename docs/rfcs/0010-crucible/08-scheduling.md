@@ -1194,9 +1194,20 @@ application of explorer-supplied preemption decisions
   resolved-event count as a placeholder. Focused regressions cover happening
   before-decision ordering, stable content hashes across replay, prefix/sequence
   advancement across quanta, and liveness-report determinism.
-- [ ] **T-SCHED-20** Convert horizon virtual times to per-node icount ceilings
+- [x] **T-SCHED-20** Convert horizon virtual times to per-node icount ceilings
   via the fixed shift and integrate with the virtual-time/icount module. —
   satisfies [SCHED-34]; spec §8.10.
+  Completed by `checks.crucible.phase3.schedulerIcountCeiling`.
+  `SharedTimeline::max_advance_icount_for_horizon` now owns the SCHED-34/TIME-4
+  boundary: scheduler horizon arithmetic remains in virtual time, while RUN
+  publications convert the selected horizon through the fixed-shift ceil map into
+  the shmem ABI `max_advance_icount`. Conservative virtual-time caps still reject
+  a ceil projection that would cross the cap, while exact local wake/deadline
+  horizons may command the first instruction boundary at or after the deadline.
+  `SchedulerRunCeilingPublication` records the fixed shift used for the
+  conversion. Focused regressions cover exact-local, aligned network-lookahead,
+  unaligned conservative rejection, and idle-wake horizons with nonzero shifts so
+  floor rounding or raw-virtual-time ceilings fail loudly.
 - [ ] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.

@@ -112,7 +112,7 @@
       }
       {
         label = "RUN target ceiling";
-        needle = "candidate\n            .target_time\n            .to_icount_ceil";
+        needle = "max_advance_icount_for_horizon(candidate.target_time)";
       }
       {
         label = "RUN conservative overshoot guard";

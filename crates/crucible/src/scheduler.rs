@@ -129,6 +129,8 @@ pub struct SchedulerRunCeilingPublication {
     pub current_icount: NodeCounter,
     /// The scheduler-published `max_advance_icount` ABI field value.
     pub max_advance_icount: u64,
+    /// The fixed icount shift used to convert `target_time` into the ceiling.
+    pub icount_shift: Shift,
     /// The virtual-time horizon that produced `max_advance_icount`.
     pub target_time: SimInstant,
 }
@@ -729,6 +731,23 @@ impl SharedTimeline {
     ) -> Result<SharedTimelineKey, TimeConversionError> {
         let projection = self.project_counter(node, counter)?;
         Ok(projection.timeline_key(sequence))
+    }
+
+    /// Converts a finite scheduler horizon to a node max-advance icount.
+    ///
+    /// This is the SCHED-34/TIME-4 boundary: horizon arithmetic stays in
+    /// virtual time, and the timeline's fixed shift maps that horizon to the
+    /// first icount boundary at or after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::InvalidShift`] when the fixed shift cannot
+    /// name a `u64` power-of-two scale.
+    pub fn max_advance_icount_for_horizon(
+        &self,
+        horizon: SimInstant,
+    ) -> Result<Icount, TimeConversionError> {
+        horizon.to_icount_ceil(self.shift)
     }
 }
 
@@ -1443,10 +1462,11 @@ impl SchedulerHorizon {
         source: SchedulerHorizonSource,
         shift: Shift,
     ) -> Result<Self, SchedulerError> {
+        let timeline = SharedTimeline::new(shift)?;
         Ok(Self {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: virtual_time.to_icount_ceil(shift)?,
+                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
             },
             source,
         })
@@ -1508,9 +1528,10 @@ pub fn network_horizon_from_lookahead(
     match network_lookahead {
         NetworkLookahead::Finite(duration) => {
             let virtual_time = current_time + duration;
+            let timeline = SharedTimeline::new(shift)?;
             Ok(SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: virtual_time.to_icount_ceil(shift)?,
+                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
             })
         }
         NetworkLookahead::Infinite => Ok(SchedulerHorizonLimit::Infinite),
@@ -1578,6 +1599,29 @@ fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> SchedulerHorizon
         ExactLocalEvent::IoCompletion { .. } => SchedulerHorizonSource::ExactLocalIoCompletion,
         ExactLocalEvent::FaultActivation { .. } => SchedulerHorizonSource::ExactLocalFault,
         ExactLocalEvent::NoArmedTimer => SchedulerHorizonSource::NetworkLookahead,
+    }
+}
+
+fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
+    matches!(
+        source,
+        SchedulerHorizonSource::ExactLocalTimer
+            | SchedulerHorizonSource::ExactLocalIoCompletion
+            | SchedulerHorizonSource::ExactLocalFault
+    )
+}
+
+fn scheduler_ceiling_overshoot_error(
+    node: &SchedulerNodeId,
+    boundary_label: &str,
+    boundary_time: SimInstant,
+    projected_target: SimInstant,
+) -> SchedulerError {
+    SchedulerError::BoundaryViolation {
+        message: format!(
+            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}={} projected_target={}",
+            node.node.name, node.kind, boundary_time.nanos, projected_target.nanos
+        ),
     }
 }
 
@@ -2489,6 +2533,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon,
             conservative_dependency,
+            allow_ceil_past_target,
         } = self.effective_horizon(node, current_time, rendezvous_cap)?
         else {
             return Ok(None);
@@ -2506,6 +2551,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon,
             conservative_dependency,
+            allow_ceil_past_target,
         }))
     }
 
@@ -2522,6 +2568,7 @@ impl SingleScheduler {
                     target_time: window.target_time,
                     quiescent_horizon: window.quiescent_horizon,
                     conservative_dependency: window.conservative_dependency,
+                    allow_ceil_past_target: window.allow_ceil_past_target,
                 })
             }
             SchedulerNodeActivity::Idle => self.idle_advance_candidate(node, rendezvous_cap),
@@ -2540,9 +2587,19 @@ impl SingleScheduler {
         if projection.source != SchedulerEffectiveClockSource::IdleWake {
             return Ok(EffectiveHorizonProjection::Infinite);
         }
-        let mut wake_time = projection.effective_time;
+        let Some(wake_target) = self.idle_wake_target(node)? else {
+            return Ok(EffectiveHorizonProjection::Infinite);
+        };
+        let mut wake_time = wake_target.wake_time;
+        let mut allow_ceil_past_target = wake_target.allow_ceil_past_target;
         wake_time = min_instant(wake_time, self.time_limit);
+        if self.time_limit <= wake_target.wake_time {
+            allow_ceil_past_target = false;
+        }
         if let Some(cap) = rendezvous_cap {
+            if cap <= wake_time {
+                allow_ceil_past_target = false;
+            }
             wake_time = min_instant(wake_time, cap);
         }
 
@@ -2550,6 +2607,7 @@ impl SingleScheduler {
             target_time: wake_time,
             quiescent_horizon: Some(wake_time),
             conservative_dependency: None,
+            allow_ceil_past_target,
         })
     }
 
@@ -2582,27 +2640,52 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<Option<SimInstant>, SchedulerError> {
+        Ok(self.idle_wake_target(node)?.map(|target| target.wake_time))
+    }
+
+    fn idle_wake_target(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<Option<IdleWakeTarget>, SchedulerError> {
         let exact_local_event = next_exact_local_event(
             &node.id,
             node.exact_local_event.clone(),
             &self.pending_events,
             self.timeline.shift(),
         )?;
-        let mut wake_time = exact_local_event.virtual_time();
+        let mut target = exact_local_event
+            .virtual_time()
+            .map(|wake_time| IdleWakeTarget {
+                wake_time,
+                allow_ceil_past_target: horizon_source_allows_ceiling_past_target(
+                    exact_local_event_horizon_source(&exact_local_event),
+                ),
+            });
 
         for event in &self.pending_events {
             if event.key.consumer() == &node.id {
                 let event_time = SimInstant {
                     nanos: event.key.virtual_time().ticks,
                 };
-                wake_time = Some(match wake_time {
-                    Some(current) => min_instant(current, event_time),
-                    None => event_time,
-                });
+                match target {
+                    Some(current) if current.wake_time < event_time => {}
+                    Some(current) if current.wake_time == event_time => {
+                        target = Some(IdleWakeTarget {
+                            wake_time: current.wake_time,
+                            allow_ceil_past_target: false,
+                        });
+                    }
+                    _ => {
+                        target = Some(IdleWakeTarget {
+                            wake_time: event_time,
+                            allow_ceil_past_target: false,
+                        });
+                    }
+                }
             }
         }
 
-        Ok(wake_time)
+        Ok(target)
     }
 
     fn advance_window(
@@ -2624,8 +2707,23 @@ impl SingleScheduler {
             self.timeline.shift(),
         )?;
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
+        let mut allow_ceil_past_target = horizon
+            .virtual_time()
+            .is_some_and(|_| horizon_source_allows_ceiling_past_target(horizon.source));
+        if let NetworkLookahead::Finite(duration) = node.network_lookahead {
+            let network_target = current_time + duration;
+            if network_target <= finite_horizon {
+                allow_ceil_past_target = false;
+            }
+        }
         let mut requested_target = min_instant(finite_horizon, self.time_limit);
+        if self.time_limit <= finite_horizon {
+            allow_ceil_past_target = false;
+        }
         if let Some(cap) = rendezvous_cap {
+            if cap <= requested_target {
+                allow_ceil_past_target = false;
+            }
             requested_target = min_instant(requested_target, cap);
         }
         let authorization = authorize_conservative_advance(
@@ -2636,14 +2734,20 @@ impl SingleScheduler {
         )?;
         let mut target_time = authorization.authorized_target;
         let conservative_dependency = authorization.blocking_dependency;
+        if conservative_dependency.is_some() {
+            allow_ceil_past_target = false;
+        }
 
         for event in &self.pending_events {
             if event.key.consumer() == &node.id {
                 let event_time = SimInstant {
                     nanos: event.key.virtual_time().ticks,
                 };
-                if event_time > current_time && event_time < target_time {
-                    target_time = event_time;
+                if event_time > current_time && event_time <= target_time {
+                    if event_time < target_time {
+                        target_time = event_time;
+                    }
+                    allow_ceil_past_target = false;
                 }
             }
         }
@@ -2652,6 +2756,7 @@ impl SingleScheduler {
             target_time,
             quiescent_horizon: horizon.virtual_time(),
             conservative_dependency,
+            allow_ceil_past_target,
         })
     }
 
@@ -2677,6 +2782,7 @@ impl SingleScheduler {
             node,
             current_icount,
             max_advance_icount,
+            icount_shift: self.timeline.shift(),
             target_time,
         };
         self.ceiling_publications.push(publication.clone());
@@ -3156,6 +3262,7 @@ struct AdvanceCandidate {
     target_time: SimInstant,
     quiescent_horizon: Option<SimInstant>,
     conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+    allow_ceil_past_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3165,6 +3272,7 @@ enum EffectiveHorizonProjection {
         target_time: SimInstant,
         quiescent_horizon: Option<SimInstant>,
         conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+        allow_ceil_past_target: bool,
     },
 }
 
@@ -3173,6 +3281,13 @@ struct AdvanceWindow {
     target_time: SimInstant,
     quiescent_horizon: Option<SimInstant>,
     conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+    allow_ceil_past_target: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IdleWakeTarget {
+    wake_time: SimInstant,
+    allow_ceil_past_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3208,26 +3323,97 @@ impl<'a> SchedulerCriticalSection<'a> {
         let selected_index = candidate.index;
         let selected_node = self.scheduler.nodes[selected_index].id.clone();
         let before = self.scheduler.nodes[selected_index].counter;
-        let target_counter = candidate
-            .target_time
-            .to_icount_ceil(self.scheduler.timeline.shift())?
+        let target_counter = self
+            .scheduler
+            .timeline
+            .max_advance_icount_for_horizon(candidate.target_time)?
             .retired;
-        if let Some(dependency) = &candidate.conservative_dependency {
-            let projected_target = NodeCounter {
-                ticks: target_counter,
+        let projected_target = NodeCounter {
+            ticks: target_counter,
+        }
+        .to_virtual(self.scheduler.timeline.shift())?;
+        if !candidate.allow_ceil_past_target && projected_target > candidate.target_time {
+            return Err(scheduler_ceiling_overshoot_error(
+                &selected_node,
+                "target_at",
+                candidate.target_time,
+                projected_target,
+            ));
+        }
+        if projected_target > candidate.target_time {
+            let current_time = before.to_virtual(self.scheduler.timeline.shift())?;
+            let selected_runtime_node = &self.scheduler.nodes[selected_index];
+            if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
+                let network_target = current_time + duration;
+                if network_target > candidate.target_time && projected_target > network_target {
+                    return Err(scheduler_ceiling_overshoot_error(
+                        &selected_node,
+                        "network_cap_at",
+                        network_target,
+                        projected_target,
+                    ));
+                }
             }
-            .to_virtual(self.scheduler.timeline.shift())?;
-            if projected_target > dependency.virtual_time {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "conservative PDES rejected icount ceiling overshoot for {}:{:?}: dependency_at={} projected_target={}",
-                        selected_node.node.name,
-                        selected_node.kind,
-                        dependency.virtual_time.nanos,
-                        projected_target.nanos
-                    ),
-                });
+            if self.scheduler.time_limit > candidate.target_time
+                && projected_target > self.scheduler.time_limit
+            {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "time_limit_at",
+                    self.scheduler.time_limit,
+                    projected_target,
+                ));
             }
+            if let Some(cap) = self.scheduler.shared_rendezvous_cap()?
+                && cap > candidate.target_time
+                && projected_target > cap
+            {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "rendezvous_at",
+                    cap,
+                    projected_target,
+                ));
+            }
+            if let Some(dependency) =
+                unresolved_cross_node_dependencies(&selected_node, &self.scheduler.pending_events)
+                    .into_iter()
+                    .find(|dependency| {
+                        dependency.virtual_time > candidate.target_time
+                            && projected_target > dependency.virtual_time
+                    })
+            {
+                return Err(scheduler_ceiling_overshoot_error(
+                    &selected_node,
+                    "dependency_at",
+                    dependency.virtual_time,
+                    projected_target,
+                ));
+            }
+            for event in &self.scheduler.pending_events {
+                if event.key.consumer() == &selected_node {
+                    let event_time = SimInstant {
+                        nanos: event.key.virtual_time().ticks,
+                    };
+                    if event_time > candidate.target_time && projected_target > event_time {
+                        return Err(scheduler_ceiling_overshoot_error(
+                            &selected_node,
+                            "pending_event_at",
+                            event_time,
+                            projected_target,
+                        ));
+                    }
+                }
+            }
+        } else if let Some(dependency) = candidate.conservative_dependency
+            && projected_target > dependency.virtual_time
+        {
+            return Err(scheduler_ceiling_overshoot_error(
+                &selected_node,
+                "dependency_at",
+                dependency.virtual_time,
+                projected_target,
+            ));
         }
         let ceiling = self.scheduler.publish_run_ceiling(
             selected_node.clone(),
