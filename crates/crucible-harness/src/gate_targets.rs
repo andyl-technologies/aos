@@ -216,7 +216,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-harness",
         test_target: "gate_adversarial_determinism",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:e2e-determinism",

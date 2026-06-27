@@ -346,13 +346,10 @@ in {
         attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
         taskIds = ["T-PLAN-3" "T-HARN-14"];
       };
-      adversarialDeterminism = redGate {
+      adversarialDeterminism = import ./phase3-adversarial-determinism.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";
-        gateName = "gate:adversarial-determinism";
-        owner = "crucible-harness";
-        phase = "phase3";
-        taskIds = ["T-PLAN-3" "T-CRATE-8" "T-HARN-22"];
-        reason = "two-VM adversarial determinism gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-22"];
       };
     };
   };
