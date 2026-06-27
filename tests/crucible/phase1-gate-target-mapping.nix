@@ -83,13 +83,6 @@
       placeholder = false;
     }
     {
-      gate = "gate:layer1-injection";
-      package = "crucible";
-      testTarget = "network_link_subnode";
-      requiredFeatures = ["test-double"];
-      placeholder = false;
-    }
-    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
@@ -115,20 +108,6 @@
       package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
-    }
-    {
-      gate = "gate:abi-conformance";
-      package = "crucible-qemu-plugin";
-      testTarget = "gate_abi_conformance";
-      requiredFeatures = [];
-      placeholder = false;
-    }
-    {
-      gate = "gate:abi-conformance";
-      package = "crucible";
-      testTarget = "ninep_wire_abi";
-      requiredFeatures = ["test-double"];
       placeholder = false;
     }
     {

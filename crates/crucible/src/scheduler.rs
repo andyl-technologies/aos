@@ -7,6 +7,7 @@
 //! EMIT output as dense, content-addressed event-log segment bytes before STEP
 //! advances the frontier.
 
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
@@ -15,10 +16,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, NetworkLinkEffectiveFaults, NetworkLinkFrame, NetworkLinkSubNode, NodeCounter, NodeId,
-    PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    VcpuId, VirtualTime, WorldLookaheadEdge, step,
+    Icount, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
+    SimInstant, TimeConversionError, VcpuId, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -1475,6 +1475,30 @@ pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEven
     ordered
 }
 
+/// Merges frame deliveries with device I/O completions in the §8.6 total order.
+///
+/// Frame (backend-input) deliveries and device [`IoCompletion`] events are both
+/// cross-node happenings resolved at a node's advanced frontier; this folds them
+/// into one canonically ordered list keyed by `(virtual_time, consumer, producer,
+/// sequence)` ([SCHED-29], [SCHED-33]). When no device completion is due the
+/// frame list is returned unchanged, so the no-device path is byte-identical to
+/// before the device seam existed.
+#[must_use]
+fn merge_node_deliveries(
+    frames: Vec<ScheduledEvent>,
+    device: Vec<ScheduledEvent>,
+) -> Vec<ScheduledEvent> {
+    if device.is_empty() {
+        return frames;
+    }
+    let mut merged = frames;
+    merged.extend(device);
+    ordered_scheduled_events(&merged)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
 /// Returns the RESOLVE payload class for `event`.
 #[must_use]
 pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventResolveClass {
@@ -1760,40 +1784,6 @@ pub fn resolve_due_scheduled_events(
     *pending_events = pending;
 
     Ok(ordered)
-}
-
-/// Applies a network-link sub-node during RESOLVE and returns target events.
-///
-/// This is the scheduler-facing boundary for the `SLOT_NET_ROUTER` path: the
-/// caller supplies a VM-emitted frame and the effective fault table already
-/// selected for that directed link, and the helper returns the final
-/// [`ScheduledEventPayload::BackendInput`] events that may later be drained by
-/// [`resolve_due_scheduled_events`].
-///
-/// # Errors
-///
-/// Returns [`SchedulerError::BoundaryViolation`] when the link model rejects the
-/// frame or cannot encode one of its resulting scheduler events.
-pub fn resolve_network_link_frame(
-    link: &NetworkLinkSubNode,
-    frame: NetworkLinkFrame,
-    faults: &NetworkLinkEffectiveFaults,
-) -> Result<Vec<ScheduledEvent>, SchedulerError> {
-    let plan =
-        link.plan_frame(frame, faults)
-            .map_err(|source| SchedulerError::BoundaryViolation {
-                message: format!("network link RESOLVE failed: {source}"),
-            })?;
-    plan.deliveries
-        .iter()
-        .map(|delivery| {
-            delivery
-                .to_scheduled_event(link)
-                .map_err(|source| SchedulerError::BoundaryViolation {
-                    message: format!("network link RESOLVE failed: {source}"),
-                })
-        })
-        .collect()
 }
 
 /// Records every probabilistic RESOLVE choice in canonical event order.
@@ -3312,6 +3302,15 @@ pub enum SchedulerQuiescenceBlocker {
         /// The exact local event that prevents terminal quiescence.
         event: ExactLocalEvent,
     },
+    /// A device sub-node still holds an undelivered I/O completion.
+    ///
+    /// A completion not yet delivered to its requester is a future happening, so
+    /// the system is not quiescent while any is in flight even if every node is
+    /// parked `Idle` ([SCHED-22], [SCHED-29]).
+    DeviceCompletionInFlight {
+        /// The VM node that still owes the completion.
+        target: NodeId,
+    },
 }
 
 /// The single authoritative scheduler used by the liveness gate.
@@ -3333,6 +3332,34 @@ pub struct SingleScheduler {
     control_applications: Vec<SchedulerControlApplication>,
     pending_events: Vec<ScheduledEvent>,
     event_sequences: EventSequenceState,
+    /// I/O scheduling sub-nodes (disk/9p/net) keyed by the VM node they target.
+    ///
+    /// Each [`DeviceSchedulingSubNode`](crate::device_subnode::DeviceSchedulingSubNode)
+    /// holds an L1 `crucible-device` whose in-flight completions become the owning
+    /// node's exact I/O-completion horizon term and are delivered at their exact
+    /// icount through [`SingleScheduler::resolve_device_completions`] ([IO-1],
+    /// [IO-3], [SCHED-29]).
+    device_sub_nodes: BTreeMap<NodeId, Vec<crate::device_subnode::DeviceSchedulingSubNode>>,
+    /// The earliest undelivered device-completion virtual time per target node,
+    /// recomputed each quantum by
+    /// [`refresh_device_horizons`](SingleScheduler::refresh_device_horizons).
+    ///
+    /// This is the separate exact I/O-completion horizon TERM the scheduler folds
+    /// into a node's effective exact local event ([IO-3], [SCHED-10]) — it bounds
+    /// the requester's horizon without injecting a deliverable event, so delivery
+    /// happens solely on the RESOLVE path through
+    /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
+    /// and is never double-counted.
+    device_horizons: BTreeMap<NodeId, SimInstant>,
+    /// Test-only fault injection: when `true`,
+    /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
+    /// stamps each I/O completion's key with the consumer's *frontier* icount
+    /// instead of the completion's exact `delivery_icount`, modeling the
+    /// freeze-time / transport-timing bug RFC-0010 forbids ([IO-2], [DET-19]).
+    /// Used by `gate:layer1-injection` falsifiability tests to prove the gates go
+    /// red when delivery is not icount-exact. It is never set in production.
+    #[cfg(test)]
+    broken_device_delivery_stamp: bool,
     control_inbox: Vec<ControlOperation>,
     decision_rng_cursor: DecisionRngState,
     event_log_prefix: ContentHash,
@@ -3397,6 +3424,10 @@ impl SingleScheduler {
             control_applications: Vec::new(),
             pending_events: scenario.pending_events,
             event_sequences: scenario.event_sequences,
+            device_sub_nodes: BTreeMap::new(),
+            device_horizons: BTreeMap::new(),
+            #[cfg(test)]
+            broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
             decision_rng_cursor: DecisionRngState::empty(),
             event_log_prefix: scheduler_event_log_empty_prefix(),
@@ -3419,6 +3450,280 @@ impl SingleScheduler {
     #[must_use]
     pub fn configuration(&self) -> &Configuration {
         &self.configuration
+    }
+
+    /// Installs a deterministic I/O sub-node (disk/9p/net) on its target VM node
+    /// (RFC-0010 [IO-1], [IO-3], §15.1).
+    ///
+    /// The sub-node's in-flight head delivery icount is the **real** source of the
+    /// owning node's exact I/O-completion horizon term, so an otherwise-idle
+    /// requester is fast-forwarded *exactly* to its next I/O completion ([IO-3],
+    /// [SCHED-10]), and [`SingleScheduler::resolve_device_completions`] delivers
+    /// the completion at that exact icount in the canonical `(delivery_icount,
+    /// src_node, seq)` order ([SCHED-29]). Several sub-nodes may target one VM
+    /// node; their horizon terms are folded with `min`.
+    ///
+    /// Submit requests through the returned sub-node before driving the scheduler;
+    /// fold the device's live in-flight head into the node's horizon with
+    /// [`SingleScheduler::refresh_device_horizons`].
+    #[must_use]
+    pub fn with_device_sub_node(
+        mut self,
+        sub_node: crate::device_subnode::DeviceSchedulingSubNode,
+    ) -> Self {
+        self.device_sub_nodes
+            .entry(sub_node.target().clone())
+            .or_default()
+            .push(sub_node);
+        self
+    }
+
+    /// Returns a mutable view of the I/O sub-nodes targeting `node`, if any.
+    ///
+    /// Used by a driver to submit device requests between quanta; the next horizon
+    /// refresh folds the device's in-flight head into the node's horizon.
+    pub fn device_sub_nodes_for_mut(
+        &mut self,
+        node: &NodeId,
+    ) -> Option<&mut Vec<crate::device_subnode::DeviceSchedulingSubNode>> {
+        self.device_sub_nodes.get_mut(node)
+    }
+
+    /// **Test-only.** Forces I/O completions to be stamped at the consumer's
+    /// frontier icount instead of their exact `delivery_icount`, modeling the
+    /// freeze-time bug ([IO-2], [DET-19]).
+    ///
+    /// Exists solely to prove the determinism gates are falsifiable: with this
+    /// set, a scenario whose requester reaches a completion at a frontier
+    /// *different* from the completion's exact icount produces a different
+    /// resolved order, so the gate goes red. Never used in production.
+    #[cfg(test)]
+    pub(crate) fn with_broken_device_delivery_stamp(mut self) -> Self {
+        self.broken_device_delivery_stamp = true;
+        self
+    }
+
+    /// Returns whether any device sub-node holds an undelivered completion.
+    ///
+    /// While any I/O completion is still in flight the system is not quiescent,
+    /// even when every node is parked `Idle` ([SCHED-22], [SCHED-29]).
+    #[must_use]
+    pub fn has_undelivered_device_completion(&self) -> bool {
+        self.device_sub_nodes
+            .values()
+            .flatten()
+            .any(|sub_node| sub_node.next_exact_local_event().is_some())
+    }
+
+    /// Returns the earliest undelivered device completion for `node` due
+    /// **strictly after** `instant`, if any ([SCHED-29]).
+    ///
+    /// Scans every targeting sub-node's next exact local event; used to keep a
+    /// requester `Runnable` when it still owes a later completion, so an idle park
+    /// can never strand a sequential read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::TimeConversion`] when a completion delivery
+    /// icount cannot be converted under the timeline shift.
+    pub fn device_completion_due_after(
+        &self,
+        node: &SchedulerNodeId,
+        instant: SimInstant,
+    ) -> Result<Option<SimInstant>, SchedulerError> {
+        let Some(sub_nodes) = self.device_sub_nodes.get(&node.node) else {
+            return Ok(None);
+        };
+        let mut earliest: Option<SimInstant> = None;
+        for sub_node in sub_nodes {
+            if let Some(delivery_icount) = sub_node.next_exact_local_event() {
+                let due = Icount {
+                    retired: delivery_icount,
+                }
+                .to_virtual(self.timeline.shift())?;
+                if due > instant {
+                    earliest = Some(match earliest {
+                        Some(current) => current.min(due),
+                        None => due,
+                    });
+                }
+            }
+        }
+        Ok(earliest)
+    }
+
+    /// Folds every device sub-node's in-flight head into its target node's exact
+    /// I/O-completion horizon term and re-activates a parked target that still
+    /// owes a completion ([IO-3], [SCHED-9], [SCHED-10], [SCHED-29]).
+    ///
+    /// Called at the start of each quantum so the horizon the scheduler reads is
+    /// the device's *current* next completion — the real exact local event with no
+    /// conservative slack. The earliest undelivered completion per target is
+    /// recorded in [`device_horizons`](Self::device_horizons), which
+    /// [`effective_exact_local_event`](Self::effective_exact_local_event) mins into
+    /// the node's effective horizon. No deliverable event is injected, so delivery
+    /// stays solely on the RESOLVE path through
+    /// [`resolve_device_completions`](Self::resolve_device_completions) and is
+    /// never double-counted; the term is recomputed from scratch so a refresh is
+    /// idempotent.
+    ///
+    /// # Re-activation of an idle requester
+    ///
+    /// A node parks `Idle` at one completion's exact icount; its *next* sequential
+    /// completion is a fresh exact local event it must still advance to. So
+    /// whenever a targeting sub-node has an undelivered completion this flips the
+    /// node back to `Runnable`, so it is re-PICKed and advanced to the next
+    /// completion — without this an idle requester would silently drop a normal
+    /// sequential read ([SCHED-29]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::TimeConversion`] when a completion delivery
+    /// icount cannot be converted under the timeline shift.
+    pub fn refresh_device_horizons(&mut self) -> Result<(), SchedulerError> {
+        // Recompute the earliest undelivered completion per target; the in-flight
+        // queues are the single source of truth. Ordered by `NodeId` (BTreeMap
+        // iteration) so the refresh is deterministic.
+        let mut earliest_by_target: Vec<(NodeId, SimInstant)> = Vec::new();
+        for (target, sub_nodes) in &self.device_sub_nodes {
+            let mut earliest: Option<SimInstant> = None;
+            for sub_node in sub_nodes {
+                if let Some(delivery_icount) = sub_node.next_exact_local_event() {
+                    let instant = Icount {
+                        retired: delivery_icount,
+                    }
+                    .to_virtual(self.timeline.shift())?;
+                    earliest = Some(match earliest {
+                        Some(current) => current.min(instant),
+                        None => instant,
+                    });
+                }
+            }
+            if let Some(instant) = earliest {
+                earliest_by_target.push((target.clone(), instant));
+            }
+        }
+
+        self.device_horizons.clear();
+        for (target, instant) in earliest_by_target {
+            self.device_horizons.insert(target.clone(), instant);
+            // Re-activate a parked requester so the next sequential completion is
+            // observed ([SCHED-29]); a `Runnable` node is left as-is.
+            if let Some(runtime) = self
+                .nodes
+                .iter_mut()
+                .find(|runtime| runtime.id.node == target)
+                && runtime.activity == SchedulerNodeActivity::Idle
+            {
+                runtime.activity = SchedulerNodeActivity::Runnable;
+            }
+        }
+        Ok(())
+    }
+
+    /// RESOLVEs every device completion for `node` due at or before
+    /// `consumer_icount` (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
+    ///
+    /// Drains each targeting sub-node's due completions in the canonical
+    /// `(delivery_icount, src_node, seq)` order, mints each event's `sequence`
+    /// from the live [`EventSequenceState`] for its `(sub_node, target)` pair
+    /// ([SCHED-18]), and returns the [`IoCompletion`] events plus the fault
+    /// [`Decision`]s they drew, all in delivery order. The completion is made
+    /// visible at **exactly** its `delivery_icount` ([SCHED-29], [IO-2]), never
+    /// the consumer's `consumer_icount` frontier.
+    ///
+    /// # Errors
+    ///
+    /// This currently never returns an error; the `Result` is kept for forward
+    /// compatibility with sequence-exhaustion guards.
+    pub fn resolve_device_completions(
+        &mut self,
+        node: &SchedulerNodeId,
+        consumer_icount: u64,
+    ) -> Result<(Vec<ScheduledEvent>, Vec<Decision>), SchedulerError> {
+        let mut events = Vec::new();
+        let mut decisions = Vec::new();
+        let Some(sub_nodes) = self.device_sub_nodes.get_mut(&node.node) else {
+            return Ok((events, decisions));
+        };
+        // Collect every due completion across this node's sub-nodes first (the
+        // borrow of `sub_nodes` ends here), then mint sequences against the
+        // scheduler-owned counter on the live RESOLVE path.
+        let mut due: Vec<(IoCompletion, Vec<Decision>)> = Vec::new();
+        for sub_node in sub_nodes.iter_mut() {
+            due.extend(sub_node.deliver_due(consumer_icount));
+        }
+        // Canonical (delivery_icount, then producer sub-node id) order so the
+        // resolved order is a pure function of the keys, not host iteration.
+        due.sort_by(|left, right| {
+            left.0
+                .delivery_icount
+                .cmp(&right.0.delivery_icount)
+                .then_with(|| left.0.sub_node.cmp(&right.0.sub_node))
+        });
+        for (completion, completion_decisions) in due {
+            let producer = completion.sub_node.clone();
+            let consumer = SchedulerNodeId {
+                node: completion.target.clone(),
+                kind: SchedulingNodeKind::Vm,
+            };
+            // SCHED-18 on the LIVE path: the sequence comes from the owned counter.
+            let sequence = self.event_sequences.next_sequence(&producer, &consumer);
+            self.event_sequences.set_next_sequence(
+                producer.clone(),
+                consumer.clone(),
+                sequence + 1,
+            );
+            // The completion is made visible at EXACTLY its delivery icount
+            // ([SCHED-29], [IO-2]) — never the consumer's frontier. The test-only
+            // broken stamp models the freeze-time bug to prove the gates catch it.
+            let stamp_icount = completion.delivery_icount.retired;
+            #[cfg(test)]
+            let stamp_icount = if self.broken_device_delivery_stamp {
+                consumer_icount
+            } else {
+                stamp_icount
+            };
+            let virtual_time = VirtualTime {
+                ticks: stamp_icount,
+            };
+            let key = ScheduledEventKey::from_parts(virtual_time, consumer, producer, sequence);
+            events.push(ScheduledEvent {
+                key,
+                payload: ScheduledEventPayload::IoCompletion(completion),
+            });
+            decisions.extend(completion_decisions);
+        }
+        // Reconcile the cached device horizon term with the in-flight queues now
+        // that this target's due completions have drained: a delivered head is no
+        // longer a future exact local event, so the term must drop or fall back to
+        // the next in-flight head IMMEDIATELY (not wait for the next pre-PICK
+        // refresh). Otherwise a stale term would keep the node non-quiescent and
+        // distort its effective horizon after the completion was already resolved.
+        let next_head = self
+            .device_sub_nodes
+            .get(&node.node)
+            .into_iter()
+            .flatten()
+            .filter_map(|sub_node| sub_node.next_exact_local_event())
+            .map(|delivery_icount| {
+                Icount {
+                    retired: delivery_icount,
+                }
+                .to_virtual(self.timeline.shift())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .min();
+        match next_head {
+            Some(instant) => {
+                self.device_horizons.insert(node.node.clone(), instant);
+            }
+            None => {
+                self.device_horizons.remove(&node.node);
+            }
+        }
+        Ok((events, decisions))
     }
 
     /// Returns the current shared-timeline frontier.
@@ -3604,6 +3909,20 @@ impl SingleScheduler {
                     key: event.key.clone(),
                 }),
         );
+
+        // An in-flight device completion is a future happening ([SCHED-29]); the
+        // system is not quiescent while one is undelivered, even when every node
+        // is parked `Idle`. Ordered by target `NodeId` (BTreeMap iteration).
+        for (target, sub_nodes) in &self.device_sub_nodes {
+            if sub_nodes
+                .iter()
+                .any(|sub_node| sub_node.next_exact_local_event().is_some())
+            {
+                blockers.push(SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                    target: target.clone(),
+                });
+            }
+        }
 
         for node in &self.nodes {
             blockers.extend(self.vcpu_quiescence_blockers(node));
@@ -4239,6 +4558,20 @@ impl SingleScheduler {
             &self.pending_events,
             self.timeline.shift(),
         )?;
+        // Fold the device sub-node's in-flight head into the node's exact horizon
+        // ([IO-3], [SCHED-10]): the requester is fast-forwarded EXACTLY to its next
+        // device completion, with no conservative slack. The term wins only when it
+        // is at or before any timer/pending term already selected.
+        if let Some(device_time) = self.device_horizons.get(&node.id.node).copied() {
+            let device_event = ExactLocalEvent::IoCompletion {
+                virtual_time: device_time,
+                sub_node: node.id.clone(),
+            };
+            match exact_local_event.virtual_time() {
+                Some(current) if current <= device_time => {}
+                _ => exact_local_event = device_event,
+            }
+        }
         if let Some(vcpu_deadline) = self.earliest_vcpu_deadline(node) {
             match exact_local_event.virtual_time() {
                 Some(current) if current <= vcpu_deadline => {}
@@ -4617,6 +4950,11 @@ impl SingleScheduler {
         self.last_advance = None;
         self.last_topology_recompute = false;
 
+        // Fold each device sub-node's in-flight head into its target node's exact
+        // I/O-completion horizon term BEFORE PICK, so a requester's horizon is the
+        // device's real next completion ([IO-3], [SCHED-10]).
+        self.refresh_device_horizons()?;
+
         self.admit_control_at_boundary(request.control);
         let SchedulerControlDrain {
             events: mut boundary_resolved_events,
@@ -4641,7 +4979,7 @@ impl SingleScheduler {
             let at = SimInstant {
                 nanos: self.frontier.ticks,
             };
-            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], at)?;
+            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
             let event_log =
                 self.emit_quantum_event_log(&boundary_resolved_events, &decisions, at)?;
             let configuration = self.step_quantum(&decisions);
@@ -4721,15 +5059,31 @@ impl SingleScheduler {
                 Vec::new()
             };
             let shift = self.timeline.shift();
-            resolved_events.extend(resolve_due_scheduled_events(
+            let frame_deliveries = resolve_due_scheduled_events(
                 &mut self.pending_events,
                 &selected_node,
                 after_time,
                 shift,
-            )?);
+            )?;
 
-            let decisions =
-                self.emit_quantum_decisions(&resolved_events, &preemptions, after_time)?;
+            // Device I/O completions are cross-node events too: drain each
+            // targeting sub-node's due completions at the exact delivery icount
+            // ([SCHED-29]), minting their sequence from the owned counter on the
+            // LIVE RESOLVE path ([SCHED-18]), and append the fault decisions they
+            // drew ([SCHED-30]).
+            let (device_events, device_decisions) =
+                self.resolve_device_completions(&selected_node, after.ticks)?;
+            // Order (frame ++ device) deliveries together by the §8.6 key, keeping
+            // the control/boundary events prefixed exactly as the no-device path
+            // does ([SCHED-33]).
+            resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
+
+            let decisions = self.emit_quantum_decisions(
+                &resolved_events,
+                &preemptions,
+                &device_decisions,
+                after_time,
+            )?;
             let event_log =
                 self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
             let configuration = self.step_quantum(&decisions);
@@ -4783,6 +5137,11 @@ impl SingleScheduler {
         self.last_advance = None;
         self.last_topology_recompute = false;
 
+        // Fold each device sub-node's in-flight head into its target node's exact
+        // I/O-completion horizon term BEFORE PICK, so the requester's horizon is
+        // the device's real next completion ([IO-3], [SCHED-10]).
+        self.refresh_device_horizons()?;
+
         // Boundary admission phase: accept control exposed by the previous STEP yield.
         self.admit_control_at_boundary(request.control);
         let SchedulerControlDrain {
@@ -4798,6 +5157,7 @@ impl SingleScheduler {
                 // Control-only EMIT/STEP: no node RUN occurs.
                 let decisions = self.emit_quantum_decisions(
                     &resolved_events,
+                    &[],
                     &[],
                     SimInstant {
                         nanos: self.frontier.ticks,
@@ -4848,15 +5208,30 @@ impl SingleScheduler {
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
         // RESOLVE phase: collect due events for the node that just advanced.
         let shift = self.timeline.shift();
-        resolved_events.extend(resolve_due_scheduled_events(
+        let frame_deliveries = resolve_due_scheduled_events(
             &mut self.pending_events,
             &selected_node,
             after_time,
             shift,
-        )?);
+        )?;
+
+        // Device I/O completions are cross-node events too: drain each targeting
+        // sub-node's due completions at the exact delivery icount ([SCHED-29]),
+        // minting their sequence from the owned counter on the LIVE RESOLVE path
+        // ([SCHED-18]), and append the fault decisions they drew ([SCHED-30]).
+        let (device_events, device_decisions) =
+            self.resolve_device_completions(&selected_node, after.ticks)?;
+        // Order (frame ++ device) deliveries together by the §8.6 key, keeping the
+        // control events prefixed exactly as the no-device path does ([SCHED-33]).
+        resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
 
         // EMIT phase: convert happenings into decisions and append event-log entries.
-        let decisions = self.emit_quantum_decisions(&resolved_events, &preemptions, after_time)?;
+        let decisions = self.emit_quantum_decisions(
+            &resolved_events,
+            &preemptions,
+            &device_decisions,
+            after_time,
+        )?;
         let event_log = self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
@@ -4897,6 +5272,7 @@ impl SingleScheduler {
         &mut self,
         resolved_events: &[ScheduledEvent],
         preemptions: &[PlannedPreemptionApplication],
+        device_decisions: &[Decision],
         at: SimInstant,
     ) -> Result<Vec<Decision>, SchedulerError> {
         let mut decisions = Vec::new();
@@ -4924,6 +5300,16 @@ impl SingleScheduler {
             }
             decisions.extend(probabilistic.decisions);
         }
+        // Device I/O completions drew their fault decisions (RngDraw + FaultFires)
+        // at COMPUTE and buffered them; they are appended on the LIVE RESOLVE path
+        // in delivery order ([SCHED-30]). Each device RngDraw advances the owning
+        // stream's decision-RNG cursor exactly as a probabilistic RESOLVE draw does.
+        for decision in device_decisions {
+            if let Decision::RngDraw(draw) = decision {
+                self.advance_decision_rng_cursor_for(draw.stream.clone());
+            }
+        }
+        decisions.extend(device_decisions.iter().cloned());
         decisions.extend(
             preemptions
                 .iter()
@@ -5191,7 +5577,17 @@ impl SingleScheduler {
             .quiescent_horizon
             .is_some_and(|horizon| after_time >= horizon)
         {
-            self.nodes[plan.index].activity = SchedulerNodeActivity::Idle;
+            // Don't park `Idle` if this node still owes a later device completion:
+            // its next sequential completion is a fresh exact local event it must
+            // advance to, so keep it `Runnable` ([SCHED-29]). The next quantum's
+            // `refresh_device_horizons` re-activation also covers this; this guard
+            // avoids a spurious one-quantum park.
+            if self
+                .device_completion_due_after(&plan.node, after_time)?
+                .is_none()
+            {
+                self.nodes[plan.index].activity = SchedulerNodeActivity::Idle;
+            }
         }
 
         Ok((after, after_time, true))
@@ -6493,5 +6889,284 @@ mod tests {
             key: event_key(virtual_time, consumer, producer, sequence),
             payload: ScheduledEventPayload::FaultActivation(fault),
         }
+    }
+
+    /// Builds a fault-free disk scheduling sub-node targeting VM node `target`,
+    /// with the given `(request_icount, count)` reads pre-submitted.
+    fn disk_with_reads(
+        target: &str,
+        device_name: &str,
+        reads: &[(u64, u32)],
+    ) -> crate::device_subnode::DeviceSchedulingSubNode {
+        use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
+
+        let core = match IoCore::new(0, 1, 16, 16) {
+            Ok(core) => core,
+            Err(error) => panic!("io core should construct: {error}"),
+        };
+        let block = BlockDevice::new(
+            core,
+            BaseImage::new(vec![0x5a; 4096]),
+            BlockLatency::default(),
+        );
+        let mut sub_node = crate::device_subnode::DeviceSchedulingSubNode::new(
+            scheduler_node(device_name, SchedulingNodeKind::Disk),
+            NodeId {
+                name: target.to_string(),
+            },
+            crate::DeviceId {
+                name: device_name.to_string(),
+            },
+            block,
+            crate::Seed::from_u64(0xd15c_0de),
+        );
+        for (index, (request_icount, count)) in reads.iter().enumerate() {
+            let request_id = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            if let Err(error) =
+                sub_node.submit(*request_icount, &BlockRequest::read(request_id, 0, *count))
+            {
+                panic!("disk submit should succeed: {error}");
+            }
+        }
+        sub_node
+    }
+
+    #[test]
+    fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
+        // The integration capstone ([SCHED-29], [IO-2]): two sequential disk reads
+        // resolved at a single consumer frontier above the head completion are each
+        // made visible at their OWN exact delivery icount, in canonical order — not
+        // collapsed onto the consumer frontier.
+        let mut scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            Vec::new(),
+        );
+        scheduler =
+            scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8), (2000, 8)]));
+
+        assert!(
+            scheduler.has_undelivered_device_completion(),
+            "submitted reads must leave completions in flight"
+        );
+
+        let node = scheduler_node("a", SchedulingNodeKind::Vm);
+        let (events, _decisions) = match scheduler.resolve_device_completions(&node, 3008) {
+            Ok(resolved) => resolved,
+            Err(error) => panic!("resolve should succeed: {error}"),
+        };
+        let stamped: Vec<u64> = events
+            .iter()
+            .map(|event| event.key.virtual_time().ticks)
+            .collect();
+
+        assert_eq!(
+            stamped,
+            vec![1008, 3008],
+            "each completion is stamped at its own exact delivery icount"
+        );
+        assert!(
+            !scheduler.has_undelivered_device_completion(),
+            "both completions must be drained after RESOLVE"
+        );
+    }
+
+    #[test]
+    fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
+        // [IO-3]/[SCHED-10]: the device sub-node's in-flight head delivery icount
+        // becomes the owning node's exact I/O-completion horizon term (a horizon
+        // TERM, not a deliverable pending event — delivery stays on the RESOLVE
+        // path so it is never double-counted). A second refresh is idempotent.
+        let mut scheduler = test_scheduler(
+            vec![test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Idle,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            Vec::new(),
+        );
+        scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8)]));
+
+        scheduler
+            .refresh_device_horizons()
+            .unwrap_or_else(|error| panic!("refresh should succeed: {error}"));
+
+        // No deliverable event was injected into the pending-event queue.
+        assert!(
+            !scheduler
+                .pending_events
+                .iter()
+                .any(|event| matches!(event.payload, ScheduledEventPayload::IoCompletion(_))),
+            "refresh must not inject a deliverable IoCompletion event"
+        );
+
+        // The in-flight head bounds the node's effective exact local event.
+        let node_a = scheduler
+            .nodes
+            .iter()
+            .find(|runtime| runtime.id.node.name == "a")
+            .unwrap_or_else(|| panic!("node a should exist"));
+        let exact = scheduler
+            .effective_exact_local_event(node_a)
+            .unwrap_or_else(|error| panic!("effective horizon should compute: {error}"));
+        assert!(
+            matches!(
+                exact,
+                ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.nanos == 1008
+            ),
+            "the in-flight head (icount 1008) must bound the node horizon, got {exact:?}"
+        );
+
+        // The idle requester is re-activated so it advances to the completion.
+        assert!(
+            scheduler
+                .nodes
+                .iter()
+                .any(|runtime| runtime.id.node.name == "a"
+                    && runtime.activity == SchedulerNodeActivity::Runnable),
+            "an idle requester that owes a completion must be re-activated"
+        );
+
+        // A second refresh recomputes the same single horizon term (idempotent).
+        scheduler
+            .refresh_device_horizons()
+            .unwrap_or_else(|error| panic!("second refresh should succeed: {error}"));
+        assert_eq!(
+            scheduler.device_horizons.len(),
+            1,
+            "refresh must be idempotent and record exactly one horizon term"
+        );
+    }
+
+    #[test]
+    fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
+        // ITEM 1 teeth: a device completion submitted to a sub-node is delivered
+        // through the LIVE `drive_quantum` (not the building blocks) at EXACTLY its
+        // delivery icount ([SCHED-29], [IO-2]). The device horizon caps the
+        // requester's advance so it is fast-forwarded to exactly the completion.
+        // A time limit comfortably past the completion icount (1008) so the
+        // requester can advance to it; budget large enough to reach it.
+        let scenario = SchedulerLivenessScenario::from_canonical_material(
+            "test-device-live-drive",
+            shift(0),
+            4_096,
+            SimInstant { nanos: 4_096 },
+            vec![test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )],
+            Vec::new(),
+        );
+        let mut scheduler = SingleScheduler::new(scenario)
+            .unwrap_or_else(|error| panic!("scheduler should build: {error}"));
+        scheduler = scheduler.with_device_sub_node(disk_with_reads("a", "disk-a", &[(0, 8)]));
+
+        // Drive quanta until the run quiesces, recording the icount at which the
+        // IoCompletion was resolved through the LIVE loop.
+        let mut delivered = None;
+        for _ in 0..16 {
+            let outcome = scheduler
+                .drive_quantum(QuantumRequest {
+                    configuration: scheduler.configuration().clone(),
+                    control: Vec::new(),
+                })
+                .unwrap_or_else(|error| panic!("drive_quantum should succeed: {error}"));
+            if let Some(event) = outcome
+                .resolved_events
+                .iter()
+                .find(|event| matches!(event.payload, ScheduledEventPayload::IoCompletion(_)))
+            {
+                delivered = Some(event.key.virtual_time().ticks);
+            }
+            if scheduler
+                .quiescence()
+                .unwrap_or_else(|error| panic!("quiescence should compute: {error}"))
+                .is_quiescent()
+            {
+                break;
+            }
+        }
+
+        assert_eq!(
+            delivered,
+            Some(1008),
+            "the live loop must deliver the completion at its EXACT delivery icount"
+        );
+        // Once delivered, nothing remains in flight and the system quiesces.
+        assert!(
+            !scheduler.has_undelivered_device_completion(),
+            "no device completion may remain in flight after delivery"
+        );
+        assert!(
+            scheduler
+                .quiescence()
+                .unwrap_or_else(|error| panic!("quiescence should compute: {error}"))
+                .is_quiescent(),
+            "the run must quiesce once the completion has been delivered"
+        );
+    }
+
+    #[test]
+    fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
+        // The falsifiability proof for the exact-icount property ([IO-2], [DET-19]).
+        // Driving PRODUCTION `resolve_device_completions` at a frontier ABOVE the
+        // head completion (the one configuration where exact and frontier provably
+        // differ), the exact path stamps each completion at its OWN icount while the
+        // freeze-time bug stamps BOTH at the shared consumer frontier — so the
+        // resolved-icount vector diverges and a determinism gate would go red.
+        let resolve_at_frontier = |broken: bool| -> Vec<u64> {
+            let mut scheduler = test_scheduler(
+                vec![test_scenario_node(
+                    "a",
+                    0,
+                    SchedulerNodeActivity::Runnable,
+                    NetworkLookahead::Infinite,
+                    ExactLocalEvent::NoArmedTimer,
+                )],
+                Vec::new(),
+            );
+            scheduler = scheduler.with_device_sub_node(disk_with_reads(
+                "a",
+                "disk-a",
+                &[(0, 8), (2000, 8)],
+            ));
+            if broken {
+                scheduler = scheduler.with_broken_device_delivery_stamp();
+            }
+            let node = scheduler_node("a", SchedulingNodeKind::Vm);
+            let (events, _decisions) = scheduler
+                .resolve_device_completions(&node, 3008)
+                .unwrap_or_else(|error| panic!("resolve should succeed: {error}"));
+            events
+                .iter()
+                .map(|event| event.key.virtual_time().ticks)
+                .collect()
+        };
+
+        assert_eq!(
+            resolve_at_frontier(false),
+            vec![1008, 3008],
+            "exact stamps are each completion's own delivery icount"
+        );
+        assert_eq!(
+            resolve_at_frontier(true),
+            vec![3008, 3008],
+            "the freeze-time bug collapses both onto the consumer frontier"
+        );
+        assert_ne!(
+            resolve_at_frontier(false),
+            resolve_at_frontier(true),
+            "exact delivery must be distinguishable from frontier delivery"
+        );
     }
 }

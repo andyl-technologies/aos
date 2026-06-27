@@ -1,6 +1,6 @@
 //! `crucible-device` owns deterministic I/O sub-node models.
 //!
-//! Spec index: RFC-0010 file 15 (I/O sub-nodes).
+//! Spec index: RFC-0010 files 15.
 //!
 //! This L1 crate models a disk, a 9p server, and a network link as **uniform
 //! simulation sub-nodes**: each is a scheduling node with an icount-derived

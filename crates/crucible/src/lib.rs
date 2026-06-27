@@ -10,10 +10,10 @@
 //! driver-specific details live outside the engine crate.
 //!
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
-//! [`decision`] owns seeded decision recording, [`io_subnode`] owns the
-//! deterministic I/O sub-node lifecycle, [`block_subnode`] owns the block
-//! copy-on-write overlay, [`ninep_subnode`] owns the deterministic 9p served
-//! tree, [`network_link_subnode`] owns the deterministic network-link model,
+//! [`decision`] owns seeded decision recording, [`device`] bridges the
+//! `crucible-device` I/O sub-nodes into the determinism RNG and the device half
+//! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
+//! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
 //! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
 //! boundary, and `sim_backend` provides the gated in-process test double.
 
@@ -22,12 +22,10 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
-pub mod block_subnode;
 pub mod decision;
-pub mod io_subnode;
+pub mod device;
+pub mod device_subnode;
 pub mod model;
-pub mod network_link_subnode;
-pub mod ninep_subnode;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
@@ -35,17 +33,12 @@ mod sim_backend;
 pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
 };
-pub use block_subnode::{
-    BLOCK_OVERLAY_PAGE_SIZE, BlockBaseImage, BlockCompletionError, BlockCompletionPlan,
-    BlockCompletionRequest, BlockDirtyPage, BlockLatencyParameters, BlockOverlayDelta,
-    BlockOverlayError, BlockSnapshotError, BlockSubNodeOperation, BlockSubNodeOverlay,
-    BlockSubNodeSnapshot, RestoredBlockSubNodeState, sort_block_completion_plans,
-};
 pub use decision::{DecisionRecordError, DecisionRecorder};
-pub use io_subnode::{
-    DeterministicIoSubNode, IoSubNode, IoSubNodeCompletion, IoSubNodeError, IoSubNodeQueue,
-    IoSubNodeRequest, IoSubNodeSnapshot,
+pub use device::{
+    device_overlay, device_rng, device_stream_id, io_fault_id, io_fault_state, record_device_fault,
+    with_active_io_faults,
 };
+pub use device_subnode::DeviceSchedulingSubNode;
 pub use model::{
     AppRandomDecision, AssertionDef, AssertionId, Checkpoint, CheckpointKind, CheckpointMeta,
     ChoiceTag, ClockDriftRate, Configuration, ContentAddressedBlobRef, ContentHash, CowDeltaKind,
@@ -74,21 +67,6 @@ pub use model::{
     TimerState, TopologyShape, TopologySizeRange, VcpuId, VirtualInstant, VirtualTime,
     VmArchitecture, VmSnapshotRef, WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode,
     WorldStaticTopology, bake, instantiate, reduce, step,
-};
-pub use network_link_subnode::{
-    NETWORK_ROUTER_SLOT_INDEX, NETWORK_ROUTER_SLOT_NAME, NETWORK_ROUTER_SLOT_NODE_NAME,
-    NetworkLinkDelivery, NetworkLinkEffectiveFaults, NetworkLinkEndpointRole, NetworkLinkError,
-    NetworkLinkFrame, NetworkLinkPerturbations, NetworkLinkPlan, NetworkLinkSubNode,
-    network_router_node, sort_network_link_deliveries,
-};
-pub use ninep_subnode::{
-    NINEP_BLOCK_COUNT_UNIT, NINEP_DEFAULT_MAXIMUM_MSIZE, NINEP_EINVAL, NINEP_EIO, NINEP_ENOSYS,
-    NINEP_EROFS, NINEP_FIXED_BLOCK_SIZE, NINEP_FIXED_EPOCH_SECONDS, NINEP_FIXED_GID,
-    NINEP_FIXED_NAME_MAX, NINEP_FIXED_QID_VERSION, NINEP_FIXED_UID, NINEP_HEADER_SIZE,
-    NINEP_PROTOCOL_VERSION, NinePAttributes, NinePDirectoryEntry, NinePEntryContent,
-    NinePEntryKind, NinePFidSnapshot, NinePMutatingMessage, NinePQid, NinePRequest,
-    NinePRequestKind, NinePResponse, NinePResponseKind, NinePServedEntry, NinePServedTree,
-    NinePServerError, NinePSession, NinePSessionSnapshot, NinePStatFs, NinePVersionNegotiation,
 };
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
@@ -119,8 +97,8 @@ pub use scheduler::{
     horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
     network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
     ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
-    resolve_due_scheduled_events, resolve_network_link_frame, resolve_probabilistic_decisions,
-    scheduled_event_delivery_time, scheduled_event_resolve_class, scheduler_rr_run_subdivision,
+    resolve_due_scheduled_events, resolve_probabilistic_decisions, scheduled_event_delivery_time,
+    scheduled_event_resolve_class, scheduler_rr_run_subdivision,
     unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]

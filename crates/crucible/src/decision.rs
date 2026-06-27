@@ -84,6 +84,19 @@ impl DecisionRecorder {
         fired
     }
 
+    /// Records a pre-resolved fault outcome in the schedule.
+    ///
+    /// Unlike [`DecisionRecorder::decide_fault`], which draws and tests in one
+    /// step, this appends a caller-resolved [`Decision::FaultFires`] outcome. It
+    /// is the recording surface for device faults whose firing test is the
+    /// exact-fraction `crucible-device` model rather than the engine's
+    /// strictly-below-threshold test: the caller draws the raw value with
+    /// [`DecisionRecorder::draw_u64`] (recording the draw), resolves the fault,
+    /// and records the derived outcome here.
+    pub fn record_fault_outcome(&mut self, decision: FaultDecision) {
+        self.append_decision(Decision::FaultFires(decision));
+    }
+
     /// Serves an application-requested random value and records it.
     ///
     /// # Errors

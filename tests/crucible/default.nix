@@ -480,50 +480,10 @@ in {
       attrPath = "checks.crucible.phase3.schedulerAllVcpusIdle";
       taskIds = ["T-SCHED-30"];
     };
-    ioSubnodeTrait = import ./phase3-io-subnode-trait.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.ioSubnodeTrait";
-      taskIds = ["T-IO-1"];
-    };
-    blockSubnodeOverlay = import ./phase3-block-subnode-overlay.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.blockSubnodeOverlay";
-      taskIds = ["T-IO-2"];
-    };
     blockWireAbi = import ./phase3-block-wire-abi.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase3.blockWireAbi";
       taskIds = ["T-IO-3"];
-    };
-    blockCompletionModel = import ./phase3-block-completion-model.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.blockCompletionModel";
-      taskIds = ["T-IO-4"];
-    };
-    blockSnapshotRestore = import ./phase3-block-snapshot-restore.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.blockSnapshotRestore";
-      taskIds = ["T-IO-5"];
-    };
-    ninePSubnodeServer = import ./phase3-ninep-subnode-server.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.ninePSubnodeServer";
-      taskIds = ["T-IO-6"];
-    };
-    ninePSessionLifecycle = import ./phase3-ninep-session-lifecycle.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.ninePSessionLifecycle";
-      taskIds = ["T-IO-7"];
-    };
-    ninePWireAbi = import ./phase3-ninep-wire-abi.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.ninePWireAbi";
-      taskIds = ["T-IO-8"];
-    };
-    networkLinkSubnode = import ./phase3-network-link-subnode.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase3.networkLinkSubnode";
-      taskIds = ["T-IO-9"];
     };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {

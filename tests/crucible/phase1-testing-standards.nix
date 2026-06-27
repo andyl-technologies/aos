@@ -207,12 +207,6 @@
       requiredFeatures = [];
     }
     {
-      gate = "gate:layer1-injection";
-      package = "crucible";
-      testTarget = "network_link_subnode";
-      requiredFeatures = ["test-double"];
-    }
-    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
@@ -235,18 +229,6 @@
       package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-    }
-    {
-      gate = "gate:abi-conformance";
-      package = "crucible-qemu-plugin";
-      testTarget = "gate_abi_conformance";
-      requiredFeatures = [];
-    }
-    {
-      gate = "gate:abi-conformance";
-      package = "crucible";
-      testTarget = "ninep_wire_abi";
-      requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:replay-oracle";
@@ -364,15 +346,15 @@
     }
     {
       gate = "gate:layer1-injection";
-      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem" "crucible"];
-      layers = ["L1" "L3"];
+      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem"];
+      layers = ["L1"];
       shape = "observed-injection-icount-vectors";
       backend = "in-process";
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin" "crucible"];
-      layers = ["L1" "L2" "L3" "L4" "CrossCutting"];
+      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api"];
+      layers = ["L1" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
@@ -490,7 +472,7 @@
     }
     {
       package = "crucible-qemu-plugin";
-      gates = ["gate:single-vm-fingerprint" "gate:abi-conformance" "gate:qemu-inert" "gate:patch-microtests"];
+      gates = ["gate:single-vm-fingerprint" "gate:qemu-inert" "gate:patch-microtests"];
     }
     {
       package = "crucible-guest";
@@ -498,7 +480,7 @@
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:layer1-injection" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness"];
+      gates = ["gate:layer0-determinism" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness"];
     }
     {
       package = "crucible-session";

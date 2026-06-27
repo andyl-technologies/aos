@@ -1533,6 +1533,7 @@ name = "crucible"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-device",
  "crucible-harness",
  "crucible-protocol",
  "crucible-shmem",
