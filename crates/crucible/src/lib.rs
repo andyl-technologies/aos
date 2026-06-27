@@ -4,22 +4,24 @@
 //!
 //! This L3 crate defines the RFC-0010 execution-model vocabulary shared by the
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, event
-//! log, uniform I/O sub-node lifecycle, and VM backend adapters. The crate
-//! remains a safe reduction island: it declares the backend trait and core model
-//! signatures, while concrete VM drivers and driver-specific details live
-//! outside the engine crate.
+//! log, uniform I/O sub-node lifecycle, block overlay model, and VM backend
+//! adapters. The crate remains a safe reduction island: it declares the backend
+//! trait and core model signatures, while concrete VM drivers and
+//! driver-specific details live outside the engine crate.
 //!
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
 //! [`decision`] owns seeded decision recording, [`io_subnode`] owns the
-//! deterministic I/O sub-node lifecycle, [`backend`] owns the VM backend
-//! boundary, [`scheduler`] owns the quantum-loop boundary, and `sim_backend`
-//! provides the gated in-process test double.
+//! deterministic I/O sub-node lifecycle, [`block_subnode`] owns the block
+//! copy-on-write overlay, [`backend`] owns the VM backend boundary,
+//! [`scheduler`] owns the quantum-loop boundary, and `sim_backend` provides the
+//! gated in-process test double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
+pub mod block_subnode;
 pub mod decision;
 pub mod io_subnode;
 pub mod model;
@@ -29,6 +31,10 @@ mod sim_backend;
 
 pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
+};
+pub use block_subnode::{
+    BLOCK_OVERLAY_PAGE_SIZE, BlockBaseImage, BlockDirtyPage, BlockOverlayDelta, BlockOverlayError,
+    BlockSubNodeOverlay,
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use io_subnode::{
