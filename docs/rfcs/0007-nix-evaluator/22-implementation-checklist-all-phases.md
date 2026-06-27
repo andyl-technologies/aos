@@ -1209,9 +1209,9 @@ alone (`M-1`/`Q-A`).
       that lease. Tests cover accepted leases and rejected non-covering leases.
       A compile-fail rustdoc canary proves a leased mapping cannot escape a
       stack lease as `'static`.
-      This is a type-boundary substrate only; production cache-root lease
-      implementation, same-root lock migration into `ratchet-cache`,
-      cross-process/durable filesystem leases, `ratchet-oracle` integration,
+      This is a type-boundary substrate only; production cache-root read lease
+      implementation, cross-process/durable filesystem leases,
+      `ratchet-oracle` integration,
       automatic mmap-backed indexed hits, append-writer migration, LMDB/redb
       offset indexes, out-of-core rematerialization, and harness proof remain
       open (`C-13`/`R-14`).
@@ -1315,10 +1315,10 @@ alone (`M-1`/`Q-A`).
       records therefore still fail through the existing artifact index errors.
       Cross-crate compatibility tests prove both writer directions and invalid
       generic engine records. This is the append-only sidecar migration only;
-      oracle still owns same-root locks, cache policy, blob payload validation,
-      and parse/file materialization semantics, while LMDB/redb tables, writer
-      batching, mmap reads, GC/repack engine migration, Attic transport, and
-      cross-process coordination remain open (`C-13`/`R-14`).
+      oracle still owns cache policy, blob payload validation, and parse/file
+      materialization semantics, while LMDB/redb tables, writer batching, mmap
+      reads, GC/repack engine migration, Attic transport, and cross-process
+      coordination remain open (`C-13`/`R-14`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and
@@ -1469,7 +1469,7 @@ alone (`M-1`/`Q-A`).
       value/file blob-index and file/parse-artifact repack sidecars before the
       later multi-file swap. Oracle repack staging now routes through these
       typed helpers while preserving the existing `Persist*IndexError` surfaces.
-      This is sidecar staging only; live-root selection, same-root locks,
+      This is sidecar staging only; live-root selection, oracle lock ordering,
       durable transaction policy across staged sidecars and packs,
       cross-process/raw writers, mmap reads, and automatic GC policy remain open
       (`C-13`/`R-14`).
@@ -1588,38 +1588,41 @@ alone (`M-1`/`Q-A`).
 - [x] Current same-process same-root indexed materialization single-flight
       precursor: independently opened `PersistCache` handles in one process now
       store canonicalized layout paths and acquire their per-store blob
-      materialization mutexes from a process-local weak registry keyed by the
-      canonical persistent cache root, so simultaneous same-key materialization
-      through separate opens of the same root shares the same
-      `ensure_blob_indexed` critical section. The initially-missing case
-      collapses to one fresh verified pack record and newest sidecar entry for
-      the selected store, public `append_blob` and `append_blob_indexed` use the
-      same lock for cache-level non-idempotent appends, a poisoned same-root
-      lock is reported before any cache-level raw append or indexed
-      append/index write, and an opened symlink-root handle keeps writing the
-      canonical target it opened even if the symlink is retargeted.
+      materialization mutexes through `ratchet-cache::root_locks::CacheRootLocks`,
+      whose process-local weak registry is keyed by the canonical persistent
+      cache root. Simultaneous same-key materialization through separate opens
+      of the same root shares the same `ensure_blob_indexed` critical section.
+      The initially-missing case collapses to one fresh verified pack record and
+      newest sidecar entry for the selected store, public `append_blob` and
+      `append_blob_indexed` use the same lock for cache-level non-idempotent
+      appends, a poisoned same-root lock is mapped back into the existing oracle
+      error surface before any cache-level raw append or indexed append/index
+      write, and an opened symlink-root handle keeps writing the canonical
+      target it opened even if the symlink is retargeted.
       Different roots, multi-process writers, two-machine misses, durable
       filesystem locks/CAS, automatic compaction, GC/repack, mmap reads,
       LMDB/redb indexes, and loom/harness proof remain open
       (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root blob-store maintenance lock precursor:
       cache-level blob-index compaction, blob-index rebuild, blob-pack tail
-      trim, and value/file blob-pack repack share the same per-store root-lock
-      registry entries as indexed materialization, so maintenance rewrites for
-      one live canonical cache root serialize with cache-level indexed or raw
-      blob writes for the selected `values/` or `files/` store. File-pack tail
-      trim and file-pack repack also share the file-artifact and parse-artifact
-      mapping locks while they snapshot or relocate those live roots. Poisoned
-      live same-root locks are reported before compaction, rebuild, trim, or
-      repack writes sidecars, truncates, or replaces a pack. Raw lower-level
-      `PersistBlobIndex`/`PersistBlobPack` users, different roots,
-      multi-process writers, two-machine races, durable filesystem locks/CAS,
-      LMDB/redb indexes, automatic GC policy, and loom/harness proof remain
-      open (`C-13`/`R-4`/`R-14`).
+      trim, and value/file blob-pack repack share the same
+      `ratchet-cache::root_locks` per-store slots as indexed materialization, so
+      maintenance rewrites for one live canonical cache root serialize with
+      cache-level indexed or raw blob writes for the selected `values/` or
+      `files/` store. File-pack tail trim and file-pack repack also share the
+      file-artifact and parse-artifact mapping slots while they snapshot or
+      relocate those live roots; oracle keeps the pending file-root map in a
+      canonical-root weak registry because those roots are semantic liveness,
+      not generic lock substrate. Poisoned live same-root locks are reported
+      before compaction, rebuild, trim, or repack writes sidecars, truncates, or
+      replaces a pack. Raw lower-level `PersistBlobIndex`/`PersistBlobPack`
+      users, different roots, multi-process writers, two-machine races, durable
+      filesystem locks/CAS, LMDB/redb indexes, automatic GC policy, and
+      loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
-      it, acquires a process-local same-root open mutex from the shared weak
-      root-lock registry, and only then performs schema validation/rewrites plus
+      it through `ratchet-cache::root_locks`, acquires that root's process-local
+      open slot, and only then performs schema validation/rewrites plus
       pack/index initialization through the canonical layout. If a panic
       poisons a live same-root open lock while another cache handle or waiter
       keeps that root's lock object alive, later same-root opens report the
@@ -1631,10 +1634,10 @@ alone (`M-1`/`Q-A`).
       transactions, and loom/harness proof remain open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root node-metadata writer lock precursor:
       independently opened `PersistCache` handles in one process acquire their
-      node-metadata write mutex from the same process-local weak root-lock
-      registry, so raw metadata appends, typed reuse/value-hash
-      read-modify-appends, current-demand increments, run-boundary advancement,
-      and metadata compaction serialize for a live canonical cache root.
+      node-metadata write mutex from `ratchet-cache::root_locks`, so raw
+      metadata appends, typed reuse/value-hash read-modify-appends,
+      current-demand increments, run-boundary advancement, and metadata
+      compaction serialize for a live canonical cache root.
       Concurrent same-root demand records keep every current-run increment, and
       a poisoned live metadata lock is reported before any sidecar write. Raw
       lower-level `PersistNodeMetadataIndex` users, different roots,
@@ -1643,9 +1646,9 @@ alone (`M-1`/`Q-A`).
       open (`C-13`/`R-4`/`S-14`).
 - [x] Current same-process same-root node-trace writer lock precursor:
       independently opened `PersistCache` handles in one process acquire their
-      node-trace write mutex from the same process-local weak root-lock
-      registry, so trace appends and trace-log compaction serialize for a live
-      canonical cache root. Concurrent same-root trace appends keep every
+      node-trace write mutex from `ratchet-cache::root_locks`, so trace appends
+      and trace-log compaction serialize for a live canonical cache root.
+      Concurrent same-root trace appends keep every
       complete record readable, and a poisoned live trace lock is reported
       before any log write. Raw lower-level `PersistNodeTraceLog` users,
       different roots, multi-process writers, two-machine races, durable
@@ -1654,10 +1657,10 @@ alone (`M-1`/`Q-A`).
       open (`C-13`/`R-4`/`S-14`).
 - [x] Current same-process same-root artifact-mapping writer lock precursor:
       independently opened `PersistCache` handles in one process acquire
-      file-artifact and parse-artifact mapping write mutexes from the same
-      process-local weak root-lock registry, so cache-level mapping appends and
-      mapping compaction serialize for a live canonical cache root. Concurrent
-      same-root appends keep every complete mapping record readable, and
+      file-artifact and parse-artifact mapping write mutexes from
+      `ratchet-cache::root_locks`, so cache-level mapping appends and mapping
+      compaction serialize for a live canonical cache root. Concurrent same-root
+      appends keep every complete mapping record readable, and
       poisoned live mapping locks are reported before any sidecar write. Raw
       lower-level `PersistFileArtifactIndex`/`PersistParseArtifactIndex` users,
       different roots, multi-process writers, two-machine races, durable
@@ -1757,9 +1760,9 @@ alone (`M-1`/`Q-A`).
       records therefore still fail through `PersistNodeMetadataIndexError`.
       Cross-crate compatibility tests prove both writer directions and invalid
       generic engine records. This is the append-only sidecar migration only;
-      oracle still owns same-root locks, node-trace/value transactionality, and
-      cache policy, while LMDB/redb tables, writer batching, mmap reads, GC
-      policy, and cross-process coordination remain open (`C-13`/`R-14`).
+      oracle still owns node-trace/value transactionality and cache policy,
+      while LMDB/redb tables, writer batching, mmap reads, GC policy, and
+      cross-process coordination remain open (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` variable-length node-trace log substrate:
       `node_trace_log::NodeTraceLogKey`, `NodeTraceLogValueHash`,
       `NodeTraceLogEntry`, and `NodeTraceLog` provide the generic engine-band
@@ -1781,9 +1784,9 @@ alone (`M-1`/`Q-A`).
       therefore still fail through `PersistNodeTraceLogError`. Cross-crate
       compatibility tests prove both writer directions and invalid generic
       engine records. This is the append-only sidecar migration only; oracle
-      still owns same-root locks, node-metadata/value transactionality, and
-      cache policy, while LMDB/redb tables, writer batching, mmap reads, GC
-      policy, and cross-process coordination remain open (`C-13`/`R-14`).
+      still owns node-metadata/value transactionality and cache policy, while
+      LMDB/redb tables, writer batching, mmap reads, GC policy, and
+      cross-process coordination remain open (`C-13`/`R-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse

@@ -7,6 +7,10 @@
 use super::*;
 
 use ratchet_cache::file_replace::{FileReplacement, FileReplacementError, FileReplacementSet};
+use ratchet_cache::root_locks::{
+    self as engine_root_locks, CacheRootLockError, CacheRootLockSlot,
+    CacheRootLocks as EngineCacheRootLocks,
+};
 
 use std::sync::atomic::Ordering;
 
@@ -25,36 +29,25 @@ pub struct PersistCache {
     root_locks: Arc<PersistRootLocks>,
 }
 
+type PendingFileRootKey = ([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64);
+type PendingFileRoots = Mutex<BTreeMap<PendingFileRootKey, PersistBlobLiveRoot>>;
+
 #[derive(Debug)]
 struct PersistRootLocks {
-    open: Mutex<()>,
-    values: Mutex<()>,
-    files: Mutex<()>,
-    pending_file_roots:
-        Mutex<BTreeMap<([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64), PersistBlobLiveRoot>>,
-    file_artifacts: Mutex<()>,
-    parse_artifacts: Mutex<()>,
-    node_metadata: Mutex<()>,
-    node_traces: Mutex<()>,
+    locks: Arc<EngineCacheRootLocks>,
+    pending_file_roots: Arc<PendingFileRoots>,
 }
 
 impl PersistRootLocks {
-    fn new() -> Self {
+    fn new(locks: Arc<EngineCacheRootLocks>, pending_file_roots: Arc<PendingFileRoots>) -> Self {
         Self {
-            open: Mutex::new(()),
-            values: Mutex::new(()),
-            files: Mutex::new(()),
-            pending_file_roots: Mutex::new(BTreeMap::new()),
-            file_artifacts: Mutex::new(()),
-            parse_artifacts: Mutex::new(()),
-            node_metadata: Mutex::new(()),
-            node_traces: Mutex::new(()),
+            locks,
+            pending_file_roots,
         }
     }
 
     fn lock_open(&self) -> Result<MutexGuard<'_, ()>, PersistError> {
-        self.open
-            .lock()
+        self.lock_slot(CacheRootLockSlot::Open)
             .map_err(|_| PersistError::RootOpenLockPoisoned)
     }
 
@@ -62,8 +55,7 @@ impl PersistRootLocks {
         &self,
         store: PersistBlobStore,
     ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexedWriteError> {
-        self.blob_store_lock(store)
-            .lock()
+        self.lock_blob_store(store)
             .map_err(|_| PersistBlobIndexedWriteError::WriteLockPoisoned { store })
     }
 
@@ -71,8 +63,7 @@ impl PersistRootLocks {
         &self,
         store: PersistBlobStore,
     ) -> Result<MutexGuard<'_, ()>, PersistBlobPackError> {
-        self.blob_store_lock(store)
-            .lock()
+        self.lock_blob_store(store)
             .map_err(|_| PersistBlobPackError::WriteLockPoisoned { store })
     }
 
@@ -80,18 +71,30 @@ impl PersistRootLocks {
         &self,
         store: PersistBlobStore,
     ) -> Result<MutexGuard<'_, ()>, PersistBlobIndexError> {
-        self.blob_store_lock(store)
-            .lock()
+        self.lock_blob_store(store)
             .map_err(|_| PersistBlobIndexError::WriteLockPoisoned { store })
     }
 
-    fn blob_store_lock(&self, store: PersistBlobStore) -> &Mutex<()> {
-        match store {
-            PersistBlobStore::Values => &self.values,
-            PersistBlobStore::Files => &self.files,
-        }
+    fn lock_blob_store(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<MutexGuard<'_, ()>, CacheRootLockError> {
+        self.lock_slot(blob_store_lock_slot(store))
     }
 
+    fn lock_slot(&self, slot: CacheRootLockSlot) -> Result<MutexGuard<'_, ()>, CacheRootLockError> {
+        self.locks.lock(slot)
+    }
+}
+
+fn blob_store_lock_slot(store: PersistBlobStore) -> CacheRootLockSlot {
+    match store {
+        PersistBlobStore::Values => CacheRootLockSlot::Values,
+        PersistBlobStore::Files => CacheRootLockSlot::Files,
+    }
+}
+
+impl PersistRootLocks {
     fn insert_pending_file_root(
         &self,
         root: PersistBlobLiveRoot,
@@ -123,50 +126,61 @@ impl PersistRootLocks {
     }
 
     fn lock_file_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistFileArtifactIndexError> {
-        self.file_artifacts
-            .lock()
+        self.lock_slot(CacheRootLockSlot::FileArtifacts)
             .map_err(|_| PersistFileArtifactIndexError::WriteLockPoisoned)
     }
 
     fn lock_parse_artifacts(&self) -> Result<MutexGuard<'_, ()>, PersistParseArtifactIndexError> {
-        self.parse_artifacts
-            .lock()
+        self.lock_slot(CacheRootLockSlot::ParseArtifacts)
             .map_err(|_| PersistParseArtifactIndexError::WriteLockPoisoned)
     }
 
     fn lock_node_metadata(&self) -> Result<MutexGuard<'_, ()>, PersistNodeMetadataIndexError> {
-        self.node_metadata
-            .lock()
+        self.lock_slot(CacheRootLockSlot::NodeMetadata)
             .map_err(|_| PersistNodeMetadataIndexError::WriteLockPoisoned)
     }
 
     fn lock_node_traces(&self) -> Result<MutexGuard<'_, ()>, PersistNodeTraceLogError> {
-        self.node_traces
-            .lock()
+        self.lock_slot(CacheRootLockSlot::NodeTraces)
             .map_err(|_| PersistNodeTraceLogError::WriteLockPoisoned)
     }
 }
 
-static PERSIST_ROOT_LOCK_REGISTRY: OnceLock<Mutex<BTreeMap<PathBuf, Weak<PersistRootLocks>>>> =
-    OnceLock::new();
+static PERSIST_PENDING_FILE_ROOT_REGISTRY: OnceLock<
+    Mutex<BTreeMap<PathBuf, Weak<PendingFileRoots>>>,
+> = OnceLock::new();
 
 fn root_locks_for_root(root: &Path) -> Result<Arc<PersistRootLocks>, PersistError> {
-    let canonical_root =
-        fs::canonicalize(root).map_err(|source| PersistError::CanonicalizeRoot {
-            path: root.to_path_buf(),
-            source,
-        })?;
-    let registry = PERSIST_ROOT_LOCK_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut locks = registry
+    let locks = engine_root_locks::locks_for_root(root).map_err(root_lock_registry_error)?;
+    let pending_file_roots = pending_file_roots_for_canonical_root(locks.root())?;
+    Ok(Arc::new(PersistRootLocks::new(locks, pending_file_roots)))
+}
+
+fn root_lock_registry_error(error: engine_root_locks::CacheRootLockRegistryError) -> PersistError {
+    match error {
+        engine_root_locks::CacheRootLockRegistryError::CanonicalizeRoot { path, source } => {
+            PersistError::CanonicalizeRoot { path, source }
+        }
+        engine_root_locks::CacheRootLockRegistryError::RegistryPoisoned => {
+            PersistError::RootLockRegistryPoisoned
+        }
+    }
+}
+
+fn pending_file_roots_for_canonical_root(
+    root: &Path,
+) -> Result<Arc<PendingFileRoots>, PersistError> {
+    let registry = PERSIST_PENDING_FILE_ROOT_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut pending_roots = registry
         .lock()
         .map_err(|_| PersistError::RootLockRegistryPoisoned)?;
-    locks.retain(|_, candidate| candidate.strong_count() > 0);
-    if let Some(existing) = locks.get(&canonical_root).and_then(Weak::upgrade) {
+    pending_roots.retain(|_, candidate| candidate.strong_count() > 0);
+    if let Some(existing) = pending_roots.get(root).and_then(Weak::upgrade) {
         return Ok(existing);
     }
 
-    let created = Arc::new(PersistRootLocks::new());
-    locks.insert(canonical_root, Arc::downgrade(&created));
+    let created = Arc::new(Mutex::new(BTreeMap::new()));
+    pending_roots.insert(root.to_path_buf(), Arc::downgrade(&created));
     Ok(created)
 }
 
@@ -2999,8 +3013,7 @@ impl PersistCache {
     ) -> Result<PersistBlobPackRepackPlan, PersistValueBlobPackRepackError> {
         let _write_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Values)
-            .lock()
+            .lock_blob_store(PersistBlobStore::Values)
             .map_err(|_| PersistValueBlobPackRepackError::WriteLockPoisoned)?;
         let plan = self
             .plan_blob_pack_repack_unlocked(PersistBlobStore::Values)
@@ -3061,8 +3074,7 @@ impl PersistCache {
     ) -> Result<PersistBlobPackRepackPlan, PersistFileBlobPackRepackError> {
         let _file_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
+            .lock_blob_store(PersistBlobStore::Files)
             .map_err(|_| PersistFileBlobPackRepackError::WriteLockPoisoned)?;
         let _file_artifact_guard = self
             .root_locks
@@ -3320,8 +3332,7 @@ impl PersistCache {
     ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildError> {
         let _write_guard = self
             .root_locks
-            .blob_store_lock(store)
-            .lock()
+            .lock_blob_store(store)
             .map_err(|_| PersistBlobIndexRebuildError::WriteLockPoisoned { store })?;
         let plan = self
             .plan_blob_index_rebuild(store)
@@ -3416,8 +3427,7 @@ impl PersistCache {
     ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
         let _read_guard = self
             .root_locks
-            .blob_store_lock(key.store())
-            .lock()
+            .lock_blob_store(key.store())
             .map_err(|_| PersistBlobIndexedReadError::ReadLockPoisoned { store: key.store() })?;
         let Some(location) = self
             .lookup_blob_location(key)
@@ -4091,13 +4101,7 @@ impl PersistCache {
         &self,
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let _read_guard = self
-            .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistBlobPackError::WriteLockPoisoned {
-                store: PersistBlobStore::Files,
-            })?;
+        let _read_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
         self.read_file_artifact_unlocked(index_value)
     }
 
@@ -4123,13 +4127,7 @@ impl PersistCache {
         &self,
         index_value: PersistParseArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let _read_guard = self
-            .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistBlobPackError::WriteLockPoisoned {
-                store: PersistBlobStore::Files,
-            })?;
+        let _read_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
         self.read_parse_artifact_unlocked(index_value)
     }
 
@@ -4161,13 +4159,8 @@ impl PersistCache {
     ) -> Result<(), PersistParseArtifactHydrationError> {
         let _read_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistParseArtifactHydrationError::Read {
-                source: PersistBlobPackError::WriteLockPoisoned {
-                    store: PersistBlobStore::Files,
-                },
-            })?;
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
         self.hydrate_parse_artifact_bundle_unlocked(index_value, entry)
     }
 
@@ -4267,13 +4260,8 @@ impl PersistCache {
     ) -> Result<(), PersistFileArtifactHydrationError> {
         let _read_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistFileArtifactHydrationError::Read {
-                source: PersistBlobPackError::WriteLockPoisoned {
-                    store: PersistBlobStore::Files,
-                },
-            })?;
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
         self.hydrate_file_artifact_bundle_unlocked(index_value, entry)
     }
 
@@ -4381,14 +4369,9 @@ impl PersistCache {
         let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
         let _file_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistFileArtifactIndexedHydrationError::Hydrate {
-                source: PersistFileArtifactHydrationError::Read {
-                    source: PersistBlobPackError::WriteLockPoisoned {
-                        store: PersistBlobStore::Files,
-                    },
-                },
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate {
+                source: PersistFileArtifactHydrationError::Read { source },
             })?;
         let _file_artifact_guard = self
             .root_locks
@@ -4431,15 +4414,12 @@ impl PersistCache {
         let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
         let _file_guard = self
             .root_locks
-            .blob_store_lock(PersistBlobStore::Files)
-            .lock()
-            .map_err(|_| PersistParseArtifactIndexedHydrationError::Hydrate {
-                source: PersistParseArtifactHydrationError::Read {
-                    source: PersistBlobPackError::WriteLockPoisoned {
-                        store: PersistBlobStore::Files,
-                    },
+            .lock_blob_pack(PersistBlobStore::Files)
+            .map_err(
+                |source| PersistParseArtifactIndexedHydrationError::Hydrate {
+                    source: PersistParseArtifactHydrationError::Read { source },
                 },
-            })?;
+            )?;
         let _parse_artifact_guard = self
             .root_locks
             .lock_parse_artifacts()
