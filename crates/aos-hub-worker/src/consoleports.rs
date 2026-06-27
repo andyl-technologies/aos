@@ -35,19 +35,19 @@
 //! Worker secret by [`sealer_from_secret`]. The *crypto* is shared; only the
 //! Worker's key *sourcing* (a Wrangler secret) is platform-specific.
 
+use anyhow::{bail, Context, Result};
 use aos_hub_core::auth::magic::Mailer;
 use aos_hub_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_hub_core::db::{Database, RegistryRecord};
 use aos_hub_core::email::EmailContent;
 use aos_hub_core::fetch::SurfaceProvider as _;
-use aos_hub_core::url_guard;
 use aos_hub_core::reindex::Reindexer;
+use aos_hub_core::url_guard;
 use aos_hub_core::web::console::ports::HttpClient;
-use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use futures_util::StreamExt;
 use wasm_bindgen::{JsCast, JsValue};
 use worker::{Bucket, Fetch, Headers, Method, Request, RequestInit};
 
@@ -77,8 +77,8 @@ const MAX_OIDC_BODY_BYTES: usize = 1024 * 1024;
 /// Returns an error only if [`AesGcmSealer::new`] rejects the derived key, which
 /// cannot happen here (both paths yield exactly 32 bytes).
 pub fn sealer_from_secret(secret: &str) -> Result<Arc<dyn SecretSealer>> {
-    let key = parse_key(secret.as_bytes())
-        .unwrap_or_else(|_| Sha256::digest(secret.as_bytes()).to_vec());
+    let key =
+        parse_key(secret.as_bytes()).unwrap_or_else(|_| Sha256::digest(secret.as_bytes()).to_vec());
     Ok(Arc::new(AesGcmSealer::new(&key)?))
 }
 
@@ -370,7 +370,11 @@ impl WorkerReindexer {
     /// the [`SecretSealer`] used to resolve a registry's external storage
     /// binding (matching the surface provider the read path and Cron use).
     #[must_use]
-    pub fn new(bucket: Bucket, db: Arc<Database>, sealer: Arc<dyn SecretSealer>) -> WorkerReindexer {
+    pub fn new(
+        bucket: Bucket,
+        db: Arc<Database>,
+        sealer: Arc<dyn SecretSealer>,
+    ) -> WorkerReindexer {
         WorkerReindexer { bucket, db, sealer }
     }
 }

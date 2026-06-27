@@ -479,6 +479,7 @@ const INSTANCE_KEYS: &[&str] = &[
     "signup_policy",
     "signup_domains",
     "password_login",
+    "caches_public",
     "session_lifetime_secs",
     "default_crawl_policy",
     "max_upload_bytes",
@@ -526,7 +527,7 @@ fn normalize_instance_value(key: &str, value: &str) -> Result<Option<String>, Rp
                 .map_err(|e| RpcError::invalid(e.to_string()))?;
             Ok(Some(policy.as_str().to_string()))
         }
-        "password_login" => {
+        "password_login" | "caches_public" => {
             // Normalize the various truthy/falsy spellings to on/off.
             let on = !matches!(trimmed, "off" | "false" | "0" | "no");
             Ok(Some(if on { "on" } else { "off" }.to_string()))
@@ -3393,6 +3394,8 @@ impl RpcService {
         self.require_cache_admin(auth, c.org_id).await?;
         let claims = self.require_claims(auth)?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
+        // Unlinking de-advertises, which edits the registry's committed config,
+        // so it also requires registry.configure on the registry.
         self.require_permission(
             &claims,
             Permission::RegistryConfigure,

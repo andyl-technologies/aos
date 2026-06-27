@@ -292,7 +292,10 @@ mod tests {
             .filter(|r| r.repeat)
             .map(|r| r.store_hash.as_str())
             .collect();
-        assert!(repeats.contains(&"shared"), "shared shown twice: {repeats:?}");
+        assert!(
+            repeats.contains(&"shared"),
+            "shared shown twice: {repeats:?}"
+        );
         assert!(repeats.contains(&"root"), "cycle back to root: {repeats:?}");
         // Every distinct node is expanded exactly once (a single non-repeat row).
         for h in ["root", "a", "b", "shared"] {
@@ -353,7 +356,12 @@ mod tests {
             } else {
                 vec![]
             };
-            nodes.push(node(Box::leak(format!("n{i}").into_boxed_str()), &refs, true, 1));
+            nodes.push(node(
+                Box::leak(format!("n{i}").into_boxed_str()),
+                &refs,
+                true,
+                1,
+            ));
         }
         let view = build_closure_view("n0", &nodes, n as i64);
         assert_eq!(view.rows.len(), n);
@@ -375,7 +383,12 @@ mod tests {
             } else {
                 vec![]
             };
-            nodes.push(node(Box::leak(format!("n{i}").into_boxed_str()), &refs, true, 1));
+            nodes.push(node(
+                Box::leak(format!("n{i}").into_boxed_str()),
+                &refs,
+                true,
+                1,
+            ));
         }
         let view = build_closure_view("n0", &nodes, n as i64);
         assert_eq!(view.rows.len(), MAX_ROWS);

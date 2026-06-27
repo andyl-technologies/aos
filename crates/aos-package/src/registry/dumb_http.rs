@@ -114,10 +114,20 @@ pub(crate) async fn fetch(repo_dir: &Path, base_url: &str, refspecs: &[String]) 
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
             let repo_path = repo_dir.to_path_buf();
-            tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
-                .await
-                .context("pack-indexing task panicked")??;
-            missing = walk_missing(repo_dir, &target_oids).await?;
+            // The pack phase is a fast-path optimization. libgit2's streaming
+            // indexer can intermittently reject an otherwise-complete pack with a
+            // generic write error; rather than failing the whole sync, fall
+            // through to the loose phase below, which fetches and individually
+            // hash-verifies every still-missing object (the dumb-HTTP layout
+            // guarantees loose completeness). On success, prune what the pack
+            // already covered so the loose phase only fetches the remainder.
+            let indexed =
+                tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
+                    .await
+                    .context("pack-indexing task panicked")?;
+            if indexed.is_ok() {
+                missing = walk_missing(repo_dir, &target_oids).await?;
+            }
         }
 
         // Loose fallback: fetch whatever the packs did not cover (a registry's

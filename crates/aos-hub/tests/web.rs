@@ -128,7 +128,9 @@ async fn static_assets_are_served_by_the_shared_router() {
         let (status, headers, body) = get(&app, uri).await;
         assert_eq!(status, StatusCode::OK, "{uri} must be served");
         assert_eq!(
-            headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
             Some(ctype),
             "{uri} content-type"
         );
@@ -709,7 +711,10 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
     // Home page: a no-JS HTML summary naming the cache.
     let (status, _, home) = get(&app, "/acme-cache/").await;
     assert_eq!(status, StatusCode::OK, "cache home: {home}");
-    assert!(home.contains("<!DOCTYPE html>") && home.contains("Acme Cache"), "{home}");
+    assert!(
+        home.contains("<!DOCTYPE html>") && home.contains("Acme Cache"),
+        "{home}"
+    );
 
     // Object list: the indexed object's store name shows up.
     let (status, _, objects) = get(&app, "/acme-cache/-/objects").await;
@@ -734,7 +739,10 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
     // raw download — the `hi` entry inside the sample NAR appears.
     let (status, _, explore) = get(&app, "/acme-cache/nar/test.nar?explore").await;
     assert_eq!(status, StatusCode::OK, "explore: {explore}");
-    assert!(explore.contains("hi"), "NAR explorer lists entries: {explore}");
+    assert!(
+        explore.contains("hi"),
+        "NAR explorer lists entries: {explore}"
+    );
 
     // Without `?explore`, the same path downloads the raw NAR bytes.
     let (status, _headers, _) = get(&app, "/acme-cache/nar/test.nar").await;
@@ -762,8 +770,14 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
         .unwrap_or_default()
         .to_string();
     assert!(cr.starts_with("bytes 0-3/"), "content-range: {cr}");
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-    assert_eq!(body.len(), 4, "ranged body is exactly the 4 requested bytes");
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        body.len(),
+        4,
+        "ranged body is exactly the 4 requested bytes"
+    );
 }
 
 /// The unified streaming cache-read path gates a non-public cache: an anonymous
@@ -828,7 +842,11 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
 
     // Anonymous machine read of the private cache's narinfo must NOT serve bytes.
     let (status, _, _) = get(&app, "/priv-cache/aaaa.narinfo").await;
-    assert_ne!(status, StatusCode::OK, "private cache must gate anonymous reads");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "private cache must gate anonymous reads"
+    );
 }
 
 /// Issue a GET carrying a `Host` header (domain-routed frontend dispatch).
@@ -896,9 +914,17 @@ async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
         .unwrap();
     // A second proxied frontend on `nocache.example.test` that does NOT serve
     // the cache surface (serves_cache = false).
-    db.create_cache_frontend(cache, "nocache.example.test", "/", "proxied", false, 100, true)
-        .await
-        .unwrap();
+    db.create_cache_frontend(
+        cache,
+        "nocache.example.test",
+        "/",
+        "proxied",
+        false,
+        100,
+        true,
+    )
+    .await
+    .unwrap();
 
     let app = router(Arc::new(
         AppState::new(Arc::clone(&db), "http://hub.example.test:8420".into()).await,
@@ -908,7 +934,11 @@ async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
     // Host-routed: the narinfo is served off the frontend domain with no slug in
     // the path (rewritten internally to `/ext-cache/aaaa.narinfo`).
     let (status, _, body) = get_with_host(&app, "cache.example.test", "/aaaa.narinfo").await;
-    assert_eq!(status, StatusCode::OK, "frontend domain should serve the cache");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "frontend domain should serve the cache"
+    );
     assert!(
         body.contains("StorePath: /nix/store/aaaa-x-1.0"),
         "served the bound cache's narinfo: {body}"
@@ -931,7 +961,11 @@ async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
     // and is never served the bound cache's bytes (here the single-segment path
     // hits the `/{slug}` -> `/{slug}/` canonical redirect, i.e. not a 200 serve).
     let (status, _, body) = get_with_host(&app, "stranger.example.test", "/aaaa.narinfo").await;
-    assert_ne!(status, StatusCode::OK, "unknown host must not serve the cache");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "unknown host must not serve the cache"
+    );
     assert!(
         !body.contains("StorePath: /nix/store/aaaa-x-1.0"),
         "unknown host must not leak the cache's narinfo"
@@ -943,18 +977,38 @@ async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
         .await
         .unwrap();
     let (status, _, _) = get_with_host(&app, "mixed.example.test", "/aaaa.narinfo").await;
-    assert_eq!(status, StatusCode::OK, "domain match must be case-insensitive");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "domain match must be case-insensitive"
+    );
 
     // base_path matches on a segment boundary: a frontend at `/v1` does not
     // capture `/v1x/...`.
-    db.create_cache_frontend(cache, "based.example.test", "/v1", "proxied", true, 100, true)
-        .await
-        .unwrap();
+    db.create_cache_frontend(
+        cache,
+        "based.example.test",
+        "/v1",
+        "proxied",
+        true,
+        100,
+        true,
+    )
+    .await
+    .unwrap();
     let (status, _, body) = get_with_host(&app, "based.example.test", "/v1/aaaa.narinfo").await;
-    assert_eq!(status, StatusCode::OK, "base_path /v1 should serve /v1/<path>");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "base_path /v1 should serve /v1/<path>"
+    );
     assert!(body.contains("StorePath"), "{body}");
     let (status, _, _) = get_with_host(&app, "based.example.test", "/v1x/aaaa.narinfo").await;
-    assert_ne!(status, StatusCode::OK, "base_path /v1 must not capture /v1x/...");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "base_path /v1 must not capture /v1x/..."
+    );
 }
 
 /// The `serves_*` subset gate classifies on the *decoded* path, so a

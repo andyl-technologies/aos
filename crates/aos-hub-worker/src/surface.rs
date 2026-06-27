@@ -234,19 +234,14 @@ impl R2SurfaceProvider {
         db: Arc<Database>,
         sealer: Arc<dyn SecretSealer>,
     ) -> R2SurfaceProvider {
-        R2SurfaceProvider {
-            bucket,
-            db,
-            sealer,
-        }
+        R2SurfaceProvider { bucket, db, sealer }
     }
 }
 
 #[async_trait(?Send)]
 impl SurfaceProvider for R2SurfaceProvider {
     async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
-        if let Some(surface) =
-            registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
+        if let Some(surface) = registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
         {
             return Ok(Box::new(S3SurfaceFetch { surface }));
         }
@@ -340,8 +335,12 @@ impl SurfaceFetch for R2SurfaceFetch {
                 &JsValue::from_str(&listing_prefix),
             )
             .map_err(|e| jserr("set prefix", e))?;
-            Reflect::set(&opts, &JsValue::from_str("limit"), &JsValue::from_f64(1000.0))
-                .map_err(|e| jserr("set limit", e))?;
+            Reflect::set(
+                &opts,
+                &JsValue::from_str("limit"),
+                &JsValue::from_f64(1000.0),
+            )
+            .map_err(|e| jserr("set limit", e))?;
             if let Some(c) = &cursor {
                 Reflect::set(&opts, &JsValue::from_str("cursor"), &JsValue::from_str(c))
                     .map_err(|e| jserr("set cursor", e))?;
@@ -571,10 +570,9 @@ impl SurfaceFetch for S3SurfaceFetch {
             if !(200..300).contains(&status) {
                 anyhow::bail!("s3 list {}: status {status}", self.surface.describe());
             }
-            let body = response
-                .text()
-                .await
-                .map_err(|err| anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe()))?;
+            let body = response.text().await.map_err(|err| {
+                anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe())
+            })?;
             let (page_keys, next) = aos_hub_core::s3surface::parse_list_objects_v2(&body);
             for key in page_keys {
                 if let Some(rel) = self.surface.relative_from_key(&key) {
@@ -646,7 +644,12 @@ impl SurfaceFetch for S3SurfaceFetch {
             // Trust nothing from the origin: a malformed range would
             // underflow/overflow the downstream `Content-Length` arithmetic.
             if cr.0 > cr.1 || cr.1 >= cr.2 {
-                anyhow::bail!("s3 malformed Content-Range bytes {}-{}/{}", cr.0, cr.1, cr.2);
+                anyhow::bail!(
+                    "s3 malformed Content-Range bytes {}-{}/{}",
+                    cr.0,
+                    cr.1,
+                    cr.2
+                );
             }
             served = Some((cr.0, cr.1));
             total = cr.2;
@@ -773,7 +776,12 @@ impl OriginFetch for WorkerOriginFetch {
             // `end >= total`) would underflow/overflow the downstream
             // `Content-Length` arithmetic. Enforce `fetch_stream`'s invariant.
             if cr.0 > cr.1 || cr.1 >= cr.2 {
-                anyhow::bail!("origin malformed Content-Range bytes {}-{}/{}", cr.0, cr.1, cr.2);
+                anyhow::bail!(
+                    "origin malformed Content-Range bytes {}-{}/{}",
+                    cr.0,
+                    cr.1,
+                    cr.2
+                );
             }
             served = Some((cr.0, cr.1));
             total = cr.2;
@@ -840,19 +848,14 @@ impl R2SurfaceWriteProvider {
         db: Arc<Database>,
         sealer: Arc<dyn SecretSealer>,
     ) -> R2SurfaceWriteProvider {
-        R2SurfaceWriteProvider {
-            bucket,
-            db,
-            sealer,
-        }
+        R2SurfaceWriteProvider { bucket, db, sealer }
     }
 }
 
 #[async_trait(?Send)]
 impl SurfaceWriteProvider for R2SurfaceWriteProvider {
     async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>> {
-        if let Some(surface) =
-            registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
+        if let Some(surface) = registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
         {
             return Ok(Box::new(S3Write { surface }));
         }
@@ -862,10 +865,7 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         }))
     }
 
-    async fn cache_writer(
-        &self,
-        cache: &aos_hub_core::db::Cache,
-    ) -> Result<Box<dyn SurfaceWrite>> {
+    async fn cache_writer(&self, cache: &aos_hub_core::db::Cache) -> Result<Box<dyn SurfaceWrite>> {
         if let Some(surface) = cache_s3_surface(&self.db, self.sealer.as_ref(), cache).await? {
             return Ok(Box::new(S3Write { surface }));
         }
@@ -953,7 +953,9 @@ impl SurfaceWrite for R2Write {
         js_sys::Reflect::get(&mp, &JsValue::from_str("uploadId"))
             .ok()
             .and_then(|v| v.as_string())
-            .ok_or_else(|| anyhow::anyhow!("R2 createMultipartUpload {key}: result has no uploadId"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("R2 createMultipartUpload {key}: result has no uploadId")
+            })
     }
 
     async fn upload_part(
@@ -1007,8 +1009,12 @@ impl SurfaceWrite for R2Write {
                 &JsValue::from(p.part_number),
             )
             .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
-            js_sys::Reflect::set(&obj, &JsValue::from_str("etag"), &JsValue::from_str(&p.etag))
-                .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
+            js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("etag"),
+                &JsValue::from_str(&p.etag),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
             arr.push(&obj);
         }
         let complete = js_method(&mp, "complete")?;

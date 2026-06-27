@@ -32,9 +32,7 @@ use std::time::Duration;
 
 use crate::db::{Database, DueDelivery};
 
-pub use aos_hub_core::webhook::{
-    backoff_secs, dispatch, sign_body, WebhookEvent, MAX_ATTEMPTS,
-};
+pub use aos_hub_core::webhook::{backoff_secs, dispatch, sign_body, WebhookEvent, MAX_ATTEMPTS};
 
 /// Per-request timeout for a delivery `POST`.
 const DELIVERY_TIMEOUT_SECS: u64 = 15;
