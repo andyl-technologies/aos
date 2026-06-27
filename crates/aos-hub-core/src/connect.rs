@@ -120,7 +120,8 @@ fn text_plain_response(body: String) -> Response {
 
 /// Render an [`RpcError`] as the Connect-JSON error envelope plus HTTP status.
 fn error_response(err: &RpcError) -> Response {
-    let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = Json(serde_json::json!({ "code": err.code(), "message": err.message() }));
     (status, body).into_response()
 }
@@ -296,11 +297,9 @@ fn facade_write_response(outcome: FacadeWrite, path: &str) -> Response {
             Json(serde_json::json!({ "path": path })),
         )
             .into_response(),
-        FacadeWrite::Overwritten | FacadeWrite::Present => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "path": path })),
-        )
-            .into_response(),
+        FacadeWrite::Overwritten | FacadeWrite::Present => {
+            (StatusCode::OK, Json(serde_json::json!({ "path": path }))).into_response()
+        }
         FacadeWrite::NotFound => StatusCode::NOT_FOUND.into_response(),
         FacadeWrite::NotWritable(reason) => {
             (StatusCode::METHOD_NOT_ALLOWED, reason).into_response()
@@ -461,8 +460,7 @@ async fn facade_post(
                 })
                 .collect::<Vec<_>>(),
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, "invalid multipart complete body")
-                    .into_response()
+                return (StatusCode::BAD_REQUEST, "invalid multipart complete body").into_response()
             }
         };
         let outcome = svc
@@ -470,7 +468,11 @@ async fn facade_post(
             .await;
         return facade_write_response(outcome, &path);
     }
-    (StatusCode::BAD_REQUEST, "unsupported POST to a surface path").into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        "unsupported POST to a surface path",
+    )
+        .into_response()
 }
 
 /// Abort (`?uploadId`) of a multipart upload, on the facade `DELETE` to a
@@ -490,7 +492,11 @@ async fn facade_delete(
             .await;
         return facade_write_response(outcome, &path);
     }
-    (StatusCode::BAD_REQUEST, "unsupported DELETE to a surface path").into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        "unsupported DELETE to a surface path",
+    )
+        .into_response()
 }
 
 /// `200` JSON response to a multipart part upload (`PUT ?uploadId&partNumber`).
@@ -554,11 +560,9 @@ fn browse_response(rendered: Rendered) -> Response {
             body,
         )
             .into_response(),
-        Rendered::Json(body) => (
-            [(header::CONTENT_TYPE, "application/json")],
-            body,
-        )
-            .into_response(),
+        Rendered::Json(body) => {
+            ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+        }
         Rendered::Redirect(location) => {
             axum::response::Redirect::permanent(&location).into_response()
         }
@@ -635,8 +639,7 @@ async fn browse_dispatch(
             other => {
                 if let Some(name) = other.strip_prefix("packages/").filter(|n| !n.is_empty()) {
                     browse::package(&svc, &headers, &slug, name).await
-                } else if let Some(name) =
-                    other.strip_prefix("channels/").filter(|n| !n.is_empty())
+                } else if let Some(name) = other.strip_prefix("channels/").filter(|n| !n.is_empty())
                 {
                     browse::channel(&svc, &headers, &slug, name, &q).await
                 } else {
@@ -1231,11 +1234,31 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
 fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
     let mut r = Router::new();
     // RegistryService
-    r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListRegistries", list_registries);
-    r = rpc_route!(r, "/aos.registry.v1.RegistryService/GetRegistry", get_registry);
-    r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListReleases", list_releases);
-    r = rpc_route!(r, "/aos.registry.v1.RegistryService/CreateRegistry", create_registry);
-    r = rpc_route!(r, "/aos.registry.v1.RegistryService/SetCrawlPolicy", set_crawl_policy);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/ListRegistries",
+        list_registries
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/GetRegistry",
+        get_registry
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/ListReleases",
+        list_releases
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/CreateRegistry",
+        create_registry
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.RegistryService/SetCrawlPolicy",
+        set_crawl_policy
+    );
     r = rpc_route!(
         r,
         "/aos.registry.v1.RegistryService/ChangeRegistryStorage",
@@ -1246,16 +1269,40 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.OrgService/GetOrg", get_org);
     r = rpc_route!(r, "/aos.registry.v1.OrgService/ListOrgs", list_orgs);
     // ProjectService
-    r = rpc_route!(r, "/aos.registry.v1.ProjectService/CreateProject", create_project);
-    r = rpc_route!(r, "/aos.registry.v1.ProjectService/ListProjects", list_projects);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ProjectService/CreateProject",
+        create_project
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ProjectService/ListProjects",
+        list_projects
+    );
     // StorageService
-    r = rpc_route!(r, "/aos.registry.v1.StorageService/CreateBinding", create_binding);
-    r = rpc_route!(r, "/aos.registry.v1.StorageService/ListBindings", list_bindings);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.StorageService/CreateBinding",
+        create_binding
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.StorageService/ListBindings",
+        list_bindings
+    );
     // PackageService
-    r = rpc_route!(r, "/aos.registry.v1.PackageService/ListPackages", list_packages);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.PackageService/ListPackages",
+        list_packages
+    );
     r = rpc_route!(r, "/aos.registry.v1.PackageService/GetPackage", get_package);
     // ChannelService
-    r = rpc_route!(r, "/aos.registry.v1.ChannelService/ListChannels", list_channels);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ChannelService/ListChannels",
+        list_channels
+    );
     r = rpc_route!(r, "/aos.registry.v1.ChannelService/GetChannel", get_channel);
     // AuditService
     r = rpc_route!(r, "/aos.registry.v1.AuditService/ListAudit", list_audit);
@@ -1271,19 +1318,51 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         update_instance_settings
     );
     // ConfigService
-    r = rpc_route!(r, "/aos.registry.v1.ConfigService/ListChangesets", list_changesets);
-    r = rpc_route!(r, "/aos.registry.v1.ConfigService/GetChangeset", get_changeset);
-    r = rpc_route!(r, "/aos.registry.v1.ConfigService/RevertChangeset", revert_changeset);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ConfigService/ListChangesets",
+        list_changesets
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ConfigService/GetChangeset",
+        get_changeset
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.ConfigService/RevertChangeset",
+        revert_changeset
+    );
     // WebhookService
-    r = rpc_route!(r, "/aos.registry.v1.WebhookService/CreateWebhook", create_webhook);
-    r = rpc_route!(r, "/aos.registry.v1.WebhookService/ListWebhooks", list_webhooks);
-    r = rpc_route!(r, "/aos.registry.v1.WebhookService/DeleteWebhook", delete_webhook);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.WebhookService/CreateWebhook",
+        create_webhook
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.WebhookService/ListWebhooks",
+        list_webhooks
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.WebhookService/DeleteWebhook",
+        delete_webhook
+    );
     // PublishService
-    r = rpc_route!(r, "/aos.registry.v1.PublishService/MintUploadCredentials", mint_upload_credentials);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.PublishService/MintUploadCredentials",
+        mint_upload_credentials
+    );
     // GitService
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
-    r = rpc_route!(r, "/aos.registry.v1.GitService/ListChangeRequests", list_change_requests);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.GitService/ListChangeRequests",
+        list_change_requests
+    );
     // CacheService (RFC-0004 "11-caches")
     r = rpc_route!(r, "/aos.registry.v1.CacheService/CreateCache", create_cache);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCache", get_cache);
@@ -1292,17 +1371,53 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.CacheService/DeleteCache", delete_cache);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/LinkCache", link_cache);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/UnlinkCache", unlink_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheLinks", list_cache_links);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/SetCacheGcPolicy", set_cache_gc_policy);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCacheGcPolicy", get_cache_gc_policy);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/PinCachePath", pin_cache_path);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/UnpinCachePath", unpin_cache_path);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheRoots", list_cache_roots);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/ListCacheLinks",
+        list_cache_links
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/SetCacheGcPolicy",
+        set_cache_gc_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/GetCacheGcPolicy",
+        get_cache_gc_policy
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/PinCachePath",
+        pin_cache_path
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/UnpinCachePath",
+        unpin_cache_path
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/ListCacheRoots",
+        list_cache_roots
+    );
     r = rpc_route!(r, "/aos.registry.v1.CacheService/SearchCache", search_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCacheObject", get_cache_object);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheGcRuns", list_cache_gc_runs);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/GetCacheObject",
+        get_cache_object
+    );
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/ListCacheGcRuns",
+        list_cache_gc_runs
+    );
     r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/CacheClosure", cache_closure);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/CacheClosure",
+        cache_closure
+    );
     r = rpc_route!(
         r,
         "/aos.registry.v1.CacheService/ChangeCacheStorage",
@@ -1334,7 +1449,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
             .route("/_assets/app.js", get(assets::app_js))
-            .route("/_assets/jetbrains-mono-regular.woff2", get(assets::font_regular))
+            .route(
+                "/_assets/jetbrains-mono-regular.woff2",
+                get(assets::font_regular),
+            )
             .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
@@ -1428,23 +1546,28 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         // slash-terminated root the rich pages link to) and at the marker form
         // `/{slug}/-/`; both dispatch to the registry-home browse read, which
         // content-negotiates HTML vs the machine `index.html` pointer.
-        let registry_home =
-            |State(state): State<SharedState>, headers: HeaderMap, Path(slug): Path<String>, uri: axum::http::Uri| {
-                let svc = from_state(state);
-                send_bridge(browse_dispatch(
-                    svc,
-                    headers,
-                    slug,
-                    String::new(),
-                    uri.query().map(str::to_owned),
-                ))
-            };
+        let registry_home = |State(state): State<SharedState>,
+                             headers: HeaderMap,
+                             Path(slug): Path<String>,
+                             uri: axum::http::Uri| {
+            let svc = from_state(state);
+            send_bridge(browse_dispatch(
+                svc,
+                headers,
+                slug,
+                String::new(),
+                uri.query().map(str::to_owned),
+            ))
+        };
         r = r.route("/{slug}/", get(registry_home));
         r = r.route(&format!("/{{slug}}/{BROWSE_MARKER}/"), get(registry_home));
         r = r.route(
             &format!("/{{slug}}/{BROWSE_MARKER}/{{*rest}}"),
             get(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, rest)): Path<(String, String)>, uri: axum::http::Uri| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((slug, rest)): Path<(String, String)>,
+                 uri: axum::http::Uri| {
                     let svc = from_state(state);
                     send_bridge(browse_dispatch(
                         svc,
@@ -1468,7 +1591,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         r = r.route(
             "/{slug}/{*path}",
             get(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((slug, path)): Path<(String, String)>,
+                 uri: axum::http::Uri| {
                     let svc = from_state(state);
                     let query = uri.query().map(str::to_owned);
                     send_bridge(facade(svc, headers, slug, path, query))
@@ -1482,7 +1608,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             // hub keeps its own richer `/{slug}/{*path}` handler instead (this
             // facade route is omitted for it via `mount_facade = false`).
             .put(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri, body: Bytes| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((slug, path)): Path<(String, String)>,
+                 uri: axum::http::Uri,
+                 body: Bytes| {
                     let svc = from_state(state);
                     let query = uri.query().map(str::to_owned);
                     send_bridge(facade_put(svc, headers, slug, path, query, body))
@@ -1494,14 +1624,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             // part is a small, sub-cap body, so they upload with bounded memory
             // even for NARs far larger than the request-body limit.
             .post(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri, body: Bytes| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((slug, path)): Path<(String, String)>,
+                 uri: axum::http::Uri,
+                 body: Bytes| {
                     let svc = from_state(state);
                     let query = uri.query().map(str::to_owned);
                     send_bridge(facade_post(svc, headers, slug, path, query, body))
                 },
             )
             .delete(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((slug, path)): Path<(String, String)>,
+                 uri: axum::http::Uri| {
                     let svc = from_state(state);
                     let query = uri.query().map(str::to_owned);
                     send_bridge(facade_delete(svc, headers, slug, path, query))

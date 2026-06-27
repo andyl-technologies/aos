@@ -2004,6 +2004,7 @@ async fn render_cache_detail(
     org: &OrgRecord,
     cache: &crate::db::Cache,
     can_admin: bool,
+    active: &str,
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
@@ -2104,6 +2105,7 @@ async fn render_cache_detail(
             &pin_rows,
             can_admin,
             advertise_frontend,
+            active,
             notice,
             started,
         ))
@@ -2134,12 +2136,56 @@ async fn cache_in_org(
     Ok((org, cache))
 }
 
-/// `GET /-/org/{org}/caches/{slug}` — a cache's detail page.
+/// `GET /-/org/{org}/caches/{slug}` — a cache's **General** settings tab.
 pub(crate) async fn cache_detail(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "general").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/links` — the **Linked registries** tab.
+pub(crate) async fn cache_links(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "links").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/pins` — the **GC & pins** tab.
+pub(crate) async fn cache_pins(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "pins").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/danger` — the **Danger** (delete) tab.
+pub(crate) async fn cache_danger(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "danger").await
+}
+
+/// Shared body for the cache settings tabs: require a session + read on the org,
+/// load the `(org, cache)` pair, resolve admin authority, then render the
+/// `active` section within the cache settings chrome.
+async fn cache_tab(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    org_slug: String,
+    cache_slug: String,
+    active: &str,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
@@ -2156,7 +2202,10 @@ pub(crate) async fn cache_detail(
     let can_admin = session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await;
-    render_cache_detail(&deps, &session, &org, &cache, can_admin, None, started).await
+    render_cache_detail(
+        &deps, &session, &org, &cache, can_admin, active, None, started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches` — create a managed binary cache.
@@ -2604,7 +2653,17 @@ pub(crate) async fn cache_gc(
             }
             Err(err) => format!("GC failed: {err:#}"),
         };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// Extract the store-path hash component from operator-entered text.
@@ -2674,19 +2733,36 @@ pub(crate) async fn cache_pin_add(
             Ok(days) if days > 0 => Some(crate::clock::now_unix_secs() + days * 86_400),
             Ok(_) => None,
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, "expires must be a whole number of days")
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "expires must be a whole number of days",
+                )
                     .into_response()
             }
         },
     };
-    let notice = match deps.db.pin_cache_path(cache.id, &store_hash, expires_at).await {
+    let notice = match deps
+        .db
+        .pin_cache_path(cache.id, &store_hash, expires_at)
+        .await
+    {
         Ok(()) => match expires_at {
             Some(_) => format!("Pinned {store_hash} (expires set)."),
             None => format!("Pinned {store_hash} (unlimited)."),
         },
         Err(err) => format!("Pin failed: {err:#}"),
     };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches/{slug}/pin/remove` — remove a manual GC pin.
@@ -2724,7 +2800,17 @@ pub(crate) async fn cache_pin_remove(
         Ok(false) => format!("No manual pin for {store_hash}."),
         Err(err) => format!("Unpin failed: {err:#}"),
     };
-    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+    render_cache_detail(
+        &deps,
+        &session,
+        &org,
+        &cache,
+        true,
+        "pins",
+        Some(&notice),
+        started,
+    )
+    .await
 }
 
 /// `POST /-/org/{org}/caches/{slug}/delete` — soft-delete a cache (typed slug

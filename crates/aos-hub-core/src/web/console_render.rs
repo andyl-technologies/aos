@@ -1839,38 +1839,45 @@ pub fn cache_page(
     // Whether this cache advertises its inherited storage-binding frontend
     // (RFC-0004 §12) — the storage section's opt-out checkbox.
     advertise_storage_frontend: bool,
+    // The active settings section/tab: "general", "links", "pins", or "danger".
+    active: &str,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    let mut body = format!("<h1>Cache · {}</h1>\n", escape(&cache.slug));
+    let mut body = String::new();
+    // The action-result notice shows on whichever tab the action returned to.
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
 
-    // Usage + identity chips.
-    let signed = if cache.hosted_key_id.is_some() {
-        " · <span class=\"chip\">signed</span>"
-    } else {
-        ""
-    };
-    let _ = write!(
-        body,
-        "<p class=\"chips\"><span class=\"chip\">{vis}</span>\
-         <span class=\"chip\">priority {prio}</span>\
-         <span class=\"chip\">{comp}</span>{signed}</p>\n\
-         <p class=\"dim\">{objects} objects · {size} · {links} linked · created {ago}</p>\n",
-        vis = escape(&cache.visibility),
-        prio = cache.priority,
-        comp = escape(&cache.compression),
-        signed = signed,
-        objects = usage.object_count,
-        size = human_size(usage.used_bytes.max(0) as u64),
-        links = links.len(),
-        ago = ago(cache.created_at),
-    );
+    // -- General tab: identity + usage chips --------------------------------
+    if active == "general" {
+        let _ = write!(body, "<h1>Cache · {}</h1>\n", escape(&cache.slug));
+        // Usage + identity chips.
+        let signed = if cache.hosted_key_id.is_some() {
+            " · <span class=\"chip\">signed</span>"
+        } else {
+            ""
+        };
+        let _ = write!(
+            body,
+            "<p class=\"chips\"><span class=\"chip\">{vis}</span>\
+             <span class=\"chip\">priority {prio}</span>\
+             <span class=\"chip\">{comp}</span>{signed}</p>\n\
+             <p class=\"dim\">{objects} objects · {size} · {links} linked · created {ago}</p>\n",
+            vis = escape(&cache.visibility),
+            prio = cache.priority,
+            comp = escape(&cache.compression),
+            signed = signed,
+            objects = usage.object_count,
+            size = human_size(usage.used_bytes.max(0) as u64),
+            links = links.len(),
+            ago = ago(cache.created_at),
+        );
+    }
 
     // Surface location (admin-only detail — never the credential).
-    if can_admin {
+    if active == "general" && can_admin {
         let _ = write!(
             body,
             "<p class=\"dim\">binding <code>{binding}</code>{prefix}</p>\n",
@@ -1931,7 +1938,7 @@ pub fn cache_page(
         );
     }
 
-    if can_admin {
+    if active == "general" && can_admin {
         // -- Settings --------------------------------------------------------
         body.push_str("<h2>Settings</h2>\n");
         let opt = |value: &str, current: &str, label: &str| {
@@ -1968,12 +1975,13 @@ pub fn cache_page(
         );
     }
 
-    // -- Linked registries ---------------------------------------------------
-    body.push_str("<h2>Linked registries</h2>\n");
-    if links.is_empty() {
-        body.push_str("<p class=\"dim\">No linked registries.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = links
+    // -- Linked registries (Links tab) --------------------------------------
+    if active == "links" {
+        body.push_str("<h2>Linked registries</h2>\n");
+        if links.is_empty() {
+            body.push_str("<p class=\"dim\">No linked registries.</p>\n");
+        } else {
+            let rows: Vec<Vec<String>> = links
             .iter()
             .map(|l| {
                 let mut flags: Vec<String> = Vec::new();
@@ -2009,25 +2017,25 @@ pub fn cache_page(
                 vec![escape(&l.registry_slug), flags_cell, action]
             })
             .collect();
-        body.push_str(&table(&["registry", "", ""], &rows));
-    }
-    if can_admin && !linkable.is_empty() {
-        // Each registry option carries its visibility, and the form this cache's,
-        // so the JS greys out advertise when the chosen registry is more visible
-        // than the cache (its consumers couldn't read the cache) — the same rule
-        // the server enforces.
-        let mut reg_options = String::new();
-        for (slug, vis) in linkable {
-            let _ = write!(
-                reg_options,
-                "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
-                s = escape(slug),
-                v = escape(vis),
-            );
+            body.push_str(&table(&["registry", "", ""], &rows));
         }
-        let _ = write!(
-            body,
-            "<h3>Link a registry</h3>\n\
+        if can_admin && !linkable.is_empty() {
+            // Each registry option carries its visibility, and the form this cache's,
+            // so the JS greys out advertise when the chosen registry is more visible
+            // than the cache (its consumers couldn't read the cache) — the same rule
+            // the server enforces.
+            let mut reg_options = String::new();
+            for (slug, vis) in linkable {
+                let _ = write!(
+                    reg_options,
+                    "<option value=\"{s}\" data-visibility=\"{v}\">{s} · {v}</option>",
+                    s = escape(slug),
+                    v = escape(vis),
+                );
+            }
+            let _ = write!(
+                body,
+                "<h3>Link a registry</h3>\n\
              <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\" \
              data-cache-link data-cache-visibility=\"{cachevis}\">{csrf}\
              <label>registry <select name=\"registry\">{regs}</select></label>\n\
@@ -2036,53 +2044,67 @@ pub fn cache_page(
              <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
              <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
              <button>link</button>\n</form>\n",
-            org = escape(org_slug),
-            slug = escape(&cache.slug),
-            cachevis = escape(&cache.visibility),
-            csrf = csrf_field(csrf),
-            regs = reg_options,
-            adv_help = help::marker("link.advertised"),
-            roots_help = help::marker("link.roots_packages"),
-        );
+                org = escape(org_slug),
+                slug = escape(&cache.slug),
+                cachevis = escape(&cache.visibility),
+                csrf = csrf_field(csrf),
+                regs = reg_options,
+                adv_help = help::marker("link.advertised"),
+                roots_help = help::marker("link.roots_packages"),
+            );
+        }
+    } // end Links tab
+
+    // -- Garbage collection + manual pins (Pins tab) ------------------------
+    if active == "pins" {
+        if can_admin {
+            body.push_str("<h2>Garbage collection</h2>\n");
+            let _ = write!(
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
+                 style=\"display:inline\">{csrf}\
+                 <input type=\"hidden\" name=\"dry_run\" value=\"1\"><button>preview (dry run)</button></form>\n\
+                 <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
+                 style=\"display:inline\">{csrf}<button class=\"danger\">collect now</button></form>\n",
+                org = escape(org_slug),
+                slug = escape(&cache.slug),
+                csrf = csrf_field(csrf),
+            );
+            body.push_str(&cache_pins_section(org_slug, csrf, cache, pins));
+        } else {
+            body.push_str(
+                "<p class=\"dim\">Garbage collection and pins are available to cache admins.</p>\n",
+            );
+        }
     }
 
-    if can_admin {
-        // -- Garbage collection ---------------------------------------------
-        body.push_str("<h2>Garbage collection</h2>\n");
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
-             style=\"display:inline\">{csrf}\
-             <input type=\"hidden\" name=\"dry_run\" value=\"1\"><button>preview (dry run)</button></form>\n\
-             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
-             style=\"display:inline\">{csrf}<button class=\"danger\">collect now</button></form>\n",
-            org = escape(org_slug),
-            slug = escape(&cache.slug),
-            csrf = csrf_field(csrf),
-        );
-
-        // -- Pins (manual GC roots) -----------------------------------------
-        body.push_str(&cache_pins_section(org_slug, csrf, cache, pins));
-
-        // -- Delete ----------------------------------------------------------
-        body.push_str("<h2 class=\"danger\">Delete cache</h2>\n");
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/delete\">{csrf}\
-             <label>type <code>{slug}</code> to confirm \
-             <input type=\"text\" name=\"confirm\" autocomplete=\"off\"></label>\n\
-             <button class=\"danger\">delete cache</button>\n</form>\n",
-            org = escape(org_slug),
-            slug = escape(&cache.slug),
-            csrf = csrf_field(csrf),
-        );
+    // -- Delete the cache (Danger tab) --------------------------------------
+    // Mirrors the registry/org "Remove" pages: a danger heading, an explicit
+    // warning, then a name-confirmation form gating the destructive button.
+    if active == "danger" {
+        if can_admin {
+            body.push_str("<h2 class=\"danger\">Delete cache</h2>\n");
+            let _ = write!(
+                body,
+                "<p class=\"warn\">Permanently deletes this cache and its index. Stored objects are \
+                 not removed from the bucket. This cannot be undone — type the cache name \
+                 <code>{slug}</code> to confirm.</p>\n\
+                 <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/delete\">{csrf}\
+                 <label>confirm name <input type=\"text\" name=\"confirm\" required \
+                 autocomplete=\"off\" spellcheck=\"false\"></label>\n\
+                 <button class=\"danger\">delete cache</button>\n</form>\n",
+                org = escape(org_slug),
+                slug = escape(&cache.slug),
+                csrf = csrf_field(csrf),
+            );
+        } else {
+            body.push_str("<p class=\"dim\">Deleting a cache is available to cache admins.</p>\n");
+        }
     }
 
-    // Render inside the org settings chrome (left-tabs sidebar) so a cache's
-    // detail page shares the information architecture of every other org/registry
-    // settings page, with "Binary caches" highlighted — rather than a standalone
-    // full-width page.
-    org_settings_chrome(email, org_slug, "caches", &body, started)
+    // Render inside the cache settings chrome (its own left-tabs sidebar) with
+    // the active section highlighted and a `caches / {slug}` breadcrumb.
+    cache_settings_chrome(email, org_slug, cache, active, &body, started)
 }
 
 /// Render the "Pins (manual GC roots)" section of a cache's detail page.
@@ -2107,14 +2129,13 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
     if pins.is_empty() {
         body.push_str("<p class=\"dim\">No manual pins. Add one below to root a store path.</p>\n");
     } else {
-        // A plain `<table>` (the 6-column grid here must NOT use `.linktable`,
-        // which is a 4-column `display:grid` meant for the div-based links list —
-        // applying it to a real table mangles the columns into unreadable slivers).
-        body.push_str("<div class=\"table-scroll\">\n");
+        // Four columns, not six: the package name and the store hash are the
+        // same store path, so they share one cell (name on the primary line, the
+        // hash on a dim sub-line); the pin's age and expiry likewise stack in one
+        // cell. This keeps every column wide enough to read without squishing.
         body.push_str(
-            "<table><tr>\
-             <th>package</th><th>store hash</th><th>closure</th>\
-             <th>expires</th><th>created</th><th></th></tr>\n",
+            "<table class=\"pins\">\n<thead><tr>\
+             <th>package</th><th>closure</th><th>pinned</th><th></th></tr></thead>\n<tbody>\n",
         );
         for pin in pins {
             // A short, scannable prefix of the 32-char hash; the title carries
@@ -2140,14 +2161,16 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
                 "<span class=\"dim\">unknown</span>".to_string()
             };
             let expires = match pin.expires_at {
-                Some(at) => format!("<span title=\"{}\">{}</span>", at, ago(at)),
-                None => "<span class=\"chip\">unlimited</span>".to_string(),
+                Some(at) => format!("expires <span title=\"{}\">{}</span>", at, ago(at)),
+                None => "<span class=\"chip\">no expiry</span>".to_string(),
             };
             let _ = write!(
                 body,
-                "<tr><td>{name}</td>\
-                 <td><code title=\"{full}\">{short}\u{2026}</code></td>\
-                 <td>{closure}</td><td>{expires}</td><td>{created}</td>\
+                "<tr>\
+                 <td><div>{name}</div>\
+                   <div class=\"subline\"><code title=\"{full}\">{short}\u{2026}</code></div></td>\
+                 <td>{closure}</td>\
+                 <td><div>pinned {created}</div><div class=\"subline\">{expires}</div></td>\
                  <td><form class=\"console\" method=\"post\" \
                  action=\"/-/org/{org}/caches/{slug}/pin/remove\" style=\"display:inline\">{csrf}\
                  <input type=\"hidden\" name=\"store_hash\" value=\"{full}\">\
@@ -2156,14 +2179,14 @@ fn cache_pins_section(org_slug: &str, csrf: &str, cache: &Cache, pins: &[CachePi
                 full = escape(&pin.store_hash),
                 short = escape(&short_hash),
                 closure = closure,
-                expires = expires,
                 created = ago(pin.created_at),
+                expires = expires,
                 org = org,
                 slug = slug,
                 csrf = csrf_field(csrf),
             );
         }
-        body.push_str("</table>\n</div>\n");
+        body.push_str("</tbody>\n</table>\n");
     }
 
     // -- Add / renew pin -----------------------------------------------------
@@ -2560,6 +2583,52 @@ fn org_settings_chrome(
         &[
             ("/-/orgs".into(), "organizations".into()),
             (format!("/-/org/{org_slug}"), org_slug.to_string()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// The cache-scope settings sidebar (one of a cache's sections active).
+///
+/// `active` is the current section key: `general` (identity, storage, settings),
+/// `links` (linked registries), `pins` (garbage collection + manual pins), or
+/// `danger` (delete). An unknown key highlights none.
+fn cache_settings_tabs(org_slug: &str, cache_slug: &str, active: &str) -> Vec<SettingsTab> {
+    let base = format!("/-/org/{org_slug}/caches/{cache_slug}");
+    vec![
+        SettingsTab::new("general", "General", base.clone(), active),
+        SettingsTab::new(
+            "links",
+            "Linked registries",
+            format!("{base}/links"),
+            active,
+        ),
+        SettingsTab::new("pins", "GC & pins", format!("{base}/pins"), active),
+        SettingsTab::new("danger", "Danger", format!("{base}/danger"), active),
+    ]
+}
+
+/// Renders a cache management page: the cache-scope sidebar (with `active`
+/// highlighted) beside `content`, under a `caches / {slug}` breadcrumb, in the
+/// standard session chrome. Mirrors [`registry_settings_chrome`] so a cache's
+/// settings share the left-tabs IA of registries and orgs. The breadcrumb leads
+/// with `caches` (not the org), since a cache is addressed by its own slug.
+fn cache_settings_chrome(
+    email: &str,
+    org_slug: &str,
+    cache: &Cache,
+    active: &str,
+    content: &str,
+    started: Instant,
+) -> String {
+    let body = settings_layout(&cache_settings_tabs(org_slug, &cache.slug, active), content);
+    page_with_session(
+        &format!("cache {}", cache.slug),
+        &[
+            (format!("/-/org/{org_slug}/caches"), "caches".to_string()),
+            (String::new(), cache.slug.clone()),
         ],
         &body,
         &StateLine::timed(started),
@@ -5218,81 +5287,105 @@ mod cache_render_tests {
             expires_at: None,
             created_at: 1_700_000_000,
         }];
-        let html = cache_page(
-            "a@b.com",
-            "acme",
-            "csrf-tok",
-            &cache(),
-            "primary",
-            &["cold".to_string()],
-            &usage(),
-            &[],
-            &[("cdn".to_string(), "public".to_string())],
-            &pins,
-            true,
-            true,
-            None,
-            Instant::now(),
-        );
-        // Identity + usage are shown.
-        assert!(html.contains("Cache · build"));
-        assert!(html.contains("2.0 MiB"));
-        assert!(html.contains("<span class=\"chip\">signed</span>"));
-        // Every admin control is present.
-        assert!(html.contains("/-/org/acme/caches/build/link"));
-        assert!(html.contains("/-/org/acme/caches/build/gc"));
-        assert!(html.contains("/-/org/acme/caches/build/delete"));
-        assert!(html.contains("save"));
-        // The pins editor renders the pin with its closure summary + controls.
-        assert!(html.contains("Pins (manual GC roots)"));
-        assert!(html.contains("/-/org/acme/caches/build/pin/add"));
-        assert!(html.contains("/-/org/acme/caches/build/pin/remove"));
-        assert!(html.contains("hello-2.12"));
-        assert!(html.contains("3.0 MiB · 4 objects"));
-        assert!(html.contains("unlimited"));
-        // The cache detail page renders inside the org settings left-tabs chrome
-        // (the same IA as the other org/registry settings pages), with "Binary
-        // caches" as a sidebar tab — not a standalone full-width page.
-        assert!(html.contains("class=\"settings-nav\""));
-        assert!(html.contains("Binary caches"));
-        // The Pins table is a plain, horizontally-scrollable <table> — it must
-        // NOT carry the 4-column `.linktable` grid class (that mangled the
-        // 6-column table into unreadable slivers).
-        assert!(html.contains("<div class=\"table-scroll\">"));
-        assert!(!html.contains("<table class=\"linktable\">"));
-        // The CSRF token is wired into the forms.
-        assert!(html.contains("csrf-tok"));
+        let render = |active: &str| {
+            cache_page(
+                "a@b.com",
+                "acme",
+                "csrf-tok",
+                &cache(),
+                "primary",
+                &["cold".to_string()],
+                &usage(),
+                &[],
+                &[("cdn".to_string(), "public".to_string())],
+                &pins,
+                true,
+                true,
+                active,
+                None,
+                Instant::now(),
+            )
+        };
+
+        // Every tab renders inside the cache settings chrome — its own left-tabs
+        // sidebar (General / Linked registries / GC & pins / Danger) and a
+        // `caches / build` breadcrumb — not the org tabs.
+        let general = render("general");
+        assert!(general.contains("class=\"settings-nav\""));
+        assert!(general.contains("Linked registries"));
+        assert!(general.contains("Danger"));
+        assert!(general.contains("caches"));
+        // General: identity, usage, and the settings form.
+        assert!(general.contains("Cache · build"));
+        assert!(general.contains("2.0 MiB"));
+        assert!(general.contains("<span class=\"chip\">signed</span>"));
+        assert!(general.contains("save"));
+        assert!(general.contains("csrf-tok"));
+
+        // Links tab: the link form (the `\"` guards against matching the
+        // sidebar's `/links` tab href).
+        let links = render("links");
+        assert!(links.contains("action=\"/-/org/acme/caches/build/link\""));
+
+        // GC & pins tab: the GC controls + the redesigned 4-column pins table
+        // (a plain `<table class="pins">` with the hash on a sub-line — never the
+        // 4-column `.linktable` grid that crushed the columns).
+        let pins_tab = render("pins");
+        assert!(pins_tab.contains("/-/org/acme/caches/build/gc"));
+        assert!(pins_tab.contains("Pins (manual GC roots)"));
+        assert!(pins_tab.contains("/-/org/acme/caches/build/pin/add"));
+        assert!(pins_tab.contains("/-/org/acme/caches/build/pin/remove"));
+        assert!(pins_tab.contains("hello-2.12"));
+        assert!(pins_tab.contains("3.0 MiB · 4 objects"));
+        assert!(pins_tab.contains("no expiry"));
+        assert!(pins_tab.contains("<table class=\"pins\">"));
+        assert!(pins_tab.contains("class=\"subline\""));
+        assert!(!pins_tab.contains("class=\"linktable\""));
+
+        // Danger tab: the delete form, styled like the registry/org remove pages.
+        let danger = render("danger");
+        assert!(danger.contains("<h2 class=\"danger\">Delete cache</h2>"));
+        assert!(danger.contains("/-/org/acme/caches/build/delete"));
+        assert!(danger.contains("class=\"warn\""));
     }
 
     #[test]
     fn member_sees_no_mutating_forms() {
-        let html = cache_page(
-            "a@b.com",
-            "acme",
-            "csrf-tok",
-            &cache(),
-            "primary",
-            &["cold".to_string()],
-            &usage(),
-            &[],
-            &[("cdn".to_string(), "public".to_string())],
-            &[],
-            false,
-            true,
-            None,
-            Instant::now(),
-        );
-        assert!(html.contains("Cache · build"));
-        // No admin forms for a plain member.
-        assert!(!html.contains("/caches/build/delete"));
-        assert!(!html.contains("/caches/build/gc"));
-        assert!(!html.contains("/caches/build/link"));
-        assert!(!html.contains("/caches/build/pin/"));
-        assert!(!html.contains("Pins (manual GC roots)"));
+        let render = |active: &str| {
+            cache_page(
+                "a@b.com",
+                "acme",
+                "csrf-tok",
+                &cache(),
+                "primary",
+                &["cold".to_string()],
+                &usage(),
+                &[],
+                &[("cdn".to_string(), "public".to_string())],
+                &[],
+                false,
+                true,
+                active,
+                None,
+                Instant::now(),
+            )
+        };
+        // The General tab shows identity but no settings form for a plain member.
+        let general = render("general");
+        assert!(general.contains("Cache · build"));
+        assert!(!general.contains("<h2>Settings</h2>"));
+        // The privileged tabs show an admins-only notice, not the controls.
+        let pins = render("pins");
+        assert!(!pins.contains("/caches/build/pin/"));
+        assert!(!pins.contains("Pins (manual GC roots)"));
+        assert!(pins.contains("available to cache admins"));
+        assert!(!render("danger").contains("/caches/build/delete"));
+        assert!(!render("links").contains("action=\"/-/org/acme/caches/build/link\""));
     }
 
     #[test]
     fn gc_notice_is_surfaced() {
+        // A GC run returns to the Pins tab with its notice.
         let html = cache_page(
             "a@b.com",
             "acme",
@@ -5306,6 +5399,7 @@ mod cache_render_tests {
             &[],
             true,
             true,
+            "pins",
             Some("Collected 5 objects, reclaimed 1.0 MiB (3 retained)."),
             Instant::now(),
         );

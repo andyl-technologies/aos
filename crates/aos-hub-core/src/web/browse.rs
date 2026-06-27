@@ -234,7 +234,11 @@ fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> b
 /// visible to a session member of the owning org; `private` (and any unknown
 /// visibility, fail-closed) is visible only when a session or bearer token
 /// grants `Read` at the registry scope.
-async fn can_read_registry(svc: &RpcService, registry: &RegistryRecord, headers: &HeaderMap) -> bool {
+async fn can_read_registry(
+    svc: &RpcService,
+    registry: &RegistryRecord,
+    headers: &HeaderMap,
+) -> bool {
     if let Some(org_id) = registry.org_id {
         if !matches!(svc.db.org_is_active(org_id).await, Ok(true)) {
             return false;
@@ -401,8 +405,10 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     if session.email.is_none() {
         if let Some(kv) = &svc.kv {
             if let Ok(Some(entries)) = crate::directory::read(kv.as_ref()).await {
-                let rows: Vec<(RegistryRecord, Option<IndexStatus>)> =
-                    entries.iter().map(crate::directory::DirectoryEntry::to_row).collect();
+                let rows: Vec<(RegistryRecord, Option<IndexStatus>)> = entries
+                    .iter()
+                    .map(crate::directory::DirectoryEntry::to_row)
+                    .collect();
                 return Rendered::Html(pages::instance_home(
                     &rows,
                     query.query(),
@@ -477,24 +483,22 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     // poll and resolves alongside the others, collapsing seven sequential
     // round-trips into one (the dominant cost of this page); on the native
     // sqlx pool they run across pooled connections.
-    let (
-        (channels, packages, caches, roster, validations),
-        (session, can_manage),
-    ) = futures_util::future::join(
-        futures_util::future::join5(
-            svc.db.list_channels(registry.id),
-            svc.db.list_packages(registry.id),
-            svc.db.list_advertised_caches(registry.id),
-            // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
-            svc.list_roster_cached(registry.id),
-            svc.db.latest_validation_runs(registry.id),
-        ),
+    let ((channels, packages, caches, roster, validations), (session, can_manage)) =
         futures_util::future::join(
-            session_indicator(svc, headers),
-            manage_link(svc, &registry, headers),
-        ),
-    )
-    .await;
+            futures_util::future::join5(
+                svc.db.list_channels(registry.id),
+                svc.db.list_packages(registry.id),
+                svc.db.list_advertised_caches(registry.id),
+                // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
+                svc.list_roster_cached(registry.id),
+                svc.db.latest_validation_runs(registry.id),
+            ),
+            futures_util::future::join(
+                session_indicator(svc, headers),
+                manage_link(svc, &registry, headers),
+            ),
+        )
+        .await;
     let channels = channels.unwrap_or_default();
     let packages = packages.unwrap_or_default();
     let caches = caches.unwrap_or_default();
@@ -541,7 +545,9 @@ pub async fn packages(
         return Rendered::NotFound;
     };
     let session = session_indicator(svc, headers).await;
-    Rendered::Html(package_index_html(svc, &registry, status.as_ref(), query, started, &session).await)
+    Rendered::Html(
+        package_index_html(svc, &registry, status.as_ref(), query, started, &session).await,
+    )
 }
 
 /// Render the package index for one registry from the parsed query.
@@ -644,7 +650,13 @@ pub async fn package(svc: &RpcService, headers: &HeaderMap, slug: &str, name: &s
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some(detail) = svc.db.package_detail(registry.id, name).await.ok().flatten() else {
+    let Some(detail) = svc
+        .db
+        .package_detail(registry.id, name)
+        .await
+        .ok()
+        .flatten()
+    else {
         return Rendered::NotFound;
     };
     let closure = resolve_package_closure(svc, registry.id, name, &detail).await;
@@ -796,8 +808,17 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
             runs.push((run, missing, corrupt));
         }
     }
-    let stack = svc.db.registry_cache_stack(registry.id).await.ok().flatten();
-    let probes = svc.db.list_cache_probes(registry.id).await.unwrap_or_default();
+    let stack = svc
+        .db
+        .registry_cache_stack(registry.id)
+        .await
+        .ok()
+        .flatten();
+    let probes = svc
+        .db
+        .list_cache_probes(registry.id)
+        .await
+        .unwrap_or_default();
     let repair_jobs = svc
         .db
         .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
@@ -881,7 +902,10 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
             return Rendered::NotFound;
         }
         let auth = auth_header(headers);
-        return match svc.facade_fetch(auth.as_deref(), slug, "nix-cache-info").await {
+        return match svc
+            .facade_fetch(auth.as_deref(), slug, "nix-cache-info")
+            .await
+        {
             Ok(Some(o)) => Rendered::Json(String::from_utf8_lossy(&o.bytes).into_owned()),
             _ => Rendered::NotAcceptable,
         };

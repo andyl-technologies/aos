@@ -453,11 +453,7 @@ pub fn package_index(
 
 /// One package's detail page: versions × platforms with sizes and store paths.
 #[must_use]
-pub fn package_page(
-    chrome: &PageChrome,
-    registry: &pb::Registry,
-    package: &pb::Package,
-) -> String {
+pub fn package_page(chrome: &PageChrome, registry: &pb::Registry, package: &pb::Package) -> String {
     let slug = &registry.slug;
     let index = IndexInfo::from_registry(registry);
     let mut body = format!(
@@ -476,10 +472,7 @@ pub fn package_page(
         // data:, …) renders as escaped text. The homepage is stored content
         // that cannot be trusted to be a safe scheme.
         let cell = if is_safe_href(&package.homepage) {
-            format!(
-                "<a href=\"{h}\">{h}</a>",
-                h = escape(&package.homepage)
-            )
+            format!("<a href=\"{h}\">{h}</a>", h = escape(&package.homepage))
         } else {
             escape(&package.homepage)
         };
@@ -536,11 +529,7 @@ fn dense_partitions(channel: &pb::Channel) -> Vec<Option<&str>> {
 
 /// One channel's 256-partition grid page.
 #[must_use]
-pub fn channel_page(
-    chrome: &PageChrome,
-    registry: &pb::Registry,
-    channel: &pb::Channel,
-) -> String {
+pub fn channel_page(chrome: &PageChrome, registry: &pb::Registry, channel: &pb::Channel) -> String {
     let slug = &registry.slug;
     let index = IndexInfo::from_registry(registry);
     let mut body = format!(
@@ -634,7 +623,11 @@ pub fn releases_page(
                 vec![
                     escape(&r.semver),
                     escape(&truncate_chars(&r.commit_oid, 12)),
-                    escape(if r.signer.is_empty() { "—" } else { &r.signer }),
+                    escape(if r.signer.is_empty() {
+                        "—"
+                    } else {
+                        &r.signer
+                    }),
                 ]
             })
             .collect();
@@ -707,10 +700,7 @@ mod tests {
         // Anonymous, no brand: neutral title, no brand element, log-in link.
         let anon = PageChrome::anonymous();
         assert_eq!(anon.brand_span(), "");
-        assert_eq!(
-            anon.page_title("log in"),
-            "log in — AOS Registry Hub"
-        );
+        assert_eq!(anon.page_title("log in"), "log in — AOS Registry Hub");
         assert!(anon.session_span().contains("log in"));
         // Branded + signed in: home-linked brand, branded title, email + logout.
         let signed = PageChrome {

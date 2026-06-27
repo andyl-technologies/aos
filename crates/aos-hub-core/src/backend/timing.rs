@@ -112,7 +112,10 @@ impl QueryTimings {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.spans.try_borrow().map(|v| v.clone()).unwrap_or_default()
+            self.spans
+                .try_borrow()
+                .map(|v| v.clone())
+                .unwrap_or_default()
         }
     }
 
@@ -132,8 +135,10 @@ impl QueryTimings {
             return None;
         }
         let total: u64 = spans.iter().map(|s| s.millis).sum();
-        let mut parts =
-            vec![format!("db_total;dur={total};desc=\"{} stmts\"", spans.len())];
+        let mut parts = vec![format!(
+            "db_total;dur={total};desc=\"{} stmts\"",
+            spans.len()
+        )];
         for (i, span) in spans.iter().enumerate() {
             let desc = sanitize_desc(&format!("{} {}", span.op, span.sql));
             parts.push(format!("db{i};dur={};desc=\"{desc}\"", span.millis));
@@ -269,7 +274,10 @@ mod tests {
     #[tokio::test]
     async fn server_timing_header_is_none_when_empty_and_well_formed_when_not() {
         let (db, timings) = fixture().await;
-        assert!(timings.server_timing_header().is_none(), "no statements yet");
+        assert!(
+            timings.server_timing_header().is_none(),
+            "no statements yet"
+        );
         db.query("SELECT id FROM t WHERE v = ?1", &[]).await.ok();
         let header = timings.server_timing_header().expect("a header");
         assert!(header.starts_with("db_total;dur="));
@@ -283,7 +291,10 @@ mod tests {
     fn snippet_collapses_whitespace_and_caps_length() {
         let long = format!("SELECT {}", "x, ".repeat(60));
         let s = super::snippet(&long);
-        assert!(s.chars().count() <= super::SNIPPET_LEN + 1, "capped with ellipsis");
+        assert!(
+            s.chars().count() <= super::SNIPPET_LEN + 1,
+            "capped with ellipsis"
+        );
         assert!(!s.contains('\n'));
         assert_eq!(super::snippet("SELECT\n  a,\n  b"), "SELECT a, b");
     }

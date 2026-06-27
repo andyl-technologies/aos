@@ -506,6 +506,32 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                 },
             ),
         )
+        // Cache settings tabs (each renders the cache chrome with its section
+        // active): Linked registries, GC & pins, and Danger.
+        .route(
+            "/-/org/{org}/caches/{slug}/links",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_links(from_state(s), h, r, p))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/pins",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_pins(from_state(s), h, r, p))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/danger",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_danger(from_state(s), h, r, p))
+                },
+            ),
+        )
         .route(
             "/-/org/{org}/caches/{slug}/link",
             post(

@@ -220,7 +220,11 @@ pub struct RootRegistryView {
 /// this function.
 #[must_use]
 pub fn render_registry_llms(view: &RegistryView) -> String {
-    let title = view.name.as_deref().filter(|s| !s.is_empty()).unwrap_or(&view.slug);
+    let title = view
+        .name
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&view.slug);
     let summary = view
         .description
         .as_deref()
@@ -245,7 +249,11 @@ pub fn render_registry_llms(view: &RegistryView) -> String {
             if pkg.description.is_empty() {
                 let _ = writeln!(out, "- [{}]({})", pkg.name, pkg.browse_url);
             } else {
-                let _ = writeln!(out, "- [{}]({}): {}", pkg.name, pkg.browse_url, pkg.description);
+                let _ = writeln!(
+                    out,
+                    "- [{}]({}): {}",
+                    pkg.name, pkg.browse_url, pkg.description
+                );
             }
         }
     }
@@ -377,7 +385,9 @@ mod tests {
         assert!(out.starts_with("# Acme CDN\n"));
         assert!(out.contains("> The Acme CDN registry.\n"));
         assert!(out.contains("Browse: https://hub.example.com/acme/cdn/\n"));
-        assert!(out.contains("- [hello](https://hub.example.com/acme/cdn/-/p/hello): a friendly greeter\n"));
+        assert!(out.contains(
+            "- [hello](https://hub.example.com/acme/cdn/-/p/hello): a friendly greeter\n"
+        ));
         // Empty description omits the trailing colon.
         assert!(out.contains("- [bare](https://hub.example.com/acme/cdn/-/p/bare)\n"));
         assert!(out.contains("- stable: 1.2.0\n"));
