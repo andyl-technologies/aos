@@ -12,4 +12,5 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod blob_pack;
 pub mod store;

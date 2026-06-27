@@ -1176,8 +1176,18 @@ alone (`M-1`/`Q-A`).
       immutability contract, and `// SAFETY:` comments for every unsafe block.
       `ratchet-oracle` remains `#![forbid(unsafe_code)]` and does not call this
       primitive yet. This is the unsafe fence and raw mapping substrate only;
-      packfile payload windows, safe cache-root lease protocol, LMDB/redb
-      metadata, mmap-backed indexed hits, out-of-core value rematerialization,
+      safe cache-root lease protocol, LMDB/redb metadata, mmap-backed indexed
+      hits, out-of-core value rematerialization, cross-process writer
+      coordination, and harness proof remain open (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` mmap blob-pack payload reader:
+      `blob_pack::MappedBlobPack` validates the current pack header and record
+      format from a `ReadOnlyMmap`, checks lookup hash/length and payload
+      bounds, rehashes mapped payload bytes with BLAKE3, and returns
+      `MappedBlobPayload<'_>` as a borrowed zero-copy slice. This covers the
+      current `AOS-NIX-BLOBPACK` compatibility format inside the unsafe engine
+      crate only; construction remains `unsafe`, and safe cache-root leases,
+      `ratchet-oracle` integration, append writing, LMDB/redb offset indexes,
+      automatic mmap-backed indexed hits, out-of-core rematerialization,
       cross-process writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current hash-to-offset index value codec substrate: `PersistBlobKey`

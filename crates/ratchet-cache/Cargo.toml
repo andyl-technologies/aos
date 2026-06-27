@@ -7,5 +7,6 @@ edition = "2024"
 default = []
 
 [dependencies]
+blake3 = { workspace = true }
 libc = { workspace = true }
 thiserror = { workspace = true }
