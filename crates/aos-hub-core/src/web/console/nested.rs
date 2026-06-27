@@ -86,6 +86,8 @@ fn is_console_path(right: &str, is_post: bool) -> bool {
         "settings" | "settings/caches" | "settings/danger" => !is_post,
         // Storage is GET (view) + POST (change storage).
         "settings/storage" => true,
+        // The bucket-direct frontend advertise toggle is POST-only.
+        "settings/advertise-frontend" => is_post,
         "settings/visibility" | "settings/crawl" | "settings/delete" => is_post,
         "settings/cache-link" | "settings/cache-unlink" => is_post,
         // The serving & mirror page is GET (view) + POST (mutate).
@@ -264,6 +266,20 @@ pub async fn dispatch_nested(
             };
             handlers::registry_change_storage(deps, headers, started, uri, Path(slug), Form(form))
                 .await
+        }
+        ("settings/advertise-frontend", true) => {
+            let Ok(form) = serde_urlencoded::from_bytes(&body) else {
+                return Some(bad_request());
+            };
+            handlers::registry_set_advertise_frontend(
+                deps,
+                headers,
+                started,
+                uri,
+                Path(slug),
+                Form(form),
+            )
+            .await
         }
         // -- serving & mirror ------------------------------------------------
         ("settings/serving", false) => {
@@ -450,6 +466,18 @@ mod tests {
             assert!(is_console_path(tail, true), "{tail} POST");
             assert!(!is_console_path(tail, false), "{tail} GET");
         }
+    }
+
+    #[test]
+    fn classifies_storage_and_advertise_frontend() {
+        // Storage is GET (view) + POST (change storage).
+        assert!(is_console_path("settings/storage", false));
+        assert!(is_console_path("settings/storage", true));
+        // The bucket-direct frontend advertise toggle is POST-only — a nested
+        // (org/name) registry must reach it here, else its save falls through to
+        // the surface catch-all ("unsupported POST to a surface path").
+        assert!(is_console_path("settings/advertise-frontend", true));
+        assert!(!is_console_path("settings/advertise-frontend", false));
     }
 
     #[test]
