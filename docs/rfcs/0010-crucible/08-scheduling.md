@@ -1357,10 +1357,22 @@ application of explorer-supplied preemption decisions
   nodes use fixed ascending rotation by vCPU index at deterministic RR
   boundaries, and the single-vCPU case consumes the whole RUN budget in one
   slice without publishing any extra ceilings.
-- [ ] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
+- [x] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
   within the bounded `[deadline, horizon]` window, recorded in total order, never
   moving a point past the node's authorized ceiling (Contract B / conservative
   PDES). — satisfies [SCHED-46]; spec §8.16.
+  Completed by `checks.crucible.phase3.schedulerPreemptionResolve`.
+  `SchedulerLivenessScenario::with_preemption_request` carries explorer-supplied
+  `PreemptionDecision`s in scenario identity, and `SchedulerPreemptionApplication`
+  records each completed RESOLVE application against the single RUN ceiling. The
+  scheduler validates each command against the authorized `[deadline, ceiling]` window,
+  records valid choices as `Decision::Preemption`, assigns the event-log entry
+  at the preemption's commanded virtual time, and rejects out-of-window commands
+  loudly. Each RUN admits at most one explorer preemption command so concurrent
+  completions can be serialized by commanded time without inventing an
+  interleaving the plugin cannot execute. It never clamps or defers a preemption
+  past the node ceiling; pending preemptions remain scheduler-owned quiescence
+  blockers until applied.
 - [ ] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
   is idle only when every vCPU is halted with no armed timer and no pending input;
   node `idle_wake` = `min` over vCPUs of next deadline; apply the
