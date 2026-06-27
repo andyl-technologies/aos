@@ -61,6 +61,11 @@ impl PersistLayout {
         self.locks_dir().join("node-metadata.lock")
     }
 
+    /// Returns the advisory lock path for node-trace writes.
+    pub fn node_traces_lock_path(&self) -> PathBuf {
+        self.locks_dir().join("node-traces.lock")
+    }
+
     /// Returns the mutable node metadata directory.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")

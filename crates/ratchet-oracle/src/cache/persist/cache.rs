@@ -1615,10 +1615,10 @@ impl PersistCache {
     /// This explicit maintenance operation rewrites the value and file blob
     /// indexes, file-artifact and parse-artifact indexes, demand-node metadata
     /// index, and node verifying-trace log. The blob-index, artifact-mapping,
-    /// and node-metadata compaction phases use per-sidecar advisory locks;
-    /// trace compaction remains same-process coordinated only. This does not
-    /// rewrite blob packs, drop unreferenced blobs, coordinate raw lower-level
-    /// sidecar users, or implement an automatic GC policy.
+    /// node-metadata, and node-trace compaction phases use per-sidecar
+    /// advisory locks. This does not rewrite blob packs, drop unreferenced
+    /// blobs, coordinate raw lower-level sidecar users, or implement an
+    /// automatic GC policy.
     ///
     /// # Errors
     ///
@@ -1667,8 +1667,8 @@ impl PersistCache {
     /// policy, relocate live pack records, coordinate raw lower-level pack or
     /// sidecar users, or replace the future LMDB/redb metadata engine. Only
     /// the blob-index compaction/rebuild, file/parse artifact compaction,
-    /// node-metadata compaction, and blob-pack tail-trim phases use advisory
-    /// locks.
+    /// node-metadata compaction, node-trace compaction, and blob-pack
+    /// tail-trim phases use advisory locks.
     ///
     /// # Errors
     ///
@@ -1929,6 +1929,16 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    fn lock_node_traces_write(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeTraceLogError> {
+        let path = self.layout.node_traces_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Exclusive)
+            .map_err(|source| PersistNodeTraceLogError::AdvisoryWriteLock { path, source })?;
+        let write_guard = self.root_locks.lock_node_traces()?;
+        Ok((advisory_guard, write_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors
@@ -2157,23 +2167,24 @@ impl PersistCache {
     /// Appends a durable verifying-trace payload for one materialized demand node.
     ///
     /// The trace log is append-only and newest-record-wins on lookup.
-    /// Same-process writers opened on the same cache root share a trace write
-    /// lock while appending. Cross-process writers must still be excluded by
-    /// the caller. The caller supplies the materialized value hash so future
-    /// hit selection can reject stale trace/value pairings.
+    /// Cache-level writers share the node-trace advisory lock and same-root
+    /// trace write lock while appending. Raw lower-level log users must still
+    /// be excluded by the caller. The caller supplies the materialized value
+    /// hash so future hit selection can reject stale trace/value pairings.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
-    /// is poisoned or if the trace log cannot be opened, validated, written,
-    /// flushed, or decoded during validation.
+    /// Returns [`PersistNodeTraceLogError`] if the advisory trace lock cannot
+    /// be acquired, if the same-root trace write lock is poisoned, or if the
+    /// trace log cannot be opened, validated, written, flushed, or decoded
+    /// during validation.
     pub fn record_node_trace(
         &self,
         key: PersistNodeMetadataKey,
         value_hash: ValueHash,
         payload: &PersistNodeTracePayload,
     ) -> Result<(), PersistNodeTraceLogError> {
-        let _write_guard = self.root_locks.lock_node_traces()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_traces_write()?;
         self.node_trace_log.append_trace(key, value_hash, payload)
     }
 
@@ -2185,9 +2196,10 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
-    /// is poisoned or if the trace log cannot be opened, validated, written,
-    /// flushed, or decoded during validation.
+    /// Returns [`PersistNodeTraceLogError`] if the advisory trace lock cannot
+    /// be acquired, if the same-root trace write lock is poisoned, or if the
+    /// trace log cannot be opened, validated, written, flushed, or decoded
+    /// during validation.
     pub fn record_node_trace_tombstone(
         &self,
         key: PersistNodeMetadataKey,
@@ -2215,17 +2227,18 @@ impl PersistCache {
 
     /// Compacts node traces to the newest record for every known demand node.
     ///
-    /// Same-process writers opened on the same cache root share a trace write
-    /// lock while this method rewrites the log. Cross-process writers must
-    /// still be excluded by the caller.
+    /// Cache-level writers share the node-trace advisory lock and same-root
+    /// trace write lock while this method rewrites the log. Raw lower-level
+    /// log users must still be excluded by the caller.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the same-root trace write lock
-    /// is poisoned or if the trace log cannot be opened, read, decoded,
-    /// written, flushed, or renamed into place.
+    /// Returns [`PersistNodeTraceLogError`] if the advisory trace lock cannot
+    /// be acquired, if the same-root trace write lock is poisoned, or if the
+    /// trace log cannot be opened, read, decoded, written, flushed, or renamed
+    /// into place.
     pub fn compact_node_traces(&self) -> Result<usize, PersistNodeTraceLogError> {
-        let _write_guard = self.root_locks.lock_node_traces()?;
+        let (_advisory_guard, _write_guard) = self.lock_node_traces_write()?;
         self.node_trace_log.compact_latest_entries()
     }
 

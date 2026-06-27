@@ -46,6 +46,10 @@ fn open_creates_versioned_layout() {
         layout.node_metadata_lock_path(),
         layout.locks_dir().join("node-metadata.lock")
     );
+    assert_eq!(
+        layout.node_traces_lock_path(),
+        layout.locks_dir().join("node-traces.lock")
+    );
     assert!(layout.open_lock_path().is_file());
     assert_eq!(cache.value_pack().path(), layout.value_packfile_path());
     assert_eq!(cache.file_pack().path(), layout.file_packfile_path());

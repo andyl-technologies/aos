@@ -353,6 +353,14 @@ pub enum PersistNodeTraceLogError {
     /// The in-process node trace write lock was poisoned by a prior panic.
     #[error("persistent node trace write lock was poisoned")]
     WriteLockPoisoned,
+    /// The advisory node trace write lock could not be acquired.
+    #[error("failed to acquire persistent node trace advisory write lock at {path}")]
+    AdvisoryWriteLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The log parent directory could not be created.
     #[error("failed to create persistent node trace log parent {path:?}")]
     CreateParent {

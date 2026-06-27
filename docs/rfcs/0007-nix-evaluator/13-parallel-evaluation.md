@@ -794,15 +794,17 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       node table, work-stealing integration, or loom/Miri audit (§4.3,
       [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5** precursor,
       `R-4`/`S-14`.
-- [x] Current same-root persistent node-trace writer lock precursor:
-      independently opened `PersistCache` handles in one process now serialize
-      trace-log appends and compaction through a process-local mutex keyed by
-      the canonical cache root, so concurrent same-root appends preserve
-      complete trace records and poisoned live trace locks fail before writing
-      the log. This is same-process log coordination only, not cross-process
-      locking/CAS, the final LMDB/redb node table, work-stealing integration, or
-      loom/Miri audit (§4.3, [12](12-incremental-evaluation-cache.md) §6.5) —
-      **P3.5** precursor, `R-4`/`S-14`.
+- [x] Current same-root plus advisory persistent node-trace writer lock precursor:
+      independently opened `PersistCache` handles now acquire the
+      `.locks/node-traces.lock` advisory file before a process-local mutex keyed
+      by the canonical cache root, so cache-level trace-log appends, tombstones,
+      and compaction serialize for cooperating writers. Concurrent same-root
+      appends preserve complete trace records and poisoned live trace locks fail
+      before writing the log. This is cache-level log coordination only, not raw
+      lower-level sidecar enforcement, full locking/CAS, the final LMDB/redb
+      node table, work-stealing integration, or loom/Miri audit (§4.3,
+      [12](12-incremental-evaluation-cache.md) §6.5) — **P3.5** precursor,
+      `R-4`/`S-14`.
 - [x] Current same-root persistent artifact-mapping writer lock precursor:
       independently opened `PersistCache` handles now acquire advisory
       file locks at `.locks/file-artifacts.lock` and
