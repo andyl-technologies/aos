@@ -9,6 +9,7 @@ use std::fmt;
 use std::fs;
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::os::unix::fs::MetadataExt;
 
 use thiserror::Error;
 
@@ -194,6 +195,104 @@ impl BlobPackLocation {
     /// Returns the payload length declared by the lookup index.
     pub const fn payload_len(self) -> u64 {
         self.payload_len
+    }
+}
+
+/// A Unix file-identity snapshot for a blob pack descriptor.
+///
+/// This identity records the device, inode, size, modification time, and
+/// change time observed through an already-opened file descriptor. It is useful
+/// for detecting that a later descriptor no longer refers to the same stable
+/// pack bytes, but it is not an immutability guarantee by itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlobPackFileIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime_secs: i64,
+    mtime_nanos: i64,
+    ctime_secs: i64,
+    ctime_nanos: i64,
+}
+
+impl BlobPackFileIdentity {
+    /// Snapshots the current identity of `file`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackFileIdentityError`] if file metadata cannot be read or
+    /// if `file` does not refer to a regular file.
+    pub fn for_file(file: &fs::File) -> Result<Self, BlobPackFileIdentityError> {
+        let metadata = file
+            .metadata()
+            .map_err(BlobPackFileIdentityError::Metadata)?;
+        Self::from_metadata(&metadata)
+    }
+
+    /// Returns whether `file` still has the same observed identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackFileIdentityError`] if file metadata cannot be read or
+    /// if `file` does not refer to a regular file.
+    pub fn matches_file(self, file: &fs::File) -> Result<bool, BlobPackFileIdentityError> {
+        Ok(Self::for_file(file)? == self)
+    }
+
+    /// Returns the Unix device id recorded for the file.
+    pub const fn dev(self) -> u64 {
+        self.dev
+    }
+
+    /// Returns the Unix inode recorded for the file.
+    pub const fn ino(self) -> u64 {
+        self.ino
+    }
+
+    /// Returns the file length recorded for the file.
+    pub const fn len(self) -> u64 {
+        self.len
+    }
+
+    /// Returns whether the recorded file length is zero.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the recorded Unix modification timestamp seconds.
+    pub const fn mtime_secs(self) -> i64 {
+        self.mtime_secs
+    }
+
+    /// Returns the recorded Unix modification timestamp nanoseconds.
+    pub const fn mtime_nanos(self) -> i64 {
+        self.mtime_nanos
+    }
+
+    /// Returns the recorded Unix change timestamp seconds.
+    pub const fn ctime_secs(self) -> i64 {
+        self.ctime_secs
+    }
+
+    /// Returns the recorded Unix change timestamp nanoseconds.
+    pub const fn ctime_nanos(self) -> i64 {
+        self.ctime_nanos
+    }
+
+    fn from_metadata(metadata: &fs::Metadata) -> Result<Self, BlobPackFileIdentityError> {
+        if !metadata.is_file() {
+            return Err(BlobPackFileIdentityError::NotRegularFile);
+        }
+
+        Ok(Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            len: metadata.len(),
+            mtime_secs: metadata.mtime(),
+            mtime_nanos: metadata.mtime_nsec(),
+            ctime_secs: metadata.ctime(),
+            ctime_nanos: metadata.ctime_nsec(),
+        })
     }
 }
 
@@ -632,6 +731,17 @@ pub enum MappedBlobPackError {
     },
 }
 
+/// A blob pack file identity operation failed.
+#[derive(Debug, Error)]
+pub enum BlobPackFileIdentityError {
+    /// File metadata could not be read.
+    #[error("failed to read blob pack file metadata")]
+    Metadata(#[source] std::io::Error),
+    /// The file descriptor does not refer to a regular file.
+    #[error("blob pack file descriptor does not refer to a regular file")]
+    NotRegularFile,
+}
+
 fn read_u32(bytes: &[u8]) -> u32 {
     let mut value = [0; 4];
     value.copy_from_slice(bytes);
@@ -779,6 +889,72 @@ mod tests {
             .expect_err("uncovered file is rejected");
 
         assert!(matches!(error, MappedBlobPackError::LeaseRejected));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_file_identity_matches_reopened_same_file() {
+        let path = temp_path("identity-same");
+        write_pack(&path, &[b"payload"]);
+        let file = fs::File::open(&path).expect("pack opens read-only");
+        let identity = BlobPackFileIdentity::for_file(&file).expect("identity snapshots");
+        let reopened = fs::File::open(&path).expect("pack reopens read-only");
+
+        assert!(
+            identity
+                .matches_file(&reopened)
+                .expect("same file metadata reads")
+        );
+        assert!(!identity.is_empty());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_file_identity_rejects_different_file() {
+        let left_path = temp_path("identity-left");
+        let right_path = temp_path("identity-right");
+        write_pack(&left_path, &[b"left"]);
+        write_pack(&right_path, &[b"right"]);
+        let left = fs::File::open(&left_path).expect("left pack opens read-only");
+        let right = fs::File::open(&right_path).expect("right pack opens read-only");
+        let identity = BlobPackFileIdentity::for_file(&left).expect("left identity snapshots");
+
+        assert!(
+            !identity
+                .matches_file(&right)
+                .expect("right file metadata reads")
+        );
+
+        let _ = fs::remove_file(left_path);
+        let _ = fs::remove_file(right_path);
+    }
+
+    #[test]
+    fn blob_pack_file_identity_rejects_changed_length() {
+        let path = temp_path("identity-changed-length");
+        write_pack(&path, &[b"payload"]);
+        let file = fs::File::open(&path).expect("pack opens read-only");
+        let identity = BlobPackFileIdentity::for_file(&file).expect("identity snapshots");
+        {
+            let mut append = fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("pack opens for append");
+            append.write_all(b"tail").expect("tail writes");
+            append.sync_all().expect("appended pack syncs");
+        }
+
+        assert!(
+            !identity
+                .matches_file(&file)
+                .expect("changed file metadata reads")
+        );
+        assert_eq!(
+            identity.len() + 4,
+            file.metadata().expect("metadata reads").len()
+        );
+
         let _ = fs::remove_file(path);
     }
 
