@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolCodecFuzz",
-  taskIds ? ["T-PROTO-10"],
+  taskIds ? ["T-PROTO-10" "T-HARN-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,7 +14,12 @@
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   codecFuzzLib = builtins.readFile ../../crates/crucible-protocol/src/codec_fuzz.rs;
   codecFuzzTest = builtins.readFile ../../crates/crucible-protocol/tests/codec_fuzz.rs;
+  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  ioWireFuzzLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
+  pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
+  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
+  harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -166,10 +171,180 @@
         needle = "tag_constants_are_covered_by_structure_aware_fuzz_generation";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+      {
+        label = "I/O wire fuzz module";
+        needle = "pub mod io_wire_fuzz;";
+      }
+      {
+        label = "I/O wire fuzz target export";
+        needle = "run_io_wire_fuzz_target";
+      }
+      {
+        label = "I/O wire fuzz corpus export";
+        needle = "IO_WIRE_FUZZ_REGRESSION_CORPUS";
+      }
+      {
+        label = "9p wire handler export";
+        needle = "handle_ninep_wire_fuzz_message";
+      }
+      {
+        label = "9p wire message export";
+        needle = "NinePWireMessage";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+      {
+        label = "block request encoder public";
+        needle = "pub fn encode(&self, request_id: u32)";
+      }
+      {
+        label = "block request decoder";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>";
+      }
+      {
+        label = "block operation typed rejection";
+        needle = "UnknownOperation";
+      }
+      {
+        label = "block write count typed rejection";
+        needle = "RequestCountExceedsPayload";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+      {
+        label = "9p wire message type";
+        needle = "pub struct NinePWireMessage";
+      }
+      {
+        label = "9p wire handler outcome";
+        needle = "pub struct NinePWireHandlerOutcome";
+      }
+      {
+        label = "9p wire decode";
+        needle = "pub fn decode(frame: &[u8]) -> Result<Self, NinePWireError>";
+      }
+      {
+        label = "9p msize validation";
+        needle = "pub fn decode_with_msize(frame: &[u8], msize: u32) -> Result<Self, NinePWireError>";
+      }
+      {
+        label = "9p fuzz handler";
+        needle = "pub fn handle_ninep_wire_fuzz_message";
+      }
+      {
+        label = "9p synthetic error response";
+        needle = "fn ninep_lerror";
+      }
+      {
+        label = "9p typed wire errors";
+        needle = "pub enum NinePWireError";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzzLib [
+      {
+        label = "I/O fuzz target function";
+        needle = "pub fn run_io_wire_fuzz_target";
+      }
+      {
+        label = "I/O fuzz outcome type";
+        needle = "pub struct IoWireFuzzOutcome";
+      }
+      {
+        label = "I/O regression case type";
+        needle = "pub struct IoWireFuzzCase";
+      }
+      {
+        label = "I/O regression corpus";
+        needle = "pub const IO_WIRE_FUZZ_REGRESSION_CORPUS";
+      }
+      {
+        label = "9p fuzz msize";
+        needle = "pub const NINEP_FUZZ_MSIZE";
+      }
+      {
+        label = "I/O fuzz target with msize";
+        needle = "pub fn run_io_wire_fuzz_target_with_msize";
+      }
+      {
+        label = "block request corpus entry";
+        needle = "name: \"block-request-write-count-exceeds-payload\"";
+      }
+      {
+        label = "block response corpus entry";
+        needle = "name: \"block-response-trailing-payload\"";
+      }
+      {
+        label = "9p corpus entry";
+        needle = "name: \"9p-declared-size-exceeds-frame\"";
+      }
+      {
+        label = "9p msize corpus entry";
+        needle = "name: \"9p-msize-exceeds\"";
+      }
+      {
+        label = "seed corpus test";
+        needle = "io_wire_regression_corpus_exercises_block_and_9p_wire_cases";
+      }
+      {
+        label = "no panic corpus test";
+        needle = "io_wire_fuzz_target_never_panics_on_regression_corpus";
+      }
+      {
+        label = "block request round trip";
+        needle = "block_request_wire_messages_round_trip";
+      }
+      {
+        label = "block response round trip";
+        needle = "block_response_wire_messages_round_trip";
+      }
+      {
+        label = "9p round trip";
+        needle = "ninep_wire_messages_round_trip_and_msize_is_enforced";
+      }
+      {
+        label = "9p error response assertion";
+        needle = "assert_well_formed_9p_error_response";
+      }
+      {
+        label = "structure-aware malformed generation";
+        needle = "structure_aware_malformed_wire_frames_never_panic";
+      }
+      {
+        label = "truncation and trailing generation";
+        needle = "generated_truncations_and_trailing_bytes_stay_typed";
+      }
+      {
+        label = "catch unwind no-panic assertion";
+        needle = "catch_unwind";
+      }
+      {
+        label = "roundtrip helper";
+        needle = "assert_decode_encode_roundtrip";
+      }
+      {
+        label = "clean rejection helper";
+        needle = "assert_clean_reject_or_deterministic_decode";
+      }
+      {
+        label = "regression corpus marker";
+        needle = "regression_corpus";
+      }
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
       {
         label = "T-PROTO-10 checklist complete";
         needle = "- [x] **T-PROTO-10**";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
+      {
+        label = "T-HARN-19 checklist complete";
+        needle = "- [x] **T-HARN-19**";
+      }
+      {
+        label = "T-HARN-19 completion note";
+        needle = "Completed by `checks.crucible.phase2.protocolCodecFuzz`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -184,10 +359,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase2 protocol codec-fuzz check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase2 protocol and I/O wire fuzz check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase2-protocol-codec-fuzz";
+      pname = "crucible-phase2-protocol-codec-and-io-wire-fuzz";
       version = "0";
       src = crucibleSrc;
 
@@ -240,6 +415,23 @@ in
           '';
         }
         {
+          name = "run-qemu-plugin-io-wire-fuzz";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-qemu-plugin-io-wire-fuzz-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              io_wire_fuzz \
+              -- --test-threads=1
+          '';
+        }
+        {
           name = "write-result";
           script = ''
             set -eu
@@ -250,8 +442,9 @@ in
             tasks=${taskList}
             gate=gate:abi-conformance
             rust_test=crucible-protocol::codec_fuzz
-            corpus=malformed,adversarial,regression
-            property=no-panic,typed-error,well-formed-round-trip
+            rust_test=crucible-qemu-plugin::io_wire_fuzz
+            corpus=protocol-codec,block-wire,9p-wire,malformed,adversarial,regression
+            property=no-panic,typed-error,deterministic-decode,well-formed-round-trip
             RESULT
           '';
         }

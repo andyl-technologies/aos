@@ -92,6 +92,7 @@ pub(super) fn boundary_abi_owner_failures(targets: &[GateTargetSpec]) -> Vec<Str
         "crucible-shmem",
         "crucible-protocol",
         "crucible-api",
+        "crucible-qemu-plugin",
     ]);
 
     if actual == expected {

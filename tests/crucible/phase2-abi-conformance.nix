@@ -20,6 +20,8 @@
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
+  qemuPluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  qemuPluginIoWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -85,6 +87,15 @@
         needle = ''
           gate: "gate:abi-conformance",
                   package: "crucible-api",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "qemu-plugin ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-qemu-plugin",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
                   placeholder: false,'';
@@ -240,10 +251,62 @@
         needle = "rpc_golden_vector_negative_control_detects_wire_drift";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs" qemuPluginGateTest [
+      {
+        label = "plugin I/O wire ABI test";
+        needle = "gate_abi_conformance_covers_plugin_io_wire_fuzzing";
+      }
+      {
+        label = "I/O fuzz module coverage";
+        needle = "io_wire_fuzz";
+      }
+      {
+        label = "9p handler coverage";
+        needle = "handle_ninep_wire_fuzz_message";
+      }
+      {
+        label = "phase fuzz check linkage";
+        needle = "phase2-protocol-codec-fuzz.nix";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" qemuPluginIoWireFuzz [
+      {
+        label = "I/O wire fuzz corpus";
+        needle = "pub const IO_WIRE_FUZZ_REGRESSION_CORPUS";
+      }
+      {
+        label = "I/O wire fuzz target";
+        needle = "pub fn run_io_wire_fuzz_target";
+      }
+      {
+        label = "I/O wire fuzz target with msize";
+        needle = "pub fn run_io_wire_fuzz_target_with_msize";
+      }
+      {
+        label = "block request round trip";
+        needle = "block_request_wire_messages_round_trip";
+      }
+      {
+        label = "block response round trip";
+        needle = "block_response_wire_messages_round_trip";
+      }
+      {
+        label = "9p round trip and msize";
+        needle = "ninep_wire_messages_round_trip_and_msize_is_enforced";
+      }
+      {
+        label = "9p error response assertion";
+        needle = "assert_well_formed_9p_error_response";
+      }
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
       {
         label = "T-HARN-17 checklist complete";
         needle = "- [x] **T-HARN-17**";
+      }
+      {
+        label = "T-HARN-19 checklist complete";
+        needle = "- [x] **T-HARN-19**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/21-api.md" apiSpec [
@@ -357,6 +420,22 @@ in
               -p crucible-api \
               --test gate_abi_conformance \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              io_wire_fuzz \
+              -- --test-threads=1
           '';
         }
         {
@@ -372,6 +451,7 @@ in
             shmem_vectors=generated-header,layout-fixture,spsc-structure-aware
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
             rpc_vectors=hello-request,hello-response,attached,send-command-request,send-command-response,event-fault-injected
+            qemu_plugin_io_wire_fuzz=block-request,block-response,9p-handler
             version_bump_rule=shmem+protocol+rpc-golden-corpora
             rpc_major_mismatch_rejection=true
             reference_client_scope=pending-T-API-13

@@ -231,6 +231,12 @@
       requiredFeatures = [];
     }
     {
+      gate = "gate:abi-conformance";
+      package = "crucible-qemu-plugin";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+    }
+    {
       gate = "gate:replay-oracle";
       package = "crucible";
       testTarget = "gate_replay_oracle";
@@ -353,8 +359,8 @@
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api"];
-      layers = ["L1" "L4" "CrossCutting"];
+      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin"];
+      layers = ["L1" "L2" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
@@ -472,7 +478,7 @@
     }
     {
       package = "crucible-qemu-plugin";
-      gates = ["gate:single-vm-fingerprint" "gate:qemu-inert" "gate:patch-microtests"];
+      gates = ["gate:single-vm-fingerprint" "gate:abi-conformance" "gate:qemu-inert" "gate:patch-microtests"];
     }
     {
       package = "crucible-guest";

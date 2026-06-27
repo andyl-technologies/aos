@@ -21,6 +21,13 @@ use crate::{
 
 const NINEP_IO_SLOT_U32: u32 = SLOT_9P_IO as u32;
 const MAX_NINEP_IN_FLIGHT_REQUESTS: usize = 256;
+const NINEP_WIRE_HEADER_LEN: usize = 7;
+const NINEP_RLERROR: u8 = 7;
+const NINEP_NOTAG: u16 = u16::MAX;
+const NINEP_EIO: u32 = 5;
+const NINEP_EINVAL: u32 = 22;
+const NINEP_ENOSYS: u32 = 38;
+const NINEP_EROFS: u32 = 30;
 
 /// Registration-time-fixed 9p callback state.
 #[derive(Debug)]
@@ -585,6 +592,184 @@ impl NinePResponse {
     }
 }
 
+/// A parsed 9p message envelope carried as a raw plugin payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NinePWireMessage {
+    message_type: u8,
+    tag: u16,
+    payload: Vec<u8>,
+}
+
+impl NinePWireMessage {
+    /// Builds a parsed 9p message envelope.
+    #[must_use]
+    pub fn new(message_type: u8, tag: u16, payload: Vec<u8>) -> Self {
+        Self {
+            message_type,
+            tag,
+            payload,
+        }
+    }
+
+    /// Returns the 9p message type byte.
+    #[must_use]
+    pub const fn message_type(&self) -> u8 {
+        self.message_type
+    }
+
+    /// Returns the 9p tag.
+    #[must_use]
+    pub const fn tag(&self) -> u16 {
+        self.tag
+    }
+
+    /// Returns the body bytes following the 9p header.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Encodes the message envelope as one 9p wire message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePWireError::MessageSizeOverflow`] when the message length
+    /// cannot fit in the 9p `size[4]` field.
+    pub fn encode(&self) -> Result<Vec<u8>, NinePWireError> {
+        let len = NINEP_WIRE_HEADER_LEN
+            .checked_add(self.payload.len())
+            .ok_or(NinePWireError::MessageSizeOverflow {
+                len: self.payload.len(),
+            })?;
+        let size = u32::try_from(len).map_err(|_| NinePWireError::MessageSizeOverflow { len })?;
+        let mut out = Vec::with_capacity(len);
+        out.extend_from_slice(&size.to_le_bytes());
+        out.push(self.message_type);
+        out.extend_from_slice(&self.tag.to_le_bytes());
+        out.extend_from_slice(&self.payload);
+        Ok(out)
+    }
+
+    /// Decodes exactly one 9p wire message envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePWireError`] when the buffer is shorter than the fixed
+    /// header, has an impossible declared size, or contains trailing bytes after
+    /// the declared message.
+    pub fn decode(frame: &[u8]) -> Result<Self, NinePWireError> {
+        Self::decode_with_msize(frame, u32::MAX)
+    }
+
+    /// Decodes exactly one 9p wire message envelope under a negotiated `msize`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePWireError`] when the frame is malformed or its declared
+    /// size exceeds `msize`.
+    pub fn decode_with_msize(frame: &[u8], msize: u32) -> Result<Self, NinePWireError> {
+        if frame.len() < NINEP_WIRE_HEADER_LEN {
+            return Err(NinePWireError::ShortHeader { len: frame.len() });
+        }
+        let size = u32::from_le_bytes(
+            frame[0..4]
+                .try_into()
+                .map_err(|_| NinePWireError::ShortHeader { len: frame.len() })?,
+        );
+        if size < NINEP_WIRE_HEADER_LEN as u32 {
+            return Err(NinePWireError::DeclaredSizeTooSmall { size });
+        }
+        if size > msize {
+            return Err(NinePWireError::DeclaredSizeExceedsMsize { size, msize });
+        }
+        let size_usize =
+            usize::try_from(size).map_err(|_| NinePWireError::DeclaredSizeExceedsFrame {
+                size,
+                available: frame.len(),
+            })?;
+        if size_usize > frame.len() {
+            return Err(NinePWireError::DeclaredSizeExceedsFrame {
+                size,
+                available: frame.len(),
+            });
+        }
+        if size_usize != frame.len() {
+            return Err(NinePWireError::DeclaredSizeHasTrailingBytes {
+                size,
+                frame_len: frame.len(),
+            });
+        }
+        let message_type = frame[4];
+        let tag = u16::from_le_bytes(
+            frame[5..7]
+                .try_into()
+                .map_err(|_| NinePWireError::ShortHeader { len: frame.len() })?,
+        );
+        Ok(Self {
+            message_type,
+            tag,
+            payload: frame[NINEP_WIRE_HEADER_LEN..].to_vec(),
+        })
+    }
+}
+
+/// Result of running arbitrary 9p bytes through the fuzz-safe wire handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NinePWireHandlerOutcome {
+    request: Result<NinePWireMessage, NinePWireError>,
+    response: NinePWireMessage,
+    errno: u32,
+}
+
+impl NinePWireHandlerOutcome {
+    /// Returns the request decode result.
+    #[must_use]
+    pub const fn request(&self) -> &Result<NinePWireMessage, NinePWireError> {
+        &self.request
+    }
+
+    /// Returns the deterministic 9p error response.
+    #[must_use]
+    pub const fn response(&self) -> &NinePWireMessage {
+        &self.response
+    }
+
+    /// Returns the Linux errno encoded in the response payload.
+    #[must_use]
+    pub const fn errno(&self) -> u32 {
+        self.errno
+    }
+}
+
+/// Handles arbitrary 9p wire bytes for the fuzz target.
+///
+/// This is a fail-closed, state-free wire handler: it validates the 9p envelope
+/// under the negotiated `msize` and returns a deterministic `Rlerror` response.
+/// The real read-only filesystem server remains a separate I/O sub-node
+/// implementation, but this path proves the raw wire boundary never panics and
+/// always yields either a typed reject or a well-formed 9p error response.
+#[must_use]
+pub fn handle_ninep_wire_fuzz_message(frame: &[u8], msize: u32) -> NinePWireHandlerOutcome {
+    match NinePWireMessage::decode_with_msize(frame, msize) {
+        Ok(request) => {
+            let errno = errno_for_valid_ninep_message(request.message_type());
+            NinePWireHandlerOutcome {
+                response: ninep_lerror(request.tag(), errno),
+                request: Ok(request),
+                errno,
+            }
+        }
+        Err(error) => {
+            let tag = tag_from_header(frame).unwrap_or(NINEP_NOTAG);
+            NinePWireHandlerOutcome {
+                request: Err(error),
+                response: ninep_lerror(tag, NINEP_EINVAL),
+                errno: NINEP_EINVAL,
+            }
+        }
+    }
+}
+
 /// A request token that must be consumed by poll completion or failure handling.
 #[must_use = "9p request tokens must be consumed by 9p poll completion or failure"]
 #[derive(Debug, PartialEq, Eq)]
@@ -693,6 +878,72 @@ impl NinePGuestCompletionError {
         Self {
             message: message.into(),
         }
+    }
+}
+
+/// A 9p wire-envelope decode or encode error.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum NinePWireError {
+    /// The frame is shorter than the fixed 9p header.
+    #[error("9p frame length {len} is shorter than header")]
+    ShortHeader {
+        /// The observed frame length.
+        len: usize,
+    },
+    /// The declared message size is smaller than the header.
+    #[error("9p declared size {size} is smaller than header")]
+    DeclaredSizeTooSmall {
+        /// The declared size field.
+        size: u32,
+    },
+    /// The declared message size exceeds the supplied frame bytes.
+    #[error("9p declared size {size} exceeds available frame length {available}")]
+    DeclaredSizeExceedsFrame {
+        /// The declared size field.
+        size: u32,
+        /// The supplied frame length.
+        available: usize,
+    },
+    /// The frame has bytes after the declared single message.
+    #[error("9p declared size {size} leaves trailing bytes in frame length {frame_len}")]
+    DeclaredSizeHasTrailingBytes {
+        /// The declared size field.
+        size: u32,
+        /// The supplied frame length.
+        frame_len: usize,
+    },
+    /// The declared message size exceeds the negotiated `msize`.
+    #[error("9p declared size {size} exceeds negotiated msize {msize}")]
+    DeclaredSizeExceedsMsize {
+        /// The declared size field.
+        size: u32,
+        /// The negotiated maximum message size.
+        msize: u32,
+    },
+    /// An encoded message length cannot fit in the wire size field.
+    #[error("9p message length {len} cannot fit in u32")]
+    MessageSizeOverflow {
+        /// The unrepresentable message length.
+        len: usize,
+    },
+}
+
+fn ninep_lerror(tag: u16, errno: u32) -> NinePWireMessage {
+    NinePWireMessage::new(NINEP_RLERROR, tag, errno.to_le_bytes().to_vec())
+}
+
+fn tag_from_header(frame: &[u8]) -> Option<u16> {
+    if frame.len() < NINEP_WIRE_HEADER_LEN {
+        return None;
+    }
+    Some(u16::from_le_bytes([frame[5], frame[6]]))
+}
+
+fn errno_for_valid_ninep_message(message_type: u8) -> u32 {
+    match message_type {
+        14 | 26 | 72 | 74 | 76 | 118 => NINEP_EROFS,
+        8 | 12 | 22 | 24 | 30 | 40 | 100 | 104 | 108 | 110 | 116 | 120 => NINEP_EIO,
+        _ => NINEP_ENOSYS,
     }
 }
 

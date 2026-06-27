@@ -254,6 +254,13 @@
       placeholder = true;
     }
     {
+      gate = "gate:abi-conformance";
+      package = "crucible-qemu-plugin";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
       gate = "gate:layer1-injection";
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
@@ -550,7 +557,7 @@
 
   abiOwners =
     lib.sort builtins.lessThan (map (target: target.package) (builtins.filter (target: target.gate == "gate:abi-conformance") targets));
-  expectedAbiOwners = ["crucible-api" "crucible-harness" "crucible-protocol" "crucible-shmem"];
+  expectedAbiOwners = ["crucible-api" "crucible-harness" "crucible-protocol" "crucible-qemu-plugin" "crucible-shmem"];
   abiOwnerFailures =
     lib.optionals (abiOwners != expectedAbiOwners) [
       "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"

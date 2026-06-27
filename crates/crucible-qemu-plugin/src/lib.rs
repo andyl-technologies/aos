@@ -36,8 +36,9 @@
 //! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
 //! reads for N-vCPU fingerprinting;
 //! `coverage` owns optional TCG-exec coverage planning and observational
-//! basic-block map updates. Future modules will add live device callback behavior
-//! and QEMU-facing helpers.
+//! basic-block map updates; `io_wire_fuzz` owns the pure block and 9p wire fuzz
+//! target used by the ABI-conformance gate. Future modules will add live device
+//! callback behavior and QEMU-facing helpers.
 //!
 //! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
 //! pointers and delegate to safe Rust shims for time-control, callback
@@ -60,6 +61,7 @@ pub mod handshake;
 pub mod idle_loop;
 pub mod inbound;
 pub mod inertness;
+pub mod io_wire_fuzz;
 pub mod network_rx;
 pub mod network_tx;
 pub mod ninep_io;
@@ -144,6 +146,10 @@ pub use inertness::{
     PluginInertnessError, PluginInertnessObservation, PluginInertnessReport,
     PluginPatchCapabilityCalls, PluginSimulationMode, assert_plugin_inert,
 };
+pub use io_wire_fuzz::{
+    IO_WIRE_FUZZ_REGRESSION_CORPUS, IoWireFuzzCase, IoWireFuzzChannel, IoWireFuzzOutcome,
+    run_io_wire_fuzz_target,
+};
 pub use network_rx::{
     LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection, NetworkRxQueueError,
     NetworkRxQueueOperation, PluginNetworkRx, QEMU_PLUGIN_NET_CAN_RECEIVE_SYMBOL,
@@ -160,8 +166,9 @@ pub use network_tx::{
 pub use ninep_io::{
     NinePGuestCompletion, NinePGuestCompletionError, NinePInboundRing, NinePIoError,
     NinePOutboundRing, NinePPoll, NinePRequest, NinePRequestToken, NinePResponse, NinePSubmit,
-    PluginNinePIo, handle_9p_burst_done_callback, handle_9p_burst_start_callback,
-    handle_9p_poll_callback, handle_9p_submit_callback,
+    NinePWireError, NinePWireHandlerOutcome, NinePWireMessage, PluginNinePIo,
+    handle_9p_burst_done_callback, handle_9p_burst_start_callback, handle_9p_poll_callback,
+    handle_9p_submit_callback, handle_ninep_wire_fuzz_message,
 };
 pub use preemption::{
     DeterministicIpiDelivery, PluginPreemptionApplication, PluginPreemptionDecision,

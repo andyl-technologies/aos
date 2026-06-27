@@ -101,8 +101,9 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
             "crucible-shmem",
             "crucible-protocol",
             "crucible-api",
+            "crucible-qemu-plugin",
         ],
-        layers: &[Layer::L1, Layer::L4, Layer::CrossCutting],
+        layers: &[Layer::L1, Layer::L2, Layer::L4, Layer::CrossCutting],
         shape: TestShape::AbiGoldenVectors,
         backend: TestBackend::InProcess,
     },
@@ -211,6 +212,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         package: "crucible-qemu-plugin",
         gates: &[
             "gate:single-vm-fingerprint",
+            "gate:abi-conformance",
             "gate:qemu-inert",
             "gate:patch-microtests",
         ],

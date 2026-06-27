@@ -245,8 +245,9 @@ BlockResponse (SLOT_BLK_IO -> VM slot)
 - **[IO-8]** The block request/response wire format MUST be a **versioned
   boundary ABI** ([G-8]): every message MUST carry an ABI version byte and a
   fixed field order; all multi-byte integers MUST use a single fixed endianness
-  declared in this section; reserved bytes MUST be zero on emit and ignored on
-  receive. A request whose declared `count` exceeds the available payload bytes,
+  declared in this section; reserved bytes MUST be zero on emit and rejected on
+  receive until a future ABI version assigns them meaning. A request whose
+  declared `count` exceeds the available payload bytes,
   or whose type is unknown, MUST be rejected as malformed and answered with an
   error-status response, never parsed past its bounds. *Gate:*
   `gate:abi-conformance`. *Spec:* §15.2.2; cross-ref 13 §13.3.3.
