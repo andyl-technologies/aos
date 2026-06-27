@@ -513,6 +513,165 @@ mod tests {
     }
 
     #[test]
+    fn scenario_layers_stay_structurally_orthogonal() {
+        let partition_entry = PlanEntry::Activate {
+            at: VirtualTime { ticks: 7 },
+            tag: tag("split-a-b"),
+            fault: MembershipFault::Partition {
+                endpoint_a: node_id("a"),
+                endpoint_b: node_id("b"),
+                direction: PartitionDirection::Bidirectional,
+            },
+        };
+        let property_assertion = assertion(
+            "a-reachable",
+            "node a remains reachable",
+            Property::Always {
+                predicate: named_predicate("node_alive", &["a"]),
+            },
+        );
+        let world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 10, 1, 0, Some(1_000_000))],
+        );
+        let plan = Plan::from_entries_for_world(&world, vec![partition_entry.clone()])
+            .unwrap_or_else(|error| panic!("plan should be valid: {error}"));
+        let properties =
+            Properties::from_assertions_for_world(&world, vec![property_assertion.clone()])
+                .unwrap_or_else(|error| panic!("properties should be valid: {error}"));
+        let seed = Seed::from_u64(0x0010_0002);
+        let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)
+            .unwrap_or_else(|error| panic!("scenario form should be valid: {error}"));
+        let built = ScenarioBuilder::new()
+            .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+            .node("b", NodeTemplate::fixed_icount(Icount { retired: 2 }))
+            .link_with_transport(
+                "a",
+                "b",
+                SimDuration { nanos: 10 },
+                SimDuration { nanos: 1 },
+                LinkLossProbability::ZERO,
+                Some(1_000_000),
+            )
+            .plan_entry(partition_entry.clone())
+            .property(property_assertion.clone())
+            .seed(seed)
+            .build()
+            .unwrap_or_else(|error| panic!("builder scenario should be valid: {error}"));
+
+        assert_eq!(built, form.scenario_def());
+
+        let other_seed_form =
+            ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(99))
+                .unwrap_or_else(|error| panic!("other-seed form should be valid: {error}"));
+        assert_eq!(other_seed_form.world().id(), form.world().id());
+        assert_eq!(
+            other_seed_form.plan().content_hash(),
+            form.plan().content_hash()
+        );
+        assert_eq!(
+            other_seed_form.properties().content_hash(),
+            form.properties().content_hash()
+        );
+        assert_ne!(other_seed_form.id(), form.id());
+
+        let changed_plan = Plan::from_entries_for_world(
+            &world,
+            vec![PlanEntry::Activate {
+                at: VirtualTime { ticks: 7 },
+                tag: tag("crash-b"),
+                fault: MembershipFault::Crash {
+                    node: node_id("b"),
+                    restart: RestartPolicy::StayDown,
+                },
+            }],
+        )
+        .unwrap_or_else(|error| panic!("changed plan should be valid: {error}"));
+        let changed_plan_form =
+            ScenarioDefForm::from_components(&world, &changed_plan, &properties, seed)
+                .unwrap_or_else(|error| panic!("changed-plan form should be valid: {error}"));
+        assert_eq!(changed_plan_form.world().id(), form.world().id());
+        assert_eq!(
+            changed_plan_form.properties().content_hash(),
+            form.properties().content_hash()
+        );
+        assert_ne!(
+            changed_plan_form.plan().content_hash(),
+            form.plan().content_hash()
+        );
+        assert_ne!(changed_plan_form.id(), form.id());
+
+        let changed_properties = Properties::from_assertions_for_world(
+            &world,
+            vec![assertion(
+                "b-reachable",
+                "node b remains reachable",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["b"]),
+                },
+            )],
+        )
+        .unwrap_or_else(|error| panic!("changed properties should be valid: {error}"));
+        let changed_properties_form =
+            ScenarioDefForm::from_components(&world, &plan, &changed_properties, seed)
+                .unwrap_or_else(|error| panic!("changed-properties form should be valid: {error}"));
+        assert_eq!(changed_properties_form.world().id(), form.world().id());
+        assert_eq!(
+            changed_properties_form.plan().content_hash(),
+            form.plan().content_hash()
+        );
+        assert_ne!(
+            changed_properties_form.properties().content_hash(),
+            form.properties().content_hash()
+        );
+        assert_ne!(changed_properties_form.id(), form.id());
+
+        let toml = form
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("scenario form should serialize: {error}"));
+        assert!(toml.contains("[[world.link]]"));
+        assert!(toml.contains("[[plan.entry]]"));
+        assert!(toml.contains("[[properties.assertion]]"));
+        assert!(toml.contains("seed = \"0x"));
+        assert!(!toml.contains("boot_event"));
+        assert!(!toml.contains("entrypoint"));
+
+        let missing_link_fault = ScenarioBuilder::new()
+            .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+            .node("b", NodeTemplate::fixed_icount(Icount { retired: 2 }))
+            .plan_entry(partition_entry)
+            .build();
+        assert!(matches!(
+            missing_link_fault,
+            Err(EngineError::PlanFaultUnknownLink { .. })
+        ));
+
+        let assertion_cannot_declare_node = ScenarioBuilder::new()
+            .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+            .property(assertion(
+                "missing-node",
+                "properties cannot declare topology",
+                Property::Always {
+                    predicate: named_predicate("node_alive", &["missing"]),
+                },
+            ))
+            .build();
+        assert!(matches!(
+            assertion_cannot_declare_node,
+            Err(EngineError::PropertyPredicateUnknownNode { .. })
+        ));
+
+        let link_cannot_declare_missing_node = ScenarioBuilder::new()
+            .node("a", NodeTemplate::fixed_icount(Icount { retired: 1 }))
+            .link("a", "missing")
+            .build();
+        assert!(matches!(
+            link_cannot_declare_missing_node,
+            Err(EngineError::WorldLinkUnknownNode { .. })
+        ));
+    }
+
+    #[test]
     fn configuration_id_is_content_addressed_by_def_and_schedule() {
         let scenario =
             ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
