@@ -485,6 +485,11 @@ in {
       attrPath = "checks.crucible.phase3.ioSubnodeTrait";
       taskIds = ["T-IO-1"];
     };
+    blockSubnodeOverlay = import ./phase3-block-subnode-overlay.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.blockSubnodeOverlay";
+      taskIds = ["T-IO-2"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

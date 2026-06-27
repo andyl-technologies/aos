@@ -732,11 +732,25 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   affect completion icounts, payload bytes, or ordering.
   Summary: response outbox sorted by delivery icount, requester, and sequence
   after every advance.
-- [ ] **T-IO-2** Implement the block sub-node base+overlay: read-only
+- [x] **T-IO-2** Implement the block sub-node base+overlay: read-only
   content-addressed base image, in-memory 4 KiB CoW page overlay, page-wise read
   (overlay-over-base) and write (copy-up to overlay), dirty-page tracking; assert
   the base image is never mutated. — satisfies [IO-5], [IO-6], [IO-7]; spec
   §15.2.1.
+  Completed by `checks.crucible.phase3.blockSubnodeOverlay`.
+  `BlockBaseImage` stores an immutable content-addressed base image whose
+  supplied bytes must hash to the advertised `ContentAddressedBlobRef`.
+  `BlockSubNodeOverlay` layers deterministic, ordered 4 KiB copy-on-write overlay pages
+  over that base: reads resolve overlay pages before falling back
+  to the base, writes copy the whole base page into the overlay before patching
+  it, `flush` is a no-op success, and `get_length` reports the fixed base size.
+  Dirty tracking records only the dirty pages since the last checkpoint boundary,
+  captures full 4 KiB pages in ascending page offset order, and clears the dirty
+  set after capture so successive deltas remain disjoint. Range checks reject
+  overflow and any read or write beyond the fixed device length without
+  truncating or extending the device.
+  Summary: the base image is never mutated; all guest writes land only in the
+  in-memory overlay.
 - [ ] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
   fixed field order/endianness, reserved-byte rules, bounds-checked decode) and
   carry it over the `SLOT_BLK_IO` shmem rings with `delivery_icount` set to the
