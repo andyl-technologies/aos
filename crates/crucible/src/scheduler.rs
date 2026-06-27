@@ -17,7 +17,7 @@ use crate::{
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
     Icount, NodeCounter, NodeId, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
     SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    VirtualTime, WorldLookaheadEdge, step,
+    VcpuId, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -183,6 +183,64 @@ pub struct SchedulerRunCeilingPublication {
     pub icount_shift: Shift,
     /// The virtual-time horizon that produced `max_advance_icount`.
     pub target_time: SimInstant,
+}
+
+/// Deterministic vCPU RR policy for one scheduler node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SchedulerRunSubdivisionPolicy {
+    /// Scheduler node whose RUN budget is subdivided internally.
+    pub node: SchedulerNodeId,
+    /// Number of vCPUs hosted by the node.
+    pub vcpu_count: u32,
+    /// Fixed retired-instruction quantum used before rotating to the next vCPU.
+    pub rr_switch_quantum: u64,
+}
+
+impl SchedulerRunSubdivisionPolicy {
+    /// Builds a validated RR subdivision policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `vcpu_count` or
+    /// `rr_switch_quantum` is zero.
+    pub fn new(
+        node: SchedulerNodeId,
+        vcpu_count: u32,
+        rr_switch_quantum: u64,
+    ) -> Result<Self, SchedulerError> {
+        validate_scheduler_rr_policy(vcpu_count, rr_switch_quantum)?;
+        Ok(Self {
+            node,
+            vcpu_count,
+            rr_switch_quantum,
+        })
+    }
+}
+
+/// One plugin-internal vCPU slice inside a node-level RUN.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerRunSubdivisionSlice {
+    /// vCPU selected for this slice.
+    pub vcpu: VcpuId,
+    /// Node-local counter at which the slice starts.
+    pub start_icount: NodeCounter,
+    /// Node-local counter at which the slice ends.
+    pub end_icount: NodeCounter,
+}
+
+/// Evidence that a node-level RUN used deterministic RR subdivision internally.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerRunSubdivisionRecord {
+    /// Monotone scheduler-local subdivision record sequence.
+    pub sequence: u64,
+    /// Scheduler quantum whose RUN was subdivided.
+    pub quantum: u64,
+    /// Policy used to subdivide this RUN.
+    pub policy: SchedulerRunSubdivisionPolicy,
+    /// The single scheduler-published node ceiling for this RUN.
+    pub ceiling: SchedulerRunCeilingPublication,
+    /// Per-vCPU slices in plugin execution order.
+    pub slices: Vec<SchedulerRunSubdivisionSlice>,
 }
 
 /// The virtual-time clock value used for scheduler lookahead decisions.
@@ -1861,6 +1919,86 @@ pub fn rendezvous_cap_for(
     Ok(Some(SimInstant { nanos }))
 }
 
+/// Computes plugin-internal RR slices for one node-level RUN ceiling.
+///
+/// The returned slices are ordered exactly as the plugin should execute them.
+/// The scheduler still publishes only the node-level `max_advance_icount`;
+/// these slices are evidence for the deterministic internal vCPU rotation.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the RR policy is invalid,
+/// the target is before the current counter, or the next RR boundary overflows.
+pub fn scheduler_rr_run_subdivision(
+    current_icount: NodeCounter,
+    max_advance_icount: u64,
+    vcpu_count: u32,
+    rr_switch_quantum: u64,
+) -> Result<Vec<SchedulerRunSubdivisionSlice>, SchedulerError> {
+    validate_scheduler_rr_policy(vcpu_count, rr_switch_quantum)?;
+    if max_advance_icount < current_icount.ticks {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "scheduler RR subdivision target precedes current icount: current={} target={}",
+                current_icount.ticks, max_advance_icount
+            ),
+        });
+    }
+    if vcpu_count == 1 {
+        if current_icount.ticks == max_advance_icount {
+            return Ok(Vec::new());
+        }
+        return Ok(vec![SchedulerRunSubdivisionSlice {
+            vcpu: VcpuId { index: 0 },
+            start_icount: current_icount,
+            end_icount: NodeCounter {
+                ticks: max_advance_icount,
+            },
+        }]);
+    }
+
+    let mut slices = Vec::new();
+    let mut cursor = current_icount.ticks;
+    while cursor < max_advance_icount {
+        let rr_slot = cursor / rr_switch_quantum;
+        let vcpu = VcpuId {
+            index: (rr_slot % u64::from(vcpu_count)) as u32,
+        };
+        let next_rr_boundary = rr_slot
+            .checked_add(1)
+            .and_then(|slot| slot.checked_mul(rr_switch_quantum))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("scheduler RR subdivision boundary overflow"),
+            })?;
+        let end = std::cmp::min(next_rr_boundary, max_advance_icount);
+        slices.push(SchedulerRunSubdivisionSlice {
+            vcpu,
+            start_icount: NodeCounter { ticks: cursor },
+            end_icount: NodeCounter { ticks: end },
+        });
+        cursor = end;
+    }
+
+    Ok(slices)
+}
+
+fn validate_scheduler_rr_policy(
+    vcpu_count: u32,
+    rr_switch_quantum: u64,
+) -> Result<(), SchedulerError> {
+    if vcpu_count == 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("scheduler RR subdivision vCPU count must be nonzero"),
+        });
+    }
+    if rr_switch_quantum == 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("scheduler RR subdivision quantum must be nonzero"),
+        });
+    }
+    Ok(())
+}
+
 /// A scheduler horizon and its matching icount ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
@@ -2122,6 +2260,8 @@ pub struct SchedulerLivenessScenario {
     pub nodes: Vec<SchedulerScenarioNode>,
     /// Boundary-applied topology changes waiting for the scheduler.
     pub topology_changes: Vec<SchedulerTopologyChange>,
+    /// Optional deterministic RR subdivision policies keyed by scheduler node.
+    pub run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
     /// Cross-node, I/O, fault, and control events waiting for scheduler delivery.
     pub pending_events: Vec<ScheduledEvent>,
     /// Saved per-producer/consumer sequence counters for newly emitted events.
@@ -2153,6 +2293,7 @@ impl SchedulerLivenessScenario {
             effective_topology: SchedulerLookaheadGraph::default(),
             nodes,
             topology_changes: Vec::new(),
+            run_subdivision_policies: Vec::new(),
             pending_events,
             event_sequences: EventSequenceState::empty(),
         };
@@ -2205,6 +2346,17 @@ impl SchedulerLivenessScenario {
         self
     }
 
+    /// Sets the deterministic RR subdivision policy for one scheduler node.
+    #[must_use]
+    pub fn with_run_subdivision_policy(mut self, policy: SchedulerRunSubdivisionPolicy) -> Self {
+        self.run_subdivision_policies
+            .retain(|existing| existing.node != policy.node);
+        self.run_subdivision_policies.push(policy);
+        self.run_subdivision_policies.sort();
+        self.refresh_configuration();
+        self
+    }
+
     fn refresh_configuration(&mut self) {
         self.configuration = self.canonical_configuration();
     }
@@ -2240,6 +2392,18 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     topology_changes.sort_by(topology_change_order);
     lines.push(format!("topology_changes={}", topology_changes.len()));
     lines.extend(topology_changes.iter().map(topology_change_material));
+
+    let mut run_subdivision_policies = scenario.run_subdivision_policies.clone();
+    run_subdivision_policies.sort();
+    lines.push(format!(
+        "run_subdivision_policies={}",
+        run_subdivision_policies.len()
+    ));
+    lines.extend(
+        run_subdivision_policies
+            .iter()
+            .map(run_subdivision_policy_material),
+    );
 
     let pending = ordered_scheduled_events(&scenario.pending_events);
     lines.push(format!("pending_events={}", pending.len()));
@@ -2277,6 +2441,15 @@ fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
         scheduler_node_activity_label(node.activity),
         network_lookahead_material(node.network_lookahead),
         exact_local_event_material(&node.exact_local_event),
+    )
+}
+
+fn run_subdivision_policy_material(policy: &SchedulerRunSubdivisionPolicy) -> String {
+    format!(
+        "run_subdivision_policy:\n{}\nvcpu_count={}\nrr_switch_quantum={}",
+        scheduler_node_material(&policy.node),
+        policy.vcpu_count,
+        policy.rr_switch_quantum,
     )
 }
 
@@ -2845,6 +3018,8 @@ pub struct SingleScheduler {
     effective_topology: SchedulerLookaheadGraph,
     nodes: Vec<RuntimeSchedulerNode>,
     topology_changes: Vec<SchedulerTopologyChange>,
+    run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
+    run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
     control_admissions: Vec<SchedulerControlAdmission>,
     control_applications: Vec<SchedulerControlApplication>,
     pending_events: Vec<ScheduledEvent>,
@@ -2883,6 +3058,8 @@ impl SingleScheduler {
             .map(RuntimeSchedulerNode::from)
             .collect::<Vec<_>>();
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut run_subdivision_policies = scenario.run_subdivision_policies;
+        run_subdivision_policies.sort();
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
 
@@ -2895,6 +3072,8 @@ impl SingleScheduler {
             effective_topology: scenario.effective_topology,
             nodes,
             topology_changes: scenario.topology_changes,
+            run_subdivision_policies,
+            run_subdivision_records: Vec::new(),
             control_admissions: Vec::new(),
             control_applications: Vec::new(),
             pending_events: scenario.pending_events,
@@ -2949,6 +3128,12 @@ impl SingleScheduler {
     #[must_use]
     pub fn run_ceiling_publications(&self) -> &[SchedulerRunCeilingPublication] {
         &self.ceiling_publications
+    }
+
+    /// Returns plugin-internal RR subdivision evidence for completed RUNs.
+    #[must_use]
+    pub fn run_subdivision_records(&self) -> &[SchedulerRunSubdivisionRecord] {
+        &self.run_subdivision_records
     }
 
     /// Returns topology changes applied at completed scheduler boundaries.
@@ -3765,6 +3950,47 @@ impl SingleScheduler {
         Ok(publication)
     }
 
+    fn planned_run_subdivision(
+        &self,
+        node: &SchedulerNodeId,
+        current_icount: NodeCounter,
+        max_advance_icount: u64,
+    ) -> Result<Option<PlannedRunSubdivision>, SchedulerError> {
+        let Some(policy) = self
+            .run_subdivision_policies
+            .iter()
+            .find(|policy| &policy.node == node)
+        else {
+            return Ok(None);
+        };
+        let slices = scheduler_rr_run_subdivision(
+            current_icount,
+            max_advance_icount,
+            policy.vcpu_count,
+            policy.rr_switch_quantum,
+        )?;
+
+        Ok(Some(PlannedRunSubdivision {
+            policy: policy.clone(),
+            slices,
+        }))
+    }
+
+    fn record_run_subdivision(
+        &mut self,
+        planned: PlannedRunSubdivision,
+        ceiling: SchedulerRunCeilingPublication,
+    ) {
+        self.run_subdivision_records
+            .push(SchedulerRunSubdivisionRecord {
+                sequence: self.run_subdivision_records.len() as u64,
+                quantum: ceiling.quantum,
+                policy: planned.policy,
+                ceiling,
+                slices: planned.slices,
+            });
+    }
+
     fn topology_activation_ready(
         &self,
         activation_time: SimInstant,
@@ -3939,9 +4165,10 @@ impl SingleScheduler {
             let event_log =
                 self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
             let configuration = self.step_quantum(&decisions);
+            let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
 
             self.configuration = configuration.clone();
-            self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+            self.frontier = frontier;
             self.quanta = self.quanta.saturating_add(1);
             self.last_advance = Some(NodeAdvance {
                 node: selected_node.clone(),
@@ -3952,6 +4179,9 @@ impl SingleScheduler {
             });
             self.yield_to_control_inbox();
             self.commit_control_applications(control_applications);
+            if let Some(subdivision) = plan.subdivision {
+                self.record_run_subdivision(subdivision, plan.ceiling.clone());
+            }
 
             outcomes.push(QuantumOutcome {
                 configuration,
@@ -4058,9 +4288,10 @@ impl SingleScheduler {
         let event_log = self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
+        let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
 
         self.configuration = configuration.clone();
-        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+        self.frontier = frontier;
         self.quanta = self.quanta.saturating_add(1);
         self.last_advance = Some(NodeAdvance {
             node: selected_node.clone(),
@@ -4072,6 +4303,9 @@ impl SingleScheduler {
         // STEP yield phase: expose the control inbox before the next PICK.
         self.yield_to_control_inbox();
         self.commit_control_applications(std::mem::take(&mut control_applications));
+        if let Some(subdivision) = plan.subdivision {
+            self.record_run_subdivision(subdivision, plan.ceiling.clone());
+        }
 
         Ok(QuantumOutcome {
             configuration,
@@ -4574,6 +4808,7 @@ struct AdvancePlan {
     before: NodeCounter,
     target_counter: u64,
     ceiling: SchedulerRunCeilingPublication,
+    subdivision: Option<PlannedRunSubdivision>,
     quiescent_horizon: Option<SimInstant>,
 }
 
@@ -4584,6 +4819,12 @@ struct AdvancePlanDraft {
     before: NodeCounter,
     target_counter: u64,
     quiescent_horizon: Option<SimInstant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlannedRunSubdivision {
+    policy: SchedulerRunSubdivisionPolicy,
+    slices: Vec<SchedulerRunSubdivisionSlice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4607,19 +4848,24 @@ impl<'a> SchedulerCriticalSection<'a> {
 
     fn advance_plan(self, candidate: AdvanceCandidate) -> Result<AdvancePlan, SchedulerError> {
         let draft = self.scheduler.advance_plan_draft(&candidate)?;
+        let subdivision = self.scheduler.planned_run_subdivision(
+            &draft.node,
+            draft.before,
+            draft.target_counter,
+        )?;
         let ceiling = self.scheduler.publish_run_ceiling(
             draft.node.clone(),
             draft.before,
             draft.target_counter,
             candidate.target_time,
         )?;
-
         Ok(AdvancePlan {
             index: draft.index,
             node: draft.node,
             before: draft.before,
             target_counter: draft.target_counter,
             ceiling,
+            subdivision,
             quiescent_horizon: draft.quiescent_horizon,
         })
     }

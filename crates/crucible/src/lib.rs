@@ -75,6 +75,7 @@ pub use scheduler::{
     SchedulerNodeActivity, SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerRendezvous,
     SchedulerRendezvousNode, SchedulerRendezvousPurpose, SchedulerRendezvousRecord,
     SchedulerResolveDecisionRecord, SchedulerResolveFaultChoice, SchedulerRunCeilingPublication,
+    SchedulerRunSubdivisionPolicy, SchedulerRunSubdivisionRecord, SchedulerRunSubdivisionSlice,
     SchedulerScenarioNode, SchedulerSendAuthorization, SchedulerSendAuthorizer, SchedulerTerminal,
     SchedulerTopologyChange, SchedulerTopologyChangeApplication, SchedulerTopologyChangeEffect,
     SchedulerTopologyChangeTrigger, SchedulerTopologyLookaheadUpdate, SharedTimeline,
@@ -85,7 +86,8 @@ pub use scheduler::{
     network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
     ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
     resolve_due_scheduled_events, resolve_probabilistic_decisions, scheduled_event_delivery_time,
-    scheduled_event_resolve_class, unresolved_cross_node_dependencies,
+    scheduled_event_resolve_class, scheduler_rr_run_subdivision,
+    unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
