@@ -1731,6 +1731,41 @@ impl SchedulerRendezvous {
     }
 }
 
+/// The only scheduler-visible purposes that may use a global rendezvous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SchedulerRendezvousPurpose {
+    /// Drains the assertion engine at a globally consistent virtual time.
+    AssertionDrain,
+    /// Evaluates global triggers at a globally consistent virtual time.
+    TriggerEvaluation,
+    /// Swaps effective topology at an exact activation virtual time.
+    TopologySwap,
+    /// Captures or coordinates a globally consistent snapshot.
+    SnapshotControl,
+}
+
+/// One active node observed at a scheduler rendezvous.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerRendezvousNode {
+    /// The scheduler graph node participating in the rendezvous.
+    pub node: SchedulerNodeId,
+    /// The exact virtual time observed for the node.
+    pub virtual_time: SimInstant,
+}
+
+/// Evidence that an allowed scheduler rendezvous occurred.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerRendezvousRecord {
+    /// Monotone scheduler-local rendezvous record sequence.
+    pub sequence: u64,
+    /// The scheduler-visible reason this rendezvous was used.
+    pub purpose: SchedulerRendezvousPurpose,
+    /// The exact shared virtual time for the rendezvous.
+    pub virtual_time: SimInstant,
+    /// Active nodes observed at the exact rendezvous time.
+    pub nodes: Vec<SchedulerRendezvousNode>,
+}
+
 /// Computes the exact rendezvous cap after `current_time`.
 ///
 /// # Errors
@@ -2754,6 +2789,7 @@ pub struct SingleScheduler {
     quanta: u64,
     topology_epoch: u64,
     topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
+    rendezvous_records: Vec<SchedulerRendezvousRecord>,
     boundary_yields: u64,
     ceiling_publications: Vec<SchedulerRunCeilingPublication>,
     lock_held: bool,
@@ -2801,6 +2837,7 @@ impl SingleScheduler {
             quanta: 0,
             topology_epoch: 0,
             topology_change_applications: Vec::new(),
+            rendezvous_records: Vec::new(),
             boundary_yields: 0,
             ceiling_publications: Vec::new(),
             lock_held: false,
@@ -2847,6 +2884,12 @@ impl SingleScheduler {
     #[must_use]
     pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
         &self.topology_change_applications
+    }
+
+    /// Returns allowed rendezvous records completed at scheduler boundaries.
+    #[must_use]
+    pub fn rendezvous_records(&self) -> &[SchedulerRendezvousRecord] {
+        &self.rendezvous_records
     }
 
     /// Returns the deterministic RUN set eligible for host-level concurrency.
@@ -3038,6 +3081,9 @@ impl SingleScheduler {
                 activation_time,
                 effect,
             } = change;
+            if let Some(activation_time) = activation_time {
+                self.record_rendezvous(SchedulerRendezvousPurpose::TopologySwap, activation_time)?;
+            }
             let graph = match effect {
                 SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
                     SchedulerLookaheadGraph::from_edges(effective_edges)
@@ -3082,6 +3128,48 @@ impl SingleScheduler {
         self.topology_changes = deferred;
 
         Ok(applied)
+    }
+
+    fn record_rendezvous(
+        &mut self,
+        purpose: SchedulerRendezvousPurpose,
+        virtual_time: SimInstant,
+    ) -> Result<(), SchedulerError> {
+        let mut nodes = Vec::new();
+        for node in &self.nodes {
+            if matches!(
+                node.activity,
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                continue;
+            }
+
+            let current_time = node.counter.to_virtual(self.timeline.shift())?;
+            if current_time != virtual_time {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "scheduler {:?} rendezvous requires zero skew for {}:{:?}: current={} rendezvous={}",
+                        purpose,
+                        node.id.node.name,
+                        node.id.kind,
+                        current_time.nanos,
+                        virtual_time.nanos
+                    ),
+                });
+            }
+            nodes.push(SchedulerRendezvousNode {
+                node: node.id.clone(),
+                virtual_time: current_time,
+            });
+        }
+
+        self.rendezvous_records.push(SchedulerRendezvousRecord {
+            sequence: self.rendezvous_records.len() as u64,
+            purpose,
+            virtual_time,
+            nodes,
+        });
+        Ok(())
     }
 
     fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {

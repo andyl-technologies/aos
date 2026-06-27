@@ -455,6 +455,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerConcurrency";
       taskIds = ["T-SCHED-25"];
     };
+    schedulerRendezvousPurpose = import ./phase3-scheduler-rendezvous-purpose.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerRendezvousPurpose";
+      taskIds = ["T-SCHED-26"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

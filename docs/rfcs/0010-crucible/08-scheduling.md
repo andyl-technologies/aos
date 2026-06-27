@@ -61,8 +61,9 @@ of this file:
 
 4. **Decouple sync FREQUENCY from ordering EXACTNESS** (§8.5). Ordering is
    *always* exact — never a tuning knob. The only knob is how often the
-   scheduler rendezvouses all nodes for assertion-drain / topology-change, and
-   that knob can never affect which instruction sees which input.
+   scheduler rendezvouses non-terminal scheduler nodes for assertion-drain /
+   topology-change, and that knob can never affect which instruction sees which
+   input.
 
 Everything below makes these precise.
 
@@ -316,9 +317,10 @@ rejects this conflation.
   [DET-11], [DET-13], [DET-14].
 
 - **[SCHED-12]** The only schedule-related tunable MUST be the **rendezvous
-  frequency** (the interval at which the scheduler brings all nodes to a common
-  virtual time to drain assertions, evaluate triggers, and apply topology
-  changes). This frequency is a *performance and observation-latency* knob only:
+  frequency** (the interval at which the scheduler brings non-terminal
+  scheduler nodes to a common virtual time to drain assertions, evaluate
+  triggers, and apply topology changes). This frequency is a *performance and
+  observation-latency* knob only:
   it MUST NOT affect the instruction stream, the icount at which any input is
   delivered, the event log's ordering, or any fingerprint. Two runs with
   different rendezvous frequencies MUST produce bit-identical `S` and `T` and
@@ -338,18 +340,19 @@ The decoupling is realized by the horizon rule: because each node independently
 runs to its own horizon and RESOLVE delivers any event whose delivery time has
 arrived (§8.9), event delivery is *continuous and exact* at the instruction
 level, while the rendezvous is a *separate, coarse* operation used only for work
-that genuinely needs all nodes at one virtual time (assertion drain, topology
-swap). Frequency tunes the latter; it cannot touch the former.
+that genuinely needs non-terminal scheduler nodes at one virtual time (assertion
+drain, topology swap). Frequency tunes the latter; it cannot touch the former.
 
 - **[SCHED-14]** A rendezvous MUST be implemented as a special, exact horizon
-  term shared by all nodes (a common `rendezvous_vt` that participates in
-  `horizon` exactly like an exact local event), so that bringing all nodes to a
-  common virtual time is itself an exact, deterministic operation — never an
-  approximate "stop everyone roughly here." If a node's exact local event or
-  network horizon is earlier than `rendezvous_vt`, that earlier horizon governs;
-  the rendezvous only *caps* advancement, it never *forces* a node past an
-  earlier exact event. *Gate:* `gate:layer1-injection`. *Spec:* §8.5; routes
-  [INV-3].
+  term shared by all non-terminal scheduler nodes (a common `rendezvous_vt` that
+  participates in `horizon` exactly like an exact local event), so that bringing
+  those nodes to a common virtual time is itself an exact, deterministic
+  operation — never an approximate "stop everyone roughly here." If a node's
+  exact local event or network horizon is earlier than `rendezvous_vt`, that
+  earlier horizon governs; the rendezvous only *caps* advancement, it never
+  *forces* a node past an earlier exact event. Halted and done nodes are
+  terminal and are not members of the active rendezvous set. *Gate:*
+  `gate:layer1-injection`. *Spec:* §8.5; routes [INV-3].
 
 ## 8.6 The deterministic total order of cross-node events
 
@@ -739,22 +742,23 @@ the scheduler MUST recompute it when the effective topology changes.
   routes [INV-3], [DET-12].
 
 - **[SCHED-39]** Topology changes MUST be applied **atomically at a rendezvous**
-  (all nodes at a common virtual time, §8.5/§8.14): the scheduler swaps the
-  effective topology while no node is mid-RUN, so every node observes the change
-  at the same virtual time and no node ever runs partly under the old and partly
-  under the new lookahead within one quantum. The rendezvous used for topology
-  swap is the *frequency* knob of §8.5; the *virtual time* at which the swap
-  takes effect is the fault's exact activation time, not "whenever the next
-  rendezvous happens to fall." *Gate:* `gate:layer1-injection`,
+  (all non-terminal scheduler nodes at a common virtual time, §8.5/§8.14): the
+  scheduler swaps the effective topology while no node is mid-RUN, so every
+  non-terminal node observes the change at the same virtual time and no node ever
+  runs partly under the old and partly under the new lookahead within one
+  quantum. The rendezvous used for topology swap is the *frequency* knob of
+  §8.5; the *virtual time* at which the swap takes effect is the fault's exact
+  activation time, not "whenever the next rendezvous happens to fall." *Gate:*
+  `gate:layer1-injection`,
   `gate:scheduler-liveness`. *Spec:* §8.11; routes [INV-3], [DET-12].
 
 The interaction of [SCHED-39] with [SCHED-14] is the resolution of an apparent
 tension: a fault activates at an *exact* virtual time (an exact local event, so
 it tightens horizons exactly), and the scheduler ensures that the topology swap
-implied by that fault happens with all nodes brought to that exact time — so the
-swap is both exactly-timed *and* atomic. The frequency knob never moves the
-fault's activation time; it only governs how often *other* (non-time-critical)
-global work is batched.
+implied by that fault happens with all non-terminal scheduler nodes brought to
+that exact time — so the swap is both exactly-timed *and* atomic. The frequency
+knob never moves the fault's activation time; it only governs how often *other*
+(non-time-critical) global work is batched.
 
 ## 8.12 Lookahead is the parallelism budget
 
@@ -832,21 +836,23 @@ To forestall the conflation [SCHED-11] forbids, this is the exhaustive list of
 what a rendezvous does and does not do.
 
 - **[SCHED-42]** A rendezvous MUST be used *only* for work that genuinely
-  requires all nodes at a common virtual time: draining the assertion engine
-  ([`18-assertions-properties.md`](18-assertions-properties.md)), evaluating
-  triggers, swapping the effective topology on a topology-changing fault
-  ([SCHED-39]), and servicing control operations that request a globally
+  requires all non-terminal scheduler nodes at a common virtual time: draining
+  the assertion engine ([`18-assertions-properties.md`](18-assertions-properties.md)),
+  evaluating triggers, swapping the effective topology on a topology-changing
+  fault ([SCHED-39]), and servicing control operations that request a globally
   consistent snapshot ([`20-session-control-plane.md`](20-session-control-plane.md)).
   A rendezvous MUST NOT be the mechanism for cross-node *event delivery* —
-  delivery is continuous and exact via RESOLVE ([SCHED-13]). *Gate:*
+  delivery is continuous and exact via RESOLVE ([SCHED-13]). Halted and done
+  nodes are terminal and are excluded from the active rendezvous set. *Gate:*
   `gate:layer1-injection`, `gate:control-responsive`. *Spec:* §8.14; routes
   [INV-3], [INV-8].
 
-- **[SCHED-43]** At a rendezvous the inter-node virtual-time skew MUST be zero
-  (all nodes brought to `rendezvous_vt` via the exact horizon cap of [SCHED-14]),
-  so any global recompute (lookahead, topology, fingerprint comparison across
-  nodes) sees a consistent global state. After the rendezvous releases, nodes
-  resume independent horizon-bounded advancement. *Gate:* `gate:layer1-injection`.
+- **[SCHED-43]** At a rendezvous the inter-node virtual-time skew among active
+  rendezvous members MUST be zero (all non-terminal scheduler nodes brought to
+  `rendezvous_vt` via the exact horizon cap of [SCHED-14]), so any global
+  recompute (lookahead, topology, fingerprint comparison across those nodes)
+  sees a consistent global state. After the rendezvous releases, nodes resume
+  independent horizon-bounded advancement. *Gate:* `gate:layer1-injection`.
   *Spec:* §8.14; routes [INV-3].
 
 ## 8.15 Summary
@@ -1261,9 +1267,10 @@ application of explorer-supplied preemption decisions
   next-minimum recompute after partial partition, last-inbound removal,
   sequential partition-then-heal over the current graph, and send authorization
   blocking/restoration across partition/heal.
-- [x] **T-SCHED-24** Apply topology swaps atomically at a rendezvous (all nodes
-  brought to the fault's exact activation virtual time), never mid-RUN and never
-  shifted to the next arbitrary rendezvous tick. — satisfies [SCHED-39],
+- [x] **T-SCHED-24** Apply topology swaps atomically at a rendezvous (all
+  non-terminal scheduler nodes brought to the fault's exact activation virtual
+  time), never mid-RUN and never shifted to the next arbitrary rendezvous tick.
+  — satisfies [SCHED-39],
   [SCHED-14]; spec §8.11, §8.5.
   Completed by `checks.crucible.phase3.schedulerTopologyRendezvous`.
   `SchedulerTopologyChange::with_activation_time` lets fault and latency
@@ -1300,10 +1307,22 @@ application of explorer-supplied preemption decisions
   frontier, event-log offset, and event-log entry hashes for simultaneous due
   inputs. This is the scheduler-side proof used by `gate:e2e-determinism`;
   broader harness coverage continues to own guest fingerprint equality.
-- [ ] **T-SCHED-26** Restrict the rendezvous to assertion-drain / trigger-eval /
+- [x] **T-SCHED-26** Restrict the rendezvous to assertion-drain / trigger-eval /
   topology-swap / snapshot-control only (never event delivery), with zero skew at
   the rendezvous and independent resumption after. — satisfies [SCHED-42],
   [SCHED-43]; spec §8.14.
+  Completed by `checks.crucible.phase3.schedulerRendezvousPurpose`.
+  `SchedulerRendezvousPurpose` exposes only the allowed assertion-drain,
+  trigger-eval, topology-swap, and snapshot-control rendezvous purposes; the
+  scheduler has no event-delivery rendezvous purpose. Fixed rendezvous
+  intervals remain exact advancement caps and are not an event-delivery
+  mechanism: due inputs are still delivered only through RESOLVE at their exact
+  event time. Timed topology changes record a topology-swap rendezvous only
+  after every active scheduler node is at the activation virtual time, with a
+  zero-skew guard on the recorded node observations. The regression test also
+  proves that after the topology-swap record is emitted the scheduler resumes
+  independent horizon-bounded advancement instead of pinning nodes to the
+  rendezvous time.
 - [ ] **T-SCHED-27** Add the scheduler half of `gate:control-responsive`: a
   control op submitted to the scheduler actor is applied within a bounded number
   of quanta, only at quantum boundaries. — satisfies [SCHED-3], [SCHED-33]; spec
