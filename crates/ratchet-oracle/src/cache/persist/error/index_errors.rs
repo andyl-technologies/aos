@@ -85,6 +85,14 @@ pub enum PersistFileArtifactIndexError {
         /// The underlying advisory lock error.
         source: ratchet_cache::file_lock::AdvisoryFileLockError,
     },
+    /// The advisory file-artifact read lock could not be acquired.
+    #[error("failed to acquire persistent file-artifact advisory read lock at {path}")]
+    AdvisoryReadLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The index parent directory could not be created.
     #[error("failed to create persistent file artifact index parent {path:?}")]
     CreateParent {
@@ -144,6 +152,14 @@ pub enum PersistParseArtifactIndexError {
     /// The advisory parse-artifact write lock could not be acquired.
     #[error("failed to acquire persistent parse-artifact advisory write lock at {path}")]
     AdvisoryWriteLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
+    /// The advisory parse-artifact read lock could not be acquired.
+    #[error("failed to acquire persistent parse-artifact advisory read lock at {path}")]
+    AdvisoryReadLock {
         /// The advisory lock file path.
         path: PathBuf,
         /// The underlying advisory lock error.

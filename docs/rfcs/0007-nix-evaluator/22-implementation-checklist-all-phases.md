@@ -1784,15 +1784,17 @@ alone (`M-1`/`Q-A`).
       `ratchet-cache::file_lock::AdvisoryFileLock`s at
       `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock` before
       acquiring file-artifact and parse-artifact mapping mutexes from
-      `ratchet-cache::root_locks`, so cache-level mapping appends, mapping
-      compaction, indexed hydration reads, and file-pack tail trim/repack mapping
-      phases serialize for a live canonical cache root. Mapping writers and
-      maintenance phases hold exclusive mapping advisory locks; indexed
-      file-artifact and parse-artifact hydration reads hold shared `files` store
-      and mapping advisory locks before the same-root locks while they perform
-      the sidecar lookup and referenced `files/` pack read. Concurrent same-root
-      appends keep every complete mapping record readable, poisoned live mapping
-      locks are reported before any sidecar write or indexed hydration read, and
+      `ratchet-cache::root_locks`, so cache-level mapping appends, raw mapping
+      lookups, mapping compaction, indexed hydration reads, and file-pack tail
+      trim/repack mapping phases serialize for a live canonical cache root.
+      Mapping writers and maintenance phases hold exclusive mapping advisory
+      locks; raw file-artifact and parse-artifact mapping lookups hold shared
+      mapping advisory locks before the same-root locks while they read the
+      sidecar; indexed hydration reads additionally hold the shared `files` store
+      advisory and same-root file-store lock while they perform the referenced
+      `files/` pack read. Concurrent same-root appends keep every complete
+      mapping record readable, poisoned live mapping locks are reported before
+      any sidecar write, mapping lookup, or indexed hydration read, and
       cooperating cross-process cache-level mapping readers and writers share the
       same advisory files. Raw lower-level
       `PersistFileArtifactIndex`/`PersistParseArtifactIndex` users, different
@@ -1826,10 +1828,11 @@ alone (`M-1`/`Q-A`).
       cache-level indexed blob reads and indexed artifact hydration reads,
       raw/indexed blob writes plus blob-index compaction/rebuild, blob-pack tail
       trim, and blob-pack repack use it for `.locks/values.lock` and
-      `.locks/files.lock`, and cache-level file/parse artifact mapping writes
-      plus indexed artifact hydration reads and file-pack maintenance phases use
-      `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`, cache-level
-      node metadata writes plus metadata compaction use
+      `.locks/files.lock`, and cache-level file/parse artifact raw mapping
+      lookups, mapping writes, indexed artifact hydration reads, and file-pack
+      maintenance phases use `.locks/file-artifacts.lock` and
+      `.locks/parse-artifacts.lock`, cache-level node metadata writes plus
+      metadata compaction use
       `.locks/node-metadata.lock`, and cache-level node trace writes plus trace
       compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected

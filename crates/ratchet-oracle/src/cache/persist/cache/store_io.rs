@@ -158,6 +158,16 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_file_artifact_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistFileArtifactIndexError> {
+        let path = self.layout.file_artifact_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistFileArtifactIndexError::AdvisoryReadLock { path, source })?;
+        let read_guard = self.root_locks.lock_file_artifacts()?;
+        Ok((advisory_guard, read_guard))
+    }
+
     pub(super) fn lock_parse_artifact_write(
         &self,
     ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistParseArtifactIndexError> {
@@ -166,6 +176,16 @@ impl PersistCache {
             .map_err(|source| PersistParseArtifactIndexError::AdvisoryWriteLock { path, source })?;
         let write_guard = self.root_locks.lock_parse_artifacts()?;
         Ok((advisory_guard, write_guard))
+    }
+
+    pub(super) fn lock_parse_artifact_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistParseArtifactIndexError> {
+        let path = self.layout.parse_artifact_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistParseArtifactIndexError::AdvisoryReadLock { path, source })?;
+        let read_guard = self.root_locks.lock_parse_artifacts()?;
+        Ok((advisory_guard, read_guard))
     }
 
     pub(super) fn lock_file_artifact_hydration_read(
@@ -359,23 +379,24 @@ impl PersistCache {
 
     /// Looks up a durable file-artifact mapping through the sidecar index.
     ///
-    /// Missing index entries return `Ok(None)`. Same-process file-artifact
-    /// writers and file-pack repacks for the same cache root share the
-    /// file-artifact mapping lock while this sidecar is read. This is still a
-    /// raw mapping lookup: callers that need the returned location to remain
-    /// consistent with a following `files/` pack read must hold the file-store
-    /// lock across both operations or use the higher-level hydration helpers.
+    /// Missing index entries return `Ok(None)`. Cache-level file-artifact
+    /// writers, readers, and file-pack repacks for the same cache root share the
+    /// file-artifact advisory and same-root mapping locks while this sidecar is
+    /// read. This is still a raw mapping lookup: callers that need the returned
+    /// location to remain consistent with a following `files/` pack read must
+    /// hold the file-store lock across both operations or use the higher-level
+    /// hydration helpers.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistFileArtifactIndexError`] if the same-root
-    /// file-artifact lock is poisoned or if the sidecar index cannot be opened,
-    /// read, or decoded.
+    /// Returns [`PersistFileArtifactIndexError`] if the advisory read lock
+    /// cannot be acquired, if the same-root file-artifact lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, or decoded.
     pub fn lookup_file_artifact(
         &self,
         key: PersistFileArtifactKey,
     ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
-        let _read_guard = self.root_locks.lock_file_artifacts()?;
+        let (_advisory_guard, _read_guard) = self.lock_file_artifact_read()?;
         self.file_artifact_index.lookup(key)
     }
 
@@ -405,23 +426,24 @@ impl PersistCache {
 
     /// Looks up a durable parse-artifact mapping through the sidecar index.
     ///
-    /// Missing index entries return `Ok(None)`. Same-process parse-artifact
-    /// writers and file-pack repacks for the same cache root share the
-    /// parse-artifact mapping lock while this sidecar is read. This is still a
-    /// raw mapping lookup: callers that need the returned location to remain
-    /// consistent with a following `files/` pack read must hold the file-store
-    /// lock across both operations or use the higher-level hydration helpers.
+    /// Missing index entries return `Ok(None)`. Cache-level parse-artifact
+    /// writers, readers, and file-pack repacks for the same cache root share the
+    /// parse-artifact advisory and same-root mapping locks while this sidecar is
+    /// read. This is still a raw mapping lookup: callers that need the returned
+    /// location to remain consistent with a following `files/` pack read must
+    /// hold the file-store lock across both operations or use the higher-level
+    /// hydration helpers.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistParseArtifactIndexError`] if the same-root
-    /// parse-artifact lock is poisoned or if the sidecar index cannot be
-    /// opened, read, or decoded.
+    /// Returns [`PersistParseArtifactIndexError`] if the advisory read lock
+    /// cannot be acquired, if the same-root parse-artifact lock is poisoned, or
+    /// if the sidecar index cannot be opened, read, or decoded.
     pub fn lookup_parse_artifact(
         &self,
         key: PersistParseArtifactKey,
     ) -> Result<Option<PersistParseArtifactIndexValue>, PersistParseArtifactIndexError> {
-        let _read_guard = self.root_locks.lock_parse_artifacts()?;
+        let (_advisory_guard, _read_guard) = self.lock_parse_artifact_read()?;
         self.parse_artifact_index.lookup(key)
     }
 
