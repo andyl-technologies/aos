@@ -99,6 +99,21 @@
 
   ukiFilename = "aos-${name}-${version}.efi";
 
+  # RFC-0011 §5.2: sd-boot boot-counting tries-suffix for durable image
+  # rollback. When `aos.boot.bootCountingTries` is set, the UKI staged into the
+  # ESP is named `aos-<name>-<version>+<tries>.efi`; sd-boot decrements the
+  # counter on each boot attempt and auto-demotes a UKI that fails to boot, so a
+  # bad new image falls back to the other A/B slot without operator action.
+  # Durable rollback to an older slot is `bootctl set-default` (apm, runtime),
+  # NOT the lexically-highest `default aos-*.efi` glob, which stays only the
+  # first-install fallback. The file inside the `uki` derivation keeps its
+  # un-suffixed name; only the ESP copy carries the suffix.
+  bootCountingTries = system.config.aos.boot.bootCountingTries;
+  espUkiFilename =
+    if bootCountingTries == null
+    then ukiFilename
+    else "aos-${name}-${version}+${toString bootCountingTries}.efi";
+
   imageDrv = pkgs.mkDerivation {
     name = "aos-image-${name}";
     src = null;
@@ -169,12 +184,16 @@
             cp "$SDBOOT_DIR/systemd-bootx64.efi" esp/EFI/systemd/systemd-bootx64.efi
           fi
 
-          # UKI auto-discovered by sd-boot from /EFI/Linux/.
-          cp "$UKI_PATH" esp/EFI/Linux/${ukiFilename}
+          # UKI auto-discovered by sd-boot from /EFI/Linux/. The ESP filename
+          # carries the RFC-0011 §5.2 boot-counting tries-suffix when enabled.
+          cp "$UKI_PATH" esp/EFI/Linux/${espUkiFilename}
 
-          # sd-boot configuration. The `default aos-*.efi` glob makes
-          # sd-boot pick the lexically-highest match — sysupdate-friendly
-          # when the A/B flow ships newer UKIs alongside older ones.
+          # sd-boot configuration. The `default aos-*.efi` glob is the
+          # FIRST-INSTALL FALLBACK only: it picks the lexically-highest match.
+          # For A/B rollout, RFC-0011 §5.2 names UKIs with a boot-counting
+          # tries-suffix (auto-demoting a bad new image) and pins durable
+          # rollback via `bootctl set-default` at runtime, which overrides the
+          # glob's lexical preference.
           cat > esp/loader/loader.conf <<LOADER
           default aos-*.efi
           timeout 3
@@ -262,7 +281,7 @@
               { "number": 2, "label": "root-a", "type": "linux", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }
             ],
             "esp": {
-              "uki": "EFI/Linux/${ukiFilename}",
+              "uki": "EFI/Linux/${espUkiFilename}",
               "sdBoot": "EFI/systemd/systemd-bootx64.efi"
             }
           }

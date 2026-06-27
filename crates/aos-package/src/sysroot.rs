@@ -323,6 +323,17 @@ pub async fn install_system(
         registry: closure.registry_name.clone(),
         created_at: now_iso,
         kernel_path: kernel_path.clone(),
+        // RFC-0011 two-axis fields: this single-axis sysroot-install path does
+        // not run the on-host config evaluator, so the config-gen axis metadata
+        // is absent. A `None` `module_abi_pinned` makes the rollback pin treat
+        // the generation as same-ABI (the pre-RFC-0011 direct re-activation).
+        image_gen_parent: None,
+        module_abi_pinned: None,
+        manifest_hash: None,
+        config_module_closure: None,
+        host_nix_ref: None,
+        host_nix_commit: None,
+        facts_hash: None,
     };
 
     // Create generation directory with a symlink to the toplevel.
@@ -2393,6 +2404,13 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-03-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern1-linux-6.12".into()),
+                    image_gen_parent: None,
+                    module_abi_pinned: None,
+                    manifest_hash: None,
+                    config_module_closure: None,
+                    host_nix_ref: None,
+                    host_nix_commit: None,
+                    facts_hash: None,
                 },
                 SystemGeneration {
                     number: 2,
@@ -2402,6 +2420,13 @@ mod tests {
                     registry: "aos-core".into(),
                     created_at: "2026-04-01T00:00:00Z".into(),
                     kernel_path: Some("/nix/store/kern2-linux-6.13".into()),
+                    image_gen_parent: None,
+                    module_abi_pinned: None,
+                    manifest_hash: None,
+                    config_module_closure: None,
+                    host_nix_ref: None,
+                    host_nix_commit: None,
+                    facts_hash: None,
                 },
             ],
         };
@@ -2437,6 +2462,13 @@ mod tests {
                 registry: "core".into(),
                 created_at: "2026-01-01T00:00:00Z".into(),
                 kernel_path: None,
+                image_gen_parent: None,
+                module_abi_pinned: None,
+                manifest_hash: None,
+                config_module_closure: None,
+                host_nix_ref: None,
+                host_nix_commit: None,
+                facts_hash: None,
             }],
         };
         save_generation_state(tmp.path(), &state).unwrap();
