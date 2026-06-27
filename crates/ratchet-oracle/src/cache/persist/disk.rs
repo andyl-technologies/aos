@@ -1,9 +1,9 @@
 //! Internal disk helpers for the persistent eval-cache stores.
 //!
 //! Owns the low-level integer decoders, the append-only index file invariants,
-//! the blob-packfile validation, and the schema-version sidecar that each
-//! store directory carries. Every helper is `pub(super)` so the sibling
-//! `format`, `pack`, and `cache` modules can reach it through `use super::*`.
+//! and the schema-version sidecar that each store directory carries. Every
+//! helper is `pub(super)` so the sibling `format`, `pack`, and `cache` modules
+//! can reach it through `use super::*`.
 //!
 //! Each store directory holds three on-disk artifacts:
 //!
@@ -31,45 +31,6 @@ pub(super) fn read_u64(bytes: &[u8]) -> u64 {
 pub(super) fn update_persist_index_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
     hasher.update(&(bytes.len() as u64).to_le_bytes());
     hasher.update(bytes);
-}
-
-pub(super) fn validate_blob_pack_header(
-    path: &Path,
-    file: &mut std::fs::File,
-) -> Result<(), PersistBlobPackError> {
-    let len = file
-        .metadata()
-        .map_err(|source| PersistBlobPackError::Metadata {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .len();
-    if len < PERSIST_BLOB_PACK_HEADER_LEN as u64 {
-        return Err(PersistBlobPackError::Format {
-            path: path.to_path_buf(),
-            source: PersistPackFormatError::ShortPackHeader {
-                expected: PERSIST_BLOB_PACK_HEADER_LEN,
-                actual: len as usize,
-            },
-        });
-    }
-    file.seek(SeekFrom::Start(0))
-        .map_err(|source| PersistBlobPackError::Seek {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    let mut bytes = [0; PERSIST_BLOB_PACK_HEADER_LEN];
-    file.read_exact(&mut bytes)
-        .map_err(|source| PersistBlobPackError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    PersistBlobPackHeader::decode(&bytes)
-        .map(|_| ())
-        .map_err(|source| PersistBlobPackError::Format {
-            path: path.to_path_buf(),
-            source,
-        })
 }
 
 pub(super) fn ensure_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {

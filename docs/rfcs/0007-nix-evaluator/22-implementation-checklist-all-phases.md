@@ -1214,10 +1214,23 @@ alone (`M-1`/`Q-A`).
       `ratchet-cache::blob_pack::MappedBlobPack`, and verifies the borrowed
       mapped payload slices match the original bytes. The unsafe mmap call
       stays in harness test code rather than the safe oracle crate. This is
-      format compatibility coverage only; production oracle integration, safe
-      cache-root leases, mmap-backed indexed hits, append-writer migration,
+      format compatibility coverage only; production mmap-read integration,
+      safe cache-root leases, mmap-backed indexed hits,
       LMDB/redb offset indexes, out-of-core rematerialization, cross-process
       writer coordination, and harness proof remain open (`C-13`/`R-14`).
+- [x] Current `ratchet-cache` blob-pack tail-trim primitive:
+      `blob_pack::BlobPackAppender::trim_tail` validates the current pack
+      header, rejects offsets before the fixed header or beyond the current
+      file length, truncates only the requested suffix, and returns the removed
+      byte count. Unit coverage proves tail-record reclamation, no-op trims,
+      invalid offset rejection, past-end rejection, and corrupt-header
+      preservation, and `PersistBlobPack::trim_tail` now delegates to this
+      primitive while preserving the existing oracle error surface. This is an
+      uncoordinated engine-side truncation primitive only; cache-root writer
+      locks in `ratchet-cache`, cross-process/durable coordination, crash
+      transactions with sidecar indexes, automatic GC policy, LMDB/redb offset
+      indexes, mmap-backed indexed hits, and full harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current hash-to-offset index value codec substrate: `PersistBlobKey`
       supplies domain-separated index keys, and `PersistBlobLocation` round-trips
       record offset plus payload length as stable little-endian index metadata.
@@ -1372,12 +1385,13 @@ alone (`M-1`/`Q-A`).
       file/parse artifact roots) while holding the selected store's
       same-process same-root blob lock plus the file/parse mapping locks for
       `files/` trims, verifies each referenced pack record, and truncates only
-      unindexed bytes after the highest live record, returning
+      unindexed bytes after the highest live record through
+      `ratchet-cache::blob_pack::BlobPackAppender::trim_tail`, returning
       `PersistBlobPackTrim` byte/count stats. This is tail-only maintenance for
       unindexed trailing records; applied full-pack repack is covered by the
       explicit helpers below, while cross-process/raw-writer coordination,
-      automatic GC policy, mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      automatic GC policy, mmap reads, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current read-only blob-pack liveness plan:
       `PersistCache::plan_blob_pack_liveness` snapshots and verifies the same
       latest live roots used by tail trimming plus same-process pending

@@ -2,8 +2,9 @@
 //!
 //! RFC-0007 stores immutable `values/` and `files/` payloads in append-only
 //! packfiles. This module owns the stable pack header and record format,
-//! append-only buffered writes, buffered integrity reads that return owned
-//! payload bytes, and memory-mapped reads that return borrowed payload slices.
+//! append-only buffered writes, tail trimming, buffered integrity reads that
+//! return owned payload bytes, and memory-mapped reads that return borrowed
+//! payload slices.
 //!
 //! ```text
 //! pack = header || record*
@@ -428,11 +429,11 @@ impl BlobPackFileIdentity {
     }
 }
 
-/// An append-only writer for one blob packfile.
+/// A writer for one blob packfile.
 ///
 /// Empty packfiles are initialized with the current [`BlobPackHeader`].
-/// Non-empty packfiles must already contain a valid current header. Appends
-/// are ordinary buffered filesystem writes and do not provide writer
+/// Non-empty packfiles must already contain a valid current header. Appends and
+/// tail trims are ordinary buffered filesystem writes and do not provide writer
 /// coordination, index updates, or crash-durability guarantees beyond flushing
 /// the opened descriptor.
 #[derive(Clone, Debug)]
@@ -545,6 +546,59 @@ impl BlobPackAppender {
                 source,
             })?;
         Ok(BlobPackLocation::new(record_offset, payload_len))
+    }
+
+    /// Truncates unneeded bytes after `end_offset`.
+    ///
+    /// `end_offset` must be at least the fixed pack header length and no larger
+    /// than the current file length. The returned value is the number of bytes
+    /// removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackTrimError`] if the packfile cannot be opened,
+    /// inspected, truncated, or if `end_offset` is outside the packfile.
+    pub fn trim_tail(&self, end_offset: u64) -> Result<u64, BlobPackTrimError> {
+        if end_offset < BLOB_PACK_HEADER_LEN as u64 {
+            return Err(BlobPackTrimError::InvalidRecordOffset {
+                record_offset: end_offset,
+            });
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|source| BlobPackTrimError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| BlobPackTrimError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_open_blob_pack_header_for_trim(&self.path, &mut file, len)?;
+
+        if end_offset > len {
+            return Err(BlobPackTrimError::RecordExtendsPastEnd {
+                payload_end: end_offset,
+                pack_len: len,
+            });
+        }
+        if end_offset == len {
+            return Ok(0);
+        }
+
+        file.set_len(end_offset)
+            .and_then(|()| file.flush())
+            .map_err(|source| BlobPackTrimError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(len - end_offset)
     }
 }
 
@@ -1666,6 +1720,79 @@ pub enum BlobPackRewriteError {
     },
 }
 
+/// A blob pack tail trim failed.
+#[derive(Debug, Error)]
+pub enum BlobPackTrimError {
+    /// The packfile could not be opened.
+    #[error("failed to open blob pack {path:?}")]
+    Open {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// File metadata could not be read.
+    #[error("failed to read blob pack metadata for {path:?}")]
+    Metadata {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be seeked.
+    #[error("failed to seek blob pack {path:?}")]
+    Seek {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be read.
+    #[error("failed to read blob pack {path:?}")]
+    Read {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile could not be written.
+    #[error("failed to write blob pack {path:?}")]
+    Write {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile header is invalid.
+    #[error("invalid blob pack format in {path:?}")]
+    Format {
+        /// The packfile path.
+        path: PathBuf,
+        /// The format error.
+        #[source]
+        source: BlobPackFormatError,
+    },
+    /// The trim offset points before the initialized pack header.
+    #[error("invalid blob pack trim offset {record_offset}")]
+    InvalidRecordOffset {
+        /// The invalid trim offset.
+        record_offset: u64,
+    },
+    /// The trim offset is past the current packfile length.
+    #[error("blob pack trim offset {payload_end} is past pack length {pack_len}")]
+    RecordExtendsPastEnd {
+        /// The requested byte offset one past the retained tail.
+        payload_end: u64,
+        /// The current packfile length.
+        pack_len: u64,
+    },
+}
+
 /// A blob pack append operation failed.
 #[derive(Debug, Error)]
 pub enum BlobPackAppendError {
@@ -1904,6 +2031,31 @@ fn validate_open_blob_pack_header(
     Ok(())
 }
 
+fn validate_open_blob_pack_header_for_trim(
+    path: &Path,
+    file: &mut fs::File,
+    len: u64,
+) -> Result<(), BlobPackTrimError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| BlobPackTrimError::Seek {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    let header_len = len.min(BLOB_PACK_HEADER_LEN as u64) as usize;
+    let mut bytes = vec![0; header_len];
+    file.read_exact(&mut bytes)
+        .map_err(|source| BlobPackTrimError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    BlobPackHeader::decode(&bytes).map_err(|source| BlobPackTrimError::Format {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 fn read_u32(bytes: &[u8]) -> u32 {
     let mut value = [0; 4];
     value.copy_from_slice(bytes);
@@ -2115,6 +2267,133 @@ mod tests {
                 if expected == wrong_hash && actual == BlobPackHash::for_bytes(payload)
         ));
         assert_eq!(appender.len().expect("final pack length reads"), before_len);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_trim_tail_removes_unneeded_records() {
+        let path = temp_path("appender-trim-tail");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        let first = b"first payload".as_slice();
+        let second = b"second payload".as_slice();
+        let first_hash = BlobPackHash::for_bytes(first);
+        let second_hash = BlobPackHash::for_bytes(second);
+        let first_location = appender
+            .append_payload(first_hash, first)
+            .expect("first payload appends");
+        let second_location = appender
+            .append_payload(second_hash, second)
+            .expect("second payload appends");
+        let before_len = appender.len().expect("pack length reads");
+
+        let removed = appender
+            .trim_tail(second_location.record_offset())
+            .expect("tail trims");
+
+        assert_eq!(removed, before_len - second_location.record_offset());
+        assert_eq!(
+            appender.len().expect("trimmed pack length reads"),
+            second_location.record_offset()
+        );
+        let reader = BlobPackReader::open(path.clone()).expect("reader opens trimmed pack");
+        assert_eq!(
+            reader.records().expect("trimmed records scan"),
+            [BlobPackRecord::new(first_hash, first_location)]
+        );
+        assert_eq!(
+            reader
+                .read_payload(first_location, first_hash)
+                .expect("retained payload reads"),
+            first
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_trim_tail_noops_at_current_len() {
+        let path = temp_path("appender-trim-tail-noop");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        let payload = b"payload".as_slice();
+        appender
+            .append_payload(BlobPackHash::for_bytes(payload), payload)
+            .expect("payload appends");
+        let len = appender.len().expect("pack length reads");
+
+        let removed = appender.trim_tail(len).expect("current len trim noops");
+
+        assert_eq!(removed, 0);
+        assert_eq!(appender.len().expect("final pack length reads"), len);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_trim_tail_rejects_offset_before_header() {
+        let path = temp_path("appender-trim-tail-before-header");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+
+        let error = appender
+            .trim_tail(BLOB_PACK_HEADER_LEN as u64 - 1)
+            .expect_err("offset before header errors");
+
+        assert!(matches!(
+            error,
+            BlobPackTrimError::InvalidRecordOffset { record_offset }
+                if record_offset == BLOB_PACK_HEADER_LEN as u64 - 1
+        ));
+        assert_eq!(
+            appender.len().expect("final pack length reads"),
+            BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_trim_tail_rejects_offset_past_end() {
+        let path = temp_path("appender-trim-tail-past-end");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        let len = appender.len().expect("pack length reads");
+
+        let error = appender
+            .trim_tail(len + 1)
+            .expect_err("offset past end errors");
+
+        assert!(matches!(
+            error,
+            BlobPackTrimError::RecordExtendsPastEnd {
+                payload_end,
+                pack_len,
+            } if payload_end == len + 1 && pack_len == len
+        ));
+        assert_eq!(appender.len().expect("final pack length reads"), len);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_pack_appender_trim_tail_rejects_corrupt_header_without_rewriting() {
+        let path = temp_path("appender-trim-tail-corrupt-header");
+        let appender = BlobPackAppender::open(path.clone()).expect("appender opens");
+        fs::write(&path, b"bad").expect("corrupt pack writes");
+
+        let error = appender
+            .trim_tail(BLOB_PACK_HEADER_LEN as u64)
+            .expect_err("corrupt header errors");
+
+        assert!(matches!(
+            error,
+            BlobPackTrimError::Format {
+                source: BlobPackFormatError::ShortPackHeader { actual: 3, .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(&path).expect("corrupt pack reads").as_slice(),
+            b"bad"
+        );
 
         let _ = fs::remove_file(path);
     }

@@ -427,6 +427,98 @@ fn blob_pack_rejects_append_payload_hash_mismatch() {
 }
 
 #[test]
+fn blob_pack_trim_tail_removes_unneeded_records() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let first_payload = b"first payload";
+    let first_hash = DurableBlake3Hash::for_bytes(first_payload);
+    let second_payload = b"second payload";
+    let second_hash = DurableBlake3Hash::for_bytes(second_payload);
+    let first = pack
+        .append_blob(first_hash, first_payload)
+        .expect("first blob appends");
+    let second = pack
+        .append_blob(second_hash, second_payload)
+        .expect("second blob appends");
+    let before_len = pack.len().expect("pack length reads");
+
+    let removed = pack
+        .trim_tail(second.record_offset())
+        .expect("pack tail trims");
+
+    assert_eq!(removed, before_len - second.record_offset());
+    assert_eq!(
+        pack.len().expect("trimmed pack length reads"),
+        second.record_offset()
+    );
+    let records = pack.records().expect("trimmed records scan");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].hash(), first_hash);
+    assert_eq!(records[0].location(), first);
+    assert_eq!(
+        pack.read_blob(first, first_hash)
+            .expect("retained blob reads")
+            .as_slice(),
+        first_payload
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_trim_tail_rejects_corrupt_header_without_rewriting() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    fs::write(&path, b"bad").expect("corrupt pack writes");
+
+    let error = pack
+        .trim_tail(PERSIST_BLOB_PACK_HEADER_LEN as u64)
+        .expect_err("corrupt header errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::Format {
+            source: PersistPackFormatError::ShortPackHeader { actual: 3, .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(&path).expect("corrupt pack reads").as_slice(),
+        b"bad"
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_trim_tail_rejects_offsets_outside_pack() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let len = pack.len().expect("pack length reads");
+
+    let error = pack
+        .trim_tail(PERSIST_BLOB_PACK_HEADER_LEN as u64 - 1)
+        .expect_err("offset before header errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::InvalidRecordOffset { record_offset }
+            if record_offset == PERSIST_BLOB_PACK_HEADER_LEN as u64 - 1
+    ));
+
+    let error = pack.trim_tail(len + 1).expect_err("offset past end errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordExtendsPastEnd {
+            payload_end,
+            pack_len,
+        } if payload_end == len + 1 && pack_len == len
+    ));
+    assert_eq!(pack.len().expect("final pack length reads"), len);
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_read_rejects_mismatched_lookup_metadata() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");

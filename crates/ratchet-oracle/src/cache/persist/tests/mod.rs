@@ -3,6 +3,8 @@
 //! Shared fixtures live here; the test cases are grouped by concern into the
 //! child modules below.
 
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
