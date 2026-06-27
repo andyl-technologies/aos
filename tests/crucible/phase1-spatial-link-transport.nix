@@ -117,6 +117,10 @@
         needle = "link_latency_ns={}";
       }
       {
+        label = "minimum latency floor material";
+        needle = "min_link_latency_ns={}";
+      }
+      {
         label = "jitter material";
         needle = "link_jitter_ns={}";
       }

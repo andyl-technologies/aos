@@ -11300,7 +11300,8 @@ fn scenario_world_plan_properties_seed_material(
 
 fn world_material(nodes: &[WorldNode], links: &[LinkDef]) -> String {
     format!(
-        "{}\n{}",
+        "min_link_latency_ns={}\n{}\n{}",
+        MIN_LINK_LATENCY.nanos,
         world_nodes_material(nodes),
         world_links_material(links)
     )

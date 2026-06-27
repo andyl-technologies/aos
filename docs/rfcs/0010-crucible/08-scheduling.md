@@ -1058,9 +1058,15 @@ application of explorer-supplied preemption decisions
   scheduler ordering path, and runs those focused harness-lint regressions plus
   the scheduler event-order regression; the broader phase1 harness-lint gate
   remains a separate multi-policy gate.
-- [ ] **T-SCHED-10** Enforce the minimum link-latency floor at lowering time,
+- [x] **T-SCHED-10** Enforce the minimum link-latency floor at lowering time,
   include it in the scenario content hash, and reject sub-floor links. —
   satisfies [SCHED-20], [SCHED-21]; spec §8.7.
+  Completed by `checks.crucible.phase3.schedulerLinkLatencyFloor`.
+  `MIN_LINK_LATENCY=1` is enforced by link construction and world lowering,
+  including canonical TOML and compact-binary parsing. Canonical world material
+  now records `min_link_latency_ns`, so the scenario `world_ref` changes with
+  the configured floor; the focused check runs the scheduler floor regression,
+  existing link-transport regressions, and canonicalization hash regression.
 - [ ] **T-SCHED-11** Implement deterministic quiescence detection from
   authoritative scheduler state only (no host timeout); idle nodes do not
   constrain peers. — satisfies [SCHED-22], [SCHED-23]; spec §8.8.

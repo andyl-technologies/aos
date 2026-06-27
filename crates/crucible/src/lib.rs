@@ -2487,6 +2487,75 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world_material() {
+        let below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 0 },
+            SimDuration::default(),
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let jitter_below_floor = LinkDef::with_transport(
+            node_id("a"),
+            node_id("b"),
+            SimDuration { nanos: 5 },
+            SimDuration { nanos: 5 },
+            LinkLossProbability::ZERO,
+            None,
+        );
+        let floor_world = world_from_nodes_and_links(two_ready_nodes(), vec![link("a", "b")]);
+        let material = String::from_utf8(floor_world.canonical_bytes())
+            .unwrap_or_else(|error| panic!("world material should be utf8: {error}"));
+        let toml = floor_world
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("world TOML should serialize: {error}"));
+        let subfloor_toml = toml.replace("latency_nanos = 1", "latency_nanos = 0");
+        let parsed_subfloor = World::from_canonical_toml(&subfloor_toml);
+        let raised_latency_world = world_from_nodes_and_links(
+            two_ready_nodes(),
+            vec![transport_link("a", "b", 2, 0, 0, None)],
+        );
+
+        assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+        assert!(matches!(
+            below_floor,
+            Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
+                if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            jitter_below_floor,
+            Err(EngineError::WorldLinkJitterBelowLatencyFloor {
+                latency,
+                jitter,
+                minimum,
+                ..
+            }) if latency == SimDuration { nanos: 5 }
+                && jitter == SimDuration { nanos: 5 }
+                && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(matches!(
+            parsed_subfloor,
+            Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
+                if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+        ));
+        assert!(material.contains("min_link_latency_ns=1"));
+        assert_eq!(
+            floor_world.id(),
+            ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        );
+        assert_ne!(floor_world.id(), raised_latency_world.id());
+        assert_ne!(
+            floor_world.scenario_def().id(),
+            raised_latency_world.scenario_def().id()
+        );
+        assert_eq!(
+            floor_world.static_topology().lookahead_graph[0].minimum_latency,
+            MIN_LINK_LATENCY
+        );
+    }
+
+    #[test]
     fn world_static_topology_is_derived_from_world_only() {
         let world = world_from_nodes_and_links(
             two_ready_nodes(),
@@ -5083,15 +5152,15 @@ tag = "negative-time"
         assert_eq!(density.millionths(), 125_000);
         assert_eq!(
             authored_world.id().to_hex(),
-            "61ec12fd977d4673b7ab5b291831c52f391a4287a373f8198ace9eaf55ca8fb0"
+            "2f107a46c69f789cd0fa04ed4bca6e7c1d780594789e2167a80bf0dfe3bc21c3"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.canonical_bytes()).to_hex(),
-            "823a244bfbcf43723a7f21d7a96bc4271005dc0938ae39ce9fd70670486d7898"
+            "ccd11b842c868487bd1417fba149d40afe0fb75e012217552da9999a2d081c00"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
-            "454d471d33c954cbc4d36617ffe9f666ef6761f25ed94482bf59448bbf47d208"
+            "d6b383bba7293f4ed649f2f2cded1d57a6117077fdbaeb29a3f9b989a5533c3b"
         );
         assert_eq!(
             authored_plan.content_hash().to_hex(),
@@ -5119,15 +5188,15 @@ tag = "negative-time"
         );
         assert_eq!(
             authored_form.id().to_hex(),
-            "9af89ea579d9cba62209d8e8df73f316cfab3d3a7f98de05bb57aaedd5bde805"
+            "ff875d3d8ad89db5298ca68dfd6f70f6ee895891a43930e94df8d384ac47f51f"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-            "6c4b2d2891da1aed1d336e43e35dd6186a02fd5df75a82e3603b3418857b8313"
+            "420eb3bea78a29f1bbcfc57fbcd6fed5bdad1ae0c7d39f762c06e6865ce03f4d"
         );
         assert_eq!(
             ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-            "b8cb69c893d97292f967e12373f53a03c4bd70e8efe8dbc2b9c15b3ba329e890"
+            "64e947f6585ea7c6dce06670bc7d76d50d695dc94172373fd62764ba0543ae61"
         );
         assert_eq!(authored_world.id(), canonical_world.id());
         assert_eq!(authored_world.nodes(), canonical_world.nodes());
