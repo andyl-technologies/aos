@@ -2354,6 +2354,215 @@ fn cache_storage_maintenance_file_trim_failure_keeps_blob_index_rebuilds() {
 }
 
 #[test]
+fn cache_storage_repack_compacts_sidecars_and_repacks_blob_packs() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    let unrooted_value_payload = b"unrooted value before storage repack";
+    let unrooted_value_key =
+        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload));
+    let unrooted_value_location = cache
+        .append_blob(unrooted_value_key, unrooted_value_payload)
+        .expect("unrooted value appends");
+    let value_payload = CachedExpressionValue::immediate(Value::int(101)).expect("payload builds");
+    let value_hash = value_payload.value_hash().expect("payload hashes");
+    let value_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let value_materialized = cache
+        .materialize_cached_expression_value_indexed(
+            &value_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("value payload materializes");
+    let PersistMaterialization::Materialized(value_old_location) = value_materialized else {
+        panic!("value payload should materialize");
+    };
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, value_old_location))
+        .expect("duplicate value index entry appends");
+
+    let unrooted_file_payload = b"unrooted file before storage repack";
+    let unrooted_file_key =
+        PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_file_payload));
+    let unrooted_file_location = cache
+        .append_blob(unrooted_file_key, unrooted_file_payload)
+        .expect("unrooted file appends");
+    let source = b"let z = 3; in z";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let file_payload = b"storage repack file artifact";
+    let file_materialized = cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact materializes");
+    let file_entry = file_materialized
+        .index_entry()
+        .expect("file artifact should materialize");
+    let file_blob_hash = file_entry.value().blob_hash();
+    let file_old_location = file_entry.value().location();
+    cache
+        .record_file_artifact(file_entry)
+        .expect("duplicate file artifact mapping records");
+
+    let repack = cache.repack_storage().expect("storage repack runs");
+
+    assert_eq!(repack.sidecars().value_blob_index_entries(), 1);
+    assert_eq!(repack.sidecars().file_blob_index_entries(), 1);
+    assert_eq!(repack.sidecars().file_artifact_entries(), 1);
+    assert_eq!(repack.sidecars().parse_artifact_entries(), 0);
+    assert!(repack.blob_packs().value_blob_pack().reclaimable_bytes() > 0);
+    assert!(repack.blob_packs().file_blob_pack().reclaimable_bytes() > 0);
+    assert_eq!(
+        repack.reclaimed_blob_bytes(),
+        repack.blob_packs().reclaimed_blob_bytes()
+    );
+    assert!(
+        repack
+            .blob_packs()
+            .value_blob_pack()
+            .record_relocations()
+            .iter()
+            .any(|relocation| relocation.old_location() == value_old_location)
+    );
+    assert!(
+        repack
+            .blob_packs()
+            .file_blob_pack()
+            .record_relocations()
+            .iter()
+            .any(|relocation| relocation.old_location() == file_old_location)
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("value payload loads")
+            .expect("value payload exists"),
+        value_payload
+    );
+    let relocated_file_value = cache
+        .lookup_file_artifact(file_artifact_key)
+        .expect("file artifact lookup succeeds")
+        .expect("file artifact exists after storage repack");
+    assert_eq!(relocated_file_value.blob_hash(), file_blob_hash);
+    assert_eq!(
+        cache
+            .read_file_artifact(relocated_file_value)
+            .expect("file artifact reads after storage repack")
+            .as_slice(),
+        file_payload
+    );
+    assert!(
+        cache
+            .read_blob(unrooted_value_key, unrooted_value_location)
+            .is_err()
+    );
+    assert!(
+        cache
+            .read_blob(unrooted_file_key, unrooted_file_location)
+            .is_err()
+    );
+    assert_eq!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after storage repack")
+            .len(),
+        repack.blob_packs().value_blob_pack().bytes_after()
+    );
+    assert_eq!(
+        fs::metadata(cache.file_pack().path())
+            .expect("file pack metadata after storage repack")
+            .len(),
+        repack.blob_packs().file_blob_pack().bytes_after()
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_storage_repack_file_failure_keeps_sidecar_compaction_and_value_repack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let unrooted_value_payload = b"unrooted value before storage repack failure";
+    cache
+        .append_blob(
+            PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload)),
+            unrooted_value_payload,
+        )
+        .expect("unrooted value appends");
+    let value_payload = CachedExpressionValue::immediate(Value::int(102)).expect("payload builds");
+    let value_hash = value_payload.value_hash().expect("payload hashes");
+    let value_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let value_materialized = cache
+        .materialize_cached_expression_value_indexed(
+            &value_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("value payload materializes");
+    let PersistMaterialization::Materialized(value_location) = value_materialized else {
+        panic!("value payload should materialize");
+    };
+    cache
+        .value_index()
+        .append_entry(PersistBlobIndexEntry::new(value_key, value_location))
+        .expect("duplicate value index entry appends");
+    let value_bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before storage repack failure")
+        .len();
+
+    let source = b"let pending = true; in pending";
+    let parse_key = test_parse_key(source);
+    let file_key = ParseFileKey::for_source("/src/pending.nix", source);
+    cache
+        .materialize_file_artifact(
+            &file_key,
+            parse_key,
+            b"pending storage repack file artifact",
+            MaterializationDecision::Materialize,
+        )
+        .expect("pending file artifact materializes");
+
+    let error = cache
+        .repack_storage()
+        .expect_err("pending file roots block storage repack");
+
+    assert!(matches!(
+        error,
+        PersistStorageRepackError::BlobPacks {
+            source: PersistBlobPacksRepackError::FileBlobPack {
+                source: PersistFileBlobPackRepackError::PendingArtifactRoots { roots: 1 }
+            }
+        }
+    ));
+    assert_eq!(
+        fs::metadata(cache.value_index().path())
+            .expect("value index metadata after failed storage repack")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64,
+        "sidecar compaction should remain committed before file repack fails"
+    );
+    assert!(
+        fs::metadata(cache.value_pack().path())
+            .expect("value pack metadata after failed storage repack")
+            .len()
+            < value_bytes_before,
+        "value pack repack should remain committed before file repack fails"
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("value payload loads")
+            .expect("value payload exists"),
+        value_payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_traces_compacts_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

@@ -1903,6 +1903,21 @@ alone (`M-1`/`Q-A`).
       does not run the explicit full-pack repack helpers
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
       tests.
+- [x] Current explicit storage repack sweep:
+      `PersistCache::repack_storage` compacts all current append-only
+      sidecars, then runs `repack_blob_packs` against the current live roots,
+      returning `PersistStorageRepack` with sidecar counts and applied
+      value/file repack plans. Unlike `compact_storage`, it does not rebuild
+      blob indexes from physical pack scans before planning, so unindexed pack
+      records stay unrooted and can be omitted by the repack. Failure coverage
+      pins the non-transactional boundaries where sidecar compaction remains
+      committed if file-pack repack fails and value-pack repack may already be
+      committed before that failure. This is sequential caller-driven
+      maintenance only; automatic compaction/GC policy, transactionality across
+      sidecar/repack phases, cross-process/raw pack or sidecar writer
+      coordination, LMDB/redb indexes, mmap reads, Attic transport, and
+      cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage repack cache tests.
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a

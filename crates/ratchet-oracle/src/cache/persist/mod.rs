@@ -116,7 +116,7 @@ pub use cache::{
     PersistBlobPackRepackPlan, PersistBlobPackTrim, PersistBlobPacksRepack,
     PersistBlobRecordRelocation, PersistCache, PersistCompaction, PersistFileBlobReachabilityPlan,
     PersistMissingNodeValueRoot, PersistNodeValueRoot, PersistNodeValueRootPlan,
-    PersistStorageMaintenance, PersistValueBlobReachabilityPlan,
+    PersistStorageMaintenance, PersistStorageRepack, PersistValueBlobReachabilityPlan,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
@@ -136,7 +136,7 @@ pub use error::{
     PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
     PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
     PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
-    PersistParseSourceIndexedLoadError, PersistStorageMaintenanceError,
+    PersistParseSourceIndexedLoadError, PersistStorageMaintenanceError, PersistStorageRepackError,
     PersistValueBlobPackRepackError, PersistValueBlobReachabilityPlanError,
 };
 pub use format::{

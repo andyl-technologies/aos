@@ -885,6 +885,37 @@ impl PersistStorageMaintenance {
     }
 }
 
+/// Results from an explicit persistent storage repack sweep.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistStorageRepack {
+    sidecars: PersistCompaction,
+    blob_packs: PersistBlobPacksRepack,
+}
+
+impl PersistStorageRepack {
+    fn new(sidecars: PersistCompaction, blob_packs: PersistBlobPacksRepack) -> Self {
+        Self {
+            sidecars,
+            blob_packs,
+        }
+    }
+
+    /// Returns sidecar compaction counts from the repack sweep.
+    pub const fn sidecars(&self) -> PersistCompaction {
+        self.sidecars
+    }
+
+    /// Returns applied blob-pack repack plans from the repack sweep.
+    pub const fn blob_packs(&self) -> &PersistBlobPacksRepack {
+        &self.blob_packs
+    }
+
+    /// Returns total bytes reclaimed from both blob packs.
+    pub fn reclaimed_blob_bytes(&self) -> u64 {
+        self.blob_packs.reclaimed_blob_bytes()
+    }
+}
+
 /// A sidecar entry that would be replaced by a blob-index rebuild.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PersistBlobIndexStaleEntry {
@@ -2005,6 +2036,34 @@ impl PersistCache {
             value_blob_pack,
             file_blob_pack,
         ))
+    }
+
+    /// Runs explicit persistent storage repacking.
+    ///
+    /// This caller-driven sweep compacts append-only sidecars to their latest
+    /// entries, then runs [`Self::repack_blob_packs`] against the current live
+    /// roots. Unlike [`Self::compact_storage`], it does not rebuild blob-index
+    /// sidecars from physical pack scans before planning, so unindexed pack
+    /// records stay unrooted and can be omitted by the repack. It is sequential
+    /// and non-transactional: sidecar compaction remains committed if a later
+    /// pack repack fails, and value-pack rewrites may remain committed if the
+    /// file-pack repack fails. It does not implement an automatic GC policy,
+    /// coordinate with cross-process writers or raw lower-level pack or
+    /// sidecar users, or replace the future LMDB/redb metadata engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistStorageRepackError`] identifying the phase that failed.
+    /// Earlier phases may already have rewritten sidecars or repacked a blob
+    /// pack.
+    pub fn repack_storage(&self) -> Result<PersistStorageRepack, PersistStorageRepackError> {
+        let sidecars = self
+            .compact_sidecars()
+            .map_err(|source| PersistStorageRepackError::Sidecars { source })?;
+        let blob_packs = self
+            .repack_blob_packs()
+            .map_err(|source| PersistStorageRepackError::BlobPacks { source })?;
+        Ok(PersistStorageRepack::new(sidecars, blob_packs))
     }
 
     /// Returns this cache's canonicalized filesystem layout.

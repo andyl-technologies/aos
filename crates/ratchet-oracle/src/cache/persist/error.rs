@@ -1131,6 +1131,23 @@ pub enum PersistStorageMaintenanceError {
     },
 }
 
+/// Persistent storage repacking failed.
+#[derive(Debug, Error)]
+pub enum PersistStorageRepackError {
+    /// Sidecar compaction failed.
+    #[error("failed to compact persistent sidecars before storage repack")]
+    Sidecars {
+        /// The underlying sidecar compaction error.
+        source: PersistCompactionError,
+    },
+    /// Blob-pack repacking failed.
+    #[error("failed to repack persistent blob packs during storage repack")]
+    BlobPacks {
+        /// The underlying blob-pack repack error.
+        source: PersistBlobPacksRepackError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
