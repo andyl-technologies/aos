@@ -465,6 +465,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerControlResponsive";
       taskIds = ["T-SCHED-27"];
     };
+    schedulerRrSubdivision = import ./phase3-scheduler-rr-subdivision.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerRrSubdivision";
+      taskIds = ["T-SCHED-28"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;

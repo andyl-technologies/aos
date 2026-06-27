@@ -1342,10 +1342,21 @@ application of explorer-supplied preemption decisions
   queued/request controls, deferred-drive responsiveness, and control-only quanta
   with no runnable node all apply only at quantum boundaries and within the
   bound.
-- [ ] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
+- [x] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
   node's instruction budget among its vCPUs by `rr_switch_quantum` in fixed
   ascending rotation, plugin-internal and host-timing-independent, with the node
   ceiling unchanged (one ceiling per RUN). — satisfies [SCHED-45]; spec §8.16.
+  Completed by `checks.crucible.phase3.schedulerRrSubdivision`.
+  `SchedulerRunSubdivisionPolicy` adds optional per-node, deterministic RR
+  subdivision to scheduler scenarios and canonical material, while
+  `SchedulerRunSubdivisionRecord` records plugin-internal vCPU slices against
+  the single node-level ceiling already published for the RUN. The pure
+  `scheduler_rr_run_subdivision` helper derives slices only from the current
+  node icount, the published `max_advance_icount`, `vcpu_count`, and
+  `rr_switch_quantum`, keeping the result host-timing-independent. Multi-vCPU
+  nodes use fixed ascending rotation by vCPU index at deterministic RR
+  boundaries, and the single-vCPU case consumes the whole RUN budget in one
+  slice without publishing any extra ceilings.
 - [ ] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
   within the bounded `[deadline, horizon]` window, recorded in total order, never
   moving a point past the node's authorized ceiling (Contract B / conservative
