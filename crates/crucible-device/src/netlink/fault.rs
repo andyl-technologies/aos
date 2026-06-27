@@ -1,0 +1,207 @@
+//! The network-link effective fault table and its deterministic transforms.
+//!
+//! A link's behavior is the fault-free delivery (base latency) composed with an
+//! **effective fault table** ([IO-20]): the set of faults currently active on
+//! the link, each a deterministic transform of a frame's delivery icount and/or
+//! payload. This module owns [`LinkFaults`] (the table) and the pure transform
+//! functions every fault applies at RESOLVE.
+//!
+//! # The fault application model
+//!
+//! Faults are applied in a fixed order so the result is a pure function of the
+//! frame, the table, and the injected RNG draws. The order matters: bandwidth
+//! serialization and latency are deterministic shifts computed first; the
+//! probabilistic faults (jitter, reorder, loss, duplicate, corrupt) each consume
+//! one or more draws in this fixed sequence.
+//!
+//! ```text
+//! resolve(frame, t_emit_ns, draws):
+//!   delivery_ns  = t_emit_ns + effective_latency_ns        // base, clamped to floor (IO-33)
+//!   delivery_ns += serialization_delay_ns(len, bandwidth)  // bandwidth (integer ns, no float)
+//!   delivery_ns += draw(jitter)  % (jitter_window_ns + 1)  // jitter   (seeded, shift later)
+//!   delivery_ns += draw(reorder) % (reorder_window_ns + 1) // reorder  (seeded, shift later)
+//!   if loss      and draw(loss)      < loss_num/loss_den    : DROP (no delivery)
+//!   if duplicate and draw(dup)       < dup_num/dup_den      : emit a 2nd copy at
+//!                                                             delivery_ns + dup_gap_ns
+//!   if corrupt   and draw(corrupt)   < corrupt_num/cor_den  : flip bits at seeded
+//!                                                             positions in payload
+//! ```
+//!
+//! Every probabilistic decision is a pure function of an **injected draw value**
+//! (a `u64`) supplied by the seeded per-device RNG ([`crate::fault::DeviceRng`]),
+//! forked by name-hash from the scenario seed ([IO-21]). The link consumes its
+//! draws in the fixed order documented above; the shared [`Probability`] and the
+//! transform functions are owned by [`crate::fault`] and re-exported here so the
+//! block, 9p, and network sub-nodes apply one taxonomy ([IO-25], [IO-26]).
+
+pub use crate::fault::{
+    Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns, serialization_delay_ns,
+};
+
+/// The effective fault table for a directed network link.
+///
+/// Holds every fault parameter the link applies at RESOLVE. All fields are
+/// integer nanoseconds or exact-fraction probabilities; no floating point
+/// appears anywhere ([IO-24]). A default table is fault-free: zero windows, zero
+/// bandwidth limit (unlimited), and never-firing probabilities, so the link
+/// delivers at exactly the base latency.
+///
+/// The fields are deliberately a flat data contract: the link reads them, and a
+/// snapshot stores them verbatim, so the active fault set is part of the device
+/// half of `MaterializedState` ([IO-26], deferred wiring in CS-IO-5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct LinkFaults {
+    /// Extra fixed latency added to every frame, in virtual nanoseconds.
+    ///
+    /// A latency fault that *raises* the effective latency is honored as-is (it
+    /// only widens lookahead, [IO-33]); a fault that would *lower* the link below
+    /// its floor is clamped by [`super::link::NetLink`], never applied here.
+    pub added_latency_ns: u64,
+
+    /// The upper bound (inclusive) of the seeded jitter window, in ns.
+    ///
+    /// Jitter shifts a frame later by `draw % (jitter_window_ns + 1)` ([IO-20]).
+    /// A window of zero is no jitter.
+    pub jitter_window_ns: u64,
+
+    /// The upper bound (inclusive) of the seeded reorder window, in ns.
+    ///
+    /// Reorder shifts a frame later by `draw % (reorder_window_ns + 1)`,
+    /// potentially past a sibling frame ([IO-20]). The shift is checked against
+    /// the consumer's frontier by [`super::link::NetLink`] ([IO-34]).
+    pub reorder_window_ns: u64,
+
+    /// The serialization rate in bytes per second; zero means unlimited.
+    ///
+    /// Bandwidth adds a transfer delay proportional to the frame size,
+    /// `serialization_delay_ns = len * 1e9 / bandwidth_bps`, computed in integer
+    /// nanoseconds with no floating point ([IO-20], [IO-24]).
+    pub bandwidth_bytes_per_sec: u64,
+
+    /// The probability a frame is dropped (lost) entirely.
+    pub loss: Probability,
+
+    /// The probability a frame is duplicated (a second copy is emitted).
+    pub duplicate: Probability,
+
+    /// The fixed gap, in ns, between an original and its duplicate's delivery.
+    ///
+    /// The duplicate is delivered at `delivery_ns + duplicate_gap_ns`, so the two
+    /// copies never collide on the same icount and the order is deterministic.
+    pub duplicate_gap_ns: u64,
+
+    /// The probability a frame's payload is corrupted (bits flipped).
+    pub corrupt: Probability,
+
+    /// The number of payload bit positions a corruption flips.
+    ///
+    /// Each flipped position is derived from a seeded draw; the same draws flip
+    /// exactly the same bits ([IO-20]).
+    pub corrupt_bit_flips: u32,
+}
+
+impl LinkFaults {
+    /// Returns a fault-free table (the default): no shifts, no probabilistic faults.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Returns whether any latency-affecting fault is active.
+    ///
+    /// This is the set of faults that change the link's effective latency and so
+    /// require the scheduler's lookahead recompute ([IO-33]): added latency,
+    /// jitter, reorder, and a bandwidth limit (which adds size-dependent delay).
+    /// Loss, duplicate, and corrupt do not change the latency bound.
+    #[must_use]
+    pub fn affects_latency(&self) -> bool {
+        self.added_latency_ns != 0
+            || self.jitter_window_ns != 0
+            || self.reorder_window_ns != 0
+            || self.bandwidth_bytes_per_sec != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probability_fires_on_exact_fraction_without_float() {
+        let p = Probability::new(3, 10); // 30%
+        // draws 0,1,2 fire; 3..9 do not; wraps at 10.
+        assert!(p.fires(0));
+        assert!(p.fires(2));
+        assert!(!p.fires(3));
+        assert!(!p.fires(9));
+        assert!(p.fires(10)); // 10 % 10 = 0 < 3
+        assert!(!Probability::NEVER.fires(0));
+        assert!(Probability::ALWAYS.fires(123));
+    }
+
+    #[test]
+    fn probability_zero_denominator_never_fires() {
+        let p = Probability::new(5, 0);
+        assert!(!p.fires(0));
+        assert!(!p.fires(u64::MAX));
+    }
+
+    #[test]
+    fn serialization_delay_is_integer_and_saturating() {
+        // 1500 bytes at 1 Gbps = 12_000 ns.
+        assert_eq!(serialization_delay_ns(1500, 125_000_000), 12_000);
+        // Unlimited bandwidth => no delay.
+        assert_eq!(serialization_delay_ns(1_000_000, 0), 0);
+        // Tiny bandwidth, huge frame: saturates at u64::MAX, never overflows.
+        assert_eq!(serialization_delay_ns(u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn jitter_and_reorder_shifts_stay_within_window() {
+        for draw in [0u64, 1, 7, 99, u64::MAX] {
+            assert!(jitter_shift_ns(draw, 16) <= 16);
+            assert!(reorder_shift_ns(draw, 1000) <= 1000);
+        }
+        assert_eq!(jitter_shift_ns(123, 0), 0);
+        assert_eq!(reorder_shift_ns(123, 0), 0);
+        // Determinism: same draw => same shift.
+        assert_eq!(jitter_shift_ns(42, 16), jitter_shift_ns(42, 16));
+    }
+
+    #[test]
+    fn corrupt_flips_exactly_the_seeded_bits() {
+        let mut payload = vec![0u8; 4]; // 32 bits, all zero
+        // draws select bit positions 0, 9, 17.
+        corrupt_payload(&mut payload, &[0, 9, 17], 3);
+        // bit 0 -> byte 0 bit 0; bit 9 -> byte 1 bit 1; bit 17 -> byte 2 bit 1.
+        assert_eq!(payload, vec![0b0000_0001, 0b0000_0010, 0b0000_0010, 0]);
+        // Re-applying the same draws toggles back (XOR is its own inverse).
+        corrupt_payload(&mut payload, &[0, 9, 17], 3);
+        assert_eq!(payload, vec![0; 4]);
+    }
+
+    #[test]
+    fn corrupt_is_a_noop_on_empty_or_zero_flips() {
+        let mut empty: Vec<u8> = Vec::new();
+        corrupt_payload(&mut empty, &[1, 2, 3], 3);
+        assert!(empty.is_empty());
+        let mut payload = vec![0xFFu8; 2];
+        corrupt_payload(&mut payload, &[1, 2, 3], 0);
+        assert_eq!(payload, vec![0xFF; 2]);
+    }
+
+    #[test]
+    fn affects_latency_excludes_loss_dup_corrupt() {
+        let mut f = LinkFaults::none();
+        assert!(!f.affects_latency());
+        f.loss = Probability::ALWAYS;
+        f.duplicate = Probability::ALWAYS;
+        f.corrupt = Probability::ALWAYS;
+        assert!(
+            !f.affects_latency(),
+            "loss/dup/corrupt do not change latency"
+        );
+        f.jitter_window_ns = 5;
+        assert!(f.affects_latency());
+    }
+}
