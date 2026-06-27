@@ -1300,9 +1300,9 @@ alone (`M-1`/`Q-A`).
       `files/` trims, verifies each referenced pack record, and truncates only
       unindexed bytes after the highest live record, returning
       `PersistBlobPackTrim` byte/count stats. This is tail-only maintenance for
-      unindexed trailing records; full pack repack/relocation,
-      cross-process/raw-writer coordination, automatic GC policy, mmap reads,
-      Attic transport, and harness proof remain open
+      unindexed trailing records; applied full-pack repack is covered by the
+      explicit helpers below, while cross-process/raw-writer coordination,
+      automatic GC policy, mmap reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current read-only blob-pack liveness plan:
       `PersistCache::plan_blob_pack_liveness` snapshots and verifies the same
@@ -1310,9 +1310,20 @@ alone (`M-1`/`Q-A`).
       file/parse artifact roots, scans the selected pack, and classifies
       verified physical records as rooted or sidecar-unrooted with byte counts
       for current tail-trim candidates. This is diagnostic planning only, not
-      the final RFC GC root model: node metadata reachability, pack rewriting,
-      live-record relocation, automatic GC policy, cross-process/raw-writer
-      coordination, mmap reads, Attic transport, and harness proof remain open
+      the final RFC GC root model: node metadata reachability is covered by the
+      value reachability plan below, applied pack rewriting is covered by the
+      explicit repack helpers below, and automatic GC policy,
+      cross-process/raw-writer coordination, mmap reads, Attic transport, and
+      harness proof remain open
+      (`C-13`/`R-14`).
+- [x] Current read-only blob-pack repack plan:
+      `PersistCache::plan_blob_pack_repack` builds the selected store's
+      liveness plan, preserves verified live records in current pack order,
+      assigns their contiguous locations in a fresh compacted pack, and reports
+      omitted unrooted records plus before/after byte counts. This is
+      relocation planning only; applying `files/` plans with pending artifact
+      roots, automatic GC policy, cross-process/raw-writer coordination, mmap
+      reads, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current read-only node value-root plan:
       `PersistCache::plan_node_value_roots` snapshots latest node metadata,
@@ -1333,6 +1344,45 @@ alone (`M-1`/`Q-A`).
       rewriting/deletion, live-record relocation, automatic GC policy,
       cross-process/raw-writer coordination, mmap reads, Attic transport, and
       harness proof remain open (`C-13`/`R-14`).
+- [x] Current read-only file-pack reachability plan:
+      `PersistCache::plan_file_blob_reachability` snapshots latest
+      file-artifact, parse-artifact, `files/` blob-index, and same-process
+      pending artifact roots, verifies captured roots, scans the file pack, and
+      classifies physical records as file-artifact-rooted,
+      parse-artifact-rooted, pending-artifact-rooted, indexed-without-artifact,
+      or absent from all captured roots. This is diagnostic classification
+      only; retention windows, sidecar repair, pack rewriting/deletion,
+      live-record relocation, automatic GC policy, cross-process/raw-writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
+- [x] Current explicit value-pack repack helper:
+      `PersistCache::repack_value_blob_pack` holds the same-root `values/`
+      store lock, plans live-record relocation, stages a compacted value pack
+      plus replacement value blob-index sidecar, and swaps both into place with
+      best-effort rollback for ordinary filesystem errors. It preserves latest
+      indexed value roots and omits unrooted value records. This is
+      caller-driven advisory maintenance only; crash transactionality, node
+      metadata pruning, automatic GC policy, cross-process/raw-writer
+      coordination, mmap reads, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
+- [x] Current explicit file-pack repack helper:
+      `PersistCache::repack_file_blob_pack` holds the same-root `files/` store,
+      file-artifact, and parse-artifact locks, rejects same-process pending
+      artifact roots, stages a compacted file pack plus relocated file blob,
+      file-artifact, and parse-artifact sidecars, and swaps them into place
+      with best-effort rollback for ordinary filesystem errors. This is
+      caller-driven advisory maintenance only; crash transactionality,
+      automatic GC policy, cross-process/raw-writer coordination, mmap reads,
+      Attic transport, and harness proof remain open
+      (`C-13`/`R-14`/`R-10`).
+- [x] Current explicit all-blob-pack repack helper:
+      `PersistCache::repack_blob_packs` runs value-pack repack and then
+      file-pack repack, returning both applied plans and total reclaimed blob
+      bytes. It is sequential and non-transactional: a committed value-pack
+      rewrite can remain if a later file-pack repack fails. It does not compact
+      unrelated sidecars, rebuild blob indexes from physical pack scans before
+      planning, coordinate with cross-process/raw writers, or apply automatic
+      GC policy (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
       `PersistBlobPack::records` scans a pack in record order, validates every
       record header and payload hash, rejects truncated or corrupt tails instead
@@ -1433,17 +1483,18 @@ alone (`M-1`/`Q-A`).
       LMDB/redb indexes, and loom/harness proof remain open
       (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root blob-store maintenance lock precursor:
-      cache-level blob-index compaction, blob-index rebuild, and blob-pack tail
-      trim share the same per-store root-lock registry entries as indexed
-      materialization, so maintenance rewrites for one live canonical cache root
-      serialize with cache-level indexed or raw blob writes for the selected
-      `values/` or `files/` store. File-pack tail trim also shares the
-      file-artifact and parse-artifact mapping locks while it snapshots those
-      live roots. Poisoned live same-root locks are reported before compaction,
-      rebuild, or trim writes sidecars or truncates a pack. Raw lower-level
+      cache-level blob-index compaction, blob-index rebuild, blob-pack tail
+      trim, and value/file blob-pack repack share the same per-store root-lock
+      registry entries as indexed materialization, so maintenance rewrites for
+      one live canonical cache root serialize with cache-level indexed or raw
+      blob writes for the selected `values/` or `files/` store. File-pack tail
+      trim and file-pack repack also share the file-artifact and parse-artifact
+      mapping locks while they snapshot or relocate those live roots. Poisoned
+      live same-root locks are reported before compaction, rebuild, trim, or
+      repack writes sidecars, truncates, or replaces a pack. Raw lower-level
       `PersistBlobIndex`/`PersistBlobPack` users, different roots,
       multi-process writers, two-machine races, durable filesystem locks/CAS,
-      LMDB/redb indexes, automatic GC/repack, and loom/harness proof remain
+      LMDB/redb indexes, automatic GC policy, and loom/harness proof remain
       open (`C-13`/`R-4`/`R-14`).
 - [x] Current same-process same-root open-initialization lock precursor:
       `PersistCache::open` now creates the caller-supplied root, canonicalizes
@@ -1847,9 +1898,9 @@ alone (`M-1`/`Q-A`).
       records become indexed roots before trimming. This is sequential
       caller-driven maintenance only; automatic compaction/GC policy,
       transactionality across sidecar/rebuild/pack phases, cross-process/raw
-      pack or sidecar writer coordination, full pack repack/relocation,
-      LMDB/redb indexes, mmap reads, Attic transport, and cached/uncached
-      harness proof remain open
+      pack or sidecar writer coordination, LMDB/redb indexes, mmap reads,
+      Attic transport, and cached/uncached harness proof remain open, and it
+      does not run the explicit full-pack repack helpers
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage maintenance cache
       tests.
 - [x] Current force-cache persistent trace writeback:
