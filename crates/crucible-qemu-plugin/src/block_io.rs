@@ -1601,6 +1601,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn block_request_decode_rejects_nonzero_reserved_and_trailing_payload() {
+        let mut reserved = BlockRequest::read(4096, 512)
+            .encode(7)
+            .expect("read request should encode");
+        reserved[2] = 1;
+        assert_eq!(
+            BlockRequest::decode(&reserved),
+            Err(BlockWireError::NonZeroReserved { reserved: 1 })
+        );
+
+        let mut trailing = BlockRequest::read(4096, 512)
+            .encode(7)
+            .expect("read request should encode");
+        trailing.push(b'!');
+        assert_eq!(
+            BlockRequest::decode(&trailing),
+            Err(BlockWireError::UnexpectedPayload {
+                operation: BlockOperation::Read,
+                payload_len: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn block_response_frames_are_stamped_by_reserved_block_slot_and_delivery_icount() {
+        let frame = response_frame(123, 9, b"block");
+
+        assert_frame(&frame, 123, BLOCK_IO_SLOT_U32, 9);
+        assert!(frame.is_deliverable_at(123));
+        assert!(!frame.is_deliverable_at(122));
+        assert_eq!(
+            frame.payload(),
+            Ok(&[
+                0, 1, 0, 0, // status/version/reserved
+                9, 0, 0, 0, // request_id
+                5, 0, 0, 0, // count
+                b'b', b'l', b'o', b'c', b'k',
+            ][..])
+        );
+    }
+
     #[derive(Default)]
     struct RecordingCompletion {
         responses: Vec<BlockResponse>,

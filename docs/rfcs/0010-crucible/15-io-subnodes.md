@@ -751,10 +751,23 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   truncating or extending the device.
   Summary: the base image is never mutated; all guest writes land only in the
   in-memory overlay.
-- [ ] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
+- [x] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
   fixed field order/endianness, reserved-byte rules, bounds-checked decode) and
   carry it over the `SLOT_BLK_IO` shmem rings with `delivery_icount` set to the
   computed completion. — satisfies [IO-8], [IO-9]; spec §15.2.2.
+  Completed by `checks.crucible.phase3.blockWireAbi`.
+  `PluginBlockIo` encodes VM requests into the `(vm slot -> SLOT_BLK_IO)`
+  shared-memory ring and polls responses from the `(SLOT_BLK_IO -> vm slot)`
+  shared-memory ring. `BlockRequest` and `BlockResponse` use block wire version
+  1, fixed little-endian field order, exact fixed header sizes, and
+  `MAX_FRAME_DATA` bounds before `FrameEntry` construction; reserved bytes are zero on emit and rejected on decode; unknown operation/status values,
+  unsupported versions, short frames, count-over-payload frames, and trailing
+  payload bytes all fail as typed `BlockWireError` values without parsing past
+  bounds. Response frames are accepted only from the reserved block slot, and
+  `FrameEntry.delivery_icount` is the computed completion icount controlling
+  visibility by `delivery_icount <= consumer.current_icount`.
+  Summary: block request/response frames use the versioned ABI exclusively over
+  `SLOT_BLK_IO` shared-memory rings; no separate per-request IPC channel is used.
 - [ ] **T-IO-4** Implement the block deterministic completion model
   (`completion_vt = vt(request_icount) + latency(op, count, params)`, no host
   timing) and total-order delivery of coincident responses. — satisfies [IO-10],
