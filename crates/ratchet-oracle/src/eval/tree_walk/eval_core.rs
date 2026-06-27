@@ -484,10 +484,16 @@ impl TreeWalk {
             }
             return;
         };
-        let identity = if trace.is_empty_complete() {
-            subject.pure_observation_identity
-        } else {
+        let trace_is_empty_complete = trace.is_empty_complete();
+        // Generally effectful primops can still produce an empty trace for
+        // immutable text-store inputs; use their trace-backed identity when no
+        // pure identity is available.
+        let use_impure_observation =
+            !trace_is_empty_complete || subject.pure_observation_identity.is_none();
+        let identity = if use_impure_observation {
             subject.impure_observation_identity
+        } else {
+            subject.pure_observation_identity
         };
         let Some(identity) = identity else {
             return;
@@ -510,7 +516,7 @@ impl TreeWalk {
             );
             return;
         };
-        let persistence_action = if trace.is_empty_complete() {
+        let persistence_action = if !use_impure_observation {
             match cache.observe_inline_expression_payload(
                 identity,
                 subject.free_var_value_hashes.iter().copied(),

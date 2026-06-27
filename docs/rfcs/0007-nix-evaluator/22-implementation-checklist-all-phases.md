@@ -2202,7 +2202,8 @@ alone (`M-1`/`Q-A`).
       impure calls share this path through a force-cache subject keyed by
       apply-node identity, builtin name, and argument value hashes: unary
       `import`, `pathExists`, `readDir`, `readFile`, `readFileType`, and
-      `getEnv`, plus full-arity and named-partial first-class `hashFile`. Hits
+      `getEnv`, plus full-arity, named-partial, and immutable text-store
+      `hashFile`. Hits
       rehydrate replayable payloads into the
       current evaluator heap, preserving source-order attrset metadata and
       root-or-own-module binding source positions when the durable payload carries those attrset
@@ -2656,11 +2657,17 @@ alone (`M-1`/`Q-A`).
       `persistent_partial_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surfaces`
       stores `b.hashFile "sha256"` in a binding and applies that named partial
       later, requiring the same hit, stale-miss, and post-recompute surfaces.
-      This proves selected ordinary filesystem full-arity and named-partial
-      first-class `hashFile` payload trace admission, binary-safe revalidation,
-      and stale-payload fallback inside a derivation input surface only;
-      allowed-path/IFD/fetch interactions, text-store-only paths, full
-      automatic demand-edge wiring, and edge-exactness harness coverage remain open
+      The adjacent
+      `persistent_text_store_hash_file_force_cache_hit_preserves_drv_surfaces`
+      forces an immutable `builtins.toFile` payload before hashing it through
+      `hashFile`, then requires the zero-input persistent trace to materialize
+      and replay without leaking force-cache hashes into the `.drv` path or
+      ATerm. This proves selected ordinary filesystem full-arity and
+      named-partial first-class `hashFile` payload trace admission, binary-safe
+      revalidation, stale-payload fallback, and immutable text-store `hashFile`
+      zero-input trace replay inside derivation input surfaces only;
+      allowed-path/IFD/fetch interactions, text-store import/readFile paths,
+      full automatic demand-edge wiring, and edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
 - [x] Current cache-side impure leaf substrate: domain-separated
       `DemandCacheKey` construction from typed input identities,

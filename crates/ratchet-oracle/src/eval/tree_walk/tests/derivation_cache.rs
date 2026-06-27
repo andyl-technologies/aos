@@ -1028,6 +1028,114 @@ fn persistent_partial_hash_file_force_cache_hit_and_stale_miss_preserve_drv_surf
 }
 
 #[test]
+fn persistent_text_store_hash_file_force_cache_hit_preserves_drv_surfaces() {
+    let persist_root = unique_temp_dir("force-cache-text-store-hash-file-drv-hit-parity");
+    let source = r#"let
+             b = builtins;
+             payload = b.toFile "force-cache-text-store-hash-file-payload" "text store hash payload";
+           in {
+             pkg = derivationStrict {
+               name = "force-cache-text-store-hash-file-drv-surface";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ payload (b.hashFile "sha256" payload) ];
+             };
+           }"#;
+    let ir = lower(source);
+
+    let uncached = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        TreeWalkOptions::new(),
+        EvalCacheRuntime::disabled(),
+    );
+    assert!(uncached.trace.is_empty());
+    assert_eq!(uncached.cache_hits, 0);
+    assert_eq!(uncached.force_cache_hits, 0);
+    assert_eq!(uncached.force_cache_misses, 0);
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    let first =
+        evaluate_cached_derivation_surface(&ir, source, first_options, EvalCacheRuntime::enabled());
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.aterm, uncached.aterm);
+    assert!(first.trace.is_empty());
+    assert_eq!(first.cache_hits, 0);
+    assert_eq!(first.force_cache_hits, 0);
+    assert!(
+        first.force_cache_misses > 0,
+        "cold text-store hashFile surface should miss while recording demand"
+    );
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options.set_persist_cache_root(&persist_root);
+    let materialize = evaluate_cached_derivation_surface(
+        &ir,
+        source,
+        materialize_options,
+        EvalCacheRuntime::enabled(),
+    );
+    assert_eq!(materialize.path, uncached.path);
+    assert_eq!(materialize.aterm, uncached.aterm);
+    assert!(materialize.trace.is_empty());
+    assert_eq!(materialize.cache_hits, 0);
+    assert_eq!(materialize.force_cache_hits, 0);
+    assert!(
+        materialize.force_cache_misses > 0,
+        "materializing text-store hashFile surface should miss before writing persistent force-cache payloads"
+    );
+    let trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &[],
+        "materializing text-store hashFile force-cache surface",
+    );
+
+    let mut hit_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    hit_options.set_persist_cache_root(&persist_root);
+    let hit =
+        evaluate_cached_derivation_surface(&ir, source, hit_options, EvalCacheRuntime::enabled());
+    assert_eq!(hit.path, uncached.path);
+    assert_eq!(hit.aterm, uncached.aterm);
+    assert!(hit.trace.is_empty());
+    assert!(
+        hit.thunks_forced < materialize.thunks_forced,
+        "fresh-runtime text-store hashFile persistent hits should force fewer thunks than materializing recomputation"
+    );
+    assert!(hit.cache_hits > 0);
+    assert!(hit.force_cache_hits > 0);
+    assert_eq!(hit.force_cache_misses, 0);
+    assert!(
+        hit.persist_force_cache_hit_keys.contains(&trace_entry.0),
+        "fresh-runtime text-store hashFile hit should load the expected force-cache metadata key"
+    );
+
+    let canaries = persistent_force_cache_surface_canaries(&persist_root, &[&[]]);
+    assert_derivation_surface_canaries_absent(
+        "uncached text-store hashFile surface",
+        &uncached,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "cold text-store hashFile surface",
+        &first,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "materializing text-store hashFile surface",
+        &materialize,
+        &canaries,
+    );
+    assert_derivation_surface_canaries_absent(
+        "persistent-hit text-store hashFile surface",
+        &hit,
+        &canaries,
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
 fn persistent_read_dir_force_cache_hit_preserves_drv_surfaces() {
     let root = unique_temp_dir("force-cache-read-dir-drv-source");
     fs::create_dir(root.join("dir")).expect("directory creates");
