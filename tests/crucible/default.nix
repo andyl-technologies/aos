@@ -355,6 +355,11 @@ in {
       attrPath = "checks.crucible.phase3.schedulerHorizon";
       taskIds = ["T-SCHED-5"];
     };
+    schedulerExactLocalEvent = import ./phase3-scheduler-exact-local-event.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerExactLocalEvent";
+      taskIds = ["T-SCHED-6"];
+    };
     gates = {
       layer1Injection = import ./phase1-layer1-injection.nix {
         inherit pkgs lib;
