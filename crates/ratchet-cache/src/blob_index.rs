@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
@@ -33,6 +34,8 @@ pub const BLOB_INDEX_KEY_LEN: usize = 33;
 pub const BLOB_INDEX_VALUE_LEN: usize = 16;
 /// The encoded length of a complete hash-to-offset index entry.
 pub const BLOB_INDEX_ENTRY_LEN: usize = BLOB_INDEX_KEY_LEN + BLOB_INDEX_VALUE_LEN;
+
+static BLOB_INDEX_REWRITE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A generic blob-index namespace tag.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -231,6 +234,78 @@ impl BlobIndex {
             latest.insert(entry.key().encode(), entry);
         })?;
         Ok(latest.into_values().collect())
+    }
+
+    /// Rewrites the index to the newest entry for every key.
+    ///
+    /// Entries are written in stable encoded-key order through a temporary file
+    /// that is renamed over the original index. The returned count is the
+    /// number of latest entries preserved after compaction. Callers must
+    /// exclude concurrent sidecar writers while this method runs; an append
+    /// that races between the snapshot and rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobIndexError`] if the index cannot be created, opened,
+    /// inspected, read, decoded, written, flushed, or renamed into place.
+    pub fn compact_latest_entries(&self) -> Result<usize, BlobIndexError> {
+        let entries = self.latest_entries()?;
+        self.replace_entries(&entries)
+    }
+
+    /// Rewrites the index to exactly `entries` in caller-supplied order.
+    ///
+    /// Entries are written through a temporary file that is renamed over the
+    /// original index. The returned count is the number of entries written.
+    /// This low-level helper does not validate that entries match any specific
+    /// blob namespace or packfile. Callers must exclude concurrent sidecar
+    /// writers while this method runs; an append that races between the
+    /// caller's snapshot and this rename can be lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobIndexError`] if the index cannot be created, opened,
+    /// inspected, written, flushed, or renamed into place.
+    pub fn replace_entries(&self, entries: &[BlobIndexEntry]) -> Result<usize, BlobIndexError> {
+        ensure_blob_index_file(&self.path)?;
+        let rewrite_id = BLOB_INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = self
+            .path
+            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
+        let write_result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|source| BlobIndexError::Write {
+                    path: tmp_path.clone(),
+                    source,
+                })?;
+            for entry in entries {
+                file.write_all(&entry.encode())
+                    .map_err(|source| BlobIndexError::Write {
+                        path: tmp_path.clone(),
+                        source,
+                    })?;
+            }
+            file.flush().map_err(|source| BlobIndexError::Write {
+                path: tmp_path.clone(),
+                source,
+            })
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+        fs::rename(&tmp_path, &self.path).map_err(|source| {
+            let _ = fs::remove_file(&tmp_path);
+            BlobIndexError::Write {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        Ok(entries.len())
     }
 
     fn scan_entries(&self, mut visit: impl FnMut(BlobIndexEntry)) -> Result<(), BlobIndexError> {
@@ -575,6 +650,80 @@ mod tests {
                 BlobIndexEntry::new(lower, fresh_lower),
                 BlobIndexEntry::new(upper, upper_location),
             ]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_index_compacts_to_latest_entries() {
+        let path = temp_path("compact");
+        let index = BlobIndex::open(path.clone()).expect("index opens");
+        let lower = BlobIndexKey::new(VALUES, BlobPackHash::from_bytes([0; 32]));
+        let upper = BlobIndexKey::new(FILES, BlobPackHash::from_bytes([0xff; 32]));
+        let stale_lower = BlobPackLocation::new(24, 1);
+        let fresh_lower = BlobPackLocation::new(65, 1);
+        let upper_location = BlobPackLocation::new(106, 2);
+
+        index
+            .append_entry(BlobIndexEntry::new(upper, upper_location))
+            .expect("upper entry appends");
+        index
+            .append_entry(BlobIndexEntry::new(lower, stale_lower))
+            .expect("stale lower entry appends");
+        index
+            .append_entry(BlobIndexEntry::new(lower, fresh_lower))
+            .expect("fresh lower entry appends");
+
+        assert_eq!(
+            fs::metadata(index.path()).expect("index metadata").len(),
+            (BLOB_INDEX_ENTRY_LEN * 3) as u64
+        );
+        assert_eq!(index.compact_latest_entries().expect("index compacts"), 2);
+        assert_eq!(
+            fs::metadata(index.path()).expect("index metadata").len(),
+            (BLOB_INDEX_ENTRY_LEN * 2) as u64
+        );
+        assert_eq!(
+            index.latest_entries().expect("latest entries scan"),
+            [
+                BlobIndexEntry::new(lower, fresh_lower),
+                BlobIndexEntry::new(upper, upper_location),
+            ]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blob_index_replaces_entries_in_caller_order() {
+        let path = temp_path("replace");
+        let index = BlobIndex::open(path.clone()).expect("index opens");
+        let first = BlobIndexEntry::new(
+            BlobIndexKey::new(FILES, BlobPackHash::from_bytes([0xff; 32])),
+            BlobPackLocation::new(24, 1),
+        );
+        let second = BlobIndexEntry::new(
+            BlobIndexKey::new(VALUES, BlobPackHash::from_bytes([0; 32])),
+            BlobPackLocation::new(65, 2),
+        );
+
+        index
+            .append_entry(BlobIndexEntry::new(
+                BlobIndexKey::new(VALUES, BlobPackHash::for_bytes(b"stale")),
+                BlobPackLocation::new(106, 3),
+            ))
+            .expect("stale entry appends");
+
+        assert_eq!(
+            index
+                .replace_entries(&[first, second])
+                .expect("entries replace"),
+            2
+        );
+        assert_eq!(
+            fs::read(index.path()).expect("index bytes read"),
+            [first.encode(), second.encode()].concat()
         );
 
         let _ = fs::remove_file(path);
