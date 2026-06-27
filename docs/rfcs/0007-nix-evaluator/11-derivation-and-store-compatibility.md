@@ -841,7 +841,15 @@ harness, never cut for scope.
       output through a fresh content-addressed miss/write path and a later
       persistent-hit path. It scans all original and changed hashString outputs
       for selected root/import parse-cache BLAKE3, file-content BLAKE3, and hot
-      xxh3 canaries. `configured_cache_preserves_guarded_hash_file_surface`
+      xxh3 canaries. `configured_import_cache_preserves_convert_hash_surface`
+      evaluates `builtins.convertHash (import file)` over an imported typed hash
+      and output format with import caching disabled, with configured
+      parse/persist roots on a miss/write path, and with a later persistent-hit
+      path, requires identical converted Nix hash-string outputs across all
+      three runs, and scans those convertHash outputs for root/import
+      parse-cache BLAKE3, imported-file content BLAKE3, imported-hash and
+      decoded-digest BLAKE3, and hot xxh3 canaries.
+      `configured_cache_preserves_guarded_hash_file_surface`
       evaluates `builtins.hashFile "sha256" ./payload.txt` behind a forced
       `builtins.pathExists ./marker` guard with configured persistent
       force-cache writeback and later fresh-runtime hit for the guarded
@@ -914,9 +922,10 @@ harness, never cut for scope.
       path strings across all three runs, and scans those toFile surfaces for
       root/name/content parse-cache BLAKE3, imported-file content BLAKE3, a
       toFile body BLAKE3 sentinel, and hot xxh3 canaries. These are selected
-      `hashString`/`hashFile`/`fetchurl`/`fetchTarball`/`fetchGit`/`fetchTree`/
-      `builtins.path`/`findFile`/`filterSource`/`toFile` output-surface
-      samples, not full hash/fetch/source/text-path leak-invariant coverage
+      `hashString`/`convertHash`/`hashFile`/`fetchurl`/`fetchTarball`/
+      `fetchGit`/`fetchTree`/`builtins.path`/`findFile`/`filterSource`/`toFile`
+      output-surface samples, not full hash/fetch/source/text-path
+      leak-invariant coverage
       ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2 precursor,
       `S-15`; gate: focused hash/fetch/source/text-path cache-surface canary
       tests.

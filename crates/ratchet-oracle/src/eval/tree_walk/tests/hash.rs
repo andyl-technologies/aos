@@ -280,6 +280,168 @@ fn configured_import_cache_preserves_hash_builtin_surface() {
     fs::remove_dir_all(root).expect("temp directory removes");
 }
 
+#[test]
+fn configured_import_cache_preserves_convert_hash_surface() {
+    fn evaluate_convert_hash_surface(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (Vec<u8>, (usize, usize)) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator
+            .eval_root()
+            .expect("convertHash expression evaluates");
+        let import_stats = evaluator.import_parse_cache_stats();
+        let output = evaluator
+            .heap()
+            .get_string(value)
+            .expect("convertHash result is a string")
+            .bytes()
+            .to_vec();
+        (output, import_stats)
+    }
+
+    fn configured_options(root: &Path) -> TreeWalkOptions {
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(root))
+            .expect("path base configures");
+        options
+    }
+
+    fn hot_string_surface_canaries(label: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let hot_canary = NixString::from_bytes(bytes.to_vec())
+            .structural_hash_xxh3()
+            .raw_for_tests();
+        vec![
+            (
+                format!("{label} hot xxh3 decimal"),
+                hot_canary.to_string().into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 hex"),
+                format!("{hot_canary:016x}").into_bytes(),
+            ),
+            (
+                format!("{label} hot xxh3 little-endian bytes"),
+                hot_canary.to_le_bytes().to_vec(),
+            ),
+            (
+                format!("{label} hot xxh3 big-endian bytes"),
+                hot_canary.to_be_bytes().to_vec(),
+            ),
+        ]
+    }
+
+    let root = fs::canonicalize(unique_temp_dir("import-cache-convert-hash-surface-parity"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse-cache");
+    let second_parse_root = root.join("second-parse-cache");
+    let persist_root = root.join("persist-cache");
+    let import_path = root.join("convert-hash-args.nix");
+    let imported_hash = b"sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+    let imported_format = b"nix32";
+    let decoded_digest = [
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22,
+        0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00,
+        0x15, 0xad,
+    ];
+    let imported_source =
+        br#"{ hash = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="; toHashFormat = "nix32"; }"#;
+    fs::write(&import_path, imported_source).expect("convertHash args import writes");
+    let import_realpath = fs::canonicalize(&import_path).expect("import path canonicalizes");
+    let source = format!(
+        "builtins.convertHash (import {})",
+        path_source(&import_path)
+    );
+    let expected_output = b"1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
+
+    let (uncached_output, uncached_stats) =
+        evaluate_convert_hash_surface(&source, configured_options(&root));
+    assert_eq!(uncached_stats, (0, 0));
+    assert_eq!(uncached_output, expected_output);
+
+    let mut miss_options = configured_options(&root);
+    miss_options.set_parse_cache_root(&first_parse_root);
+    miss_options.set_persist_cache_root(&persist_root);
+    let (miss_output, miss_stats) = evaluate_convert_hash_surface(&source, miss_options);
+    assert_eq!(miss_stats, (0, 1));
+    assert_eq!(miss_output, uncached_output);
+
+    let mut hit_options = configured_options(&root);
+    hit_options.set_parse_cache_root(&second_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    let (hit_output, hit_stats) = evaluate_convert_hash_surface(&source, hit_options);
+    assert_eq!(hit_stats, (1, 0));
+    assert_eq!(hit_output, uncached_output);
+    assert!(
+        ParseCache::new(&second_parse_root)
+            .entry_for_source(imported_source)
+            .is_complete(),
+        "persistent hit should hydrate the runtime parse-cache entry"
+    );
+
+    let root_parse_key = ParseCacheKey::for_source(
+        source.as_bytes(),
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let imported_parse_key = ParseCacheKey::for_source(
+        imported_source,
+        PARSE_CACHE_SCHEMA_VERSION,
+        ParseCacheFlags::new(),
+    );
+    let file_key = ParseFileKey::for_source(&import_realpath, imported_source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, imported_parse_key);
+    assert!(
+        PersistCache::open(&persist_root)
+            .expect("persistent cache opens")
+            .lookup_file_artifact(artifact_key)
+            .expect("persistent file-artifact lookup succeeds")
+            .is_some(),
+        "convertHash canary import should materialize a persistent file-artifact mapping"
+    );
+
+    let mut canaries = durable_hash_surface_canaries(
+        "root parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "import parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "import file-content BLAKE3",
+        file_key.content_hash(),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "imported hash BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(imported_hash),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "decoded hash digest BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(&decoded_digest),
+    ));
+    canaries.extend(hot_string_surface_canaries(
+        "convertHash input hash",
+        imported_hash,
+    ));
+    canaries.extend(hot_string_surface_canaries(
+        "convertHash output format",
+        imported_format,
+    ));
+
+    for (surface_name, output) in [
+        ("cache-disabled convertHash surface", &uncached_output),
+        ("persistent miss convertHash surface", &miss_output),
+        ("persistent hit convertHash surface", &hit_output),
+    ] {
+        assert_surface_canaries_absent(surface_name, "hash output", output, &canaries);
+    }
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
 #[derive(Debug)]
 struct HashFileSurface {
     output: Vec<u8>,
