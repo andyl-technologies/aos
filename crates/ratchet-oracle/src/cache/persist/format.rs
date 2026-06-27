@@ -13,6 +13,13 @@ use ratchet_cache::blob_index::{
     BlobIndexKey as EngineBlobIndexKey, BlobIndexNamespace,
 };
 use ratchet_cache::blob_pack::{BlobPackHash, BlobPackLocation};
+use ratchet_cache::node_metadata::{
+    NodeMetadataEntry as EngineNodeMetadataEntry,
+    NodeMetadataFormatError as EngineNodeMetadataFormatError,
+    NodeMetadataIndex as EngineNodeMetadataIndex,
+    NodeMetadataIndexError as EngineNodeMetadataIndexError,
+    NodeMetadataKey as EngineNodeMetadataKey, NodeMetadataValue as EngineNodeMetadataValue,
+};
 
 /// A content-addressed immutable blob namespace in the persistent cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1575,10 +1582,9 @@ impl PersistNodeMetadataIndexEntry {
 
     /// Encodes this record as stable node metadata index bytes.
     pub fn encode_index_entry(self) -> [u8; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN] {
+        let encoded = persist_node_metadata_entry_to_engine(self).encode();
         let mut bytes = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
-        bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
-        bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..]
-            .copy_from_slice(&self.value.encode_index_value());
+        bytes.copy_from_slice(&encoded);
         bytes
     }
 
@@ -1590,19 +1596,93 @@ impl PersistNodeMetadataIndexEntry {
     /// [`PERSIST_NODE_METADATA_INDEX_ENTRY_LEN`], if the key is malformed, or
     /// if the value is malformed.
     pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
-        if bytes.len() < PERSIST_NODE_METADATA_INDEX_ENTRY_LEN {
-            return Err(PersistPackFormatError::ShortNodeMetadataIndexEntry {
-                expected: PERSIST_NODE_METADATA_INDEX_ENTRY_LEN,
-                actual: bytes.len(),
-            });
+        let entry =
+            EngineNodeMetadataEntry::decode(bytes).map_err(engine_node_metadata_format_error)?;
+        engine_node_metadata_entry_to_persist(entry)
+    }
+}
+
+fn persist_node_metadata_key_to_engine(key: PersistNodeMetadataKey) -> EngineNodeMetadataKey {
+    EngineNodeMetadataKey::new(PERSIST_NODE_METADATA_INDEX_TAG, key.hash().as_bytes())
+}
+
+fn engine_node_metadata_key_to_persist(
+    key: EngineNodeMetadataKey,
+) -> Result<PersistNodeMetadataKey, PersistPackFormatError> {
+    PersistNodeMetadataKey::decode_index_bytes(&key.encode())
+}
+
+fn persist_node_metadata_value_to_engine(
+    value: PersistNodeMetadataIndexValue,
+) -> EngineNodeMetadataValue {
+    EngineNodeMetadataValue::from_bytes(value.encode_index_value())
+}
+
+fn engine_node_metadata_value_to_persist(
+    value: EngineNodeMetadataValue,
+) -> Result<PersistNodeMetadataIndexValue, PersistPackFormatError> {
+    PersistNodeMetadataIndexValue::decode_index_value(&value.encode())
+}
+
+fn persist_node_metadata_entry_to_engine(
+    entry: PersistNodeMetadataIndexEntry,
+) -> EngineNodeMetadataEntry {
+    EngineNodeMetadataEntry::new(
+        persist_node_metadata_key_to_engine(entry.key()),
+        persist_node_metadata_value_to_engine(entry.value()),
+    )
+}
+
+fn engine_node_metadata_entry_to_persist(
+    entry: EngineNodeMetadataEntry,
+) -> Result<PersistNodeMetadataIndexEntry, PersistPackFormatError> {
+    Ok(PersistNodeMetadataIndexEntry::new(
+        engine_node_metadata_key_to_persist(entry.key())?,
+        engine_node_metadata_value_to_persist(entry.value())?,
+    ))
+}
+
+fn engine_node_metadata_index_error(
+    error: EngineNodeMetadataIndexError,
+) -> PersistNodeMetadataIndexError {
+    match error {
+        EngineNodeMetadataIndexError::CreateParent { path, source } => {
+            PersistNodeMetadataIndexError::CreateParent { path, source }
         }
-        let key = PersistNodeMetadataKey::decode_index_bytes(
-            &bytes[..PERSIST_NODE_METADATA_INDEX_KEY_LEN],
-        )?;
-        let value = PersistNodeMetadataIndexValue::decode_index_value(
-            &bytes[PERSIST_NODE_METADATA_INDEX_KEY_LEN..],
-        )?;
-        Ok(Self::new(key, value))
+        EngineNodeMetadataIndexError::Open { path, source } => {
+            PersistNodeMetadataIndexError::Open { path, source }
+        }
+        EngineNodeMetadataIndexError::Metadata { path, source } => {
+            PersistNodeMetadataIndexError::Metadata { path, source }
+        }
+        EngineNodeMetadataIndexError::Read { path, source } => {
+            PersistNodeMetadataIndexError::Read { path, source }
+        }
+        EngineNodeMetadataIndexError::Write { path, source } => {
+            PersistNodeMetadataIndexError::Write { path, source }
+        }
+        EngineNodeMetadataIndexError::Format { path, source } => {
+            PersistNodeMetadataIndexError::Format {
+                path,
+                source: engine_node_metadata_format_error(source),
+            }
+        }
+    }
+}
+
+fn engine_node_metadata_format_error(
+    error: EngineNodeMetadataFormatError,
+) -> PersistPackFormatError {
+    match error {
+        EngineNodeMetadataFormatError::ShortKey { expected, actual } => {
+            PersistPackFormatError::ShortNodeMetadataIndexKey { expected, actual }
+        }
+        EngineNodeMetadataFormatError::ShortValue { expected, actual } => {
+            PersistPackFormatError::ShortNodeMetadataIndexValue { expected, actual }
+        }
+        EngineNodeMetadataFormatError::ShortEntry { expected, actual } => {
+            PersistPackFormatError::ShortNodeMetadataIndexEntry { expected, actual }
+        }
     }
 }
 
@@ -2354,7 +2434,7 @@ fn node_trace_log_format_error(
 /// matching entry.
 #[derive(Clone, Debug)]
 pub struct PersistNodeMetadataIndex {
-    path: PathBuf,
+    engine: EngineNodeMetadataIndex,
 }
 
 impl PersistNodeMetadataIndex {
@@ -2366,14 +2446,14 @@ impl PersistNodeMetadataIndex {
     /// index file cannot be created/opened, or if the existing file ends with a
     /// partial fixed-width record.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistNodeMetadataIndexError> {
-        let path = path.into();
-        ensure_node_metadata_index_file(&path)?;
-        Ok(Self { path })
+        let engine =
+            EngineNodeMetadataIndex::open(path.into()).map_err(engine_node_metadata_index_error)?;
+        Ok(Self { engine })
     }
 
     /// Returns this index file's filesystem path.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.engine.path()
     }
 
     /// Appends one node metadata index entry.
@@ -2386,20 +2466,9 @@ impl PersistNodeMetadataIndex {
         &self,
         entry: PersistNodeMetadataIndexEntry,
     ) -> Result<(), PersistNodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| PersistNodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        file.write_all(&entry.encode_index_entry())
-            .and_then(|()| file.flush())
-            .map_err(|source| PersistNodeMetadataIndexError::Write {
-                path: self.path.clone(),
-                source,
-            })
+        self.engine
+            .append_entry(persist_node_metadata_entry_to_engine(entry))
+            .map_err(engine_node_metadata_index_error)
     }
 
     /// Looks up the newest node metadata value for `key`.
@@ -2412,40 +2481,8 @@ impl PersistNodeMetadataIndex {
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistNodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistNodeMetadataIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_node_metadata_index_len(&self.path, len)?;
-
         let mut found = None;
-        let records = len / PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistNodeMetadataIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistNodeMetadataIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistNodeMetadataIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             if entry.key() == key {
                 found = Some(entry.value());
             }
@@ -2465,40 +2502,8 @@ impl PersistNodeMetadataIndex {
     pub fn latest_entries(
         &self,
     ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.path)
-            .map_err(|source| PersistNodeMetadataIndexError::Open {
-                path: self.path.clone(),
-                source,
-            })?;
-        let len = file
-            .metadata()
-            .map_err(|source| PersistNodeMetadataIndexError::Metadata {
-                path: self.path.clone(),
-                source,
-            })?
-            .len();
-        validate_node_metadata_index_len(&self.path, len)?;
-
         let mut latest = std::collections::BTreeMap::new();
-        let records = len / PERSIST_NODE_METADATA_INDEX_ENTRY_LEN as u64;
-        let mut encoded = [0; PERSIST_NODE_METADATA_INDEX_ENTRY_LEN];
-        for _ in 0..records {
-            file.read_exact(&mut encoded).map_err(|source| {
-                PersistNodeMetadataIndexError::Read {
-                    path: self.path.clone(),
-                    source,
-                }
-            })?;
-            let entry =
-                PersistNodeMetadataIndexEntry::decode_index_entry(&encoded).map_err(|source| {
-                    PersistNodeMetadataIndexError::Format {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
+        for entry in self.entries()? {
             latest.insert(entry.key(), entry.value());
         }
         Ok(latest
@@ -2522,40 +2527,26 @@ impl PersistNodeMetadataIndex {
     /// read, decoded, written, flushed, or renamed into place.
     pub fn compact_latest_entries(&self) -> Result<usize, PersistNodeMetadataIndexError> {
         let entries = self.latest_entries()?;
-        let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = self
-            .path
-            .with_extension(format!("compact-{}-{rewrite_id}.tmp", std::process::id()));
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| PersistNodeMetadataIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            for entry in &entries {
-                file.write_all(&entry.encode_index_entry())
-                    .map_err(|source| PersistNodeMetadataIndexError::Write {
-                        path: tmp_path.clone(),
-                        source,
-                    })?;
-            }
-            file.flush()
-                .map_err(|source| PersistNodeMetadataIndexError::Write {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-        }
-        fs::rename(&tmp_path, &self.path).map_err(|source| {
-            let _ = fs::remove_file(&tmp_path);
-            PersistNodeMetadataIndexError::Write {
-                path: self.path.clone(),
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_node_metadata_entry_to_engine)
+            .collect::<Vec<_>>();
+        self.engine
+            .replace_entries(&entries)
+            .map_err(engine_node_metadata_index_error)
+    }
+
+    fn entries(&self) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
+        self.engine
+            .entries()
+            .map_err(engine_node_metadata_index_error)?
+            .into_iter()
+            .map(engine_node_metadata_entry_to_persist)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| PersistNodeMetadataIndexError::Format {
+                path: self.path().to_path_buf(),
                 source,
-            }
-        })?;
-        Ok(entries.len())
+            })
     }
 }

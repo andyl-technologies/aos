@@ -1671,12 +1671,24 @@ alone (`M-1`/`Q-A`).
       `NodeMetadataEntry`, and `NodeMetadataIndex` provide the generic
       engine-band record layout and append/newest/compact/replacement file
       operations for the current `nodes/metadata.index` sidecar without
-      interpreting oracle-specific metadata semantics. This is a migration
-      target only; `ratchet-oracle` production node metadata still owns the
-      sidecar wrapper, node-trace/value transactionality, same-root locks, and
-      cache policy, while LMDB/redb tables, writer batching, mmap reads,
-      cross-process coordination, and harness proof remain open
-      (`C-13`/`R-14`).
+      interpreting oracle-specific metadata semantics. The engine can also
+      return every physical entry so typed adapters can validate stale records
+      before applying newest-wins semantics. This is a fixed-record sidecar
+      primitive only; LMDB/redb tables, writer batching, mmap reads,
+      cross-process coordination, and full storage-engine harness proof remain
+      open (`C-13`/`R-14`).
+- [x] Current oracle node-metadata sidecar migration:
+      `PersistNodeMetadataIndex` now wraps
+      `ratchet-cache::node_metadata::NodeMetadataIndex` for open, append,
+      physical scans, newest-entry scans, and compaction rewrites while routing
+      every engine record back through the oracle key/value codecs. Invalid
+      namespace tags, malformed optional value-hash fields, and stale malformed
+      records therefore still fail through `PersistNodeMetadataIndexError`.
+      Cross-crate compatibility tests prove both writer directions and invalid
+      generic engine records. This is the append-only sidecar migration only;
+      oracle still owns same-root locks, node-trace/value transactionality, and
+      cache policy, while LMDB/redb tables, writer batching, mmap reads, GC
+      policy, and cross-process coordination remain open (`C-13`/`R-14`).
 - [x] Current explicit node reuse counter update adapter:
       `PersistCache::record_node_materialization_reuse` and
       `lookup_node_materialization_reuse` expose typed materialization reuse

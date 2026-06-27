@@ -263,6 +263,20 @@ impl NodeMetadataIndex {
         Ok(latest.into_values().collect())
     }
 
+    /// Returns every entry in physical append order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeMetadataIndexError`] if the index cannot be created,
+    /// opened, inspected, read, or decoded.
+    pub fn entries(&self) -> Result<Vec<NodeMetadataEntry>, NodeMetadataIndexError> {
+        let mut entries = Vec::new();
+        self.scan_entries(|entry| {
+            entries.push(entry);
+        })?;
+        Ok(entries)
+    }
+
     /// Rewrites the index to the newest entry for every key.
     ///
     /// Entries are written in stable encoded-key order through a temporary file
@@ -663,6 +677,26 @@ mod tests {
                 NodeMetadataEntry::new(lower, fresh_lower),
                 NodeMetadataEntry::new(upper, upper_value),
             ]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn node_metadata_index_entries_preserve_physical_append_order() {
+        let path = temp_path("entries");
+        let index = NodeMetadataIndex::open(path.clone()).expect("index opens");
+        let first = NodeMetadataEntry::new(metadata_key(OTHER_NODES, 0xff), value(1));
+        let second = NodeMetadataEntry::new(metadata_key(NODES, 0), value(2));
+        let third = NodeMetadataEntry::new(metadata_key(OTHER_NODES, 0xff), value(3));
+
+        index.append_entry(first).expect("first entry appends");
+        index.append_entry(second).expect("second entry appends");
+        index.append_entry(third).expect("third entry appends");
+
+        assert_eq!(
+            index.entries().expect("physical entries scan"),
+            [first, second, third]
         );
 
         let _ = fs::remove_file(path);
