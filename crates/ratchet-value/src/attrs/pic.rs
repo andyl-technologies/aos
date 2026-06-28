@@ -14,6 +14,7 @@
 
 use thiserror::Error;
 
+use super::hamt::HamtAttrs;
 use super::shape::{ShapeHandle, ShapedAttrs};
 use crate::syntax::Symbol;
 use crate::value::Value;
@@ -637,10 +638,198 @@ fn validate_same_shaped_slot(cached: u32, attempted: u32) -> Result<(), ShapedSe
     }
 }
 
+/// The select-site policy for HAMT-backed attrsets.
+///
+/// HAMT values have no flat slot vector, so a shape-to-slot inline-cache entry
+/// is not available. The site can either remember that HAMT values use the
+/// keyed trie lookup path or abandon specialization when a HAMT value appears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HamtSelectPolicy {
+    /// Cache a distinguished HAMT entry and keep using keyed HAMT lookup.
+    DistinguishedEntry,
+    /// Treat a HAMT value as the point where the site becomes megamorphic.
+    MegamorphicFallback,
+}
+
+/// The current HAMT select-cache state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HamtSelectCacheState {
+    /// No HAMT value has reached the site.
+    Uninitialized,
+    /// A distinguished HAMT entry has been installed.
+    DistinguishedHamt,
+    /// The site uses the generic megamorphic path for HAMT values.
+    Megamorphic,
+}
+
+impl HamtSelectCacheState {
+    /// Returns whether this state has abandoned specialization.
+    pub const fn is_megamorphic(self) -> bool {
+        matches!(self, Self::Megamorphic)
+    }
+}
+
+/// A safe HAMT-valued select-site policy precursor.
+///
+/// This cache binds one static select key, then applies the selected
+/// [`HamtSelectPolicy`] whenever a HAMT-backed attrset reaches the site. It
+/// does not install a shape slot, does not interact with [`ShapedSelectCache`],
+/// and is not wired into the active tree-walk evaluator. The HAMT attrset and
+/// select key must come from the same symbol universe.
+#[derive(Clone, Debug)]
+pub struct HamtSelectCache {
+    key: Option<Symbol>,
+    policy: HamtSelectPolicy,
+    state: HamtSelectCacheState,
+}
+
+impl HamtSelectCache {
+    /// Creates an uninitialized HAMT select cache with `policy`.
+    pub const fn new(policy: HamtSelectPolicy) -> Self {
+        Self {
+            key: None,
+            policy,
+            state: HamtSelectCacheState::Uninitialized,
+        }
+    }
+
+    /// Returns the configured HAMT select policy.
+    pub const fn policy(&self) -> HamtSelectPolicy {
+        self.policy
+    }
+
+    /// Returns the current HAMT select-cache state.
+    pub const fn state(&self) -> HamtSelectCacheState {
+        self.state
+    }
+
+    /// Returns the static key bound to this select-site cache, if observed.
+    pub const fn key(&self) -> Option<Symbol> {
+        self.key
+    }
+
+    /// Selects `key` from a HAMT attrset using this site's HAMT policy.
+    ///
+    /// The lookup itself is always the HAMT keyed lookup. The cache records
+    /// whether future HAMT values should stay on that distinguished path or
+    /// use the megamorphic path. `attrs` and `key` must come from the same
+    /// symbol universe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HamtSelectError::KeyChanged`] if the cache is reused for a
+    /// different static select key.
+    pub fn select(
+        &mut self,
+        attrs: &HamtAttrs,
+        key: Symbol,
+    ) -> Result<HamtSelectOutcome, HamtSelectError> {
+        self.bind_key(key)?;
+        let source = self.observe_hamt();
+        Ok(match attrs.get(key) {
+            Some(value) => HamtSelectOutcome::Hit { value, source },
+            None => HamtSelectOutcome::Missing { source },
+        })
+    }
+
+    fn observe_hamt(&mut self) -> HamtSelectSource {
+        match (self.state, self.policy) {
+            (HamtSelectCacheState::Uninitialized, HamtSelectPolicy::DistinguishedEntry) => {
+                self.state = HamtSelectCacheState::DistinguishedHamt;
+                HamtSelectSource::Resolved {
+                    update: HamtSelectUpdate::InstalledDistinguishedHamt,
+                }
+            }
+            (HamtSelectCacheState::DistinguishedHamt, HamtSelectPolicy::DistinguishedEntry) => {
+                HamtSelectSource::CachedDistinguishedHamt
+            }
+            (HamtSelectCacheState::Uninitialized, HamtSelectPolicy::MegamorphicFallback)
+            | (HamtSelectCacheState::DistinguishedHamt, HamtSelectPolicy::MegamorphicFallback) => {
+                self.state = HamtSelectCacheState::Megamorphic;
+                HamtSelectSource::Resolved {
+                    update: HamtSelectUpdate::BecameMegamorphic,
+                }
+            }
+            (HamtSelectCacheState::Megamorphic, _) => HamtSelectSource::Resolved {
+                update: HamtSelectUpdate::AlreadyMegamorphic,
+            },
+        }
+    }
+
+    fn bind_key(&mut self, key: Symbol) -> Result<(), HamtSelectError> {
+        match self.key {
+            Some(previous) if previous != key => Err(HamtSelectError::KeyChanged {
+                previous,
+                attempted: key,
+            }),
+            Some(_) => Ok(()),
+            None => {
+                self.key = Some(key);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A HAMT select-cache lookup result.
+#[derive(Clone, Copy, Debug)]
+pub enum HamtSelectOutcome {
+    /// The key was present.
+    Hit {
+        /// The selected value.
+        value: Value,
+        /// Whether the site used a cached HAMT policy or slow resolution.
+        source: HamtSelectSource,
+    },
+    /// The key is absent from the HAMT attrset.
+    Missing {
+        /// Whether the site used a cached HAMT policy or slow resolution.
+        source: HamtSelectSource,
+    },
+}
+
+/// The path used to produce a HAMT select result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HamtSelectSource {
+    /// A distinguished HAMT entry was already installed.
+    CachedDistinguishedHamt,
+    /// The HAMT policy was resolved, possibly updating the cache state.
+    Resolved {
+        /// The state-machine update produced by observing the HAMT value.
+        update: HamtSelectUpdate,
+    },
+}
+
+/// The HAMT policy update produced at one select site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HamtSelectUpdate {
+    /// The first HAMT value installed a distinguished HAMT entry.
+    InstalledDistinguishedHamt,
+    /// The HAMT value forced this site to use the megamorphic path.
+    BecameMegamorphic,
+    /// The site was already megamorphic.
+    AlreadyMegamorphic,
+}
+
+/// A failed HAMT select-cache operation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum HamtSelectError {
+    /// A select-site cache was reused for a different static key.
+    #[error("HAMT select-cache key changed from {previous:?} to {attempted:?}")]
+    KeyChanged {
+        /// The key already bound to the cache.
+        previous: Symbol,
+        /// The attempted replacement key.
+        attempted: Symbol,
+    },
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::AttrEntry;
     use super::super::shape::{ShapeTable, ShapedAttrs};
     use super::*;
+    use crate::attrs::hamt::HamtAttrs;
     use crate::syntax::SymbolTable;
     use crate::value::Value;
 
@@ -685,6 +874,144 @@ mod tests {
         assert_eq!(value.as_int().expect("int value"), expected_value);
         assert_eq!(slot, expected_slot);
         source
+    }
+
+    fn expect_hamt_hit_int(outcome: HamtSelectOutcome, expected_value: i64) -> HamtSelectSource {
+        let HamtSelectOutcome::Hit { value, source } = outcome else {
+            panic!("expected HAMT select hit");
+        };
+        assert_eq!(value.as_int().expect("int value"), expected_value);
+        source
+    }
+
+    fn expect_hamt_missing(outcome: HamtSelectOutcome) -> HamtSelectSource {
+        let HamtSelectOutcome::Missing { source } = outcome else {
+            panic!("expected HAMT select missing");
+        };
+        source
+    }
+
+    #[test]
+    fn hamt_select_cache_installs_distinguished_entry_then_reuses_it() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let attrs = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("HAMT attrs build");
+        let mut cache = HamtSelectCache::new(HamtSelectPolicy::DistinguishedEntry);
+
+        assert_eq!(
+            expect_hamt_hit_int(
+                cache
+                    .select(&attrs, ids[1])
+                    .expect("HAMT select resolves policy"),
+                20,
+            ),
+            HamtSelectSource::Resolved {
+                update: HamtSelectUpdate::InstalledDistinguishedHamt,
+            }
+        );
+        assert_eq!(cache.state(), HamtSelectCacheState::DistinguishedHamt);
+
+        assert_eq!(
+            expect_hamt_hit_int(
+                cache
+                    .select(&attrs, ids[1])
+                    .expect("HAMT select reuses policy"),
+                20,
+            ),
+            HamtSelectSource::CachedDistinguishedHamt
+        );
+    }
+
+    #[test]
+    fn hamt_select_cache_records_distinguished_entry_for_missing_keys() {
+        let (symbols, ids) = symbols(&[b"a", b"missing"]);
+        let attrs = HamtAttrs::new(vec![AttrEntry::new(ids[0], Value::int(10))], &symbols)
+            .expect("HAMT attrs build");
+        let mut cache = HamtSelectCache::new(HamtSelectPolicy::DistinguishedEntry);
+
+        assert_eq!(
+            expect_hamt_missing(
+                cache
+                    .select(&attrs, ids[1])
+                    .expect("HAMT missing select resolves policy"),
+            ),
+            HamtSelectSource::Resolved {
+                update: HamtSelectUpdate::InstalledDistinguishedHamt,
+            }
+        );
+        assert_eq!(
+            expect_hamt_missing(
+                cache
+                    .select(&attrs, ids[1])
+                    .expect("HAMT missing select reuses policy"),
+            ),
+            HamtSelectSource::CachedDistinguishedHamt
+        );
+    }
+
+    #[test]
+    fn hamt_select_cache_can_fold_hamt_values_into_megamorphic_path() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let attrs = HamtAttrs::new(vec![AttrEntry::new(ids[0], Value::int(10))], &symbols)
+            .expect("HAMT attrs build");
+        let mut cache = HamtSelectCache::new(HamtSelectPolicy::MegamorphicFallback);
+
+        assert_eq!(
+            expect_hamt_hit_int(
+                cache
+                    .select(&attrs, ids[0])
+                    .expect("HAMT select becomes megamorphic"),
+                10,
+            ),
+            HamtSelectSource::Resolved {
+                update: HamtSelectUpdate::BecameMegamorphic,
+            }
+        );
+        assert!(cache.state().is_megamorphic());
+        assert_eq!(
+            expect_hamt_hit_int(
+                cache
+                    .select(&attrs, ids[0])
+                    .expect("HAMT select remains megamorphic"),
+                10,
+            ),
+            HamtSelectSource::Resolved {
+                update: HamtSelectUpdate::AlreadyMegamorphic,
+            }
+        );
+    }
+
+    #[test]
+    fn hamt_select_cache_rejects_key_changes() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let attrs = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("HAMT attrs build");
+        let mut cache = HamtSelectCache::new(HamtSelectPolicy::DistinguishedEntry);
+
+        cache
+            .select(&attrs, ids[0])
+            .expect("first HAMT select binds key");
+        assert_eq!(
+            cache
+                .select(&attrs, ids[1])
+                .expect_err("same select site cannot change keys"),
+            HamtSelectError::KeyChanged {
+                previous: ids[0],
+                attempted: ids[1],
+            }
+        );
     }
 
     #[test]

@@ -3501,6 +3501,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `symbols` share one symbol universe. Active evaluator `//` wiring, HAMT
       right source-order semantics, measured threshold calibration, and `.drv`
       differential proof remain open.
+- [x] Current HAMT select-policy precursor: `ratchet-value` exposes
+      `HamtSelectCache`, which binds one static select key and models the two
+      RFC policy choices for HAMT-valued selections: cache a distinguished HAMT
+      entry that keeps using keyed HAMT lookup, or fold the site into the
+      megamorphic path. The HAMT attrset and select key must share one symbol
+      universe. `select_slow`, `ShapedSelectCache`, native PIC lowering, and
+      active evaluator selection remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current cached ordering-rank precursor: `aos-nix-syntax::SymbolTable`

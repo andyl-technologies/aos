@@ -864,6 +864,13 @@ harness, never cut for scope.
       right source-order semantics, measured threshold calibration, and `.drv`
       differential proof remain open.
 - [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
+- [x] Current HAMT select-policy precursor: `ratchet-value::attrs::pic`
+      exposes `HamtSelectCache`, which binds one static select key and models
+      the two RFC policy choices for HAMT-valued selections: cache a
+      distinguished HAMT entry that keeps using keyed HAMT lookup, or fold the
+      site into the megamorphic path. The HAMT attrset and select key must
+      share one symbol universe. It is not wired into `select_slow`,
+      `ShapedSelectCache`, native PIC lowering, or active evaluator selection.
 
 ### Iteration-order compatibility (acceptance-critical)
 
