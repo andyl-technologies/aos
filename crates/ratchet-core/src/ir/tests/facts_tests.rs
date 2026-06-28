@@ -10,6 +10,8 @@ fn expr_facts_default_to_conservative_choices() {
     assert_eq!(facts.cardinality, Cardinality::Many);
     assert_eq!(facts.escape, Escape::Escapes);
     assert_eq!(facts, ExprFacts::conservative());
+    assert_eq!(facts.binding_lowering(), BindingLowering::Thunk);
+    assert_eq!(facts.thunk_sharing(), ThunkSharing::Update);
 }
 
 #[test]
@@ -47,4 +49,84 @@ fn fact_table_is_mutable_by_ir_id_for_future_analysis_passes() {
         })
     );
     assert_eq!(facts.get(IrId::new(3)), None);
+}
+
+#[test]
+fn binding_lowering_requires_positive_strictness_and_escape_proofs() {
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Many,
+            escape: Escape::NoEscape,
+        }
+        .binding_lowering(),
+        BindingLowering::Thunk
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Many,
+            escape: Escape::Escapes,
+        }
+        .binding_lowering(),
+        BindingLowering::Eager
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Many,
+            escape: Escape::NoEscape,
+        }
+        .binding_lowering(),
+        BindingLowering::Scalar
+    );
+}
+
+#[test]
+fn thunk_sharing_requires_cardinality_and_frame_locality_proofs() {
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Once,
+            escape: Escape::Escapes,
+        }
+        .thunk_sharing(),
+        ThunkSharing::Update
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Many,
+            escape: Escape::NoEscape,
+        }
+        .thunk_sharing(),
+        ThunkSharing::Update
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        }
+        .thunk_sharing(),
+        ThunkSharing::SingleEntry
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
+            escape: Escape::Escapes,
+        }
+        .thunk_sharing(),
+        ThunkSharing::Omit
+    );
+    assert_eq!(
+        ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Absent,
+            escape: Escape::NoEscape,
+        }
+        .thunk_sharing(),
+        ThunkSharing::Update
+    );
 }

@@ -20,7 +20,9 @@ use crate::syntax::{
 
 mod facts;
 
-pub use facts::{Cardinality, Escape, ExprFacts, IrFacts, Strictness};
+pub use facts::{
+    BindingLowering, Cardinality, Escape, ExprFacts, IrFacts, Strictness, ThunkSharing,
+};
 
 /// Lowers a scope-resolved AST into evaluator IR.
 ///

@@ -817,6 +817,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 - [ ] Backward demand-propagation fixpoint over the IR, seeded from strict primops / `if`-condition / `derivationStrict` / interpolation / `foldl'` etc., iterated to a fixed point over the closed AOS call graph (§4.1) — **P4**, `S-9`.
 - [ ] Worker/wrapper transform: split into an unboxed-strict-args worker + an always-inline lazy-convention wrapper that forces strict args and tail-calls the worker (§4.2) — **P4**, `S-9`; reductions in [26](26-optimization-pass-catalog.md).
 - [ ] Soundness discipline: eager lowering licensed only by *proven* strictness, never heuristic; an unproven binding stays a thunk (§4.3) — **P4**; harness byte-green is the hard gate (a forced should-be-lazy `throw` is a loud test failure).
+- [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
+      encodes the THUNK/EAGER/SCALAR decision lattice so conservative or
+      escape-only facts still choose THUNK, `Eager` requires proven strictness,
+      and `Scalar` requires both proven strictness and proven no-escape.
+      `ExprFacts::thunk_sharing` similarly keeps normal update/blackhole
+      machinery unless cardinality and frame-locality proofs license a
+      single-entry thunk, or a non-contradicted absence proof licenses
+      omission. This only records the policy API; the oracle and future JIT
+      consumers remain open.
 
 ### Cardinality / usage analysis 0/1/many (§5)
 

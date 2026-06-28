@@ -3301,6 +3301,14 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
+- [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
+      encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
+      default, `Eager` gated by proven strictness, and `Scalar` gated by both
+      proven strictness and proven no-escape. `ExprFacts::thunk_sharing` keeps
+      normal update/blackhole machinery unless cardinality plus no-escape
+      proofs license single-entry thunks, or a non-contradicted absence proof
+      licenses omission. This is the policy API only; oracle/JIT consumers and
+      the analysis passes remain open.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the
       `eval_expr` flip.
 

@@ -62,6 +62,59 @@ impl ExprFacts {
             escape: Escape::Escapes,
         }
     }
+
+    /// Returns the binding-lowering strategy licensed by these facts.
+    ///
+    /// Eager execution is only selected when strictness is positively proven.
+    /// Scalar replacement additionally requires a no-escape proof. Any missing
+    /// proof falls back to lazy thunk allocation.
+    pub const fn binding_lowering(self) -> BindingLowering {
+        match (self.strictness, self.escape) {
+            (Strictness::Strict, Escape::NoEscape) => BindingLowering::Scalar,
+            (Strictness::Strict, Escape::Escapes) => BindingLowering::Eager,
+            (Strictness::Unknown, _) => BindingLowering::Thunk,
+        }
+    }
+
+    /// Returns the thunk-sharing mode licensed by these facts.
+    ///
+    /// Single-entry thunks are only safe when the cardinality proof says the
+    /// thunk is entered at most once and the escape proof keeps it frame-local.
+    /// A proof of absence licenses omitting the thunk entirely unless another
+    /// fact contradicts it by proving the binding strict.
+    pub const fn thunk_sharing(self) -> ThunkSharing {
+        match (self.cardinality, self.strictness, self.escape) {
+            (Cardinality::Absent, Strictness::Unknown, _) => ThunkSharing::Omit,
+            (Cardinality::Absent, Strictness::Strict, _)
+            | (Cardinality::Once | Cardinality::Many, _, Escape::Escapes)
+            | (Cardinality::Many, _, Escape::NoEscape) => ThunkSharing::Update,
+            (Cardinality::Once, _, Escape::NoEscape) => ThunkSharing::SingleEntry,
+        }
+    }
+}
+
+/// Strategy for lowering one binding-position expression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BindingLowering {
+    /// Allocate a lazy thunk and force it on demand.
+    #[default]
+    Thunk,
+    /// Evaluate eagerly and pass the WHNF value directly.
+    Eager,
+    /// Evaluate eagerly and keep a non-escaping result out of the heap.
+    Scalar,
+}
+
+/// Sharing/update machinery required for a thunk-like binding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ThunkSharing {
+    /// Keep normal update and blackhole state for sharing and cycle detection.
+    #[default]
+    Update,
+    /// Use a single-entry representation for a frame-local used-once thunk.
+    SingleEntry,
+    /// Omit code and storage for a proven-absent binding.
+    Omit,
 }
 
 /// Per-node analysis facts for one lowered IR artifact.

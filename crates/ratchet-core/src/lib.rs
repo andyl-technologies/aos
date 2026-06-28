@@ -25,10 +25,11 @@ pub mod ir;
 pub mod scope;
 
 pub use ir::{
-    Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrArena, IrAttrPathId,
-    IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError,
-    IrErrorKind, IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape,
-    IrShapeId, IrWithChain, Strictness, all_pure, all_pure_builtin, lower, lower_with_options,
+    BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrArena,
+    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,
+    IrError, IrErrorKind, IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode,
+    IrShape, IrShapeId, IrWithChain, Strictness, ThunkSharing, all_pure, all_pure_builtin, lower,
+    lower_with_options,
 };
 pub use scope::{
     FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst,
