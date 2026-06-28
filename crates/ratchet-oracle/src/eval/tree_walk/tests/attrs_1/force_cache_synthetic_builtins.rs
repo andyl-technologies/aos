@@ -707,8 +707,11 @@ fn synthetic_builtin_attr_current_time_records_uncacheable_trace_without_payload
         [ImpureInputFingerprint::current_time()].as_slice()
     );
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
+    let cache = runtime.cache().expect("cache is enabled");
+    assert!(!cache.is_empty(), "currentTime records an observation node");
+    assert_eq!(
+        cache.inline_payload_record_count(),
+        0,
         "synthetic currentTime remains uncacheable even when it is observed"
     );
 }

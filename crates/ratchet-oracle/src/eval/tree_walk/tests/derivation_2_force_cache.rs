@@ -1,7 +1,14 @@
 //! Tree-walk evaluator tests for derivation force-cache surfaces.
 
+use super::derivation_2_support::{
+    derivation_aterm_cache_subject, eval_single_derivation_with_cache,
+    static_derivation_outputs_cache_subject,
+};
 use super::*;
-use crate::cache::{PersistCache, PersistNodeMetadataKey, ValueHash};
+use crate::cache::{
+    CacheExprIdentity, DemandCacheKey, DurableBlake3Hash, NodeFreshness, PersistCache,
+    PersistNodeMetadataKey, ValueHash,
+};
 
 #[test]
 fn persistent_force_cache_hit_preserves_drv_surfaces() {
@@ -308,6 +315,10 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(uncached_first.cache_hits, 0);
     assert_eq!(uncached_first.force_cache_hits, 0);
     assert_eq!(uncached_first.force_cache_misses, 0);
+    assert_eq!(uncached_first.path_reuses, 0);
+    assert_eq!(uncached_first.output_path_reuses, 0);
+    assert!(uncached_first.hash_calculations > 0);
+    assert!(uncached_first.text_path_calculations > 0);
 
     let mut first_options =
         TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
@@ -325,6 +336,10 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(first.cache_hits, 0);
     assert_eq!(first.force_cache_hits, 0);
     assert_eq!(first.force_cache_misses, 0);
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(first.output_path_reuses, 0);
+    assert!(first.hash_calculations > 0);
+    assert!(first.text_path_calculations > 0);
 
     let mut replay_options =
         TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
@@ -346,6 +361,10 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(replay.cache_hits, 0);
     assert_eq!(replay.force_cache_hits, 0);
     assert_eq!(replay.force_cache_misses, 0);
+    assert_eq!(replay.path_reuses, 0);
+    assert_eq!(replay.output_path_reuses, 0);
+    assert!(replay.hash_calculations > 0);
+    assert!(replay.text_path_calculations > 0);
 
     let uncached_changed_options =
         TreeWalkOptions::with_current_time(1_700_000_123).expect("currentTime is valid");
@@ -359,6 +378,10 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(uncached_changed.cache_hits, 0);
     assert_eq!(uncached_changed.force_cache_hits, 0);
     assert_eq!(uncached_changed.force_cache_misses, 0);
+    assert_eq!(uncached_changed.path_reuses, 0);
+    assert_eq!(uncached_changed.output_path_reuses, 0);
+    assert!(uncached_changed.hash_calculations > 0);
+    assert!(uncached_changed.text_path_calculations > 0);
     assert_ne!(uncached_changed.path, uncached_first.path);
     assert_ne!(uncached_changed.aterm, uncached_first.aterm);
 
@@ -382,9 +405,164 @@ fn persistent_current_time_force_cache_no_replay_preserves_drv_surfaces() {
     assert_eq!(changed.cache_hits, 0);
     assert_eq!(changed.force_cache_hits, 0);
     assert_eq!(changed.force_cache_misses, 0);
+    assert_eq!(changed.path_reuses, 0);
+    assert_eq!(changed.output_path_reuses, 0);
+    assert!(changed.hash_calculations > 0);
+    assert!(changed.text_path_calculations > 0);
     assert_persistent_force_cache_sidecars_empty(
         &persist_root,
         "uncacheable currentTime derivation canary",
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn current_time_derivation_taints_in_memory_side_record_nodes() {
+    let source = r#"derivationStrict (let
+             b = builtins;
+           in {
+             name = "force-cache-current-time-side-record";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             env = b.currentTime;
+           })"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = || {
+        let mut options =
+            TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+        options.set_eval_cache_enabled(true);
+        options
+    };
+    let (final_identity, final_free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, options(), cache.clone());
+    let (static_identity, static_free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, options(), cache.clone());
+
+    let run = eval_single_derivation_with_cache(&ir, options(), cache.clone());
+
+    assert_eq!(run.path_reuses, 0);
+    assert_eq!(run.output_path_reuses, 0);
+    assert!(run.hash_calculations > 0);
+    assert!(run.text_path_calculations > 0);
+    let final_key =
+        DemandCacheKey::for_free_vars(final_identity, final_free_var_hashes.iter().copied())
+            .expect("final ATerm runtime key builds");
+    let static_key =
+        DemandCacheKey::for_free_vars(static_identity, static_free_var_hashes.iter().copied())
+            .expect("static output runtime key builds");
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache_view = runtime.cache().expect("cache is enabled");
+    let final_node = cache_view
+        .graph()
+        .node_id_for_key(final_key)
+        .expect("final ATerm node is present");
+    let static_node = cache_view
+        .graph()
+        .node_id_for_key(static_key)
+        .expect("static output node is present");
+
+    let final_graph_node = cache_view
+        .graph()
+        .node(final_node)
+        .expect("final ATerm graph node is present");
+    let static_graph_node = cache_view
+        .graph()
+        .node(static_node)
+        .expect("static output graph node is present");
+    assert_eq!(final_graph_node.freshness(), NodeFreshness::Dirty);
+    assert_eq!(static_graph_node.freshness(), NodeFreshness::Dirty);
+    assert_eq!(
+        (
+            cache_view.derivation_aterm_path_record_count(),
+            cache_view.static_derivation_output_path_record_count()
+        ),
+        (0, 0)
+    );
+    drop(runtime);
+
+    let second = eval_single_derivation_with_cache(&ir, options(), cache.clone());
+
+    assert_eq!(second.path, run.path);
+    assert_eq!(second.aterm, run.aterm);
+    assert_eq!(second.path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 0);
+    assert!(second.hash_calculations > 0);
+    assert!(second.text_path_calculations > 0);
+}
+
+#[test]
+fn current_time_derivation_skips_persistent_side_record_nodes() {
+    let persist_root = unique_temp_dir("force-cache-current-time-side-record-persist");
+    let source = r#"derivationStrict (let
+             b = builtins;
+           in {
+             name = "force-cache-current-time-side-record";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             env = b.currentTime;
+           })"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let options = || {
+        let mut options =
+            TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime is valid");
+        options.set_eval_cache_enabled(true);
+        options.set_persist_cache_root(&persist_root);
+        options
+    };
+    let (final_identity, final_free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, options(), cache.clone());
+    let (static_identity, static_free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, options(), cache);
+
+    let first = eval_single_derivation_with_cache(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(first.output_path_reuses, 0);
+    assert!(first.hash_calculations > 0);
+    assert!(first.text_path_calculations > 0);
+    assert_no_live_persistent_side_record(
+        &persist_root,
+        final_identity,
+        &final_free_var_hashes,
+        "direct currentTime final ATerm side-record first run",
+    );
+    assert_no_live_persistent_side_record(
+        &persist_root,
+        static_identity,
+        &static_free_var_hashes,
+        "direct currentTime static-output side-record first run",
+    );
+
+    let second = eval_single_derivation_with_cache(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.aterm, first.aterm);
+    assert_eq!(second.path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 0);
+    assert!(second.hash_calculations > 0);
+    assert!(second.text_path_calculations > 0);
+    assert_no_live_persistent_side_record(
+        &persist_root,
+        final_identity,
+        &final_free_var_hashes,
+        "direct currentTime final ATerm side-record fresh-runtime replay",
+    );
+    assert_no_live_persistent_side_record(
+        &persist_root,
+        static_identity,
+        &static_free_var_hashes,
+        "direct currentTime static-output side-record fresh-runtime replay",
     );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
@@ -399,6 +577,10 @@ struct EffectfulDerivationSurface {
     cache_hits: u64,
     force_cache_hits: u64,
     force_cache_misses: u64,
+    path_reuses: u64,
+    output_path_reuses: u64,
+    hash_calculations: u64,
+    text_path_calculations: u64,
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
 }
 
@@ -444,6 +626,27 @@ fn assert_persistent_force_cache_trace_log_contains(
         "{context} should persist exactly one live force-cache verifying trace for the expected inputs"
     );
     live_matches[0]
+}
+
+fn assert_no_live_persistent_side_record(
+    persist_root: &std::path::Path,
+    identity: CacheExprIdentity,
+    free_var_value_hashes: &[DurableBlake3Hash],
+    context: &str,
+) {
+    if !persist_root.exists() {
+        return;
+    }
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(key)
+            .expect("persistent side-record metadata lookup succeeds"),
+        None,
+        "{context} should not link a live persistent side payload"
+    );
 }
 
 fn evaluate_effectful_derivation_surface(
@@ -494,6 +697,10 @@ fn evaluate_effectful_derivation_surface_with_cache(
         cache_hits: outcome.stats().cache_hits(),
         force_cache_hits: outcome.stats().force_cache_hits(),
         force_cache_misses: outcome.stats().force_cache_misses(),
+        path_reuses: outcome.stats().derivation_aterm_path_reuses(),
+        output_path_reuses: outcome.stats().static_derivation_output_path_reuses(),
+        hash_calculations: outcome.stats().derivation_hash_calculations(),
+        text_path_calculations: outcome.stats().derivation_text_path_calculations(),
         persist_force_cache_hit_keys: outcome.persist_force_cache_hit_keys().to_vec(),
     }
 }

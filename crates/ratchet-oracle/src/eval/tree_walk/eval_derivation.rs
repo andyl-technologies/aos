@@ -4,6 +4,14 @@ use super::*;
 
 mod aterm_cache;
 mod static_outputs;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistSideRecordRuntimeObservation {
+    Accepted(DemandNodeId),
+    Rejected,
+    Skipped,
+}
+
 impl TreeWalk {
     pub(super) fn invalid_payload(
         &self,
@@ -152,10 +160,16 @@ impl TreeWalk {
         argument: IrId,
         argument_span: Span,
     ) -> Result<Value, TreeWalkError> {
-        self.with_active_derivation_aterm_memo_read_node(id, |eval| {
+        let trace_cursor = self.impure_input_trace_cursor();
+        let result = self.with_active_derivation_aterm_memo_read_node(id, |eval| {
             let value = eval.eval_node(argument)?;
             eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
-        })
+        });
+        if result.is_ok() {
+            let trace = self.impure_input_trace_segment(trace_cursor);
+            self.invalidate_derivation_side_records_for_uncacheable_trace(id, &trace);
+        }
+        result
     }
 
     pub(super) fn eval_derivation_strict_value(
@@ -166,12 +180,65 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        self.with_active_derivation_aterm_memo_read_node(id, |eval| {
+        let trace_cursor = self.impure_input_trace_cursor();
+        let result = self.with_active_derivation_aterm_memo_read_node(id, |eval| {
             eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
-        })
+        });
+        if result.is_ok() {
+            let trace = self.impure_input_trace_segment(trace_cursor);
+            self.invalidate_derivation_side_records_for_uncacheable_trace(id, &trace);
+        }
+        result
     }
 
-    fn with_active_derivation_aterm_memo_read_node<T>(
+    fn invalidate_derivation_side_records_for_uncacheable_trace(
+        &mut self,
+        id: IrId,
+        trace: &ImpureInputTraceSegment,
+    ) {
+        // Derivation side records do not retain verifying traces yet, so any
+        // incomplete or uncacheable input observed while building the .drv must
+        // make the side records unavailable for same-runtime reuse.
+        if trace.complete
+            && trace
+                .trace
+                .iter()
+                .all(|fingerprint| fingerprint.as_cacheable().is_some())
+        {
+            return;
+        }
+        let derivation_aterm_subject = self.derivation_aterm_cache_subject_for_current_node(id);
+        let static_outputs_subject =
+            self.static_derivation_outputs_cache_subject_for_current_node(id);
+        if let Some((identity, free_var_value_hashes)) = &derivation_aterm_subject {
+            self.clear_persist_derivation_aterm_path(*identity, free_var_value_hashes);
+        }
+        if let Some((identity, free_var_value_hashes)) = &static_outputs_subject {
+            self.clear_persist_static_derivation_output_paths(*identity, free_var_value_hashes);
+        }
+        let subjects = [derivation_aterm_subject, static_outputs_subject];
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping uncacheable derivation runtime side-record invalidation"
+            );
+            return;
+        };
+        for (identity, free_var_value_hashes) in subjects.into_iter().flatten() {
+            if let Err(error) = cache.invalidate_inline_expression_payload(
+                identity,
+                free_var_value_hashes.iter().copied(),
+            ) {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator uncacheable derivation side-record invalidation failed"
+                );
+            }
+        }
+    }
+
+    pub(in crate::eval::tree_walk) fn with_active_derivation_aterm_memo_read_node<T>(
         &mut self,
         id: IrId,
         evaluate: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
@@ -196,10 +263,24 @@ impl TreeWalk {
         let result = result?;
         if let Some(active_memo_read_node) = active_memo_read_node {
             let dependency = active_memo_read_node.node();
-            self.replace_active_memo_reads(active_memo_read_node);
+            if self.replace_active_memo_reads(active_memo_read_node) {
+                self.clear_persist_derivation_side_records_for_current_node(id);
+            }
             self.record_enclosing_memo_read(dependency);
         }
         Ok(result)
+    }
+
+    fn clear_persist_derivation_side_records_for_current_node(&mut self, id: IrId) {
+        let derivation_aterm_subject = self.derivation_aterm_cache_subject_for_current_node(id);
+        let static_outputs_subject =
+            self.static_derivation_outputs_cache_subject_for_current_node(id);
+        if let Some((identity, free_var_value_hashes)) = &derivation_aterm_subject {
+            self.clear_persist_derivation_aterm_path(*identity, free_var_value_hashes);
+        }
+        if let Some((identity, free_var_value_hashes)) = &static_outputs_subject {
+            self.clear_persist_static_derivation_output_paths(*identity, free_var_value_hashes);
+        }
     }
 
     fn eval_derivation_strict_value_inner(

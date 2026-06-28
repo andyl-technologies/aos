@@ -292,8 +292,11 @@ fn ambient_current_time_forced_inline_thunks_record_uncacheable_trace_without_pa
         [ImpureInputFingerprint::current_time()].as_slice()
     );
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
+    let cache = runtime.cache().expect("cache is enabled");
+    assert!(!cache.is_empty(), "currentTime records an observation node");
+    assert_eq!(
+        cache.inline_payload_record_count(),
+        0,
         "currentTime remains uncacheable even when the force body is observed"
     );
 }
@@ -314,8 +317,11 @@ fn source_less_current_time_thunks_record_uncacheable_trace_without_payload() {
         [ImpureInputFingerprint::current_time()].as_slice()
     );
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
+    let cache = runtime.cache().expect("cache is enabled");
+    assert!(!cache.is_empty(), "currentTime records an observation node");
+    assert_eq!(
+        cache.inline_payload_record_count(),
+        0,
         "source-less currentTime remains uncacheable even when the force body is observed"
     );
 }

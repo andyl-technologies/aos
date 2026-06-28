@@ -2703,16 +2703,30 @@ alone (`M-1`/`Q-A`).
       changed cache-disabled surface instead of replaying the older one, again
       without force-cache hits or misses. Each run records the uncacheable
       currentTime trace, and the canary asserts that persistent force metadata
-      and trace sidecars remain empty. The adjacent
+      and trace sidecars remain empty. The same canary now also requires
+      derivation ATerm path and static-output side-record reuse counters to stay
+      at zero while `.drv` hash and text-path calculations still run. The adjacent
+      `current_time_derivation_taints_in_memory_side_record_nodes` canary uses a
+      shared runtime to require uncacheable derivation traces to remove both
+      in-memory derivation side-record maps, leave their nodes dirty, and
+      recompute instead of reusing those side records on a second same-time run.
+      Its persistent-root companion
+      `current_time_derivation_skips_persistent_side_record_nodes` requires the
+      final ATerm and static-output side-record keys to have no live
+      materialized value links and requires a fresh runtime to recompute instead
+      of reusing persistent side records.
+      The adjacent
       `source_backed_current_time_tombstones_stale_persistent_payload` and
       `observation_only_current_time_tombstones_stale_persistent_payload`
       canaries seed stale durable payloads under the source-backed node-thunk
       and synthetic builtin-attr currentTime observation identities and require
       uncacheable forcing to clear the value link, tombstone the trace, and
       leave seeded reuse counters unchanged.
-      This samples currentTime inside one derivation input surface plus one
-      stale durable force-value boundary; general currentTime taint propagation through
-      persisted dependents, full cached-vs-uncached closure parity,
+      This samples currentTime inside one derivation input surface, the
+      derivationStrict uncacheable-trace side-record invalidation path, the
+      observation-only active memo-read bridge, and one stale durable force-value
+      boundary; general currentTime taint propagation through persisted
+      dependents, full cached-vs-uncached closure parity,
       derivationStrict-node SHA-256 early cutoff, mmap reads, GC/repack, and
       future value-memoization safety net remain open
       (`S-14`/`R-10`).
@@ -3084,10 +3098,26 @@ alone (`M-1`/`Q-A`).
       such as `currentTime`, while clearing only the `ImpureInput` dependency
       group and preserving `MemoRead` edges. Runtime invalidation also purges
       inline, derivation ATerm path, and static-output side records for the
-      invalidated node plus that memo-read dependent closure. This is transitive memo-read
-      taint only; automatic evaluator node lifecycle integration, persistence,
-      full currentTime taint propagation through future durable dependents, and
-      edge-exactness harness coverage remain open (`R-10`/`S-14`).
+      invalidated node plus that memo-read dependent closure. Replacing a
+      node's `MemoRead` group now also checks the newly attached suppliers and
+      immediately taints/purges the dependent if any supplier is already dirty,
+      which covers side records observed before an active evaluator frame is
+      closed. Derivation active-frame closure mirrors that dirty-supplier taint
+      to the persistent final ATerm/static-output side-record metadata
+      (`derivation_frame_close_dirty_supplier_clears_persistent_side_records`).
+      Runtime side-payload observations also refuse to leave a reusable
+      side record on a node whose memo-read suppliers are already dirty.
+      DerivationStrict uncacheable-trace invalidation also clears persistent
+      final ATerm/static-output materialized-value links for the current
+      side-record subjects, and enabled-runtime dirty-supplier rejections do not
+      report accepted side-payload observations to persistence or persistent-hit
+      replay (`persistent_force_cache_hit_rejects_dirty_runtime_supplier`,
+      `persistent_derivation_aterm_path_hit_rejects_dirty_runtime_supplier`,
+      `persistent_static_derivation_output_paths_hit_rejects_dirty_runtime_supplier`).
+      This remains transitive memo-read taint only; automatic evaluator node lifecycle
+      integration, persistence, full currentTime taint propagation through
+      future durable dependents, and edge-exactness harness coverage remain
+      open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

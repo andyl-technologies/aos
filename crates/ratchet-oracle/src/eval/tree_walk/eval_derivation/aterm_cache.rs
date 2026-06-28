@@ -118,12 +118,21 @@ impl TreeWalk {
             return None;
         }
         if persistent_hit {
-            dependency = self.observe_persist_derivation_aterm_path_runtime_hit(
+            match self.observe_persist_derivation_aterm_path_runtime_hit(
                 identity,
                 &free_var_value_hashes,
                 aterm,
                 &path_bytes,
-            );
+            ) {
+                PersistSideRecordRuntimeObservation::Accepted(observed) => {
+                    dependency = Some(observed);
+                }
+                PersistSideRecordRuntimeObservation::Rejected => {
+                    self.clear_persist_derivation_aterm_path(identity, &free_var_value_hashes);
+                    return None;
+                }
+                PersistSideRecordRuntimeObservation::Skipped => {}
+            }
         }
         if let Some(dependency) = dependency {
             self.record_enclosing_memo_read(dependency);
@@ -204,13 +213,13 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         path: &[u8],
-    ) -> Option<DemandNodeId> {
+    ) -> PersistSideRecordRuntimeObservation {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping persistent derivation ATerm path runtime observation"
             );
-            return None;
+            return PersistSideRecordRuntimeObservation::Skipped;
         };
         match cache.observe_derivation_aterm_expression_path(
             identity,
@@ -218,15 +227,17 @@ impl TreeWalk {
             aterm,
             path,
         ) {
-            Ok(Some(reconsideration)) => Some(reconsideration.node()),
-            Ok(None) => None,
+            Ok(Some(reconsideration)) => {
+                PersistSideRecordRuntimeObservation::Accepted(reconsideration.node())
+            }
+            Ok(None) => PersistSideRecordRuntimeObservation::Rejected,
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     error = %error,
                     "tree-walk evaluator persistent derivation ATerm path runtime observation failed"
                 );
-                None
+                PersistSideRecordRuntimeObservation::Rejected
             }
         }
     }
@@ -265,6 +276,7 @@ impl TreeWalk {
             }
         };
         let drv_path_bytes = self.store_path_absolute_bytes(drv_path);
+        let mut rejected = false;
         let (observed, early_cutoff) = {
             let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
@@ -282,7 +294,10 @@ impl TreeWalk {
                 Ok(Some(reconsideration)) => {
                     (true, reconsideration.decision() == CutoffDecision::CutOff)
                 }
-                Ok(None) => (true, false),
+                Ok(None) => {
+                    rejected = cache.is_enabled();
+                    (false, false)
+                }
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
@@ -300,6 +315,8 @@ impl TreeWalk {
                 &aterm,
                 &drv_path_bytes,
             );
+        } else if rejected {
+            self.clear_persist_derivation_aterm_path(identity, &free_var_value_hashes);
         }
         if early_cutoff {
             self.increment_early_cutoffs();
@@ -374,6 +391,29 @@ impl TreeWalk {
                 target: "aos_nix::cache",
                 error = %error,
                 "tree-walk evaluator persistent derivation ATerm path metadata write failed"
+            );
+        }
+    }
+
+    pub(super) fn clear_persist_derivation_aterm_path(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: &[DurableBlake3Hash],
+    ) {
+        if !self.options.eval_cache_enabled() {
+            return;
+        }
+        self.open_persist_eval_cache();
+        let Some(persist_cache) = &self.persist_cache else {
+            return;
+        };
+        let key =
+            PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+        if let Err(error) = persist_cache.clear_node_materialized_value_hash(key) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent derivation ATerm path metadata clear failed"
             );
         }
     }

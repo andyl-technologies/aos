@@ -327,6 +327,67 @@ fn synthetic_selected_force_cache_subject(identity: CacheExprIdentity) -> ForceC
 }
 
 #[test]
+fn observation_only_subject_allocates_active_node_without_lookup_replay() {
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let observation_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"observation-only-active-node"),
+        IrId::new(7),
+    );
+    let free_var_hash = DurableBlake3Hash::for_bytes(b"free-var");
+    let subject = ForceCacheSubject {
+        lookup_identity: None,
+        pure_observation_identity: None,
+        impure_observation_identity: Some(observation_identity),
+        metadata_identity: None,
+        persistent_clear_identity: Some(observation_identity),
+        free_var_value_hashes: vec![free_var_hash],
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    };
+    let observed_node = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                observation_identity,
+                [free_var_hash],
+                CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
+            )
+            .expect("observation payload observes")
+            .expect("cache is enabled")
+            .node()
+    };
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+
+    let active_node = evaluator
+        .active_force_cache_node_for_subject(Some(&subject))
+        .expect("observation-only active node allocates");
+    let replayed = evaluator.lookup_forced_inline_expression_result(Some(subject.clone()));
+
+    assert_eq!(active_node, observed_node);
+    assert!(
+        replayed.is_none(),
+        "observation-only subjects must not replay"
+    );
+    assert_eq!(evaluator.stats().force_cache_hits(), 0);
+    let runtime = cache.lock().expect("cache lock is valid");
+    let runtime_cache = runtime.cache().expect("cache is enabled");
+    let key = crate::cache::DemandCacheKey::for_free_vars(observation_identity, [free_var_hash])
+        .expect("observation key builds");
+    assert_eq!(
+        runtime_cache.graph().node_id_for_key(key),
+        Some(active_node)
+    );
+}
+
+#[test]
 fn source_backed_active_force_cache_hits_record_memo_read_edges() {
     let source = "1";
     let ir = lower(source);
@@ -804,6 +865,96 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
             .contains(&parent_node)
     );
     drop(runtime);
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
+    let persist_root = unique_temp_dir("force-cache-persistent-dirty-supplier");
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier-child"),
+        IrId::new(1),
+    );
+    let child_subject = synthetic_selected_force_cache_subject(child_identity);
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    let child_persist_key = PersistNodeMetadataKey::for_expression(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            child_persist_key,
+            &child_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("child payload materializes");
+    persist
+        .record_node_trace(
+            child_persist_key,
+            child_value_hash,
+            &persistent_empty_trace_payload(),
+        )
+        .expect("child empty trace records");
+    drop(persist);
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache_mut().expect("cache is enabled");
+        let supplier_identity = CacheExprIdentity::new(
+            DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier"),
+            IrId::new(2),
+        );
+        let supplier = cache
+            .get_or_insert_expression_node(
+                supplier_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(crate::cache::ValueHash::from_canonical_value_hash(
+                    DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier-value"),
+                )),
+            )
+            .expect("dirty supplier node inserts");
+        cache
+            .test_mark_dirty_node(supplier)
+            .expect("dirty supplier node dirties");
+        let child = cache
+            .get_or_insert_expression_node(
+                child_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(child_value_hash),
+            )
+            .expect("child runtime node inserts");
+        cache
+            .record_memo_read_dependency(child, supplier)
+            .expect("dirty supplier edge records");
+    }
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator =
+        TreeWalk::with_options_and_source_and_eval_cache(&ir, options, "expr.nix", source, cache);
+    let forced = evaluator.lookup_forced_inline_expression_result(Some(child_subject));
+
+    assert!(
+        forced.is_none(),
+        "dirty supplier should reject the persistent force-cache hit"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(child_persist_key)
+            .expect("persistent metadata lookup succeeds"),
+        None,
+        "rejected persistent force-cache hit should clear the durable value link"
+    );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }

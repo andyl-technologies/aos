@@ -53,6 +53,31 @@ impl EvalCacheRuntime {
         }
     }
 
+    fn clean_reconsideration(
+        cache: &EvalCache,
+        reconsideration: Reconsideration,
+    ) -> Result<Option<Reconsideration>, DemandGraphError> {
+        let node = cache.graph().node(reconsideration.node())?;
+        if node.freshness() == NodeFreshness::Dirty {
+            return Ok(None);
+        }
+        Ok(Some(reconsideration))
+    }
+
+    fn clean_trace_observation(
+        cache: &EvalCache,
+        observation: ExpressionTraceObservation,
+    ) -> Result<ExpressionTraceObservation, DemandGraphError> {
+        let Some(node) = observation.node() else {
+            return Ok(observation);
+        };
+        if cache.graph().node(node)?.freshness() != NodeFreshness::Dirty {
+            return Ok(observation);
+        }
+        let (_, trace) = observation.into_parts();
+        Ok(ExpressionTraceObservation::new(None, trace))
+    }
+
     #[cfg(test)]
     pub(crate) fn test_mark_dirty_node(
         &mut self,
@@ -470,7 +495,7 @@ impl EvalCacheRuntime {
         &mut self,
         dependent: DemandNodeId,
         dependencies: I,
-    ) -> Result<Option<()>, DemandGraphError>
+    ) -> Result<Option<bool>, DemandGraphError>
     where
         I: IntoIterator<Item = DemandNodeId>,
     {
@@ -506,7 +531,7 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_inline_expression_result(identity, free_var_value_hashes, value)
-            .map(Some)
+            .and_then(|reconsideration| Self::clean_reconsideration(cache, reconsideration))
     }
 
     /// Observes one expression payload when cache observation is enabled.
@@ -533,7 +558,7 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_inline_expression_payload(identity, free_var_value_hashes, value)
-            .map(Some)
+            .and_then(|reconsideration| Self::clean_reconsideration(cache, reconsideration))
     }
 
     /// Observes one derivation ATerm expression when cache observation is enabled.
@@ -593,7 +618,7 @@ impl EvalCacheRuntime {
                 aterm,
                 drv_path,
             )
-            .map(Some)
+            .and_then(|reconsideration| Self::clean_reconsideration(cache, reconsideration))
     }
 
     /// Observes resolved static derivation output paths when cache observation is enabled.
@@ -626,7 +651,7 @@ impl EvalCacheRuntime {
                 pre_output_aterm,
                 output_paths,
             )
-            .map(Some)
+            .and_then(|reconsideration| Self::clean_reconsideration(cache, reconsideration))
     }
 
     /// Invalidates one inline expression payload when cache observation is enabled.
@@ -687,7 +712,7 @@ impl EvalCacheRuntime {
                 value,
                 source,
             )
-            .map(Some)
+            .and_then(|observation| Self::clean_trace_observation(cache, observation).map(Some))
     }
 
     /// Observes one expression payload and its impure inputs when enabled.
@@ -722,6 +747,6 @@ impl EvalCacheRuntime {
                 value,
                 source,
             )
-            .map(Some)
+            .and_then(|observation| Self::clean_trace_observation(cache, observation).map(Some))
     }
 }

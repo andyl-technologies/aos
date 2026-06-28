@@ -46,6 +46,11 @@ impl EvalCache {
     }
 
     #[cfg(test)]
+    pub(crate) fn inline_payload_record_count(&self) -> usize {
+        self.inline_values.len()
+    }
+
+    #[cfg(test)]
     pub(crate) fn derivation_aterm_path_record_count(&self) -> usize {
         self.derivation_aterm_paths.len()
     }
@@ -581,19 +586,31 @@ impl EvalCache {
             .add_dependency_to_group(dependent, DemandDependencyGroup::MemoRead, dependency)
     }
 
+    /// Replaces memo-read dependencies and taints the dependent on dirty reads.
     pub(crate) fn replace_memo_read_dependencies<I>(
         &mut self,
         dependent: DemandNodeId,
         dependencies: I,
-    ) -> Result<(), DemandGraphError>
+    ) -> Result<bool, DemandGraphError>
     where
         I: IntoIterator<Item = DemandNodeId>,
     {
+        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        let mut has_dirty_dependency = false;
+        for dependency in &dependencies {
+            if self.graph.node(*dependency)?.freshness() == NodeFreshness::Dirty {
+                has_dirty_dependency = true;
+            }
+        }
         self.graph.replace_dependency_group(
             dependent,
             DemandDependencyGroup::MemoRead,
-            dependencies,
-        )
+            dependencies.iter().copied(),
+        )?;
+        if has_dirty_dependency {
+            self.invalidate_existing_inline_payload(Some(dependent))?;
+        }
+        Ok(has_dirty_dependency)
     }
 
     /// Observes impure inputs from one completed evaluator trace source.
@@ -741,6 +758,9 @@ impl EvalCache {
             .map_err(|source| DemandGraphError::ValueHash { source })?;
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
         let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(reconsideration);
+        }
         self.inline_values.insert(node, record);
         Ok(reconsideration)
     }
@@ -797,6 +817,9 @@ impl EvalCache {
         let reconsideration = self
             .graph
             .reconsider_node(node, record.payload_value_hash)?;
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(reconsideration);
+        }
         self.derivation_aterm_paths.insert(node, record);
         Ok(reconsideration)
     }
@@ -829,6 +852,9 @@ impl EvalCache {
         let reconsideration = self
             .graph
             .reconsider_node(node, record.payload_value_hash)?;
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(reconsideration);
+        }
         self.static_derivation_output_paths.insert(node, record);
         Ok(reconsideration)
     }
@@ -964,6 +990,13 @@ impl EvalCache {
             trace.leaves().iter().map(|leaf| leaf.node()),
         )?;
         let payload_reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(ExpressionTraceObservation::with_payload_reconsideration(
+                node,
+                trace,
+                payload_reconsideration,
+            ));
+        }
         self.inline_values.insert(node, record);
         Ok(ExpressionTraceObservation::with_payload_reconsideration(
             node,
@@ -1069,6 +1102,36 @@ impl EvalCache {
             self.invalidate_existing_inline_payload(Some(node))?;
         }
         Ok(())
+    }
+
+    fn invalidate_if_dirty_memo_read_dependency(
+        &mut self,
+        node: DemandNodeId,
+    ) -> Result<bool, DemandGraphError> {
+        // Side records are only reusable when their memo-read suppliers are
+        // clean. Observations that race with dirty supplier wiring keep the
+        // freshly computed value hash but leave the node dirty and uncacheable.
+        if !self.has_dirty_memo_read_dependency(node)? {
+            return Ok(false);
+        }
+        self.invalidate_existing_inline_payload(Some(node))?;
+        Ok(true)
+    }
+
+    fn has_dirty_memo_read_dependency(&self, node: DemandNodeId) -> Result<bool, DemandGraphError> {
+        let Some(dependencies) = self
+            .graph
+            .node(node)?
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+        else {
+            return Ok(false);
+        };
+        for dependency in dependencies {
+            if self.graph.node(*dependency)?.freshness() == NodeFreshness::Dirty {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn revalidate_inline_record_inputs<R>(

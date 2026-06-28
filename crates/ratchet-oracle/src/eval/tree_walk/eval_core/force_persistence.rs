@@ -16,6 +16,13 @@ enum ForcePayloadPersistenceAction {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistRuntimeHitObservation {
+    Accepted(DemandNodeId),
+    Rejected,
+    Skipped,
+}
+
 impl TreeWalk {
     #[cfg(test)]
     pub(in crate::eval::tree_walk) fn observe_forced_inline_expression_result(
@@ -78,6 +85,7 @@ impl TreeWalk {
             );
             return None;
         };
+        let cache_enabled = cache.is_enabled();
         let persistence_action = if !use_impure_observation {
             match cache.observe_inline_expression_payload(
                 identity,
@@ -88,6 +96,7 @@ impl TreeWalk {
                     node: reconsideration.node(),
                     early_cutoff: reconsideration.decision() == CutoffDecision::CutOff,
                 }),
+                Ok(None) if cache_enabled => Ok(ForcePayloadPersistenceAction::Clear),
                 Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
                 Err(error) => Err(error),
             }
@@ -464,7 +473,9 @@ impl TreeWalk {
         subject: Option<&ForceCacheSubject>,
     ) -> Option<DemandNodeId> {
         let subject = subject?;
-        let identity = subject.lookup_identity?;
+        let identity = subject
+            .lookup_identity
+            .or(subject.impure_observation_identity)?;
         self.active_memo_read_node_for_expression(
             identity,
             subject.free_var_value_hashes.iter().copied(),
@@ -540,21 +551,26 @@ impl TreeWalk {
     pub(in crate::eval::tree_walk) fn replace_active_memo_reads(
         &mut self,
         active: ActiveMemoReadNode,
-    ) {
+    ) -> bool {
         let (dependent, memo_reads) = active.into_parts();
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping memo-read edge replacement"
             );
-            return;
+            return false;
         };
-        if let Err(error) = cache.replace_memo_read_dependencies(dependent, memo_reads) {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator memo-read edge replacement failed"
-            );
+        match cache.replace_memo_read_dependencies(dependent, memo_reads) {
+            Ok(Some(has_dirty_dependency)) => has_dirty_dependency,
+            Ok(None) => false,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator memo-read edge replacement failed"
+                );
+                false
+            }
         }
     }
 
@@ -717,10 +733,15 @@ impl TreeWalk {
         let trace = revalidator.into_revalidated_trace();
         let value =
             self.value_for_cached_expression_payload_for_subject(payload.clone(), subject)?;
-        let dependency =
-            self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);
-        if let Some(dependency) = dependency {
-            self.record_active_memo_read(active_force_cache_node, dependency);
+        match self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace) {
+            PersistRuntimeHitObservation::Accepted(dependency) => {
+                self.record_active_memo_read(active_force_cache_node, dependency);
+            }
+            PersistRuntimeHitObservation::Rejected => {
+                self.clear_persist_forced_expression_payload(subject);
+                return None;
+            }
+            PersistRuntimeHitObservation::Skipped => {}
         }
         for fingerprint in trace {
             self.record_impure_input(fingerprint);
@@ -737,19 +758,19 @@ impl TreeWalk {
         subject: &ForceCacheSubject,
         payload: CachedExpressionValue,
         trace: &[ImpureInputFingerprint],
-    ) -> Option<DemandNodeId> {
+    ) -> PersistRuntimeHitObservation {
         let Some(identity) = subject.lookup_identity else {
-            return None;
+            return PersistRuntimeHitObservation::Skipped;
         };
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping persistent forced expression runtime observation"
             );
-            return None;
+            return PersistRuntimeHitObservation::Skipped;
         };
         if !cache.is_enabled() {
-            return None;
+            return PersistRuntimeHitObservation::Skipped;
         }
         let observation = if trace.is_empty() {
             cache
@@ -766,7 +787,7 @@ impl TreeWalk {
                     target: "aos_nix::cache",
                     "tree-walk evaluator persistent forced expression runtime trace allocation failed"
                 );
-                return None;
+                return PersistRuntimeHitObservation::Skipped;
             }
             runtime_trace.extend_from_slice(trace);
             let source = ImpureInputTraceSegment {
@@ -783,14 +804,15 @@ impl TreeWalk {
                 .map(|observation| observation.and_then(|observation| observation.node()))
         };
         match observation {
-            Ok(node) => node,
+            Ok(Some(node)) => PersistRuntimeHitObservation::Accepted(node),
+            Ok(None) => PersistRuntimeHitObservation::Rejected,
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     error = %error,
                     "tree-walk evaluator persistent forced expression runtime observation failed"
                 );
-                None
+                PersistRuntimeHitObservation::Rejected
             }
         }
     }

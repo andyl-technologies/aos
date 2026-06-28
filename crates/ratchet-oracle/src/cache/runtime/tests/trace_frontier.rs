@@ -260,6 +260,62 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
 }
 
 #[test]
+fn replace_memo_read_dependencies_with_dirty_supplier_invalidates_inline_payload() {
+    let mut cache = EvalCache::new();
+    let supplier = cache
+        .get_or_insert_expression_node(
+            identity(b"supplier", 7),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"supplier")),
+        )
+        .expect("supplier inserts");
+    let parent_identity = identity(b"parent", 8);
+    let parent = cache
+        .observe_inline_expression_result(
+            parent_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("parent payload observes")
+        .node();
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier dirties");
+    assert!(cache.inline_values.contains_key(&parent));
+
+    cache
+        .replace_memo_read_dependencies(parent, [supplier])
+        .expect("memo-read dependencies replace");
+
+    assert!(!cache.inline_values.contains_key(&parent));
+    let parent_node = cache.graph().node(parent).expect("parent exists");
+    assert_eq!(parent_node.freshness(), NodeFreshness::Dirty);
+    assert!(
+        parent_node
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("parent memo-read edges exist")
+            .contains(&supplier)
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(supplier)
+            .expect("supplier exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+    assert!(
+        cache
+            .lookup_inline_expression_result(
+                parent_identity,
+                std::iter::empty::<DurableBlake3Hash>()
+            )
+            .expect("parent lookup succeeds")
+            .is_none()
+    );
+}
+
+#[test]
 fn eval_cache_changed_input_dirties_dependent_node() {
     let first = TraceSource {
         trace: vec![read_file_trace(b"/tmp/version", b"1")],

@@ -6,8 +6,82 @@ use crate::cache::{
     CacheExprIdentity, CachedDerivationAtermPath, CachedDerivationOutputPath,
     CachedDerivationOutputPaths, CachedStaticDerivationOutputPathsPayload, DemandCacheKey,
     DemandDependencyGroup, DurableBlake3Hash, MaterializationDecision, NodeFreshness,
-    PersistBlobKey, PersistCache, PersistNodeMetadataKey,
+    PersistBlobKey, PersistCache, PersistNodeMetadataKey, ValueHash,
 };
+
+fn test_cache_identity(label: &[u8], node: u32) -> CacheExprIdentity {
+    CacheExprIdentity::new(DurableBlake3Hash::for_bytes(label), IrId::new(node))
+}
+
+fn test_value_hash(label: &[u8]) -> ValueHash {
+    ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(label))
+}
+
+fn attach_dirty_memo_read_supplier(
+    runtime: &Arc<Mutex<EvalCacheRuntime>>,
+    dependent_identity: CacheExprIdentity,
+    dependent_free_var_hashes: &[DurableBlake3Hash],
+    supplier_label: &'static [u8],
+) {
+    let mut runtime = runtime.lock().expect("cache lock is valid");
+    let cache = runtime.cache_mut().expect("runtime is enabled");
+    let supplier = cache
+        .get_or_insert_expression_node(
+            test_cache_identity(supplier_label, 9000),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(test_value_hash(supplier_label)),
+        )
+        .expect("supplier node inserts");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier node dirties");
+    let dependent = cache
+        .get_or_insert_expression_node(
+            dependent_identity,
+            dependent_free_var_hashes.iter().copied(),
+            Some(test_value_hash(b"dirty-persistent-hit-dependent")),
+        )
+        .expect("dependent node inserts");
+    cache
+        .record_memo_read_dependency(dependent, supplier)
+        .expect("dirty supplier memo-read edge records");
+}
+
+fn assert_no_persistent_materialized_value(
+    persist_root: &std::path::Path,
+    identity: CacheExprIdentity,
+    free_var_value_hashes: &[DurableBlake3Hash],
+    context: &str,
+) {
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(key)
+            .expect("persistent metadata lookup succeeds"),
+        None,
+        "{context} should clear the live persistent side-record link"
+    );
+}
+
+fn assert_persistent_materialized_value(
+    persist_root: &std::path::Path,
+    identity: CacheExprIdentity,
+    free_var_value_hashes: &[DurableBlake3Hash],
+    context: &str,
+) {
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+    assert!(
+        persist
+            .lookup_node_materialized_value_hash(key)
+            .expect("persistent metadata lookup succeeds")
+            .is_some(),
+        "{context} should link a live persistent side-record payload"
+    );
+}
 
 #[test]
 fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
@@ -733,6 +807,163 @@ fn persistent_static_derivation_output_paths_reuse_preserves_drv_surface() {
 }
 
 #[test]
+fn persistent_static_derivation_output_paths_hit_rejects_dirty_runtime_supplier() {
+    let persist_root = unique_temp_dir("static-output-path-dirty-supplier");
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+    }"#;
+    let ir = lower(source);
+    let options = || {
+        let mut options = enabled_eval_cache_options();
+        options.set_persist_cache_root(&persist_root);
+        options
+    };
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+    let first = eval_single_derivation_with_cache(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.output_path_reuses, 0);
+
+    let dirty_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, options(), dirty_runtime.clone());
+    attach_dirty_memo_read_supplier(
+        &dirty_runtime,
+        identity,
+        &free_var_hashes,
+        b"dirty-persistent-static-supplier",
+    );
+    let rejected = eval_single_derivation_with_cache(&ir, options(), dirty_runtime);
+
+    assert_eq!(rejected.path, uncached.path);
+    assert_eq!(rejected.aterm, uncached.aterm);
+    assert_eq!(rejected.output_path_reuses, 0);
+    assert!(
+        rejected.hash_calculations > 0,
+        "dirty supplier should make the persistent static-output hit fall back to output hashing"
+    );
+    assert_no_persistent_materialized_value(
+        &persist_root,
+        identity,
+        &free_var_hashes,
+        "dirty-supplier persistent static-output hit",
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn derivation_frame_close_dirty_supplier_clears_persistent_side_records() {
+    let persist_root = unique_temp_dir("derivation-frame-close-dirty-supplier");
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        args = [ "alpha" "beta" ];
+    }"#;
+    let ir = lower(source);
+    let options = || {
+        let mut options = enabled_eval_cache_options();
+        options.set_persist_cache_root(&persist_root);
+        options
+    };
+    let (final_identity, final_free_var_hashes) = derivation_aterm_cache_subject(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let (static_identity, static_free_var_hashes) = static_derivation_outputs_cache_subject(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let first = eval_single_derivation_with_cache(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(first.output_path_reuses, 0);
+    assert_persistent_materialized_value(
+        &persist_root,
+        final_identity,
+        &final_free_var_hashes,
+        "first-run final ATerm side record",
+    );
+    assert_persistent_materialized_value(
+        &persist_root,
+        static_identity,
+        &static_free_var_hashes,
+        "first-run static-output side record",
+    );
+
+    let runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let dirty_supplier = {
+        let mut runtime = runtime.lock().expect("cache lock is valid");
+        let cache = runtime.cache_mut().expect("cache is enabled");
+        let supplier = cache
+            .get_or_insert_expression_node(
+                test_cache_identity(b"frame-close-dirty-supplier", 9100),
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(test_value_hash(b"frame-close-dirty-supplier")),
+            )
+            .expect("dirty supplier node inserts");
+        cache
+            .test_mark_dirty_node(supplier)
+            .expect("dirty supplier node dirties");
+        supplier
+    };
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options(), runtime.clone());
+    evaluator
+        .with_active_derivation_aterm_memo_read_node(ir.root, |eval| {
+            eval.record_enclosing_memo_read(dirty_supplier);
+            Ok(())
+        })
+        .expect("derivation frame close succeeds");
+
+    assert_no_persistent_materialized_value(
+        &persist_root,
+        final_identity,
+        &final_free_var_hashes,
+        "frame-close dirty-supplier final ATerm side record",
+    );
+    assert_no_persistent_materialized_value(
+        &persist_root,
+        static_identity,
+        &static_free_var_hashes,
+        "frame-close dirty-supplier static-output side record",
+    );
+    let final_key =
+        DemandCacheKey::for_free_vars(final_identity, final_free_var_hashes.iter().copied())
+            .expect("final ATerm runtime key builds");
+    let runtime = runtime.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let final_node = cache
+        .graph()
+        .node_id_for_key(final_key)
+        .expect("final ATerm node is present");
+    assert_eq!(
+        cache
+            .graph()
+            .node(final_node)
+            .expect("final ATerm graph node is present")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
 fn disabled_eval_cache_option_skips_persistent_derivation_side_records() {
     let persist_root = unique_temp_dir("derivation-side-records-cache-disabled");
     let source = r#"derivationStrict {
@@ -1085,6 +1316,64 @@ fn persistent_derivation_aterm_path_reuse_preserves_drv_surface() {
     assert_eq!(hit.output_path_reuses, 0);
     assert!(first.text_path_calculations > 0);
     assert_eq!(hit.text_path_calculations, 0);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
+#[test]
+fn persistent_derivation_aterm_path_hit_rejects_dirty_runtime_supplier() {
+    let persist_root = unique_temp_dir("derivation-aterm-path-dirty-supplier");
+    let source = r#"derivationStrict {
+        name = "floating";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+    }"#;
+    let ir = lower(source);
+    let options = || {
+        let mut options = enabled_eval_cache_options();
+        options.set_persist_cache_root(&persist_root);
+        options
+    };
+    let uncached = eval_single_derivation_with_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        Arc::new(Mutex::new(EvalCacheRuntime::disabled())),
+    );
+    let first = eval_single_derivation_with_cache(
+        &ir,
+        options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    assert_eq!(first.path, uncached.path);
+    assert_eq!(first.path_reuses, 0);
+
+    let dirty_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, options(), dirty_runtime.clone());
+    attach_dirty_memo_read_supplier(
+        &dirty_runtime,
+        identity,
+        &free_var_hashes,
+        b"dirty-persistent-aterm-supplier",
+    );
+    let rejected = eval_single_derivation_with_cache(&ir, options(), dirty_runtime);
+
+    assert_eq!(rejected.path, uncached.path);
+    assert_eq!(rejected.aterm, uncached.aterm);
+    assert_eq!(rejected.path_reuses, 0);
+    assert!(
+        rejected.text_path_calculations > 0,
+        "dirty supplier should make the persistent ATerm path hit fall back to path calculation"
+    );
+    assert_no_persistent_materialized_value(
+        &persist_root,
+        identity,
+        &free_var_hashes,
+        "dirty-supplier persistent ATerm path hit",
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }

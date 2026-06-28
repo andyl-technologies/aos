@@ -351,6 +351,165 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
 }
 
 #[test]
+fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_records() {
+    let mut cache = EvalCache::new();
+    let supplier = cache
+        .get_or_insert_expression_node(
+            identity(b"dirty-supplier", 6),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"dirty-supplier")),
+        )
+        .expect("supplier inserts");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier dirties");
+    let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+    let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv";
+    let derivation = cache
+        .observe_derivation_aterm_expression_path(
+            identity(b"dirty-dependent-derivation", 7),
+            [durable_hash(b"free-var")],
+            aterm,
+            drv_path,
+        )
+        .expect("derivation ATerm path observes");
+    let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+    let output_paths = CachedDerivationOutputPaths::new(
+        [7; 32],
+        vec![CachedDerivationOutputPath::new(
+            b"out".to_vec(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+        )],
+    );
+    let static_outputs = cache
+        .observe_static_derivation_output_paths(
+            identity(b"dirty-dependent-static", 8),
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+            output_paths,
+        )
+        .expect("static derivation output paths observe");
+    assert_eq!(cache.derivation_aterm_path_record_count(), 1);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 1);
+
+    cache
+        .replace_memo_read_dependencies(derivation.node(), [supplier])
+        .expect("derivation memo-read dependencies replace");
+    cache
+        .replace_memo_read_dependencies(static_outputs.node(), [derivation.node()])
+        .expect("static output memo-read dependencies replace");
+
+    assert_eq!(cache.derivation_aterm_path_record_count(), 0);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 0);
+    for node in [supplier, derivation.node(), static_outputs.node()] {
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("invalidated node exists")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+    assert!(
+        cache
+            .lookup_derivation_aterm_path(
+                identity(b"dirty-dependent-derivation", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation lookup succeeds")
+            .is_none()
+    );
+    assert!(
+        cache
+            .lookup_static_derivation_output_paths(
+                identity(b"dirty-dependent-static", 8),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("static output lookup succeeds")
+            .is_none()
+    );
+}
+
+#[test]
+fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
+    let mut cache = EvalCache::new();
+    let supplier = cache
+        .get_or_insert_expression_node(
+            identity(b"dirty-side-record-supplier", 6),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"dirty-side-record-supplier")),
+        )
+        .expect("supplier inserts");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier dirties");
+    let derivation_identity = identity(b"dirty-side-record-derivation", 7);
+    let derivation = cache
+        .get_or_insert_expression_node(
+            derivation_identity,
+            [durable_hash(b"free-var")],
+            Some(value_hash(b"old-derivation")),
+        )
+        .expect("derivation node inserts");
+    cache
+        .record_memo_read_dependency(derivation, supplier)
+        .expect("derivation memo-read edge records");
+    let static_identity = identity(b"dirty-side-record-static", 8);
+    let static_outputs = cache
+        .get_or_insert_expression_node(
+            static_identity,
+            [durable_hash(b"free-var")],
+            Some(value_hash(b"old-static")),
+        )
+        .expect("static output node inserts");
+    cache
+        .record_memo_read_dependency(static_outputs, supplier)
+        .expect("static output memo-read edge records");
+    let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+    let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+    let output_paths = CachedDerivationOutputPaths::new(
+        [7; 32],
+        vec![CachedDerivationOutputPath::new(
+            b"out".to_vec(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+        )],
+    );
+
+    cache
+        .observe_derivation_aterm_expression_path(
+            derivation_identity,
+            [durable_hash(b"free-var")],
+            aterm,
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+        )
+        .expect("derivation ATerm path observes");
+    cache
+        .observe_static_derivation_output_paths(
+            static_identity,
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+            output_paths,
+        )
+        .expect("static derivation output paths observe");
+
+    assert_eq!(cache.derivation_aterm_path_record_count(), 0);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 0);
+    for node in [derivation, static_outputs] {
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("side-record node exists")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+}
+
+#[test]
 fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges() {
     let mut cache = EvalCache::new();
     let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
