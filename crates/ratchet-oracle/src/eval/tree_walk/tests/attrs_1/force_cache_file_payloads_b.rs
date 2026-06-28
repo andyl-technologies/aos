@@ -142,6 +142,217 @@ fn get_env_string_payload_thunks_hit_and_miss_after_revalidation() {
 }
 
 #[test]
+fn impure_input_builtins_record_exact_force_cache_graph_edges() {
+    let root = unique_temp_dir("force-cache-impure-edge-exactness");
+    fs::write(root.join("target"), b"payload").expect("target writes");
+    fs::create_dir(root.join("dir")).expect("directory creates");
+    fs::write(root.join("dir").join("alpha"), b"data").expect("alpha writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let dir_path = path_bytes(&root.join("dir"));
+    let marker_path = path_bytes(&root.join("marker"));
+
+    {
+        let source = "{ a = builtins.readFile ./target; }";
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert_eq!(
+            eval.heap()
+                .get_string(forced)
+                .expect("readFile result is a string")
+                .bytes(),
+            b"payload"
+        );
+        let expected_trace = vec![
+            ImpureInputFingerprint::read_file(&target_path, b"payload")
+                .expect("readFile fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = r#"{ a = builtins.hashFile "sha256" ./target; }"#;
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert!(
+            eval.heap().get_string(forced).is_ok(),
+            "hashFile result should be a string"
+        );
+        let expected_trace = vec![
+            ImpureInputFingerprint::hash_file(&target_path, b"payload")
+                .expect("hashFile fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = "{ a = builtins.readDir ./dir; }";
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        let alpha = eval.symbols.intern(b"alpha").expect("symbol interns");
+        let attrs = eval
+            .heap()
+            .get_attrs(forced)
+            .expect("readDir result is an attrset");
+        let value = attrs.get(alpha).expect("alpha entry exists");
+        assert_eq!(
+            eval.heap()
+                .get_string(value)
+                .expect("alpha entry is a string")
+                .bytes(),
+            b"regular"
+        );
+        let expected_trace = vec![
+            ImpureInputFingerprint::read_dir(
+                &dir_path,
+                [DirEntryInput::new(b"alpha", FileTypeForInput::Regular)],
+            )
+            .expect("readDir fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = "{ a = builtins.readFileType ./target; }";
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert_eq!(
+            eval.heap()
+                .get_string(forced)
+                .expect("readFileType result is a string")
+                .bytes(),
+            b"regular"
+        );
+        let expected_trace = vec![
+            ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Regular)
+                .expect("readFileType fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = "{ a = builtins.pathExists ./marker; }";
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert_eq!(forced.as_bool(), Ok(false));
+        let expected_trace = vec![
+            ImpureInputFingerprint::path_exists(&marker_path, false)
+                .expect("pathExists fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = r#"{ a = builtins.getEnv "AOS_FORCE_CACHE_EDGE_TEST"; }"#;
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let name = b"AOS_FORCE_CACHE_EDGE_TEST";
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options.set_env_var(name.to_vec(), b"value".to_vec());
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert_eq!(
+            eval.heap()
+                .get_string(forced)
+                .expect("getEnv result is a string")
+                .bytes(),
+            b"value"
+        );
+        let expected_trace = vec![
+            ImpureInputFingerprint::get_env(name, Some(b"value"))
+                .expect("getEnv fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn read_dir_attrset_payload_thunks_hit_and_miss_after_revalidation() {
     let root = unique_temp_dir("force-cache-read-dir-list-payload");
     fs::create_dir(root.join("dir")).expect("directory creates");

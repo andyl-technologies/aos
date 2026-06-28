@@ -1,8 +1,8 @@
 //! Tree-walk evaluator tests: attrs 1.
 
 use crate::cache::{
-    PERSIST_NODE_METADATA_INDEX_ENTRY_LEN, PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN,
-    PersistNodeTraceLogEntry,
+    DemandCacheKey, DemandDependencyGroup, DemandNodeId, PERSIST_NODE_METADATA_INDEX_ENTRY_LEN,
+    PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN, PersistNodeTraceLogEntry,
 };
 
 use super::*;
@@ -195,6 +195,118 @@ fn cache_nodes_with_dependencies(cache: &EvalCache) -> usize {
         })
         .count()
 }
+
+fn assert_force_cache_impure_edges_match_trace(
+    runtime: &Arc<Mutex<EvalCacheRuntime>>,
+    expected_owner: DemandCacheKey,
+    expected_trace: &[ImpureInputFingerprint],
+) {
+    assert!(
+        !expected_trace.is_empty(),
+        "edge-exactness assertions require at least one input leaf"
+    );
+    let runtime = runtime.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let graph = cache.graph();
+    let expected_owner = graph
+        .node_id_for_key(expected_owner)
+        .expect("forced expression node exists");
+    let expected_leaf_nodes = expected_trace
+        .iter()
+        .map(|fingerprint| {
+            let fingerprint = fingerprint
+                .as_cacheable()
+                .expect("expected trace is cacheable");
+            let key = DemandCacheKey::for_impure_input(fingerprint.identity().hash());
+            graph.node_id_for_key(key).unwrap_or_else(|| {
+                panic!(
+                    "cache graph contains no leaf node for {:?} input",
+                    fingerprint.kind()
+                )
+            })
+        })
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        expected_leaf_nodes.len(),
+        expected_trace.len(),
+        "each observed input fingerprint should map to one distinct graph leaf"
+    );
+
+    let impure_edge_owners = (0..cache.len())
+        .filter_map(|index| {
+            let raw = u32::try_from(index).expect("test graph has u32-addressable nodes");
+            let node = DemandNodeId::new(raw);
+            let dependencies = graph
+                .node(node)
+                .expect("node exists")
+                .dependencies_in_group(DemandDependencyGroup::ImpureInput)?;
+            (!dependencies.is_empty()).then(|| (node, dependencies.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        impure_edge_owners.len(),
+        1,
+        "a single forced attr thunk should own the impure-input edge group"
+    );
+    let (owner, dependencies) = impure_edge_owners[0].clone();
+    assert_eq!(
+        owner, expected_owner,
+        "the force-cache expression node should own the impure-input edge group"
+    );
+    assert_eq!(
+        dependencies, expected_leaf_nodes,
+        "the forced attr thunk should depend on exactly the observed input leaves"
+    );
+    for dependency in dependencies {
+        assert!(
+            graph
+                .node(dependency)
+                .expect("dependency exists")
+                .dependents()
+                .contains(&owner),
+            "input leaf should record the forced expression as a reverse dependent"
+        );
+    }
+}
+
+fn force_attr_a_with_impure_observation_key(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    a: Symbol,
+) -> (Value, DemandCacheKey) {
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("a force-cache subject builds")
+    };
+    let key = DemandCacheKey::for_free_vars(
+        subject
+            .impure_observation_identity
+            .expect("a has an impure observation identity"),
+        subject.free_var_value_hashes.iter().copied(),
+    )
+    .expect("a force-cache impure observation key builds");
+    evaluator.record_force_cache_memoization_demand(&subject);
+    evaluator.record_force_cache_memoization_demand(&subject);
+    let forced = TreeWalk::force_value(evaluator, ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
+    (forced, key)
+}
+
 fn persistent_path_exists_trace_payload(path: &[u8], exists: bool) -> PersistNodeTracePayload {
     let input =
         ImpureInputFingerprint::path_exists(path, exists).expect("pathExists fingerprint builds");
