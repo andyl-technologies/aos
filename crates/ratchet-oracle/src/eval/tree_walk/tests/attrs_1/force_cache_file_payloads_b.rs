@@ -144,13 +144,13 @@ fn get_env_string_payload_thunks_hit_and_miss_after_revalidation() {
 #[test]
 fn impure_input_builtins_record_exact_force_cache_graph_edges() {
     let root = unique_temp_dir("force-cache-impure-edge-exactness");
-    fs::write(root.join("target"), b"payload").expect("target writes");
     fs::create_dir(root.join("dir")).expect("directory creates");
     fs::write(root.join("dir").join("alpha"), b"data").expect("alpha writes");
     let root = fs::canonicalize(&root).expect("root canonicalizes");
     let target_path = path_bytes(&root.join("target"));
     let dir_path = path_bytes(&root.join("dir"));
     let marker_path = path_bytes(&root.join("marker"));
+    fs::write(root.join("target"), marker_path.as_slice()).expect("canonical target path writes");
 
     {
         let source = "{ a = builtins.readFile ./target; }";
@@ -174,10 +174,10 @@ fn impure_input_builtins_record_exact_force_cache_graph_edges() {
                 .get_string(forced)
                 .expect("readFile result is a string")
                 .bytes(),
-            b"payload"
+            marker_path.as_slice()
         );
         let expected_trace = vec![
-            ImpureInputFingerprint::read_file(&target_path, b"payload")
+            ImpureInputFingerprint::read_file(&target_path, marker_path.as_slice())
                 .expect("readFile fingerprint builds"),
         ];
 
@@ -207,7 +207,7 @@ fn impure_input_builtins_record_exact_force_cache_graph_edges() {
             "hashFile result should be a string"
         );
         let expected_trace = vec![
-            ImpureInputFingerprint::hash_file(&target_path, b"payload")
+            ImpureInputFingerprint::hash_file(&target_path, marker_path.as_slice())
                 .expect("hashFile fingerprint builds"),
         ];
 
@@ -343,6 +343,35 @@ fn impure_input_builtins_record_exact_force_cache_graph_edges() {
         let expected_trace = vec![
             ImpureInputFingerprint::get_env(name, Some(b"value"))
                 .expect("getEnv fingerprint builds"),
+        ];
+
+        assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+        assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+    }
+
+    {
+        let source = "{ a = builtins.pathExists (builtins.readFile ./target); }";
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(path_bytes(&root))
+            .expect("path base is absolute");
+        let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+        assert_eq!(forced.as_bool(), Ok(false));
+        let expected_trace = vec![
+            ImpureInputFingerprint::read_file(&target_path, marker_path.as_slice())
+                .expect("readFile fingerprint builds"),
+            ImpureInputFingerprint::path_exists(&marker_path, false)
+                .expect("pathExists fingerprint builds"),
         ];
 
         assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());

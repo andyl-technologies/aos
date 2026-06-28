@@ -149,6 +149,39 @@ fn changed_import_backed_inline_thunks_miss_after_revalidation() {
 }
 
 #[test]
+fn import_backed_inline_thunks_record_exact_force_cache_graph_edges() {
+    let root = unique_temp_dir("force-cache-import-backed-edge-exactness");
+    fs::write(root.join("dep.nix"), b"1").expect("import source writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let dep_path = path_bytes(&fs::canonicalize(root.join("dep.nix")).expect("dep canonicalizes"));
+    let source = "{ a = import ./dep.nix; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+    assert_eq!(forced.as_int(), Ok(1));
+    let expected_trace =
+        vec![ImpureInputFingerprint::import(&dep_path, b"1").expect("fingerprint builds")];
+
+    assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+    assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn import_backed_path_payload_thunks_hit_after_revalidation() {
     let root = unique_temp_dir("force-cache-import-backed-path");
     let imported_source = br#"/tmp + "/imported-path""#;
