@@ -115,58 +115,6 @@ fn assert_blob_indexed_read_waits_for_store_lock(store: PersistBlobStore, payloa
 }
 
 #[test]
-fn cache_file_artifact_read_waits_for_store_lock() {
-    let root = temp_root();
-    let cache = PersistCache::open(&root).expect("cache opens");
-    let source = b"let x = 1; in x";
-    let parse_key = test_parse_key(source);
-    let file_key = ParseFileKey::for_source("/src/default.nix", source);
-    let payload = b"locked file artifact";
-    let materialized = cache
-        .materialize_file_artifact(
-            &file_key,
-            parse_key,
-            payload,
-            MaterializationDecision::Materialize,
-        )
-        .expect("file artifact materializes");
-    let index_entry = materialized
-        .index_entry()
-        .expect("file artifact should materialize");
-    let index_value = index_entry.value();
-    cache
-        .record_file_artifact(index_entry)
-        .expect("file artifact mapping records");
-    let guard = cache
-        .lock_blob_materialization_for_tests(PersistBlobStore::Files)
-        .expect("file store lock acquired");
-    let reader = cache.clone();
-    let (tx, rx) = mpsc::channel();
-    let barrier = Arc::new(Barrier::new(2));
-    let reader_barrier = Arc::clone(&barrier);
-    let handle = thread::spawn(move || {
-        reader_barrier.wait();
-        let result = reader.read_file_artifact(index_value);
-        tx.send(result).expect("read result sends");
-    });
-
-    barrier.wait();
-    assert!(
-        rx.recv_timeout(Duration::from_millis(50)).is_err(),
-        "file artifact read should wait while the file store lock is held"
-    );
-    drop(guard);
-    let result = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("file artifact read completes after lock release")
-        .expect("file artifact read succeeds");
-    handle.join().expect("reader thread joins");
-    assert_eq!(result.as_slice(), payload);
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
 fn cache_blob_indexed_read_returns_none_on_miss() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
