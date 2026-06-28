@@ -3605,6 +3605,11 @@ it ships).**
       ([05](05-value-representation.md)); NaN-boxing remains a *variant to
       evaluate* because Nix `i64` ints do not fit a NaN-box payload — build both
       and select (`M-4`/`Q-E`).
+- [x] Current `value/tag.rs` precursor: `ratchet-value` exposes safe checked
+      low-bit heap address tag helpers, reserves the low three bits of
+      8-byte-aligned heap pointers, and names the thunk `FORCED` shortcut bit.
+      Raw decoded words do not prove pointer provenance or liveness; the active
+      `Value` representation and force path are unchanged.
 - [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
       ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
       `R-6`).

@@ -7,10 +7,11 @@
 //! knowledge and depends on no other workspace crate.
 //!
 //! The RFC §1.1 reserves this crate as the eventual home of the NaN-boxed,
-//! hash-consed value representation (an UNSAFE band). Until that lands there is
-//! no `unsafe` here, so the crate keeps `#![forbid(unsafe_code)]`; the attribute
+//! pointer-tagged, hash-consed value representation (an UNSAFE band). The
+//! current pointer-tagging support is still a safe layout helper; there is no
+//! `unsafe` here, so the crate keeps `#![forbid(unsafe_code)]`. The attribute
 //! relaxes to the per-block `// SAFETY:` discipline when the bit-twiddling
-//! representation arrives.
+//! runtime representation arrives.
 #![forbid(unsafe_code)]
 
 // Re-exported so the moved `attrs` module's `crate::syntax::Symbol` path keeps

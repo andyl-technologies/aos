@@ -257,15 +257,19 @@ pointers:
 
 ```rust
 #[inline(always)]
-fn deref_binding(slot: Value) -> Value {
+fn deref_binding(slot: Value, heap: &Heap) -> Value {
     // `slot` is whatever the environment holds for this binding.
     if slot.tag as u8 == ValueTag::Thunk as u8 {
-        let p = slot.payload_ptr_raw();        // raw usize of the pointer
-        if p & 0b1 != 0 {
+        let tagged = slot.payload_tagged_address(); // raw address bits only
+        if tagged.has_forced_bit() {
             // FORCED bit set: the thunk's result pointer is one indirection
             // away, but we know the state without an atomic load or a call.
-            let thunk = (p & !0b111usize) as *const Thunk;
-            return unsafe { (*thunk).result_unchecked() };
+            //
+            // Raw decoded address bits are not a dereference capability. The
+            // runtime must recover the thunk through a provenance-bearing heap
+            // handle or object table before reading the cell.
+            let thunk = heap.thunk_handle(tagged.address_bits());
+            return thunk.result_unchecked();
         }
         // not yet forced: fall to the slow path
         return force_slow(slot);
@@ -828,6 +832,12 @@ Value representation has no observable effect on `.drv` output by construction (
 ### Pointer tagging and the WHNF bit (§3)
 
 - [ ] Pointer tagging of the low 3 bits of 8-byte-aligned heap pointers; the thunk `FORCED` shortcut bit (`b0`) skipping the atomic state load / slow-path call on the already-forced path (§3.1) — **P8**, `S-6`; benchmark-gated (rank-5 follow-up), IN SCOPE.
+- [x] Current pointer-tagging precursor: `ratchet-value::value::tag` defines
+      the 8-byte heap-pointer alignment contract, reserves the low three pointer
+      bits, exposes the thunk `FORCED` shortcut bit (`b0`), and provides safe
+      checked encode/decode helpers for tagged heap address words. Raw decoded
+      words do not prove pointer provenance or liveness. This does not change
+      the active 16-byte `Value` ABI or skip thunk-state loads yet.
 - [ ] Optional small-constructor (0/1/2-element) inline encoding for small lists/attrs so `length`/single-key `select` skip a header load (§3, §7) — **P8**, measure-gated default-off; benchmark delta required (`C6`).
 - [x] Current conservative thunk publication/read discipline: `ThunkCell` uses acquire loads for state and cached-value checks, an AcqRel `Suspended → Blackhole` claim CAS, Release stores when publishing `Forced` or resetting to `Suspended`, and reads cached WHNF only after observing `Forced`; this preserves the future parallel boundary while the P1 tree-walk result slot remains `Cell<Option<Value>>`/single-threaded (§3.1–§3.2). Covered by `eval::thunk::tests::*`, especially `finish_force_publishes_cached_value`, `already_forced_thunk_returns_cached_value_without_reclaiming`, `abort_force_resets_suspended_state`, and `dropped_claim_resets_suspended_state_for_error_unwind`, plus tree-walk memoization/reset tests such as `forcing_attr_value_thunks_memoizes_whnf_results`, `shared_thunks_emit_trace_once_when_forced_repeatedly`, and `failed_thunks_reset_and_are_retried`.
 - [ ] Full RFC monotonic-`FORCED` fast path/proof: unsynchronized single-threaded fast reads if retained, the pointer-tag `FORCED` shortcut that skips the atomic load (tracked above), and the true parallel forcing acquire-load protocol with `loom`/Miri audit (§3.1–§3.2) — parallel acquire path **P3.5** (`C-12`, `R-4`).
