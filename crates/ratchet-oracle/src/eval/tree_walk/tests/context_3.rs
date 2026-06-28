@@ -543,7 +543,7 @@ fn to_file_text_store_import_uses_import_cache() {
 }
 
 #[test]
-fn to_file_text_store_import_marks_impure_trace_incomplete() {
+fn to_file_text_store_import_records_complete_empty_trace() {
     let outcome = eval_whnf_owned(&lower(
         r#"let p = builtins.toFile "generated.nix" "1"; in import p"#,
     ))
@@ -551,7 +551,71 @@ fn to_file_text_store_import_marks_impure_trace_incomplete() {
 
     assert_eq!(outcome.value().as_int(), Ok(1));
     assert!(outcome.impure_input_trace().is_empty());
-    assert!(!outcome.impure_input_trace_complete());
+    assert!(outcome.impure_input_trace_complete());
+}
+
+#[test]
+fn to_file_text_store_import_with_current_time_records_uncacheable_trace() {
+    let current_time = 1_700_000_000;
+    let options = TreeWalkOptions::with_current_time(current_time).expect("currentTime is valid");
+    let outcome = eval_whnf_owned_with_options(
+        &lower(r#"let p = builtins.toFile "generated.nix" "builtins.currentTime"; in import p"#),
+        options,
+    )
+    .expect("text-store import evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(current_time));
+    assert_eq!(
+        outcome.impure_input_trace(),
+        &[ImpureInputFingerprint::current_time()]
+    );
+    assert!(outcome.impure_input_trace_complete());
+}
+
+#[test]
+fn first_class_text_store_import_does_not_replay_without_text_store_effects() {
+    fn imported_text_store_path(ir: &Ir, persist_root: &Path) -> Vec<u8> {
+        let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+        options.set_persist_cache_root(persist_root);
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(
+            ir,
+            options,
+            Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+        );
+        let value = evaluator.eval_root().expect("text-store import evaluates");
+        let path = evaluator
+            .heap()
+            .get_string(value)
+            .expect("import result is a string")
+            .bytes()
+            .to_vec();
+        assert!(
+            evaluator.text_store.contains_key(&path),
+            "imported toFile side effect should populate the returned text-store path"
+        );
+        assert!(evaluator.impure_input_trace().is_empty());
+        assert!(evaluator.impure_input_trace_complete());
+        evaluator.advance_persist_eval_cache_run_boundary();
+        path
+    }
+
+    let persist_root = unique_temp_dir("force-cache-first-class-text-store-import-no-replay");
+    let ir = lower(
+        r#"let
+             b = builtins;
+             payload = b.toFile
+               "outer-generated.nix"
+               "builtins.toFile \"inner-generated.nix\" \"\\\"inner payload\\\"\"";
+           in b.seq payload (b.import payload)"#,
+    );
+
+    let first = imported_text_store_path(&ir, &persist_root);
+    let second = imported_text_store_path(&ir, &persist_root);
+    let third = imported_text_store_path(&ir, &persist_root);
+    assert_eq!(second, first);
+    assert_eq!(third, first);
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
 #[test]

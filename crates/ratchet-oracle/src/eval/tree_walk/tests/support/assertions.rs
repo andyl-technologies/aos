@@ -105,6 +105,24 @@ pub(crate) fn assert_persistent_force_cache_sidecars_empty(persist_root: &Path, 
     );
 }
 
+pub(crate) fn assert_persistent_force_cache_has_no_live_traces(persist_root: &Path, context: &str) {
+    if !persist_root.exists() {
+        return;
+    }
+
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let trace_entries = persist
+        .node_trace_log()
+        .latest_entries()
+        .expect("persistent node trace entries load");
+    assert!(
+        trace_entries
+            .iter()
+            .all(|entry| entry.payload().is_tombstone()),
+        "{context} should not write live persistent force-cache traces"
+    );
+}
+
 pub(crate) fn assert_drv_surface_canaries_absent(
     surface_name: &str,
     path: &str,

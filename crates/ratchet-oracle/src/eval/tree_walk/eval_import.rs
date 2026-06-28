@@ -566,6 +566,7 @@ impl TreeWalk {
         cache_path: PathBuf,
         diagnostic_path: Vec<u8>,
         current_force_cache_trace_complete: bool,
+        allow_empty_impure_trace: bool,
         load: impl FnOnce(&mut Self) -> Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
         if !current_force_cache_trace_complete {
@@ -611,12 +612,13 @@ impl TreeWalk {
                 let force_cache_trace_complete = self
                     .force_cache_impure_input_trace_segment(trace_cursor)
                     .complete;
-                let trace = if trace.complete && !trace.trace.is_empty() {
-                    Some(trace.trace)
-                } else {
-                    self.mark_impure_input_trace_incomplete();
-                    None
-                };
+                let trace =
+                    if trace.complete && (allow_empty_impure_trace || !trace.trace.is_empty()) {
+                        Some(trace.trace)
+                    } else {
+                        self.mark_impure_input_trace_incomplete();
+                        None
+                    };
                 self.import_cache.insert(
                     cache_path,
                     ImportCacheEntry::Ready {
@@ -657,6 +659,7 @@ impl TreeWalk {
                 cache_path,
                 path,
                 false,
+                true,
                 |eval| {
                     eval.load_and_eval_text_store_import(
                         id,
@@ -680,6 +683,7 @@ impl TreeWalk {
             realpath,
             realpath_bytes,
             trace_import,
+            false,
             |eval| {
                 eval.load_and_eval_import(
                     id,
