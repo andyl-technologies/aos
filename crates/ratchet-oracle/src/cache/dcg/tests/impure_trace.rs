@@ -232,9 +232,75 @@ fn cacheable_impure_trace_for_node_replaces_prior_input_edges() {
 }
 
 #[test]
+fn impure_trace_for_node_preserves_memo_read_edges() {
+    let mut graph = DemandGraph::new();
+    let memo_dependency = node_with_hash(&mut graph, 6, b"memo-dependency");
+    let dependent = node_with_hash(&mut graph, 7, b"dependent");
+    graph
+        .add_dependency(dependent, memo_dependency)
+        .expect("memo edge records");
+
+    let first = [read_file_trace(b"/tmp/first", b"same")];
+    let first_observation = graph
+        .observe_impure_trace_for_node(dependent, &first, true)
+        .expect("first trace observes and wires");
+    let first_dependency = first_observation.leaves()[0].node();
+
+    let second = [read_file_trace(b"/tmp/second", b"same")];
+    let second_observation = graph
+        .observe_impure_trace_for_node(dependent, &second, true)
+        .expect("second trace replaces input edges");
+    let second_dependency = second_observation.leaves()[0].node();
+
+    let dependent_node = graph.node(dependent).expect("dependent exists");
+    assert!(dependent_node.dependencies().contains(&memo_dependency));
+    assert!(!dependent_node.dependencies().contains(&first_dependency));
+    assert!(dependent_node.dependencies().contains(&second_dependency));
+    assert!(
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("memo group exists")
+            .contains(&memo_dependency)
+    );
+    assert!(
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .expect("input group exists")
+            .contains(&second_dependency)
+    );
+    assert!(
+        graph
+            .node(memo_dependency)
+            .expect("memo dependency exists")
+            .dependents()
+            .contains(&dependent)
+    );
+
+    graph
+        .observe_impure_trace(&[read_file_trace(b"/tmp/first", b"changed")], true)
+        .expect("stale input reconsiders");
+    assert_eq!(
+        graph.node(dependent).expect("dependent exists").freshness(),
+        NodeFreshness::Clean
+    );
+
+    graph
+        .reconsider_node(memo_dependency, value_hash(b"changed-memo"))
+        .expect("memo dependency reconsiders");
+    assert_eq!(
+        graph.node(dependent).expect("dependent exists").freshness(),
+        NodeFreshness::Dirty
+    );
+}
+
+#[test]
 fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
     let mut graph = DemandGraph::new();
+    let memo_dependency = node_with_hash(&mut graph, 6, b"memo-dependency");
     let dependent = node_with_hash(&mut graph, 7, b"dependent");
+    graph
+        .add_dependency(dependent, memo_dependency)
+        .expect("memo edge records");
     let first = [read_file_trace(b"/tmp/first", b"same")];
     let first_observation = graph
         .observe_impure_trace_for_node(dependent, &first, true)
@@ -253,17 +319,25 @@ fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
         second_observation.status(),
         ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
     );
+    let dependent_node = graph.node(dependent).expect("dependent exists");
+    assert!(dependent_node.dependencies().contains(&memo_dependency));
+    assert!(!dependent_node.dependencies().contains(&first_dependency));
     assert!(
-        graph
-            .node(dependent)
-            .expect("dependent exists")
-            .dependencies()
-            .is_empty()
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
     );
     assert!(
         !graph
             .node(first_dependency)
             .expect("first dependency exists")
+            .dependents()
+            .contains(&dependent)
+    );
+    assert!(
+        graph
+            .node(memo_dependency)
+            .expect("memo dependency exists")
             .dependents()
             .contains(&dependent)
     );
@@ -280,7 +354,11 @@ fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
 #[test]
 fn incomplete_impure_trace_for_node_clears_prior_input_edges() {
     let mut graph = DemandGraph::new();
+    let memo_dependency = node_with_hash(&mut graph, 6, b"memo-dependency");
     let dependent = node_with_hash(&mut graph, 7, b"dependent");
+    graph
+        .add_dependency(dependent, memo_dependency)
+        .expect("memo edge records");
     let first = [read_file_trace(b"/tmp/first", b"same")];
     let first_observation = graph
         .observe_impure_trace_for_node(dependent, &first, true)
@@ -294,17 +372,25 @@ fn incomplete_impure_trace_for_node_clears_prior_input_edges() {
 
     assert_eq!(second_observation.status(), ImpureTraceStatus::Incomplete);
     assert!(second_observation.leaves().is_empty());
+    let dependent_node = graph.node(dependent).expect("dependent exists");
+    assert!(dependent_node.dependencies().contains(&memo_dependency));
+    assert!(!dependent_node.dependencies().contains(&first_dependency));
     assert!(
-        graph
-            .node(dependent)
-            .expect("dependent exists")
-            .dependencies()
-            .is_empty()
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
     );
     assert!(
         !graph
             .node(first_dependency)
             .expect("first dependency exists")
+            .dependents()
+            .contains(&dependent)
+    );
+    assert!(
+        graph
+            .node(memo_dependency)
+            .expect("memo dependency exists")
             .dependents()
             .contains(&dependent)
     );

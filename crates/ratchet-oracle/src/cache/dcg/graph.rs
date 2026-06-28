@@ -179,15 +179,12 @@ impl DemandGraph {
     ///
     /// `dependent` must be an existing caller-supplied evaluating node. This
     /// method does not create demand nodes for evaluator computations. Complete
-    /// cacheable traces replace `dependent`'s dependencies with the observed
-    /// input leaves, so later changed input observations dirty `dependent` only
-    /// for the latest trace.
+    /// cacheable traces replace `dependent`'s impure-input dependency group
+    /// with the observed input leaves, so later changed input observations dirty
+    /// `dependent` only for the latest trace while preserving dependencies
+    /// owned by other groups.
     /// Incomplete and uncacheable traces return their cacheability status and
-    /// clear any existing dependencies from `dependent`.
-    ///
-    /// The graph does not type dependency edges. Callers must use this method
-    /// only when the impure trace represents the full dependency set that should
-    /// remain on `dependent`.
+    /// clear any existing impure-input dependencies from `dependent`.
     ///
     /// Successful leaf observations are not rolled back if later edge
     /// replacement fails.
@@ -207,7 +204,11 @@ impl DemandGraph {
         self.node(dependent)?;
         let observation = self.observe_impure_trace(trace, complete)?;
         if observation.status() != ImpureTraceStatus::Cacheable {
-            self.replace_dependencies(dependent, std::iter::empty::<DemandNodeId>())?;
+            self.replace_dependency_group(
+                dependent,
+                DemandDependencyGroup::ImpureInput,
+                std::iter::empty::<DemandNodeId>(),
+            )?;
             return Ok(observation);
         }
 
@@ -219,14 +220,15 @@ impl DemandGraph {
             return Err(DemandGraphError::SelfDependency { id: dependent });
         }
 
-        self.replace_dependencies(
+        self.replace_dependency_group(
             dependent,
+            DemandDependencyGroup::ImpureInput,
             observation.leaves().iter().map(|leaf| leaf.node()),
         )?;
         Ok(observation)
     }
 
-    /// Records that `dependent` reads `dependency`.
+    /// Records that `dependent` reads `dependency` as a memo-read dependency.
     ///
     /// # Errors
     ///
@@ -238,16 +240,77 @@ impl DemandGraph {
         dependent: DemandNodeId,
         dependency: DemandNodeId,
     ) -> Result<(), DemandGraphError> {
+        self.add_dependency_to_group(dependent, DemandDependencyGroup::MemoRead, dependency)
+    }
+
+    /// Records that `dependent` reads `dependency` in `group`.
+    ///
+    /// Reverse dirty-propagation edges are tracked as a union across groups, so
+    /// adding the same dependency in multiple groups still records one
+    /// dependent edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if either id does not belong
+    /// to this graph, or [`DemandGraphError::SelfDependency`] when both ids are
+    /// equal.
+    pub fn add_dependency_to_group(
+        &mut self,
+        dependent: DemandNodeId,
+        group: DemandDependencyGroup,
+        dependency: DemandNodeId,
+    ) -> Result<(), DemandGraphError> {
         self.node(dependent)?;
         self.node(dependency)?;
         if dependent == dependency {
             return Err(DemandGraphError::SelfDependency { id: dependent });
         }
 
-        self.nodes[dependent.index()]
-            .dependencies
+        let dependent_node = &mut self.nodes[dependent.index()];
+        dependent_node.dependencies.insert(dependency);
+        dependent_node
+            .dependency_groups
+            .entry(group)
+            .or_default()
             .insert(dependency);
         self.nodes[dependency.index()].dependents.insert(dependent);
+        Ok(())
+    }
+
+    /// Replaces dependencies in one ownership group for `dependent`.
+    ///
+    /// Existing dependency groups on `dependent` are preserved. Reverse
+    /// dependent edges are removed only when a dependency disappears from the
+    /// union of all groups, and inserted only when it newly appears in that
+    /// union. Duplicate replacement ids are collapsed by deterministic node-id
+    /// ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if any id does not belong to
+    /// this graph, or [`DemandGraphError::SelfDependency`] if `dependent`
+    /// appears in the replacement dependency set. On error, graph edges are left
+    /// unchanged.
+    pub fn replace_dependency_group<I>(
+        &mut self,
+        dependent: DemandNodeId,
+        group: DemandDependencyGroup,
+        dependencies: I,
+    ) -> Result<(), DemandGraphError>
+    where
+        I: IntoIterator<Item = DemandNodeId>,
+    {
+        self.node(dependent)?;
+        let replacement = self.collect_dependency_set(dependent, dependencies)?;
+        let previous = self.nodes[dependent.index()].dependencies.clone();
+        let mut groups = self.nodes[dependent.index()].dependency_groups.clone();
+        if replacement.is_empty() {
+            groups.remove(&group);
+        } else {
+            groups.insert(group, replacement);
+        }
+        let replacement = Self::dependency_union(&groups);
+        self.commit_dependency_replacement(dependent, previous, replacement, groups);
         Ok(())
     }
 
@@ -258,9 +321,11 @@ impl DemandGraph {
     /// dependency. Duplicate replacement ids are collapsed by the graph's
     /// deterministic node-id ordering.
     ///
-    /// Dependency edges are untyped, so replacement covers the node's whole
-    /// dependency set. Callers that need to preserve separate dependency groups
-    /// must merge those groups before calling this method.
+    /// Replacement covers the node's whole dependency union and clears previous
+    /// group ownership. Non-empty replacement dependencies are assigned to
+    /// [`DemandDependencyGroup::MemoRead`] for compatibility. Call
+    /// [`Self::replace_dependency_group`] when only one dependency group should
+    /// be refreshed.
     ///
     /// # Errors
     ///
@@ -277,23 +342,13 @@ impl DemandGraph {
         I: IntoIterator<Item = DemandNodeId>,
     {
         self.node(dependent)?;
-        let mut replacement = BTreeSet::new();
-        for dependency in dependencies {
-            self.node(dependency)?;
-            if dependent == dependency {
-                return Err(DemandGraphError::SelfDependency { id: dependent });
-            }
-            replacement.insert(dependency);
-        }
-
+        let replacement = self.collect_dependency_set(dependent, dependencies)?;
         let previous = self.nodes[dependent.index()].dependencies.clone();
-        for removed in previous.difference(&replacement) {
-            self.nodes[removed.index()].dependents.remove(&dependent);
+        let mut groups = BTreeMap::new();
+        if !replacement.is_empty() {
+            groups.insert(DemandDependencyGroup::MemoRead, replacement.clone());
         }
-        for added in replacement.difference(&previous) {
-            self.nodes[added.index()].dependents.insert(dependent);
-        }
-        self.nodes[dependent.index()].dependencies = replacement;
+        self.commit_dependency_replacement(dependent, previous, replacement, groups);
         Ok(())
     }
 
@@ -443,6 +498,53 @@ impl DemandGraph {
             stack.extend(node.dependencies.iter().copied());
         }
         blockers.into_iter().collect()
+    }
+
+    fn collect_dependency_set<I>(
+        &self,
+        dependent: DemandNodeId,
+        dependencies: I,
+    ) -> Result<BTreeSet<DemandNodeId>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DemandNodeId>,
+    {
+        let mut replacement = BTreeSet::new();
+        for dependency in dependencies {
+            self.node(dependency)?;
+            if dependent == dependency {
+                return Err(DemandGraphError::SelfDependency { id: dependent });
+            }
+            replacement.insert(dependency);
+        }
+        Ok(replacement)
+    }
+
+    fn dependency_union(
+        groups: &BTreeMap<DemandDependencyGroup, BTreeSet<DemandNodeId>>,
+    ) -> BTreeSet<DemandNodeId> {
+        let mut dependencies = BTreeSet::new();
+        for group in groups.values() {
+            dependencies.extend(group.iter().copied());
+        }
+        dependencies
+    }
+
+    fn commit_dependency_replacement(
+        &mut self,
+        dependent: DemandNodeId,
+        previous: BTreeSet<DemandNodeId>,
+        replacement: BTreeSet<DemandNodeId>,
+        groups: BTreeMap<DemandDependencyGroup, BTreeSet<DemandNodeId>>,
+    ) {
+        for removed in previous.difference(&replacement) {
+            self.nodes[removed.index()].dependents.remove(&dependent);
+        }
+        for added in replacement.difference(&previous) {
+            self.nodes[added.index()].dependents.insert(dependent);
+        }
+        let node = &mut self.nodes[dependent.index()];
+        node.dependencies = replacement;
+        node.dependency_groups = groups;
     }
 
     /// Reconsiders one node with a recomputed value hash.

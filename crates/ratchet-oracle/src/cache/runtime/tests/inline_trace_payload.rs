@@ -46,6 +46,185 @@ fn eval_cache_observes_inline_expression_results_with_impure_edges_without_hits(
 }
 
 #[test]
+fn eval_cache_inline_trace_payload_preserves_memo_read_edges() {
+    let source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: true,
+    };
+    let mut graph = DemandGraph::new();
+    let expression_identity = identity(b"source", 7);
+    let node = graph
+        .get_or_insert_expression_node(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"value")),
+        )
+        .expect("expression node inserts");
+    let memo_dependency = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+                .expect("memo key builds"),
+            Some(value_hash(b"memo")),
+        )
+        .expect("memo dependency inserts");
+    graph
+        .add_dependency(node, memo_dependency)
+        .expect("memo edge records");
+    let mut cache = EvalCache::from_graph(graph);
+
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("inline result and trace observe");
+
+    assert_eq!(observation.node(), Some(node));
+    let input_dependency = observation.trace().leaves()[0].node();
+    let node = cache.graph().node(node).expect("expression node exists");
+    assert!(node.dependencies().contains(&memo_dependency));
+    assert!(node.dependencies().contains(&input_dependency));
+    assert!(
+        node.dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("memo group exists")
+            .contains(&memo_dependency)
+    );
+    assert!(
+        node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .expect("input group exists")
+            .contains(&input_dependency)
+    );
+}
+
+#[test]
+fn eval_cache_inline_trace_payload_uncacheable_trace_preserves_memo_read_edges() {
+    let first_source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: true,
+    };
+    let second_source = TraceSource {
+        trace: vec![ImpureInputFingerprint::current_time()],
+        complete: true,
+    };
+    let mut graph = DemandGraph::new();
+    let expression_identity = identity(b"source", 7);
+    let node = graph
+        .get_or_insert_expression_node(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"value")),
+        )
+        .expect("expression node inserts");
+    let memo_dependency = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+                .expect("memo key builds"),
+            Some(value_hash(b"memo")),
+        )
+        .expect("memo dependency inserts");
+    graph
+        .add_dependency(node, memo_dependency)
+        .expect("memo edge records");
+    let mut cache = EvalCache::from_graph(graph);
+    let first_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &first_source,
+        )
+        .expect("first inline result and trace observe");
+    assert_eq!(first_observation.node(), Some(node));
+    let input_dependency = first_observation.trace().leaves()[0].node();
+
+    let second_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(4),
+            &second_source,
+        )
+        .expect("uncacheable trace observes");
+
+    assert_eq!(
+        second_observation.cacheability(),
+        ExpressionCacheability::Uncacheable(UncacheableInput::CurrentTime)
+    );
+    let node = cache.graph().node(node).expect("expression node exists");
+    assert!(node.dependencies().contains(&memo_dependency));
+    assert!(!node.dependencies().contains(&input_dependency));
+    assert!(
+        node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+}
+
+#[test]
+fn eval_cache_inline_trace_payload_incomplete_trace_preserves_memo_read_edges() {
+    let first_source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: true,
+    };
+    let second_source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: false,
+    };
+    let mut graph = DemandGraph::new();
+    let expression_identity = identity(b"source", 7);
+    let node = graph
+        .get_or_insert_expression_node(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"value")),
+        )
+        .expect("expression node inserts");
+    let memo_dependency = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+                .expect("memo key builds"),
+            Some(value_hash(b"memo")),
+        )
+        .expect("memo dependency inserts");
+    graph
+        .add_dependency(node, memo_dependency)
+        .expect("memo edge records");
+    let mut cache = EvalCache::from_graph(graph);
+    let first_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &first_source,
+        )
+        .expect("first inline result and trace observe");
+    assert_eq!(first_observation.node(), Some(node));
+    let input_dependency = first_observation.trace().leaves()[0].node();
+
+    let second_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(4),
+            &second_source,
+        )
+        .expect("incomplete trace observes");
+
+    assert_eq!(
+        second_observation.cacheability(),
+        ExpressionCacheability::Incomplete
+    );
+    let node = cache.graph().node(node).expect("expression node exists");
+    assert!(node.dependencies().contains(&memo_dependency));
+    assert!(!node.dependencies().contains(&input_dependency));
+    assert!(
+        node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+}
+
+#[test]
 fn eval_cache_recomputed_trace_backed_payload_replaces_prior_input_edges() {
     let first_source = TraceSource {
         trace: vec![read_file_trace(b"/tmp/first", b"same")],

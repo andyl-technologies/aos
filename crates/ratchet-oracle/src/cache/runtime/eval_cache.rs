@@ -468,7 +468,7 @@ impl EvalCache {
     /// inline payload is invalidated and its stale dependencies are cleared.
     /// Complete cacheable traces get or insert the caller-supplied expression
     /// node, invalidate any prior side inline payload, and then replace that
-    /// node's dependencies with the observed input leaves.
+    /// node's impure-input dependency group with the observed input leaves.
     ///
     /// This is still an explicit adapter: callers supply expression identity,
     /// ordered free-variable value hashes, and the optional current value hash.
@@ -501,15 +501,21 @@ impl EvalCache {
         self.invalidate_existing_inline_payload_if_present(existing_node)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
             if let Some(node) = existing_node {
-                self.graph
-                    .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+                self.graph.replace_dependency_group(
+                    node,
+                    DemandDependencyGroup::ImpureInput,
+                    std::iter::empty::<DemandNodeId>(),
+                )?;
             }
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
 
         let node = self.graph.get_or_insert_node(key, value_hash)?;
-        self.graph
-            .replace_dependencies(node, trace.leaves().iter().map(|leaf| leaf.node()))?;
+        self.graph.replace_dependency_group(
+            node,
+            DemandDependencyGroup::ImpureInput,
+            trace.leaves().iter().map(|leaf| leaf.node()),
+        )?;
         Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
@@ -730,8 +736,11 @@ impl EvalCache {
         if trace.status() != ImpureTraceStatus::Cacheable {
             self.invalidate_existing_inline_payload(existing_node)?;
             if let Some(node) = existing_node {
-                self.graph
-                    .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+                self.graph.replace_dependency_group(
+                    node,
+                    DemandDependencyGroup::ImpureInput,
+                    std::iter::empty::<DemandNodeId>(),
+                )?;
             }
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
@@ -741,15 +750,21 @@ impl EvalCache {
             Err(error) => {
                 self.invalidate_existing_inline_payload(existing_node)?;
                 if let Some(node) = existing_node {
-                    self.graph
-                        .replace_dependencies(node, std::iter::empty::<DemandNodeId>())?;
+                    self.graph.replace_dependency_group(
+                        node,
+                        DemandDependencyGroup::ImpureInput,
+                        std::iter::empty::<DemandNodeId>(),
+                    )?;
                 }
                 return Err(error);
             }
         };
         let node = self.graph.get_or_insert_node(key, None)?;
-        self.graph
-            .replace_dependencies(node, trace.leaves().iter().map(|leaf| leaf.node()))?;
+        self.graph.replace_dependency_group(
+            node,
+            DemandDependencyGroup::ImpureInput,
+            trace.leaves().iter().map(|leaf| leaf.node()),
+        )?;
         let payload_reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
         self.inline_values.insert(node, record);
         Ok(ExpressionTraceObservation::with_payload_reconsideration(

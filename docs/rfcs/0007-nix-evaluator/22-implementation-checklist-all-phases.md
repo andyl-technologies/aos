@@ -483,18 +483,20 @@ alone (`M-1`/`Q-A`).
       caller-supplied `ValueHash` results, impure-input leaf integration,
       persistence, and cached/uncached `.drv` parity proof remain open
       (`S-14`/`C-20`).
-- [x] Current dynamic dependency replacement substrate:
-      `DemandGraph::replace_dependencies` validates a caller-supplied node and
-      replacement dependency set before atomically swapping the node's whole
-      forward dependency set and reverse dependent edges, and the explicit
-      impure-trace adapters use it only for nodes whose dependencies are
-      represented by the latest explicit trace, replacing those edges on
-      cacheable recomputes and clearing them on incomplete or uncacheable
-      recomputes. This is explicit graph/runtime edge maintenance only; typed
-      dependency groups, automatic evaluator-owned dynamic dependency capture,
-      separate inner/outer observers, evaluator-integrated ready-dirty
-      recomputation, persistence, and cached/uncached `.drv` parity proof remain
-      open (`S-14`/`C-20`).
+- [x] Current grouped dynamic dependency replacement substrate:
+      `DemandDependencyGroup` splits graph edge ownership between memo-read and
+      impure-input edges, `DemandNode::dependencies()` remains the deterministic
+      union used by dirty-frontier scheduling and propagation, and
+      `DemandGraph::replace_dependency_group` refreshes one group while
+      preserving other groups and maintaining reverse dependent edges from the
+      union diff. Whole-set `replace_dependencies` remains as a compatibility
+      reset, while graph and runtime impure-trace adapters now replace or clear
+      only the impure-input group so later trace refreshes do not erase
+      memo-read edges. This is explicit graph/runtime edge ownership only;
+      automatic evaluator-owned dynamic dependency capture, separate inner/outer
+      active observers, evaluator-integrated ready-dirty recomputation,
+      persistent graph serialization, and cached/uncached `.drv` parity proof
+      remain open (`S-14`/`C-20`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, connect the ready-dirty recomputation loop
@@ -2939,17 +2941,17 @@ alone (`M-1`/`Q-A`).
 - [x] Current graph-side impure input edge substrate:
       `DemandGraph::observe_impure_trace_for_node` wires complete cacheable
       input leaves to a caller-supplied existing node by replacing that node's
-      whole dependency set with the latest leaves, so later changed input
-      observations dirty that node only for current trace-owned inputs;
-      incomplete and uncacheable traces add no leaves and clear prior
-      dependencies from that node. This is graph-side edge wiring only for
-      nodes whose dependencies are owned by the explicit trace; automatic
-      demand/evaluating-node creation, cache-key integration for evaluator
-      nodes, mixed dependency scopes, typed edge groups, automatic edges from
-      evaluator-created nodes to input leaves, value memoization, currentTime
-      taint propagation through memoized nodes, persistence,
-      allowed-path/IFD/fetch trace coverage, and edge-exactness harness
-      coverage remain open (`R-10`/`S-14`).
+      `ImpureInput` dependency group with the latest leaves, so later changed
+      input observations dirty that node only for current trace-owned inputs
+      while preserving memo-read dependencies; incomplete and uncacheable traces
+      add no leaves and clear only prior impure-input dependencies from that
+      node. This is graph-side edge wiring only for explicit caller-supplied
+      nodes; automatic demand/evaluating-node creation, cache-key integration
+      for evaluator nodes, active observer capture of nested memo reads,
+      automatic edges from evaluator-created nodes to input leaves, value
+      memoization, currentTime taint propagation through memoized nodes,
+      persistence, allowed-path/IFD/fetch trace coverage, and edge-exactness
+      harness coverage remain open (`R-10`/`S-14`).
 - [x] Current EvalCache trace-to-node edge adapter:
       `EvalCache::from_graph` wraps a prebuilt demand graph and
       `EvalCache::observe_impure_inputs_for_node` delegates an
@@ -2966,14 +2968,14 @@ alone (`M-1`/`Q-A`).
       caller-supplied expression key and observe/classify a completed trace,
       skip new expression-node creation for incomplete or uncacheable traces
       while invalidating any existing inline side payload and clearing stale
-      dependencies for an existing key, and for complete cacheable traces get
-      or insert the expression node before invalidating any prior side payload
-      and replacing its input edges. This is
-      still explicit caller-driven wiring; automatic evaluator demand-node
-      lifecycle, evaluator-produced expression identities/free-variable value
-      hashes, value memoization, currentTime taint propagation through memoized
-      nodes, persistence, and edge-exactness harness coverage remain open
-      (`R-10`/`S-14`).
+      impure-input dependencies for an existing key, and for complete cacheable
+      traces get or insert the expression node before invalidating any prior
+      side payload and replacing its impure-input edge group. This is still
+      explicit caller-driven wiring; automatic evaluator demand-node lifecycle,
+      evaluator-produced expression identities/free-variable value hashes,
+      active observer capture of nested memo reads, value memoization,
+      currentTime taint propagation through memoized nodes, persistence, and
+      edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [x] Current expression cacheability status substrate:
       `ExpressionTraceObservation::cacheability` exposes a typed memoization
       gate that distinguishes cacheable expression nodes, incomplete traces,

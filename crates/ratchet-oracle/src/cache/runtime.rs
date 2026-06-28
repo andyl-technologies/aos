@@ -16,11 +16,11 @@ use super::cutoff::{
     PATH_VALUE_HASH_DOMAIN_VERSION,
 };
 use super::{
-    CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandGraph, DemandGraphError,
-    DemandNodeId, DirtyFrontier, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity,
-    ImpureTraceObservation, ImpureTraceStatus, MemoizationDecision, MemoizationDemand,
-    MemoizationSubject, NodeFreshness, RecomputeReadyDirty, Reconsideration, UncacheableInput,
-    ValueHash, ValueHashError,
+    CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandDependencyGroup,
+    DemandGraph, DemandGraphError, DemandNodeId, DirtyFrontier, DurableBlake3Hash,
+    ImpureInputFingerprint, ImpureInputIdentity, ImpureTraceObservation, ImpureTraceStatus,
+    MemoizationDecision, MemoizationDemand, MemoizationSubject, NodeFreshness, RecomputeReadyDirty,
+    Reconsideration, UncacheableInput, ValueHash, ValueHashError,
 };
 use crate::attrs::AttrPosition;
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};

@@ -6,7 +6,7 @@
 //! dirty-frontier scheduling, and the local reconsideration step that applies
 //! early cutoff.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use thiserror::Error;
 
@@ -38,12 +38,22 @@ pub enum NodeFreshness {
     Dirty,
 }
 
+/// The owner class for one demand-graph dependency edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DemandDependencyGroup {
+    /// A dependency discovered when one memoized demand reads another node.
+    MemoRead,
+    /// A dependency discovered from one evaluator impure-input trace.
+    ImpureInput,
+}
+
 /// One demand-graph node.
 #[derive(Clone, Debug)]
 pub struct DemandNode {
     key: DemandCacheKey,
     value_hash: Option<ValueHash>,
     freshness: NodeFreshness,
+    dependency_groups: BTreeMap<DemandDependencyGroup, BTreeSet<DemandNodeId>>,
     dependencies: BTreeSet<DemandNodeId>,
     dependents: BTreeSet<DemandNodeId>,
 }

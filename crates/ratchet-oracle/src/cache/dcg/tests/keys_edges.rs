@@ -151,6 +151,103 @@ fn dependency_edges_are_symmetric() {
 }
 
 #[test]
+fn grouped_dependency_replacement_preserves_other_groups() {
+    let mut graph = DemandGraph::new();
+    let memo_dependency = node_with_hash(&mut graph, 1, b"memo");
+    let first_input = node_with_hash(&mut graph, 2, b"first-input");
+    let second_input = node_with_hash(&mut graph, 3, b"second-input");
+    let dependent = node_with_hash(&mut graph, 4, b"dependent");
+
+    graph
+        .add_dependency(dependent, memo_dependency)
+        .expect("memo edge records");
+    graph
+        .replace_dependency_group(dependent, DemandDependencyGroup::ImpureInput, [first_input])
+        .expect("first input edge records");
+    graph
+        .replace_dependency_group(
+            dependent,
+            DemandDependencyGroup::ImpureInput,
+            [second_input],
+        )
+        .expect("input edge group replaces");
+
+    let dependent_node = graph.node(dependent).expect("dependent exists");
+    assert!(dependent_node.dependencies().contains(&memo_dependency));
+    assert!(!dependent_node.dependencies().contains(&first_input));
+    assert!(dependent_node.dependencies().contains(&second_input));
+    assert!(
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("memo group exists")
+            .contains(&memo_dependency)
+    );
+    assert!(
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .expect("input group exists")
+            .contains(&second_input)
+    );
+    assert!(
+        graph
+            .node(memo_dependency)
+            .expect("memo dependency exists")
+            .dependents()
+            .contains(&dependent)
+    );
+    assert!(
+        !graph
+            .node(first_input)
+            .expect("first input exists")
+            .dependents()
+            .contains(&dependent)
+    );
+    assert!(
+        graph
+            .node(second_input)
+            .expect("second input exists")
+            .dependents()
+            .contains(&dependent)
+    );
+}
+
+#[test]
+fn clearing_one_dependency_group_keeps_shared_union_edges() {
+    let mut graph = DemandGraph::new();
+    let shared = node_with_hash(&mut graph, 1, b"shared");
+    let dependent = node_with_hash(&mut graph, 2, b"dependent");
+
+    graph
+        .add_dependency(dependent, shared)
+        .expect("memo edge records");
+    graph
+        .replace_dependency_group(dependent, DemandDependencyGroup::ImpureInput, [shared])
+        .expect("input edge records");
+    graph
+        .replace_dependency_group(
+            dependent,
+            DemandDependencyGroup::ImpureInput,
+            std::iter::empty::<DemandNodeId>(),
+        )
+        .expect("input group clears");
+
+    let dependent_node = graph.node(dependent).expect("dependent exists");
+    assert!(dependent_node.dependencies().contains(&shared));
+    assert!(
+        dependent_node
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+    assert!(
+        graph
+            .node(shared)
+            .expect("shared dependency exists")
+            .dependents()
+            .contains(&dependent)
+    );
+}
+
+#[test]
 fn dependency_edges_iterate_in_node_order() {
     let mut graph = DemandGraph::new();
     let dependency = node_with_hash(&mut graph, 1, b"dependency");

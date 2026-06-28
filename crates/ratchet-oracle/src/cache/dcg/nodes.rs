@@ -25,6 +25,7 @@ impl DemandNode {
             key,
             value_hash,
             freshness: NodeFreshness::Clean,
+            dependency_groups: BTreeMap::new(),
             dependencies: BTreeSet::new(),
             dependents: BTreeSet::new(),
         }
@@ -46,8 +47,20 @@ impl DemandNode {
     }
 
     /// Returns the nodes this node depends on.
+    ///
+    /// This is the union of all dependency groups. Use
+    /// [`Self::dependencies_in_group`] when callers need to inspect ownership
+    /// for one group.
     pub fn dependencies(&self) -> &BTreeSet<DemandNodeId> {
         &self.dependencies
+    }
+
+    /// Returns the nodes this node depends on through `group`.
+    pub fn dependencies_in_group(
+        &self,
+        group: DemandDependencyGroup,
+    ) -> Option<&BTreeSet<DemandNodeId>> {
+        self.dependency_groups.get(&group)
     }
 
     /// Returns the nodes that depend on this node.
