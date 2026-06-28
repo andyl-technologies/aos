@@ -767,6 +767,12 @@ harness, never cut for scope.
       sites, or `.drv`-observable behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
+- [x] Current shaped hash-consing precursor: `ratchet-value::attrs::shape`
+      exposes `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an
+      in-process shaped fingerprint and reuses only candidates confirmed by the
+      same interned shape pointer plus raw `Value` equality. This returns
+      `Arc<ShapedAttrs>` handles; it does not allocate evaluator heap attrs,
+      replace `FlatAttrs`, or affect active evaluation / `.drv` bytes.
 
 ### Inline caches on selection sites
 

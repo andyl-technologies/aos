@@ -3431,6 +3431,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       iterates through the shape's source/lexicographic permutations. Source
       positions, evaluator heap allocation, active `FlatAttrs` replacement,
       select-site/runtime use, and `.drv` effects remain open.
+- [x] Current shaped hash-consing precursor: `ratchet-value` exposes
+      `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an in-process
+      shaped fingerprint and reuses only candidates confirmed by the same
+      interned shape pointer plus raw `Value` equality. It returns
+      `Arc<ShapedAttrs>` handles; evaluator heap allocation, active `FlatAttrs`
+      replacement, select-site/runtime use, and `.drv` effects remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
 - [x] Current `attrs/pic.rs` precursor: `ratchet-value` exposes the safe

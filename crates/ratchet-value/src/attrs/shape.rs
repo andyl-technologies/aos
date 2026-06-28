@@ -16,6 +16,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::hashcons::{HashConsError, HashConsTable};
 use crate::syntax::{Symbol, SymbolTable};
 use crate::value::Value;
 
@@ -28,6 +29,21 @@ use crate::value::Value;
 pub struct ShapeFingerprint(u64);
 
 impl ShapeFingerprint {
+    /// Returns the raw xxh3 fingerprint bits.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// An in-process fingerprint of a shaped attrset instance.
+///
+/// This hash is only a bucket key for hash-cons probes. It is not a
+/// Nix-observable hash, not durable across evaluator processes, and not
+/// sufficient for equality without [`ShapedAttrs::raw_eq`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShapedAttrsFingerprint(u64);
+
+impl ShapedAttrsFingerprint {
     /// Returns the raw xxh3 fingerprint bits.
     pub const fn as_u64(self) -> u64 {
         self.0
@@ -732,6 +748,15 @@ impl ShapedAttrs {
         &self.values_by_symbol
     }
 
+    /// Returns a hash-cons bucket fingerprint for this shaped attrset.
+    ///
+    /// Equal shaped attrsets according to [`Self::raw_eq`] have the same
+    /// fingerprint, but callers must still use [`Self::raw_eq`] to confirm a
+    /// candidate because this hash can collide and is not a semantic value hash.
+    pub fn fingerprint(&self) -> ShapedAttrsFingerprint {
+        fingerprint_shaped_attrs(self)
+    }
+
     /// Returns the value for `key` using the shape's symbol-slot lookup.
     ///
     /// `key` must come from the same symbol universe used to construct this
@@ -777,6 +802,80 @@ impl ShapedAttrs {
                 .zip(other.values_by_symbol.iter())
                 .all(|(left, right)| left.raw_eq(*right))
     }
+}
+
+/// Hash-cons table for shaped attrset instances.
+///
+/// The table stores already-constructed [`ShapedAttrs`] instances behind
+/// [`Arc`] handles. It buckets candidates by [`ShapedAttrsFingerprint`] and
+/// confirms reuse with [`ShapedAttrs::raw_eq`], so hash collisions or handles
+/// from different [`ShapeTable`] instances do not collapse incorrectly.
+#[derive(Clone, Debug)]
+pub struct ShapedAttrConsTable {
+    table: HashConsTable<ShapedAttrsFingerprint, Arc<ShapedAttrs>>,
+}
+
+impl ShapedAttrConsTable {
+    /// Creates an empty shaped-attrset hash-cons table.
+    pub fn new() -> Self {
+        Self {
+            table: HashConsTable::new(),
+        }
+    }
+
+    /// Returns whether the table has no hash buckets.
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+
+    /// Returns the number of hash buckets currently stored in the table.
+    pub fn bucket_count(&self) -> usize {
+        self.table.bucket_count()
+    }
+
+    /// Interns `attrs`, reusing an existing raw-equal shaped attrset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapedAttrConsError::HashCons`] if the underlying hash-cons
+    /// table cannot reserve space for a new candidate. Returns
+    /// [`ShapedAttrConsError::ReservedSlotLost`] if the internal reservation
+    /// token no longer names a bucket in this table.
+    pub fn intern(&mut self, attrs: ShapedAttrs) -> Result<Arc<ShapedAttrs>, ShapedAttrConsError> {
+        let fingerprint = attrs.fingerprint();
+        if let Some(existing) = self.table.try_find(&fingerprint, |candidate| {
+            Ok::<bool, ShapedAttrConsError>(candidate.raw_eq(&attrs))
+        })? {
+            return Ok(existing.clone());
+        }
+
+        let slot = self.table.reserve_slot(fingerprint)?;
+        let interned = Arc::new(attrs);
+        if !self.table.push_reserved(slot, interned.clone()) {
+            return Err(ShapedAttrConsError::ReservedSlotLost { fingerprint });
+        }
+        Ok(interned)
+    }
+}
+
+impl Default for ShapedAttrConsTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A failed shaped attrset hash-cons operation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ShapedAttrConsError {
+    /// The generic hash-cons table could not reserve candidate storage.
+    #[error("shaped attrset hash-cons table error: {0}")]
+    HashCons(#[from] HashConsError),
+    /// A reserved slot no longer pointed at its bucket when the candidate was pushed.
+    #[error("shaped attrset hash-cons reservation disappeared for {fingerprint:?}")]
+    ReservedSlotLost {
+        /// The bucket fingerprint whose reservation was lost.
+        fingerprint: ShapedAttrsFingerprint,
+    },
 }
 
 /// One shaped attrset binding observed through a cached shape order.
@@ -955,6 +1054,23 @@ fn fingerprint_keys(keys: &[Symbol]) -> ShapeFingerprint {
         key.as_u32().hash(&mut hasher);
     }
     ShapeFingerprint(hasher.finish())
+}
+
+fn fingerprint_shaped_attrs(attrs: &ShapedAttrs) -> ShapedAttrsFingerprint {
+    let mut hasher = Xxh3::new();
+    b"ratchet-value.shaped-attrs.v1".hash(&mut hasher);
+    attrs
+        .shape()
+        .shape()
+        .fingerprint()
+        .as_u64()
+        .hash(&mut hasher);
+    attrs.values_by_symbol().len().hash(&mut hasher);
+    for value in attrs.values_by_symbol() {
+        value.tag().hash(&mut hasher);
+        value.payload_bits().hash(&mut hasher);
+    }
+    ShapedAttrsFingerprint(hasher.finish())
 }
 
 fn shape_key_bytes(
@@ -1556,6 +1672,85 @@ mod tests {
         assert!(left.raw_eq(&same));
         assert!(!left.raw_eq(&different_value));
         assert!(!left.raw_eq(&foreign));
+    }
+
+    #[test]
+    fn shaped_attr_cons_reuses_raw_equal_instances() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let mut shape_table = ShapeTable::new().expect("shape table initializes");
+        let shape = shape_table
+            .intern_construction_order(&ids, &symbols)
+            .expect("shape interns");
+        let same_shape = shape_table
+            .intern_construction_order(&ids, &symbols)
+            .expect("same shape interns");
+        let mut cons = ShapedAttrConsTable::new();
+
+        let first = cons
+            .intern(
+                ShapedAttrs::from_symbol_order(shape, &[Value::int(1), Value::bool(true)])
+                    .expect("first attrs build"),
+            )
+            .expect("first attrs intern");
+        let second = cons
+            .intern(
+                ShapedAttrs::from_symbol_order(same_shape, &[Value::int(1), Value::bool(true)])
+                    .expect("second attrs build"),
+            )
+            .expect("second attrs intern");
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(cons.bucket_count(), 1);
+    }
+
+    #[test]
+    fn shaped_attr_cons_keeps_different_raw_values_separate() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut shape_table = ShapeTable::new().expect("shape table initializes");
+        let shape = shape_table
+            .intern_construction_order(&ids, &symbols)
+            .expect("shape interns");
+        let mut cons = ShapedAttrConsTable::new();
+
+        let first = cons
+            .intern(
+                ShapedAttrs::from_symbol_order(shape.clone(), &[Value::int(1)])
+                    .expect("first attrs build"),
+            )
+            .expect("first attrs intern");
+        let second = cons
+            .intern(
+                ShapedAttrs::from_symbol_order(shape, &[Value::int(2)])
+                    .expect("second attrs build"),
+            )
+            .expect("second attrs intern");
+
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+        assert!(!first.raw_eq(&second));
+    }
+
+    #[test]
+    fn shaped_attr_cons_does_not_merge_foreign_same_fingerprint_shapes() {
+        let left_shape = ShapeTable::new()
+            .expect("left shape table initializes")
+            .empty();
+        let right_shape = ShapeTable::new()
+            .expect("right shape table initializes")
+            .empty();
+        let left_attrs = ShapedAttrs::from_symbol_order(left_shape, &[]).expect("left attrs build");
+        let right_attrs =
+            ShapedAttrs::from_symbol_order(right_shape, &[]).expect("right attrs build");
+        assert_eq!(left_attrs.fingerprint(), right_attrs.fingerprint());
+
+        let mut cons = ShapedAttrConsTable::new();
+        assert!(cons.is_empty());
+
+        let left = cons.intern(left_attrs).expect("left attrs intern");
+        let right = cons.intern(right_attrs).expect("right attrs intern");
+
+        assert!(!std::sync::Arc::ptr_eq(&left, &right));
+        assert!(!left.raw_eq(&right));
+        assert_eq!(cons.bucket_count(), 1);
     }
 
     #[test]
