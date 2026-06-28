@@ -141,7 +141,7 @@ fn lowered_ir_matcher_ignores_non_serialized_fact_table() {
 
     assert!(
         lowered_ir_matches(&left, &right),
-        "ir.bin equality ignores analysis facts until facts have their own artifact"
+        "ir.bin equality ignores analysis facts because facts live in facts.bin"
     );
 
     let encoded = encode_lowered_ir(&right).expect("IR artifact encodes");
@@ -150,6 +150,58 @@ fn lowered_ir_matcher_ignores_non_serialized_fact_table() {
         decoded.node_facts(decoded.root),
         Some(crate::compile::ExprFacts::conservative())
     );
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_roundtrip() {
+    let mut facts = IrFacts::conservative(2);
+    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let expected = ExprFacts {
+        strictness: Strictness::Strict,
+        cardinality: Cardinality::Once,
+        escape: Escape::NoEscape,
+    };
+    *facts.get_mut(IrId::new(1)).expect("fact slot exists") = expected;
+
+    let encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
+    let decoded = decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
+
+    assert_eq!(decoded.as_slice(), facts.as_slice());
+    assert_eq!(decoded.get(IrId::new(1)), Some(expected));
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_reject_count_mismatch() {
+    let facts = IrFacts::conservative(1);
+    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
+    let error = decode_ir_facts(&encoded, 2, fingerprint).expect_err("mismatched count errors");
+
+    assert!(error.contains("does not match node count"), "{error}");
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_reject_invalid_tags() {
+    let facts = IrFacts::conservative(1);
+    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let mut encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
+    encoded[FACTS_MAGIC.len() + 4 + 32 + 4] = 99;
+
+    let error = decode_ir_facts(&encoded, 1, fingerprint).expect_err("invalid fact tag errors");
+
+    assert!(error.contains("invalid strictness fact tag"), "{error}");
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_reject_fingerprint_mismatch() {
+    let facts = IrFacts::conservative(1);
+    let encoded = encode_ir_facts(&facts, DurableBlake3Hash::for_bytes(b"old-ir"))
+        .expect("fact artifact encodes");
+
+    let error = decode_ir_facts(&encoded, 1, DurableBlake3Hash::for_bytes(b"new-ir"))
+        .expect_err("mismatched fingerprint errors");
+
+    assert!(error.contains("fingerprint"), "{error}");
 }
 
 #[test]
@@ -191,6 +243,10 @@ fn entry_paths_follow_rfc_layout() {
     assert_eq!(
         entry.symbols_path().file_name().expect("file name"),
         "symbols.bin"
+    );
+    assert_eq!(
+        entry.facts_path().file_name().expect("file name"),
+        "facts.bin"
     );
     assert_eq!(
         entry.meta_path().file_name().expect("file name"),
@@ -307,6 +363,40 @@ fn write_resolved_cleans_temporary_files_after_artifact_commit_failure() {
 }
 
 #[test]
+fn write_resolved_commits_mandatory_artifacts_when_fact_sidecar_write_fails() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = "let x = 1; in x";
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("source resolves");
+    let entry = cache.entry_for_source(source.as_bytes());
+    let meta = ParseCacheMeta::new(
+        cache.schema_version(),
+        Some("expr.nix".to_owned()),
+        resolved.arena.len() as u32,
+        resolved.symbols.len() as u32,
+    );
+    entry.ensure_dir().expect("entry dir creates");
+    fs::create_dir(entry.facts_path()).expect("blocking fact sidecar directory creates");
+
+    entry
+        .write_resolved(&resolved, &meta)
+        .expect("mandatory artifacts still write");
+
+    assert!(entry.is_complete());
+    assert!(entry.facts_path().is_dir());
+    let loaded = entry.read_ir().expect("IR reads without fact sidecar");
+    assert!(
+        loaded
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn load_or_parse_writes_then_hits_by_source_content() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
@@ -318,6 +408,7 @@ fn load_or_parse_writes_then_hits_by_source_content() {
     assert!(!miss.hit);
     assert!(miss.stored);
     assert!(miss.entry.is_complete());
+    assert!(miss.entry.facts_path().is_file());
 
     let hit = cache
         .load_or_parse_bytes(source, Some("second-name-is-not-identity.nix".to_owned()))
@@ -412,6 +503,34 @@ fn load_cached_bytes_reports_corrupt_complete_entries() {
 }
 
 #[test]
+fn load_cached_bytes_ignores_corrupt_fact_sidecars() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    fs::write(parsed.entry.facts_path(), b"not a fact artifact").expect("corrupt facts write");
+
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("load-only cache hit ignores corrupt fact artifact")
+        .expect("cached entry remains usable");
+
+    assert!(cached.hit);
+    assert!(
+        cached
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn artifact_bundle_round_trips_complete_entry_payloads() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));
@@ -465,6 +584,7 @@ fn artifact_bundle_hydrates_entry_files() {
         .expect("artifact bundle hydrates");
 
     assert!(hydrated.is_complete());
+    assert!(!hydrated.facts_path().exists());
     assert_eq!(
         hydrated
             .read_artifact_bundle()
@@ -477,6 +597,45 @@ fn artifact_bundle_hydrates_entry_files() {
     assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
     let ir = hydrated.read_ir().expect("hydrated IR artifact reads");
     assert!(lowered_ir_matches(&ir, &parsed.ir));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_hydration_removes_stale_fact_sidecar() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let hydrated = ParseCacheEntry::new(root.join("hydrated-entry"));
+    hydrated
+        .write_resolved(
+            &parsed.resolved,
+            &ParseCacheMeta::new(cache.schema_version(), Some("stale.nix".to_owned()), 0, 0),
+        )
+        .expect("initial artifact writes");
+
+    assert!(hydrated.facts_path().is_file());
+
+    hydrated
+        .write_artifact_bundle(&bundle)
+        .expect("artifact bundle hydrates");
+
+    assert!(hydrated.is_complete());
+    assert!(!hydrated.facts_path().exists());
+    let ir = hydrated.read_ir().expect("hydrated IR reads");
+    assert!(
+        ir.facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative())
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -936,6 +1095,7 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
         .write_resolved(&resolved, &meta)
         .expect("resolved artifact writes");
     assert!(entry.is_complete());
+    assert!(entry.facts_path().is_file());
 
     let loaded = entry.read_ir().expect("lowered IR artifact reads");
     assert!(lowered_ir_matches(&loaded, &expected));
@@ -951,6 +1111,80 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
             dynamic_start,
             dynamic_start + "${name}".len() as u32
         ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = "let x = 1; in x";
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
+    let entry = cache.entry_for_source(source.as_bytes());
+    let meta = ParseCacheMeta::new(
+        cache.schema_version(),
+        Some("expr.nix".to_owned()),
+        resolved.arena.len() as u32,
+        resolved.symbols.len() as u32,
+    );
+    entry
+        .write_resolved(&resolved, &meta)
+        .expect("resolved artifact writes");
+    let base_ir = entry.read_ir().expect("IR reads");
+    let fact_id = base_ir.root;
+    let mut expected = IrFacts::conservative(base_ir.arena.nodes().len());
+    let root_fact = ExprFacts {
+        strictness: Strictness::Strict,
+        cardinality: Cardinality::Once,
+        escape: Escape::NoEscape,
+    };
+    *expected.get_mut(fact_id).expect("root fact exists") = root_fact;
+    fs::write(
+        entry.facts_path(),
+        encode_ir_facts(
+            &expected,
+            lowered_ir_fingerprint(&base_ir).expect("IR fingerprint computes"),
+        )
+        .expect("fact artifact encodes"),
+    )
+    .expect("fact sidecar writes");
+
+    let loaded = entry.read_ir().expect("lowered IR artifact reads");
+
+    assert_eq!(loaded.facts.as_slice(), expected.as_slice());
+    assert_eq!(loaded.node_facts(fact_id), Some(root_fact));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn lowered_ir_entry_ignores_mismatched_fact_sidecar_fingerprint() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let first = cache
+        .load_or_parse_bytes(b"1", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let other_ir = lowered_ir_for_source("2");
+    fs::write(
+        first.entry.ir_path(),
+        encode_lowered_ir(&other_ir).expect("other IR encodes"),
+    )
+    .expect("replacement IR writes");
+
+    let loaded = first
+        .entry
+        .read_ir()
+        .expect("stale fact sidecar is ignored");
+
+    assert!(lowered_ir_matches(&loaded, &other_ir));
+    assert!(
+        loaded
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative())
     );
 
     let _ = fs::remove_dir_all(root);

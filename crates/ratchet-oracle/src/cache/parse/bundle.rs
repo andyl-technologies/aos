@@ -4,8 +4,10 @@ use super::*;
 
 /// Raw bytes for one complete parse-cache artifact bundle.
 ///
-/// The bundle frames the same payloads that [`ParseCacheEntry`] stores as
+/// The bundle frames the mandatory payloads that [`ParseCacheEntry`] stores as
 /// separate files: `resolved.bin`, `ir.bin`, `symbols.bin`, and `meta.toml`.
+/// Optional analysis sidecars such as `facts.bin` are cache-local and are not
+/// bundled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseArtifactBundle {
     resolved: Vec<u8>,

@@ -9,6 +9,7 @@
 //!   ir.bin
 //!   resolved.bin
 //!   symbols.bin
+//!   facts.bin      # optional analysis fact sidecar
 //!   meta.toml
 //! ```
 //!
@@ -29,10 +30,11 @@ use thiserror::Error;
 
 use crate::cache::DurableBlake3Hash;
 use crate::compile::{
-    EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
-    IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,
-    IrError, IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
-    ResolvedAst, ScopeError, ScopeTables, Upvalue, WithChain, resolve,
+    Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
+    InheritResolution, InheritSource, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
+    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError, IrFacts, IrId, IrInlineCacheSiteId,
+    IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst, ScopeError, ScopeTables,
+    Strictness, Upvalue, WithChain, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
@@ -50,6 +52,7 @@ const FLAG_ENCODING_VERSION: u8 = 1;
 const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
 const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
 const SYMBOL_MAGIC: &[u8; 8] = b"AOSNIXSY";
+const FACTS_MAGIC: &[u8; 8] = b"AOSNIXFT";
 const BUNDLE_MAGIC: &[u8; 8] = b"AOSNIXAF";
 const ARTIFACT_VERSION: u32 = 1;
 static ATOMIC_WRITE_ID: AtomicU64 = AtomicU64::new(0);
@@ -128,12 +131,16 @@ impl fmt::Display for ParseCacheKey {
 pub fn lowered_ir_fingerprint(ir: &Ir) -> Result<DurableBlake3Hash, ParseCacheError> {
     let ir_bytes = encode_lowered_ir(ir)?;
     let symbol_bytes = encode_symbols(&ir.symbols)?;
+    Ok(lowered_ir_artifact_fingerprint(&ir_bytes, &symbol_bytes))
+}
+
+fn lowered_ir_artifact_fingerprint(ir_bytes: &[u8], symbol_bytes: &[u8]) -> DurableBlake3Hash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOWERED_IR_FINGERPRINT_DOMAIN);
     hasher.update(&PARSE_CACHE_SCHEMA_VERSION.to_le_bytes());
     update_fingerprint_chunk(&mut hasher, &ir_bytes);
     update_fingerprint_chunk(&mut hasher, &symbol_bytes);
-    Ok(DurableBlake3Hash::from_hasher(hasher))
+    DurableBlake3Hash::from_hasher(hasher)
 }
 
 fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {

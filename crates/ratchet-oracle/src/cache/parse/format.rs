@@ -15,6 +15,8 @@
 //!               <nodes> <children> <frames> <with_chains>
 //!               <attr_paths> <bindings> <shapes>
 //! symbols.bin:  "AOSNIXSY" version symbol_count <len-prefixed symbol bytes>
+//! facts.bin:    "AOSNIXFT" version ir_fingerprint fact_count
+//!               <strictness/cardinality/escape tags>
 //! ```
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
@@ -221,6 +223,115 @@ pub(super) fn encode_lowered_ir(ir: &Ir) -> Result<Vec<u8>, ParseCacheError> {
         }
     }
     Ok(out)
+}
+
+pub(super) fn encode_ir_facts(
+    facts: &IrFacts,
+    ir_fingerprint: DurableBlake3Hash,
+) -> Result<Vec<u8>, ParseCacheError> {
+    let mut out = Vec::new();
+    out.extend_from_slice(FACTS_MAGIC);
+    write_u32(&mut out, ARTIFACT_VERSION);
+    out.extend_from_slice(&ir_fingerprint.as_bytes());
+    write_len(&mut out, facts.len(), "IR fact count")?;
+    for fact in facts.as_slice() {
+        encode_expr_facts(&mut out, *fact);
+    }
+    Ok(out)
+}
+
+pub(super) fn decode_ir_facts(
+    bytes: &[u8],
+    expected_node_count: usize,
+    expected_ir_fingerprint: DurableBlake3Hash,
+) -> Result<IrFacts, String> {
+    let mut reader = BinaryReader::new(bytes);
+    reader.expect_magic(FACTS_MAGIC)?;
+    let version = reader.read_u32()?;
+    if version != ARTIFACT_VERSION {
+        return Err(format!("unsupported IR facts artifact version {version}"));
+    }
+    let actual_ir_fingerprint = reader.read_array::<32>()?;
+    if actual_ir_fingerprint != expected_ir_fingerprint.as_bytes() {
+        return Err("IR facts artifact fingerprint does not match lowered IR artifact".to_owned());
+    }
+    let fact_count = reader.read_len("IR fact count")?;
+    if fact_count != expected_node_count {
+        return Err(format!(
+            "IR fact count {fact_count} does not match node count {expected_node_count}"
+        ));
+    }
+
+    let mut facts = IrFacts::conservative(expected_node_count);
+    for index in 0..fact_count {
+        let fact = decode_expr_facts(&mut reader)?;
+        *facts
+            .get_mut(IrId::new(index as u32))
+            .ok_or_else(|| "IR fact index out of range".to_owned())? = fact;
+    }
+    reader.expect_eof()?;
+    Ok(facts)
+}
+
+fn encode_expr_facts(out: &mut Vec<u8>, facts: ExprFacts) {
+    out.push(strictness_tag(facts.strictness));
+    out.push(cardinality_tag(facts.cardinality));
+    out.push(escape_tag(facts.escape));
+}
+
+fn decode_expr_facts(reader: &mut BinaryReader<'_>) -> Result<ExprFacts, String> {
+    Ok(ExprFacts {
+        strictness: decode_strictness(reader.read_u8()?)?,
+        cardinality: decode_cardinality(reader.read_u8()?)?,
+        escape: decode_escape(reader.read_u8()?)?,
+    })
+}
+
+fn strictness_tag(strictness: Strictness) -> u8 {
+    match strictness {
+        Strictness::Unknown => 0,
+        Strictness::Strict => 1,
+    }
+}
+
+fn decode_strictness(tag: u8) -> Result<Strictness, String> {
+    match tag {
+        0 => Ok(Strictness::Unknown),
+        1 => Ok(Strictness::Strict),
+        tag => Err(format!("invalid strictness fact tag {tag}")),
+    }
+}
+
+fn cardinality_tag(cardinality: Cardinality) -> u8 {
+    match cardinality {
+        Cardinality::Absent => 0,
+        Cardinality::Once => 1,
+        Cardinality::Many => 2,
+    }
+}
+
+fn decode_cardinality(tag: u8) -> Result<Cardinality, String> {
+    match tag {
+        0 => Ok(Cardinality::Absent),
+        1 => Ok(Cardinality::Once),
+        2 => Ok(Cardinality::Many),
+        tag => Err(format!("invalid cardinality fact tag {tag}")),
+    }
+}
+
+fn escape_tag(escape: Escape) -> u8 {
+    match escape {
+        Escape::NoEscape => 0,
+        Escape::Escapes => 1,
+    }
+}
+
+fn decode_escape(tag: u8) -> Result<Escape, String> {
+    match tag {
+        0 => Ok(Escape::NoEscape),
+        1 => Ok(Escape::Escapes),
+        tag => Err(format!("invalid escape fact tag {tag}")),
+    }
 }
 
 pub(super) fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir, String> {

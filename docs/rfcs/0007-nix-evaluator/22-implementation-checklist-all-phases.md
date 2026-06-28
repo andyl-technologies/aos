@@ -1409,18 +1409,21 @@ alone (`M-1`/`Q-A`).
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and
       `ParseCacheEntry::read_artifact_bundle` reads complete entries into that
-      bundle. This is payload-format substrate only; automatic file-artifact
-      materialization, automatic parse-cache integration, cache-hit selection,
-      mmap reads, and harness proof remain open (`C-13`).
+      bundle. Optional parse-cache sidecars such as `facts.bin` are cache-local
+      and deliberately excluded from the bundle framing. This is payload-format
+      substrate only; automatic file-artifact materialization, automatic
+      parse-cache integration, cache-hit selection, mmap reads, and harness
+      proof remain open (`C-13`).
 - [x] Current explicit parse-cache hit reader:
       `ParseCache::load_cached_bytes` computes the normal source-content key,
       returns `Ok(None)` for missing/incomplete entries, and decodes complete
       `resolved.bin`/`ir.bin`/`symbols.bin` artifacts into `CachedParse` without
-      parsing. `load_or_parse_bytes` reuses this helper while preserving
-      fallback-to-parse behavior for corrupt entries. This is explicit parse
-      cache hit reading only; durable file-artifact lookup integration,
-      automatic evaluator hit selection, mmap reads, and harness proof remain
-      open (`C-13`).
+      parsing, overlaying optional `facts.bin` analysis facts when the sidecar
+      is present and matches the lowered-IR artifact fingerprint.
+      `load_or_parse_bytes` reuses this helper while preserving fallback-to-parse
+      behavior for corrupt entries. This is explicit parse cache hit reading
+      only; durable file-artifact lookup integration, automatic evaluator hit
+      selection, mmap reads, and harness proof remain open (`C-13`).
 - [x] Current parse metadata decoder substrate:
       `ParseCacheMeta::from_toml` and `ParseArtifactBundle::decode_meta` parse
       bundled `meta.toml` into typed schema/node/symbol counts plus the
@@ -1441,11 +1444,12 @@ alone (`M-1`/`Q-A`).
       (`C-13`).
 - [x] Current parse-artifact bundle hydration adapter:
       `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
-      entry, clearing `meta.toml` before payload writes and committing metadata
-      last so partial hydration is not treated as complete. This is explicit
-      entry hydration only; durable index lookup, automatic file-artifact
-      materialization, semantic validation before write, mmap reads, cache-hit
-      integration, and harness proof remain open (`C-13`).
+      entry, clearing `meta.toml` before payload writes, clearing stale
+      `facts.bin` because bundles do not carry analysis sidecars, and committing
+      metadata last so partial hydration is not treated as complete. This is
+      explicit entry hydration only; durable index lookup, automatic
+      file-artifact materialization, semantic validation before write, mmap
+      reads, cache-hit integration, and harness proof remain open (`C-13`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -3295,9 +3299,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       attached to every lowered `Ir`; lowering, parse-cache hydration, and
       manual IR fixtures initialize one conservative record per node, import IR
       remapping preserves the fact table it receives, and parse-artifact
-      validation rejects fact-table/node-count mismatches. This does not close
-      `ir/annotate.rs`: analysis passes, persistent fact artifacts, strictness
-      FV sets, and oracle lowering consumers remain open.
+      validation rejects fact-table/node-count mismatches. Parse-cache entry
+      reads now optionally overlay a validated `facts.bin` sidecar only when it
+      matches the lowered-IR artifact fingerprint, and fall back to conservative
+      facts when the sidecar is absent, malformed, or stale.
+      This does not close `ir/annotate.rs`: analysis passes, IR-hash
+      content-addressed persistent fact artifacts, strictness FV sets, and
+      oracle lowering consumers remain open.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

@@ -807,9 +807,12 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       manual IR fixtures initialize one conservative `Unknown`/`Many`/`Escapes`
       record per arena node, import IR remapping preserves the fact table it
       receives, and parse-artifact validation rejects fact-table/node-count
-      mismatches. This is only the default-safe annotation substrate; analysis
-      passes, content-addressed fact persistence, and THUNK/EAGER/SCALAR
-      consumers remain open.
+      mismatches. Parse-cache entries may also carry an optional `facts.bin`
+      sidecar that overlays facts when present and fingerprint-matched, and
+      falls back to conservative facts when absent, malformed, or stale. This is
+      only the default-safe annotation substrate; analysis passes, IR-hash
+      content-addressed fact persistence, and THUNK/EAGER/SCALAR consumers
+      remain open.
 - [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
 
 ### Strictness / demand analysis + worker-wrapper (§4)

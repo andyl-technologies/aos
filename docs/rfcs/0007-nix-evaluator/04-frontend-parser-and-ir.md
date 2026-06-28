@@ -764,14 +764,16 @@ cross-run, cross-machine early cutoff.
 ```text
 $AOS_NIX_CACHE/parse/
   <blake3-of-key>/
+    resolved.bin   # serialized resolved frontend artifact
     ir.bin         # serialized arena: nodes, child pool, frame tables
     symbols.bin    # file-local symbol table (strings)
+    facts.bin      # optional per-node analysis fact sidecar
     meta.toml      # schema version, source path hint, sizes (diagnostics only)
 ```
 
 ```toml
 # meta.toml — diagnostic metadata only; never part of the cache key's identity.
-schema_version = 7
+schema_version = 8
 source_hint    = "pkgs/foo/default.nix"
 node_count     = 3194
 symbol_count   = 412
@@ -1009,8 +1011,9 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 - [x] Content-addressed parse cache: `blake3(file_content ⧺ schema_version ⧺ flags)` key, content-not-mtime, schema-version wholesale invalidation (§9.2) — **P1**, `S-11`/`S-15`.
 - [x] Current parse/IR artifact serialization: explicit little-endian codecs
       write the resolved frontend artifact, lowered IR arena, side tables,
-      file-local symbol table, and diagnostic metadata to `resolved.bin`,
-      `ir.bin`, `symbols.bin`, and `meta.toml`; artifacts validate and
+      file-local symbol table, optional fingerprint-bound per-node analysis
+      facts, and diagnostic metadata to `resolved.bin`, `ir.bin`,
+      `symbols.bin`, `facts.bin`, and `meta.toml`; artifacts validate and
       round-trip through owned Rust structures (§9.3–§9.4) — **P1**.
 - [ ] Future zero-copy artifact layout: near-`memcpy` serialization and
       `mmap` zero-copy loading of the scope-resolved IR arena + side tables

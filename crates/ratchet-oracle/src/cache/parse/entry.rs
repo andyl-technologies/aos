@@ -34,6 +34,11 @@ impl ParseCacheEntry {
         self.dir.join("symbols.bin")
     }
 
+    /// Returns the optional analysis fact sidecar path.
+    pub fn facts_path(&self) -> PathBuf {
+        self.dir.join("facts.bin")
+    }
+
     /// Returns the diagnostic metadata path.
     pub fn meta_path(&self) -> PathBuf {
         self.dir.join("meta.toml")
@@ -73,18 +78,20 @@ impl ParseCacheEntry {
             .map_err(|source| ParseCacheError::WriteMeta { path, source })
     }
 
-    /// Writes the serialized resolved arena, file-local symbols, and metadata.
+    /// Writes the serialized resolved arena, file-local symbols, facts, and metadata.
     ///
     /// Symbol ids are rewritten into a deterministic file-local table before
     /// `resolved.bin`, `ir.bin`, and `symbols.bin` are written, so artifacts do
     /// not inherit process-global interner allocation order. Diagnostic node and
-    /// symbol counts are derived from the lowered IR artifact.
+    /// symbol counts are derived from the lowered IR artifact. The optional
+    /// `facts.bin` sidecar is written on a best-effort basis; mandatory
+    /// artifacts determine cache-entry completeness.
     ///
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if the entry directory cannot be created, the
-    /// resolved artifact cannot be encoded, or any output file cannot be
-    /// written.
+    /// resolved artifact cannot be encoded, or any mandatory output file cannot
+    /// be written.
     pub fn write_resolved(
         &self,
         resolved: &ResolvedAst,
@@ -103,13 +110,17 @@ impl ParseCacheEntry {
         let ir_path = self.ir_path();
         let resolved_path = self.resolved_path();
         let symbols_path = self.symbols_path();
+        let facts_path = self.facts_path();
         let meta_path = self.meta_path();
         let resolved_bytes = encode_resolved_ir(&resolved)?;
         let ir_bytes = encode_lowered_ir(&ir)?;
         let symbols_bytes = encode_symbols(&resolved.symbols)?;
+        let ir_fingerprint = lowered_ir_artifact_fingerprint(&ir_bytes, &symbols_bytes);
+        let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint)?;
         let meta_toml = meta.to_toml();
 
         let _ = fs::remove_file(&meta_path);
+        let _ = fs::remove_file(&facts_path);
         write_cache_file_atomic(&resolved_path, &resolved_bytes).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: resolved_path,
@@ -128,6 +139,7 @@ impl ParseCacheEntry {
                 source,
             }
         })?;
+        let _ = write_cache_file_atomic(&facts_path, &facts_bytes);
         write_cache_file_atomic(&meta_path, meta_toml.as_bytes()).map_err(|source| {
             ParseCacheError::WriteMeta {
                 path: meta_path,
@@ -172,7 +184,8 @@ impl ParseCacheEntry {
     ///
     /// The metadata file is removed before payload files are written and
     /// rewritten last, so incomplete bundle hydration does not look like a
-    /// complete cache entry.
+    /// complete cache entry. The optional `facts.bin` sidecar is removed
+    /// because raw bundles do not frame analysis facts.
     ///
     /// # Errors
     ///
@@ -186,9 +199,11 @@ impl ParseCacheEntry {
         let resolved_path = self.resolved_path();
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
+        let facts_path = self.facts_path();
         let meta_path = self.meta_path();
 
         let _ = fs::remove_file(&meta_path);
+        let _ = fs::remove_file(&facts_path);
         write_cache_file_atomic(&resolved_path, bundle.resolved_bytes()).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: resolved_path,
@@ -272,10 +287,12 @@ impl ParseCacheEntry {
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if `ir.bin` or `symbols.bin` cannot be read
-    /// or decoded.
+    /// or decoded. An unreadable or invalid optional `facts.bin` sidecar is
+    /// ignored, leaving the decoded IR with conservative facts.
     pub(super) fn read_ir(&self) -> Result<Ir, ParseCacheError> {
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
+        let facts_path = self.facts_path();
         let ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
             path: ir_path.clone(),
             source,
@@ -284,14 +301,24 @@ impl ParseCacheEntry {
             path: symbols_path.clone(),
             source,
         })?;
+        let ir_fingerprint = lowered_ir_artifact_fingerprint(&ir, &symbols);
         let symbols =
             decode_symbols(&symbols).map_err(|message| ParseCacheError::DecodeArtifact {
                 path: symbols_path,
                 message,
             })?;
-        decode_lowered_ir(&ir, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
-            path: ir_path,
-            message,
-        })
+        let mut ir =
+            decode_lowered_ir(&ir, symbols).map_err(|message| ParseCacheError::DecodeArtifact {
+                path: ir_path,
+                message,
+            })?;
+        if facts_path.is_file() {
+            if let Ok(facts) = fs::read(&facts_path) {
+                if let Ok(facts) = decode_ir_facts(&facts, ir.arena.nodes().len(), ir_fingerprint) {
+                    ir.facts = facts;
+                }
+            }
+        }
+        Ok(ir)
     }
 }
