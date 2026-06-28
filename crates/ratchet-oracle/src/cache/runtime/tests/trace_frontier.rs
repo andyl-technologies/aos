@@ -151,6 +151,74 @@ fn eval_cache_observes_trace_source_for_node_edges() {
 }
 
 #[test]
+fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependents() {
+    let source = TraceSource {
+        trace: vec![ImpureInputFingerprint::current_time()],
+        complete: true,
+    };
+    let mut cache = EvalCache::new();
+    let expression_identity = identity(b"source", 7);
+    let observed = cache
+        .observe_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("inline payload observes");
+    let node = observed.node();
+    let memo_dependency = cache
+        .graph
+        .get_or_insert_node(key(8, b"memo"), Some(value_hash(b"memo")))
+        .expect("memo dependency inserts");
+    cache
+        .graph
+        .add_dependency(node, memo_dependency)
+        .expect("memo edge records");
+    let consumer = cache
+        .graph
+        .get_or_insert_node(key(9, b"consumer"), Some(value_hash(b"consumer")))
+        .expect("consumer inserts");
+    cache
+        .graph
+        .add_dependency(consumer, node)
+        .expect("consumer memo edge records");
+    assert!(cache.inline_values.contains_key(&node));
+
+    let observation = cache
+        .observe_impure_inputs_for_node(node, &source)
+        .expect("uncacheable node trace observes");
+
+    assert_eq!(
+        observation.status(),
+        ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+    );
+    assert!(!cache.inline_values.contains_key(&node));
+    let node_state = cache.graph().node(node).expect("node exists");
+    assert_eq!(node_state.freshness(), NodeFreshness::Dirty);
+    assert!(node_state.dependencies().contains(&memo_dependency));
+    assert!(
+        node_state
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+    let value = cache
+        .lookup_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("lookup succeeds");
+    assert!(value.is_none());
+}
+
+#[test]
 fn eval_cache_changed_input_dirties_dependent_node() {
     let first = TraceSource {
         trace: vec![read_file_trace(b"/tmp/version", b"1")],

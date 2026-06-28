@@ -3032,22 +3032,25 @@ alone (`M-1`/`Q-A`).
       `ImpureInput` dependency group with the latest leaves, so later changed
       input observations dirty that node only for current trace-owned inputs
       while preserving memo-read dependencies; incomplete and uncacheable traces
-      add no leaves and clear only prior impure-input dependencies from that
-      node. This is graph-side edge wiring only for explicit caller-supplied
+      add no leaves, mark the node plus direct `MemoRead` dependents dirty, and
+      clear only prior impure-input dependencies from that node. This is
+      graph-side edge wiring only for explicit caller-supplied
       nodes; automatic demand/evaluating-node creation, cache-key integration
       for evaluator nodes, active observer capture of nested memo reads,
       automatic edges from evaluator-created nodes to input leaves, value
-      memoization, currentTime taint propagation through memoized nodes,
+      memoization, full currentTime taint propagation through memoized nodes,
       persistence, allowed-path/IFD/fetch trace coverage, and edge-exactness
       harness coverage remain open (`R-10`/`S-14`).
 - [x] Current EvalCache trace-to-node edge adapter:
       `EvalCache::from_graph` wraps a prebuilt demand graph and
       `EvalCache::observe_impure_inputs_for_node` delegates an
       `ImpureInputTraceSource` to `DemandGraph::observe_impure_trace_for_node`
-      for a caller-supplied existing node. This is an explicit adapter only;
+      for a caller-supplied existing node, removing any node side payload record
+      when the observed trace is incomplete or uncacheable. This is an explicit
+      adapter only;
       automatic demand/evaluating-node creation, evaluator-node cache-key
       integration, automatic edges from evaluator-created nodes to input
-      leaves, value memoization, currentTime taint propagation through memoized
+      leaves, value memoization, full currentTime taint propagation through memoized
       nodes, persistence, allowed-path/IFD/fetch trace coverage, and
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [x] Current explicit expression-trace edge adapter:
@@ -3055,14 +3058,14 @@ alone (`M-1`/`Q-A`).
       `EvalCacheRuntime::observe_expression_impure_inputs` first compute the
       caller-supplied expression key and observe/classify a completed trace,
       skip new expression-node creation for incomplete or uncacheable traces
-      while invalidating any existing inline side payload and clearing stale
-      impure-input dependencies for an existing key, and for complete cacheable
-      traces get or insert the expression node before invalidating any prior
-      side payload and replacing its impure-input edge group. This is still
+      while invalidating any existing node and side inline payload and clearing
+      stale impure-input dependencies for an existing key, and for complete
+      cacheable traces get or insert the expression node before invalidating any
+      prior side payload and replacing its impure-input edge group. This is still
       explicit caller-driven wiring; automatic evaluator demand-node lifecycle,
       evaluator-produced expression identities/free-variable value hashes,
       active observer capture of nested memo reads, value memoization,
-      currentTime taint propagation through memoized nodes, persistence, and
+      full currentTime taint propagation through memoized nodes, persistence, and
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [x] Current expression cacheability status substrate:
       `ExpressionTraceObservation::cacheability` exposes a typed memoization
@@ -3071,6 +3074,17 @@ alone (`M-1`/`Q-A`).
       only; evaluator memo lookup, automatic taint propagation through
       already-memoized dependents, persistence, and edge-exactness harness
       coverage remain open (`R-10`/`S-14`).
+- [x] Current uncacheable/incomplete trace invalidation propagation precursor:
+      `DemandGraph::invalidate_node` marks a node dirty without requiring a
+      replacement value hash and dirties clean direct dependents whose
+      `MemoRead` group points at that node. Runtime expression-trace and
+      trace-backed inline-payload invalidation paths use it when an existing
+      expression observes an incomplete or uncacheable trace such as
+      `currentTime`, while clearing only the `ImpureInput` dependency group and
+      preserving `MemoRead` edges. This is local direct-dependent taint only;
+      transitive scheduling, automatic evaluator node lifecycle integration,
+      persistence, full currentTime taint propagation, and edge-exactness
+      harness coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

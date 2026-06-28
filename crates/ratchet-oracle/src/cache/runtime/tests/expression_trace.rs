@@ -151,7 +151,7 @@ fn eval_cache_expression_trace_adapter_skips_node_for_uncacheable_trace() {
 }
 
 #[test]
-fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
+fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents() {
     let first_source = TraceSource {
         trace: vec![read_file_trace(b"/tmp/first", b"same")],
         complete: true,
@@ -179,6 +179,16 @@ fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
     graph
         .add_dependency(node, memo_dependency)
         .expect("memo edge records");
+    let consumer = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+                .expect("consumer key builds"),
+            Some(value_hash(b"consumer")),
+        )
+        .expect("consumer inserts");
+    graph
+        .add_dependency(consumer, node)
+        .expect("consumer memo edge records");
     let mut cache = EvalCache::from_graph(graph);
     let first_observation = cache
         .observe_expression_impure_inputs(
@@ -206,6 +216,7 @@ fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
     );
     assert_eq!(second_observation.node(), None);
     let expression_node = cache.graph().node(node).expect("expression node exists");
+    assert_eq!(expression_node.freshness(), NodeFreshness::Dirty);
     assert!(expression_node.dependencies().contains(&memo_dependency));
     assert!(!expression_node.dependencies().contains(&first_dependency));
     assert!(
@@ -229,6 +240,14 @@ fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
             .dependents()
             .contains(&node)
     );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
 
     cache
         .observe_impure_inputs(&TraceSource {
@@ -242,12 +261,12 @@ fn eval_cache_expression_trace_adapter_uncacheable_trace_clears_prior_edges() {
             .node(node)
             .expect("expression node exists")
             .freshness(),
-        NodeFreshness::Clean
+        NodeFreshness::Dirty
     );
 }
 
 #[test]
-fn eval_cache_expression_trace_adapter_incomplete_trace_preserves_memo_read_edges() {
+fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() {
     let first_source = TraceSource {
         trace: vec![read_file_trace(b"/tmp/first", b"same")],
         complete: true,
@@ -272,6 +291,16 @@ fn eval_cache_expression_trace_adapter_incomplete_trace_preserves_memo_read_edge
     graph
         .add_dependency(node, memo_dependency)
         .expect("memo edge records");
+    let consumer = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+                .expect("consumer key builds"),
+            Some(value_hash(b"consumer")),
+        )
+        .expect("consumer inserts");
+    graph
+        .add_dependency(consumer, node)
+        .expect("consumer memo edge records");
     let mut cache = EvalCache::from_graph(graph);
     let first_observation = cache
         .observe_expression_impure_inputs(
@@ -299,6 +328,7 @@ fn eval_cache_expression_trace_adapter_incomplete_trace_preserves_memo_read_edge
     );
     assert_eq!(second_observation.node(), None);
     let expression_node = cache.graph().node(node).expect("expression node exists");
+    assert_eq!(expression_node.freshness(), NodeFreshness::Dirty);
     assert!(expression_node.dependencies().contains(&memo_dependency));
     assert!(!expression_node.dependencies().contains(&first_dependency));
     assert!(
@@ -313,6 +343,14 @@ fn eval_cache_expression_trace_adapter_incomplete_trace_preserves_memo_read_edge
             .expect("memo dependency exists")
             .dependents()
             .contains(&node)
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
     );
 }
 

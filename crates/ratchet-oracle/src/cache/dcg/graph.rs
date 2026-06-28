@@ -183,8 +183,9 @@ impl DemandGraph {
     /// with the observed input leaves, so later changed input observations dirty
     /// `dependent` only for the latest trace while preserving dependencies
     /// owned by other groups.
-    /// Incomplete and uncacheable traces return their cacheability status and
-    /// clear any existing impure-input dependencies from `dependent`.
+    /// Incomplete and uncacheable traces return their cacheability status,
+    /// mark `dependent` and its direct memo-read dependents dirty, and clear
+    /// any existing impure-input dependencies from `dependent`.
     ///
     /// Successful leaf observations are not rolled back if later edge
     /// replacement fails.
@@ -204,6 +205,7 @@ impl DemandGraph {
         self.node(dependent)?;
         let observation = self.observe_impure_trace(trace, complete)?;
         if observation.status() != ImpureTraceStatus::Cacheable {
+            self.invalidate_node(dependent)?;
             self.replace_dependency_group(
                 dependent,
                 DemandDependencyGroup::ImpureInput,
@@ -362,6 +364,47 @@ impl DemandGraph {
         let node = self.node_mut(id)?;
         node.freshness = NodeFreshness::Dirty;
         Ok(())
+    }
+
+    /// Invalidates one node and its direct memo-read dependents.
+    ///
+    /// This is the graph primitive for observations that make a memoized value
+    /// unusable without producing a replacement value hash, such as an
+    /// uncacheable trace. The node itself is marked dirty, and clean direct
+    /// dependents whose [`DemandDependencyGroup::MemoRead`] group contains
+    /// `id` are marked dirty. Other dependency groups are left for their owning
+    /// observation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if `id` does not belong to
+    /// this graph.
+    pub fn invalidate_node(
+        &mut self,
+        id: DemandNodeId,
+    ) -> Result<Vec<DemandNodeId>, DemandGraphError> {
+        self.node(id)?;
+        let dependents: Vec<_> = self.nodes[id.index()]
+            .dependents
+            .iter()
+            .copied()
+            .filter(|dependent| {
+                self.nodes[dependent.index()]
+                    .dependencies_in_group(DemandDependencyGroup::MemoRead)
+                    .is_some_and(|dependencies| dependencies.contains(&id))
+            })
+            .collect();
+
+        self.nodes[id.index()].freshness = NodeFreshness::Dirty;
+        let mut dirtied_dependents = Vec::new();
+        for dependent in dependents {
+            let node = &mut self.nodes[dependent.index()];
+            if node.freshness != NodeFreshness::Dirty {
+                node.freshness = NodeFreshness::Dirty;
+                dirtied_dependents.push(dependent);
+            }
+        }
+        Ok(dirtied_dependents)
     }
 
     /// Returns dirty nodes in deterministic node order.

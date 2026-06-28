@@ -138,6 +138,18 @@ fn eval_cache_inline_trace_payload_uncacheable_trace_preserves_memo_read_edges()
         .expect("first inline result and trace observe");
     assert_eq!(first_observation.node(), Some(node));
     let input_dependency = first_observation.trace().leaves()[0].node();
+    let consumer = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+                .expect("consumer key builds"),
+            Some(value_hash(b"consumer")),
+        )
+        .expect("consumer inserts");
+    cache
+        .graph
+        .add_dependency(consumer, node)
+        .expect("consumer memo edge records");
 
     let second_observation = cache
         .observe_inline_expression_result_with_impure_inputs(
@@ -153,11 +165,20 @@ fn eval_cache_inline_trace_payload_uncacheable_trace_preserves_memo_read_edges()
         ExpressionCacheability::Uncacheable(UncacheableInput::CurrentTime)
     );
     let node = cache.graph().node(node).expect("expression node exists");
+    assert_eq!(node.freshness(), NodeFreshness::Dirty);
     assert!(node.dependencies().contains(&memo_dependency));
     assert!(!node.dependencies().contains(&input_dependency));
     assert!(
         node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
             .is_none()
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
     );
 }
 
@@ -201,6 +222,18 @@ fn eval_cache_inline_trace_payload_incomplete_trace_preserves_memo_read_edges() 
         .expect("first inline result and trace observe");
     assert_eq!(first_observation.node(), Some(node));
     let input_dependency = first_observation.trace().leaves()[0].node();
+    let consumer = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+                .expect("consumer key builds"),
+            Some(value_hash(b"consumer")),
+        )
+        .expect("consumer inserts");
+    cache
+        .graph
+        .add_dependency(consumer, node)
+        .expect("consumer memo edge records");
 
     let second_observation = cache
         .observe_inline_expression_result_with_impure_inputs(
@@ -216,11 +249,20 @@ fn eval_cache_inline_trace_payload_incomplete_trace_preserves_memo_read_edges() 
         ExpressionCacheability::Incomplete
     );
     let node = cache.graph().node(node).expect("expression node exists");
+    assert_eq!(node.freshness(), NodeFreshness::Dirty);
     assert!(node.dependencies().contains(&memo_dependency));
     assert!(!node.dependencies().contains(&input_dependency));
     assert!(
         node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
             .is_none()
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
     );
 }
 
@@ -627,18 +669,30 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
         complete: true,
     };
     let mut cache = EvalCache::new();
-    let identity = identity(b"source", 7);
+    let expression_identity = identity(b"source", 7);
     let previous = cache
         .observe_inline_expression_result(
-            identity,
+            expression_identity,
             std::iter::empty::<DurableBlake3Hash>(),
             Value::int(3),
         )
         .expect("previous pure result observes");
+    let consumer = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+                .expect("consumer key builds"),
+            Some(value_hash(b"consumer")),
+        )
+        .expect("consumer inserts");
+    cache
+        .graph
+        .add_dependency(consumer, previous.node())
+        .expect("consumer memo edge records");
 
     let observation = cache
         .observe_inline_expression_result_with_impure_inputs(
-            identity,
+            expression_identity,
             std::iter::empty::<DurableBlake3Hash>(),
             Value::int(4),
             &source,
@@ -657,8 +711,19 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
             .freshness(),
         NodeFreshness::Dirty
     );
+    assert_eq!(
+        cache
+            .graph()
+            .node(consumer)
+            .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
         .expect("lookup succeeds");
     assert!(value.is_none());
 }

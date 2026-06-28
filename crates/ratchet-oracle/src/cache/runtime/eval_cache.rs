@@ -622,8 +622,10 @@ impl EvalCache {
     /// Observes impure inputs and wires cacheable leaves to an existing node.
     ///
     /// `dependent` must be a caller-supplied node in this cache's demand graph.
-    /// This delegates to [`DemandGraph::observe_impure_trace_for_node`] and
-    /// does not create evaluating nodes or memoized value records.
+    /// This delegates trace edge wiring to
+    /// [`DemandGraph::observe_impure_trace_for_node`]. Incomplete or
+    /// uncacheable traces also remove side payload records for `dependent`.
+    /// This does not create evaluating nodes or memoized value records.
     ///
     /// # Errors
     ///
@@ -637,11 +639,17 @@ impl EvalCache {
     where
         T: ImpureInputTraceSource + ?Sized,
     {
-        self.graph.observe_impure_trace_for_node(
+        let observation = self.graph.observe_impure_trace_for_node(
             dependent,
             source.impure_input_trace(),
             source.impure_input_trace_complete(),
-        )
+        )?;
+        if observation.status() != ImpureTraceStatus::Cacheable {
+            self.inline_values.remove(&dependent);
+            self.derivation_aterm_paths.remove(&dependent);
+            self.static_derivation_output_paths.remove(&dependent);
+        }
+        Ok(observation)
     }
 
     /// Observes an expression evaluation trace and wires cacheable leaves to its node.
@@ -649,7 +657,8 @@ impl EvalCache {
     /// This first computes the expression key and observes the trace.
     /// Incomplete or uncacheable traces return their status without creating a
     /// new expression node; if the expression key already exists, any side
-    /// inline payload is invalidated and its stale dependencies are cleared.
+    /// inline payload is invalidated, its direct memo-read dependents are
+    /// dirtied, and its stale input dependencies are cleared.
     /// Complete cacheable traces get or insert the caller-supplied expression
     /// node, invalidate any prior side inline payload, and then replace that
     /// node's impure-input dependency group with the observed input leaves.
@@ -682,9 +691,9 @@ impl EvalCache {
             .map_err(|source| DemandGraphError::CacheKey { source })?;
         let existing_node = self.graph.node_id_for_key(key);
         let trace = self.observe_impure_inputs(source)?;
-        self.invalidate_existing_inline_payload_if_present(existing_node)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
             if let Some(node) = existing_node {
+                self.invalidate_existing_inline_payload(Some(node))?;
                 self.graph.replace_dependency_group(
                     node,
                     DemandDependencyGroup::ImpureInput,
@@ -694,6 +703,7 @@ impl EvalCache {
             return Ok(ExpressionTraceObservation::new(None, trace));
         }
 
+        self.invalidate_existing_inline_payload_if_present(existing_node)?;
         let node = self.graph.get_or_insert_node(key, value_hash)?;
         self.graph.replace_dependency_group(
             node,
@@ -823,7 +833,8 @@ impl EvalCache {
     /// Invalidates an existing inline expression payload.
     ///
     /// If the expression key already exists, the node is marked dirty and any
-    /// side payload is removed. Missing keys return `Ok(false)`.
+    /// direct memo-read dependents are marked dirty, and any side payload is
+    /// removed. Missing keys return `Ok(false)`.
     ///
     /// # Errors
     ///
@@ -1030,7 +1041,7 @@ impl EvalCache {
         node: Option<DemandNodeId>,
     ) -> Result<(), DemandGraphError> {
         if let Some(node) = node {
-            self.graph.mark_dirty(node)?;
+            self.graph.invalidate_node(node)?;
             self.inline_values.remove(&node);
             self.derivation_aterm_paths.remove(&node);
             self.static_derivation_output_paths.remove(&node);
