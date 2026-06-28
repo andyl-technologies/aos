@@ -39,6 +39,22 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_forces_empty_foldl_initial_for_attrs_consumers() -> Result<()> {
+    let native = NixNative::new(0)?;
+
+    assert_eq!(
+        native.eval_expr("(builtins.foldl' (acc: subdir: acc // subdir) {} []) // { z = 1; }")?,
+        r#"{"z":1}"#
+    );
+    assert_eq!(
+        native.eval_expr("(builtins.foldl' (acc: subdir: acc // subdir) { z = 1; } []).z")?,
+        "1"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
     let root = unique_temp_dir("native-expression-parse-cache");
     fs::create_dir_all(&root)?;
