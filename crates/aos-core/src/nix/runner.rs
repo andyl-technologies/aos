@@ -21,6 +21,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 #[cfg(test)]
@@ -520,6 +521,13 @@ impl NixRunner {
                     self.write_repl_type(state, rest, output)?;
                 }
             }
+            "scope" => {
+                if rest.is_empty() {
+                    writeln!(output, "error: :scope requires an expression")?;
+                } else {
+                    self.write_repl_scope(state, rest, output)?;
+                }
+            }
             "b" => {
                 if rest.is_empty() {
                     writeln!(output, "error: :b requires an expression")?;
@@ -563,6 +571,19 @@ impl NixRunner {
                 Ok(kind) => writeln!(output, "{kind}")?,
                 Err(_) => writeln!(output, "{value}")?,
             },
+            Err(error) => writeln!(output, "error: {error:#}")?,
+        }
+        Ok(())
+    }
+
+    fn write_repl_scope<W: Write>(
+        &self,
+        state: &NativeReplState,
+        expr: &str,
+        output: &mut W,
+    ) -> Result<()> {
+        match repl_scope_report(state.loaded_file.as_deref(), expr) {
+            Ok(report) => write!(output, "{report}")?,
             Err(error) => writeln!(output, "error: {error:#}")?,
         }
         Ok(())
@@ -866,6 +887,10 @@ fn write_native_repl_help(output: &mut impl Write) -> Result<()> {
     writeln!(output, ":t EXPR              print the Nix type of EXPR")?;
     writeln!(
         output,
+        ":scope EXPR          inspect resolver frames and variable coordinates (native-eval)"
+    )?;
+    writeln!(
+        output,
         ":b EXPR              build EXPR and print its output path"
     )?;
     writeln!(output, ":quit, :q            exit")?;
@@ -873,17 +898,186 @@ fn write_native_repl_help(output: &mut impl Write) -> Result<()> {
 }
 
 fn repl_context_expr(loaded_file: Option<&Path>, expr: &str) -> String {
+    repl_context_expr_with_user_range(loaded_file, expr).0
+}
+
+fn repl_context_expr_with_user_range(
+    loaded_file: Option<&Path>,
+    expr: &str,
+) -> (String, Range<usize>) {
     let Some(loaded_file) = loaded_file else {
-        return expr.to_string();
+        return (expr.to_string(), 0..expr.len());
     };
-    format!(
+
+    let prefix = format!(
         "let \
          __aos_repl_loaded = import (builtins.toPath {}); \
          __aos_repl_scope = if builtins.isFunction __aos_repl_loaded \
          then __aos_repl_loaded {{}} else __aos_repl_loaded; \
-         in with __aos_repl_scope; ({expr})",
+         in with __aos_repl_scope; (",
         nix_string_literal(&loaded_file.to_string_lossy())
-    )
+    );
+    let start = prefix.len();
+    let mut source = prefix;
+    source.push_str(expr);
+    let end = source.len();
+    source.push(')');
+    (source, start..end)
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_scope_report(loaded_file: Option<&Path>, expr: &str) -> Result<String> {
+    use std::fmt::Write as _;
+
+    use aos_nix::syntax::Span;
+    use aos_nix::syntax::ast::{NodeData, NodeKind, Symbol};
+
+    let (source, user_range) = repl_context_expr_with_user_range(loaded_file, expr);
+    let parsed = aos_nix::syntax::parse_str(&source).context("parsing REPL scope expression")?;
+    let resolved = aos_nix::compile::resolve(parsed).context("resolving REPL scope expression")?;
+
+    let mut report = String::new();
+    writeln!(&mut report, "scope for: {expr}")?;
+    writeln!(&mut report, "frames:")?;
+    let mut user_frames = std::collections::BTreeSet::new();
+    for (index, node) in resolved.arena.nodes().iter().enumerate() {
+        if !span_within(node.span, &user_range) {
+            continue;
+        }
+        if let Some(frame_id) = resolved.scopes.node_frames().get(index).copied().flatten() {
+            user_frames.insert(frame_id.index());
+        }
+    }
+    if user_frames.is_empty() {
+        writeln!(&mut report, "  <none>")?;
+    } else {
+        for index in user_frames {
+            let Some(frame) = resolved.scopes.frames().get(index) else {
+                continue;
+            };
+            writeln!(
+                &mut report,
+                "  frame {index}: slots={} rec={} with={} captures={}",
+                frame.slot_count,
+                frame.rec,
+                frame.has_with,
+                format_upvalues(frame.captures.iter().copied())
+            )?;
+        }
+    }
+
+    writeln!(&mut report, "references:")?;
+    let mut references = 0usize;
+    for (index, node) in resolved.arena.nodes().iter().enumerate() {
+        if !span_within(node.span, &user_range) {
+            continue;
+        }
+        match node.kind {
+            NodeKind::LocalVar => {
+                let NodeData::Local { slot } = node.data else {
+                    continue;
+                };
+                references += 1;
+                writeln!(
+                    &mut report,
+                    "  node {index}: {} -> local slot={slot}",
+                    span_snippet(&source, node.span, user_range.start)
+                )?;
+            }
+            NodeKind::UpvalVar => {
+                let NodeData::Upval { depth, slot } = node.data else {
+                    continue;
+                };
+                references += 1;
+                writeln!(
+                    &mut report,
+                    "  node {index}: {} -> upvalue depth={depth} slot={slot}",
+                    span_snippet(&source, node.span, user_range.start)
+                )?;
+            }
+            NodeKind::WithVar => {
+                let NodeData::WithVar { symbol, chain } = node.data else {
+                    continue;
+                };
+                references += 1;
+                writeln!(
+                    &mut report,
+                    "  node {index}: {} -> with {} chain={chain}",
+                    span_snippet(&source, node.span, user_range.start),
+                    symbol_text(&resolved.symbols, symbol)
+                )?;
+            }
+            NodeKind::GlobalVar => {
+                let NodeData::Symbol(symbol) = node.data else {
+                    continue;
+                };
+                references += 1;
+                writeln!(
+                    &mut report,
+                    "  node {index}: {} -> global {}",
+                    span_snippet(&source, node.span, user_range.start),
+                    symbol_text(&resolved.symbols, symbol)
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    if references == 0 {
+        writeln!(&mut report, "  <none>")?;
+    }
+
+    fn format_upvalues(upvalues: impl IntoIterator<Item = aos_nix::compile::Upvalue>) -> String {
+        let mut rendered = Vec::new();
+        for upvalue in upvalues {
+            rendered.push(format!("depth={} slot={}", upvalue.depth, upvalue.slot));
+        }
+        if rendered.is_empty() {
+            "[]".to_string()
+        } else {
+            format!("[{}]", rendered.join(", "))
+        }
+    }
+
+    fn span_within(span: Span, range: &Range<usize>) -> bool {
+        let start = span.start as usize;
+        let end = span.end as usize;
+        range.start <= start && end <= range.end
+    }
+
+    fn span_snippet(source: &str, span: Span, base: usize) -> String {
+        let start = span.start as usize;
+        let end = span.end as usize;
+        match source.get(start..end) {
+            Some(snippet) => {
+                let relative_start = start.saturating_sub(base);
+                let relative_end = end.saturating_sub(base);
+                format!(
+                    "{relative_start}..{relative_end} \"{}\"",
+                    snippet.escape_debug()
+                )
+            }
+            None => {
+                let relative_start = start.saturating_sub(base);
+                let relative_end = end.saturating_sub(base);
+                format!("{relative_start}..{relative_end} <invalid utf-8 boundary>")
+            }
+        }
+    }
+
+    fn symbol_text(symbols: &aos_nix::syntax::ast::SymbolTable, symbol: Symbol) -> String {
+        symbols
+            .resolve(symbol)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .unwrap_or_else(|| format!("<invalid-symbol:{}>", symbol.as_u32()))
+    }
+
+    Ok(report)
+}
+
+#[cfg(not(feature = "native-eval"))]
+fn repl_scope_report(_loaded_file: Option<&Path>, _expr: &str) -> Result<String> {
+    anyhow::bail!(":scope requires the native-eval feature")
 }
 
 fn nix_string_literal(value: &str) -> String {
@@ -1396,6 +1590,64 @@ mod tests {
         let expr = repl_context_expr(Some(Path::new("/aos/a\"${x}.nix")), "1");
 
         assert!(expr.contains(r#""/aos/a\"\${x}.nix""#));
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_reports_resolver_coordinates() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope let x = 1; in (y: x + y)\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("scope for: let x = 1; in (y: x + y)"),
+            "{output}"
+        );
+        assert!(
+            output.contains("slots=1 rec=true with=true captures=[]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("slots=1 rec=false with=true captures=[depth=1 slot=0]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("\"x\" -> upvalue depth=1 slot=0"),
+            "{output}"
+        );
+        assert!(output.contains("\"y\" -> local slot=0"), "{output}");
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
+        assert!(!output.contains("\"builtins\" -> global"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    #[test]
+    fn native_repl_scope_command_reports_feature_requirement_without_native_eval() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope 1\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("error: :scope requires the native-eval feature"),
+            "{output}"
+        );
+        Ok(())
     }
 
     #[test]

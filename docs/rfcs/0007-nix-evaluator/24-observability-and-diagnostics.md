@@ -330,12 +330,13 @@ meta-commands ([nix repl manual](https://nix.dev/manual/nix/2.32/command-ref/new
 | `:p <expr>` | evaluate and print recursively (force deeply) | as C++ Nix `:p` |
 | `:b <expr>` | build a derivation (delegates to the realisation path) | derivation output *is* gate-relevant |
 | `:q` | quit | — |
-| binding inspection | tab-completion / listing of in-scope names | from the resolver's scope frames ([04](04-frontend-parser-and-ir.md) §6) |
+| `:scope <expr>` | inspect resolver frames and variable coordinates for an expression in the current REPL context | from the resolver's scope frames ([04](04-frontend-parser-and-ir.md) §6) |
 
 Binding inspection is a natural fit for aos-nix specifically because the resolver
 already computes, at every program point, exactly which names are in scope and
 their `(depth, slot)` coordinates ([04](04-frontend-parser-and-ir.md) §6.2). The
-REPL surfaces that scope metadata directly — it does not re-derive it.
+REPL surfaces that scope metadata directly through `:scope`; it does not
+re-derive it.
 
 ### 6.3 The REPL is incremental and cache-assisted
 
@@ -553,7 +554,7 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 ### The native-backed REPL (§6)
 
 - [x] Back `aos repl` with the native evaluator when `AOS_NIX_NATIVE` selects it: `NixRunner::repl` now delegates to external `nix repl` only for the `nix-cli` evaluator; native/shadow selections run an in-process AOS REPL backed by the selected `NixEval`, validate the initially loaded `default.nix` before claiming it is loaded, evaluate ordinary input/`:p` through strict JSON rendering, support `:t`, validate `:load`/`:reload`, and implement `:b` by instantiating then realising through `NixCli::realise`. The `aos repl` banner names the selected evaluator; scripted unit tests cover selected-evaluator routing, load-validation failure preserving the prior scope, type/eval/build command flow, and native-feature CLI smoke tests with `AOS_NIX_NATIVE=1 --features native-eval --impure-eval` exercise the real binary. This remains a dev tool, parity best-effort, not a `.drv` producer gate (§6.1) — **P1**+, `D-OBS-3`.
-- [ ] Reproduce the load-bearing `nix repl` meta-commands (`:load`/`:l`, `:reload`/`:r`, `:t`, `:p`, `:b`, `:q`, binding/scope inspection from the resolver's `(depth, slot)` scope frames) (§6.2) — **P1**+; `:b` derivation output *is* gate-relevant.
+- [x] Reproduce the load-bearing `nix repl` meta-commands (`:load`/`:l`, `:reload`/`:r`, `:t`, `:p`, `:b`, `:q`) plus `:scope <expr>` binding/scope inspection from the resolver's `(depth, slot)` scope frames. `NixRunner`'s native REPL command parser now exposes `:scope`, renders frame slot counts/captures plus local/upvalue/with/global references for the REPL-wrapped expression, and keeps the command behind the existing `native-eval` feature boundary. Scripted tests cover load/reload/type/eval/build/quit flow, load-validation failure preserving the prior scope, and `native_repl_scope_command_reports_resolver_coordinates` asserts the lambda capture frame and concrete `x` upvalue / `y` local coordinates (§6.2) — **P1**+; `:b` derivation output *is* gate-relevant.
 - [ ] Make the REPL incremental/cache-assisted: `:load` and imports hit the content-addressed parse cache, `:reload` after a localized edit triggers early cutoff (the interactive face of criterion **C4**, instrumented by `early_cutoffs`) (§6.3) — **P2** (depends on the incremental cache, [12](12-incremental-evaluation-cache.md)).
 
 ### Internal instrumentation: the `tracing` crate (§7)
