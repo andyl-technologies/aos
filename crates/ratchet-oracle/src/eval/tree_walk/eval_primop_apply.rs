@@ -421,13 +421,16 @@ impl TreeWalk {
                 .stats
                 .thunks_forced
                 .saturating_sub(thunks_forced_before);
-            self.observe_forced_inline_expression_result_with_eval_work_units(
+            let observed_node = self.observe_forced_inline_expression_result_with_eval_work_units(
                 cache_subject,
                 value,
                 impure_trace,
                 Some(eval_work_units),
                 scale_eval_work_by_payload,
             );
+            if let Some(observed_node) = observed_node {
+                self.record_enclosing_force_cache_memo_read(observed_node);
+            }
         }
         Ok(value)
     }

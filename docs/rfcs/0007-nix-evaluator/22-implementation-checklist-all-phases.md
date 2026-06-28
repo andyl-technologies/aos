@@ -506,13 +506,16 @@ alone (`M-1`/`Q-A`).
       collect the hit child node into the active parent frame. Successful
       admitted thunk child misses also collect the newly evaluated child
       expression node into the enclosing active parent after the child
-      completes.
+      completes, and successful admitted first-class cacheable impure primop
+      misses collect the accepted primop expression node into the active parent
+      frame after the primop payload observation completes.
       Successful parent force completion replaces the parent's `MemoRead`
       group with that per-evaluation child set without disturbing impure-input
       edges; failed parent evaluations leave the previous memo-read group
       unchanged. Disabled runtimes, inactive parents, and self-edges remain
       no-ops. This covers force-cache child payload hits that already have or
-      seed an in-memory runtime node plus admitted thunk child misses with runtime
+      seed an in-memory runtime node, admitted thunk child misses with runtime
+      nodes, and admitted first-class cacheable impure primop misses with runtime
       nodes; general evaluator-owned dynamic dependency capture, separate
       inner/outer observers, evaluator-integrated ready-dirty recomputation,
       persistent graph serialization, and cached/uncached `.drv` parity proof
@@ -522,6 +525,7 @@ alone (`M-1`/`Q-A`).
       `source_backed_active_force_cache_hits_replace_prior_memo_read_edges`,
       `source_backed_parent_force_without_hits_clears_prior_memo_read_edges`,
       `source_backed_active_force_cache_child_misses_record_memo_read_edges`,
+      `effectful_primop_child_misses_record_memo_read_edges`,
       `source_backed_active_persistent_force_cache_hits_record_memo_read_edges`,
       trace-backed `effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation`,
       `source_backed_admitted_force_error_balances_active_force_cache_stack`,

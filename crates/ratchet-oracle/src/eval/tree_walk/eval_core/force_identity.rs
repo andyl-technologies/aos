@@ -383,6 +383,15 @@ impl TreeWalk {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_cache_first_class_primop_call_identity_for_current_node(
+        &self,
+        id: IrId,
+        builtin: Builtin,
+    ) -> Option<CacheExprIdentity> {
+        self.cache_first_class_primop_call_identity_for_current_node(id, builtin)
+    }
+
     fn derivation_aterm_cache_identity_for_current_node(
         &self,
         id: IrId,

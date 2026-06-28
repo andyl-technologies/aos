@@ -6,8 +6,14 @@ use super::*;
 enum ForcePayloadPersistenceAction {
     Skip,
     Clear,
-    Materialize { early_cutoff: bool },
-    MaterializeWithTrace { early_cutoff: bool },
+    Materialize {
+        node: DemandNodeId,
+        early_cutoff: bool,
+    },
+    MaterializeWithTrace {
+        node: DemandNodeId,
+        early_cutoff: bool,
+    },
 }
 
 impl TreeWalk {
@@ -30,15 +36,15 @@ impl TreeWalk {
         trace: ImpureInputTraceSegment,
         eval_work_units: Option<u64>,
         scale_eval_work_by_payload: bool,
-    ) {
+    ) -> Option<DemandNodeId> {
         let Some(subject) = subject else {
-            return;
+            return None;
         };
         let Some(payload) = self.force_cache_payload_for_value(value) else {
             if self.invalidate_cached_forced_expression_payload(&subject) {
                 self.clear_persist_forced_expression_payload(&subject);
             }
-            return;
+            return None;
         };
         let trace_is_empty_complete = trace.is_empty_complete();
         // Generally effectful primops can still produce an empty trace for
@@ -52,12 +58,12 @@ impl TreeWalk {
             subject.pure_observation_identity
         };
         let Some(identity) = identity else {
-            return;
+            return None;
         };
         let Some(payload) = self.prepare_observable_payload_for_subject(payload, &subject) else {
             self.invalidate_cached_forced_expression_payload(&subject);
             self.clear_persist_forced_expression_payload(&subject);
-            return;
+            return None;
         };
         let materialization_cost_observation = self.materialization_cost_observation_for_payload(
             &payload,
@@ -70,7 +76,7 @@ impl TreeWalk {
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping forced expression observation"
             );
-            return;
+            return None;
         };
         let persistence_action = if !use_impure_observation {
             match cache.observe_inline_expression_payload(
@@ -79,6 +85,7 @@ impl TreeWalk {
                 payload.clone(),
             ) {
                 Ok(Some(reconsideration)) => Ok(ForcePayloadPersistenceAction::Materialize {
+                    node: reconsideration.node(),
                     early_cutoff: reconsideration.decision() == CutoffDecision::CutOff,
                 }),
                 Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
@@ -91,24 +98,28 @@ impl TreeWalk {
                 payload.clone(),
                 &trace,
             ) {
-                Ok(Some(observation)) if observation.node().is_some() => {
-                    Ok(ForcePayloadPersistenceAction::MaterializeWithTrace {
-                        early_cutoff: observation
-                            .payload_reconsideration()
-                            .map(|reconsideration| {
-                                reconsideration.decision() == CutoffDecision::CutOff
-                            })
-                            .unwrap_or(false),
-                    })
+                Ok(Some(observation)) => {
+                    if let Some(node) = observation.node() {
+                        Ok(ForcePayloadPersistenceAction::MaterializeWithTrace {
+                            node,
+                            early_cutoff: observation
+                                .payload_reconsideration()
+                                .map(|reconsideration| {
+                                    reconsideration.decision() == CutoffDecision::CutOff
+                                })
+                                .unwrap_or(false),
+                        })
+                    } else {
+                        Ok(ForcePayloadPersistenceAction::Clear)
+                    }
                 }
-                Ok(Some(_)) => Ok(ForcePayloadPersistenceAction::Clear),
                 Ok(None) => Ok(ForcePayloadPersistenceAction::Skip),
                 Err(error) => Err(error),
             }
         };
         drop(cache);
         match persistence_action {
-            Ok(ForcePayloadPersistenceAction::Materialize { early_cutoff }) => {
+            Ok(ForcePayloadPersistenceAction::Materialize { node, early_cutoff }) => {
                 if early_cutoff {
                     self.increment_early_cutoffs();
                 }
@@ -120,8 +131,9 @@ impl TreeWalk {
                 {
                     self.clear_persist_forced_expression_payload(&subject);
                 }
+                Some(node)
             }
-            Ok(ForcePayloadPersistenceAction::MaterializeWithTrace { early_cutoff }) => {
+            Ok(ForcePayloadPersistenceAction::MaterializeWithTrace { node, early_cutoff }) => {
                 if early_cutoff {
                     self.increment_early_cutoffs();
                 }
@@ -133,17 +145,20 @@ impl TreeWalk {
                 {
                     self.clear_persist_forced_expression_payload(&subject);
                 }
+                Some(node)
             }
             Ok(ForcePayloadPersistenceAction::Clear) => {
                 self.clear_persist_forced_expression_payload(&subject);
+                None
             }
-            Ok(ForcePayloadPersistenceAction::Skip) => {}
+            Ok(ForcePayloadPersistenceAction::Skip) => None,
             Err(error) => {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     error = %error,
                     "tree-walk evaluator forced expression observation failed"
                 );
+                None
             }
         }
     }
