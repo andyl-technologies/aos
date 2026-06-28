@@ -169,7 +169,7 @@ fn measurement_specs(
 }
 
 fn is_buildable_measurement_spec(spec: &BenchmarkSpec) -> bool {
-    spec.category != "diagnostic"
+    spec.category != "diagnostic" && spec.temperature == "cold"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +489,19 @@ mod tests {
             attr: "diagnostic.attrset_access".to_string(),
             category: "diagnostic".to_string(),
             temperature: "cold".to_string(),
+        };
+
+        assert!(!is_buildable_measurement_spec(&spec));
+    }
+
+    #[test]
+    fn warm_benchmark_specs_do_not_double_measure_cold_warm_pairs() {
+        let spec = BenchmarkSpec {
+            name: "leaf:warm:pkgs.zlib".to_string(),
+            file: PathBuf::from("/repo/default.nix"),
+            attr: "pkgs.zlib".to_string(),
+            category: "leaf".to_string(),
+            temperature: "warm".to_string(),
         };
 
         assert!(!is_buildable_measurement_spec(&spec));

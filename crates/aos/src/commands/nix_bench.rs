@@ -650,18 +650,17 @@ fn run_one_benchmark(
     samples: usize,
 ) -> Result<BenchmarkRecord> {
     let parity = run_parity_gate(oracle, candidate, candidate_name, spec)?;
-    let mut records = Vec::with_capacity(samples);
-    for _ in 0..samples {
+    let records = capture_benchmark_samples(spec, samples, || {
         let stats = oracle
             .instantiate_with_stats(&spec.file, &spec.attr)
-            .with_context(|| format!("capturing NIX_SHOW_STATS for {}", spec.name))?;
-        records.push(BenchmarkSample {
+            .with_context(|| format!("running nix-instantiate for {}", spec.name))?;
+        Ok(BenchmarkSample {
             elapsed_seconds: stats.elapsed.as_secs_f64(),
             elapsed_nanos: duration_nanos(stats.elapsed),
             drv_path: stats.drv_path.to_string_lossy().into_owned(),
             stats: stats.stats,
-        });
-    }
+        })
+    })?;
 
     Ok(BenchmarkRecord {
         name: spec.name.clone(),
@@ -674,6 +673,28 @@ fn run_one_benchmark(
         summary: summarize_samples(&records),
         samples: records,
     })
+}
+
+fn capture_benchmark_samples(
+    spec: &BenchmarkSpec,
+    samples: usize,
+    mut capture: impl FnMut() -> Result<BenchmarkSample>,
+) -> Result<Vec<BenchmarkSample>> {
+    if temperature_requires_warmup(&spec.temperature) {
+        let _ = capture().with_context(|| format!("warming Nix eval cache for {}", spec.name))?;
+    }
+
+    let mut records = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        records.push(
+            capture().with_context(|| format!("capturing NIX_SHOW_STATS for {}", spec.name))?,
+        );
+    }
+    Ok(records)
+}
+
+fn temperature_requires_warmup(temperature: &str) -> bool {
+    temperature == "warm"
 }
 
 fn run_parity_gate(
@@ -861,6 +882,7 @@ fn previous_benchmark<'a>(
             .iter()
             .find(|record| {
                 record.name == current.name
+                    && record.temperature == current.temperature
                     && record.context == current.context
                     && parity_context_matches(&record.parity, &current.parity)
             })

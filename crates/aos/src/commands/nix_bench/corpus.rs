@@ -152,6 +152,8 @@ const GCC_TOOLCHAIN_TIER_COMPONENTS: &[&str] = &[
 ];
 const DIAGNOSTIC_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-bench-diagnostic-builder";
+const COLD_TEMPERATURE: &str = "cold";
+const WARM_TEMPERATURE: &str = "warm";
 
 #[derive(Debug, Clone)]
 pub(crate) struct BenchmarkSpec {
@@ -169,7 +171,7 @@ pub(crate) fn benchmark_specs(
     attrs: &[String],
 ) -> Result<Vec<BenchmarkSpec>> {
     if !attrs.is_empty() {
-        return Ok(explicit_benchmark_specs(file, attrs));
+        return Ok(with_warm_split(explicit_benchmark_specs(file, attrs)));
     }
 
     let mut specs = Vec::new();
@@ -193,7 +195,7 @@ pub(crate) fn benchmark_specs(
         }
         .into());
     }
-    Ok(specs)
+    Ok(with_warm_split(specs))
 }
 
 pub(crate) fn explicit_benchmark_specs(file: &Path, attrs: &[String]) -> Vec<BenchmarkSpec> {
@@ -277,14 +279,36 @@ fn diagnostic_benchmark_specs(root: &Path) -> Result<Vec<BenchmarkSpec>> {
 }
 
 fn benchmark_spec(file: PathBuf, attr: String, category: &str) -> BenchmarkSpec {
-    let temperature = "cold".to_string();
+    benchmark_spec_with_temperature(file, attr, category, COLD_TEMPERATURE)
+}
+
+fn benchmark_spec_with_temperature(
+    file: PathBuf,
+    attr: String,
+    category: &str,
+    temperature: &str,
+) -> BenchmarkSpec {
     BenchmarkSpec {
         name: format!("{category}:{temperature}:{attr}"),
         file,
         attr,
         category: category.to_string(),
-        temperature,
+        temperature: temperature.to_string(),
     }
+}
+
+fn with_warm_split(specs: Vec<BenchmarkSpec>) -> Vec<BenchmarkSpec> {
+    let mut expanded = Vec::with_capacity(specs.len().saturating_mul(2));
+    for spec in specs {
+        expanded.push(spec.clone());
+        expanded.push(benchmark_spec_with_temperature(
+            spec.file,
+            spec.attr,
+            &spec.category,
+            WARM_TEMPERATURE,
+        ));
+    }
+    expanded
 }
 
 fn existing_attr_expr(file: &Path, wanted: &[&str]) -> Result<String> {
@@ -499,4 +523,27 @@ fn nix_string_literal(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warm_split_pairs_each_benchmark_spec() {
+        let specs = with_warm_split(vec![benchmark_spec(
+            PathBuf::from("/repo/default.nix"),
+            "pkgs.zlib".to_string(),
+            "leaf",
+        )]);
+
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "leaf:cold:pkgs.zlib");
+        assert_eq!(specs[0].temperature, "cold");
+        assert_eq!(specs[1].name, "leaf:warm:pkgs.zlib");
+        assert_eq!(specs[1].temperature, "warm");
+        assert_eq!(specs[1].file, PathBuf::from("/repo/default.nix"));
+        assert_eq!(specs[1].attr, "pkgs.zlib");
+        assert_eq!(specs[1].category, "leaf");
+    }
 }
