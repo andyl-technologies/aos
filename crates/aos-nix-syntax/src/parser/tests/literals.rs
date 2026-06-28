@@ -277,3 +277,18 @@ fn indented_string_interpolation_at_line_start_counts_as_content() {
     assert_eq!(node(&ast, fragments[0]).kind, NodeKind::Interp);
     assert_eq!(string_bytes(&ast, fragments[1]), b"\ntext\n");
 }
+
+#[test]
+fn indented_string_deindent_preserves_interpolation_source_span() {
+    let source = "''\n    ${missing}\n    text\n  ''";
+    let ast = parse(source);
+    let root = node(&ast, ast.root);
+    let NodeData::Children(fragments) = root.data else {
+        panic!("interpolation fragments expected");
+    };
+    let fragments = ast.arena.child_slice(fragments).expect("fragments");
+
+    let interpolation = node(&ast, fragments[0]);
+    assert_eq!(interpolation.kind, NodeKind::Interp);
+    assert_eq!(span_text(source, interpolation.span), "${missing}");
+}

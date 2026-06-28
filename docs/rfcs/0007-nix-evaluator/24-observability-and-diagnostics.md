@@ -454,11 +454,11 @@ separate:
    `throw`/`trace`. Whether aos-nix's REPL grows an equivalent (its logical
    eval-context stack, §5.1, and scope frames, §6.2, are the substrate it would
    need) is deferred until the REPL is in real use.
-4. **Span fidelity through desugaring.** A handful of parse-time desugarings
-   ([04](04-frontend-parser-and-ir.md) §4.4 — attr-path nesting, `inherit`,
-   indented-string de-indentation) synthesize nodes; ensuring those nodes carry
-   spans that point at *sensible* original bytes (so diagnostics on desugared
-   constructs are not misleading) is an ongoing fit-and-finish item.
+4. **Remaining span fidelity through desugaring.** The current P1 attr-path,
+   `inherit`, and indented-string rewrite surfaces are covered below; ordinary
+   string interpolation and later tier/deopt trace reconstruction still need
+   canaries proving that synthesized nodes carry spans pointing at *sensible*
+   original bytes.
 
 ## Implementation checklist
 
@@ -517,9 +517,19 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       tests assert the first significant token after skipped trivia is reported
       at the exact source byte (§4.3) — **P1** core; gate today: parser
       diagnostic tests.
-- [ ] Span fidelity through desugaring remains: synthesized/desugared nodes from
-      attr-path nesting, `inherit`, indented-string de-indentation, and other
-      rewrites must consistently point diagnostics at sensible original bytes
+- [x] Span fidelity through desugaring: synthesized/desugared nodes from
+      attr-path nesting, `inherit`, and indented-string de-indentation preserve
+      sensible original byte spans for diagnostics. Parser canaries assert
+      duplicate attribute diagnostics created through attr-path normalization
+      and inherit expansion label the original conflicting binding slices,
+      including the precise nested `b = ...;` span when an explicit
+      `{ b = ...; }` conflicts with `a.b`; a separate indented-string canary
+      asserts de-indentation preserves the interpolation node's original
+      `${...}` source span for downstream diagnostics. This covers the current
+      P1 attr-path, inherit, and indented-string rewrite surfaces; future
+      ordinary string interpolation coverage, tier/deopt trace reconstruction,
+      and diagnostic reconstruction remain tracked by the zero-fixup
+      span-survival and full `--show-trace` rows
       (§4.3, open question 4) — **P1** fit-and-finish.
 
 ### `--show-trace` parity: structural, not textual (§5)

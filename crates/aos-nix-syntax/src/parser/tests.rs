@@ -16,6 +16,10 @@ fn parse(source: &str) -> ParsedAst {
     parse_str(source).expect("source parses")
 }
 
+fn span_text<'a>(source: &'a str, span: Span) -> &'a str {
+    &source[span.start as usize..span.end as usize]
+}
+
 fn parse_acceptance(source: &str) -> Result<(), String> {
     parse_str(source)
         .map(|_| ())
@@ -883,6 +887,41 @@ fn duplicate_static_attr_paths_are_parse_errors() {
             error.kind(),
             ParseErrorKind::DuplicateAttribute { .. }
         ));
+    }
+}
+
+#[test]
+fn duplicate_attr_errors_keep_desugared_original_binding_spans() {
+    for (source, first_text, second_text) in [
+        ("{ a.b = 1; a.b = 2; }", "a.b = 1;", "a.b = 2;"),
+        ("{ a = { b = 1; }; a.b = 2; }", "b = 1;", "a.b = 2;"),
+        ("{ a.b = 1; a = { b = 2; }; }", "a.b = 1;", "b = 2;"),
+        (
+            "let x = 1; in { inherit x; x = 2; }",
+            "inherit x;",
+            "x = 2;",
+        ),
+        (
+            "let src = { x = 1; }; in { inherit (src) x; x = 2; }",
+            "inherit (src) x;",
+            "x = 2;",
+        ),
+        (
+            "let x = 1; in { inherit x; inherit   x; }",
+            "inherit x;",
+            "inherit   x;",
+        ),
+    ] {
+        let error = parse_str(source).expect_err("duplicate attr path errors");
+        let ParseErrorKind::DuplicateAttribute { first, second } = error.kind() else {
+            panic!("duplicate attr path error expected for {source}");
+        };
+
+        assert!(first.start < second.start, "{source}");
+        assert_eq!(span_text(source, *first), first_text, "{source}");
+        assert_eq!(span_text(source, *second), second_text, "{source}");
+        assert_eq!(error.span(), *second, "{source}");
+        assert_eq!(span_text(source, error.span()), second_text, "{source}");
     }
 }
 
