@@ -414,7 +414,7 @@ fn strict_list_result_thunks_with_heap_elements_hit_after_heap_rehydration() {
 }
 
 #[test]
-fn non_empty_list_literals_with_lazy_elements_wait_for_element_payloads() {
+fn non_empty_list_literals_with_non_replayable_lazy_elements_allocate_node_without_payload_hits() {
     let source = r#"{ a = [ (1 / 0) ]; }"#;
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
@@ -449,9 +449,16 @@ fn non_empty_list_literals_with_lazy_elements_wait_for_element_payloads() {
     }
 
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "list literals with lazy elements need element payloads before observation"
+    let cache = runtime.cache().expect("cache is enabled");
+    assert_eq!(
+        cache.len(),
+        1,
+        "non-replayable lazy list literals still allocate the force demand node"
+    );
+    assert_eq!(
+        cache.inline_payload_record_count(),
+        0,
+        "list literals with non-replayable lazy elements must not store reusable inline payloads"
     );
 }
 
@@ -888,7 +895,8 @@ fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
 }
 
 #[test]
-fn non_empty_attrset_literals_with_lazy_bindings_wait_for_binding_payloads() {
+fn non_empty_attrset_literals_with_non_replayable_lazy_bindings_allocate_node_without_payload_hits()
+{
     let source = r#"{ a = { b = (1 / 0); }; }"#;
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
@@ -923,9 +931,16 @@ fn non_empty_attrset_literals_with_lazy_bindings_wait_for_binding_payloads() {
     }
 
     let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "attrset literals with lazy bindings need binding payloads before observation"
+    let cache = runtime.cache().expect("cache is enabled");
+    assert_eq!(
+        cache.len(),
+        1,
+        "non-replayable lazy attrset literals still allocate the force demand node"
+    );
+    assert_eq!(
+        cache.inline_payload_record_count(),
+        0,
+        "attrset literals with non-replayable lazy bindings must not store reusable inline payloads"
     );
 }
 
