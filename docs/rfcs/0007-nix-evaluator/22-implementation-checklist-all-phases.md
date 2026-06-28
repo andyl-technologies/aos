@@ -3413,6 +3413,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       permutation, and an in-process xxh3 key-vector fingerprint. Global shape
       interning, transitions, pointer-identity equality, PIC integration, HAMT
       dispatch, and runtime fast paths remain open.
+- [x] Current shape-transition precursor: `AttrShape` can locally plan key
+      insertions. Existing keys return the current symbol-sorted slot; new keys
+      append to construction order and produce a child descriptor with updated
+      source/lexicographic permutations. Parent-edge caches, global child
+      interning, and pointer-identity shape equality remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
 - [x] Current `attrs/pic.rs` precursor: `ratchet-value` exposes the safe

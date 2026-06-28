@@ -188,6 +188,53 @@ impl AttrShape {
             && self.fingerprint() == other.fingerprint()
     }
 
+    /// Plans the transition produced by adding `key` in construction order.
+    ///
+    /// Existing keys keep the same shape and return the current symbol-sorted
+    /// slot. New keys produce a child descriptor whose construction order is the
+    /// parent shape's construction order followed by `key`. This is a local
+    /// descriptor calculation only; it does not cache an edge on the parent and
+    /// does not intern the child in a global shape table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError`] when `key` is unknown to `symbols`, when the child
+    /// shape would exceed the slot-permutation range, or when child construction
+    /// storage cannot be reserved.
+    pub fn transition_insert_key(
+        &self,
+        key: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<ShapeTransition, ShapeError> {
+        symbols
+            .resolve(key)
+            .ok_or(ShapeError::UnknownSymbol { key })?;
+        if let Some(slot) = self.slot(key) {
+            return Ok(ShapeTransition::ExistingKey { key, slot });
+        }
+
+        let len = self
+            .len()
+            .checked_add(1)
+            .ok_or(ShapeError::TooManyKeys { len: usize::MAX })?;
+        let source_slot = u32::try_from(self.len()).map_err(|_| ShapeError::TooManyKeys { len })?;
+
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(len)
+            .map_err(|_| ShapeError::AllocationFailed { keys: len })?;
+        keys.extend(self.iter_source_order());
+        keys.push(key);
+
+        let child = AttrShape::from_construction_order(&keys, symbols)?;
+        let symbol_slot = child.slot(key).ok_or(ShapeError::UnknownSymbol { key })?;
+        Ok(ShapeTransition::AppendKey {
+            key,
+            source_slot,
+            symbol_slot,
+            child,
+        })
+    }
+
     /// Iterates keys in construction order.
     pub fn iter_source_order(&self) -> ShapeOrderKeys<'_> {
         ShapeOrderKeys {
@@ -205,6 +252,29 @@ impl AttrShape {
             next: 0,
         }
     }
+}
+
+/// A local shape-transition result.
+#[derive(Clone, Debug)]
+pub enum ShapeTransition {
+    /// The key already exists, so no child shape is required.
+    ExistingKey {
+        /// The key that was already present.
+        key: Symbol,
+        /// The existing symbol-sorted slot for `key`.
+        slot: u32,
+    },
+    /// A new key appends to construction order and produces a child descriptor.
+    AppendKey {
+        /// The appended key.
+        key: Symbol,
+        /// The new key's construction-order slot.
+        source_slot: u32,
+        /// The new key's symbol-sorted slot in `child`.
+        symbol_slot: u32,
+        /// The locally constructed child descriptor.
+        child: AttrShape,
+    },
 }
 
 /// Iterator over shape keys through a cached slot permutation.
@@ -368,6 +438,120 @@ mod tests {
 
         assert!(left.raw_eq(&same));
         assert!(!left.raw_eq(&different_order));
+    }
+
+    #[test]
+    fn transitions_for_existing_keys_return_existing_slots() {
+        let (symbols, ids) = symbols(&[b"z", b"a"]);
+        let shape =
+            AttrShape::from_construction_order(&[ids[1], ids[0]], &symbols).expect("shape builds");
+
+        match shape
+            .transition_insert_key(ids[0], &symbols)
+            .expect("existing-key transition succeeds")
+        {
+            ShapeTransition::ExistingKey { key, slot } => {
+                assert_eq!(key, ids[0]);
+                assert_eq!(slot, 0);
+            }
+            ShapeTransition::AppendKey { .. } => panic!("existing key must not append"),
+        }
+    }
+
+    #[test]
+    fn transitions_append_new_keys_in_construction_order() {
+        let (symbols, ids) = symbols(&[b"z", b"a", b"m"]);
+        let parent = AttrShape::from_construction_order(&[ids[1], ids[0]], &symbols)
+            .expect("parent shape builds");
+
+        match parent
+            .transition_insert_key(ids[2], &symbols)
+            .expect("append transition succeeds")
+        {
+            ShapeTransition::AppendKey {
+                key,
+                source_slot,
+                symbol_slot,
+                child,
+            } => {
+                assert_eq!(key, ids[2]);
+                assert_eq!(source_slot, 2);
+                assert_eq!(symbol_slot, 2);
+                assert_eq!(
+                    child.iter_source_order().collect::<Vec<_>>(),
+                    vec![ids[1], ids[0], ids[2]]
+                );
+                let names: Vec<&[u8]> = child
+                    .iter_lexicographic()
+                    .map(|key| symbols.resolve(key).expect("symbol resolves"))
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec![b"a".as_slice(), b"m".as_slice(), b"z".as_slice()]
+                );
+            }
+            ShapeTransition::ExistingKey { .. } => panic!("new key must append"),
+        }
+    }
+
+    #[test]
+    fn transitions_recompute_symbol_slot_for_low_id_appended_keys() {
+        let (symbols, ids) = symbols(&[b"a", b"m", b"z"]);
+        let parent = AttrShape::from_construction_order(&[ids[1], ids[2]], &symbols)
+            .expect("parent shape builds");
+
+        match parent
+            .transition_insert_key(ids[0], &symbols)
+            .expect("append transition succeeds")
+        {
+            ShapeTransition::AppendKey {
+                source_slot,
+                symbol_slot,
+                child,
+                ..
+            } => {
+                assert_eq!(source_slot, 2);
+                assert_eq!(symbol_slot, 0);
+                assert_eq!(child.keys_by_symbol(), ids.as_slice());
+                assert_eq!(
+                    child.iter_source_order().collect::<Vec<_>>(),
+                    vec![ids[1], ids[2], ids[0]]
+                );
+            }
+            ShapeTransition::ExistingKey { .. } => panic!("new key must append"),
+        }
+    }
+
+    #[test]
+    fn transitions_reject_unknown_new_keys_without_changing_parent() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let parent =
+            AttrShape::from_construction_order(&ids, &symbols).expect("parent shape builds");
+
+        assert_eq!(
+            parent
+                .transition_insert_key(Symbol::new(42), &symbols)
+                .expect_err("unknown key is rejected"),
+            ShapeError::UnknownSymbol {
+                key: Symbol::new(42),
+            }
+        );
+        assert_eq!(parent.iter_source_order().collect::<Vec<_>>(), ids);
+    }
+
+    #[test]
+    fn transitions_reject_existing_key_when_symbol_table_is_mismatched() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let parent =
+            AttrShape::from_construction_order(&ids, &symbols).expect("parent shape builds");
+        let empty_symbols = SymbolTable::new();
+
+        assert_eq!(
+            parent
+                .transition_insert_key(ids[0], &empty_symbols)
+                .expect_err("mismatched symbol table is rejected"),
+            ShapeError::UnknownSymbol { key: ids[0] }
+        );
     }
 
     #[test]

@@ -739,6 +739,12 @@ harness, never cut for scope.
       shape interning, inline cache, HAMT representation, or runtime fast path.
 - [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
+- [x] Current shape-transition precursor: `ratchet-value::attrs::shape`
+      can locally plan a key insertion against an `AttrShape`. Existing keys
+      return the current symbol-sorted slot; new keys append to construction
+      order and produce a child descriptor with updated source/lexicographic
+      permutations. This does not cache edges on parent shapes, intern children
+      in a global table, or claim pointer-identity shape equality.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
 
