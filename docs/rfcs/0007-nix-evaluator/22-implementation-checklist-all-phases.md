@@ -3617,6 +3617,13 @@ it ships).**
       heap-address/immediate/small-int payloads; and reports heap-address
       payloads for future precise-GC scanning without reconstructing provenance.
       The active 16-byte `Value` ABI is unchanged.
+- [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
+      small-constructor layout contract. Zero-, one-, and two-slot lists or
+      attrsets classify as inline candidates; larger constructors stay
+      heap-backed. Checked inline payload helpers preserve list values and attr
+      entries without forcing, reject duplicate inline attr keys, and treat
+      unused slots as null padding. The active `NixList`/`FlatAttrs`
+      representations and observable iteration behavior are unchanged.
 - [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
       ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
       `R-6`).

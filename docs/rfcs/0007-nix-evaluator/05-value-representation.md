@@ -839,6 +839,13 @@ Value representation has no observable effect on `.drv` output by construction (
       words do not prove pointer provenance or liveness. This does not change
       the active 16-byte `Value` ABI or skip thunk-state loads yet.
 - [ ] Optional small-constructor (0/1/2-element) inline encoding for small lists/attrs so `length`/single-key `select` skip a header load (§3, §7) — **P8**, measure-gated default-off; benchmark delta required (`C6`).
+- [x] Current small-constructor layout precursor:
+      `ratchet-value::value::small` classifies zero-, one-, and two-slot lists
+      or attrsets as inline candidates and exposes checked inline payload helpers
+      for list values and attr entries. Oversized constructors remain
+      heap-backed; attr payloads reject duplicate keys; unused slots are null
+      padding and carry no semantic meaning. The active `NixList`/`FlatAttrs`
+      heap layout and observable iteration behavior are unchanged.
 - [x] Current conservative thunk publication/read discipline: `ThunkCell` uses acquire loads for state and cached-value checks, an AcqRel `Suspended → Blackhole` claim CAS, Release stores when publishing `Forced` or resetting to `Suspended`, and reads cached WHNF only after observing `Forced`; this preserves the future parallel boundary while the P1 tree-walk result slot remains `Cell<Option<Value>>`/single-threaded (§3.1–§3.2). Covered by `eval::thunk::tests::*`, especially `finish_force_publishes_cached_value`, `already_forced_thunk_returns_cached_value_without_reclaiming`, `abort_force_resets_suspended_state`, and `dropped_claim_resets_suspended_state_for_error_unwind`, plus tree-walk memoization/reset tests such as `forcing_attr_value_thunks_memoizes_whnf_results`, `shared_thunks_emit_trace_once_when_forced_repeatedly`, and `failed_thunks_reset_and_are_retried`.
 - [ ] Full RFC monotonic-`FORCED` fast path/proof: unsynchronized single-threaded fast reads if retained, the pointer-tag `FORCED` shortcut that skips the atomic load (tracked above), and the true parallel forcing acquire-load protocol with `loom`/Miri audit (§3.1–§3.2) — parallel acquire path **P3.5** (`C-12`, `R-4`).
 
