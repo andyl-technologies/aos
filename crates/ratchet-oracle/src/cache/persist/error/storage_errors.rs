@@ -583,3 +583,55 @@ pub enum PersistStorageRepackError {
         source: PersistBlobPacksRepackError,
     },
 }
+
+/// Automatic persistent storage maintenance planning failed.
+#[derive(Debug, Error)]
+pub enum PersistStorageMaintenancePlanError {
+    /// The value blob index could not be planned for rebuild.
+    #[error("failed to plan persistent value blob-index repair during storage maintenance")]
+    ValueBlobIndex {
+        /// The underlying rebuild-plan error.
+        source: PersistBlobIndexRebuildPlanError,
+    },
+    /// The file blob index could not be planned for rebuild.
+    #[error("failed to plan persistent file blob-index repair during storage maintenance")]
+    FileBlobIndex {
+        /// The underlying rebuild-plan error.
+        source: PersistBlobIndexRebuildPlanError,
+    },
+    /// The value blob pack could not be planned for repack.
+    #[error("failed to plan persistent value blob-pack repack during storage maintenance")]
+    ValueBlobPack {
+        /// The underlying repack-plan error.
+        source: PersistBlobPackRepackPlanError,
+    },
+    /// The file blob pack could not be planned for repack.
+    #[error("failed to plan persistent file blob-pack repack during storage maintenance")]
+    FileBlobPack {
+        /// The underlying repack-plan error.
+        source: PersistBlobPackRepackPlanError,
+    },
+}
+
+/// Automatic persistent storage maintenance failed.
+#[derive(Debug, Error)]
+pub enum PersistStorageAutoMaintenanceError {
+    /// Maintenance planning failed.
+    #[error("failed to plan automatic persistent storage maintenance")]
+    Plan {
+        /// The underlying planning error.
+        source: PersistStorageMaintenancePlanError,
+    },
+    /// Index repair and tail maintenance failed.
+    #[error("failed to repair persistent storage during automatic maintenance")]
+    Repair {
+        /// The underlying maintenance error.
+        source: PersistStorageMaintenanceError,
+    },
+    /// Blob-pack repacking failed.
+    #[error("failed to repack persistent storage during automatic maintenance")]
+    Repack {
+        /// The underlying repack error.
+        source: PersistStorageRepackError,
+    },
+}

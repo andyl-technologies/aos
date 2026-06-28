@@ -25,7 +25,9 @@ pub use maintenance_types::{
     PersistBlobPackRepackPlan, PersistBlobPackTrim, PersistBlobPacksRepack,
     PersistBlobRecordRelocation, PersistCompaction, PersistFileBlobReachabilityPlan,
     PersistMissingNodeValueRoot, PersistNodeValueRoot, PersistNodeValueRootPlan,
-    PersistStorageMaintenance, PersistStorageRepack, PersistValueBlobReachabilityPlan,
+    PersistStorageMaintenance, PersistStorageMaintenanceAction, PersistStorageMaintenanceOutcome,
+    PersistStorageMaintenancePlan, PersistStorageMaintenancePolicy, PersistStorageRepack,
+    PersistValueBlobReachabilityPlan,
 };
 
 use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockMode};
@@ -407,6 +409,98 @@ impl PersistCache {
             node_metadata_entries,
             node_trace_entries,
         ))
+    }
+
+    /// Plans automatic persistent storage maintenance.
+    ///
+    /// The plan first compares both blob-index sidecars to verified physical
+    /// pack records, then computes value/file pack repack plans under the same
+    /// policy. Callers can inspect [`PersistStorageMaintenancePlan::action`] to
+    /// see whether automatic maintenance would repair indexes, repack blobs, or
+    /// skip work. Index repair has priority over repacking so recoverable
+    /// unindexed newest records are indexed before any policy-driven byte
+    /// reclamation can delete them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistStorageMaintenancePlanError`] if a blob-index rebuild
+    /// plan or blob-pack repack plan cannot be produced.
+    pub fn plan_storage_maintenance(
+        &self,
+        policy: PersistStorageMaintenancePolicy,
+    ) -> Result<PersistStorageMaintenancePlan, PersistStorageMaintenancePlanError> {
+        let value_blob_index = self
+            .plan_blob_index_rebuild(PersistBlobStore::Values)
+            .map_err(|source| PersistStorageMaintenancePlanError::ValueBlobIndex { source })?;
+        let file_blob_index = self
+            .plan_blob_index_rebuild(PersistBlobStore::Files)
+            .map_err(|source| PersistStorageMaintenancePlanError::FileBlobIndex { source })?;
+        let value_blob_pack = self
+            .plan_blob_pack_repack(PersistBlobStore::Values)
+            .map_err(|source| PersistStorageMaintenancePlanError::ValueBlobPack { source })?;
+        let file_blob_pack = self
+            .plan_blob_pack_repack(PersistBlobStore::Files)
+            .map_err(|source| PersistStorageMaintenancePlanError::FileBlobPack { source })?;
+        Ok(PersistStorageMaintenancePlan::new(
+            policy,
+            PersistBlobIndexRebuild::new(value_blob_index, file_blob_index),
+            value_blob_pack,
+            file_blob_pack,
+        ))
+    }
+
+    /// Runs automatic persistent storage maintenance under `policy`.
+    ///
+    /// The automatic action is conservative. If blob-index repair is needed,
+    /// this runs [`Self::compact_storage`] even when the same plan also shows
+    /// reclaimable pack bytes, because the repair step can make previously
+    /// unindexed records live. Only repair-clean plans whose reclaimable bytes
+    /// meet [`PersistStorageMaintenancePolicy::min_repack_reclaimable_bytes`]
+    /// run [`Self::repack_storage`] after a fresh [`Self::compact_storage`]
+    /// sweep. That pre-repack sweep repairs records visible to that sweep, but
+    /// it is not a transaction with the later repack; callers that need
+    /// cache-level raw blob appends preserved across automatic repack must
+    /// quiesce those writers under the same coordination requirement as
+    /// explicit [`Self::repack_storage`]. Otherwise the cache is left
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistStorageAutoMaintenanceError`] if planning fails, if the
+    /// selected repair/compaction maintenance fails, or if the selected repack
+    /// fails. Work completed by the selected explicit maintenance operation
+    /// keeps that operation's normal non-transactional semantics.
+    pub fn maintain_storage(
+        &self,
+        policy: PersistStorageMaintenancePolicy,
+    ) -> Result<PersistStorageMaintenanceOutcome, PersistStorageAutoMaintenanceError> {
+        let plan = self
+            .plan_storage_maintenance(policy)
+            .map_err(|source| PersistStorageAutoMaintenanceError::Plan { source })?;
+        match plan.action() {
+            PersistStorageMaintenanceAction::Skip => {
+                Ok(PersistStorageMaintenanceOutcome::Skipped { plan })
+            }
+            PersistStorageMaintenanceAction::RepairIndexes => {
+                let maintenance = self
+                    .compact_storage()
+                    .map_err(|source| PersistStorageAutoMaintenanceError::Repair { source })?;
+                Ok(PersistStorageMaintenanceOutcome::Repaired { plan, maintenance })
+            }
+            PersistStorageMaintenanceAction::RepackBlobs => {
+                let maintenance = self
+                    .compact_storage()
+                    .map_err(|source| PersistStorageAutoMaintenanceError::Repair { source })?;
+                let repack = self
+                    .repack_storage()
+                    .map_err(|source| PersistStorageAutoMaintenanceError::Repack { source })?;
+                Ok(PersistStorageMaintenanceOutcome::Repacked {
+                    plan,
+                    maintenance,
+                    repack,
+                })
+            }
+        }
     }
 
     /// Runs explicit persistent storage maintenance.

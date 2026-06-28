@@ -3,6 +3,136 @@
 use super::*;
 
 #[test]
+fn cache_automatic_storage_maintenance_skips_clean_cache() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let policy = PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
+
+    let outcome = cache
+        .maintain_storage(policy)
+        .expect("automatic maintenance runs");
+
+    assert_eq!(outcome.action(), PersistStorageMaintenanceAction::Skip);
+    assert_eq!(outcome.plan().policy(), policy);
+    assert!(!outcome.plan().blob_index_repair_needed());
+    assert_eq!(outcome.plan().repack_reclaimable_bytes(), 0);
+    assert!(!outcome.plan().repack_needed());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_automatic_storage_maintenance_repairs_indexes_before_repacking() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"recoverable unindexed value";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    cache
+        .append_blob(key, payload)
+        .expect("recoverable raw value blob appends");
+    let policy = PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
+
+    let plan = cache
+        .plan_storage_maintenance(policy)
+        .expect("automatic maintenance plans");
+    assert_eq!(
+        plan.action(),
+        PersistStorageMaintenanceAction::RepairIndexes
+    );
+    assert!(plan.blob_index_repair_needed());
+    assert!(
+        plan.repack_needed(),
+        "the raw tail is reclaimable, but repair must win before repack"
+    );
+
+    let outcome = cache
+        .maintain_storage(policy)
+        .expect("automatic maintenance repairs");
+    let PersistStorageMaintenanceOutcome::Repaired { plan, maintenance } = outcome else {
+        panic!("automatic maintenance should repair the recoverable blob index");
+    };
+    assert_eq!(
+        plan.action(),
+        PersistStorageMaintenanceAction::RepairIndexes
+    );
+    assert!(maintenance.blob_indexes().lookup_repair_needed());
+    assert_eq!(maintenance.reclaimed_blob_bytes(), 0);
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed read succeeds")
+            .expect("repaired blob is indexed")
+            .as_slice(),
+        payload
+    );
+
+    let second = cache
+        .maintain_storage(policy)
+        .expect("second automatic maintenance runs");
+    assert_eq!(second.action(), PersistStorageMaintenanceAction::Skip);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_automatic_storage_maintenance_repacks_after_reclaim_threshold() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"duplicate indexed value";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    cache
+        .append_blob_indexed(key, payload)
+        .expect("first value blob appends");
+    cache
+        .append_blob_indexed(key, payload)
+        .expect("duplicate value blob appends");
+    let bytes_before = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata before automatic maintenance")
+        .len();
+    let policy = PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
+
+    let plan = cache
+        .plan_storage_maintenance(policy)
+        .expect("automatic maintenance plans");
+    assert_eq!(plan.action(), PersistStorageMaintenanceAction::RepackBlobs);
+    assert!(!plan.blob_index_repair_needed());
+    assert!(plan.repack_needed());
+    assert!(plan.repack_reclaimable_bytes() > 0);
+
+    let outcome = cache
+        .maintain_storage(policy)
+        .expect("automatic maintenance repacks");
+    let PersistStorageMaintenanceOutcome::Repacked {
+        plan,
+        maintenance,
+        repack,
+    } = outcome
+    else {
+        panic!("automatic maintenance should repack duplicate indexed records");
+    };
+    assert_eq!(plan.action(), PersistStorageMaintenanceAction::RepackBlobs);
+    assert!(
+        !maintenance.blob_indexes().lookup_repair_needed(),
+        "automatic repack still reports its pre-repack repair sweep"
+    );
+    assert!(repack.reclaimed_blob_bytes() > 0);
+    assert_eq!(
+        cache
+            .read_blob_indexed(key)
+            .expect("indexed read succeeds")
+            .expect("latest blob remains indexed")
+            .as_slice(),
+        payload
+    );
+    let bytes_after = fs::metadata(cache.value_pack().path())
+        .expect("value pack metadata after automatic maintenance")
+        .len();
+    assert!(bytes_after < bytes_before);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

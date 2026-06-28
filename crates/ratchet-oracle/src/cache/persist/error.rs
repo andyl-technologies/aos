@@ -35,6 +35,7 @@ pub use storage_errors::{
     PersistBlobLiveRootError, PersistBlobPackLivenessPlanError, PersistBlobPackRepackPlanError,
     PersistBlobPackTrimError, PersistBlobPacksRepackError, PersistCompactionError,
     PersistFileBlobPackRepackError, PersistFileBlobReachabilityPlanError,
-    PersistNodeValueRootPlanError, PersistStorageMaintenanceError, PersistStorageRepackError,
+    PersistNodeValueRootPlanError, PersistStorageAutoMaintenanceError,
+    PersistStorageMaintenanceError, PersistStorageMaintenancePlanError, PersistStorageRepackError,
     PersistValueBlobPackRepackError, PersistValueBlobReachabilityPlanError,
 };

@@ -2329,6 +2329,25 @@ alone (`M-1`/`Q-A`).
       indexes, mmap reads, Attic transport, and cached/uncached harness proof
       remain open
       (`C-13`/`R-10`/`R-14`/`S-14`). The gate is the storage repack cache tests.
+- [x] Current automatic storage maintenance policy precursor:
+      `PersistStorageMaintenancePolicy`,
+      `PersistCache::plan_storage_maintenance`, and
+      `PersistCache::maintain_storage` choose among the current explicit
+      helpers without adding a new storage engine. Planning first compares both
+      blob indexes to verified physical pack records, then computes value/file
+      repack plans. Automatic execution always repairs indexes through
+      `compact_storage` before considering byte reclamation, so recoverable
+      unindexed newest records are indexed rather than deleted by an eager
+      repack. Repair-clean plans that meet the policy threshold run a fresh
+      `compact_storage` sweep before `repack_storage`; below-threshold plans
+      return a skipped outcome with the diagnostic plan. This is conservative
+      policy plumbing over current sidecars and pack helpers only; background
+      scheduling, retention windows, a single transaction across repair/repack
+      phases, a cache-level raw writer quiescence protocol beyond the explicit
+      helper locks, raw lower-level writer coordination, cross-process pending
+      artifact publication, LMDB/redb indexes, Attic transport, and
+      cached/uncached harness proof remain open (`C-13`/`R-14`). The gate is
+      the automatic storage maintenance cache tests.
 - [x] Current force-cache persistent trace writeback:
       after tree-walk `force_value` gets an accepted forced-expression
       observation and successfully materializes its value payload, it appends a

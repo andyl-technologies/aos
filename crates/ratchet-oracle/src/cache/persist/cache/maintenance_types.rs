@@ -2,6 +2,169 @@
 
 use super::*;
 
+const DEFAULT_STORAGE_REPACK_RECLAIMABLE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Policy inputs for automatic persistent storage maintenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistStorageMaintenancePolicy {
+    min_repack_reclaimable_bytes: u64,
+}
+
+impl Default for PersistStorageMaintenancePolicy {
+    fn default() -> Self {
+        Self {
+            min_repack_reclaimable_bytes: DEFAULT_STORAGE_REPACK_RECLAIMABLE_BYTES,
+        }
+    }
+}
+
+impl PersistStorageMaintenancePolicy {
+    /// Returns a policy that repacks only after `min_repack_reclaimable_bytes`.
+    pub const fn with_min_repack_reclaimable_bytes(
+        mut self,
+        min_repack_reclaimable_bytes: u64,
+    ) -> Self {
+        self.min_repack_reclaimable_bytes = min_repack_reclaimable_bytes;
+        self
+    }
+
+    /// Returns the minimum total reclaimable pack bytes needed before repack.
+    pub const fn min_repack_reclaimable_bytes(self) -> u64 {
+        self.min_repack_reclaimable_bytes
+    }
+}
+
+/// The action selected by automatic persistent storage maintenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistStorageMaintenanceAction {
+    /// No maintenance is needed under the selected policy.
+    Skip,
+    /// Blob indexes should be repaired before any pack bytes are reclaimed.
+    RepairIndexes,
+    /// Blob packs should be repacked to reclaim duplicate or unrooted bytes.
+    RepackBlobs,
+}
+
+/// Read-only diagnostics used to choose automatic storage maintenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistStorageMaintenancePlan {
+    policy: PersistStorageMaintenancePolicy,
+    blob_indexes: PersistBlobIndexRebuild,
+    value_blob_pack: PersistBlobPackRepackPlan,
+    file_blob_pack: PersistBlobPackRepackPlan,
+}
+
+impl PersistStorageMaintenancePlan {
+    pub(super) const fn new(
+        policy: PersistStorageMaintenancePolicy,
+        blob_indexes: PersistBlobIndexRebuild,
+        value_blob_pack: PersistBlobPackRepackPlan,
+        file_blob_pack: PersistBlobPackRepackPlan,
+    ) -> Self {
+        Self {
+            policy,
+            blob_indexes,
+            value_blob_pack,
+            file_blob_pack,
+        }
+    }
+
+    /// Returns the policy used to classify this plan.
+    pub const fn policy(&self) -> PersistStorageMaintenancePolicy {
+        self.policy
+    }
+
+    /// Returns blob-index rebuild diagnostics.
+    pub const fn blob_indexes(&self) -> &PersistBlobIndexRebuild {
+        &self.blob_indexes
+    }
+
+    /// Returns the value pack repack plan.
+    pub const fn value_blob_pack(&self) -> &PersistBlobPackRepackPlan {
+        &self.value_blob_pack
+    }
+
+    /// Returns the file pack repack plan.
+    pub const fn file_blob_pack(&self) -> &PersistBlobPackRepackPlan {
+        &self.file_blob_pack
+    }
+
+    /// Returns whether either blob index needs lookup repair.
+    pub fn blob_index_repair_needed(&self) -> bool {
+        self.blob_indexes.lookup_repair_needed()
+    }
+
+    /// Returns total bytes a repack would reclaim across both blob packs.
+    pub const fn repack_reclaimable_bytes(&self) -> u64 {
+        self.value_blob_pack
+            .reclaimable_bytes()
+            .saturating_add(self.file_blob_pack.reclaimable_bytes())
+    }
+
+    /// Returns whether the policy threshold selects blob-pack repacking.
+    pub const fn repack_needed(&self) -> bool {
+        let reclaimable = self.repack_reclaimable_bytes();
+        reclaimable > 0 && reclaimable >= self.policy.min_repack_reclaimable_bytes()
+    }
+
+    /// Returns the automatic maintenance action selected by this plan.
+    pub fn action(&self) -> PersistStorageMaintenanceAction {
+        if self.blob_index_repair_needed() {
+            return PersistStorageMaintenanceAction::RepairIndexes;
+        }
+        if self.repack_needed() {
+            return PersistStorageMaintenanceAction::RepackBlobs;
+        }
+        PersistStorageMaintenanceAction::Skip
+    }
+}
+
+/// The result of applying automatic persistent storage maintenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PersistStorageMaintenanceOutcome {
+    /// No maintenance was run.
+    Skipped {
+        /// The read-only plan that justified skipping maintenance.
+        plan: PersistStorageMaintenancePlan,
+    },
+    /// Blob indexes were repaired before reclaiming bytes.
+    Repaired {
+        /// The read-only plan that selected repair.
+        plan: PersistStorageMaintenancePlan,
+        /// The applied repair/compaction/tail-trim result.
+        maintenance: PersistStorageMaintenance,
+    },
+    /// Blob packs were repacked after the policy threshold was met.
+    Repacked {
+        /// The read-only plan that selected repacking.
+        plan: PersistStorageMaintenancePlan,
+        /// The repair/compaction/tail-trim sweep run before repack.
+        maintenance: PersistStorageMaintenance,
+        /// The applied repack result.
+        repack: PersistStorageRepack,
+    },
+}
+
+impl PersistStorageMaintenanceOutcome {
+    /// Returns the top-level action selected by this outcome.
+    pub const fn action(&self) -> PersistStorageMaintenanceAction {
+        match self {
+            Self::Skipped { .. } => PersistStorageMaintenanceAction::Skip,
+            Self::Repaired { .. } => PersistStorageMaintenanceAction::RepairIndexes,
+            Self::Repacked { .. } => PersistStorageMaintenanceAction::RepackBlobs,
+        }
+    }
+
+    /// Returns the plan used to select this outcome.
+    pub const fn plan(&self) -> &PersistStorageMaintenancePlan {
+        match self {
+            Self::Skipped { plan } | Self::Repaired { plan, .. } | Self::Repacked { plan, .. } => {
+                plan
+            }
+        }
+    }
+}
+
 /// Entry counts retained by persistent sidecar compaction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PersistCompaction {
