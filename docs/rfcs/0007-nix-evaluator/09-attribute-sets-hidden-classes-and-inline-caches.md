@@ -721,8 +721,12 @@ harness, never cut for scope.
       the active evaluator symbol table, cached import IR remaps file-local
       symbols into that active table, and `FlatAttrs` consumes the same symbol
       universe for symbol-id lookup while computing observable lexicographic
-      order from retained bytes. This does not claim a global/shared table,
-      lock-free reads, or cached lexicographic sort ranks ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1 current substrate, `S-10`; gate: conformance 20-21.
+      order from retained bytes. The table also exposes a process-local current
+      raw-byte lexicographic rank for each interned symbol, used by the current
+      flat/shaped/HAMT ordering precursors. This does not claim a global/shared
+      table, lock-free reads, durable ranks, or process-wide shape/HAMT table
+      integration ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1/P5
+      current substrate, `S-10`; gate: conformance 20-21.
 - [ ] Global append-only/shared `SymbolTable` with cached lexicographic sort
       ranks and integration with future process-wide shape/HAMT tables remains
       open; parallel read behavior is tracked by the next row ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1/P5, `S-10`; gate: conformance 20-21.
@@ -733,10 +737,11 @@ harness, never cut for scope.
 - [ ] `Shape` descriptor: ordered key vector, symbol → slot-offset map, cached iteration order, xxh3 key-vector fingerprint ([§4.1](#41-the-factoring)) — P5, `S-10`.
 - [x] Current shape descriptor precursor: `ratchet-value::attrs::shape`
       exposes a safe `AttrShape` descriptor with symbol-sorted key vector,
-      binary-search slot lookup, construction-order permutation, raw-byte
-      lexicographic iteration permutation, and in-process xxh3 key-vector
-      fingerprint. The descriptor alone does not install a global/shared shape
-      table, inline cache, HAMT representation, or runtime fast path.
+      binary-search slot lookup, construction-order permutation, rank-sorted
+      raw-byte lexicographic iteration permutation, shape-local inverse
+      lexicographic rank table, and in-process xxh3 key-vector fingerprint. The
+      descriptor alone does not install a global/shared shape table, inline
+      cache, HAMT representation, or runtime fast path.
 - [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
 - [x] Current shape-transition precursor: `ratchet-value::attrs::shape`
@@ -789,10 +794,10 @@ harness, never cut for scope.
 - [x] Current HAMT storage precursor: `ratchet-value::attrs::hamt`
       provides a safe immutable bitmap-indexed attr map keyed by dense
       `Symbol` ids, persistent insert/replace operations that preserve old
-      roots, checked duplicate/unknown-key handling, and a cached raw-byte
-      lexicographic ordered view. It does not change the active `//` evaluator
-      path, select from HAMT values, install the final measured CHAMP layout, or
-      affect observable attr iteration / `.drv` bytes.
+      roots, checked duplicate/unknown-key handling, and a cached rank-sorted
+      raw-byte lexicographic ordered view. It does not change the active `//`
+      evaluator path, select from HAMT values, install the final measured CHAMP
+      layout, or affect observable attr iteration / `.drv` bytes.
 - [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
 - [x] Current representation-policy precursor: `ratchet-value::attrs::repr`
       classifies static literals, dynamic constructions, and `//` merge results
@@ -808,6 +813,14 @@ harness, never cut for scope.
 ### Iteration-order compatibility (acceptance-critical)
 
 - [x] Current flat-attrset ordering substrate: `FlatAttrs` decouples internal symbol-id lookup order, construction/source order, and observable raw-byte lexicographic iteration order; `iter_lexicographic()` is used by current tree-walk consumers such as `attrNames`/`attrValues` and `derivationStrict`; unit tests cover construction order and raw `&[u8]` collation including `a\0`/`a\xff` cases ([§7.1](#71-two-distinct-orders), [§7.2](#72-the-subtlety-symbol-id-order-vs-spelling-order)) — P1, `S-10`/`S-2`; gate: flat attr/tree-walk ordering tests.
+- [x] Current cached rank precursor: `aos-nix-syntax::SymbolTable` maintains a
+      process-local current raw-byte lexicographic rank per symbol;
+      `FlatAttrs`, `AttrShape`, and `HamtAttrs` sort ordered views through that
+      rank snapshot; and `AttrShape` exposes a shape-local inverse rank table
+      over symbol-sorted slots. Ranks are not durable, not global/shared, and
+      may be recomputed when later interning changes the current table view
+      ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5
+      precursor, `S-10`; gate: symbol/flat/shape/HAMT ordering tests.
 - [ ] Full C++-Nix-identical ordering gate remains: differential/conformance harness must include adversarial non-ASCII quoted-key cases and `.drv` byte checks; future shapes/HAMT must carry cached lexicographic permutations/per-symbol sort ranks and ordered views, and `derivationStrict` must consume that cached order ([§7.1](#71-two-distinct-orders), [§7.2](#72-the-subtlety-symbol-id-order-vs-spelling-order), [§7.3](#73-implementation-cached-sort-permutation-on-the-shape), [§7.4](#74-derivationstrict-is-the-acceptance-critical-consumer)) — P1; gate: conformance 20-21 + differential `.drv` harness (research-grade until confirmed).
 - [ ] Cached lexicographic permutation per shape + per-symbol sort rank (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
 - [ ] Ordered view for `Hamt` instances (collect keys, sort by cached rank, memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.

@@ -3,10 +3,11 @@
 //! A shape captures the key layout shared by attrset instances: the internal
 //! symbol-sorted key vector used for binary-search lookup, the construction
 //! order permutation, the observable raw-byte lexicographic iteration
-//! permutation, and an in-process xxh3 fingerprint of the key vector. The
-//! process-local [`ShapeTable`] interns descriptors and caches transition edges
-//! for future runtime integration. It does not install a global/shared shape
-//! table, inline cache, HAMT representation, or runtime fast path.
+//! permutation, the inverse lexicographic rank per symbol slot, and an
+//! in-process xxh3 fingerprint of the key vector. The process-local
+//! [`ShapeTable`] interns descriptors and caches transition edges for future
+//! runtime integration. It does not install a global/shared shape table, inline
+//! cache, HAMT representation, or runtime fast path.
 
 use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
@@ -63,6 +64,7 @@ pub struct AttrShape {
     keys: Box<[Symbol]>,
     source_order: Box<[u32]>,
     iteration_order: Box<[u32]>,
+    lexicographic_rank_by_symbol_slot: Box<[u32]>,
     fingerprint: ShapeFingerprint,
 }
 
@@ -73,6 +75,7 @@ impl AttrShape {
             keys: Box::new([]),
             source_order: Box::new([]),
             iteration_order: Box::new([]),
+            lexicographic_rank_by_symbol_slot: Box::new([]),
             fingerprint: fingerprint_keys(&[]),
         }
     }
@@ -81,7 +84,7 @@ impl AttrShape {
     ///
     /// The descriptor stores keys sorted by symbol id for lookup and computes
     /// cached permutations for construction-order and raw-byte lexicographic
-    /// iteration.
+    /// iteration plus the inverse rank table over symbol-sorted slots.
     ///
     /// # Errors
     ///
@@ -120,15 +123,15 @@ impl AttrShape {
             source_order.push(slot as u32);
         }
 
-        let mut sort_names = Vec::new();
-        sort_names
+        let mut sort_ranks = Vec::new();
+        sort_ranks
             .try_reserve_exact(len)
             .map_err(|_| ShapeError::AllocationFailed { keys: len })?;
         for key in &sorted_keys {
-            let bytes = symbols
-                .resolve(*key)
+            let rank = symbols
+                .lexicographic_rank(*key)
                 .ok_or(ShapeError::UnknownSymbol { key: *key })?;
-            sort_names.push(bytes);
+            sort_ranks.push(rank);
         }
 
         let mut iteration_order = Vec::new();
@@ -141,16 +144,26 @@ impl AttrShape {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            sort_names[left]
-                .cmp(sort_names[right])
+            sort_ranks[left]
+                .cmp(&sort_ranks[right])
                 .then_with(|| sorted_keys[left].cmp(&sorted_keys[right]))
         });
+
+        let mut lexicographic_rank_by_symbol_slot = Vec::new();
+        lexicographic_rank_by_symbol_slot
+            .try_reserve_exact(len)
+            .map_err(|_| ShapeError::AllocationFailed { keys: len })?;
+        lexicographic_rank_by_symbol_slot.resize(len, 0);
+        for (rank, slot) in iteration_order.iter().copied().enumerate() {
+            lexicographic_rank_by_symbol_slot[slot as usize] = rank as u32;
+        }
 
         let fingerprint = fingerprint_keys(&sorted_keys);
         Ok(Self {
             keys: sorted_keys.into_boxed_slice(),
             source_order: source_order.into_boxed_slice(),
             iteration_order: iteration_order.into_boxed_slice(),
+            lexicographic_rank_by_symbol_slot: lexicographic_rank_by_symbol_slot.into_boxed_slice(),
             fingerprint,
         })
     }
@@ -180,6 +193,23 @@ impl AttrShape {
         &self.iteration_order
     }
 
+    /// Returns each symbol-sorted slot's rank in raw-byte lexicographic order.
+    ///
+    /// `lexicographic_rank_by_symbol_slot()[slot]` returns the position that
+    /// `slot` occupies in [`Self::iteration_order`]. This table is shape-local:
+    /// it is not a process-global symbol rank and is not durable across
+    /// evaluator processes.
+    pub fn lexicographic_rank_by_symbol_slot(&self) -> &[u32] {
+        &self.lexicographic_rank_by_symbol_slot
+    }
+
+    /// Returns a symbol-sorted slot's shape-local lexicographic rank.
+    pub fn lexicographic_rank_for_symbol_slot(&self, slot: u32) -> Option<u32> {
+        self.lexicographic_rank_by_symbol_slot
+            .get(slot as usize)
+            .copied()
+    }
+
     /// Returns the in-process fingerprint for this shape's key vector.
     pub const fn fingerprint(&self) -> ShapeFingerprint {
         self.fingerprint
@@ -207,6 +237,7 @@ impl AttrShape {
         self.keys_by_symbol() == other.keys_by_symbol()
             && self.source_order() == other.source_order()
             && self.iteration_order() == other.iteration_order()
+            && self.lexicographic_rank_by_symbol_slot() == other.lexicographic_rank_by_symbol_slot()
             && self.fingerprint() == other.fingerprint()
     }
 
@@ -747,6 +778,8 @@ mod tests {
         assert_eq!(shape.keys_by_symbol(), &[]);
         assert_eq!(shape.source_order(), &[]);
         assert_eq!(shape.iteration_order(), &[]);
+        assert_eq!(shape.lexicographic_rank_by_symbol_slot(), &[]);
+        assert_eq!(shape.lexicographic_rank_for_symbol_slot(0), None);
         assert_eq!(shape.fingerprint(), other.fingerprint());
     }
 
@@ -796,6 +829,10 @@ mod tests {
             ]
         );
         assert_eq!(shape.iteration_order(), &[2, 3, 1, 0]);
+        assert_eq!(shape.lexicographic_rank_by_symbol_slot(), &[3, 2, 0, 1]);
+        assert_eq!(shape.lexicographic_rank_for_symbol_slot(0), Some(3));
+        assert_eq!(shape.lexicographic_rank_for_symbol_slot(2), Some(0));
+        assert_eq!(shape.lexicographic_rank_for_symbol_slot(4), None);
     }
 
     #[test]

@@ -977,10 +977,11 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 - [x] Trivia emission (whitespace/comments) for tooling, skipped by the parser's `bump()`; trivia-suppressing pure-eval mode left as a single retained-trivia lexer for now (§3.2, §12 Q3) — **P1** baseline, `M-16` (measure-gated; single lexer is the default).
 - [x] Symbol interner at the lexer/parser seam: file-local or explicitly
       threaded append-only `SymbolTable`, dense `u32` `Symbol`, retained byte
-      spelling, and deterministic file-local renumbering for cache serialization.
-      The global/shared process-wide interner and cached sort ranks remain
+      spelling, process-local current lexicographic rank snapshots, and
+      deterministic file-local renumbering for cache serialization. The
+      global/shared process-wide interner and durable/shared rank table remain
       tracked in [09](09-attribute-sets-hidden-classes-and-inline-caches.md)
-      (§3.4) — **P1**, `S-11`.
+      (§3.4) — **P1/P5 precursor**, `S-11`/`S-10`.
 
 ### Parser (§4)
 

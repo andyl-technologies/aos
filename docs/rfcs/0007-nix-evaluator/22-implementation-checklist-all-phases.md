@@ -3409,8 +3409,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       ([09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current `attrs/shape.rs` precursor: `ratchet-value` exposes the safe
       `AttrShape` descriptor with symbol-sorted key vector, binary-search slot
-      lookup, construction-order permutation, raw-byte lexicographic iteration
-      permutation, and an in-process xxh3 key-vector fingerprint. Global/shared
+      lookup, construction-order permutation, rank-sorted raw-byte
+      lexicographic iteration permutation, shape-local inverse lexicographic
+      rank table, and an in-process xxh3 key-vector fingerprint. Global/shared
       shape interning, PIC integration, HAMT dispatch, and runtime fast paths
       remain open.
 - [x] Current shape-transition precursor: `AttrShape` can locally plan key
@@ -3437,9 +3438,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
 - [x] Current `attrs/hamt.rs` precursor: `ratchet-value` exposes a safe
       immutable bitmap-indexed attr map keyed by dense `Symbol` ids, with
       persistent insert/replace, checked duplicate/unknown-key handling, and a
-      cached raw-byte lexicographic ordered view. The active `//` evaluator
-      path, HAMT-valued selection, final measured CHAMP layout, and observable
-      `.drv` effects remain open.
+      cached rank-sorted raw-byte lexicographic ordered view. The active `//`
+      evaluator path, HAMT-valued selection, final measured CHAMP layout, and
+      observable `.drv` effects remain open.
 - [x] Current `attrs/repr.rs` precursor: `ratchet-value` exposes a safe
       `Flat`/`Hamt` representation-policy classifier for static literals,
       dynamic constructions, and `//` merge results. Static literals are
@@ -3449,6 +3450,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `FlatAttrs` changes, and observable order changes remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
+- [x] Current cached ordering-rank precursor: `aos-nix-syntax::SymbolTable`
+      maintains process-local current raw-byte lexicographic ranks; current
+      flat attrsets, shapes, and HAMTs sort ordered views through that rank
+      snapshot; and shapes expose a shape-local inverse rank table over
+      symbol-sorted slots. Global/shared symbol ranks, runtime shape/HAMT use,
+      `derivationStrict` shape-order consumption, and full order-parity harness
+      proof remain open.
 
 **Conformance (hold parity).**
 

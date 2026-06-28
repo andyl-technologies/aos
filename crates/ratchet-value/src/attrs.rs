@@ -4,7 +4,9 @@
 //! sorted by interned [`Symbol`] id for binary-search selection, while separate
 //! source-order and raw-byte lexicographic permutations drive primop traversal
 //! and observable iteration order for `attrNames`, `attrValues`, and
-//! `derivationStrict`.
+//! `derivationStrict`. Lexicographic permutations are sorted through the
+//! [`SymbolTable`]'s cached rank view so construction does not repeatedly
+//! compare raw byte strings after interning.
 //!
 //! A [`FlatAttrs`] value stores symbols, not names, and does not retain the
 //! [`SymbolTable`] used to validate them. Callers must construct and query an
@@ -135,15 +137,15 @@ impl FlatAttrs {
             source_order.push(slot as u32);
         }
 
-        let mut sort_names = Vec::new();
-        sort_names
+        let mut sort_ranks = Vec::new();
+        sort_ranks
             .try_reserve_exact(len)
             .map_err(|_| AttrError::AllocationFailed { entries: len })?;
         for entry in &entries {
-            let bytes = symbols
-                .resolve(entry.key)
+            let rank = symbols
+                .lexicographic_rank(entry.key)
                 .ok_or(AttrError::UnknownSymbol { key: entry.key })?;
-            sort_names.push(bytes);
+            sort_ranks.push(rank);
         }
 
         let mut iteration_order = Vec::new();
@@ -156,8 +158,8 @@ impl FlatAttrs {
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
             let right = *right as usize;
-            sort_names[left]
-                .cmp(sort_names[right])
+            sort_ranks[left]
+                .cmp(&sort_ranks[right])
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 
@@ -546,5 +548,53 @@ mod tests {
             Some(&b"c"[..])
         );
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn lexicographic_order_uses_current_symbol_rank_snapshot() {
+        let mut symbols = SymbolTable::new();
+        let b = symbols.intern(b"b").expect("b interns");
+        let a_ff = symbols.intern(b"a\xff").expect("a-ff interns");
+        let base = FlatAttrs::new(
+            vec![
+                AttrEntry::new(b, Value::int(1)),
+                AttrEntry::new(a_ff, Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("base attrset builds");
+
+        let a = symbols.intern(b"a").expect("a interns later");
+        let a_nul = symbols.intern(b"a\x00").expect("a-nul interns later");
+        let later = FlatAttrs::new(
+            vec![
+                AttrEntry::new(b, Value::int(1)),
+                AttrEntry::new(a_ff, Value::int(2)),
+                AttrEntry::new(a, Value::int(3)),
+                AttrEntry::new(a_nul, Value::int(4)),
+            ],
+            &symbols,
+        )
+        .expect("later attrset builds");
+
+        let base_names: Vec<&[u8]> = base
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+            .collect();
+        let later_names: Vec<&[u8]> = later
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+            .collect();
+
+        assert_eq!(base_names, vec![b"a\xff".as_slice(), b"b".as_slice()]);
+        assert_eq!(
+            later_names,
+            vec![
+                b"a".as_slice(),
+                b"a\x00".as_slice(),
+                b"a\xff".as_slice(),
+                b"b".as_slice(),
+            ]
+        );
     }
 }

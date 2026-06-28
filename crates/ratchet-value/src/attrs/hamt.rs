@@ -4,10 +4,11 @@
 //! large / override-heavy `//` path: immutable bitmap-indexed nodes keyed by
 //! dense [`Symbol`] ids, entry overwrites that preserve old roots by structural
 //! sharing, and a cached raw-byte lexicographic key view for observable Nix
-//! iteration. The active tree-walk evaluator still stores attrsets as
-//! [`crate::attrs::FlatAttrs`]; this module does not change `//`, selection, or
-//! `.drv` bytes until a later representation wrapper wires it into runtime
-//! attr values.
+//! iteration. The ordered view is sorted through the [`SymbolTable`]'s cached
+//! rank view, then memoized on the immutable HAMT value. The active tree-walk
+//! evaluator still stores attrsets as [`crate::attrs::FlatAttrs`]; this module
+//! does not change `//`, selection, or `.drv` bytes until a later representation
+//! wrapper wires it into runtime attr values.
 
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -533,17 +534,17 @@ fn lexicographic_order(
     keys_by_symbol: &[Symbol],
     symbols: &SymbolTable,
 ) -> Result<Box<[Symbol]>, HamtError> {
-    let mut sort_names = Vec::new();
-    sort_names
+    let mut sort_ranks = Vec::new();
+    sort_ranks
         .try_reserve_exact(keys_by_symbol.len())
         .map_err(|_| HamtError::AllocationFailed {
             entries: keys_by_symbol.len(),
         })?;
     for key in keys_by_symbol {
-        let bytes = symbols
-            .resolve(*key)
+        let rank = symbols
+            .lexicographic_rank(*key)
             .ok_or(HamtError::UnknownSymbol { key: *key })?;
-        sort_names.push(bytes);
+        sort_ranks.push(rank);
     }
 
     let mut slots = Vec::new();
@@ -556,8 +557,8 @@ fn lexicographic_order(
         slots.push(slot);
     }
     slots.sort_unstable_by(|left, right| {
-        sort_names[*left]
-            .cmp(sort_names[*right])
+        sort_ranks[*left]
+            .cmp(&sort_ranks[*right])
             .then_with(|| keys_by_symbol[*left].cmp(&keys_by_symbol[*right]))
     });
 
@@ -827,6 +828,50 @@ mod tests {
         assert_eq!(int_value(&updated, ids[0]), 3);
         assert_eq!(updated.keys_by_symbol(), base.keys_by_symbol());
         assert_eq!(updated.iteration_order(), base.iteration_order());
+    }
+
+    #[test]
+    fn cached_lexicographic_view_uses_current_symbol_rank_snapshot() {
+        let mut symbols = SymbolTable::new();
+        let b = symbols.intern(b"b").expect("b interns");
+        let a_ff = symbols.intern(b"a\xff").expect("a-ff interns");
+        let base = HamtAttrs::new(
+            vec![
+                AttrEntry::new(b, Value::int(1)),
+                AttrEntry::new(a_ff, Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("base HAMT builds");
+
+        let a = symbols.intern(b"a").expect("a interns later");
+        let a_nul = symbols.intern(b"a\x00").expect("a-nul interns later");
+        let (with_a, _) = base
+            .insert(AttrEntry::new(a, Value::int(3)), &symbols)
+            .expect("first insert succeeds");
+        let (updated, _) = with_a
+            .insert(AttrEntry::new(a_nul, Value::int(4)), &symbols)
+            .expect("second insert succeeds");
+
+        let base_names: Vec<&[u8]> = base
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+            .collect();
+        let updated_names: Vec<&[u8]> = updated
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+            .collect();
+
+        assert_eq!(base_names, vec![b"a\xff".as_slice(), b"b".as_slice()]);
+        assert_eq!(
+            updated_names,
+            vec![
+                b"a".as_slice(),
+                b"a\x00".as_slice(),
+                b"a\xff".as_slice(),
+                b"b".as_slice(),
+            ]
+        );
     }
 
     #[test]

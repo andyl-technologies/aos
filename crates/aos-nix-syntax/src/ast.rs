@@ -49,7 +49,7 @@ impl Symbol {
     }
 }
 
-/// A dense append-only symbol table.
+/// A dense append-only symbol table with a cached lexicographic rank view.
 ///
 /// Parsers can start from an empty table for isolated file-local ids or thread
 /// an existing table across files for process-wide ids. Cache serialization
@@ -58,6 +58,7 @@ impl Symbol {
 pub struct SymbolTable {
     by_text: BTreeMap<Vec<u8>, Symbol>,
     text: Vec<Vec<u8>>,
+    lexicographic_rank_by_symbol: Vec<u32>,
 }
 
 impl SymbolTable {
@@ -66,6 +67,7 @@ impl SymbolTable {
         Self {
             by_text: BTreeMap::new(),
             text: Vec::new(),
+            lexicographic_rank_by_symbol: Vec::new(),
         }
     }
 
@@ -96,6 +98,7 @@ impl SymbolTable {
         let symbol = Symbol::new(raw);
         let owned = bytes.to_vec();
         self.text.push(owned.clone());
+        self.rebuild_lexicographic_ranks();
         self.by_text.insert(owned, symbol);
         Ok(symbol)
     }
@@ -105,9 +108,34 @@ impl SymbolTable {
         self.text.get(symbol.as_u32() as usize).map(Vec::as_slice)
     }
 
+    /// Returns this symbol's raw-byte lexicographic rank in the current table.
+    ///
+    /// Ranks are process-local and may be renumbered when later interning adds
+    /// a byte string that sorts before existing symbols. They are not durable
+    /// cache keys; use them only to compare symbols that are known to belong to
+    /// this table snapshot.
+    pub fn lexicographic_rank(&self, symbol: Symbol) -> Option<u32> {
+        self.lexicographic_rank_by_symbol
+            .get(symbol.as_u32() as usize)
+            .copied()
+    }
+
     /// Returns all symbol byte strings in dense-id order.
     pub fn symbols(&self) -> &[Vec<u8>] {
         &self.text
+    }
+
+    fn rebuild_lexicographic_ranks(&mut self) {
+        let mut order: Vec<usize> = (0..self.text.len()).collect();
+        order.sort_unstable_by(|left, right| {
+            self.text[*left]
+                .cmp(&self.text[*right])
+                .then_with(|| left.cmp(right))
+        });
+        self.lexicographic_rank_by_symbol.resize(self.text.len(), 0);
+        for (rank, symbol_index) in order.into_iter().enumerate() {
+            self.lexicographic_rank_by_symbol[symbol_index] = rank as u32;
+        }
     }
 }
 
@@ -643,6 +671,25 @@ mod tests {
         assert_eq!(a, a_again);
         assert_eq!(symbols.resolve(a), Some(b"a".as_slice()));
         assert_eq!(symbols.resolve(b), Some(b"b".as_slice()));
+    }
+
+    #[test]
+    fn symbol_table_tracks_current_lexicographic_ranks() {
+        let mut symbols = SymbolTable::new();
+        let b = symbols.intern(b"b").expect("b interns");
+        let a_ff = symbols.intern(b"a\xff").expect("a-ff interns");
+        let a = symbols.intern(b"a").expect("a interns");
+
+        assert_eq!(symbols.lexicographic_rank(a), Some(0));
+        assert_eq!(symbols.lexicographic_rank(a_ff), Some(1));
+        assert_eq!(symbols.lexicographic_rank(b), Some(2));
+
+        let a_nul = symbols.intern(b"a\x00").expect("a-nul interns");
+        assert_eq!(symbols.lexicographic_rank(a), Some(0));
+        assert_eq!(symbols.lexicographic_rank(a_nul), Some(1));
+        assert_eq!(symbols.lexicographic_rank(a_ff), Some(2));
+        assert_eq!(symbols.lexicographic_rank(b), Some(3));
+        assert_eq!(symbols.lexicographic_rank(Symbol::new(99)), None);
     }
 
     #[test]
