@@ -80,6 +80,10 @@ impl TreeWalk {
         self.stats.thunks_allocated = self.stats.thunks_allocated.saturating_add(1);
     }
 
+    pub(super) fn increment_thunks_elided(&mut self) {
+        self.stats.thunks_elided = self.stats.thunks_elided.saturating_add(1);
+    }
+
     pub(super) fn increment_thunks_forced(&mut self) {
         self.stats.thunks_forced = self.stats.thunks_forced.saturating_add(1);
     }

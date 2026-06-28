@@ -83,6 +83,173 @@ fn strict_operand_evaluation_forces_direct_thunk_alloc_results() {
     );
 }
 
+fn first_thunk_alloc_id(ir: &Ir) -> IrId {
+    ir.arena
+        .nodes()
+        .iter()
+        .position(|node| node.kind == IrKind::ThunkAlloc)
+        .map(|index| IrId::new(u32::try_from(index).expect("test IR node id fits in u32")))
+        .expect("test IR contains a thunk allocation")
+}
+
+fn first_inherit_select_thunk_alloc_id(ir: &Ir) -> IrId {
+    ir.arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .find_map(|(index, node)| {
+            let IrData::Node(body) = node.data else {
+                return None;
+            };
+            let body = ir.arena.node(body)?;
+            (node.kind == IrKind::ThunkAlloc && body.kind == IrKind::Select)
+                .then(|| IrId::new(u32::try_from(index).expect("test IR node id fits in u32")))
+        })
+        .expect("test IR contains an inherited select thunk")
+}
+
+fn mark_all_thunk_allocs_strict(ir: &mut Ir) {
+    let thunk_ids: Vec<IrId> = ir
+        .arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            (node.kind == IrKind::ThunkAlloc)
+                .then(|| IrId::new(u32::try_from(index).expect("test IR node id fits in u32")))
+        })
+        .collect();
+    for id in thunk_ids {
+        *ir.facts.get_mut(id).expect("thunk fact exists") = crate::compile::ExprFacts {
+            strictness: crate::compile::Strictness::Strict,
+            cardinality: crate::compile::Cardinality::Many,
+            escape: crate::compile::Escape::Escapes,
+        };
+    }
+}
+
+#[test]
+fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
+    let ir = lower("[ (1 + 6) ]");
+
+    let outcome = eval_whnf_owned(&ir).expect("conservative thunk alloc evaluates");
+    let element = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    assert_eq!(element.tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+    let thunk = outcome
+        .heap()
+        .get_thunk(element)
+        .expect("element is a heap-owned thunk");
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn strict_thunk_alloc_facts_evaluate_eagerly() {
+    for (escape, label) in [
+        (crate::compile::Escape::Escapes, "eager"),
+        (crate::compile::Escape::NoEscape, "scalar"),
+    ] {
+        let mut ir = lower("[ (1 + 6) ]");
+        let thunk_alloc = first_thunk_alloc_id(&ir);
+        *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
+            strictness: crate::compile::Strictness::Strict,
+            cardinality: crate::compile::Cardinality::Many,
+            escape,
+        };
+
+        let outcome = eval_whnf_owned(&ir).expect("strict thunk alloc evaluates");
+        let element = {
+            let list = outcome
+                .heap()
+                .get_list(outcome.value())
+                .expect("root is a heap-owned list");
+            list.get(0).expect("element exists")
+        };
+
+        assert_eq!(element.as_int(), Ok(7), "{label}");
+        assert_eq!(outcome.stats().thunks_allocated(), 0, "{label}");
+        assert_eq!(outcome.stats().thunks_elided(), 1, "{label}");
+    }
+}
+
+#[test]
+fn strict_attr_binding_facts_do_not_preempt_dynamic_attr_name_errors() {
+    let mut ir = lower(r#"({ a = builtins.throw "value"; ${builtins.throw "key"} = 1; }).a"#);
+    mark_all_thunk_allocs_strict(&mut ir);
+
+    let error = eval_whnf_owned(&ir).expect_err("dynamic key error wins");
+
+    let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+        panic!("expected thrown dynamic key error");
+    };
+    assert_eq!(message, b"key");
+}
+
+#[test]
+fn strict_thunk_alloc_facts_do_not_elide_during_let_frame_initialization() {
+    let mut ir = lower("let x = y; y = 7; in x");
+    mark_all_thunk_allocs_strict(&mut ir);
+
+    let outcome = eval_whnf_owned(&ir).expect("forward let reference evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+}
+
+#[test]
+fn strict_thunk_alloc_facts_do_not_elide_during_recursive_attr_frame_initialization() {
+    let mut ir = lower("(rec { a = b; b = 7; }).a");
+    mark_all_thunk_allocs_strict(&mut ir);
+
+    let outcome = eval_whnf_owned(&ir).expect("forward rec attr reference evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+}
+
+#[test]
+fn strict_thunk_alloc_facts_do_not_elide_during_formal_default_initialization() {
+    let mut ir = lower("({ a ? b, b }: a) { b = 2; }");
+    mark_all_thunk_allocs_strict(&mut ir);
+
+    let outcome = eval_whnf_owned(&ir).expect("forward formal default evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(2));
+}
+
+#[test]
+fn strict_inherited_select_binding_facts_stay_lazy_during_attrset_assembly() {
+    let mut ir = lower("{ inherit ({ a = 1 + 6; }) a; }");
+    let a = symbol_for(&ir, b"a");
+    let inherited_select = first_inherit_select_thunk_alloc_id(&ir);
+    *ir.facts
+        .get_mut(inherited_select)
+        .expect("inherited select fact exists") = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Strict,
+        cardinality: crate::compile::Cardinality::Many,
+        escape: crate::compile::Escape::Escapes,
+    };
+
+    let outcome = eval_whnf_owned(&ir).expect("strict inherited select evaluates");
+    let attr_value = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root is a heap-owned attrset");
+        attrs.get(a).expect("a exists")
+    };
+
+    assert_eq!(attr_value.tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+}
+
 #[test]
 fn forcing_errors_reset_thunks_to_suspended() {
     let ir = lower("{ a = 1 / 0; }");

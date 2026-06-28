@@ -746,26 +746,33 @@ impl TreeWalk {
         if let Some(frame_values) = &frame_values {
             self.env.push(Rc::clone(frame_values));
         }
+        self.begin_order_sensitive_binding_assembly();
         let result = (|| {
             let mut static_slots = BTreeMap::new();
             if let Some(frame_values) = &frame_values {
-                let mut slot = 0u32;
-                for binding_index in binding_range.clone() {
-                    let binding = self.current_ir().bindings[binding_index];
-                    if let IrAttrPathSegment::Static(symbol) = binding.key {
-                        let value = self.eval_attr_binding_value(
-                            id,
-                            node.span,
-                            binding.value,
-                            &mut inherit_source_thunks,
-                        )?;
-                        frame_values.set(slot, value).map_err(|source| {
-                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
-                        })?;
-                        static_slots.insert(symbol, slot);
-                        slot += 1;
+                self.begin_order_sensitive_binding_assembly();
+                let init_result = (|| {
+                    let mut slot = 0u32;
+                    for binding_index in binding_range.clone() {
+                        let binding = self.current_ir().bindings[binding_index];
+                        if let IrAttrPathSegment::Static(symbol) = binding.key {
+                            let value = self.eval_attr_binding_value(
+                                id,
+                                node.span,
+                                binding.value,
+                                &mut inherit_source_thunks,
+                            )?;
+                            frame_values.set(slot, value).map_err(|source| {
+                                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                            })?;
+                            static_slots.insert(symbol, slot);
+                            slot += 1;
+                        }
                     }
-                }
+                    Ok(())
+                })();
+                self.end_order_sensitive_binding_assembly();
+                init_result?;
             }
 
             if let Some(overrides_symbol) = active_overrides_symbol {
@@ -880,6 +887,7 @@ impl TreeWalk {
             }
             Ok(entries)
         })();
+        self.end_order_sensitive_binding_assembly();
         if recursive {
             let _ = self.env.pop();
         }

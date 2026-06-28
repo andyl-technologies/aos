@@ -800,7 +800,7 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 
 ### Fact infrastructure (§9)
 
-- [ ] `ExprFacts { strictness, cardinality, escape }` per-IR-node record, all fields defaulting to the conservative choice (`Unknown`/`Many`/`Escapes`) (§9) — **P4**, `S-9`; annotations over the one IR ([25](25-intermediate-representation.md)), consumed by the oracle before any JIT exists.
+- [x] `ExprFacts { strictness, cardinality, escape }` per-IR-node record, all fields defaulting to the conservative choice (`Unknown`/`Many`/`Escapes`) (§9) — **P4**, `S-9`; annotations over the one IR ([25](25-intermediate-representation.md)), consumed by the oracle before any JIT exists.
 - [x] Current fact-table precursor: `ratchet-core::ir` now exposes
       `ExprFacts`, `Strictness`, `Cardinality`, `Escape`, and an `IrFacts`
       table attached to every `Ir`; lowering, parse-cache hydration, and
@@ -811,7 +811,7 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       sidecar that overlays facts when present and fingerprint-matched, and
       falls back to conservative facts when absent, malformed, or stale. This is
       only the default-safe annotation substrate; analysis passes, IR-hash
-      content-addressed fact persistence, and THUNK/EAGER/SCALAR consumers
+      content-addressed fact persistence, and JIT THUNK/EAGER/SCALAR consumers
       remain open.
 - [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
 
@@ -827,8 +827,20 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       `ExprFacts::thunk_sharing` similarly keeps normal update/blackhole
       machinery unless cardinality and frame-locality proofs license a
       single-entry thunk, or a non-contradicted absence proof licenses
-      omission. This only records the policy API; the oracle and future JIT
-      consumers remain open.
+      omission. This records the policy API; future JIT consumers remain open.
+- [x] Current tree-walk lowering consumer: the oracle's `ThunkAlloc` path reads
+      each node's `ExprFacts::binding_lowering`, keeps conservative/unknown
+      facts lazy, evaluates proven-strict `Eager` and `Scalar` facts directly to
+      WHNF outside order-sensitive binding assembly, and records elisions in
+      `EvalStats::thunks_elided`. During `let`, attrset, and formal-set default
+      population, even strict facts keep thunks so forward references,
+      dynamic-key errors, and duplicate-key validation cannot observe reordered
+      value evaluation. Scalar replacement is intentionally represented as eager
+      WHNF in the tree-walk oracle until the optimized tiers have stack/register
+      storage. Covered by tests proving conservative facts still allocate
+      suspended thunks, strict facts elide safe list-element thunks, inherited
+      select bindings stay lazy during attrset assembly, and frame-initialization
+      facts stay lazy.
 
 ### Cardinality / usage analysis 0/1/many (§5)
 

@@ -589,7 +589,31 @@ impl TreeWalk {
         let IrData::Node(body) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
-        self.alloc_thunk_for_node(id, body, node.span)
+        match self.binding_lowering_for_thunk_alloc(id) {
+            BindingLowering::Thunk => self.alloc_thunk_for_node(id, body, node.span),
+            BindingLowering::Eager | BindingLowering::Scalar => {
+                self.increment_thunks_elided();
+                self.eval_node(body)
+            }
+        }
+    }
+
+    pub(super) fn binding_lowering_for_thunk_alloc(&self, id: IrId) -> BindingLowering {
+        if self.order_sensitive_binding_depth > 0 {
+            return BindingLowering::Thunk;
+        }
+        self.current_ir()
+            .node_facts(id)
+            .map(|facts| facts.binding_lowering())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn begin_order_sensitive_binding_assembly(&mut self) {
+        self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_add(1);
+    }
+
+    pub(super) fn end_order_sensitive_binding_assembly(&mut self) {
+        self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_sub(1);
     }
 
     pub(super) fn alloc_thunk_for_node(

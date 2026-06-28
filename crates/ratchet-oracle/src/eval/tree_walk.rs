@@ -62,9 +62,9 @@ use crate::cache::{
     PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
-    FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
-    IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
-    ScopeResolver, resolve,
+    BindingLowering, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
+    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode,
+    IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
@@ -751,6 +751,7 @@ pub struct TreeWalk {
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
+    order_sensitive_binding_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers

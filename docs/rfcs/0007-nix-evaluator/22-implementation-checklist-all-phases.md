@@ -3305,7 +3305,7 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       facts when the sidecar is absent, malformed, or stale.
       This does not close `ir/annotate.rs`: analysis passes, IR-hash
       content-addressed persistent fact artifacts, strictness FV sets, and
-      oracle lowering consumers remain open.
+      JIT lowering consumers remain open.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
@@ -3315,8 +3315,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       proven strictness and proven no-escape. `ExprFacts::thunk_sharing` keeps
       normal update/blackhole machinery unless cardinality plus no-escape
       proofs license single-entry thunks, or a non-contradicted absence proof
-      licenses omission. This is the policy API only; oracle/JIT consumers and
-      the analysis passes remain open.
+      licenses omission. This is the policy API; JIT consumers and the analysis
+      passes remain open.
+- [x] Current tree-walk lowering consumer: `eval_thunk_alloc` now consumes
+      `ExprFacts::binding_lowering` for thunk-allocation nodes. Conservative
+      facts still allocate suspended thunks; `Eager` and `Scalar` facts evaluate
+      the body directly to WHNF and increment `thunks_elided` except while
+      `let`, attrset, or formal-set default bindings are being assembled. Those
+      order-sensitive paths keep all binding thunks lazy to avoid reading
+      uninitialized forward-reference slots or reordering value errors ahead of
+      dynamic-key and duplicate-key validation. The tree-walk oracle treats
+      `Scalar` as eager WHNF until optimized tiers add non-heap storage. Gate:
+      `attrs_2` tests cover conservative thunk preservation, safe strict/eager
+      fact elision, inherited-select assembly preservation, dynamic-key error
+      ordering, and frame-initialization preservation.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the
       `eval_expr` flip.
 

@@ -34,7 +34,8 @@ impl TreeWalk {
             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
         })?;
         self.env.push(Rc::clone(&frame_values));
-        let result = (|| {
+        self.begin_order_sensitive_binding_assembly();
+        let init_result = (|| {
             let mut inherit_source_thunks = BTreeMap::new();
             for (slot, binding_index) in binding_range.enumerate() {
                 let binding = self.current_ir().bindings[binding_index];
@@ -54,8 +55,10 @@ impl TreeWalk {
                     TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
                 })?;
             }
-            self.eval_node(body)
+            Ok(())
         })();
+        self.end_order_sensitive_binding_assembly();
+        let result = init_result.and_then(|()| self.eval_node(body));
         let _ = self.env.pop();
         result
     }

@@ -146,6 +146,7 @@ impl TreeWalk {
             text_store: BTreeMap::new(),
             ifd_realizer: None,
             call_depth: 0,
+            order_sensitive_binding_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
             lazy_foldl_initial_thunks: BTreeSet::new(),
         }
@@ -241,7 +242,7 @@ impl TreeWalk {
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
     /// string/list comparison, direct strict unary primops,
-    /// scalar/string/function/list/attrset equality, and conservative thunk
+    /// scalar/string/function/list/attrset equality, and fact-guided thunk
     /// allocation nodes. Non-expression IR helper nodes return
     /// [`TreeWalkErrorKind::InvalidNodeKind`] when they are evaluated directly.
     ///

@@ -247,7 +247,8 @@ impl TreeWalk {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
                 })?;
-                eval.bind_lambda_argument(
+                eval.begin_order_sensitive_binding_assembly();
+                let bind_result = eval.bind_lambda_argument(
                     id,
                     lambda.pattern(),
                     slot_count,
@@ -256,7 +257,9 @@ impl TreeWalk {
                     argument_span,
                     argument,
                     span,
-                )?;
+                );
+                eval.end_order_sensitive_binding_assembly();
+                bind_result?;
                 eval.eval_node(lambda.body())
             })();
             eval.env = saved_env;
