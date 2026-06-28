@@ -21,6 +21,7 @@ use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
 
 pub mod hamt;
+pub mod order;
 pub mod pic;
 pub mod repr;
 pub mod select;

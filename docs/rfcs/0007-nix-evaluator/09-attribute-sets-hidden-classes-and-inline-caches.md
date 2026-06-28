@@ -884,6 +884,13 @@ harness, never cut for scope.
       ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5
       precursor, `S-10`; gate: symbol/flat/shape/HAMT ordering tests.
 - [ ] Full C++-Nix-identical ordering gate remains: differential/conformance harness must include adversarial non-ASCII quoted-key cases and `.drv` byte checks; future shapes/HAMT must carry cached lexicographic permutations/per-symbol sort ranks and ordered views, and `derivationStrict` must consume that cached order ([§7.1](#71-two-distinct-orders), [§7.2](#72-the-subtlety-symbol-id-order-vs-spelling-order), [§7.3](#73-implementation-cached-sort-permutation-on-the-shape), [§7.4](#74-derivationstrict-is-the-acceptance-critical-consumer)) — P1; gate: conformance 20-21 + differential `.drv` harness (research-grade until confirmed).
+- [x] Current in-process order-parity precursor: `ratchet-value::attrs::order`
+      collects and validates observable raw-byte lexicographic key vectors for
+      `FlatAttrs`, `HamtAttrs`, `ShapedAttrs`, and `AttrSetReprValue`, compares
+      representations against each other under the same symbol universe, rejects
+      unresolved symbols, and tests adversarial symbol allocation order (`b`,
+      `a\xff`, `a`, `a\0`). This does not call C++ Nix, drive
+      `derivationStrict`, or prove `.drv` byte parity.
 - [ ] Cached lexicographic permutation per shape + per-symbol sort rank (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
 - [ ] Ordered view for `Hamt` instances (collect keys, sort by cached rank, memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
 - [ ] `derivationStrict` consumes the cached order; every shape's `iteration_order` cross-checked against sorted spelling on the oracle ([§7.4](#74-derivationstrict-is-the-acceptance-critical-consumer)) — P1, `S-13`; gate: differential `.drv` harness.

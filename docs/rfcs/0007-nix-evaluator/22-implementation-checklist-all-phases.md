@@ -3510,6 +3510,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       active evaluator selection remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
+- [x] Current in-process order-parity precursor: `ratchet-value` exposes
+      `attrs::order`, which collects and validates observable raw-byte
+      lexicographic key vectors for `FlatAttrs`, `HamtAttrs`, `ShapedAttrs`, and
+      `AttrSetReprValue`, compares representations against each other under the
+      same symbol universe, rejects unresolved symbols, and tests adversarial
+      symbol allocation order (`b`, `a\xff`, `a`, `a\0`). C++ Nix differential
+      checking, `derivationStrict` consumption, and `.drv` byte parity remain
+      open.
 - [x] Current cached ordering-rank precursor: `aos-nix-syntax::SymbolTable`
       maintains process-local current raw-byte lexicographic ranks; current
       flat attrsets, shapes, and HAMTs sort ordered views through that rank
