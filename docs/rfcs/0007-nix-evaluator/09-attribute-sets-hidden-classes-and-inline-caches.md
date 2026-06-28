@@ -745,6 +745,14 @@ harness, never cut for scope.
 ### Inline caches on selection sites
 
 - [ ] `InlineCache` state machine `Uninitialized → Monomorphic → Polymorphic → Megamorphic`, cap `N` (default 4), no invalidation protocol (immutability) ([§5.1](#51-the-mechanism)) — P5, `S-10`; gate: differential `.drv` harness.
+- [x] Current inline-cache state-machine precursor:
+      `ratchet-value::attrs::pic` exposes an opaque process-local shape id,
+      shape-to-slot cache entries, default polymorphic cap `N = 4`, and checked
+      `Uninitialized → Monomorphic → Polymorphic → Megamorphic` transitions.
+      Repeated shapes reuse existing slots, shape/slot inconsistency is rejected,
+      and cap overflow abandons specialization. This does not execute select,
+      guard a runtime value, call `select_slow`, alter tree-walk behavior, or
+      install deopt/uncommon-trap edges.
 - [ ] Monomorphic fast path: shape guard + constant-offset load, slow path widens the IC ([§5.2](#52-what-the-baseline-tier-emits)) — P5.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 direct flat selection substrate: the tree-walk

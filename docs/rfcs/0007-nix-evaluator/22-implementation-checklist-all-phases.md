@@ -3415,6 +3415,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       dispatch, and runtime fast paths remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
+- [x] Current `attrs/pic.rs` precursor: `ratchet-value` exposes the safe
+      inline-cache state-machine contract with opaque process-local shape ids,
+      shape-to-slot entries, default polymorphic cap `N = 4`, and checked
+      `Uninitialized → Monomorphic → Polymorphic → Megamorphic` transitions.
+      Runtime select execution, shape guards, slow resolver dispatch, tree-walk
+      ICs, and deopt edges remain open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
 - [ ] Deterministic iteration order preserved across shape transitions
