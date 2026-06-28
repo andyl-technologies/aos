@@ -3610,6 +3610,13 @@ it ships).**
       8-byte-aligned heap pointers, and names the thunk `FORCED` shortcut bit.
       Raw decoded words do not prove pointer provenance or liveness; the active
       `Value` representation and force path are unchanged.
+- [x] Current `value/nanbox.rs` precursor: `ratchet-value` exposes the safe
+      NaN-box layout contract for the measured value-size variant. It reserves a
+      negative quiet-NaN prefix, three tag bits, and a 48-bit payload; normalizes
+      colliding float NaNs away from boxed patterns; validates
+      heap-address/immediate/small-int payloads; and reports heap-address
+      payloads for future precise-GC scanning without reconstructing provenance.
+      The active 16-byte `Value` ABI is unchanged.
 - [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
       ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
       `R-6`).

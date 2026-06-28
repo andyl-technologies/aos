@@ -845,6 +845,13 @@ Value representation has no observable effect on `.drv` output by construction (
 ### NaN-boxing variant (§4) — build-and-measure alongside the tagged baseline
 
 - [ ] NaN-box encode/decode: quiet-NaN prefix + 3-bit tag + 48-bit payload, real `f64` stored verbatim, canonical-prefix normalization (§4) — **P8**, `M-4`/`Q-E`; built as a competing variant, selected by register-passing benchmark vs the 16-byte baseline (winner kept, not a stop gate).
+- [x] Current NaN-box layout precursor: `ratchet-value::value::nanbox`
+      defines the reserved negative quiet-NaN prefix, three-bit payload tags,
+      48-bit payload mask, signed-small-int range, float normalization away from
+      boxed patterns, checked heap-address/immediate/small-int encode-decode,
+      and GC-facing heap-payload classification. It stores address bits only,
+      makes no pointer-provenance or liveness claim, and does not change the
+      active 16-byte `Value` ABI.
 - [ ] The i64 resolution: box-only-large-integers vs the favored approach (2) NaN-box only inside homogeneous nursery containers vs the 128-bit do-nothing option (§4.1) — **P8**, `M-4` (research-grade, IN SCOPE); benchmark-selected.
 - [ ] Precise-GC agreement on boxed pointers: GC value-scanner masks the tag, treats heap-pointer payloads as roots, never mistakes a real `f64` for a pointer (§4.2) — **P8**, depends on precise GC ([06](06-memory-management-and-gc.md) **P3**).
 

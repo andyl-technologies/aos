@@ -3,9 +3,9 @@
 //! This module owns the Phase-1 value representation from RFC-0007: a 16-byte
 //! tagged word pair. The tag word carries the Nix value form and the payload word
 //! carries either an inline scalar (`i64`, `f64`, `bool`) or a [`NonNull`]
-//! pointer to an evaluator heap object. No NaN-boxing or active pointer-tagged
-//! value representation is implemented here; [`tag`] captures the safe low-bit
-//! pointer-tagging contract for the later measured variant.
+//! pointer to an evaluator heap object. No active NaN-boxed or pointer-tagged
+//! value representation is implemented here; [`tag`] and [`nanbox`] capture the
+//! safe bit-layout contracts for later measured variants.
 
 use std::fmt;
 use std::mem;
@@ -13,6 +13,7 @@ use std::ptr::NonNull;
 
 use thiserror::Error;
 
+pub mod nanbox;
 pub mod tag;
 
 use tag::{HEAP_POINTER_ALIGNMENT as HEAP_POINTER_ALIGN, POINTER_TAG_MASK as HEAP_POINTER_MASK};
