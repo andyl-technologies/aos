@@ -797,9 +797,11 @@ alone (`M-1`/`Q-A`).
       symbol/execution behavior, and ordered free-variable hash behavior. Full cache-key integration still
       requires canonical strictness/escape free-variable sets, real durable value
       hashes for all admitted values, persistent key compatibility decisions,
-      and the cached/uncached false-hit harness. The gate covers a force-cache
-      identity and shared-runtime no-hit regression for same source bytes and
-      same `IrId` under changed node or synthetic force-site spans (`C-1`/`C-2`).
+      and the cached/uncached false-hit harness. The gate covers source-backed
+      same-`IrId` node-span force-cache identity and shared-runtime no-hit
+      regressions, source-less fixed-module-hash identity separation plus
+      span-mutated lowered-IR shared-runtime no-hit regression, and synthetic
+      force-site span changes (`C-1`/`C-2`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real

@@ -328,16 +328,35 @@ impl TreeWalk {
     ) -> Option<CacheExprIdentity> {
         let module_hash = Self::cache_module_identity_hash(module)?;
         let node = module.ir.arena.node(id)?;
+        Some(Self::cache_expression_identity_for_module_hash_and_span(
+            module_hash,
+            id,
+            node.span,
+        ))
+    }
+
+    fn cache_expression_identity_for_module_hash_and_span(
+        module_hash: DurableBlake3Hash,
+        id: IrId,
+        span: Span,
+    ) -> CacheExprIdentity {
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
         hasher.update(b"node-v1");
         hasher.update(&module_hash.as_bytes());
-        hasher.update(&node.span.start.to_le_bytes());
-        hasher.update(&node.span.end.to_le_bytes());
-        Some(CacheExprIdentity::new(
-            DurableBlake3Hash::from_hasher(hasher),
-            id,
-        ))
+        hasher.update(&span.start.to_le_bytes());
+        hasher.update(&span.end.to_le_bytes());
+        CacheExprIdentity::new(DurableBlake3Hash::from_hasher(hasher), id)
+    }
+
+    /// Builds a node expression identity from a fixed module hash for tests.
+    #[cfg(test)]
+    pub(crate) fn test_cache_expression_identity_for_module_hash_and_span(
+        module_hash: DurableBlake3Hash,
+        id: IrId,
+        span: Span,
+    ) -> CacheExprIdentity {
+        Self::cache_expression_identity_for_module_hash_and_span(module_hash, id, span)
     }
 
     pub(super) fn cache_first_class_primop_call_identity_for_current_node(
