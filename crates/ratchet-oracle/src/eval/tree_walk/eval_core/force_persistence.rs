@@ -444,6 +444,64 @@ impl TreeWalk {
         decision
     }
 
+    pub(in crate::eval::tree_walk) fn active_force_cache_node_for_subject(
+        &mut self,
+        subject: Option<&ForceCacheSubject>,
+    ) -> Option<DemandNodeId> {
+        let subject = subject?;
+        let identity = subject.lookup_identity?;
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping active force-cache node"
+            );
+            return None;
+        };
+        match cache.get_or_insert_expression_node(
+            identity,
+            subject.free_var_value_hashes.iter().copied(),
+            None,
+        ) {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator active force-cache node allocation failed"
+                );
+                None
+            }
+        }
+    }
+
+    fn record_active_force_cache_memo_read(
+        &mut self,
+        dependent: Option<DemandNodeId>,
+        dependency: DemandNodeId,
+    ) {
+        let Some(dependent) = dependent else {
+            return;
+        };
+        if dependent == dependency {
+            return;
+        }
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping memo-read edge recording"
+            );
+            return;
+        };
+        if let Err(error) = cache.record_memo_read_dependency(dependent, dependency) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator memo-read edge recording failed"
+            );
+        }
+    }
+
     fn force_cache_has_prior_persistent_demand(&mut self, subject: &ForceCacheSubject) -> bool {
         if !self.options.eval_cache_enabled() {
             return false;
@@ -480,6 +538,7 @@ impl TreeWalk {
         let subject = subject?;
         let identity = subject.lookup_identity?;
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
+        let active_force_cache_node = self.active_force_cache_nodes.last().copied();
 
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -491,12 +550,14 @@ impl TreeWalk {
         if !cache.is_enabled() {
             return None;
         }
-        match cache.lookup_inline_expression_payload_with_impure_inputs(
+        match cache.lookup_inline_expression_payload_hit_with_impure_inputs(
             identity,
             subject.free_var_value_hashes.iter().copied(),
             &mut revalidator,
         ) {
-            Ok(Some(payload)) => {
+            Ok(Some(hit)) => {
+                let dependency = hit.node();
+                let payload = hit.into_value();
                 if self
                     .payload_position_remap_for_subject(&payload, &subject)
                     .is_none()
@@ -525,6 +586,7 @@ impl TreeWalk {
                     self.increment_eval_cache_miss();
                     return None;
                 };
+                self.record_active_force_cache_memo_read(active_force_cache_node, dependency);
                 for fingerprint in trace {
                     self.record_impure_input(fingerprint);
                 }

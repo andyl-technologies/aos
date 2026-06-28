@@ -95,6 +95,13 @@ pub struct ExpressionTraceObservation {
     payload_reconsideration: Option<Reconsideration>,
 }
 
+/// One clean in-memory expression-payload cache hit.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedExpressionPayloadHit {
+    node: DemandNodeId,
+    value: CachedExpressionValue,
+}
+
 impl ExpressionTraceObservation {
     fn new(node: Option<DemandNodeId>, trace: ImpureTraceObservation) -> Self {
         Self {
@@ -146,6 +153,22 @@ impl ExpressionTraceObservation {
     /// Consumes this observation into its node and trace parts.
     pub fn into_parts(self) -> (Option<DemandNodeId>, ImpureTraceObservation) {
         (self.node, self.trace)
+    }
+}
+
+impl CachedExpressionPayloadHit {
+    pub(crate) const fn new(node: DemandNodeId, value: CachedExpressionValue) -> Self {
+        Self { node, value }
+    }
+
+    /// Returns the demand-graph node that supplied this hit.
+    pub(crate) const fn node(&self) -> DemandNodeId {
+        self.node
+    }
+
+    /// Consumes the hit into its cached expression payload.
+    pub(crate) fn into_value(self) -> CachedExpressionValue {
+        self.value
     }
 }
 

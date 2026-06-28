@@ -795,81 +795,101 @@ impl TreeWalk {
         let thunks_forced_before = self.stats.thunks_forced;
         self.increment_thunks_forced();
         let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
-        let result = match thunk.kind() {
-            EvalThunkKind::Node {
-                body,
-                env,
-                with_env,
-                scoped_globals,
-            } => {
-                let thunk_env = self.clone_env_frames(id, env, span)?;
-                let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
-                let thunk_scoped_globals = self.clone_scoped_globals(id, scoped_globals, span)?;
-                let saved_env = std::mem::replace(&mut self.env, thunk_env);
-                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                let saved_scoped_globals =
-                    std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
-                let result =
-                    self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
-                self.env = saved_env;
-                self.with_scopes = saved_with_scopes;
-                self.scoped_globals = saved_scoped_globals;
-                result
+        let active_force_cache_node = memoization_admitted
+            .then(|| self.active_force_cache_node_for_subject(cache_subject.as_ref()))
+            .flatten();
+        if let Some(node) = active_force_cache_node {
+            self.active_force_cache_nodes.push(node);
+        }
+        let result = (|| -> Result<Value, TreeWalkError> {
+            match thunk.kind() {
+                EvalThunkKind::Node {
+                    body,
+                    env,
+                    with_env,
+                    scoped_globals,
+                } => {
+                    let thunk_env = self.clone_env_frames(id, env, span)?;
+                    let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
+                    let thunk_scoped_globals =
+                        self.clone_scoped_globals(id, scoped_globals, span)?;
+                    let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                    let saved_with_scopes =
+                        std::mem::replace(&mut self.with_scopes, thunk_with_env);
+                    let saved_scoped_globals =
+                        std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
+                    let result =
+                        self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
+                    self.env = saved_env;
+                    self.with_scopes = saved_with_scopes;
+                    self.scoped_globals = saved_scoped_globals;
+                    result
+                }
+                EvalThunkKind::Apply {
+                    function,
+                    function_span,
+                    function_value,
+                    argument,
+                    argument_value,
+                } => self.with_current_module(function.module(), |eval| {
+                    eval.apply_lambda_value(
+                        id,
+                        span,
+                        function.id(),
+                        *function_value,
+                        *function_span,
+                        argument.id(),
+                        *argument_value,
+                    )
+                }),
+                EvalThunkKind::Apply2 {
+                    function,
+                    function_span,
+                    function_value,
+                    first_argument,
+                    first_argument_span,
+                    first_argument_value,
+                    second_argument,
+                    second_argument_value,
+                } => self.with_current_module(function.module(), |eval| {
+                    eval.apply_lambda_value_2(
+                        id,
+                        span,
+                        function.id(),
+                        *function_value,
+                        *function_span,
+                        first_argument.id(),
+                        *first_argument_span,
+                        *first_argument_value,
+                        second_argument.id(),
+                        *second_argument_value,
+                    )
+                }),
+                EvalThunkKind::Select {
+                    select,
+                    receiver,
+                    path,
+                } => self.with_current_module(select.module(), |eval| {
+                    let span = eval.node(select.id())?.span;
+                    let value = eval.eval_select_from_value(
+                        select.id(),
+                        span,
+                        *receiver,
+                        *path,
+                        None,
+                        true,
+                    )?;
+                    eval.force_node_result(select.id(), span, value)
+                }),
+                EvalThunkKind::BuiltinAttr { symbol, builtin } => {
+                    (*builtin).select(self, id, span, *symbol)
+                }
             }
-            EvalThunkKind::Apply {
-                function,
-                function_span,
-                function_value,
-                argument,
-                argument_value,
-            } => self.with_current_module(function.module(), |eval| {
-                eval.apply_lambda_value(
-                    id,
-                    span,
-                    function.id(),
-                    *function_value,
-                    *function_span,
-                    argument.id(),
-                    *argument_value,
-                )
-            }),
-            EvalThunkKind::Apply2 {
-                function,
-                function_span,
-                function_value,
-                first_argument,
-                first_argument_span,
-                first_argument_value,
-                second_argument,
-                second_argument_value,
-            } => self.with_current_module(function.module(), |eval| {
-                eval.apply_lambda_value_2(
-                    id,
-                    span,
-                    function.id(),
-                    *function_value,
-                    *function_span,
-                    first_argument.id(),
-                    *first_argument_span,
-                    *first_argument_value,
-                    second_argument.id(),
-                    *second_argument_value,
-                )
-            }),
-            EvalThunkKind::Select {
-                select,
-                receiver,
-                path,
-            } => self.with_current_module(select.module(), |eval| {
-                let span = eval.node(select.id())?.span;
-                let value =
-                    eval.eval_select_from_value(select.id(), span, *receiver, *path, None, true)?;
-                eval.force_node_result(select.id(), span, value)
-            }),
-            EvalThunkKind::BuiltinAttr { symbol, builtin } => {
-                (*builtin).select(self, id, span, *symbol)
-            }
-        };
+        })();
+        if active_force_cache_node.is_some() {
+            let popped = self.active_force_cache_nodes.pop();
+            debug_assert_eq!(popped, active_force_cache_node);
+        }
         let value = result?;
         let impure_trace =
             impure_trace_cursor.map(|cursor| self.force_cache_impure_input_trace_segment(cursor));

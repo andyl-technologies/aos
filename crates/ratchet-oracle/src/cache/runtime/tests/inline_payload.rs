@@ -49,6 +49,59 @@ fn eval_cache_looks_up_clean_inline_expression_results() {
 }
 
 #[test]
+fn eval_cache_payload_hits_return_supplier_node_for_memo_read_edges() {
+    let mut cache = EvalCache::new();
+    let parent_identity = identity(b"parent", 1);
+    let child_identity = identity(b"child", 2);
+    let child_observation = cache
+        .observe_inline_expression_payload(
+            child_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
+        )
+        .expect("child payload observes");
+    let child_node = child_observation.node();
+    let parent_node = cache
+        .get_or_insert_expression_node(
+            parent_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            None,
+        )
+        .expect("parent node inserts");
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit(
+            child_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("payload hit lookup succeeds")
+        .expect("child payload hit is present");
+    cache
+        .record_memo_read_dependency(parent_node, hit.node())
+        .expect("memo-read edge records");
+
+    assert_eq!(hit.node(), child_node);
+    assert_eq!(
+        hit.into_value()
+            .immediate_value()
+            .expect("hit payload is immediate")
+            .as_int(),
+        Ok(3)
+    );
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    assert!(parent.dependencies().contains(&child_node));
+    assert!(
+        parent
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("memo-read group exists")
+            .contains(&child_node)
+    );
+}
+
+#[test]
 fn eval_cache_looks_up_context_free_string_payloads() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);

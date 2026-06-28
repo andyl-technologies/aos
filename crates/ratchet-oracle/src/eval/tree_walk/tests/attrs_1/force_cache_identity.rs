@@ -314,6 +314,147 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
 }
 
 #[test]
+fn source_backed_active_force_cache_hits_record_memo_read_edges() {
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"memo-read-child"),
+        IrId::new(1),
+    );
+    let parent_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"memo-read-parent"),
+        IrId::new(2),
+    );
+    let child_subject = ForceCacheSubject {
+        lookup_identity: Some(child_identity),
+        pure_observation_identity: Some(child_identity),
+        impure_observation_identity: Some(child_identity),
+        metadata_identity: Some(child_identity),
+        persistent_clear_identity: Some(child_identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    };
+    let parent_subject = ForceCacheSubject {
+        lookup_identity: Some(parent_identity),
+        pure_observation_identity: Some(parent_identity),
+        impure_observation_identity: Some(parent_identity),
+        metadata_identity: Some(parent_identity),
+        persistent_clear_identity: Some(parent_identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    };
+    let child_node = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                child_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
+            )
+            .expect("child payload observes")
+            .expect("cache is enabled")
+            .node()
+    };
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let parent_node = evaluator
+        .active_force_cache_node_for_subject(Some(&parent_subject))
+        .expect("parent active node allocates");
+    evaluator.active_force_cache_nodes.push(parent_node);
+    let forced = evaluator
+        .lookup_forced_inline_expression_result(Some(child_subject))
+        .expect("child force-cache payload hits");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        evaluator.active_force_cache_nodes.pop(),
+        Some(parent_node),
+        "test-controlled active node stack should be balanced"
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        1,
+        "cached child lookup should record a force-cache hit"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    assert!(parent.dependencies().contains(&child_node));
+    assert!(
+        parent
+            .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+            .expect("parent has memo-read edges")
+            .contains(&child_node)
+    );
+    assert!(
+        cache
+            .graph()
+            .node(child_node)
+            .expect("child node is present")
+            .dependents()
+            .contains(&parent_node)
+    );
+}
+
+#[test]
+fn source_backed_admitted_force_error_balances_active_force_cache_stack() {
+    let source = "{ a = 1 / 0; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+
+    let error = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect_err("admitted thunk body fails");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::DivisionByZero { .. }
+    ));
+    assert!(
+        evaluator.active_force_cache_nodes.is_empty(),
+        "erroring body evaluation must pop the active force-cache node"
+    );
+    assert!(
+        evaluator.stats().force_cache_memoization_admits() > 0,
+        "helper-forced policy admission should reach the real force-cache path"
+    );
+    assert_eq!(evaluator.stats().force_cache_misses(), 1);
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "the admitted force must allocate its active expression node before the body error"
+    );
+}
+
+#[test]
 fn source_and_source_less_forced_inline_thunks_use_separate_cache_domains() {
     let source = "{ a = 1 + 2; }";
     let ir = lower(source);

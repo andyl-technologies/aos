@@ -53,13 +53,13 @@ use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{
     CacheExprIdentity, CachedDerivationOutputPath, CachedDerivationOutputPaths,
-    CachedExpressionValue, CachedParse, CutoffDecision, DirEntryInput, DurableBlake3Hash,
-    EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint, ImpureInputIdentity,
-    ImpureInputKind, ImpureInputMode, ImpureInputRevalidator, ImpureInputTraceSource,
-    InputFingerprintError, MaterializationCostObservation, MaterializationCosts,
-    MaterializationDecision, MemoizationDecision, MemoizationSubject, ParseCache, ParseCacheError,
-    ParseFileKey, PersistCache, PersistMaterialization, PersistNodeMetadataKey,
-    PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
+    CachedExpressionValue, CachedParse, CutoffDecision, DemandNodeId, DirEntryInput,
+    DurableBlake3Hash, EvalCacheRuntime, FileTypeForInput, ImpureInputFingerprint,
+    ImpureInputIdentity, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
+    ImpureInputTraceSource, InputFingerprintError, MaterializationCostObservation,
+    MaterializationCosts, MaterializationDecision, MemoizationDecision, MemoizationSubject,
+    ParseCache, ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization,
+    PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
     BindingLowering, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
@@ -734,6 +734,7 @@ pub struct TreeWalk {
     impure_input_trace: Vec<ImpureInputFingerprint>,
     impure_input_trace_complete: bool,
     force_cache_impure_trace_epoch: u64,
+    active_force_cache_nodes: Vec<DemandNodeId>,
     #[cfg(test)]
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     stderr: EvalStderr,

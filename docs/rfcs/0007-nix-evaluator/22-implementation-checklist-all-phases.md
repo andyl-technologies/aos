@@ -497,6 +497,22 @@ alone (`M-1`/`Q-A`).
       active observers, evaluator-integrated ready-dirty recomputation,
       persistent graph serialization, and cached/uncached `.drv` parity proof
       remain open (`S-14`/`C-20`).
+- [x] Current in-memory force-cache memo-read edge precursor: tree-walk tracks a
+      stack of active force-cache expression nodes while policy-admitted
+      lookup-identity thunks evaluate, `EvalCache` can return the demand node
+      that supplied an in-memory inline payload hit, and successful in-memory
+      force-cache hits under an active parent record a `MemoRead` edge from the
+      active parent node to the hit child node without disturbing impure-input
+      edges. Disabled runtimes, inactive parents, and self-edges remain no-ops.
+      This covers same-process force-cache payload hits only; persistent
+      force-cache hits, cold child misses, general evaluator-owned dynamic
+      dependency capture, separate inner/outer observers,
+      evaluator-integrated ready-dirty recomputation, persistent graph
+      serialization, and cached/uncached `.drv` parity proof remain open
+      (`S-14`/`C-20`). The gate covers
+      `eval_cache_payload_hits_return_supplier_node_for_memo_read_edges` and
+      `source_backed_active_force_cache_hits_record_memo_read_edges`, plus
+      `source_backed_admitted_force_error_balances_active_force_cache_stack`.
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, connect the ready-dirty recomputation loop

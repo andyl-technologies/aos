@@ -384,6 +384,56 @@ impl EvalCacheRuntime {
         )
     }
 
+    pub(crate) fn lookup_inline_expression_payload_hit_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.lookup_inline_expression_payload_hit_with_impure_inputs(
+            identity,
+            free_var_value_hashes,
+            revalidator,
+        )
+    }
+
+    pub(crate) fn get_or_insert_expression_node<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value_hash: Option<ValueHash>,
+    ) -> Result<Option<DemandNodeId>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)
+            .map(Some)
+    }
+
+    pub(crate) fn record_memo_read_dependency(
+        &mut self,
+        dependent: DemandNodeId,
+        dependency: DemandNodeId,
+    ) -> Result<Option<()>, DemandGraphError> {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .record_memo_read_dependency(dependent, dependency)
+            .map(Some)
+    }
+
     /// Observes one inline expression result when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression

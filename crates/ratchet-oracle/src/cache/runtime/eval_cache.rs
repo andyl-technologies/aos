@@ -170,6 +170,19 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        Ok(self
+            .lookup_inline_expression_payload_hit(identity, free_var_value_hashes)?
+            .map(CachedExpressionPayloadHit::into_value))
+    }
+
+    pub(crate) fn lookup_inline_expression_payload_hit<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+    ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
         let Some(node) = self.graph.node_id_for_key(key) else {
@@ -188,7 +201,7 @@ impl EvalCache {
         if graph_node.value_hash() != Some(record.value_hash) {
             return Ok(None);
         }
-        Ok(Some(record.value()))
+        Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))
     }
 
     /// Looks up a clean memoized immediate expression result.
@@ -328,6 +341,25 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
         R: ImpureInputRevalidator + ?Sized,
     {
+        Ok(self
+            .lookup_inline_expression_payload_hit_with_impure_inputs(
+                identity,
+                free_var_value_hashes,
+                revalidator,
+            )?
+            .map(CachedExpressionPayloadHit::into_value))
+    }
+
+    pub(crate) fn lookup_inline_expression_payload_hit_with_impure_inputs<I, R>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        revalidator: &mut R,
+    ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        R: ImpureInputRevalidator + ?Sized,
+    {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
         let Some(node) = self.graph.node_id_for_key(key) else {
@@ -344,7 +376,7 @@ impl EvalCache {
             return Ok(None);
         }
         if record.is_reusable_without_revalidation() {
-            return Ok(Some(record.value()));
+            return Ok(Some(CachedExpressionPayloadHit::new(node, record.value())));
         }
         if !self.revalidate_inline_record_inputs(node, &record, revalidator)? {
             return Ok(None);
@@ -356,7 +388,7 @@ impl EvalCache {
         if graph_node.value_hash() != Some(record.value_hash) {
             return Ok(None);
         }
-        Ok(Some(record.value()))
+        Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))
     }
 
     /// Looks up a clean immediate result after impure-input revalidation.
@@ -410,6 +442,15 @@ impl EvalCache {
     {
         self.graph
             .get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)
+    }
+
+    pub(crate) fn record_memo_read_dependency(
+        &mut self,
+        dependent: DemandNodeId,
+        dependency: DemandNodeId,
+    ) -> Result<(), DemandGraphError> {
+        self.graph
+            .add_dependency_to_group(dependent, DemandDependencyGroup::MemoRead, dependency)
     }
 
     /// Observes impure inputs from one completed evaluator trace source.
