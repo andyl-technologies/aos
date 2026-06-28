@@ -2933,6 +2933,14 @@ alone (`M-1`/`Q-A`).
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
       (`R-10`).
+- [x] Current precursor: durable import input revalidation. Forced-expression
+      cache canaries now prove an `import`-backed thunk survives a fresh runtime
+      through persistent value and verifying-trace lookup when the imported file
+      bytes are unchanged, and misses/recomputes through a fresh runtime when
+      those imported bytes change. This is scoped to the forced-expression
+      value/trace replay path for import fingerprints, not full dynamic
+      dependency capture, import-result memoization persistence, the persistent
+      demand graph, or currentTime taint propagation (`R-10`/`S-14`).
 - [x] Current precursor: durable metadata-style input revalidation. Forced
       expression cache canaries now prove `getEnv`, `readDir`, and
       `readFileType` payloads survive a fresh runtime through persistent value
