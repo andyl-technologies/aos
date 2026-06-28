@@ -31,7 +31,7 @@ use crate::cache::DurableBlake3Hash;
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,
-    IrError, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
+    IrError, IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
     ResolvedAst, ScopeError, ScopeTables, Upvalue, WithChain, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};

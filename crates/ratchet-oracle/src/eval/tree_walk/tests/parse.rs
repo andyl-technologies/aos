@@ -678,6 +678,25 @@ fn parse_cached_import_remaps_formal_and_inherit_symbols() {
 }
 
 #[test]
+fn parse_cached_import_remap_preserves_analysis_facts() {
+    let mut imported = lower("let x = 1; in x");
+    let root = imported.root;
+    let expected = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Strict,
+        cardinality: crate::compile::Cardinality::Once,
+        escape: crate::compile::Escape::NoEscape,
+    };
+    *imported.facts.get_mut(root).expect("root fact exists") = expected;
+
+    let mut evaluator = TreeWalk::new(&lower("null"));
+    let remapped = evaluator
+        .remap_cached_import_ir(IrId::new(0), Span::new(0, 1), b"/dep.nix", imported)
+        .expect("cached import IR remaps");
+
+    assert_eq!(remapped.node_facts(root), Some(expected));
+}
+
+#[test]
 fn parse_cached_import_remaps_lowered_builtin_symbols() {
     let root = fs::canonicalize(unique_temp_dir("import-parse-cache-builtins"))
         .expect("temp directory canonicalizes");

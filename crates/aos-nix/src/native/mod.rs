@@ -22,7 +22,7 @@ use crate::cache::{
     PersistCache,
 };
 #[cfg(test)]
-use crate::compile::EffectClass;
+use crate::compile::{EffectClass, IrFacts};
 use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve};
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;

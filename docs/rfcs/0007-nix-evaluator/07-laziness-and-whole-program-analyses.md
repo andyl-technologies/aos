@@ -801,6 +801,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 ### Fact infrastructure (§9)
 
 - [ ] `ExprFacts { strictness, cardinality, escape }` per-IR-node record, all fields defaulting to the conservative choice (`Unknown`/`Many`/`Escapes`) (§9) — **P4**, `S-9`; annotations over the one IR ([25](25-intermediate-representation.md)), consumed by the oracle before any JIT exists.
+- [x] Current fact-table precursor: `ratchet-core::ir` now exposes
+      `ExprFacts`, `Strictness`, `Cardinality`, `Escape`, and an `IrFacts`
+      table attached to every `Ir`; lowering, parse-cache hydration, and
+      manual IR fixtures initialize one conservative `Unknown`/`Many`/`Escapes`
+      record per arena node, import IR remapping preserves the fact table it
+      receives, and parse-artifact validation rejects fact-table/node-count
+      mismatches. This is only the default-safe annotation substrate; analysis
+      passes, content-addressed fact persistence, and THUNK/EAGER/SCALAR
+      consumers remain open.
 - [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
 
 ### Strictness / demand analysis + worker-wrapper (§4)

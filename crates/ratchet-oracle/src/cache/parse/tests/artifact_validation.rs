@@ -100,6 +100,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             )],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(1),
         symbols: SymbolTable::new(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -126,6 +127,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             )],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(1),
         symbols: SymbolTable::new(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -162,6 +164,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             ],
             vec![IrId::new(0)],
         ),
+        facts: IrFacts::conservative(2),
         symbols: symbols.clone(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -199,6 +202,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             ],
             vec![IrId::new(0)],
         ),
+        facts: IrFacts::conservative(2),
         symbols: symbols.clone(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -235,6 +239,7 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
             ],
             vec![IrId::new(0)],
         ),
+        facts: IrFacts::conservative(2),
         symbols: symbols.clone(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -245,6 +250,32 @@ fn lowered_ir_rejects_inconsistent_node_payload_and_effect() {
     let bytes = encode_lowered_ir(&unknown_primop).expect("unknown primop encodes");
     let error = decode_lowered_ir(&bytes, symbols).expect_err("unknown primop is rejected");
     assert!(error.contains("unknown IR primop symbol"));
+}
+
+#[test]
+fn lowered_ir_validation_rejects_fact_count_mismatch() {
+    let ir = Ir {
+        root: IrId::new(0),
+        arena: IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Null,
+                Span::new(0, 4),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        ),
+        facts: IrFacts::conservative(0),
+        symbols: SymbolTable::new(),
+        frames: Vec::new().into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: Vec::new().into_boxed_slice(),
+        bindings: Vec::new().into_boxed_slice(),
+        shapes: Vec::new().into_boxed_slice(),
+    };
+
+    let error = validate_lowered_ir_artifact(&ir).expect_err("mismatched fact count is rejected");
+    assert!(error.contains("fact count"), "{error}");
 }
 
 #[test]
@@ -274,6 +305,7 @@ fn lowered_ir_rejects_inconsistent_attrset_shapes() {
             )],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(1),
         symbols: symbols.clone(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -303,6 +335,7 @@ fn lowered_ir_rejects_inconsistent_attrset_shapes() {
             )],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(1),
         symbols: symbols.clone(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),

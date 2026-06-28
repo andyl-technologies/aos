@@ -18,6 +18,10 @@ use crate::syntax::{
     SymbolTable, UnaryOpKind,
 };
 
+mod facts;
+
+pub use facts::{Cardinality, Escape, ExprFacts, IrFacts, Strictness};
+
 /// Lowers a scope-resolved AST into evaluator IR.
 ///
 /// # Errors
@@ -257,6 +261,8 @@ pub struct Ir {
     pub root: IrId,
     /// The fixed-stride node arena plus child pool.
     pub arena: IrArena,
+    /// Conservative or analysis-refined per-node facts indexed by [`IrId`].
+    pub facts: IrFacts,
     /// File-local symbols referenced by the IR.
     pub symbols: SymbolTable,
     /// Scope frame metadata carried from resolution.
@@ -269,6 +275,13 @@ pub struct Ir {
     pub bindings: Box<[IrBinding]>,
     /// Static attribute-set shapes referenced by construction nodes.
     pub shapes: Box<[IrShape]>,
+}
+
+impl Ir {
+    /// Returns the analysis facts attached to one node.
+    pub fn node_facts(&self, id: IrId) -> Option<ExprFacts> {
+        self.facts.get(id)
+    }
 }
 
 /// A compact IR node id.

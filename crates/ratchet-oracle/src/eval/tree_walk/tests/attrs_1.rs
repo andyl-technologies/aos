@@ -475,6 +475,7 @@ fn position_free_closed_literal_lazy_list_ir() -> (Ir, Symbol) {
             ],
             vec![IrId::new(1)],
         ),
+        facts: IrFacts::conservative(5),
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -651,6 +652,7 @@ fn manual_inline_capture_force_ir(captured: i64) -> Ir {
             ],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(6),
         symbols,
         frames: vec![FrameInfo {
             slot_count: 1,

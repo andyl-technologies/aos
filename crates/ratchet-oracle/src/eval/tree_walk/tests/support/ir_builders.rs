@@ -29,9 +29,11 @@ pub(crate) fn primop_argument(ir: &Ir, index: usize) -> (IrId, Span) {
 }
 
 pub(crate) fn empty_ir(root: IrId, arena: IrArena) -> Ir {
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
         arena,
+        facts,
         symbols: SymbolTable::new(),
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -50,9 +52,12 @@ pub(crate) fn manual_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {
 }
 
 pub(crate) fn manual_ir_with_symbols(root: IrId, nodes: Vec<IrNode>, symbols: SymbolTable) -> Ir {
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
-        arena: IrArena::from_raw_parts(nodes, Vec::new()),
+        arena,
+        facts,
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -68,9 +73,12 @@ pub(crate) fn manual_ir_with_symbols_and_frames(
     symbols: SymbolTable,
     frames: Vec<FrameInfo>,
 ) -> Ir {
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
-        arena: IrArena::from_raw_parts(nodes, Vec::new()),
+        arena,
+        facts,
         symbols,
         frames: frames.into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -86,9 +94,12 @@ pub(crate) fn manual_ir_with_with_chains(
     symbols: SymbolTable,
     with_chains: Vec<IrWithChain>,
 ) -> Ir {
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
-        arena: IrArena::from_raw_parts(nodes, Vec::new()),
+        arena,
+        facts,
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: with_chains.into_boxed_slice(),
@@ -105,9 +116,12 @@ pub(crate) fn manual_ir_with_attr_tables(
     bindings: Vec<IrBinding>,
     shapes: Vec<IrShape>,
 ) -> Ir {
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
-        arena: IrArena::from_raw_parts(nodes, Vec::new()),
+        arena,
+        facts,
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),
@@ -123,9 +137,12 @@ pub(crate) fn manual_ir_with_attr_paths(
     symbols: SymbolTable,
     attr_paths: Vec<Box<[IrAttrPathSegment]>>,
 ) -> Ir {
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
         root,
-        arena: IrArena::from_raw_parts(nodes, Vec::new()),
+        arena,
+        facts,
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),

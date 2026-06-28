@@ -26,9 +26,11 @@ impl IrLowerer {
     pub(super) fn lower(mut self) -> Result<Ir, IrError> {
         let root = self.lower_expr(self.resolved.root)?;
         let frames = self.resolved.scopes.frames().to_vec().into_boxed_slice();
+        let facts = IrFacts::conservative(self.arena.nodes().len());
         Ok(Ir {
             root,
             arena: self.arena,
+            facts,
             symbols: self.resolved.symbols,
             frames,
             with_chains: self.with_chains.into_boxed_slice(),

@@ -645,6 +645,7 @@ fn native_json_preflight_ignores_malformed_empty_builtins_attr_paths() {
             ],
             Vec::new(),
         ),
+        facts: IrFacts::conservative(2),
         symbols,
         frames: Vec::new().into_boxed_slice(),
         with_chains: Vec::new().into_boxed_slice(),

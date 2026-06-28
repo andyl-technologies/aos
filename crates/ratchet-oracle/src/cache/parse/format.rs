@@ -294,6 +294,7 @@ pub(super) fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir
     let ir = Ir {
         root,
         arena: IrArena::from_raw_parts(nodes, children),
+        facts: IrFacts::conservative(node_count),
         symbols,
         frames: frames.into_boxed_slice(),
         with_chains: with_chains.into_boxed_slice(),

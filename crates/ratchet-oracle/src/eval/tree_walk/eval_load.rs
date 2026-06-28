@@ -344,6 +344,7 @@ impl TreeWalk {
         Ok(Ir {
             root: ir.root,
             arena: IrArena::from_raw_parts(nodes, ir.arena.child_pool().to_vec()),
+            facts: ir.facts,
             symbols,
             frames: ir.frames,
             with_chains: ir.with_chains,

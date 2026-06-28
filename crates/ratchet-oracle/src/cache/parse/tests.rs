@@ -130,6 +130,29 @@ fn lowered_ir_fingerprint_is_stable_for_same_artifact() {
 }
 
 #[test]
+fn lowered_ir_matcher_ignores_non_serialized_fact_table() {
+    let left = lowered_ir_for_source("let x = 1; in x");
+    let mut right = left.clone();
+    right
+        .facts
+        .get_mut(right.root)
+        .expect("root fact exists")
+        .strictness = crate::compile::Strictness::Strict;
+
+    assert!(
+        lowered_ir_matches(&left, &right),
+        "ir.bin equality ignores analysis facts until facts have their own artifact"
+    );
+
+    let encoded = encode_lowered_ir(&right).expect("IR artifact encodes");
+    let decoded = decode_lowered_ir(&encoded, right.symbols.clone()).expect("IR artifact decodes");
+    assert_eq!(
+        decoded.node_facts(decoded.root),
+        Some(crate::compile::ExprFacts::conservative())
+    );
+}
+
+#[test]
 fn lowered_ir_fingerprint_depends_on_symbol_artifact() {
     let first = lowered_ir_for_source(r#"{ a = "x"; }"#);
     let second = lowered_ir_for_source(r#"{ a = "y"; }"#);

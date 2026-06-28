@@ -3289,6 +3289,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       non-escaping attrsets/thunks.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and
       later the JIT), and the strictness FV set reused by the cache key (`C-2`).
+- [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the
+      conservative `ExprFacts` lattice (`Unknown` strictness, `Many`
+      cardinality, `Escapes` allocation behavior) plus an `IrFacts` table
+      attached to every lowered `Ir`; lowering, parse-cache hydration, and
+      manual IR fixtures initialize one conservative record per node, import IR
+      remapping preserves the fact table it receives, and parse-artifact
+      validation rejects fact-table/node-count mismatches. This does not close
+      `ir/annotate.rs`: analysis passes, persistent fact artifacts, strictness
+      FV sets, and oracle lowering consumers remain open.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

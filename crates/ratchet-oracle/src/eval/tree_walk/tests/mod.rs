@@ -21,8 +21,8 @@ use crate::cache::{
     PersistNodeMetadataKey, UncacheableInput, ValueHash,
 };
 use crate::compile::{
-    EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode,
-    IrShape, IrWithChain, resolve as resolve_ast,
+    EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrFacts, IrInlineCacheSiteId,
+    IrNode, IrShape, IrWithChain, resolve as resolve_ast,
 };
 use crate::runtime::builtins::{BUILTINS, Builtin, BuiltinDirect, BuiltinEffect, direct_builtin};
 use crate::string::{ContextElement, StringContext};

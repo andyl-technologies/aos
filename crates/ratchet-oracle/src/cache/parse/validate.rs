@@ -172,6 +172,9 @@ fn check_inherit_id(resolved: &ResolvedAst, id: InheritGroupId) -> Result<(), St
 }
 
 pub(super) fn validate_lowered_ir_artifact(ir: &Ir) -> Result<(), String> {
+    if ir.facts.len() != ir.arena.nodes().len() {
+        return Err("IR fact count does not match node count".to_owned());
+    }
     check_ir_id(ir, ir.root, "root")?;
     for child in ir.arena.child_pool() {
         check_ir_id(ir, *child, "child pool")?;
