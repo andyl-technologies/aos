@@ -229,6 +229,67 @@ fn assert_persistent_force_cache_payload_entries(
     Ok(canaries)
 }
 
+fn persistent_force_sidecar_paths(persist: &PersistCache) -> Vec<PathBuf> {
+    let layout = persist.layout();
+    vec![
+        layout.node_metadata_index_path(),
+        layout.node_trace_log_path(),
+        layout.value_packfile_path(),
+        layout.value_index_path(),
+    ]
+}
+
+fn snapshot_regular_file_paths(
+    root: &Path,
+    paths: &[PathBuf],
+) -> Result<std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>>> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    for path in paths {
+        let relative = path.strip_prefix(root)?.as_os_str().as_bytes().to_vec();
+        let contents = if path.exists() {
+            Some(fs::read(path)?)
+        } else {
+            None
+        };
+        assert!(
+            snapshot.insert(relative, contents).is_none(),
+            "persistent cache snapshot should not see duplicate paths"
+        );
+    }
+    Ok(snapshot)
+}
+
+fn snapshot_regular_file_tree(root: &Path) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    if root.exists() {
+        snapshot_regular_file_tree_at(root, root, &mut snapshot)?;
+    }
+    Ok(snapshot)
+}
+
+fn snapshot_regular_file_tree_at(
+    root: &Path,
+    current: &Path,
+    snapshot: &mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<()> {
+    let mut entries = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            snapshot_regular_file_tree_at(root, &path, snapshot)?;
+        } else if file_type.is_file() {
+            let relative = path.strip_prefix(root)?.as_os_str().as_bytes().to_vec();
+            assert!(
+                snapshot.insert(relative, fs::read(path)?).is_none(),
+                "persistent cache snapshot should not see duplicate paths"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn assert_native_closure_surfaces_do_not_contain_canaries(
     closure_name: &str,
     closure: &NativeDrvClosure,

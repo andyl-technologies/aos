@@ -327,6 +327,127 @@ fn native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_clo
 }
 
 #[test]
+fn native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects() -> Result<()>
+{
+    let root = unique_temp_dir("native-file-instantiation-force-cache-disabled-sidecars");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+        in {
+          pkgs.hello = derivationStrict {
+            name = "native-file-force-cache-disabled-sidecars";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [ b.currentSystem ];
+          };
+        }"#,
+    )?;
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+
+    let mut uncached_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    uncached_options.set_store_dir(store_bytes.clone())?;
+    let (uncached, uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, uncached_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(uncached_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_stats.force_cache_misses(), 0);
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    first_options.set_store_dir(store_bytes.clone())?;
+    first_options.set_persist_cache_root(&persist_root);
+    first_options.set_eval_cache_enabled(true);
+    let (first, first_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, first_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(first, uncached);
+    assert_eq!(first_stats.force_cache_hits(), 0);
+    assert!(
+        first_stats.force_cache_misses() > 0,
+        "first native file force-cache run should miss before recording demand"
+    );
+
+    let mut materialize_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    materialize_options.set_store_dir(store_bytes.clone())?;
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options.set_eval_cache_enabled(true);
+    let (materialized, materialized_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, materialize_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_eq!(materialized, uncached);
+    assert_eq!(materialized_stats.force_cache_hits(), 0);
+    assert!(
+        materialized_stats.force_cache_misses() > 0,
+        "materializing native file force-cache run should miss before writing persistent payloads"
+    );
+
+    let canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    let persist = PersistCache::open(&persist_root)?;
+    let metadata_before = persist.node_metadata_index().latest_entries()?;
+    let traces_before = persist.node_trace_log().latest_entries()?;
+    let force_sidecar_paths = persistent_force_sidecar_paths(&persist);
+    let force_sidecar_files_before =
+        snapshot_regular_file_paths(&persist_root, &force_sidecar_paths)?;
+
+    let mut disabled_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    disabled_options.set_store_dir(store_bytes)?;
+    disabled_options.set_persist_cache_root(&persist_root);
+    let (disabled, disabled_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, disabled_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+
+    assert_eq!(disabled, uncached);
+    assert_eq!(
+        disabled_stats.force_cache_hits(),
+        0,
+        "disabled eval-cache must not load existing persistent file force payloads"
+    );
+    assert_eq!(
+        disabled_stats.force_cache_misses(),
+        0,
+        "disabled eval-cache must not record file force-cache lookup misses"
+    );
+    assert_eq!(
+        persist.node_metadata_index().latest_entries()?,
+        metadata_before,
+        "disabled eval-cache must not mutate persistent file node metadata"
+    );
+    assert_eq!(
+        persist.node_trace_log().latest_entries()?,
+        traces_before,
+        "disabled eval-cache must not mutate persistent file node traces"
+    );
+    assert_eq!(
+        snapshot_regular_file_paths(&persist_root, &force_sidecar_paths)?,
+        force_sidecar_files_before,
+        "disabled eval-cache must not mutate persistent file force-cache sidecar contents"
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "disabled native file force-cache closure",
+        &disabled,
+        &canaries,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()> {
     use crate::cache::{
         MaterializationDecision, ParseCache, ParseCacheMeta, ParseFileKey, PersistCache,

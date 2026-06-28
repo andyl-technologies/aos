@@ -430,37 +430,6 @@ fn native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_ef
     Ok(())
 }
 
-fn snapshot_regular_file_tree(root: &Path) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
-    let mut snapshot = std::collections::BTreeMap::new();
-    if root.exists() {
-        snapshot_regular_file_tree_at(root, root, &mut snapshot)?;
-    }
-    Ok(snapshot)
-}
-
-fn snapshot_regular_file_tree_at(
-    root: &Path,
-    current: &Path,
-    snapshot: &mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
-) -> Result<()> {
-    let mut entries = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            snapshot_regular_file_tree_at(root, &path, snapshot)?;
-        } else if file_type.is_file() {
-            let relative = path.strip_prefix(root)?.as_os_str().as_bytes().to_vec();
-            assert!(
-                snapshot.insert(relative, fs::read(path)?).is_none(),
-                "persistent cache snapshot should not see duplicate paths"
-            );
-        }
-    }
-    Ok(())
-}
-
 #[test]
 fn native_instantiation_reified_builtins_do_not_force_nix_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("native-reified-builtins")?;

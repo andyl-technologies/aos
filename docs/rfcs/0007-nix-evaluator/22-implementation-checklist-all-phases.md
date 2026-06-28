@@ -3323,15 +3323,21 @@ alone (`M-1`/`Q-A`).
       addresses when present, and a representative context-free `NixString`
       xxh3 hot-hash sentinel.
       `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects`
-      seeds a real persistent forced-expression payload, then reruns the same
-      raw-instantiation closure with eval-cache disabled and the same
-      persistent root configured, requiring byte-identical closure output, zero
-      force-cache hit/miss accounting, unchanged latest logical node metadata
-      and trace entries, byte-identical persistent cache file contents, and no
-      sidecar hash leak into the disabled closure. This
+      and
+      `native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects`
+      seed real persistent forced-expression payloads, then rerun the same
+      raw-expression and file-root closures with eval-cache disabled and the
+      same persistent root configured, requiring byte-identical closure output,
+      zero force-cache hit/miss accounting, unchanged latest logical node
+      metadata and trace entries, and no sidecar hash leak into the disabled
+      closures. The raw-expression canary additionally requires byte-identical
+      persistent cache file contents; the file-root canary requires
+      byte-identical force-cache node/value sidecar contents while leaving
+      file-root parse artifact persistence to the separate frontend cache
+      gates. This
       extends the current native closure safety net to forced-expression
-      persistent sidecars on both native source entry shapes and to one
-      populated-root disabled-cache side-effect bypass; it is not syscall-level
+      persistent sidecars and populated-root disabled-cache side-effect
+      bypasses on both native source entry shapes; it is not syscall-level
       no-read instrumentation, the full cache-off AOS closure harness, full
       internal-hash leak invariant, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
