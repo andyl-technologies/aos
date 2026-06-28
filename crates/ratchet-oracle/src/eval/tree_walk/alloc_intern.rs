@@ -904,7 +904,9 @@ impl TreeWalk {
             .finish(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
         if let Some(active_force_cache_node) = active_force_cache_node {
+            let dependency = active_force_cache_node.node();
             self.replace_active_force_cache_memo_reads(active_force_cache_node);
+            self.record_enclosing_force_cache_memo_read(dependency);
         }
         self.unmark_lazy_identity_thunk_payload(forced_payload);
         if let Some(subject) = &cache_subject {

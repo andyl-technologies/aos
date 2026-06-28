@@ -504,19 +504,24 @@ alone (`M-1`/`Q-A`).
       report the runtime node seeded by durable payload rehydration, and
       successful in-memory or persistent force-cache hits under an active parent
       collect the hit child node into the active parent frame. Successful
-      parent force completion replaces the parent's `MemoRead` group with that
-      per-evaluation hit set without disturbing impure-input edges; failed
-      parent evaluations leave the previous memo-read group unchanged. Disabled
-      runtimes, inactive parents, and self-edges remain no-ops. This covers
-      force-cache payload hits that already have or seed an in-memory runtime
-      node; cold child misses, general evaluator-owned dynamic dependency
-      capture, separate inner/outer observers, evaluator-integrated ready-dirty
-      recomputation, persistent graph serialization, and cached/uncached `.drv`
-      parity proof remain open (`S-14`/`C-20`). The gate covers
+      admitted thunk child misses also collect the newly evaluated child
+      expression node into the enclosing active parent after the child
+      completes.
+      Successful parent force completion replaces the parent's `MemoRead`
+      group with that per-evaluation child set without disturbing impure-input
+      edges; failed parent evaluations leave the previous memo-read group
+      unchanged. Disabled runtimes, inactive parents, and self-edges remain
+      no-ops. This covers force-cache child payload hits that already have or
+      seed an in-memory runtime node plus admitted thunk child misses with runtime
+      nodes; general evaluator-owned dynamic dependency capture, separate
+      inner/outer observers, evaluator-integrated ready-dirty recomputation,
+      persistent graph serialization, and cached/uncached `.drv` parity proof
+      remain open (`S-14`/`C-20`). The gate covers
       `eval_cache_payload_hits_return_supplier_node_for_memo_read_edges` and
       `source_backed_active_force_cache_hits_record_memo_read_edges`,
       `source_backed_active_force_cache_hits_replace_prior_memo_read_edges`,
       `source_backed_parent_force_without_hits_clears_prior_memo_read_edges`,
+      `source_backed_active_force_cache_child_misses_record_memo_read_edges`,
       `source_backed_active_persistent_force_cache_hits_record_memo_read_edges`,
       trace-backed `effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation`,
       `source_backed_admitted_force_error_balances_active_force_cache_stack`,

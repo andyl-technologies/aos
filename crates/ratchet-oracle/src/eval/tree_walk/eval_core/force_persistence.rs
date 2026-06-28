@@ -501,6 +501,17 @@ impl TreeWalk {
         active.memo_reads.insert(dependency);
     }
 
+    pub(in crate::eval::tree_walk) fn record_enclosing_force_cache_memo_read(
+        &mut self,
+        dependency: DemandNodeId,
+    ) {
+        let dependent = self
+            .active_force_cache_nodes
+            .last()
+            .map(ActiveForceCacheNode::node);
+        self.record_active_force_cache_memo_read(dependent, dependency);
+    }
+
     pub(in crate::eval::tree_walk) fn replace_active_force_cache_memo_reads(
         &mut self,
         active: ActiveForceCacheNode,
