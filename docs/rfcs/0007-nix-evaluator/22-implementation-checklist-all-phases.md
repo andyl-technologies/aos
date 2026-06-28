@@ -3463,6 +3463,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       lookup, and shaped attrs resolve a shape slot before loading the value
       array. Tree-walk `Select`, the PIC miss path, runtime attr representation,
       and `.drv` effects remain open.
+- [x] Current shaped update precursor: `ratchet-value` exposes
+      `ShapedUpdatePlan`, which computes a small shaped `//` result shape
+      through the transition tree and instantiates a shaped value array with the
+      current shallow update order: left source-order bindings keep their
+      slots, right values overwrite shared keys, and right-only bindings append
+      in right source order. Active `//` evaluator integration, HAMT policy use,
+      and `.drv` effects remain open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
 - [x] Current `attrs/hamt.rs` precursor: `ratchet-value` exposes a safe

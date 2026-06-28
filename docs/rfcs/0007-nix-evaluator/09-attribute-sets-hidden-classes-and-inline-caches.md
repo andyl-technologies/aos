@@ -822,6 +822,13 @@ harness, never cut for scope.
 ### The update operator `//`
 
 - [ ] Small / shape-stable case: result-shape via transition tree + flat copy, preserving a-then-new-b order ([§6.1](#61-small--shape-stable-case-transition--flat-copy)) — P5.
+- [x] Current shaped update precursor: `ratchet-value::attrs::shape`
+      exposes `ShapedUpdatePlan`, which computes a small shaped `//` result
+      shape through the transition tree and instantiates a shaped value array
+      with the current shallow update order: left source-order bindings keep
+      their slots, right values overwrite shared keys, and right-only bindings
+      append in right source order. It is not wired into the active `//`
+      evaluator path, HAMT policy, or `.drv` bytes.
 - [ ] Large / override-heavy case: persistent HAMT (CHAMP layout) with structural sharing ([§6.2](#62-large--override-heavy-case-hamt-persistent-map)) — P5, `S-10`; gate: benchmark.
 - [x] Current HAMT storage precursor: `ratchet-value::attrs::hamt`
       provides a safe immutable bitmap-indexed attr map keyed by dense

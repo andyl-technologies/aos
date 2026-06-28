@@ -816,6 +816,193 @@ pub enum StaticShapePlanError {
     ShapedAttrs(#[from] ShapedAttrsError),
 }
 
+/// A small shape-stable `//` update-merge planner for shaped attrsets.
+///
+/// This is the safe value-level precursor for RFC-0007 section 09's flat-copy
+/// update path: it computes the result shape through the transition tree and
+/// assembles values in source order before filling the shaped value array. It
+/// mirrors the current shallow update rule: left bindings keep their source
+/// order, right values overwrite shared-key slots, and new right keys append in
+/// right source order.
+#[derive(Clone, Debug)]
+pub struct ShapedUpdatePlan {
+    static_plan: StaticShapePlan,
+    left_shape: ShapeHandle,
+    right_shape: ShapeHandle,
+    source_keys: Box<[Symbol]>,
+}
+
+impl ShapedUpdatePlan {
+    /// Plans a shaped `//` update merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapedUpdateError::LengthOverflow`] if the result source entry
+    /// count overflows. Returns [`ShapedUpdateError::AllocationFailed`] if
+    /// scratch storage cannot be reserved. Returns
+    /// [`ShapedUpdateError::StaticShape`] if result-shape resolution fails.
+    ///
+    /// `left`, `right`, and `symbols` must belong to the same symbol universe.
+    pub fn plan(
+        table: &mut ShapeTable,
+        left: &ShapedAttrs,
+        right: &ShapedAttrs,
+        symbols: &SymbolTable,
+    ) -> Result<Self, ShapedUpdateError> {
+        let appended_right = right
+            .iter_source_order()
+            .filter(|entry| !left.shape().shape().contains_key(entry.key))
+            .count();
+        let result_len =
+            left.len()
+                .checked_add(appended_right)
+                .ok_or(ShapedUpdateError::LengthOverflow {
+                    left_len: left.len(),
+                    right_len: appended_right,
+                })?;
+        let mut source_keys = Vec::new();
+        source_keys.try_reserve_exact(result_len).map_err(|_| {
+            ShapedUpdateError::AllocationFailed {
+                entries: result_len,
+            }
+        })?;
+        source_keys.extend(left.iter_source_order().map(|entry| entry.key));
+        for entry in right.iter_source_order() {
+            if !left.shape().shape().contains_key(entry.key) {
+                source_keys.push(entry.key);
+            }
+        }
+
+        let static_plan = StaticShapePlan::resolve(table, &source_keys, symbols)?;
+        Ok(Self {
+            static_plan,
+            left_shape: left.shape().clone(),
+            right_shape: right.shape().clone(),
+            source_keys: source_keys.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the static shape plan for the merged result.
+    pub const fn static_plan(&self) -> &StaticShapePlan {
+        &self.static_plan
+    }
+
+    /// Returns the merged result's source-order keys.
+    pub fn source_keys(&self) -> &[Symbol] {
+        &self.source_keys
+    }
+
+    /// Returns the resolved result shape handle.
+    pub fn shape(&self) -> &ShapeHandle {
+        self.static_plan.shape()
+    }
+
+    /// Returns the left operand shape this plan was built for.
+    pub const fn left_shape(&self) -> &ShapeHandle {
+        &self.left_shape
+    }
+
+    /// Returns the right operand shape this plan was built for.
+    pub const fn right_shape(&self) -> &ShapeHandle {
+        &self.right_shape
+    }
+
+    /// Instantiates the planned update result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapedUpdateError::OperandShapeMismatch`] if either operand's
+    /// shape differs from the shapes used when planning. Returns
+    /// [`ShapedUpdateError::AllocationFailed`] if the source-order value vector
+    /// cannot be reserved. Returns
+    /// [`ShapedUpdateError::MissingPlannedKey`] if the source-key plan
+    /// cannot be found in either operand. Returns
+    /// [`ShapedUpdateError::StaticShape`] if value-array instantiation fails.
+    pub fn instantiate(
+        &self,
+        left: &ShapedAttrs,
+        right: &ShapedAttrs,
+    ) -> Result<ShapedAttrs, ShapedUpdateError> {
+        if !self.left_shape.ptr_eq(left.shape()) {
+            return Err(ShapedUpdateError::OperandShapeMismatch {
+                side: ShapedUpdateOperand::Left,
+                expected: self.left_shape.id(),
+                actual: left.shape().id(),
+            });
+        }
+        if !self.right_shape.ptr_eq(right.shape()) {
+            return Err(ShapedUpdateError::OperandShapeMismatch {
+                side: ShapedUpdateOperand::Right,
+                expected: self.right_shape.id(),
+                actual: right.shape().id(),
+            });
+        }
+
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(self.source_keys.len())
+            .map_err(|_| ShapedUpdateError::AllocationFailed {
+                entries: self.source_keys.len(),
+            })?;
+        for key in self.source_keys.iter().copied() {
+            let Some(value) = right.get(key).or_else(|| left.get(key)) else {
+                return Err(ShapedUpdateError::MissingPlannedKey { key });
+            };
+            values.push(value);
+        }
+        self.static_plan
+            .instantiate(&values)
+            .map_err(ShapedUpdateError::StaticShape)
+    }
+}
+
+/// A failed shaped update-merge planning or instantiation operation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ShapedUpdateError {
+    /// The result source-entry count overflowed.
+    #[error("shaped update length overflow while combining {left_len} and {right_len}")]
+    LengthOverflow {
+        /// The left operand length.
+        left_len: usize,
+        /// The right operand length.
+        right_len: usize,
+    },
+    /// Scratch storage for merged keys or values could not be reserved.
+    #[error("failed to reserve shaped update storage for {entries} entries")]
+    AllocationFailed {
+        /// The entry count whose storage could not be reserved.
+        entries: usize,
+    },
+    /// Static result-shape planning or instantiation failed.
+    #[error("shaped update static plan failed: {0}")]
+    StaticShape(#[from] StaticShapePlanError),
+    /// An operand did not match the shape used when planning.
+    #[error("shaped update {side:?} operand shape changed from planned {expected:?} to {actual:?}")]
+    OperandShapeMismatch {
+        /// Which operand changed shape.
+        side: ShapedUpdateOperand,
+        /// The planned operand shape id.
+        expected: ShapeId,
+        /// The supplied operand shape id.
+        actual: ShapeId,
+    },
+    /// A planned result key was not present in either operand.
+    #[error("shaped update planned key {key:?} is missing from both operands")]
+    MissingPlannedKey {
+        /// The missing planned key.
+        key: Symbol,
+    },
+}
+
+/// Which shaped update operand failed validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShapedUpdateOperand {
+    /// The left operand.
+    Left,
+    /// The right operand.
+    Right,
+}
+
 /// A flat attrset instance paired with an interned shape handle.
 ///
 /// Values are stored in the shape's symbol-sorted slot order. This is the safe
@@ -1799,6 +1986,133 @@ mod tests {
             StaticShapePlanError::ValueCountMismatch {
                 expected: 2,
                 actual: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn shaped_update_plan_preserves_left_slots_then_new_right_source_order() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c", b"d"]);
+        let mut operand_table = ShapeTable::new().expect("operand shape table initializes");
+        let left_shape = operand_table
+            .intern_construction_order(&[ids[1], ids[2], ids[0]], &symbols)
+            .expect("left shape interns");
+        let right_shape = operand_table
+            .intern_construction_order(&[ids[1], ids[3]], &symbols)
+            .expect("right shape interns");
+        let left = ShapedAttrs::from_source_order(
+            left_shape,
+            &[Value::int(20), Value::int(30), Value::int(10)],
+        )
+        .expect("left attrs build");
+        let right = ShapedAttrs::from_source_order(right_shape, &[Value::int(200), Value::int(40)])
+            .expect("right attrs build");
+        let mut result_table = ShapeTable::new().expect("result shape table initializes");
+
+        let plan = ShapedUpdatePlan::plan(&mut result_table, &left, &right, &symbols)
+            .expect("update plan builds");
+
+        assert_eq!(plan.source_keys(), &[ids[1], ids[2], ids[0], ids[3]]);
+        assert_eq!(plan.static_plan().source_to_symbol_slots(), &[1, 2, 0, 3]);
+        let result = plan
+            .instantiate(&left, &right)
+            .expect("update plan instantiates");
+
+        assert!(result.shape().ptr_eq(plan.shape()));
+        assert_eq!(result.get(ids[0]).expect("a").as_int().expect("int"), 10);
+        assert_eq!(result.get(ids[1]).expect("b").as_int().expect("int"), 200);
+        assert_eq!(result.get(ids[2]).expect("c").as_int().expect("int"), 30);
+        assert_eq!(result.get(ids[3]).expect("d").as_int().expect("int"), 40);
+
+        let source_entries: Vec<_> = result
+            .iter_source_order()
+            .map(|entry| {
+                (
+                    symbols.resolve(entry.key).expect("key resolves"),
+                    entry.value.as_int().expect("int"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            source_entries,
+            vec![
+                (b"b".as_slice(), 200),
+                (b"c".as_slice(), 30),
+                (b"a".as_slice(), 10),
+                (b"d".as_slice(), 40),
+            ]
+        );
+    }
+
+    #[test]
+    fn shaped_update_plan_handles_empty_operands() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut operand_table = ShapeTable::new().expect("operand shape table initializes");
+        let empty =
+            ShapedAttrs::from_source_order(operand_table.empty(), &[]).expect("empty attrs build");
+        let shape = operand_table
+            .intern_construction_order(&[ids[0]], &symbols)
+            .expect("shape interns");
+        let non_empty =
+            ShapedAttrs::from_source_order(shape, &[Value::int(1)]).expect("attrs build");
+        let mut result_table = ShapeTable::new().expect("result shape table initializes");
+
+        let plan = ShapedUpdatePlan::plan(&mut result_table, &empty, &non_empty, &symbols)
+            .expect("update plan builds");
+        let result = plan
+            .instantiate(&empty, &non_empty)
+            .expect("update plan instantiates");
+
+        assert_eq!(plan.source_keys(), &[ids[0]]);
+        assert_eq!(result.get(ids[0]).expect("a").as_int().expect("int"), 1);
+    }
+
+    #[test]
+    fn shaped_update_plan_rejects_mismatched_operand_shapes() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c", b"d"]);
+        let mut operand_table = ShapeTable::new().expect("operand shape table initializes");
+        let left_shape = operand_table
+            .intern_construction_order(&[ids[0]], &symbols)
+            .expect("left shape interns");
+        let right_shape = operand_table
+            .intern_construction_order(&[ids[1]], &symbols)
+            .expect("right shape interns");
+        let left_extra_shape = operand_table
+            .intern_construction_order(&[ids[0], ids[2]], &symbols)
+            .expect("left extra shape interns");
+        let right_extra_shape = operand_table
+            .intern_construction_order(&[ids[1], ids[3]], &symbols)
+            .expect("right extra shape interns");
+        let left =
+            ShapedAttrs::from_source_order(left_shape, &[Value::int(1)]).expect("left attrs build");
+        let right = ShapedAttrs::from_source_order(right_shape, &[Value::int(2)])
+            .expect("right attrs build");
+        let left_extra =
+            ShapedAttrs::from_source_order(left_extra_shape, &[Value::int(1), Value::int(3)])
+                .expect("left extra attrs build");
+        let right_extra =
+            ShapedAttrs::from_source_order(right_extra_shape, &[Value::int(2), Value::int(4)])
+                .expect("right extra attrs build");
+        let mut result_table = ShapeTable::new().expect("result shape table initializes");
+        let plan = ShapedUpdatePlan::plan(&mut result_table, &left, &right, &symbols)
+            .expect("update plan builds");
+
+        assert_eq!(
+            plan.instantiate(&left_extra, &right)
+                .expect_err("left shape mismatch is rejected"),
+            ShapedUpdateError::OperandShapeMismatch {
+                side: ShapedUpdateOperand::Left,
+                expected: left.shape().id(),
+                actual: left_extra.shape().id(),
+            }
+        );
+        assert_eq!(
+            plan.instantiate(&left, &right_extra)
+                .expect_err("right shape mismatch is rejected"),
+            ShapedUpdateError::OperandShapeMismatch {
+                side: ShapedUpdateOperand::Right,
+                expected: right.shape().id(),
+                actual: right_extra.shape().id(),
             }
         );
     }
