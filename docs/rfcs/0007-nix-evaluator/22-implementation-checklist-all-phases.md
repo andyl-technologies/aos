@@ -2933,6 +2933,17 @@ alone (`M-1`/`Q-A`).
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
       (`R-10`).
+- [x] Current precursor: durable metadata-style input revalidation. Forced
+      expression cache canaries now prove `getEnv`, `readDir`, and
+      `readFileType` payloads survive a fresh runtime through persistent value
+      and verifying-trace lookup when their observed inputs are unchanged, and
+      miss/recompute through a fresh runtime when the environment value,
+      directory entries, or file type changes. This extends the existing
+      in-memory force-cache edge tests and the durable `pathExists`/`readFile`/
+      `hashFile` canaries, but remains scoped to forced-expression value
+      replay and verifying traces, not the full persistent demand graph,
+      automatic evaluator-node lifecycle, currentTime taint propagation, or
+      generic value memoization (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
