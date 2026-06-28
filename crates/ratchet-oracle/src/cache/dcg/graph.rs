@@ -184,8 +184,8 @@ impl DemandGraph {
     /// `dependent` only for the latest trace while preserving dependencies
     /// owned by other groups.
     /// Incomplete and uncacheable traces return their cacheability status,
-    /// mark `dependent` and its direct memo-read dependents dirty, and clear
-    /// any existing impure-input dependencies from `dependent`.
+    /// mark `dependent` and its transitive memo-read dependents dirty, and
+    /// clear any existing impure-input dependencies from `dependent`.
     ///
     /// Successful leaf observations are not rolled back if later edge
     /// replacement fails.
@@ -366,14 +366,18 @@ impl DemandGraph {
         Ok(())
     }
 
-    /// Invalidates one node and its direct memo-read dependents.
+    /// Invalidates one node and its transitive memo-read dependents.
     ///
     /// This is the graph primitive for observations that make a memoized value
     /// unusable without producing a replacement value hash, such as an
-    /// uncacheable trace. The node itself is marked dirty, and clean direct
-    /// dependents whose [`DemandDependencyGroup::MemoRead`] group contains
-    /// `id` are marked dirty. Other dependency groups are left for their owning
-    /// observation path.
+    /// uncacheable trace. The node itself is marked dirty, and every node in
+    /// the transitive dependent closure reached through
+    /// [`DemandDependencyGroup::MemoRead`] edges is marked dirty. Other
+    /// dependency groups are left for their owning observation path.
+    ///
+    /// Returns affected memo-read dependents in deterministic discovery order,
+    /// including dependents that were already dirty. The invalidated root is
+    /// not included in the returned list.
     ///
     /// # Errors
     ///
@@ -384,7 +388,31 @@ impl DemandGraph {
         id: DemandNodeId,
     ) -> Result<Vec<DemandNodeId>, DemandGraphError> {
         self.node(id)?;
-        let dependents: Vec<_> = self.nodes[id.index()]
+        let mut seen = BTreeSet::new();
+        seen.insert(id);
+        let mut frontier = self.memo_read_dependents_of(id);
+        let mut affected_dependents = Vec::new();
+        let mut cursor = 0;
+        while cursor < frontier.len() {
+            let dependent = frontier[cursor];
+            cursor += 1;
+            if !seen.insert(dependent) {
+                continue;
+            }
+            affected_dependents.push(dependent);
+            frontier.extend(self.memo_read_dependents_of(dependent));
+        }
+
+        self.nodes[id.index()].freshness = NodeFreshness::Dirty;
+        for dependent in &affected_dependents {
+            let node = &mut self.nodes[dependent.index()];
+            node.freshness = NodeFreshness::Dirty;
+        }
+        Ok(affected_dependents)
+    }
+
+    fn memo_read_dependents_of(&self, id: DemandNodeId) -> Vec<DemandNodeId> {
+        self.nodes[id.index()]
             .dependents
             .iter()
             .copied()
@@ -393,18 +421,7 @@ impl DemandGraph {
                     .dependencies_in_group(DemandDependencyGroup::MemoRead)
                     .is_some_and(|dependencies| dependencies.contains(&id))
             })
-            .collect();
-
-        self.nodes[id.index()].freshness = NodeFreshness::Dirty;
-        let mut dirtied_dependents = Vec::new();
-        for dependent in dependents {
-            let node = &mut self.nodes[dependent.index()];
-            if node.freshness != NodeFreshness::Dirty {
-                node.freshness = NodeFreshness::Dirty;
-                dirtied_dependents.push(dependent);
-            }
-        }
-        Ok(dirtied_dependents)
+            .collect()
     }
 
     /// Returns dirty nodes in deterministic node order.

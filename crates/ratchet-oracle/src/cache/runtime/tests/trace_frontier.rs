@@ -174,15 +174,35 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
         .graph
         .add_dependency(node, memo_dependency)
         .expect("memo edge records");
+    let consumer_identity = identity(b"consumer", 9);
     let consumer = cache
-        .graph
-        .get_or_insert_node(key(9, b"consumer"), Some(value_hash(b"consumer")))
-        .expect("consumer inserts");
+        .observe_inline_expression_result(
+            consumer_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(4),
+        )
+        .expect("consumer payload observes")
+        .node();
     cache
         .graph
         .add_dependency(consumer, node)
         .expect("consumer memo edge records");
+    let grandconsumer_identity = identity(b"grandconsumer", 10);
+    let grandconsumer = cache
+        .observe_inline_expression_result(
+            grandconsumer_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(5),
+        )
+        .expect("grandconsumer payload observes")
+        .node();
+    cache
+        .graph
+        .add_dependency(grandconsumer, consumer)
+        .expect("grandconsumer memo edge records");
     assert!(cache.inline_values.contains_key(&node));
+    assert!(cache.inline_values.contains_key(&consumer));
+    assert!(cache.inline_values.contains_key(&grandconsumer));
 
     let observation = cache
         .observe_impure_inputs_for_node(node, &source)
@@ -193,6 +213,8 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
         ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
     );
     assert!(!cache.inline_values.contains_key(&node));
+    assert!(!cache.inline_values.contains_key(&consumer));
+    assert!(!cache.inline_values.contains_key(&grandconsumer));
     let node_state = cache.graph().node(node).expect("node exists");
     assert_eq!(node_state.freshness(), NodeFreshness::Dirty);
     assert!(node_state.dependencies().contains(&memo_dependency));
@@ -209,6 +231,14 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
             .freshness(),
         NodeFreshness::Dirty
     );
+    assert_eq!(
+        cache
+            .graph()
+            .node(grandconsumer)
+            .expect("grandconsumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
     let value = cache
         .lookup_inline_expression_result(
             expression_identity,
@@ -216,6 +246,17 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
         )
         .expect("lookup succeeds");
     assert!(value.is_none());
+    let consumer_value = cache
+        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<DurableBlake3Hash>())
+        .expect("consumer lookup succeeds");
+    assert!(consumer_value.is_none());
+    let grandconsumer_value = cache
+        .lookup_inline_expression_result(
+            grandconsumer_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("grandconsumer lookup succeeds");
+    assert!(grandconsumer_value.is_none());
 }
 
 #[test]

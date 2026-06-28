@@ -205,7 +205,7 @@ fn changed_hash_dirties_direct_dependents() {
 }
 
 #[test]
-fn invalidating_node_dirties_direct_memo_read_dependents_without_value_hash() {
+fn invalidating_node_dirties_transitive_memo_read_dependents_without_value_hash() {
     let mut graph = DemandGraph::new();
     let dependency = graph
         .get_or_insert_node(key(1, b"uncacheable"), None)
@@ -231,7 +231,7 @@ fn invalidating_node_dirties_direct_memo_read_dependents_without_value_hash() {
         .invalidate_node(dependency)
         .expect("dependency invalidates");
 
-    assert_eq!(dirtied, vec![memo_dependent]);
+    assert_eq!(dirtied, vec![memo_dependent, transitive_dependent]);
     assert_eq!(
         graph
             .node(dependency)
@@ -258,29 +258,36 @@ fn invalidating_node_dirties_direct_memo_read_dependents_without_value_hash() {
             .node(transitive_dependent)
             .expect("transitive dependent exists")
             .freshness(),
-        NodeFreshness::Clean
+        NodeFreshness::Dirty
     );
 }
 
 #[test]
-fn invalidating_node_returns_only_newly_dirtied_dependents() {
+fn invalidating_node_returns_affected_memo_read_dependents_once() {
     let mut graph = DemandGraph::new();
     let dependency = node_with_hash(&mut graph, 1, b"dependency");
     let already_dirty = node_with_hash(&mut graph, 2, b"already-dirty");
     let clean = node_with_hash(&mut graph, 3, b"clean");
+    let transitive = node_with_hash(&mut graph, 4, b"transitive");
     graph
         .add_dependency(already_dirty, dependency)
         .expect("dirty edge records");
     graph
         .add_dependency(clean, dependency)
         .expect("clean edge records");
+    graph
+        .add_dependency(transitive, already_dirty)
+        .expect("transitive edge records");
+    graph
+        .add_dependency(transitive, clean)
+        .expect("diamond edge records");
     graph.mark_dirty(already_dirty).expect("dependent dirties");
 
     let dirtied = graph
         .invalidate_node(dependency)
         .expect("dependency invalidates");
 
-    assert_eq!(dirtied, vec![clean]);
+    assert_eq!(dirtied, vec![already_dirty, clean, transitive]);
     assert_eq!(
         graph
             .node(already_dirty)
@@ -292,6 +299,40 @@ fn invalidating_node_returns_only_newly_dirtied_dependents() {
         graph.node(clean).expect("clean exists").freshness(),
         NodeFreshness::Dirty
     );
+    assert_eq!(
+        graph
+            .node(transitive)
+            .expect("transitive exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+}
+
+#[test]
+fn invalidating_node_walks_memo_read_cycles_once() {
+    let mut graph = DemandGraph::new();
+    let root = node_with_hash(&mut graph, 1, b"root");
+    let first = node_with_hash(&mut graph, 2, b"first");
+    let second = node_with_hash(&mut graph, 3, b"second");
+    graph
+        .add_dependency(first, root)
+        .expect("first memo edge records");
+    graph
+        .add_dependency(second, first)
+        .expect("second memo edge records");
+    graph
+        .add_dependency(root, second)
+        .expect("cycle edge records");
+
+    let dirtied = graph.invalidate_node(root).expect("root invalidates");
+
+    assert_eq!(dirtied, vec![first, second]);
+    for node in [root, first, second] {
+        assert_eq!(
+            graph.node(node).expect("cycle node exists").freshness(),
+            NodeFreshness::Dirty
+        );
+    }
 }
 
 #[test]

@@ -624,8 +624,9 @@ impl EvalCache {
     /// `dependent` must be a caller-supplied node in this cache's demand graph.
     /// This delegates trace edge wiring to
     /// [`DemandGraph::observe_impure_trace_for_node`]. Incomplete or
-    /// uncacheable traces also remove side payload records for `dependent`.
-    /// This does not create evaluating nodes or memoized value records.
+    /// uncacheable traces also remove side payload records for `dependent` and
+    /// its transitive memo-read dependents. This does not create evaluating
+    /// nodes or memoized value records.
     ///
     /// # Errors
     ///
@@ -645,9 +646,11 @@ impl EvalCache {
             source.impure_input_trace_complete(),
         )?;
         if observation.status() != ImpureTraceStatus::Cacheable {
-            self.inline_values.remove(&dependent);
-            self.derivation_aterm_paths.remove(&dependent);
-            self.static_derivation_output_paths.remove(&dependent);
+            let affected_dependents = self.graph.invalidate_node(dependent)?;
+            self.remove_side_payloads(dependent);
+            for dependent in affected_dependents {
+                self.remove_side_payloads(dependent);
+            }
         }
         Ok(observation)
     }
@@ -657,7 +660,7 @@ impl EvalCache {
     /// This first computes the expression key and observes the trace.
     /// Incomplete or uncacheable traces return their status without creating a
     /// new expression node; if the expression key already exists, any side
-    /// inline payload is invalidated, its direct memo-read dependents are
+    /// inline payload is invalidated, its transitive memo-read dependents are
     /// dirtied, and its stale input dependencies are cleared.
     /// Complete cacheable traces get or insert the caller-supplied expression
     /// node, invalidate any prior side inline payload, and then replace that
@@ -832,8 +835,8 @@ impl EvalCache {
 
     /// Invalidates an existing inline expression payload.
     ///
-    /// If the expression key already exists, the node is marked dirty and any
-    /// direct memo-read dependents are marked dirty, and any side payload is
+    /// If the expression key already exists, the node and its transitive
+    /// memo-read dependents are marked dirty and their side payloads are
     /// removed. Missing keys return `Ok(false)`.
     ///
     /// # Errors
@@ -1041,12 +1044,19 @@ impl EvalCache {
         node: Option<DemandNodeId>,
     ) -> Result<(), DemandGraphError> {
         if let Some(node) = node {
-            self.graph.invalidate_node(node)?;
-            self.inline_values.remove(&node);
-            self.derivation_aterm_paths.remove(&node);
-            self.static_derivation_output_paths.remove(&node);
+            let affected_dependents = self.graph.invalidate_node(node)?;
+            self.remove_side_payloads(node);
+            for dependent in affected_dependents {
+                self.remove_side_payloads(dependent);
+            }
         }
         Ok(())
+    }
+
+    fn remove_side_payloads(&mut self, node: DemandNodeId) {
+        self.inline_values.remove(&node);
+        self.derivation_aterm_paths.remove(&node);
+        self.static_derivation_output_paths.remove(&node);
     }
 
     fn invalidate_existing_inline_payload_if_present(

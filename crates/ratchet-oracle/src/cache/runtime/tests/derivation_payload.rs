@@ -262,6 +262,95 @@ fn node_noncacheable_trace_removes_derivation_side_records() {
 }
 
 #[test]
+fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
+    let source = TraceSource {
+        trace: vec![ImpureInputFingerprint::current_time()],
+        complete: true,
+    };
+    let mut cache = EvalCache::new();
+    let root = cache
+        .get_or_insert_expression_node(
+            identity(b"root", 6),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"root")),
+        )
+        .expect("root node inserts");
+    let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+    let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv";
+    let derivation = cache
+        .observe_derivation_aterm_expression_path(
+            identity(b"derivation-dependent", 7),
+            [durable_hash(b"free-var")],
+            aterm,
+            drv_path,
+        )
+        .expect("derivation ATerm path observes");
+    cache
+        .graph
+        .add_dependency(derivation.node(), root)
+        .expect("derivation memo edge records");
+    let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+    let output_paths = CachedDerivationOutputPaths::new(
+        [7; 32],
+        vec![CachedDerivationOutputPath::new(
+            b"out".to_vec(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+        )],
+    );
+    let static_outputs = cache
+        .observe_static_derivation_output_paths(
+            identity(b"static-dependent", 8),
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+            output_paths.clone(),
+        )
+        .expect("static derivation output paths observe");
+    cache
+        .graph
+        .add_dependency(static_outputs.node(), derivation.node())
+        .expect("static output memo edge records");
+    assert_eq!(cache.derivation_aterm_path_record_count(), 1);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 1);
+
+    cache
+        .observe_impure_inputs_for_node(root, &source)
+        .expect("uncacheable trace invalidates dependent side records");
+
+    assert_eq!(cache.derivation_aterm_path_record_count(), 0);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 0);
+    for node in [root, derivation.node(), static_outputs.node()] {
+        assert_eq!(
+            cache
+                .graph()
+                .node(node)
+                .expect("invalidated node exists")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+    assert!(
+        cache
+            .lookup_derivation_aterm_path(
+                identity(b"derivation-dependent", 7),
+                [durable_hash(b"free-var")],
+                aterm,
+            )
+            .expect("derivation lookup succeeds")
+            .is_none()
+    );
+    assert!(
+        cache
+            .lookup_static_derivation_output_paths(
+                identity(b"static-dependent", 8),
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("static output lookup succeeds")
+            .is_none()
+    );
+}
+
+#[test]
 fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges() {
     let mut cache = EvalCache::new();
     let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";

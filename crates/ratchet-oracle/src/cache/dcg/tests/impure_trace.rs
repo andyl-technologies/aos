@@ -310,6 +310,10 @@ fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
     graph
         .add_dependency(consumer, dependent)
         .expect("consumer memo edge records");
+    let grandconsumer = node_with_hash(&mut graph, 9, b"grandconsumer");
+    graph
+        .add_dependency(grandconsumer, consumer)
+        .expect("grandconsumer memo edge records");
 
     let uncacheable = [
         read_file_trace(b"/tmp/second", b"same"),
@@ -350,6 +354,13 @@ fn uncacheable_impure_trace_for_node_clears_prior_input_edges() {
         graph.node(consumer).expect("consumer exists").freshness(),
         NodeFreshness::Dirty
     );
+    assert_eq!(
+        graph
+            .node(grandconsumer)
+            .expect("grandconsumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
 
     graph
         .observe_impure_trace(&[read_file_trace(b"/tmp/first", b"changed")], true)
@@ -377,6 +388,10 @@ fn incomplete_impure_trace_for_node_clears_prior_input_edges() {
     graph
         .add_dependency(consumer, dependent)
         .expect("consumer memo edge records");
+    let grandconsumer = node_with_hash(&mut graph, 9, b"grandconsumer");
+    graph
+        .add_dependency(grandconsumer, consumer)
+        .expect("grandconsumer memo edge records");
 
     let incomplete = [read_file_trace(b"/tmp/second", b"same")];
     let second_observation = graph
@@ -410,6 +425,13 @@ fn incomplete_impure_trace_for_node_clears_prior_input_edges() {
     );
     assert_eq!(
         graph.node(consumer).expect("consumer exists").freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(
+        graph
+            .node(grandconsumer)
+            .expect("grandconsumer exists")
+            .freshness(),
         NodeFreshness::Dirty
     );
 

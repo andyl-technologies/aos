@@ -189,6 +189,19 @@ fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents()
     graph
         .add_dependency(consumer, node)
         .expect("consumer memo edge records");
+    let grandconsumer = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(
+                identity(b"grandconsumer", 2),
+                [durable_hash(b"grandconsumer")],
+            )
+            .expect("grandconsumer key builds"),
+            Some(value_hash(b"grandconsumer")),
+        )
+        .expect("grandconsumer inserts");
+    graph
+        .add_dependency(grandconsumer, consumer)
+        .expect("grandconsumer memo edge records");
     let mut cache = EvalCache::from_graph(graph);
     let first_observation = cache
         .observe_expression_impure_inputs(
@@ -248,6 +261,14 @@ fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents()
             .freshness(),
         NodeFreshness::Dirty
     );
+    assert_eq!(
+        cache
+            .graph()
+            .node(grandconsumer)
+            .expect("grandconsumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
 
     cache
         .observe_impure_inputs(&TraceSource {
@@ -301,6 +322,19 @@ fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() 
     graph
         .add_dependency(consumer, node)
         .expect("consumer memo edge records");
+    let grandconsumer = graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(
+                identity(b"grandconsumer", 2),
+                [durable_hash(b"grandconsumer")],
+            )
+            .expect("grandconsumer key builds"),
+            Some(value_hash(b"grandconsumer")),
+        )
+        .expect("grandconsumer inserts");
+    graph
+        .add_dependency(grandconsumer, consumer)
+        .expect("grandconsumer memo edge records");
     let mut cache = EvalCache::from_graph(graph);
     let first_observation = cache
         .observe_expression_impure_inputs(
@@ -349,6 +383,14 @@ fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() 
             .graph()
             .node(consumer)
             .expect("consumer exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(grandconsumer)
+            .expect("grandconsumer exists")
             .freshness(),
         NodeFreshness::Dirty
     );
