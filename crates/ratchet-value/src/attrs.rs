@@ -26,6 +26,7 @@ pub mod pic;
 pub mod repr;
 pub mod select;
 pub mod shape;
+pub mod telemetry;
 
 /// Source provenance for one attribute binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

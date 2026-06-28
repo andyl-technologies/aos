@@ -3525,6 +3525,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       symbol-sorted slots. Global/shared symbol ranks, runtime shape/HAMT use,
       `derivationStrict` shape-order consumption, and full order-parity harness
       proof remain open.
+- [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
+      exposes in-process, byte-neutral counters/snapshots for shape census,
+      generic/shaped/HAMT select-cache terminal-state histograms and lookup
+      paths, `//` operand-size, result-length-upper-bound, and
+      override-chain-depth distributions, HAMT merge insert/replace totals, and
+      order-parity outcomes. It is not wired into the active evaluator and does
+      not replace full package-set measurements, C++ `NIX_SHOW_STATS`
+      comparison, or `.drv` differential proof.
 
 **Conformance (hold parity).**
 
