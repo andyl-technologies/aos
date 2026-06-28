@@ -1,7 +1,7 @@
 //! Cross-crate blob pack format compatibility checks.
 //!
 //! These tests intentionally live outside `ratchet-oracle`, which forbids
-//! unsafe code. They prove the safe oracle-side buffered packfile code and the
+//! unsafe code. They prove the safe oracle-side packfile adapters and the
 //! unsafe-engine packfile code agree on the current packfile format.
 
 use ratchet_cache::blob_pack::{BlobPackAppender, BlobPackHash, BlobPackLocation, MappedBlobPack};

@@ -71,6 +71,24 @@ impl PersistCache {
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
     }
 
+    fn read_blob_indexed_mapped_with<R>(
+        &self,
+        key: PersistBlobKey,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<Option<R>, PersistBlobIndexedReadError> {
+        let (advisory_guard, _read_guard) = self.lock_indexed_blob_read(key.store())?;
+        let Some(location) = self
+            .lookup_blob_location(key)
+            .map_err(|source| PersistBlobIndexedReadError::Lookup { source })?
+        else {
+            return Ok(None);
+        };
+        self.blob_pack(key.store())
+            .with_mapped_blob(&advisory_guard, location, key.hash(), visit)
+            .map(Some)
+            .map_err(|source| PersistBlobIndexedReadError::Read { source })
+    }
+
     /// Ensures a blob is present in the selected pack and sidecar index.
     ///
     /// If the sidecar index can be read and already points at a pack record
@@ -181,13 +199,13 @@ impl PersistCache {
         value_hash: ValueHash,
     ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
         let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
-        let Some(payload) = self
-            .read_blob_indexed(key)
+        let Some(value) = self
+            .read_blob_indexed_mapped_with(key, CachedExpressionValue::decode_persistent_payload)
             .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Read { source })?
         else {
             return Ok(None);
         };
-        let value = CachedExpressionValue::decode_persistent_payload(&payload)
+        let value = value
             .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Decode { source })?;
         let actual = value
             .value_hash()

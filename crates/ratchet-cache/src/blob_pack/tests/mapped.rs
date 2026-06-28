@@ -1,4 +1,6 @@
 use super::*;
+use std::io;
+use std::os::fd::AsRawFd;
 
 #[test]
 fn mapped_blob_pack_reads_frozen_empty_payload_fixture() {
@@ -61,6 +63,62 @@ fn mapped_blob_pack_with_read_lease_rejects_uncovered_files() {
         MappedBlobPack::map_file_with_lease(&file, &lease).expect_err("uncovered file is rejected");
 
     assert!(matches!(error, MappedBlobPackError::LeaseRejected));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn blob_pack_file_read_lease_maps_matching_file() {
+    let path = temp_path("file-lease-matching");
+    let payload = b"advisory payload".as_slice();
+    let locations = write_pack(&path, &[payload]);
+    let file = fs::File::open(&path).expect("pack opens read-only");
+    let lease = BlobPackFileReadLease::new(&file).expect("file read lease snapshots");
+    let pack =
+        MappedBlobPack::map_file_with_lease(&file, &lease).expect("lease maps matching file");
+
+    let mapped_payload = pack
+        .payload(locations[0], BlobPackHash::for_bytes(payload))
+        .expect("payload reads through file lease");
+
+    assert_eq!(mapped_payload.as_bytes(), payload);
+
+    drop(pack);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn blob_pack_file_read_lease_rejects_different_file() {
+    let left_path = temp_path("file-lease-left");
+    let right_path = temp_path("file-lease-right");
+    write_pack(&left_path, &[b"left"]);
+    write_pack(&right_path, &[b"right"]);
+    let left = fs::File::open(&left_path).expect("left pack opens");
+    let right = fs::File::open(&right_path).expect("right pack opens");
+    let lease = BlobPackFileReadLease::new(&left).expect("left lease snapshots");
+
+    let error = MappedBlobPack::map_file_with_lease(&right, &lease)
+        .expect_err("lease rejects a different file identity");
+
+    assert!(matches!(error, MappedBlobPackError::LeaseRejected));
+
+    let _ = fs::remove_file(left_path);
+    let _ = fs::remove_file(right_path);
+}
+
+#[test]
+fn blob_pack_file_read_lease_holds_shared_pack_lock() {
+    let path = temp_path("file-lease-lock");
+    write_pack(&path, &[b"locked"]);
+    let file = fs::File::open(&path).expect("pack opens read-only");
+    let lease = BlobPackFileReadLease::new(&file).expect("file read lease snapshots");
+
+    let error = try_exclusive_pack_lock(&path).expect_err("read lease blocks exclusive lock");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    drop(lease);
+    let exclusive = try_exclusive_pack_lock(&path).expect("exclusive lock acquires after lease");
+    drop(exclusive);
     let _ = fs::remove_file(path);
 }
 
@@ -325,4 +383,17 @@ fn mapped_blob_pack_records_rejects_truncated_record_tail() {
 
     drop(pack);
     let _ = fs::remove_file(path);
+}
+
+fn try_exclusive_pack_lock(path: &PathBuf) -> io::Result<fs::File> {
+    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let result = unsafe {
+        // SAFETY: `file` owns a live descriptor for this call, and `flock`
+        // does not outlive or alias Rust references.
+        libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+    };
+    if result == 0 {
+        return Ok(file);
+    }
+    Err(io::Error::last_os_error())
 }

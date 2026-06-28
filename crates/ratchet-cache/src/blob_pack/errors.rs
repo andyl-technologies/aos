@@ -282,6 +282,15 @@ pub enum BlobPackTrimError {
         #[source]
         source: std::io::Error,
     },
+    /// The packfile advisory lock could not be acquired.
+    #[error("failed to lock blob pack {path:?}")]
+    Lock {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
     /// File metadata could not be read.
     #[error("failed to read blob pack metadata for {path:?}")]
     Metadata {
@@ -364,6 +373,15 @@ pub enum BlobPackAppendError {
         #[source]
         source: std::io::Error,
     },
+    /// The packfile advisory lock could not be acquired.
+    #[error("failed to lock blob pack {path:?}")]
+    Lock {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
     /// File metadata could not be read.
     #[error("failed to read blob pack metadata for {path:?}")]
     Metadata {
@@ -440,4 +458,23 @@ pub enum BlobPackFileIdentityError {
     /// The file descriptor does not refer to a regular file.
     #[error("blob pack file descriptor does not refer to a regular file")]
     NotRegularFile,
+}
+
+/// A blob pack read lease could not be created.
+#[derive(Debug, Error)]
+pub enum BlobPackReadLeaseError {
+    /// The shared packfile advisory lock could not be acquired.
+    #[error("failed to acquire shared blob pack read lease")]
+    Lock {
+        /// The underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The packfile identity could not be read.
+    #[error("failed to snapshot blob pack file identity")]
+    Identity {
+        /// The underlying identity error.
+        #[source]
+        source: BlobPackFileIdentityError,
+    },
 }

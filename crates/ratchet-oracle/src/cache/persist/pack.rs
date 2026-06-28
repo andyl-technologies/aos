@@ -6,10 +6,14 @@
 use super::*;
 
 use ratchet_cache::blob_pack::{
-    BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackAppender, BlobPackFormatError, BlobPackHash,
-    BlobPackLocation, BlobPackPayloadWindow, BlobPackReadError, BlobPackReader, BlobPackRecord,
-    BlobPackRecordRelocation, BlobPackRewriteError, BlobPackTrimError,
+    BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackAppender, BlobPackFileIdentityError,
+    BlobPackFileReadLease, BlobPackFormatError, BlobPackHash, BlobPackLocation,
+    BlobPackPayloadWindow, BlobPackReadError, BlobPackReadLeaseError, BlobPackReader,
+    BlobPackRecord, BlobPackRecordRelocation, BlobPackRewriteError, BlobPackTrimError,
+    MappedBlobPack, MappedBlobPackError,
 };
+use ratchet_cache::file_lock::AdvisoryFileLock;
+use ratchet_cache::store::ReadOnlyMmapError;
 
 /// Verified metadata for one immutable blob-pack record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +98,7 @@ fn engine_append_error_to_persist(error: BlobPackAppendError) -> PersistBlobPack
             PersistBlobPackError::CreateParent { path, source }
         }
         BlobPackAppendError::Open { path, source } => PersistBlobPackError::Open { path, source },
+        BlobPackAppendError::Lock { path, source } => PersistBlobPackError::Write { path, source },
         BlobPackAppendError::Metadata { path, source } => {
             PersistBlobPackError::Metadata { path, source }
         }
@@ -169,6 +174,101 @@ fn engine_read_error_to_persist(error: BlobPackReadError) -> PersistBlobPackErro
     }
 }
 
+fn engine_mapped_error_to_persist(path: &Path, error: MappedBlobPackError) -> PersistBlobPackError {
+    match error {
+        MappedBlobPackError::Map(source) => engine_mmap_error_to_persist(path, source),
+        MappedBlobPackError::Format(source) => PersistBlobPackError::Format {
+            path: path.to_path_buf(),
+            source: engine_format_error_to_persist(source),
+        },
+        MappedBlobPackError::LeaseRejected => PersistBlobPackError::MappedReadLeaseRejected {
+            path: path.to_path_buf(),
+        },
+        MappedBlobPackError::InvalidRecordOffset { record_offset } => {
+            PersistBlobPackError::InvalidRecordOffset { record_offset }
+        }
+        MappedBlobPackError::RecordBoundsOverflow {
+            record_offset,
+            payload_len,
+        } => PersistBlobPackError::RecordBoundsOverflow {
+            record_offset,
+            payload_len,
+        },
+        MappedBlobPackError::RecordExtendsPastEnd {
+            payload_end,
+            pack_len,
+        } => PersistBlobPackError::RecordExtendsPastEnd {
+            payload_end: u128_to_u64_saturating(payload_end),
+            pack_len: u128_to_u64_saturating(pack_len),
+        },
+        MappedBlobPackError::RecordHashMismatch { expected, actual } => {
+            PersistBlobPackError::RecordHashMismatch {
+                expected: engine_hash_to_durable(expected),
+                actual: engine_hash_to_durable(actual),
+            }
+        }
+        MappedBlobPackError::RecordLengthMismatch { expected, actual } => {
+            PersistBlobPackError::RecordLengthMismatch { expected, actual }
+        }
+        MappedBlobPackError::PayloadHashMismatch { expected, actual } => {
+            PersistBlobPackError::PayloadHashMismatch {
+                expected: engine_hash_to_durable(expected),
+                actual: engine_hash_to_durable(actual),
+            }
+        }
+    }
+}
+
+fn u128_to_u64_saturating(value: u128) -> u64 {
+    match u64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn engine_mmap_error_to_persist(path: &Path, error: ReadOnlyMmapError) -> PersistBlobPackError {
+    match error {
+        ReadOnlyMmapError::Metadata { source } => PersistBlobPackError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        },
+        source => PersistBlobPackError::Map {
+            path: path.to_path_buf(),
+            source,
+        },
+    }
+}
+
+fn engine_file_identity_error_to_persist(
+    path: &Path,
+    error: BlobPackFileIdentityError,
+) -> PersistBlobPackError {
+    match error {
+        BlobPackFileIdentityError::Metadata(source) => PersistBlobPackError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        },
+        BlobPackFileIdentityError::NotRegularFile => PersistBlobPackError::NotRegularFile {
+            path: path.to_path_buf(),
+        },
+    }
+}
+
+fn engine_read_lease_error_to_persist(
+    path: &Path,
+    error: BlobPackReadLeaseError,
+) -> PersistBlobPackError {
+    match error {
+        BlobPackReadLeaseError::Lock { source } => PersistBlobPackError::Read {
+            path: path.to_path_buf(),
+            source,
+        },
+        BlobPackReadLeaseError::Identity { source } => {
+            engine_file_identity_error_to_persist(path, source)
+        }
+    }
+}
+
 fn engine_rewrite_error_to_persist(error: BlobPackRewriteError) -> PersistBlobPackError {
     match error {
         BlobPackRewriteError::SourceEqualsTemp {
@@ -198,6 +298,7 @@ fn engine_rewrite_error_to_persist(error: BlobPackRewriteError) -> PersistBlobPa
 fn engine_trim_error_to_persist(error: BlobPackTrimError) -> PersistBlobPackError {
     match error {
         BlobPackTrimError::Open { path, source } => PersistBlobPackError::Open { path, source },
+        BlobPackTrimError::Lock { path, source } => PersistBlobPackError::Write { path, source },
         BlobPackTrimError::Metadata { path, source } => {
             PersistBlobPackError::Metadata { path, source }
         }
@@ -509,6 +610,43 @@ impl PersistBlobPack {
                 durable_hash_to_engine(expected_hash),
             )
             .map_err(engine_read_error_to_persist)
+    }
+
+    /// Maps, verifies, and visits a blob payload while a caller-owned read lease is held.
+    ///
+    /// The callback receives a borrowed payload slice from a memory-mapped
+    /// packfile. That slice cannot escape this method, and the caller must hold
+    /// the same advisory read lock used by cooperating blob-pack writers for
+    /// the duration of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the advisory read lease does not cover the opened packfile,
+    /// if `location` is invalid, or if record/payload hashes do not match
+    /// `expected_hash`.
+    pub(super) fn with_mapped_blob<R>(
+        &self,
+        _read_lease: &AdvisoryFileLock,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, PersistBlobPackError> {
+        let file = fs::File::open(&self.path).map_err(|source| PersistBlobPackError::Open {
+            path: self.path.clone(),
+            source,
+        })?;
+        let lease = BlobPackFileReadLease::new(&file)
+            .map_err(|source| engine_read_lease_error_to_persist(&self.path, source))?;
+        let pack = MappedBlobPack::map_file_with_lease(&file, &lease)
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        let payload = pack
+            .payload(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+            )
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        Ok(visit(payload.as_bytes()))
     }
 
     /// Writes a compacted copy of the supplied records to `tmp_path`.

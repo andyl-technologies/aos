@@ -27,19 +27,23 @@ use std::path::{Path, PathBuf};
 mod appender;
 mod errors;
 mod format;
+mod locking;
 mod mapped;
 
 pub use appender::BlobPackAppender;
 pub use errors::{
     BlobPackAppendError, BlobPackFileIdentityError, BlobPackFormatError, BlobPackReadError,
-    BlobPackRewriteError, BlobPackTrimError, MappedBlobPackError,
+    BlobPackReadLeaseError, BlobPackRewriteError, BlobPackTrimError, MappedBlobPackError,
 };
 pub use format::{
     BLOB_PACK_HEADER_LEN, BLOB_PACK_MAGIC, BLOB_PACK_VERSION, BLOB_RECORD_HEADER_LEN,
     BlobPackFileIdentity, BlobPackHash, BlobPackHeader, BlobPackLocation, BlobPackPayloadWindow,
     BlobPackRecord, BlobPackRecordRelocation, BlobRecordHeader,
 };
-pub use mapped::{BlobPackReadLease, LeasedMappedBlobPack, MappedBlobPack, MappedBlobPayload};
+pub use mapped::{
+    BlobPackFileReadLease, BlobPackReadLease, LeasedMappedBlobPack, MappedBlobPack,
+    MappedBlobPayload,
+};
 
 const BLOB_PACK_SCAN_BUFFER_LEN: usize = 8 * 1024;
 

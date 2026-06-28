@@ -4,9 +4,11 @@ use std::fs;
 use std::marker::PhantomData;
 use std::ops::Range;
 
+use super::locking::{BlobPackFileLockMode, lock_blob_pack_file, unlock_blob_pack_file};
 use super::{
-    BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackFormatError, BlobPackHash,
-    BlobPackHeader, BlobPackLocation, BlobPackRecord, BlobRecordHeader, MappedBlobPackError,
+    BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackFileIdentity, BlobPackFormatError,
+    BlobPackHash, BlobPackHeader, BlobPackLocation, BlobPackReadLeaseError, BlobPackRecord,
+    BlobRecordHeader, MappedBlobPackError,
 };
 use crate::store::ReadOnlyMmap;
 
@@ -57,6 +59,57 @@ pub struct MappedBlobPack {
 pub unsafe trait BlobPackReadLease {
     /// Returns whether this lease covers `file`.
     fn covers_file(&self, file: &fs::File) -> bool;
+}
+
+/// A blob-pack read lease backed by a shared packfile advisory lock.
+///
+/// The lease acquires a shared descriptor lock on the packfile itself, records
+/// the descriptor's Unix file identity, and validates that the descriptor being
+/// mapped still matches that identity before allowing a borrowed mapping. Safe
+/// `ratchet-cache` packfile writers acquire the corresponding exclusive
+/// descriptor lock before initializing, appending, or trimming packfiles.
+#[derive(Debug)]
+pub struct BlobPackFileReadLease<'lease> {
+    file: &'lease fs::File,
+    identity: BlobPackFileIdentity,
+}
+
+impl<'lease> BlobPackFileReadLease<'lease> {
+    /// Creates a read lease for `file`.
+    ///
+    /// The returned lease holds a shared advisory lock on `file`. Safe
+    /// blob-pack writer APIs in this crate acquire the corresponding exclusive
+    /// lock before mutating the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackReadLeaseError`] if the shared descriptor lock cannot
+    /// be acquired or the file identity cannot be read.
+    pub fn new(file: &'lease fs::File) -> Result<Self, BlobPackReadLeaseError> {
+        lock_blob_pack_file(file, BlobPackFileLockMode::Shared)
+            .map_err(|source| BlobPackReadLeaseError::Lock { source })?;
+        let identity = BlobPackFileIdentity::for_file(file)
+            .map_err(|source| BlobPackReadLeaseError::Identity { source })?;
+        Ok(Self { file, identity })
+    }
+}
+
+impl Drop for BlobPackFileReadLease<'_> {
+    fn drop(&mut self) {
+        unlock_blob_pack_file(self.file);
+    }
+}
+
+// SAFETY: `BlobPackFileReadLease::new` holds a shared descriptor lock on the
+// packfile itself and records the exact file identity opened under that lock.
+// `covers_file` only accepts descriptors that still match that identity. Safe
+// packfile writers in this crate acquire the corresponding exclusive descriptor
+// lock before mutation; non-cooperating raw filesystem mutation is outside this
+// blob-pack API's protocol.
+unsafe impl BlobPackReadLease for BlobPackFileReadLease<'_> {
+    fn covers_file(&self, file: &fs::File) -> bool {
+        matches!(self.identity.matches_file(file), Ok(true))
+    }
 }
 
 /// A memory-mapped blob pack whose lifetime is tied to a read lease.

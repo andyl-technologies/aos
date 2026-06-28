@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use super::locking::{BlobPackFileLockMode, lock_blob_pack_file};
 use super::{
     BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackHash, BlobPackHeader, BlobPackLocation,
     BlobPackTrimError, BlobRecordHeader,
@@ -107,6 +108,12 @@ impl BlobPackAppender {
                 path: self.path.clone(),
                 source,
             })?;
+        lock_blob_pack_file(&file, BlobPackFileLockMode::Exclusive).map_err(|source| {
+            BlobPackAppendError::Lock {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
         let record_offset = file
             .metadata()
             .map_err(|source| BlobPackAppendError::Metadata {
@@ -153,6 +160,12 @@ impl BlobPackAppender {
                 path: self.path.clone(),
                 source,
             })?;
+        lock_blob_pack_file(&file, BlobPackFileLockMode::Exclusive).map_err(|source| {
+            BlobPackTrimError::Lock {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
         let len = file
             .metadata()
             .map_err(|source| BlobPackTrimError::Metadata {
@@ -203,6 +216,12 @@ fn ensure_blob_pack_file(path: &Path) -> Result<(), BlobPackAppendError> {
             path: path.to_path_buf(),
             source,
         })?;
+    lock_blob_pack_file(&file, BlobPackFileLockMode::Exclusive).map_err(|source| {
+        BlobPackAppendError::Lock {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
     let len = file
         .metadata()
         .map_err(|source| BlobPackAppendError::Metadata {

@@ -1,6 +1,7 @@
 //! Artifact and parse-cache hydration operations.
 
 use super::*;
+use ratchet_cache::file_lock::AdvisoryFileLock;
 
 impl PersistCache {
     /// Reads and verifies a materialized frontend file artifact.
@@ -84,15 +85,25 @@ impl PersistCache {
         self.hydrate_parse_artifact_payload(&payload, entry)
     }
 
-    fn hydrate_parse_artifact_bundle_unlocked(
+    fn hydrate_parse_artifact_bundle_mapped_unlocked(
         &self,
         index_value: PersistParseArtifactIndexValue,
         entry: &ParseCacheEntry,
+        files_read_lease: &AdvisoryFileLock,
     ) -> Result<(), PersistParseArtifactHydrationError> {
-        let payload = self
-            .read_parse_artifact_unlocked(index_value)
+        let blob_key = index_value.blob_key();
+        let bundle = self
+            .blob_pack(blob_key.store())
+            .with_mapped_blob(
+                files_read_lease,
+                index_value.location(),
+                blob_key.hash(),
+                ParseArtifactBundle::decode,
+            )
             .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
-        self.hydrate_parse_artifact_payload(&payload, entry)
+        let bundle =
+            bundle.map_err(|source| PersistParseArtifactHydrationError::Decode { source })?;
+        self.hydrate_parse_artifact_bundle_decoded(&bundle, entry)
     }
 
     fn hydrate_parse_artifact_payload(
@@ -102,6 +113,14 @@ impl PersistCache {
     ) -> Result<(), PersistParseArtifactHydrationError> {
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistParseArtifactHydrationError::Decode { source })?;
+        self.hydrate_parse_artifact_bundle_decoded(&bundle, entry)
+    }
+
+    fn hydrate_parse_artifact_bundle_decoded(
+        &self,
+        bundle: &ParseArtifactBundle,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
         bundle
             .validate_meta(PARSE_CACHE_SCHEMA_VERSION)
             .map_err(|source| PersistParseArtifactHydrationError::Validate { source })?;
@@ -196,15 +215,25 @@ impl PersistCache {
         self.hydrate_file_artifact_payload(&payload, entry)
     }
 
-    fn hydrate_file_artifact_bundle_unlocked(
+    fn hydrate_file_artifact_bundle_mapped_unlocked(
         &self,
         index_value: PersistFileArtifactIndexValue,
         entry: &ParseCacheEntry,
+        files_read_lease: &AdvisoryFileLock,
     ) -> Result<(), PersistFileArtifactHydrationError> {
-        let payload = self
-            .read_file_artifact_unlocked(index_value)
+        let blob_key = index_value.blob_key();
+        let bundle = self
+            .blob_pack(blob_key.store())
+            .with_mapped_blob(
+                files_read_lease,
+                index_value.location(),
+                blob_key.hash(),
+                ParseArtifactBundle::decode,
+            )
             .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
-        self.hydrate_file_artifact_payload(&payload, entry)
+        let bundle =
+            bundle.map_err(|source| PersistFileArtifactHydrationError::Decode { source })?;
+        self.hydrate_file_artifact_bundle_decoded(&bundle, entry)
     }
 
     fn hydrate_file_artifact_payload(
@@ -214,6 +243,14 @@ impl PersistCache {
     ) -> Result<(), PersistFileArtifactHydrationError> {
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistFileArtifactHydrationError::Decode { source })?;
+        self.hydrate_file_artifact_bundle_decoded(&bundle, entry)
+    }
+
+    fn hydrate_file_artifact_bundle_decoded(
+        &self,
+        bundle: &ParseArtifactBundle,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistFileArtifactHydrationError> {
         bundle
             .validate_meta(PARSE_CACHE_SCHEMA_VERSION)
             .map_err(|source| PersistFileArtifactHydrationError::Validate { source })?;
@@ -309,7 +346,7 @@ impl PersistCache {
     {
         let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
         let (
-            _files_advisory_guard,
+            files_advisory_guard,
             _file_artifact_advisory_guard,
             _file_guard,
             _file_artifact_guard,
@@ -322,8 +359,12 @@ impl PersistCache {
             return Ok(None);
         };
         let index_entry = PersistFileArtifactIndexEntry::new(artifact_key, index_value);
-        self.hydrate_file_artifact_bundle_unlocked(index_value, entry)
-            .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate { source })?;
+        self.hydrate_file_artifact_bundle_mapped_unlocked(
+            index_value,
+            entry,
+            &files_advisory_guard,
+        )
+        .map_err(|source| PersistFileArtifactIndexedHydrationError::Hydrate { source })?;
         Ok(Some(index_entry))
     }
 
@@ -353,7 +394,7 @@ impl PersistCache {
     {
         let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
         let (
-            _files_advisory_guard,
+            files_advisory_guard,
             _parse_artifact_advisory_guard,
             _file_guard,
             _parse_artifact_guard,
@@ -366,8 +407,12 @@ impl PersistCache {
             return Ok(None);
         };
         let index_entry = PersistParseArtifactIndexEntry::new(artifact_key, index_value);
-        self.hydrate_parse_artifact_bundle_unlocked(index_value, entry)
-            .map_err(|source| PersistParseArtifactIndexedHydrationError::Hydrate { source })?;
+        self.hydrate_parse_artifact_bundle_mapped_unlocked(
+            index_value,
+            entry,
+            &files_advisory_guard,
+        )
+        .map_err(|source| PersistParseArtifactIndexedHydrationError::Hydrate { source })?;
         Ok(Some(index_entry))
     }
 

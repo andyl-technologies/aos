@@ -518,6 +518,14 @@ pub enum PersistBlobPackError {
         /// The underlying filesystem error.
         source: io::Error,
     },
+    /// The packfile could not be memory-mapped.
+    #[error("failed to memory-map persistent blob pack {path}")]
+    Map {
+        /// The packfile path.
+        path: PathBuf,
+        /// The underlying memory-map error.
+        source: ratchet_cache::store::ReadOnlyMmapError,
+    },
     /// The packfile could not be written.
     #[error("failed to write persistent blob pack {path}")]
     Write {
@@ -541,6 +549,18 @@ pub enum PersistBlobPackError {
         path: PathBuf,
         /// The format error.
         source: PersistPackFormatError,
+    },
+    /// The packfile descriptor did not refer to a regular file.
+    #[error("persistent blob pack {path} is not a regular file")]
+    NotRegularFile {
+        /// The packfile path.
+        path: PathBuf,
+    },
+    /// The mapped-read lease did not cover the packfile descriptor.
+    #[error("persistent blob pack mapped-read lease rejected {path}")]
+    MappedReadLeaseRejected {
+        /// The packfile path.
+        path: PathBuf,
     },
     /// A caller supplied a record offset inside the fixed packfile header.
     #[error("persistent blob pack record offset {record_offset} points inside the pack header")]

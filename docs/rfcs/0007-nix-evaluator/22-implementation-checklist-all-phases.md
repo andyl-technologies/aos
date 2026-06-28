@@ -1260,19 +1260,21 @@ alone (`M-1`/`Q-A`).
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
       offsets plus lengths, and reads payloads back with record and payload hash
-      verification. This is ordinary `std::fs` IO only; mmap zero-copy reads,
-      LMDB/redb index integration, batched writing, crash-durability policy,
-      GC/repack, Attic transport, and harness proof remain open (`C-13`).
+      verification. This is ordinary `std::fs` IO for the direct owned-byte
+      APIs; scoped mmap reads are covered below, while LMDB/redb index
+      integration, batched writing, crash-durability policy, GC/repack, Attic
+      transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:
       `ratchet-cache` now exists as the RFC engine-band unsafe crate with
       `#![deny(unsafe_op_in_unsafe_fn)]`, and `store::ReadOnlyMmap` wraps Unix
       read-only `mmap` behind an explicitly unsafe constructor, documented file
       immutability contract, and `// SAFETY:` comments for every unsafe block.
       `ratchet-oracle` remains `#![forbid(unsafe_code)]` and does not call this
-      primitive yet. This is the unsafe fence and raw mapping substrate only;
-      safe cache-root lease protocol, LMDB/redb metadata, mmap-backed indexed
-      hits, out-of-core value rematerialization, cross-process writer
-      coordination, and harness proof remain open (`C-13`/`R-14`).
+      primitive directly. This is the unsafe fence and raw mapping substrate
+      only; full durable lease protocol, LMDB/redb metadata, full mmap
+      maintenance/repack paths, out-of-core value rematerialization,
+      cross-process writer coordination, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` mmap blob-pack payload reader:
       `blob_pack::MappedBlobPack` validates the current pack header and record
       format from a `ReadOnlyMmap`, checks lookup hash/length and payload
@@ -1282,9 +1284,9 @@ alone (`M-1`/`Q-A`).
       empty-payload fixture that pins magic/version/header-length, record hash,
       and little-endian payload length bytes. This covers the current
       compatibility format inside the unsafe engine crate only; construction
-      remains `unsafe`, and safe cache-root leases, `ratchet-oracle`
-      integration, append writing, LMDB/redb offset indexes, automatic
-      mmap-backed indexed hits, out-of-core rematerialization, cross-process
+      remains `unsafe`, and oracle integration beyond the scoped indexed-read
+      adapter, append writing, LMDB/redb offset indexes, full mmap
+      maintenance/repack paths, out-of-core rematerialization, cross-process
       writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current lease-shaped mmap blob-pack API:
@@ -1295,12 +1297,11 @@ alone (`M-1`/`Q-A`).
       that lease. Tests cover accepted leases and rejected non-covering leases.
       A compile-fail rustdoc canary proves a leased mapping cannot escape a
       stack lease as `'static`.
-      This is a type-boundary substrate only; production cache-root read lease
-      implementation, cross-process/durable filesystem leases,
-      `ratchet-oracle` integration,
-      automatic mmap-backed indexed hits, append-writer migration, LMDB/redb
-      offset indexes, out-of-core rematerialization, and harness proof remain
-      open (`C-13`/`R-14`).
+      This is the generic type-boundary substrate; the current advisory-lock
+      implementation and scoped oracle adapters are covered below, while
+      cross-process/durable filesystem lease hardening, append-writer
+      migration, LMDB/redb offset indexes, out-of-core rematerialization, and
+      full harness proof remain open (`C-13`/`R-14`).
 - [x] Current oracle-writer/mapped-reader compatibility canary:
       `aos-nix-harness` has an integration test that writes blob-pack records
       through the existing safe `ratchet-oracle::cache::PersistBlobPack`
@@ -1308,10 +1309,30 @@ alone (`M-1`/`Q-A`).
       `ratchet-cache::blob_pack::MappedBlobPack`, and verifies the borrowed
       mapped payload slices match the original bytes. The unsafe mmap call
       stays in harness test code rather than the safe oracle crate. This is
-      format compatibility coverage only; production mmap-read integration,
-      safe cache-root leases, mmap-backed indexed hits,
-      LMDB/redb offset indexes, out-of-core rematerialization, cross-process
-      writer coordination, and harness proof remain open (`C-13`/`R-14`).
+      format compatibility coverage only; production mmap-read integration
+      beyond scoped indexed hits, LMDB/redb offset indexes, out-of-core
+      rematerialization, cross-process writer coordination, and harness proof
+      remain open (`C-13`/`R-14`).
+- [x] Current scoped oracle mmap indexed-read adapter:
+      `ratchet-cache::blob_pack::BlobPackFileReadLease` ties
+      `MappedBlobPack::map_file_with_lease` to a shared lock on the pack
+      descriptor plus descriptor identity check, while safe `ratchet-cache`
+      pack initialization, append, and tail-trim paths acquire the
+      corresponding exclusive descriptor lock.
+      `ratchet-oracle::cache::PersistBlobPack::with_mapped_blob` opens, leases,
+      maps, verifies, and decodes a payload inside a callback so borrowed mmap
+      bytes never escape `ratchet-oracle`'s safe API.
+      `PersistCache::load_cached_expression_value_indexed`,
+      `hydrate_file_artifact_bundle_from_index`, and
+      `hydrate_parse_artifact_bundle_from_index` now use that scoped path under
+      the existing shared value/files and mapping advisory locks. Direct
+      owned-byte APIs, entry-shaped artifact hydration, pack scans,
+      repack/GC/maintenance, and public parse/value cache results remain
+      buffered or owned. This is scoped cooperating-writer mmap integration
+      only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
+      maintenance/repack paths, out-of-core rematerialization,
+      cross-machine CAS-grade leases, and cached/uncached harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current `ratchet-cache` blob-pack tail-trim primitive:
       `blob_pack::BlobPackAppender::trim_tail` validates the current pack
       header, rejects offsets before the fixed header or beyond the current
@@ -2130,13 +2151,14 @@ alone (`M-1`/`Q-A`).
       malformed/non-canonical attrset binding payloads including duplicate source-order binding names. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
-      through the indexed `values/` pack by value hash, and loads rehash the
-      decoded payload before returning it while preserving
+      through the indexed `values/` pack by value hash; indexed loads decode
+      from a scoped mapped payload under the value-store advisory read lock and
+      rehash the decoded payload before returning it while preserving
       skip-without-hash/encode/write behavior when the materialization threshold
       fails. This is an explicit cache-level payload bridge only; evaluator
-      durable hit selection, lazy-element list or lazy-binding attrset values, mmap
-      reads, full AOS cost calibration, GC/repack, and cached/uncached harness proof
-      remain open (`C-13`/`C-14`/`S-14`).
+      durable hit selection, lazy-element list or lazy-binding attrset values,
+      public borrowed value APIs, full AOS cost calibration, GC/repack, and
+      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current cached-expression node-value metadata linkage adapter:
       `PersistCache::record_node_materialized_value_hash`,
       `clear_node_materialized_value_hash`, and
@@ -2150,9 +2172,9 @@ alone (`M-1`/`Q-A`).
       record metadata, and node-key loads return `None` for missing metadata,
       reuse-only metadata, cleared metadata, or missing value blobs. This is
       explicit cache-level linkage only; evaluator durable hit selection,
-      node/value transactionality, lazy-element list or lazy-binding attrset values, mmap
-      reads, cost measurement, GC/repack, and cached/uncached harness proof
-      remain open (`C-13`/`C-14`/`S-14`).
+      node/value transactionality, lazy-element list or lazy-binding attrset
+      values, public borrowed value APIs, cost measurement, GC/repack, and
+      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current threshold-driven force-cache persistent value writeback:
       tree-walk `force_value` now materializes replayable forced-expression
       payloads through `PersistCache::node_materialization_signals` and
@@ -2681,13 +2703,14 @@ alone (`M-1`/`Q-A`).
       `lookup_file_artifact`, returns `Ok(None)` on misses, and on hits hydrates
       the validated bundle into a caller-supplied `ParseCacheEntry` while
       returning the matched `PersistFileArtifactIndexEntry`. The lookup and
-      `files` pack read run under shared `files` store and file-artifact mapping
-      advisory locks plus the same-root locks, so cooperating writers and
-      maintenance cannot expose a split sidecar/pack view. This is explicit
-      cache-level lookup hydration only; automatic parse-cache integration,
-      durable hit selection, source/key equality proof, mmap reads, full artifact
-      semantic validation beyond existing decoders, GC/repack, and harness proof
-      remain open (`C-13`).
+      scoped mapped `files` pack decode run under shared `files` store and
+      file-artifact mapping advisory locks plus the same-root locks, so
+      cooperating writers and maintenance cannot expose a split sidecar/pack
+      view. This is explicit cache-level lookup hydration only; automatic
+      parse-cache integration, durable hit selection, source/key equality
+      proof, public borrowed artifact APIs, full artifact semantic validation
+      beyond existing decoders, GC/repack, and harness proof remain open
+      (`C-13`).
 - [x] Current source-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_source_index` derives both
       `ParseFileKey` and `ParseCacheKey` from one caller-supplied realpath/source
@@ -2695,8 +2718,8 @@ alone (`M-1`/`Q-A`).
       delegates matching durable file-artifact mappings to validated indexed
       hydration. This is explicit source-shaped hydration only; canonical path
       resolution, automatic parse-cache integration, durable hit selection,
-      mmap reads, full artifact semantic validation beyond existing decoders,
-      GC/repack, and harness proof remain open (`C-13`).
+      public borrowed artifact APIs, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current source-derived indexed parse-cache load adapter:
       `PersistCache::load_parse_cache_source_from_index` derives both source
       identities from one caller-supplied canonical realpath/source byte pair,
@@ -2704,26 +2727,27 @@ alone (`M-1`/`Q-A`).
       `ParseCache` layout, then returns it through
       `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
       caller-driven durable hit loading only; canonical path resolution,
-      automatic evaluator/import selection, mmap reads, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain
-      open (`C-13`/`R-10`).
+      automatic evaluator/import selection, public borrowed parse-cache APIs,
+      full artifact semantic validation beyond existing decoders, GC/repack,
+      and harness proof remain open (`C-13`/`R-10`).
 - [x] Current file-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_file_index` canonicalizes a
       requested filesystem path, reads the canonical source bytes, derives the
       same source-shaped identities, and hydrates the normal `ParseCache` entry
       when the durable file-artifact index has a match. This is explicit
       file-shaped hydration only; automatic parse-cache/evaluator integration,
-      durable hit selection, mmap reads, full artifact semantic validation
-      beyond existing decoders, GC/repack, and harness proof remain open
-      (`C-13`).
+      durable hit selection, public borrowed artifact APIs, full artifact
+      semantic validation beyond existing decoders, GC/repack, and harness proof
+      remain open (`C-13`).
 - [x] Current file-derived indexed parse-cache load adapter:
       `PersistCache::load_parse_cache_file_from_index` canonicalizes and reads a
       requested source file, hydrates the matching durable file-artifact entry
       into the normal `ParseCache` layout, then returns it through
       `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
       caller-driven durable hit loading only; automatic evaluator/import
-      selection, mmap reads, full artifact semantic validation beyond existing
-      decoders, GC/repack, and harness proof remain open (`C-13`/`R-10`).
+      selection, public borrowed parse-cache APIs, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain
+      open (`C-13`/`R-10`).
 - [x] Current parse-keyed persistent parse-artifact index substrate:
       `PersistLayout::parse_artifact_index_path` adds
       `nodes/parse-artifacts.index`; `PersistParseArtifactKey` encodes the
@@ -2736,12 +2760,12 @@ alone (`M-1`/`Q-A`).
       does not match the supplied `ParseCacheKey`, and hydration validates
       bundled metadata/schema/counts plus `resolved.bin`/`symbols.bin`/`ir.bin`
       decoder shape before writing the target entry. The parse-artifact lookup
-      and `files` pack read run under shared `files` store and parse-artifact
-      mapping advisory locks plus the same-root locks. This is cache API
+      and scoped mapped `files` pack decode run under shared `files` store and
+      parse-artifact mapping advisory locks plus the same-root locks. This is cache API
       substrate only; evaluator integration is covered by the raw native
       expression row below. Source equality proof beyond the parse-cache entry
-      directory key, mmap reads, full artifact semantic validation beyond
-      existing decoders, GC/repack, and harness proof remain open
+      directory key, public borrowed parse-cache APIs, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache hit selection:
       `TreeWalkOptions::set_persist_cache_root` configures an optional
@@ -2753,9 +2777,9 @@ alone (`M-1`/`Q-A`).
       the persistent root is unavailable, misses, or has stale/corrupt indexed
       artifacts. The persistent root opens lazily on the first eligible import;
       scoped imports and text-store imports still bypass this path. This is
-      evaluator import hit selection only; mmap reads, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain open
-      (`C-13`/`R-10`).
+      evaluator import hit selection only; public borrowed parse-cache APIs,
+      full artifact semantic validation beyond existing decoders, GC/repack,
+      and harness proof remain open (`C-13`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache writeback:
       unscoped filesystem imports with configured `parse_cache_root` and
       `persist_cache_root` now materialize successfully stored
@@ -2776,9 +2800,9 @@ alone (`M-1`/`Q-A`).
       `ParseCache::load_or_parse_bytes`, then writes successfully stored
       fallback parses to the persistent file-artifact index. Raw
       `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
-      keys. This is native file-root lookup/writeback only; mmap reads, full
-      artifact semantic validation beyond existing decoders, GC/repack, and
-      harness proof remain open
+      keys. This is native file-root lookup/writeback only; public borrowed
+      parse-cache APIs, full artifact semantic validation beyond existing
+      decoders, GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current file-backed native root cache-off/cached closure parity canary:
       `native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure`
@@ -2803,9 +2827,9 @@ alone (`M-1`/`Q-A`).
       `eval_expr`/`instantiate_expr` sources use parse-keyed persistent
       artifacts and still do not synthesize file-artifact keys. This is raw
       native expression lookup/writeback only; source equality proof beyond
-      the parse-cache entry directory key, mmap reads, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain
-      open
+      the parse-cache entry directory key, public borrowed parse-cache APIs,
+      full artifact semantic validation beyond existing decoders, GC/repack,
+      and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
