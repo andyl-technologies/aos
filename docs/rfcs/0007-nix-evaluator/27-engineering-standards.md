@@ -329,7 +329,7 @@ real implementation we intend to swap between, a trait is the right seam:
 | an allocator/GC trait | bump arena ↔ generational ↔ concurrent moving | [06](06-memory-management-and-gc.md) |
 | `StorageEngine` | packfile ↔ LMDB/heed ↔ redb | [12](12-incremental-evaluation-cache.md) |
 | a tier/executor trait | oracle ↔ tier-1 baseline ↔ tier-2 optimizing | [08](08-execution-tiers-and-cranelift.md) |
-| primop registration | the `aos_prim_<name>` registry | [10](10-primops-and-runtime-abi.md) |
+| primop registration | the `nix.builtin.<name>` registry | [10](10-primops-and-runtime-abi.md) |
 | the hashing policy | xxh3 (in-process) ↔ blake3 (durable) ↔ SHA-256 (Nix) | [18](18-glossary.md) invariant 5 |
 
 These seams are entered rarely relative to the work they gate (one `NixEval`

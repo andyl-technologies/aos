@@ -3,6 +3,7 @@
 //! [`BuiltinRegistry`], and the `BuiltinDefinition` declaration trait.
 
 use super::*;
+use crate::runtime_abi::BuiltinRuntimeSymbol;
 
 /// The observable effect class for a direct builtin boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,6 +584,11 @@ impl Builtin {
     /// Returns the byte-oriented builtin attribute name.
     pub const fn name(&self) -> &'static [u8] {
         self.name
+    }
+
+    /// Returns the stable runtime/JIT symbol name view for this builtin.
+    pub const fn runtime_symbol(&self) -> BuiltinRuntimeSymbol {
+        BuiltinRuntimeSymbol::new(self.name)
     }
 
     /// Returns the runtime execution strategy for the builtin.

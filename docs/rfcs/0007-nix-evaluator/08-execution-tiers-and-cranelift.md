@@ -396,7 +396,7 @@ generous with tier 1.
 Lowering IR to Cranelift CLIF is a tree-directed translation: each IR node kind
 emits a small CLIF sequence. Most nodes emit a **call to a runtime symbol** rather
 than open-coded logic — `aos_force`, `aos_alloc_thunk`, `aos_select_ic`,
-`aos_apply`, `aos_prim_<name>` — so that the *engine* stays thin and the *semantics*
+`aos_apply`, `nix.builtin.<name>` — so that the *engine* stays thin and the *semantics*
 live in Rust. This is the single most important structural decision in the JIT and
 is detailed in [§7](#7-the-runtime-abi). Tier 2 differs from tier 1 only in that it
 *inlines* and *specializes* some of those calls (turning an `aos_select_ic` call
@@ -416,13 +416,13 @@ block0(v_rt: i64, v_env: i64):
     v_xf  = call aos_force(v_rt, v_x)            ; force x to WHNF (an attrset)
     v_y   = call aos_select_ic(v_rt, v_xf, %sym_y, %ic_site_7)  ; x.y via inline cache
     v_yf  = call aos_force(v_rt, v_y)            ; force x.y
-    v_sum = call aos_prim_add(v_rt, v_yf, %int_1); generic add (type-checks)
+    v_sum = call nix.builtin.add(v_rt, v_yf, %int_1); generic add (type-checks)
     return v_sum
 }
 ```
 
 Tier 2, given a profile saying `%ic_site_7` is monomorphic on shape `#C42` (which
-puts `y` at byte offset 16) and `aos_prim_add` has only seen `int + int`:
+puts `y` at byte offset 16) and `nix.builtin.add` has only seen `int + int`:
 
 ```text
 function %thunk_42_opt(i64 rt, i64 env) -> i64 {
@@ -686,11 +686,11 @@ The core set:
 | `aos_alloc_attrs` | `(rt, shape, *fields) -> Value` | Allocate an attrset of a given [hidden class](09-attribute-sets-hidden-classes-and-inline-caches.md). |
 | `aos_select_ic` | `(rt, Value attrs, sym, ic_site) -> Value` | Attribute select through a per-site [inline cache](09-attribute-sets-hidden-classes-and-inline-caches.md). |
 | `aos_env_get` | `(env, slot) -> Value` | Read a de Bruijn env slot. |
-| `aos_prim_<name>` | `(rt, args...) -> Value` | One symbol per [builtin](10-primops-and-runtime-abi.md) (~120). Dispatched by perfect hashing where indirect. |
+| `nix.builtin.<name>` | `(rt, args...) -> Value` | One symbol per [builtin](10-primops-and-runtime-abi.md) (~120). Dispatched by perfect hashing where indirect. |
 | `aos_deopt` | `(rt, deopt_record) -> Value` | Reconstruct abstract state and re-enter the tier-0 oracle (§3). |
 | `aos_throw` | `(rt, err) -> !` | Raise a Nix-compatible evaluation error (e.g. infinite recursion, type error), matching C++ Nix's message for the [harness](15-differential-testing-and-benchmarking.md). |
 
-The `aos_prim_<name>` symbols (and the distinguished `derivationStrict`) are the
+The `nix.builtin.<name>` symbols, including `nix.builtin.derivationStrict`, are the
 **dialect escape hatch** ([generalization and language dialects](28-generalization-and-language-dialects.md)
 §5): the builtin identities and their runtime symbols are supplied by the Nix
 dialect, while the ABI *mechanism* — the uniform signature, register-passing, and
@@ -713,7 +713,7 @@ Two properties of this table are essential:
 
 ### 7.3 Import and parse caching at the ABI seam
 
-`import` is a runtime call (`aos_prim_import`) that resolves a path to a realpath,
+`import` is a runtime call (`nix.builtin.import`) that resolves a path to a realpath,
 content-hashes it, and returns the cached parsed+compiled module if present
 ([10](10-primops-and-runtime-abi.md), [12](12-incremental-evaluation-cache.md)). It
 is part of the ABI because compiled code triggers imports, and the cache it consults
@@ -837,7 +837,7 @@ package set, not by assertion:
   analysis, guarded by **deoptimization** back to the oracle and (as a follow-up)
   **OSR** into running activations.
 - A **uniform `extern "C"` ABI** (`ThunkFn`/`LambdaFn`) plus a fixed **runtime
-  symbol table** (`aos_force`, `aos_alloc_*`, `aos_select_ic`, `aos_prim_*`,
+  symbol table** (`aos_force`, `aos_alloc_*`, `aos_select_ic`, `nix.builtin.*`,
   `aos_deopt`) makes the engine GC-strategy-agnostic and tier-agnostic: semantics
   are written once in Rust, and a tier swap is a `code_ptr` swap.
 - **Cranelift** is chosen for fast warmup, pure-Rust hermeticity, a first-class JIT
@@ -898,7 +898,7 @@ harness, never cut for scope.
 ### Runtime ABI and symbol table (the tier-invariant spine)
 
 - [ ] Uniform `extern "C"` `ThunkFn`/`LambdaFn` signature `(rt, env[, arg]) -> Value`, 16-byte `Value` register-passed ([§7.1](#71-the-uniform-calling-convention)) — P6, `S-4`/`S-12`; gate: differential `.drv` harness.
-- [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `aos_prim_<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
+- [ ] Runtime symbol table registered via `JITBuilder::symbol`: `aos_force`, `aos_apply`, `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_select_ic`, `aos_env_get`, `nix.builtin.<name>`, `aos_deopt`, `aos_throw` ([§7.2](#72-the-runtime-symbol-table)) — P6, `S-12`.
 - [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
       heap object creation through `BumpArena::aos_alloc_*`
       entry-point-shaped Rust helpers for strings and paths, contiguous lists,
@@ -912,7 +912,7 @@ harness, never cut for scope.
       routed through every tier/primop allocation path, and swappable between
       bump-arena and generational bodies with byte-identical compiled code
       ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
-- [ ] `import` at the ABI seam (`aos_prim_import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
+- [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT
 

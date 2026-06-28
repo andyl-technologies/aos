@@ -518,7 +518,7 @@ Nix's cost. Replacing Boehm with a precise collector is a named win of the proje
 See [memory management and GC](06-memory-management-and-gc.md).
 
 **Primop / builtin** — A Nix `builtins.*` function (~120 total) implemented as a
-Rust function and registered as a Cranelift runtime symbol (`aos_prim_<name>`).
+Rust function and registered as a Cranelift runtime symbol (`nix.builtin.<name>`).
 Primops are indistinguishable from lambdas to user code, carry escape signatures
 for the analysis, and some (arithmetic, comparison, `derivationStrict`) are
 provably strict demand sources. See [primops and runtime ABI](10-primops-and-runtime-abi.md).

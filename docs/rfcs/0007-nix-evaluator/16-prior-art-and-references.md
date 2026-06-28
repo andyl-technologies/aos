@@ -614,7 +614,7 @@ steady-state code quality for **roughly an order-of-magnitude faster compilation
 than LLVM**. `cranelift-jit` provides `JITBuilder`/`JITModule`, where
 **`JITBuilder::symbol` registers host functions** that the JIT uses to resolve
 names "declared, but not defined, in the module being compiled" — exactly the
-runtime-symbol mechanism our ABI (`aos_force`, `aos_alloc_*`, `aos_prim_*`)
+runtime-symbol mechanism our ABI (`aos_force`, `aos_alloc_*`, `nix.builtin.*`)
 needs. Cranelift also supplies **user stack maps** for an *external* precise
 collector to find GC roots in compiled frames (it ships the safepoint/stack-map
 infrastructure but **not** a collector).

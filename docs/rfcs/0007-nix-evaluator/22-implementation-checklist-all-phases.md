@@ -3574,6 +3574,13 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       per-expression once; thunks are `(code, env, state)` instances (`S-4`).
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
+- [x] Current stable-symbol naming precursor: `ratchet-core::runtime_abi`
+      freezes the safe metadata names that later `jit/abi.rs` and
+      `jit/cranelift.rs` will register: `nix.builtin.<visible-name>` for every
+      declared builtin plus typed `aos_*` helper-symbol declarations. It
+      validates builtin names before rendering string-keyed symbol names, but
+      does not export unsafe ABI functions or register a Cranelift symbol
+      table.
 - [ ] `jit/tier.rs` — tier-up policy (hot-thunk detection) into tier 1.
 - [ ] `unsafe` discipline: `jit/` under `#![deny(unsafe_op_in_unsafe_fn)]`,
       `// SAFETY:` per block, two-maintainer review, ASan/UBSan CI; the

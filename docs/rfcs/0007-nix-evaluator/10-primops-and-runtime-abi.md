@@ -765,6 +765,15 @@ harness, never cut for scope.
       bump-arena and generational bodies with byte-identical JIT output
       ([§3.1](#31-what-lives-in-it)) — P3/P6, `S-8`.
 - [ ] Frozen, stable symbol naming scheme (`nix.builtin.<name>`, `aos_<verb>`) so persisted compiled-IR artifacts re-link across runs ([§3.3](#33-symbol-naming-and-stability)) — P2/P6, `R-14`.
+- [x] Current stable-symbol naming precursor: `ratchet-core::runtime_abi`
+      exposes the frozen builtin prefix `nix.builtin.`, the runtime-helper
+      prefix `aos_`, typed helper-symbol declarations for the centralized
+      current `aos_*` helper-name set, and a
+      `Builtin::runtime_symbol()` view that renders every declared builtin as
+      `nix.builtin.<visible-name>` with UTF-8 validation for future
+      string-keyed JIT registration. This is safe metadata only; no
+      `unsafe extern "C"` wrappers, `JITBuilder::symbol` registration, compiled
+      artifact relinking, or native ABI entrypoints are claimed here.
 
 ### Perfect-hash builtin dispatch
 

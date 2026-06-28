@@ -395,7 +395,7 @@ A `PrimOp(prim, args)` node is a *direct* call to a builtin
 ([primops and runtime ABI](10-primops-and-runtime-abi.md)). It exists as a
 distinct node kind (rather than `Apply` onto a `GlobalVar`) wherever the builtin
 identity is statically known, because that licenses the lowering to emit the
-specific `aos_prim_<name>` runtime symbol
+specific `nix.builtin.<name>` runtime symbol
 ([execution tiers and Cranelift](08-execution-tiers-and-cranelift.md) §7.2) and
 the simplifier to constant-fold *total* primops (`builtins.length [ 1 2 3 ] -> 3`)
 or apply rewrite RULES (list fusion). A builtin reached indirectly (passed as a

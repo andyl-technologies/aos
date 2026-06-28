@@ -23,6 +23,7 @@ pub use aos_nix_syntax as syntax;
 pub mod analysis;
 pub mod builtins;
 pub mod ir;
+pub mod runtime_abi;
 pub mod scope;
 
 pub use analysis::{
@@ -37,6 +38,11 @@ pub use ir::{
     IrChildSlice, IrData, IrDialectOp, IrError, IrErrorKind, IrFacts, IrId, IrInlineCacheSiteId,
     IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, IrWithChain, Strictness, ThunkSharing,
     all_pure, all_pure_builtin, annotate_ir, lower, lower_with_options,
+};
+pub use runtime_abi::{
+    BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, RUNTIME_HELPER_SYMBOL_PREFIX,
+    RUNTIME_HELPER_SYMBOLS, RuntimeHelperRole, RuntimeHelperSymbol, RuntimeSymbolNameError,
+    runtime_helper_symbols,
 };
 pub use scope::{
     FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst,
