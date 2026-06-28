@@ -3051,17 +3051,21 @@ alone (`M-1`/`Q-A`).
       shapes; it is not the full cache-off AOS closure harness, full
       internal-hash leak invariant, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
-- [x] Current `AOS_NIX_CACHE=0` native closure bypass canary:
+- [x] Current `AOS_NIX_CACHE=0` native closure bypass canaries:
       `aos_nix_cache_zero_bypasses_native_closure_cache_root` configures a
       stale cache-root path that is a plain file, applies the real
       `AOS_NIX_CACHE=0` config path, verifies the mapped native
       `TreeWalkOptions` have no parse/persist cache roots and eval-cache is
       disabled, and then requires native-only instantiation to produce the same
-      in-memory `.drv` closure as an explicitly uncached baseline. This samples
-      the public env/config kill switch at the native `.drv` closure boundary;
-      it is not the full periodic cache-off/cold cached CI harness or future
-      value-memoization safety net ([12](12-incremental-evaluation-cache.md)
-      §8.3).
+      in-memory `.drv` closure as an explicitly uncached baseline. The
+      file-backed companion canary drives the same public config path through
+      `NativeOnlyEval::instantiate_closure` with a real source file and `-A`
+      selector, again proving that the disabled stale cache-root file is not
+      touched and that the resulting closure bytes match the uncached baseline.
+      This samples the public env/config kill switch at the raw-expression and
+      file-backed native `.drv` closure boundaries; it is not the full periodic
+      cache-off/cold cached CI harness or future value-memoization safety net
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation
