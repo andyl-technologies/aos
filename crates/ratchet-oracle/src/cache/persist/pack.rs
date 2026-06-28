@@ -410,6 +410,8 @@ impl PersistBlobPayloadWindow {
 pub struct PersistBlobPack {
     appender: BlobPackAppender,
     path: PathBuf,
+    #[cfg(test)]
+    mapped_read_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PersistBlobPack {
@@ -426,12 +428,24 @@ impl PersistBlobPack {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobPackError> {
         let path = path.into();
         let appender = open_engine_blob_pack_appender(&path)?;
-        Ok(Self { appender, path })
+        Ok(Self {
+            appender,
+            path,
+            #[cfg(test)]
+            mapped_read_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
     }
 
     /// Returns this packfile's filesystem path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Returns the number of scoped mapped reads made through this handle.
+    #[cfg(test)]
+    pub(crate) fn mapped_read_count_for_tests(&self) -> usize {
+        self.mapped_read_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Returns the current packfile length after validating its header.
@@ -646,6 +660,9 @@ impl PersistBlobPack {
                 durable_hash_to_engine(expected_hash),
             )
             .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        #[cfg(test)]
+        self.mapped_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(visit(payload.as_bytes()))
     }
 
@@ -682,7 +699,12 @@ impl PersistBlobPack {
             .map_err(engine_rewrite_error_to_persist)?;
         let path = tmp_reader.path().to_path_buf();
         let appender = open_engine_blob_pack_appender(&path)?;
-        Ok(Self { appender, path })
+        Ok(Self {
+            appender,
+            path,
+            #[cfg(test)]
+            mapped_read_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
     }
 
     /// Truncates unneeded bytes after `end_offset`.

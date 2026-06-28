@@ -76,6 +76,128 @@ fn cache_cached_expression_payload_materializes_and_loads_by_value_hash() {
 }
 
 #[test]
+fn cache_cached_expression_payload_load_uses_scoped_mapped_value_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("payload materializes");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    cache
+        .read_blob_indexed(key)
+        .expect("owned indexed read succeeds")
+        .expect("owned indexed blob exists");
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        0,
+        "owned indexed blob reads should not hit the scoped mapped adapter"
+    );
+    assert_eq!(
+        cache
+            .load_cached_expression_value_indexed(value_hash)
+            .expect("payload loads")
+            .expect("payload exists"),
+        payload
+    );
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        1,
+        "cached-expression value loads should decode through the scoped mapped adapter"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_load_acquires_value_store_advisory_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("payload materializes");
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .load_cached_expression_value_indexed(value_hash)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("payload load result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "indexed cached-expression value loads should wait while the value store lock is held"
+    );
+    drop(guard);
+
+    let loaded = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("payload load completes after value store lock release")
+        .expect("payload loads")
+        .expect("payload exists");
+    handle.join().expect("worker joins");
+    assert_eq!(loaded, payload);
+    let released_lock = AdvisoryFileLock::try_lock(
+        layout.blob_store_lock_path(PersistBlobStore::Values),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("value-store advisory lock releases after indexed payload load");
+    drop(released_lock);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let result = cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("payload materializes");
+    let PersistMaterialization::Materialized(location) = result else {
+        panic!("payload should materialize");
+    };
+    let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .load_cached_expression_value_indexed(value_hash)
+        .expect_err("corrupt mapped value blob is rejected");
+
+    assert!(matches!(
+        error,
+        PersistCachedExpressionValueIndexedLoadError::Read {
+            source: PersistBlobIndexedReadError::Read {
+                source: PersistBlobPackError::PayloadHashMismatch { .. },
+            },
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_payload_materialization_reuses_indexed_value_blob() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

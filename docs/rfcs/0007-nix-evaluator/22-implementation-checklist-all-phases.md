@@ -1432,14 +1432,20 @@ alone (`M-1`/`Q-A`).
       `PersistCache::load_cached_expression_value_indexed`,
       `hydrate_file_artifact_bundle_from_index`, and
       `hydrate_parse_artifact_bundle_from_index` now use that scoped path under
-      the existing shared value/files and mapping advisory locks. Direct
-      owned-byte APIs, entry-shaped artifact hydration, pack scans,
+      the existing shared value/files and mapping advisory locks. Focused
+      cached-expression payload tests require indexed value loads to enter the
+      scoped mapped adapter, hold the value-store advisory lock, and reject
+      corrupt value-pack payloads. Direct owned-byte APIs, entry-shaped
+      artifact hydration, pack scans,
       repack/GC/maintenance, and public parse/value cache results remain
       buffered or owned. This is scoped cooperating-writer mmap integration
       only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
       maintenance/repack paths, out-of-core rematerialization,
       cross-machine CAS-grade leases, and cached/uncached harness proof remain
-      open (`C-13`/`R-14`).
+      open (`C-13`/`R-14`). Gates include
+      `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
+      `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`
+      and `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`.
 - [x] Current `ratchet-cache` blob-pack tail-trim primitive:
       `blob_pack::BlobPackAppender::trim_tail` validates the current pack
       header, rejects offsets before the fixed header or beyond the current
@@ -2266,12 +2272,17 @@ alone (`M-1`/`Q-A`).
       `load_cached_expression_value_indexed` write and read those payloads
       through the indexed `values/` pack by value hash; indexed loads decode
       from a scoped mapped payload under the value-store advisory read lock and
-      rehash the decoded payload before returning it while preserving
-      skip-without-hash/encode/write behavior when the materialization threshold
-      fails. This is an explicit cache-level payload bridge only; evaluator
-      durable hit selection, lazy-element list or lazy-binding attrset values,
-      public borrowed value APIs, full AOS cost calibration, GC/repack, and
-      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
+      rehash the decoded payload before returning it, with focused coverage for
+      scoped mapped-adapter use, advisory-lock blocking, and corrupt payload
+      rejection, while preserving skip-without-hash/encode/write behavior when the
+      materialization threshold fails. This is an explicit cache-level payload
+      bridge only; evaluator durable hit selection, lazy-element list or
+      lazy-binding attrset values, public borrowed value APIs, full AOS cost
+      calibration, GC/repack, and cached/uncached harness proof remain open
+      (`C-13`/`C-14`/`S-14`). Gates include
+      `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
+      `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`
+      and `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`.
 - [x] Current cached-expression node-value metadata linkage adapter:
       `PersistCache::record_node_materialized_value_hash`,
       `clear_node_materialized_value_hash`, and
