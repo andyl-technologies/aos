@@ -583,6 +583,22 @@ fn foldl_strict_primop_checks_operator_then_list_without_forcing_initial() {
 #[test]
 fn foldl_empty_lazy_initial_is_forced_by_attr_consumers() {
     assert_eq!(
+        eval(
+            "let discoverPackages = subdirs:
+               let filePackages = { zlib = 1; };
+                   subdirPackages =
+                     builtins.foldl' (acc: subdir: acc // { ${subdir} = true; }) {} subdirs;
+               in filePackages // subdirPackages;
+             in (discoverPackages []).zlib"
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval("builtins.isAttrs (builtins.foldl' (acc: _x: acc) { a = 1; } [])").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
         eval("((builtins.foldl' (acc: _x: acc) { a = 1; } []) // { b = 2; }).a").as_int(),
         Ok(1)
     );
@@ -611,6 +627,22 @@ fn foldl_empty_lazy_initial_is_forced_by_attr_consumers() {
         Ok(1)
     );
     assert_eq!(
+        eval(
+            "let get = builtins.getAttr \"a\";
+             in get (builtins.foldl' (acc: _x: acc) { a = 1; } [])"
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval(
+            "let has = builtins.hasAttr \"a\";
+             in has (builtins.foldl' (acc: _x: acc) { a = 1; } [])"
+        )
+        .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
         eval_list_string_bytes(
             "builtins.attrNames (builtins.foldl' (acc: _x: acc) { b = 2; a = 1; } [])"
         ),
@@ -625,6 +657,14 @@ fn foldl_empty_lazy_initial_is_forced_by_attr_consumers() {
         Ok(1)
     );
     assert_eq!(
+        eval(
+            "let remove = builtins.removeAttrs (builtins.foldl' (acc: _x: acc) { a = 1; b = 2; } []);
+             in (remove [ \"b\" ]).a"
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
         eval("(builtins.intersectAttrs (builtins.foldl' (acc: _x: acc) { a = 1; c = 3; } []) { a = 2; b = 4; }).a").as_int(),
         Ok(2)
     );
@@ -633,11 +673,35 @@ fn foldl_empty_lazy_initial_is_forced_by_attr_consumers() {
         Ok(2)
     );
     assert_eq!(
+        eval(
+            "let intersect = builtins.intersectAttrs { a = 0; };
+             in (intersect (builtins.foldl' (acc: _x: acc) { a = 2; b = 4; } [])).a"
+        )
+        .as_int(),
+        Ok(2)
+    );
+    assert_eq!(
         eval("(builtins.mapAttrs (_name: value: value + 1) (builtins.foldl' (acc: _x: acc) { a = 1; } [])).a").as_int(),
         Ok(2)
     );
     assert_eq!(
+        eval(
+            "let map = builtins.mapAttrs (_name: value: value + 1);
+             in (map (builtins.foldl' (acc: _x: acc) { a = 1; } [])).a"
+        )
+        .as_int(),
+        Ok(2)
+    );
+    assert_eq!(
         eval("builtins.unsafeGetAttrPos \"missing\" (builtins.foldl' (acc: _x: acc) { a = 1; } []) == null").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(
+            "let unsafeGetAttrPos = builtins.unsafeGetAttrPos \"missing\";
+             in unsafeGetAttrPos (builtins.foldl' (acc: _x: acc) { a = 1; } []) == null"
+        )
+        .as_bool(),
         Ok(true)
     );
 

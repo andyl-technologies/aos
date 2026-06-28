@@ -321,6 +321,22 @@ fn first_class_binary_builtin_selects_are_curried() {
         vec![1, 3]
     );
     assert_eq!(
+        eval_list_ints(
+            "let cat = builtins.catAttrs \"a\"; in cat [
+               (builtins.foldl' (acc: _x: acc) { a = 1; } [])
+             ]"
+        ),
+        vec![1]
+    );
+    assert_eq!(
+        eval_list_ints(
+            "builtins.catAttrs \"a\" [
+               (builtins.foldl' (acc: _x: acc) { a = 1; } [])
+             ]"
+        ),
+        vec![1]
+    );
+    assert_eq!(
         eval_string_bytes("let join = builtins.concatStringsSep \",\"; in join [ \"a\" \"b\" ]"),
         b"a,b"
     );

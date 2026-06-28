@@ -880,6 +880,8 @@ impl TreeWalk {
         context_span: Span,
         context_value: Value,
     ) -> Result<Value, TreeWalkError> {
+        let context_value =
+            self.force_lazy_foldl_initial_value(context_id, context_span, context_value)?;
         if context_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {

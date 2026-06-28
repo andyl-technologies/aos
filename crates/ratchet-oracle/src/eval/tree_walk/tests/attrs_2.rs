@@ -272,6 +272,10 @@ fn attrset_functors_apply_like_functions() {
 #[test]
 fn with_scopes_probe_dynamic_attrs_lazily() {
     assert_eq!(eval("with { a = 1; }; a").as_int(), Ok(1));
+    assert_eq!(
+        eval("with builtins.foldl' (acc: _x: acc) { a = 1; } []; a").as_int(),
+        Ok(1)
+    );
     assert_eq!(eval("with { f = x: x + 1; }; f 2").as_int(), Ok(3));
     assert_eq!(eval("with (1 / 0); 7").as_int(), Ok(7));
     assert_eq!(eval("with { a = 1 / 0; }; 7").as_int(), Ok(7));
@@ -381,6 +385,10 @@ fn with_lookup_reports_non_attr_scopes_and_missing_names() {
 #[test]
 fn formal_set_lambdas_bind_attrs_defaults_ellipsis_and_aliases() {
     assert_eq!(eval("({ x }: x) { x = 1; }").as_int(), Ok(1));
+    assert_eq!(
+        eval("({ x }: x) (builtins.foldl' (acc: _x: acc) { x = 1; } [])").as_int(),
+        Ok(1)
+    );
     assert_eq!(eval("({ x, y }: x + y) { x = 1; y = 2; }").as_int(), Ok(3));
     assert_eq!(
         eval("({ x, ... }: x) { x = 1; y = 1 / 0; }").as_int(),

@@ -233,6 +233,12 @@ fn convert_hash_primop_converts_formats() {
         sha256.as_bytes()
     );
     assert_eq!(
+        eval_string_bytes(&format!(
+            "builtins.convertHash (builtins.foldl' (acc: _x: acc) {{ hash = \"sha256:{sha256}\"; toHashFormat = \"base16\"; }} [])"
+        )),
+        sha256.as_bytes()
+    );
+    assert_eq!(
         eval_string_bytes(
             "builtins.convertHash { hash = builtins.hashString \"md5\" \"abc\"; hashAlgo = \"md5\"; toHashFormat = \"nix32\"; }"
         ),

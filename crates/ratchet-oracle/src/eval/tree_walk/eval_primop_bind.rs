@@ -12,6 +12,7 @@ impl TreeWalk {
         tag: ValueTag,
     ) -> Result<Value, TreeWalkError> {
         let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        let value = self.force_lazy_foldl_initial_value(argument.id(), argument.span(), value)?;
         if value.tag() != tag {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -592,6 +593,8 @@ impl TreeWalk {
         }
 
         let attrs_value = self.force_value(argument_id, argument_span, argument)?;
+        let attrs_value =
+            self.force_lazy_foldl_initial_value(argument_id, argument_span, attrs_value)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -918,6 +921,9 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
         let overrides_value = self
             .force_value(id, span, overrides_value)
+            .map_err(|error| self.prepend_overrides_context(id, span, error))?;
+        let overrides_value = self
+            .force_lazy_foldl_initial_value(id, span, overrides_value)
             .map_err(|error| self.prepend_overrides_context(id, span, error))?;
         if overrides_value.tag() != ValueTag::Attrs {
             let error = TreeWalkError::new(

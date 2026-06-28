@@ -613,6 +613,15 @@ fn recursive_attrset_overrides_replace_self_scope_and_final_attrs() {
         ),
         br#"{"__overrides":{"bar":"qux"},"bar":"qux","foo":"bar"}"#.to_vec()
     );
+    assert_eq!(
+        eval_string_bytes(
+            r#"(rec {
+                 foo = "bar";
+                 __overrides = builtins.foldl' (acc: _x: acc) { bar = "qux"; } [];
+               }).bar"#
+        ),
+        b"qux"
+    );
 }
 
 #[test]

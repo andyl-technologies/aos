@@ -111,7 +111,8 @@ impl TreeWalk {
             let scope_span = self.node_in_module(scope_ref.module(), scope)?.span;
             let scope_value = self.with_scope_value(id, scope_ref, node.span)?;
             let attrs_value = self.with_current_module(scope_ref.module(), |eval| {
-                eval.force_value(scope, scope_span, scope_value)
+                let attrs_value = eval.force_value(scope, scope_span, scope_value)?;
+                eval.force_lazy_foldl_initial_value(scope, scope_span, attrs_value)
             })?;
             if attrs_value.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
@@ -262,6 +263,7 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
+        let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
         match primop {
             StrictUnaryPrimOp::IsAttrs => Ok(Value::bool(value.tag() == ValueTag::Attrs)),
             StrictUnaryPrimOp::IsList => Ok(Value::bool(value.tag() == ValueTag::List)),

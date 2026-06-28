@@ -767,6 +767,26 @@ fn fetch_tree_validates_input_shape() {
         }
     ));
 
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.fetchTree {
+                 type = "git";
+                 url = "file:///no-such-repo";
+                 verifyCommit = false;
+                 publicKeys = [
+                   (builtins.foldl' (acc: _x: acc) { key = 1; type = "ssh-ed25519"; } [])
+                 ];
+               }"#,
+    ))
+    .expect_err("fetchTree publicKeys lazy foldl entries are forced before field checks");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "string",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+
     let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs""#))
         .expect_err("unsupported string flake ref type rejects");
     assert!(matches!(

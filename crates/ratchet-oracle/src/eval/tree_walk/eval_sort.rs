@@ -458,6 +458,7 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let value = self.force_value(argument, argument_span, value)?;
+        let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
         if value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -583,6 +584,7 @@ impl TreeWalk {
         keys: &mut Vec<Value>,
     ) -> Result<Option<Value>, TreeWalkError> {
         let item = self.force_value(item_id, item_span, candidate)?;
+        let item = self.force_lazy_foldl_initial_value(item_id, item_span, item)?;
         if item.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {

@@ -169,6 +169,7 @@ impl TreeWalk {
         let mut groups: Vec<(Symbol, Vec<Value>)> = Vec::new();
         for element in elements {
             let element = self.force_value(list_id, list_span, element)?;
+            let element = self.force_lazy_foldl_initial_value(list_id, list_span, element)?;
             if element.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -339,6 +340,7 @@ impl TreeWalk {
         })?;
         for element in elements {
             let element = self.force_value(list_id, list_span, element)?;
+            let element = self.force_lazy_foldl_initial_value(list_id, list_span, element)?;
             if element.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {

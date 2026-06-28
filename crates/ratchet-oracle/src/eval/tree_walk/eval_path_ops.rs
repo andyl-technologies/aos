@@ -55,6 +55,7 @@ impl TreeWalk {
                 ));
             }
             let entry_value = self.force_value(id, span, entry_value)?;
+            let entry_value = self.force_lazy_foldl_initial_value(id, span, entry_value)?;
             if entry_value.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {

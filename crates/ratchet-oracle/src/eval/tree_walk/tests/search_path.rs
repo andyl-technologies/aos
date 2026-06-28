@@ -36,6 +36,26 @@ fn scoped_import_injects_globals_and_bypasses_result_cache() {
         7
     );
     assert_eq!(
+        eval_with_options(
+            "builtins.scopedImport (builtins.foldl' (acc: _x: acc) { x = 12; } []) ./value.nix",
+            options.clone(),
+        )
+        .as_int()
+        .expect("lazy foldl initial scope is forced to attrs"),
+        12
+    );
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "builtins.readFile (
+               builtins.findFile [
+                 (builtins.foldl' (acc: _x: acc) { prefix = \"\"; path = ./.; } [])
+               ] \"value.nix\"
+            )",
+            options.clone(),
+        ),
+        b"x"
+    );
+    assert_eq!(
         eval_with_options("builtins.scopedImport { x = 8; } ./dir", options.clone())
             .as_int()
             .expect("scoped directory import is int"),

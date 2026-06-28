@@ -506,6 +506,30 @@ fn generic_closure_primop_computes_discovery_order_closure() {
             br#"[{"key":1,"value":"one"},{"key":2,"value":"two"},{"key":3,"value":"three"},{"key":4,"value":"four"}]"#.to_vec()
         );
     assert_eq!(
+        eval(
+            r#"builtins.length (builtins.genericClosure {
+                 startSet = [
+                   (builtins.foldl' (acc: _x: acc) { key = "root"; } [])
+                 ];
+                 operator = item: [];
+               })"#
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval(
+            r#"builtins.length (builtins.genericClosure (
+                 builtins.foldl' (acc: _x: acc) {
+                   startSet = [ { key = "root"; } ];
+                   operator = item: [];
+                 } []
+               ))"#
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
             eval_json_bytes(
                 r#"let f = builtins.genericClosure; in f {
                     startSet = [ { key = 1; value = "start"; } ];

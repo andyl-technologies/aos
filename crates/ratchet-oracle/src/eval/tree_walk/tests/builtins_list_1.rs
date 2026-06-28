@@ -115,6 +115,17 @@ fn zip_attrs_with_primop_groups_union_names_and_value_lists() {
         b"b:2"
     );
     assert_eq!(
+        eval(
+            "builtins.elemAt
+               (builtins.zipAttrsWith (name: values: values) [
+                 (builtins.foldl' (acc: _x: acc) { a = 1; } [])
+               ]).a
+               0"
+        )
+        .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
             eval("let zip = builtins.zipAttrsWith; zipped = zip (name: values: values) [ { a = 1; } ]; in builtins.elemAt zipped.a 0")
                 .as_int(),
             Ok(1)
@@ -483,6 +494,15 @@ fn list_to_attrs_primop_builds_attrs_with_first_wins_duplicates() {
     );
     assert_eq!(
         eval("let f = builtins.listToAttrs; in (f [ { name = \"a\"; value = 1; } ]).a").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        eval(
+            "(builtins.listToAttrs [
+               (builtins.foldl' (acc: _x: acc) { name = \"a\"; value = 1; } [])
+             ]).a"
+        )
+        .as_int(),
         Ok(1)
     );
     assert_eq!(

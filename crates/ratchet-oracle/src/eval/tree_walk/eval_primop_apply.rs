@@ -857,6 +857,7 @@ impl TreeWalk {
         })?;
         for element in elements {
             let element = self.force_value(list.id(), list.span(), element)?;
+            let element = self.force_lazy_foldl_initial_value(list.id(), list.span(), element)?;
             if element.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {

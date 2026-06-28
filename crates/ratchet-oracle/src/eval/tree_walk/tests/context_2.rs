@@ -644,6 +644,30 @@ fn append_context_primop_round_trips_reflected_context() {
         Ok(true)
     );
     assert_eq!(
+        eval(
+            r#"builtins.hasContext (
+                   builtins.appendContext "x"
+                     (builtins.foldl' (acc: _x: acc) {
+                       "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                     } [])
+                 )"#
+        )
+        .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(
+            r#"builtins.hasContext (
+                   builtins.appendContext "x" {
+                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" =
+                       builtins.foldl' (acc: _x: acc) { path = true; } [];
+                   }
+                 )"#
+        )
+        .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
         eval_string_bytes(
             r#"let builtins = { appendContext = string: context: "shadow"; };
                    in builtins.appendContext "x" {}"#

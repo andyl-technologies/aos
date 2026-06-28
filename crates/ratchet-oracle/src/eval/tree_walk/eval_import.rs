@@ -710,6 +710,7 @@ impl TreeWalk {
         argument_span: Span,
         argument_value: Value,
     ) -> Result<Value, TreeWalkError> {
+        let scope_value = self.force_lazy_foldl_initial_value(scope, scope_span, scope_value)?;
         if scope_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
