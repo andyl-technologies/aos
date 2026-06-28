@@ -365,6 +365,184 @@ fn imported_module_positioned_attrsets_replay_with_module_position_remap() {
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
     fs::remove_dir_all(root).expect("source temp tree removed");
 }
+
+#[test]
+fn multi_module_positioned_payloads_miss_and_clear_for_persistent_hits() {
+    let source_hash_root = unique_temp_dir("force-cache-positioned-source-hash");
+    let source = "{ a = { b = 1; }; }";
+    let source_name = "multi-module-positioned-attrs.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let mut source_hash_options = TreeWalkOptions::new();
+    source_hash_options.set_eval_cache_enabled(true);
+    source_hash_options.set_persist_cache_root(&source_hash_root);
+
+    let mut source_hash_evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        source_hash_options,
+        source_name,
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let root_value = source_hash_evaluator
+        .eval_root()
+        .expect("source-hash attrset evaluates");
+    let thunk_value = {
+        let attrs = source_hash_evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("source-hash root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = source_hash_evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        source_hash_evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("a force-cache subject builds")
+    };
+    let identity = subject
+        .metadata_identity
+        .expect("a has persistent metadata identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    PersistCache::open(&source_hash_root)
+        .expect("source-hash persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("source-hash prior-run demand records");
+    let forced = source_hash_evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("source-hash positioned attrset force succeeds");
+    assert!(
+        attrset_has_binding_position(
+            source_hash_evaluator
+                .heap()
+                .get_attrs(forced)
+                .expect("forced source-hash value is an attrset")
+        ),
+        "fixture must produce a position-bearing payload"
+    );
+    drop(source_hash_evaluator);
+    let source_hash_payload = PersistCache::open(&source_hash_root)
+        .expect("source-hash persistent cache reopens")
+        .load_cached_expression_node_value_indexed(key)
+        .expect("source-hash payload lookup succeeds")
+        .expect("source-hash payload materialized");
+    let source_hash = source_hash_payload
+        .attr_position_source_hash()
+        .expect("positioned payload carries source provenance");
+    fs::remove_dir_all(source_hash_root).expect("source-hash temp tree removed");
+
+    let persist_root = unique_temp_dir("force-cache-multi-module-positioned-attrs");
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator =
+        TreeWalk::with_options_and_source_and_eval_cache(&ir, options, source_name, source, cache);
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("a force-cache subject builds")
+    };
+    let identity = subject
+        .metadata_identity
+        .expect("a has persistent metadata identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let stale_payload = CachedExpressionValue::positioned_attrs(vec![
+        (
+            b"b".to_vec(),
+            Some(AttrPosition::new(
+                EvalModuleId::ROOT.as_u32(),
+                Span::new(0, 1),
+            )),
+            CachedExpressionValue::immediate(Value::int(99)).expect("stale int payload builds"),
+        ),
+        (
+            b"c".to_vec(),
+            Some(AttrPosition::new(
+                EvalModuleId::ROOT.as_u32() + 1,
+                Span::new(2, 3),
+            )),
+            CachedExpressionValue::immediate(Value::int(100)).expect("stale int payload builds"),
+        ),
+    ])
+    .expect("multi-module positioned attrset payload builds")
+    .with_attr_position_source_hash(source_hash);
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &persistent_empty_trace_payload())
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("a force recomputes after multi-module stale miss");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let c = evaluator.symbols.intern(b"c").expect("c interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(forced)
+        .expect("forced a is an attrset");
+    assert_eq!(
+        attrs.get(b).expect("b exists").as_int(),
+        Ok(1),
+        "multi-module positioned payload must not replay as the current value"
+    );
+    assert!(
+        attrs.get(c).is_none(),
+        "stale multi-module positioned payload must not leak extra bindings"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "multi-module positioned payloads clear the durable value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .map(|trace| trace.payload().is_tombstone())
+            .unwrap_or(false),
+        "multi-module positioned payloads tombstone the durable trace"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+}
+
 #[test]
 fn stale_unprovenanced_positioned_payloads_miss_and_clear_for_imported_subjects() {
     let persist_root = unique_temp_dir("force-cache-stale-unprovenanced-positioned-attrs");

@@ -571,7 +571,8 @@ alone (`M-1`/`Q-A`).
       composite value hashing, persistence, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes positioned attrset force-cache hit,
       imported own-module positioned attrset replay/remap, stale unprovenanced
-      positioned payload miss/clear, and
+      positioned payload miss/clear, multi-module stale positioned payload
+      miss/clear, and
       `unsafeGetAttrPos` provenance canaries.
 - [x] Current pure closed force-cache hit substrate: `EvalCache` keeps per-node
       scalar/string/path/replayable-list/replayable-attrset payload records beside demand-graph value
@@ -606,7 +607,8 @@ alone (`M-1`/`Q-A`).
       (`S-14`/`S-15`). The gate includes `cache::runtime` lookup tests,
       source-backed force-cache hit/skip tests, positioned attrset
       hit/provenance canaries, imported own-module positioned attrset replay/remap
-      canary, stale unprovenanced positioned payload miss/clear canary, and
+      canary, stale unprovenanced and multi-module positioned payload
+      miss/clear canaries, and
       closed-literal lazy composite hit canaries.
 - [x] Current force-time inline impure-edge substrate: tree-walk force slices the
       impure-input trace observed while a closed source-backed thunk body
