@@ -3478,6 +3478,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       cached rank-sorted raw-byte lexicographic ordered view. The active `//`
       evaluator path, HAMT-valued selection, final measured CHAMP layout, and
       observable `.drv` effects remain open.
+- [x] Current HAMT update-merge precursor: `ratchet-value` exposes
+      `HamtAttrs::update_from_flat` and `HamtAttrs::update_from_hamt`, which
+      apply right-biased `//` merges through persistent insert/replace
+      operations, preserve old roots, report inserted/replaced counts, and
+      rebuild the cached raw-byte lexicographic ordered view once for the merged
+      result. Active `//` evaluator wiring, representation-policy dispatch,
+      final CHAMP tuning, and `.drv` effects remain open.
 - [x] Current `attrs/repr.rs` precursor: `ratchet-value` exposes a safe
       `Flat`/`Hamt` representation-policy classifier for static literals,
       dynamic constructions, and `//` merge results. Static literals are

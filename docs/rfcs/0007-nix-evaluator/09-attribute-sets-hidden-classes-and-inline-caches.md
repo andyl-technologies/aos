@@ -837,6 +837,13 @@ harness, never cut for scope.
       raw-byte lexicographic ordered view. It does not change the active `//`
       evaluator path, select from HAMT values, install the final measured CHAMP
       layout, or affect observable attr iteration / `.drv` bytes.
+- [x] Current HAMT update-merge precursor: `ratchet-value::attrs::hamt`
+      exposes right-biased `update_from_flat` and `update_from_hamt` helpers
+      that apply `//` merges through persistent insert/replace operations,
+      report inserted/replaced counts, preserve old roots, and recompute the
+      cached raw-byte lexicographic ordered view once for the merged result.
+      Active `//` evaluator wiring, representation-policy dispatch, final CHAMP
+      tuning, and `.drv` effects remain open.
 - [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
 - [x] Current representation-policy precursor: `ratchet-value::attrs::repr`
       classifies static literals, dynamic constructions, and `//` merge results

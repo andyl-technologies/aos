@@ -212,6 +212,106 @@ impl HamtAttrs {
         ))
     }
 
+    /// Applies a flat right-hand operand as a persistent `//` update merge.
+    ///
+    /// The result contains all bindings from `self` and `right`; right-hand
+    /// values and source positions replace left-hand bindings on key collision.
+    /// The original HAMT remains valid and shares all untouched trie branches
+    /// with the result. `self`, `right`, and `symbols` must belong to the same
+    /// symbol universe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HamtError::UnknownSymbol`] if a key from either operand cannot
+    /// be resolved through `symbols`, including symbol-universe mismatches.
+    /// Returns [`HamtError::TooManyEntries`] if the merged result exceeds the
+    /// future `u32` slot ABI. Returns [`HamtError::AllocationFailed`] if scratch
+    /// storage cannot be reserved.
+    pub fn update_from_flat(
+        &self,
+        right: &FlatAttrs,
+        symbols: &SymbolTable,
+    ) -> Result<(Self, HamtMergeSummary), HamtError> {
+        self.update_from_entries(right.iter_source_order().copied(), symbols)
+    }
+
+    /// Applies a HAMT right-hand operand as a persistent `//` update merge.
+    ///
+    /// The result contains all bindings from `self` and `right`; right-hand
+    /// values and source positions replace left-hand bindings on key collision.
+    /// The original HAMT remains valid and shares all untouched trie branches
+    /// with the result. `self`, `right`, and `symbols` must belong to the same
+    /// symbol universe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HamtError::UnknownSymbol`] if a key from either operand cannot
+    /// be resolved through `symbols`, including symbol-universe mismatches.
+    /// Returns [`HamtError::TooManyEntries`] if the merged result exceeds the
+    /// future `u32` slot ABI. Returns [`HamtError::AllocationFailed`] if scratch
+    /// storage cannot be reserved.
+    pub fn update_from_hamt(
+        &self,
+        right: &Self,
+        symbols: &SymbolTable,
+    ) -> Result<(Self, HamtMergeSummary), HamtError> {
+        self.update_from_entries(right.iter_by_symbol().copied(), symbols)
+    }
+
+    fn update_from_entries<I>(
+        &self,
+        entries: I,
+        symbols: &SymbolTable,
+    ) -> Result<(Self, HamtMergeSummary), HamtError>
+    where
+        I: IntoIterator<Item = AttrEntry>,
+    {
+        let mut root = self.root.clone();
+        let mut len = self.len;
+        let mut keys_by_symbol = Vec::new();
+        keys_by_symbol
+            .try_reserve_exact(self.keys_by_symbol.len())
+            .map_err(|_| HamtError::AllocationFailed {
+                entries: self.keys_by_symbol.len(),
+            })?;
+        keys_by_symbol.extend_from_slice(&self.keys_by_symbol);
+
+        let mut summary = HamtMergeSummary::default();
+        for entry in entries {
+            symbols
+                .resolve(entry.key)
+                .ok_or(HamtError::UnknownSymbol { key: entry.key })?;
+
+            let (next_root, mutation) = match &root {
+                Some(root) => insert_into_node(root, entry, 0)?,
+                None => (single_entry_node(entry)?, HamtMutation::Inserted),
+            };
+            match mutation {
+                HamtMutation::Inserted => {
+                    len = len
+                        .checked_add(1)
+                        .ok_or(HamtError::TooManyEntries { len: usize::MAX })?;
+                    u32::try_from(len).map_err(|_| HamtError::TooManyEntries { len })?;
+                    insert_symbol_key_in_place(&mut keys_by_symbol, entry.key)?;
+                    summary.record_inserted()?;
+                }
+                HamtMutation::Replaced { .. } => summary.record_replaced()?,
+            }
+            root = Some(next_root);
+        }
+
+        let iteration_order = lexicographic_order(&keys_by_symbol, symbols)?;
+        Ok((
+            Self {
+                root,
+                len,
+                keys_by_symbol: keys_by_symbol.into_boxed_slice(),
+                iteration_order,
+            },
+            summary,
+        ))
+    }
+
     /// Iterates entries in internal symbol-id order.
     pub fn iter_by_symbol(&self) -> HamtEntries<'_> {
         HamtEntries {
@@ -276,6 +376,51 @@ impl PartialEq for HamtUpdate {
 }
 
 impl Eq for HamtUpdate {}
+
+/// Accounting for one HAMT `//` update merge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HamtMergeSummary {
+    inserted: usize,
+    replaced: usize,
+}
+
+impl HamtMergeSummary {
+    /// Returns how many right-hand keys were inserted into the left operand.
+    pub const fn inserted(self) -> usize {
+        self.inserted
+    }
+
+    /// Returns how many right-hand keys replaced existing left bindings.
+    pub const fn replaced(self) -> usize {
+        self.replaced
+    }
+
+    /// Returns how many right-hand bindings were applied.
+    pub const fn applied(self) -> usize {
+        self.inserted.saturating_add(self.replaced)
+    }
+
+    /// Returns whether the merge applied no right-hand bindings.
+    pub const fn is_empty(self) -> bool {
+        self.inserted == 0 && self.replaced == 0
+    }
+
+    fn record_inserted(&mut self) -> Result<(), HamtError> {
+        self.inserted = self
+            .inserted
+            .checked_add(1)
+            .ok_or(HamtError::TooManyEntries { len: usize::MAX })?;
+        Ok(())
+    }
+
+    fn record_replaced(&mut self) -> Result<(), HamtError> {
+        self.replaced = self
+            .replaced
+            .checked_add(1)
+            .ok_or(HamtError::TooManyEntries { len: usize::MAX })?;
+        Ok(())
+    }
+}
 
 /// Iterator over [`HamtAttrs`] entries in a cached key order.
 #[derive(Clone, Debug)]
@@ -528,6 +673,19 @@ fn insert_symbol_key(keys: &[Symbol], key: Symbol) -> Result<Box<[Symbol]>, Hamt
     next.push(key);
     next.extend_from_slice(&keys[index..]);
     Ok(next.into_boxed_slice())
+}
+
+fn insert_symbol_key_in_place(keys: &mut Vec<Symbol>, key: Symbol) -> Result<(), HamtError> {
+    let index = match keys.binary_search(&key) {
+        Ok(_) => return Ok(()),
+        Err(index) => index,
+    };
+    keys.try_reserve_exact(1)
+        .map_err(|_| HamtError::AllocationFailed {
+            entries: keys.len().saturating_add(1),
+        })?;
+    keys.insert(index, key);
+    Ok(())
 }
 
 fn lexicographic_order(
@@ -828,6 +986,156 @@ mod tests {
         assert_eq!(int_value(&updated, ids[0]), 3);
         assert_eq!(updated.keys_by_symbol(), base.keys_by_symbol());
         assert_eq!(updated.iteration_order(), base.iteration_order());
+    }
+
+    #[test]
+    fn update_from_flat_is_right_biased_and_preserves_left_root() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c", b"d"]);
+        let base = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(20),
+                    AttrPosition::new(0, Span::new(2, 3)),
+                ),
+                AttrEntry::new(ids[2], Value::int(30)),
+            ],
+            &symbols,
+        )
+        .expect("base HAMT builds");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(200),
+                    AttrPosition::new(1, Span::new(4, 5)),
+                ),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+
+        let (merged, summary) = base
+            .update_from_flat(&right, &symbols)
+            .expect("flat update merge succeeds");
+
+        assert_eq!(summary.inserted(), 1);
+        assert_eq!(summary.replaced(), 1);
+        assert_eq!(summary.applied(), 2);
+        assert_eq!(base.len(), 3);
+        assert!(!base.contains_key(ids[3]));
+        assert_eq!(int_value(&base, ids[1]), 20);
+        assert_eq!(merged.len(), 4);
+        assert_eq!(int_value(&merged, ids[0]), 10);
+        assert_eq!(int_value(&merged, ids[1]), 200);
+        assert_eq!(int_value(&merged, ids[2]), 30);
+        assert_eq!(int_value(&merged, ids[3]), 40);
+        assert_eq!(
+            merged.get_entry(ids[1]).expect("b exists").position,
+            Some(AttrPosition::new(1, Span::new(4, 5)))
+        );
+        assert_eq!(merged.keys_by_symbol(), ids.as_slice());
+    }
+
+    #[test]
+    fn update_from_flat_recomputes_raw_byte_lexicographic_order() {
+        let (symbols, ids) = symbols(&[b"b", b"a\xff", b"a", b"a\x00"]);
+        let base = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("base HAMT builds");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[2], Value::int(30)),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+
+        let (merged, summary) = base
+            .update_from_flat(&right, &symbols)
+            .expect("flat update merge succeeds");
+
+        assert_eq!(summary.inserted(), 2);
+        assert_eq!(summary.replaced(), 0);
+        assert_eq!(merged.keys_by_symbol(), ids.as_slice());
+        let names: Vec<&[u8]> = merged
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                b"a".as_slice(),
+                b"a\x00".as_slice(),
+                b"a\xff".as_slice(),
+                b"b".as_slice(),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_from_hamt_shares_untouched_branches() {
+        let (symbols, ids) = many_symbols(65);
+        let base = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(0)),
+                AttrEntry::new(ids[32], Value::int(32)),
+                AttrEntry::new(ids[1], Value::int(1)),
+                AttrEntry::new(ids[33], Value::int(33)),
+            ],
+            &symbols,
+        )
+        .expect("base HAMT builds");
+        let right = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[32], Value::int(320)),
+                AttrEntry::new(ids[64], Value::int(64)),
+            ],
+            &symbols,
+        )
+        .expect("right HAMT builds");
+        let untouched_before = root_node_child(&base, chunk_for(ids[1], 0));
+
+        let (merged, summary) = base
+            .update_from_hamt(&right, &symbols)
+            .expect("HAMT update merge succeeds");
+
+        assert_eq!(summary.inserted(), 1);
+        assert_eq!(summary.replaced(), 1);
+        assert_eq!(base.len(), 4);
+        assert!(!base.contains_key(ids[64]));
+        assert_eq!(int_value(&base, ids[32]), 32);
+        assert_eq!(merged.len(), 5);
+        assert_eq!(int_value(&merged, ids[32]), 320);
+        assert_eq!(int_value(&merged, ids[64]), 64);
+        assert!(std::sync::Arc::ptr_eq(
+            &untouched_before,
+            &root_node_child(&merged, chunk_for(ids[1], 0))
+        ));
+    }
+
+    #[test]
+    fn update_merge_with_empty_right_operand_is_accounted_as_empty() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let base = HamtAttrs::new(vec![AttrEntry::new(ids[0], Value::int(1))], &symbols)
+            .expect("base HAMT builds");
+        let right = FlatAttrs::empty();
+
+        let (merged, summary) = base
+            .update_from_flat(&right, &symbols)
+            .expect("empty update merge succeeds");
+
+        assert_eq!(summary, HamtMergeSummary::default());
+        assert!(summary.is_empty());
+        assert!(base.raw_eq(&merged));
     }
 
     #[test]
