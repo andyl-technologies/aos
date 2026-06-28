@@ -792,6 +792,13 @@ harness, never cut for scope.
       guard a runtime value, call `select_slow`, alter tree-walk behavior, or
       install deopt/uncommon-trap edges.
 - [ ] Monomorphic fast path: shape guard + constant-offset load, slow path widens the IC ([§5.2](#52-what-the-baseline-tier-emits)) — P5.
+- [x] Current shaped-select fast-path precursor:
+      `ratchet-value::attrs::pic` exposes `ShapedSelectCache`, which guards
+      one static key on `ShapedAttrs` by interned shape pointer, loads cached
+      symbol slots on hits, resolves misses through the shape descriptor, and
+      widens through the PIC state machine. It does not alter tree-walk
+      `Select`, call the final runtime `select_slow`, handle HAMT values, or
+      affect `.drv` bytes.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
 - [x] Current P1 direct flat selection substrate: the tree-walk
       `Select`/`HasAttr` path evaluates receivers, attr-path segments, and

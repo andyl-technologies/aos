@@ -3451,6 +3451,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `Uninitialized → Monomorphic → Polymorphic → Megamorphic` transitions.
       Runtime select execution, shape guards, slow resolver dispatch, tree-walk
       ICs, and deopt edges remain open.
+- [x] Current shaped-select fast-path precursor: `ratchet-value` exposes
+      `ShapedSelectCache`, which guards one static key on `ShapedAttrs` by
+      interned shape pointer, loads cached symbol slots on hits, resolves misses
+      through the shape descriptor, and widens through the PIC state machine.
+      Tree-walk `Select`, final runtime `select_slow`, HAMT-valued selection,
+      and `.drv` effects remain open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
 - [x] Current `attrs/hamt.rs` precursor: `ratchet-value` exposes a safe
