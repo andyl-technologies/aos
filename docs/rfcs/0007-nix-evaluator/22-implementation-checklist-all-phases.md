@@ -3425,6 +3425,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       fingerprint-filtered descriptor interning, and parent-record transition
       edge caching. Global/shared table behavior, lock-free reads, runtime attr
       allocation, select-site use, and `.drv` effects remain open.
+- [x] Current shaped-instance precursor: `ratchet-value` exposes `ShapedAttrs`,
+      a safe `{ ShapeHandle, values_by_symbol }` flat instance that validates
+      value counts, stores values in the shape's symbol-slot order, and
+      iterates through the shape's source/lexicographic permutations. Source
+      positions, evaluator heap allocation, active `FlatAttrs` replacement,
+      select-site/runtime use, and `.drv` effects remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
 - [x] Current `attrs/pic.rs` precursor: `ratchet-value` exposes the safe

@@ -743,6 +743,13 @@ harness, never cut for scope.
       descriptor alone does not install a global/shared shape table, inline
       cache, HAMT representation, or runtime fast path.
 - [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
+- [x] Current shaped-instance precursor: `ratchet-value::attrs::shape`
+      exposes `ShapedAttrs`, a safe `{ ShapeHandle, values_by_symbol }`
+      instance that validates value counts, stores values in the shape's
+      symbol-slot order, and iterates through the shape's source and
+      lexicographic permutations. This does not carry source-position metadata,
+      allocate evaluator heap objects, replace `FlatAttrs`, or affect active
+      evaluation / `.drv` bytes.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
 - [x] Current shape-transition precursor: `ratchet-value::attrs::shape`
       can locally plan a key insertion against an `AttrShape`. Existing keys

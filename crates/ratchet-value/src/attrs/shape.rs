@@ -17,6 +17,7 @@ use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::syntax::{Symbol, SymbolTable};
+use crate::value::Value;
 
 /// An in-process fingerprint of a shape's symbol-sorted key vector.
 ///
@@ -623,6 +624,224 @@ pub enum ShapeTableTransition {
     },
 }
 
+/// A flat attrset instance paired with an interned shape handle.
+///
+/// Values are stored in the shape's symbol-sorted slot order. This is the safe
+/// layout precursor for the future runtime `{ shape, values }` representation:
+/// it does not carry source positions, is not allocated in the evaluator heap,
+/// and is not wired into active `FlatAttrs` evaluation.
+#[derive(Clone, Debug)]
+pub struct ShapedAttrs {
+    shape: ShapeHandle,
+    values_by_symbol: Box<[Value]>,
+}
+
+impl ShapedAttrs {
+    /// Creates a shaped attrset from values supplied in construction order.
+    ///
+    /// Values are copied into the symbol-sorted slot order described by
+    /// `shape`. Use [`Self::iter_source_order`] to observe the original
+    /// construction order again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapedAttrsError::ValueCountMismatch`] when `values` does not
+    /// contain exactly one value per shape key. Returns
+    /// [`ShapedAttrsError::ShapeOrderSlotOutOfRange`] if the shape's cached
+    /// construction-order permutation refers outside its key vector.
+    pub fn from_source_order(
+        shape: ShapeHandle,
+        values: &[Value],
+    ) -> Result<Self, ShapedAttrsError> {
+        let expected = shape.shape().len();
+        if values.len() != expected {
+            return Err(ShapedAttrsError::ValueCountMismatch {
+                expected,
+                actual: values.len(),
+            });
+        }
+
+        let mut values_by_symbol = Vec::new();
+        values_by_symbol
+            .try_reserve_exact(expected)
+            .map_err(|_| ShapedAttrsError::AllocationFailed { values: expected })?;
+        values_by_symbol.resize(expected, Value::null());
+        for (source_slot, symbol_slot) in shape.shape().source_order().iter().copied().enumerate() {
+            let Some(target) = values_by_symbol.get_mut(symbol_slot as usize) else {
+                return Err(ShapedAttrsError::ShapeOrderSlotOutOfRange {
+                    slot: symbol_slot,
+                    len: expected,
+                });
+            };
+            *target = values[source_slot];
+        }
+
+        Ok(Self {
+            shape,
+            values_by_symbol: values_by_symbol.into_boxed_slice(),
+        })
+    }
+
+    /// Creates a shaped attrset from values already in symbol-sorted slot order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapedAttrsError::ValueCountMismatch`] when `values` does not
+    /// contain exactly one value per shape key.
+    pub fn from_symbol_order(
+        shape: ShapeHandle,
+        values: &[Value],
+    ) -> Result<Self, ShapedAttrsError> {
+        let expected = shape.shape().len();
+        if values.len() != expected {
+            return Err(ShapedAttrsError::ValueCountMismatch {
+                expected,
+                actual: values.len(),
+            });
+        }
+
+        let mut values_by_symbol = Vec::new();
+        values_by_symbol
+            .try_reserve_exact(expected)
+            .map_err(|_| ShapedAttrsError::AllocationFailed { values: expected })?;
+        values_by_symbol.extend_from_slice(values);
+
+        Ok(Self {
+            shape,
+            values_by_symbol: values_by_symbol.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the interned shape handle for this attrset instance.
+    pub fn shape(&self) -> &ShapeHandle {
+        &self.shape
+    }
+
+    /// Returns the number of bindings.
+    pub fn len(&self) -> usize {
+        self.values_by_symbol.len()
+    }
+
+    /// Returns whether this attrset has no bindings.
+    pub fn is_empty(&self) -> bool {
+        self.values_by_symbol.is_empty()
+    }
+
+    /// Returns values in the shape's symbol-sorted slot order.
+    pub fn values_by_symbol(&self) -> &[Value] {
+        &self.values_by_symbol
+    }
+
+    /// Returns the value for `key` using the shape's symbol-slot lookup.
+    ///
+    /// `key` must come from the same symbol universe used to construct this
+    /// attrset's shape.
+    pub fn get(&self, key: Symbol) -> Option<Value> {
+        let slot = self.shape.shape().slot(key)? as usize;
+        self.values_by_symbol.get(slot).copied()
+    }
+
+    /// Returns the value at a symbol-sorted slot.
+    pub fn get_slot(&self, slot: u32) -> Option<Value> {
+        self.values_by_symbol.get(slot as usize).copied()
+    }
+
+    /// Iterates entries in the shape's construction order.
+    pub fn iter_source_order(&self) -> ShapedAttrEntries<'_> {
+        ShapedAttrEntries {
+            attrs: self,
+            order: self.shape.shape().source_order(),
+            next: 0,
+        }
+    }
+
+    /// Iterates entries in raw-byte lexicographic order.
+    pub fn iter_lexicographic(&self) -> ShapedAttrEntries<'_> {
+        ShapedAttrEntries {
+            attrs: self,
+            order: self.shape.shape().iteration_order(),
+            next: 0,
+        }
+    }
+
+    /// Returns representation-level shaped-attrset equality.
+    ///
+    /// This requires the same interned shape pointer and raw value equality in
+    /// symbol-slot order. It is not Nix semantic equality.
+    pub fn raw_eq(&self, other: &Self) -> bool {
+        self.shape.ptr_eq(&other.shape)
+            && self.values_by_symbol.len() == other.values_by_symbol.len()
+            && self
+                .values_by_symbol
+                .iter()
+                .zip(other.values_by_symbol.iter())
+                .all(|(left, right)| left.raw_eq(*right))
+    }
+}
+
+/// One shaped attrset binding observed through a cached shape order.
+#[derive(Clone, Copy, Debug)]
+pub struct ShapedAttrEntry {
+    /// The interned attribute name.
+    pub key: Symbol,
+    /// The value stored for `key`.
+    pub value: Value,
+}
+
+/// Iterator over shaped attrset entries through a cached shape permutation.
+#[derive(Clone, Debug)]
+pub struct ShapedAttrEntries<'a> {
+    attrs: &'a ShapedAttrs,
+    order: &'a [u32],
+    next: usize,
+}
+
+impl Iterator for ShapedAttrEntries<'_> {
+    type Item = ShapedAttrEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slot = *self.order.get(self.next)? as usize;
+        self.next += 1;
+        let key = *self.attrs.shape.shape().keys_by_symbol().get(slot)?;
+        let value = *self.attrs.values_by_symbol.get(slot)?;
+        Some(ShapedAttrEntry { key, value })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.order.len().saturating_sub(self.next);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for ShapedAttrEntries<'_> {}
+
+/// A failed shaped attrset instance construction.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ShapedAttrsError {
+    /// The value array length did not match the shape key count.
+    #[error("shaped attrset expected {expected} values, got {actual}")]
+    ValueCountMismatch {
+        /// The number of values required by the shape.
+        expected: usize,
+        /// The number of values supplied by the caller.
+        actual: usize,
+    },
+    /// A cached shape permutation referenced a non-existent symbol slot.
+    #[error("shape order slot {slot} is out of range for {len} values")]
+    ShapeOrderSlotOutOfRange {
+        /// The invalid symbol slot.
+        slot: u32,
+        /// The number of values in the instance.
+        len: usize,
+    },
+    /// Scratch storage for the shaped value array could not be reserved.
+    #[error("failed to reserve shaped attrset storage for {values} values")]
+    AllocationFailed {
+        /// The value count whose storage could not be reserved.
+        values: usize,
+    },
+}
+
 #[derive(Clone, Debug)]
 struct ShapeRecord {
     shape: Arc<AttrShape>,
@@ -1200,6 +1419,143 @@ mod tests {
                 .expect_err("foreign symbol universe is rejected"),
             ShapeError::MismatchedSymbolUniverse { key: ids[0] }
         );
+    }
+
+    #[test]
+    fn shaped_attrs_reorder_source_values_into_symbol_slots() {
+        let (symbols, ids) = symbols(&[b"z", b"a", b"m"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let shape = table
+            .intern_construction_order(&[ids[2], ids[0], ids[1]], &symbols)
+            .expect("shape interns");
+
+        let attrs = ShapedAttrs::from_source_order(
+            shape,
+            &[Value::int(30), Value::int(10), Value::int(20)],
+        )
+        .expect("shaped attrs build");
+
+        assert_eq!(attrs.len(), 3);
+        assert!(!attrs.is_empty());
+        assert_eq!(attrs.get(ids[0]).expect("z").as_int().expect("int"), 10);
+        assert_eq!(attrs.get(ids[1]).expect("a").as_int().expect("int"), 20);
+        assert_eq!(attrs.get(ids[2]).expect("m").as_int().expect("int"), 30);
+        assert_eq!(
+            attrs
+                .values_by_symbol()
+                .iter()
+                .map(|value| value.as_int().expect("int"))
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+
+        let source_entries: Vec<_> = attrs
+            .iter_source_order()
+            .map(|entry| {
+                (
+                    symbols.resolve(entry.key).expect("key resolves"),
+                    entry.value.as_int().expect("int"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            source_entries,
+            vec![
+                (b"m".as_slice(), 30),
+                (b"z".as_slice(), 10),
+                (b"a".as_slice(), 20),
+            ]
+        );
+
+        let lexicographic_entries: Vec<_> = attrs
+            .iter_lexicographic()
+            .map(|entry| {
+                (
+                    symbols.resolve(entry.key).expect("key resolves"),
+                    entry.value.as_int().expect("int"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            lexicographic_entries,
+            vec![
+                (b"a".as_slice(), 20),
+                (b"m".as_slice(), 30),
+                (b"z".as_slice(), 10),
+            ]
+        );
+    }
+
+    #[test]
+    fn shaped_attrs_accept_symbol_order_values_directly() {
+        let (symbols, ids) = symbols(&[b"b", b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let shape = table
+            .intern_construction_order(&[ids[1], ids[0]], &symbols)
+            .expect("shape interns");
+
+        let attrs = ShapedAttrs::from_symbol_order(shape, &[Value::int(1), Value::int(2)])
+            .expect("shaped attrs build");
+
+        assert_eq!(attrs.get_slot(0).expect("slot 0").as_int().expect("int"), 1);
+        assert_eq!(attrs.get_slot(1).expect("slot 1").as_int().expect("int"), 2);
+        assert!(attrs.get_slot(2).is_none());
+    }
+
+    #[test]
+    fn shaped_attrs_reject_mismatched_value_counts() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let shape = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("shape interns");
+
+        assert_eq!(
+            ShapedAttrs::from_source_order(shape.clone(), &[Value::int(1)])
+                .expect_err("source-order value count is checked"),
+            ShapedAttrsError::ValueCountMismatch {
+                expected: 2,
+                actual: 1,
+            }
+        );
+        assert_eq!(
+            ShapedAttrs::from_symbol_order(shape, &[Value::int(1), Value::int(2), Value::int(3)])
+                .expect_err("symbol-order value count is checked"),
+            ShapedAttrsError::ValueCountMismatch {
+                expected: 2,
+                actual: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn shaped_attrs_raw_equality_requires_interned_shape_identity() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let shape = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("shape interns");
+        let same_shape = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("same shape interns");
+        let mut foreign_table = ShapeTable::new().expect("foreign table initializes");
+        let foreign_shape = foreign_table
+            .intern_construction_order(&ids, &symbols)
+            .expect("foreign shape interns");
+
+        let left =
+            ShapedAttrs::from_symbol_order(shape, &[Value::int(1)]).expect("left attrs build");
+        let same =
+            ShapedAttrs::from_symbol_order(same_shape, &[Value::int(1)]).expect("same attrs build");
+        let different_value =
+            ShapedAttrs::from_symbol_order(left.shape().clone(), &[Value::int(2)])
+                .expect("different attrs build");
+        let foreign = ShapedAttrs::from_symbol_order(foreign_shape, &[Value::int(1)])
+            .expect("foreign attrs build");
+
+        assert!(left.raw_eq(&same));
+        assert!(!left.raw_eq(&different_value));
+        assert!(!left.raw_eq(&foreign));
     }
 
     #[test]
