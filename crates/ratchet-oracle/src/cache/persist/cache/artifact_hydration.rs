@@ -10,23 +10,23 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the same-root `files/` pack lock is
+    /// Returns [`PersistBlobPackError`] if the `files/` advisory read lock
+    /// cannot be acquired, if the same-root `files/` pack read lock is
     /// poisoned, if the `files/` pack cannot be opened or read, if
-    /// `index_value` points at an invalid location, or if the record or payload
-    /// hash does not match `index_value`.
+    /// `index_value` points at an invalid location, or if the record or
+    /// payload hash does not match `index_value`.
     pub fn read_file_artifact(
         &self,
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let _read_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
-        self.read_file_artifact_unlocked(index_value)
+        self.read_blob(index_value.blob_key(), index_value.location())
     }
 
     fn read_file_artifact_unlocked(
         &self,
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        self.read_blob(index_value.blob_key(), index_value.location())
+        self.read_blob_unlocked(index_value.blob_key(), index_value.location())
     }
 
     /// Reads and verifies a materialized frontend parse artifact.
@@ -36,23 +36,23 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the same-root `files/` pack lock is
+    /// Returns [`PersistBlobPackError`] if the `files/` advisory read lock
+    /// cannot be acquired, if the same-root `files/` pack read lock is
     /// poisoned, if the `files/` pack cannot be opened or read, if
-    /// `index_value` points at an invalid location, or if the record or payload
-    /// hash does not match `index_value`.
+    /// `index_value` points at an invalid location, or if the record or
+    /// payload hash does not match `index_value`.
     pub fn read_parse_artifact(
         &self,
         index_value: PersistParseArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let _read_guard = self.root_locks.lock_blob_pack(PersistBlobStore::Files)?;
-        self.read_parse_artifact_unlocked(index_value)
+        self.read_blob(index_value.blob_key(), index_value.location())
     }
 
     fn read_parse_artifact_unlocked(
         &self,
         index_value: PersistParseArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        self.read_blob(index_value.blob_key(), index_value.location())
+        self.read_blob_unlocked(index_value.blob_key(), index_value.location())
     }
 
     /// Reads a materialized parse-artifact bundle into a parse-cache entry.
@@ -74,11 +74,14 @@ impl PersistCache {
         index_value: PersistParseArtifactIndexValue,
         entry: &ParseCacheEntry,
     ) -> Result<(), PersistParseArtifactHydrationError> {
-        let _read_guard = self
-            .root_locks
-            .lock_blob_pack(PersistBlobStore::Files)
-            .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
-        self.hydrate_parse_artifact_bundle_unlocked(index_value, entry)
+        let payload = {
+            let (_files_advisory_guard, _files_guard) = self
+                .lock_blob_pack_read(PersistBlobStore::Files)
+                .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
+            self.read_parse_artifact_unlocked(index_value)
+                .map_err(|source| PersistParseArtifactHydrationError::Read { source })?
+        };
+        self.hydrate_parse_artifact_payload(&payload, entry)
     }
 
     fn hydrate_parse_artifact_bundle_unlocked(
@@ -89,6 +92,14 @@ impl PersistCache {
         let payload = self
             .read_parse_artifact_unlocked(index_value)
             .map_err(|source| PersistParseArtifactHydrationError::Read { source })?;
+        self.hydrate_parse_artifact_payload(&payload, entry)
+    }
+
+    fn hydrate_parse_artifact_payload(
+        &self,
+        payload: &[u8],
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistParseArtifactHydrationError> {
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistParseArtifactHydrationError::Decode { source })?;
         bundle
@@ -175,11 +186,14 @@ impl PersistCache {
         index_value: PersistFileArtifactIndexValue,
         entry: &ParseCacheEntry,
     ) -> Result<(), PersistFileArtifactHydrationError> {
-        let _read_guard = self
-            .root_locks
-            .lock_blob_pack(PersistBlobStore::Files)
-            .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
-        self.hydrate_file_artifact_bundle_unlocked(index_value, entry)
+        let payload = {
+            let (_files_advisory_guard, _files_guard) = self
+                .lock_blob_pack_read(PersistBlobStore::Files)
+                .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
+            self.read_file_artifact_unlocked(index_value)
+                .map_err(|source| PersistFileArtifactHydrationError::Read { source })?
+        };
+        self.hydrate_file_artifact_payload(&payload, entry)
     }
 
     fn hydrate_file_artifact_bundle_unlocked(
@@ -190,6 +204,14 @@ impl PersistCache {
         let payload = self
             .read_file_artifact_unlocked(index_value)
             .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
+        self.hydrate_file_artifact_payload(&payload, entry)
+    }
+
+    fn hydrate_file_artifact_payload(
+        &self,
+        payload: &[u8],
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistFileArtifactHydrationError> {
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistFileArtifactHydrationError::Decode { source })?;
         bundle

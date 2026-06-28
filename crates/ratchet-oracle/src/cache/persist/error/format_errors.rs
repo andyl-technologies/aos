@@ -452,9 +452,25 @@ pub enum PersistBlobPackError {
         /// The selected blob store.
         store: PersistBlobStore,
     },
+    /// The same-root blob-pack read lock was poisoned by a prior panic.
+    #[error("persistent blob pack read lock for {store:?} is poisoned")]
+    ReadLockPoisoned {
+        /// The selected blob store.
+        store: PersistBlobStore,
+    },
     /// The advisory blob-pack write lock could not be acquired.
     #[error("failed to acquire persistent blob pack advisory write lock for {store:?} at {path}")]
     AdvisoryWriteLock {
+        /// The selected blob store.
+        store: PersistBlobStore,
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
+    /// The advisory blob-pack read lock could not be acquired.
+    #[error("failed to acquire persistent blob pack advisory read lock for {store:?} at {path}")]
+    AdvisoryReadLock {
         /// The selected blob store.
         store: PersistBlobStore,
         /// The advisory lock file path.

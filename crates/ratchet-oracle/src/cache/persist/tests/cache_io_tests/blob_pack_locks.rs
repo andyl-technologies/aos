@@ -132,6 +132,99 @@ fn cache_blob_index_rebuild_reports_poisoned_same_root_lock() {
 }
 
 #[test]
+fn cache_read_blob_acquires_advisory_store_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let payload = b"raw value blob payload";
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let location = cache.append_blob(key, payload).expect("value blob appends");
+    let guard = cache
+        .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+        .expect("value store lock acquires");
+    let worker_cache = cache.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .read_blob(key, location)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("read result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.blob_store_lock_path(PersistBlobStore::Values));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "raw blob read should wait while the same-root store lock is held"
+    );
+    drop(guard);
+
+    let bytes = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("raw blob read completes after same-process lock release")
+        .expect("raw blob read succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(bytes.as_slice(), payload);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_read_blob_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_blob_materialization_for_tests(PersistBlobStore::Values)
+            .expect("value store lock acquires");
+        panic!("poison persistent value blob-pack read lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let error = cache
+        .read_blob(key, PersistBlobLocation::new(0, 0))
+        .expect_err("poisoned same-root value lock should reject raw blob reads");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::ReadLockPoisoned {
+            store: PersistBlobStore::Values
+        }
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_read_blob_maps_advisory_store_lock_error() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+
+    fs::remove_dir_all(layout.locks_dir()).expect("locks directory removes");
+    fs::write(layout.locks_dir(), b"not a directory").expect("locks path becomes a file");
+
+    let error = cache
+        .read_blob(key, PersistBlobLocation::new(0, 0))
+        .expect_err("unusable locks path rejects raw blob reads");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::AdvisoryReadLock {
+            store: PersistBlobStore::Values,
+            ref path,
+            ..
+        } if path == &layout.blob_store_lock_path(PersistBlobStore::Values)
+    ));
+
+    let _ = fs::remove_file(layout.locks_dir());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_process_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

@@ -1707,18 +1707,20 @@ alone (`M-1`/`Q-A`).
       `.locks/files.lock`, then acquire the same-process store mutex while they
       write the pack and/or blob-index sidecar, truncate the pack tail, or stage
       and swap a compacted pack.
-      Cache-level indexed blob reads and read-only pack planners
-      (`read_blob_indexed`, `plan_blob_pack_liveness`,
-      `plan_blob_pack_repack`, `plan_node_value_roots`,
-      `plan_value_blob_reachability`, and `plan_file_blob_reachability`) first
-      acquire a shared advisory lock for the selected store, then acquire the
-      same-process store mutex while they read sidecar locations and verify or
-      scan pack records; indexed artifact hydration reads first acquire shared
-      `files` store and artifact-mapping advisory locks, then acquire the
-      same-process store and mapping mutexes while they read the sidecar mapping
-      and verify the referenced `files` pack record. Cooperating readers can
-      share advisory locks but serialize against cache-level writers and
-      maintenance.
+      Cache-level raw/indexed blob reads, direct artifact reads/hydration, and
+      read-only pack planners (`read_blob`, `read_blob_indexed`,
+      `read_file_artifact`, `read_parse_artifact`,
+      `hydrate_file_artifact_bundle`, `hydrate_parse_artifact_bundle`,
+      `plan_blob_pack_liveness`, `plan_blob_pack_repack`,
+      `plan_node_value_roots`, `plan_value_blob_reachability`, and
+      `plan_file_blob_reachability`) first acquire a shared advisory lock for
+      the selected store, then acquire the same-process store mutex while they
+      read sidecar locations and verify or scan pack records; indexed artifact
+      hydration reads first acquire shared `files` store and artifact-mapping
+      advisory locks, then acquire the same-process store and mapping mutexes
+      while they read the sidecar mapping and verify the referenced `files` pack
+      record. Cooperating readers can share advisory locks but serialize against
+      cache-level writers and maintenance.
       Simultaneous same-key materialization through separate opens of the same
       root shares the same `ensure_blob_indexed` critical section, and
       cooperating cross-process cache-level blob readers, planners, artifact
@@ -1726,11 +1728,11 @@ alone (`M-1`/`Q-A`).
       advisory files. The initially-missing indexed case collapses to one fresh verified
       pack record and newest sidecar entry for the selected store, poisoned
       same-root locks are mapped back into the existing oracle error surface
-      before any cache-level raw append, indexed append/index write, indexed
-      read, indexed hydration read, liveness/reachability plan, blob-index
-      compaction/rebuild, blob-pack tail trim, or blob-pack repack, and an
-      opened symlink-root handle keeps writing the canonical target it opened
-      even if the symlink is retargeted.
+      before any cache-level raw append, raw read, indexed append/index write,
+      indexed read, direct or indexed artifact hydration read,
+      liveness/reachability plan, blob-index compaction/rebuild, blob-pack tail
+      trim, or blob-pack repack, and an opened symlink-root handle keeps writing
+      the canonical target it opened even if the symlink is retargeted.
       Raw/lower-level `PersistBlobPack`/`PersistBlobIndex` users,
       cross-process pending artifact publication during file maintenance,
       different roots, two-machine misses, full filesystem-lock/CAS policy,
@@ -1852,9 +1854,10 @@ alone (`M-1`/`Q-A`).
       coverage proves lock-file creation, shared/shared compatibility,
       shared/exclusive and exclusive/exclusive nonblocking rejection, and
       drop-time release; oracle root open now uses it for `.locks/open.lock`,
-      cache-level indexed blob reads, read-only liveness/reachability planners,
-      indexed artifact hydration reads, raw/indexed blob writes plus blob-index
-      compaction/rebuild, blob-pack tail trim, and blob-pack repack use it for
+      cache-level raw/indexed blob reads, direct/indexed artifact hydration
+      reads, read-only liveness/reachability planners, raw/indexed blob writes
+      plus blob-index compaction/rebuild, blob-pack tail trim, and blob-pack
+      repack use it for
       `.locks/values.lock` and `.locks/files.lock`, and cache-level file/parse
       artifact raw mapping lookups, liveness/reachability sidecar snapshots,
       mapping writes, indexed artifact hydration reads, and file-pack maintenance
@@ -2631,12 +2634,14 @@ alone (`M-1`/`Q-A`).
 - [x] Current explicit file-artifact read adapter:
       `PersistCache::read_file_artifact` consumes a typed
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
-      through the `files/` pack. This is a typed buffered read helper only;
+      through the `files/` pack under the shared `files` store advisory lock
+      plus same-root file-store lock. This is a typed buffered read helper only;
       parse-artifact payload decoding, automatic cache-hit selection, mmap
       reads, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current explicit file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
-      artifact value, decodes the `ParseArtifactBundle` payload, validates
+      artifact value under the shared `files` store advisory lock plus same-root
+      file-store lock, decodes the `ParseArtifactBundle` payload, validates
       bundled metadata/schema/counts and `resolved.bin`/`symbols.bin`/`ir.bin`
       decoder shape through `ParseArtifactBundle::validate_meta`, and writes it
       into a caller-supplied `ParseCacheEntry` only after validation succeeds.

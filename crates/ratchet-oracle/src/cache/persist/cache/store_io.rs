@@ -148,6 +148,24 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_blob_pack_read(
+        &self,
+        store: PersistBlobStore,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistBlobPackError> {
+        let path = self.layout.blob_store_lock_path(store);
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistBlobPackError::AdvisoryReadLock {
+                store,
+                path,
+                source,
+            })?;
+        let read_guard = self
+            .root_locks
+            .lock_blob_store(store)
+            .map_err(|_| PersistBlobPackError::ReadLockPoisoned { store })?;
+        Ok((advisory_guard, read_guard))
+    }
+
     pub(super) fn lock_blob_index_write(
         &self,
         store: PersistBlobStore,
@@ -444,10 +462,20 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the selected packfile cannot be
-    /// opened or read, if `location` is invalid, or if record/payload hashes do
-    /// not match `key.hash()`.
+    /// Returns [`PersistBlobPackError`] if the selected advisory read lock
+    /// cannot be acquired, if the same-root blob-pack read lock is poisoned, if
+    /// the selected packfile cannot be opened or read, if `location` is
+    /// invalid, or if record/payload hashes do not match `key.hash()`.
     pub fn read_blob(
+        &self,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        let (_advisory_guard, _read_guard) = self.lock_blob_pack_read(key.store())?;
+        self.read_blob_unlocked(key, location)
+    }
+
+    pub(super) fn read_blob_unlocked(
         &self,
         key: PersistBlobKey,
         location: PersistBlobLocation,

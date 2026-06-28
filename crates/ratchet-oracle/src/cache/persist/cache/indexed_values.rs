@@ -66,7 +66,7 @@ impl PersistCache {
         else {
             return Ok(None);
         };
-        self.read_blob(key, location)
+        self.read_blob_unlocked(key, location)
             .map(Some)
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
     }
