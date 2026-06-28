@@ -898,7 +898,16 @@ harness, never cut for scope.
       unresolved symbols, and tests adversarial symbol allocation order (`b`,
       `a\xff`, `a`, `a\0`). This does not call C++ Nix, drive
       `derivationStrict`, or prove `.drv` byte parity.
-- [ ] Cached lexicographic permutation per shape + per-symbol sort rank (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+- [x] Cached lexicographic permutation per shape + per-symbol sort rank
+      (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+      Implemented by `aos-nix-syntax::SymbolTable::lexicographic_rank`
+      maintaining a process-local raw-byte rank view and by
+      `ratchet-value::attrs::shape::AttrShape` storing a cached
+      `iteration_order` plus `lexicographic_rank_by_symbol_slot` inverse table
+      over symbol-sorted slots. This remains a precursor: ranks are not
+      durable/global/shared, active evaluator shapes do not consume these
+      cached permutations, and `.drv` differential proof remains tracked by the
+      surrounding ordering rows.
 - [x] Ordered view for `Hamt` instances (collect keys, sort by cached rank,
       memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
       Implemented by `ratchet-value::attrs::hamt::HamtAttrs`, which stores a
