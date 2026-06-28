@@ -2977,6 +2977,15 @@ alone (`M-1`/`Q-A`).
       replay and verifying traces, not the full persistent demand graph,
       automatic evaluator-node lifecycle, currentTime taint propagation, or
       generic value memoization (`R-10`/`S-14`).
+- [x] Current precursor: currentTime forced-expression no-replay. Fresh-runtime
+      forced-expression canaries now prove `builtins.currentTime` records an
+      uncacheable trace, forces normally through configured persistent cache
+      roots for repeated same-time and changed-time runs, reports no
+      force-cache hits or misses, and records no persistent force metadata
+      entries or trace records. This is scoped to the direct currentTime
+      forced-expression boundary, not full currentTime taint propagation through
+      already-memoized dependents or the persistent demand graph
+      (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
