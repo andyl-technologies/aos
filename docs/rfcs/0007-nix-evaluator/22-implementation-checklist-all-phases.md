@@ -1788,19 +1788,23 @@ alone (`M-1`/`Q-A`).
       two-machine races, full CAS-grade coordination, LMDB/redb node tables,
       automatic GC/repack, and loom/harness proof remain open
       (`C-13`/`R-4`/`S-14`).
-- [x] Current same-process plus advisory node-trace writer lock precursor:
-      independently opened `PersistCache` handles in one process acquire an
-      exclusive `ratchet-cache::file_lock::AdvisoryFileLock` at
-      `.locks/node-traces.lock` before acquiring their node-trace write mutex
-      from `ratchet-cache::root_locks`, so cache-level trace appends,
-      tombstones, and trace-log compaction serialize for a live canonical cache
-      root. Concurrent same-root trace appends keep every complete record
-      readable, poisoned live trace locks are reported before any log write,
-      and cooperating cross-process cache-level trace writers share the same
-      advisory file. Raw lower-level `PersistNodeTraceLog` users, different
-      roots, two-machine races, full CAS-grade coordination, LMDB/redb node
-      tables, transactionality with metadata/value blobs, automatic GC/repack,
-      and loom/harness proof remain open (`C-13`/`R-4`/`S-14`).
+- [x] Current same-process plus advisory node-trace access lock precursor:
+      independently opened `PersistCache` handles in one process acquire
+      `ratchet-cache::file_lock::AdvisoryFileLock` at
+      `.locks/node-traces.lock` before acquiring their node-trace mutex from
+      `ratchet-cache::root_locks`, so cache-level trace lookups hold shared
+      advisory locks while scanning the append-only log, and trace appends,
+      tombstones, and trace-log compaction hold exclusive advisory locks for a
+      live canonical cache root. Concurrent same-root trace appends keep every
+      complete record readable, poisoned live trace locks are reported before
+      any trace lookup or log write, and cooperating cross-process cache-level
+      trace readers and writers share the same advisory file. Trace lookups
+      release the advisory read lock before any later revalidation or
+      value-store read in trace-backed node-value loads. Raw lower-level
+      `PersistNodeTraceLog` users, different roots, two-machine races, full
+      CAS-grade coordination, LMDB/redb node tables, transactionality with
+      metadata/value blobs, automatic GC/repack, and loom/harness proof remain
+      open (`C-13`/`R-4`/`S-14`).
 - [x] Current same-process plus advisory artifact-mapping access lock precursor:
       independently opened `PersistCache` handles in one process acquire
       `ratchet-cache::file_lock::AdvisoryFileLock`s at
@@ -1857,11 +1861,10 @@ alone (`M-1`/`Q-A`).
       phases use `.locks/file-artifacts.lock` and `.locks/parse-artifacts.lock`,
       cache-level reachability metadata snapshots, metadata writes, and metadata
       compaction use `.locks/node-metadata.lock`, and cache-level node trace
-      writes plus trace compaction use
-      `.locks/node-traces.lock`. This is
+      lookups, writes, and compaction use `.locks/node-traces.lock`. This is
       filesystem-lock substrate plus open-initialization and selected
       cache-level blob-store reads/writes/planning/maintenance plus
-      mapping/metadata/trace writes/maintenance only:
+      mapping/metadata/trace reads/writes/maintenance only:
       raw/lower-level pack/index/sidecar writers, cross-process pending
       artifact publication, mmap read leases, CAS protocols, mandatory locking,
       raw-writer enforcement, two-machine races, and loom/harness proof remain
@@ -2212,16 +2215,17 @@ alone (`M-1`/`Q-A`).
       returns the newest record for a node key through linear lookup.
       `PersistCache::record_node_trace`, `record_node_trace_tombstone`, and
       `lookup_node_trace` expose the sidecar through the opened cache root.
-      Cache-level trace appends and tombstones acquire
-      `.locks/node-traces.lock` before the same-root trace write lock. This
-      schema-version-5 log is a simple append-only substrate only; LMDB/redb
-      node tables, transactionality with node metadata or value blobs,
-      automatic evaluator writeback beyond the force-cache bridge below,
-      durable hit selection, revalidation, raw lower-level sidecar
-      coordination, full two-machine/CAS-grade coordination, currentTime taint
-      propagation through persisted dependents, automatic compaction/GC policy,
-      mmap reads, and cached/uncached harness proof remain open
-      (`C-13`/`R-10`/`S-14`).
+      Cache-level trace appends and tombstones acquire exclusive
+      `.locks/node-traces.lock` before the same-root trace write lock, and
+      cache-level trace lookups acquire shared `.locks/node-traces.lock` before
+      the same-root trace read lock. This schema-version-5 log is a simple
+      append-only substrate only; LMDB/redb node tables, transactionality with
+      node metadata or value blobs, automatic evaluator writeback beyond the
+      force-cache bridge below, durable hit selection, revalidation, raw
+      lower-level sidecar coordination, full two-machine/CAS-grade coordination,
+      currentTime taint propagation through persisted dependents, automatic
+      compaction/GC policy, mmap reads, and cached/uncached harness proof remain
+      open (`C-13`/`R-10`/`S-14`).
 - [x] Current explicit node trace-log compaction substrate:
       `PersistNodeTraceLog::latest_entries` scans the append-only
       `nodes/traces.log` into the newest trace entry per node key, preserving
@@ -2316,8 +2320,10 @@ alone (`M-1`/`Q-A`).
       or the newest trace is a tombstone, revalidates each persisted cacheable
       impure input through caller-supplied `ImpureInputRevalidator`, and loads
       the indexed `values/` payload only after every fresh identity and
-      observation hash still matches. This is cache-level durable-hit substrate
-      only: no evaluator hit selection, in-memory demand-graph insertion, dirty
+      observation hash still matches. The trace lookup itself runs under the
+      shared node-trace advisory lock and releases it before revalidation or
+      value payload loading. This is cache-level durable-hit substrate only: no
+      evaluator hit selection, in-memory demand-graph insertion, dirty
       propagation, transactionality with value materialization, currentTime
       taint propagation through persisted dependents, automatic compaction/GC,
       mmap reads, and cached/uncached harness proof remain open

@@ -389,6 +389,19 @@ impl PersistCache {
         Ok((advisory_guard, write_guard))
     }
 
+    pub(super) fn lock_node_traces_read(
+        &self,
+    ) -> Result<(AdvisoryFileLock, MutexGuard<'_, ()>), PersistNodeTraceLogError> {
+        let path = self.layout.node_traces_lock_path();
+        let advisory_guard = AdvisoryFileLock::lock(path.clone(), AdvisoryFileLockMode::Shared)
+            .map_err(|source| PersistNodeTraceLogError::AdvisoryReadLock { path, source })?;
+        let read_guard = self
+            .root_locks
+            .lock_node_traces()
+            .map_err(|_| PersistNodeTraceLogError::ReadLockPoisoned)?;
+        Ok((advisory_guard, read_guard))
+    }
+
     /// Appends a blob to the packfile selected by `key`.
     ///
     /// # Errors

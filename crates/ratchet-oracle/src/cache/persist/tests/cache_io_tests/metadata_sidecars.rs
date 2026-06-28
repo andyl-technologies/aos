@@ -352,6 +352,78 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
 }
 
 #[test]
+fn cache_lookup_node_trace_acquires_advisory_trace_lock_before_same_process_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
+    let payload = test_node_trace_payload(b"input", 1);
+    cache
+        .record_node_trace(key, value_hash, &payload)
+        .expect("node trace records");
+    let guard = cache
+        .lock_node_traces_for_tests()
+        .expect("node trace lock acquires");
+    let worker_cache = cache.clone();
+    let expected_payload = payload.clone();
+    let (tx, rx) = mpsc::channel();
+
+    let handle = thread::spawn(move || {
+        let result = worker_cache
+            .lookup_node_trace(key)
+            .map_err(|error| error.to_string());
+        tx.send(result).expect("node trace lookup result sends");
+    });
+
+    wait_until_advisory_try_lock_blocks(&layout.node_traces_lock_path());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "node trace lookup should wait while the same-root trace lock is held"
+    );
+    drop(guard);
+
+    let entry = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("node trace lookup completes after same-process lock release")
+        .expect("node trace lookup succeeds");
+    handle.join().expect("worker joins");
+    assert_eq!(
+        entry,
+        Some(PersistNodeTraceLogEntry::new(
+            key,
+            value_hash,
+            expected_payload
+        ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_lookup_node_trace_reports_poisoned_same_root_lock() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let poison_cache = PersistCache::open(&root).expect("second cache opens");
+    let poisoner = thread::spawn(move || {
+        let _guard = poison_cache
+            .lock_node_traces_for_tests()
+            .expect("node trace lock acquires");
+        panic!("poison persistent node trace read lock");
+    });
+    assert!(poisoner.join().is_err());
+
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let error = cache
+        .lookup_node_trace(key)
+        .expect_err("poisoned same-root trace lock should reject lookups");
+
+    assert!(matches!(error, PersistNodeTraceLogError::ReadLockPoisoned));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_record_node_trace_uses_advisory_trace_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
@@ -470,6 +542,30 @@ fn cache_record_node_trace_maps_advisory_trace_lock_error() {
             .len(),
         0
     );
+
+    let _ = fs::remove_file(layout.locks_dir());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_lookup_node_trace_maps_advisory_trace_lock_error() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let layout = cache.layout().clone();
+    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+
+    fs::remove_dir_all(layout.locks_dir()).expect("locks directory removes");
+    fs::write(layout.locks_dir(), b"not a directory").expect("locks path becomes a file");
+
+    let error = cache
+        .lookup_node_trace(key)
+        .expect_err("unusable locks path rejects trace lookups");
+
+    assert!(matches!(
+        error,
+        PersistNodeTraceLogError::AdvisoryReadLock { ref path, .. }
+            if path == &layout.node_traces_lock_path()
+    ));
 
     let _ = fs::remove_file(layout.locks_dir());
     let _ = fs::remove_dir_all(root);

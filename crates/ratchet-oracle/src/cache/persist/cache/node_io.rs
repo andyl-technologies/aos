@@ -105,16 +105,20 @@ impl PersistCache {
 
     /// Looks up the newest durable verifying-trace record for one demand node.
     ///
-    /// Missing trace records return `Ok(None)`.
+    /// Missing trace records return `Ok(None)`. Cache-level lookups hold the
+    /// shared node-trace advisory lock and same-root trace lock while scanning
+    /// the append-only log.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTraceLogError`] if the trace log cannot be opened,
-    /// read, or decoded.
+    /// Returns [`PersistNodeTraceLogError`] if the advisory trace read lock
+    /// cannot be acquired, if the same-root trace lock is poisoned, or if the
+    /// trace log cannot be opened, read, or decoded.
     pub fn lookup_node_trace(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<PersistNodeTraceLogEntry>, PersistNodeTraceLogError> {
+        let (_advisory_guard, _read_guard) = self.lock_node_traces_read()?;
         self.node_trace_log.lookup(key)
     }
 
