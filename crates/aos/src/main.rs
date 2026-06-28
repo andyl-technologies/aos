@@ -142,6 +142,7 @@ async fn run(cli: &Cli) -> Result<()> {
 
     if let Commands::NixDiff {
         attr,
+        smoke,
         all,
         systems,
         file,
@@ -182,6 +183,7 @@ async fn run(cli: &Cli) -> Result<()> {
             eval_config,
             file,
             attr.clone(),
+            *smoke,
             *all,
             *systems,
             (*mode).into(),
@@ -388,6 +390,7 @@ fn run_nix_diff_threaded(
     eval_config: NixEvalConfig,
     file: PathBuf,
     attr: Option<String>,
+    smoke: bool,
     all: bool,
     systems: bool,
     mode: DiffMode,
@@ -408,6 +411,7 @@ fn run_nix_diff_threaded(
                 eval_config,
                 &file,
                 attr.as_deref(),
+                smoke,
                 all,
                 systems,
                 mode,
@@ -666,6 +670,7 @@ mod tests {
         Cli {
             command: Commands::NixDiff {
                 attr: Some("pkgs.hello".to_string()),
+                smoke: false,
                 all: false,
                 systems: false,
                 file: None,

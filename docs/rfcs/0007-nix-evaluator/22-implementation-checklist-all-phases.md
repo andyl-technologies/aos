@@ -212,7 +212,8 @@ hold invariant.
       into `aos-nix-dialect`.
 - [x] Gate tooling/scaffolds: `diff_closure` plus `aos nix-diff` path, byte, and
       structural modes, closure traversal, root-vs-contaminated localization,
-      direct node reruns, `--all`/`--systems`/toolchain/lang-corpus enumeration,
+      direct node reruns, `--smoke` zlib witness,
+      `--all`/`--systems`/toolchain/lang-corpus enumeration,
       binary corpus failure semantics, `NixCli::instantiate_with_stats`,
       `aos nix-diff --oracle-stats`, `aos nix-bench` with byte-parity guard
       before recording, `cargo-fuzz` `internal_diff_raw`/`parity_json` seeds,

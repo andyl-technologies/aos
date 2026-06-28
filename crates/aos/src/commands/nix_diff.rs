@@ -122,6 +122,8 @@ const EXPLICIT_TOOLCHAIN_CORPUS_ATTRS: &[&str] = &[
     "pkgs.ninja",
 ];
 
+const SMOKE_CORPUS_ATTRS: &[&str] = &["pkgs.zlib"];
+
 const GCC_TOOLCHAIN_TIER_COMPONENTS: &[&str] = &[
     "gcc",
     "gccStage2",
@@ -227,6 +229,7 @@ pub fn run(
     mut eval_config: NixEvalConfig,
     file: &Path,
     attr: Option<&str>,
+    smoke: bool,
     all: bool,
     systems: bool,
     mode: DiffMode,
@@ -240,7 +243,7 @@ pub fn run(
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
     let candidate_name = candidate.name();
 
-    if all || systems {
+    if smoke || all || systems {
         return run_all(
             printer,
             &oracle,
@@ -248,6 +251,7 @@ pub fn run(
             candidate_name,
             &eval_config,
             file,
+            smoke,
             all,
             systems,
             mode,
@@ -256,7 +260,7 @@ pub fn run(
     }
 
     let attr = attr.ok_or_else(|| AosError::InvalidArgument {
-        message: "provide --attr <ATTR>, --all, or --systems".to_string(),
+        message: "provide --attr <ATTR>, --smoke, --all, or --systems".to_string(),
     })?;
 
     let oracle_stats = if oracle_stats {
@@ -397,12 +401,19 @@ fn run_all(
     candidate_name: &str,
     eval_config: &NixEvalConfig,
     file: &Path,
+    include_smoke: bool,
     include_packages: bool,
     include_systems: bool,
     mode: DiffMode,
     oracle_stats: bool,
 ) -> Result<()> {
-    let corpus = corpus_entries(oracle, file, include_packages, include_systems)?;
+    let corpus = corpus_entries(
+        oracle,
+        file,
+        include_smoke,
+        include_packages,
+        include_systems,
+    )?;
     if corpus.entries.is_empty() {
         return Err(AosError::InvalidArgument {
             message: "nix-diff corpus selection found no derivations".to_string(),
@@ -604,7 +615,7 @@ pub(crate) fn fuzz_source_seeds(
     include_systems: bool,
     eval_config: &NixEvalConfig,
 ) -> Result<Vec<FuzzSourceSeed>> {
-    corpus_entries(oracle, file, include_packages, include_systems)?
+    corpus_entries(oracle, file, false, include_packages, include_systems)?
         .entries
         .iter()
         .map(|entry| render_fuzz_source_seed(entry, eval_config))
@@ -671,12 +682,16 @@ fn fuzz_source_file_kind(entry: &CorpusEntry) -> FuzzSourceFileKind {
 fn corpus_entries(
     oracle: &NixCli,
     file: &Path,
+    include_smoke: bool,
     include_packages: bool,
     include_systems: bool,
 ) -> Result<CorpusSelection> {
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
 
+    if include_smoke {
+        extend_unique_attrs(&mut entries, &mut seen, file, smoke_attrs());
+    }
     if include_packages {
         extend_unique_attrs(&mut entries, &mut seen, file, package_attrs(oracle, file)?);
         extend_unique_attrs(
@@ -694,6 +709,13 @@ fn corpus_entries(
     }
 
     Ok(CorpusSelection { entries })
+}
+
+fn smoke_attrs() -> Vec<String> {
+    SMOKE_CORPUS_ATTRS
+        .iter()
+        .map(|attr| (*attr).to_owned())
+        .collect()
 }
 
 fn extend_unique_attrs(
@@ -2927,6 +2949,11 @@ mod tests {
         );
         assert_eq!(value["reports"][0]["divergences"][0]["kind"], "bytes");
         assert!(value.get("oracle_stats_summary").is_none());
+    }
+
+    #[test]
+    fn smoke_attrs_start_with_zlib_witness() {
+        assert_eq!(smoke_attrs(), ["pkgs.zlib"]);
     }
 
     #[test]

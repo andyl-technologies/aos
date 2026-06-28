@@ -187,15 +187,21 @@ pub enum Commands {
         #[arg(
             short = 'A',
             long,
-            conflicts_with_all = ["all", "systems", "oracle_drv", "candidate_drv"],
-            required_unless_present_any = ["all", "systems", "oracle_drv"]
+            conflicts_with_all = ["all", "systems", "smoke", "oracle_drv", "candidate_drv"],
+            required_unless_present_any = ["all", "systems", "smoke", "oracle_drv"]
         )]
         attr: Option<String>,
+        /// Compare the cheap per-commit smoke corpus
+        #[arg(
+            long,
+            conflicts_with_all = ["all", "systems", "oracle_drv", "candidate_drv"]
+        )]
+        smoke: bool,
         /// Compare every derivation in the pkgs set
-        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
+        #[arg(long, conflicts_with_all = ["smoke", "oracle_drv", "candidate_drv"])]
         all: bool,
         /// Compare every system toplevel
-        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
+        #[arg(long, conflicts_with_all = ["smoke", "oracle_drv", "candidate_drv"])]
         systems: bool,
         /// Nix file to instantiate (default: repository default.nix)
         #[arg(conflicts_with_all = ["oracle_drv", "candidate_drv"])]
@@ -382,6 +388,7 @@ mod tests {
         match cli.command {
             Commands::NixDiff {
                 attr,
+                smoke,
                 all,
                 systems,
                 file,
@@ -393,6 +400,7 @@ mod tests {
                 candidate_drv_bundle,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.hello"));
+                assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
                 assert_eq!(file, None);
@@ -422,6 +430,7 @@ mod tests {
         match cli.command {
             Commands::NixDiff {
                 attr,
+                smoke,
                 all,
                 systems,
                 file,
@@ -433,6 +442,7 @@ mod tests {
                 candidate_drv_bundle,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
+                assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
@@ -494,6 +504,7 @@ mod tests {
         match cli.command {
             Commands::NixDiff {
                 attr,
+                smoke,
                 all,
                 systems,
                 file,
@@ -505,6 +516,7 @@ mod tests {
                 candidate_drv_bundle,
             } => {
                 assert_eq!(attr, None);
+                assert!(!smoke);
                 assert!(!all);
                 assert!(!systems);
                 assert_eq!(file, None);
@@ -561,11 +573,39 @@ mod tests {
 
         match cli.command {
             Commands::NixDiff {
-                attr, all, mode, ..
+                attr,
+                smoke,
+                all,
+                mode,
+                ..
             } => {
                 assert_eq!(attr, None);
+                assert!(!smoke);
                 assert!(all);
                 assert_eq!(mode, NixDiffMode::Structural);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_smoke_mode() {
+        let cli = parse_cli(["aos", "nix-diff", "--smoke", "--mode", "byte"]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr,
+                smoke,
+                all,
+                systems,
+                mode,
+                ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(smoke);
+                assert!(!all);
+                assert!(!systems);
+                assert_eq!(mode, NixDiffMode::Byte);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -578,12 +618,14 @@ mod tests {
         match cli.command {
             Commands::NixDiff {
                 attr,
+                smoke,
                 all,
                 systems,
                 mode,
                 ..
             } => {
                 assert_eq!(attr, None);
+                assert!(!smoke);
                 assert!(!all);
                 assert!(systems);
                 assert_eq!(mode, NixDiffMode::Path);
@@ -598,9 +640,14 @@ mod tests {
 
         match cli.command {
             Commands::NixDiff {
-                attr, all, systems, ..
+                attr,
+                smoke,
+                all,
+                systems,
+                ..
             } => {
                 assert_eq!(attr, None);
+                assert!(!smoke);
                 assert!(all);
                 assert!(systems);
             }
@@ -836,6 +883,29 @@ mod tests {
     fn nix_diff_rejects_attr_with_systems() {
         let err = parse_cli_error(["aos", "nix-diff", "--systems", "--attr", "pkgs.hello"]);
 
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn nix_diff_rejects_smoke_with_other_corpora() {
+        let err = parse_cli_error(["aos", "nix-diff", "--smoke", "--attr", "pkgs.hello"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--smoke", "--all"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error(["aos", "nix-diff", "--smoke", "--systems"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--smoke",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+        ]);
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
