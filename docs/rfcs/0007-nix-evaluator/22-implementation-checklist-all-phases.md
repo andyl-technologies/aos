@@ -1187,7 +1187,11 @@ alone (`M-1`/`Q-A`).
       consing preserves context-sensitive identity so identical bytes with
       different contexts do not collapse, list consing compares raw child
       `Value` identities, and attrset consing includes shape id, source/iteration
-      order metadata, binding positions, and raw child `Value` identities. This
+      order metadata, binding positions, and raw child `Value` identities.
+      Lambdas, primops, and thunks remain deliberately uninterned and carry no
+      stored structural hash, so closure environments, partial applications, and
+      suspended work keep distinct identities. Covered by heap consing tests,
+      including `lambdas_primops_and_thunks_are_not_hash_consed`. This
       is current heap-local consing, not generic post-force immutable-value
       hash-consing, maximal sharing across all values, O(1) equality for all
       values, durable value hashes, or field-load value-hash support.

@@ -866,6 +866,17 @@ Value representation has no observable effect on `.drv` output by construction (
 
 - [ ] `intern(ConsTable, HeapObject)` with bottom-up structural hashing (children interned-and-hashed first), xxh3 key + structural-equality tiebreak, hash stored in the object header (§5.3, §5.4) — **P2**, `S-7`; enables O(1) equality and the incremental-cache key.
 - [ ] Interning policy: always-intern strings/symbols/small+recurring attrsets/derivation-env values; intern-on-promotion for large composites; never-intern thunks/distinct-env lambdas/externals (§5.3) — **P2**, `S-7`; intern-on-promotion threshold `M`-gated.
+- [x] Current Tier-A heap-local consing substrate: the tree-walk evaluator heap
+      interns immutable strings, paths, list spines, and shape-aware flat
+      attrsets in separate evaluator-local tables using `HotXxh3Hash` plus
+      structural-equality confirmation. The active policy deliberately leaves
+      lambdas, primops, and thunks uninterned and without stored structural
+      hashes, so closure environment identity, partial-application records, and
+      suspended work remain distinct. This is the current safe substrate only:
+      no generic post-force interning for all immutable values, object-header
+      hash ABI, O(1) equality for every value, durable value hash, promotion
+      threshold, or weak-table GC integration yet. Covered by heap consing tests,
+      including `lambdas_primops_and_thunks_are_not_hash_consed`.
 - [ ] Three-function hashing split wired through the cons-table: xxh3 in-process, blake3 durable/shared, SHA-256 only Nix-observed — none leaking into `.drv` (§5.4) — **P2**, `S-15`; leak-invariant conformance ([12](12-incremental-evaluation-cache.md) §5.2).
 - [ ] GC interaction: cons-table as arena-dropped set in Tier A; weak hash table scavenged-and-forwarded in Tier B (never resurrects garbage, pointers updated on move) (§5.5) — Tier A **P3**, Tier B weak-table **P3** (`M-12` sizing measure-gated).
 

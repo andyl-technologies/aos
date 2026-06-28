@@ -358,6 +358,63 @@ fn allocates_primop_values_and_recovers_record() {
 }
 
 #[test]
+fn lambdas_primops_and_thunks_are_not_hash_consed() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
+    let argument = EvalPrimOpArg::new(IrId::new(2), Span::new(4, 8), Value::int(3));
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+
+    let first_lambda = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(7),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("first lambda allocates");
+    let second_lambda = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(7),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("second lambda allocates");
+    let first_primop = heap
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![argument],
+        ))
+        .expect("first primop allocates");
+    let second_primop = heap
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![argument],
+        ))
+        .expect("second primop allocates");
+    let first_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(11)))
+        .expect("first thunk allocates");
+    let second_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(11)))
+        .expect("second thunk allocates");
+
+    assert_ne!(first_lambda.payload_bits(), second_lambda.payload_bits());
+    assert_ne!(first_primop.payload_bits(), second_primop.payload_bits());
+    assert_ne!(first_thunk.payload_bits(), second_thunk.payload_bits());
+    assert_eq!(heap.len(), 6);
+    assert!(
+        heap.records
+            .iter()
+            .all(|record| record.structural_hash.is_none()),
+        "effectful heap records must not participate in structural consing"
+    );
+}
+
+#[test]
 fn public_primop_constructors_keep_symbol_only_records() {
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
