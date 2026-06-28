@@ -899,7 +899,16 @@ harness, never cut for scope.
       `a\xff`, `a`, `a\0`). This does not call C++ Nix, drive
       `derivationStrict`, or prove `.drv` byte parity.
 - [ ] Cached lexicographic permutation per shape + per-symbol sort rank (integer-compare ordering) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
-- [ ] Ordered view for `Hamt` instances (collect keys, sort by cached rank, memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+- [x] Ordered view for `Hamt` instances (collect keys, sort by cached rank,
+      memoize on the root) ([§7.3](#73-implementation-cached-sort-permutation-on-the-shape)) — P5.
+      Implemented by `ratchet-value::attrs::hamt::HamtAttrs`, which stores a
+      cached raw-byte lexicographic `iteration_order` beside the immutable HAMT
+      root, derives it from the `SymbolTable` rank snapshot on
+      construction/insertion/merge, preserves it on replacements, and exposes
+      it through `iteration_order` / `iter_lexicographic`. This remains a
+      precursor: active evaluator HAMT wiring, runtime representation dispatch,
+      and `.drv` differential proof are still tracked by the surrounding P5
+      rows.
 - [ ] `derivationStrict` consumes the cached order; every shape's `iteration_order` cross-checked against sorted spelling on the oracle ([§7.4](#74-derivationstrict-is-the-acceptance-critical-consumer)) — P1, `S-13`; gate: differential `.drv` harness.
 
 ### Measure-first instrumentation
