@@ -608,15 +608,36 @@ impl EvalCacheRuntime {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        self.observe_derivation_aterm_expression_path_with_hash(
+            identity,
+            free_var_value_hashes,
+            aterm,
+            drv_path,
+            None,
+        )
+    }
+
+    pub(crate) fn observe_derivation_aterm_expression_path_with_hash<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+        drv_path: &[u8],
+        hash_derivation_modulo: Option<[u8; 32]>,
+    ) -> Result<Option<Reconsideration>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache
-            .observe_derivation_aterm_expression_path(
+            .observe_derivation_aterm_expression_path_with_hash(
                 identity,
                 free_var_value_hashes,
                 aterm,
                 drv_path,
+                hash_derivation_modulo,
             )
             .and_then(|reconsideration| Self::clean_reconsideration(cache, reconsideration))
     }

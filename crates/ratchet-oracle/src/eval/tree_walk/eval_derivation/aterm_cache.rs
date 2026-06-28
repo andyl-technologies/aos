@@ -3,6 +3,11 @@
 use super::*;
 use crate::cache::{CachedDerivationAtermPath, PersistBlobKey};
 
+pub(super) struct DerivationAtermPathCacheResult {
+    pub(super) path: nix_compat::store_path::StorePath<String>,
+    pub(super) hash_derivation_modulo: Option<DerivationHashModulo>,
+}
+
 impl TreeWalk {
     pub(super) fn active_derivation_aterm_memo_read_node_for_current_node(
         &mut self,
@@ -21,6 +26,24 @@ impl TreeWalk {
         derivation: &nix_compat::derivation::Derivation,
         output_resolution: DerivationOutputResolution,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        self.calculate_derivation_path_with_aterm_cache_result(
+            id,
+            span,
+            name,
+            derivation,
+            output_resolution,
+        )
+        .map(|result| result.path)
+    }
+
+    pub(super) fn calculate_derivation_path_with_aterm_cache_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+        output_resolution: DerivationOutputResolution,
+    ) -> Result<DerivationAtermPathCacheResult, TreeWalkError> {
         let aterm = match output_resolution {
             DerivationOutputResolution::StaticPaths => self.derivation_aterm_bytes(derivation),
             DerivationOutputResolution::FloatingCa(floating_ca_output) => {
@@ -30,13 +53,22 @@ impl TreeWalk {
                 self.impure_derivation_aterm_bytes(derivation, impure_output, None)
             }
             DerivationOutputResolution::DeferredPlaceholders => {
-                return self.calculate_derivation_path(id, span, name, derivation);
+                return self
+                    .calculate_derivation_path(id, span, name, derivation)
+                    .map(|path| DerivationAtermPathCacheResult {
+                        path,
+                        hash_derivation_modulo: None,
+                    });
             }
         };
-        if let Some(path) = self.lookup_derivation_aterm_path_for_current_node(id, name, &aterm) {
-            return Ok(path);
+        if let Some(result) = self.lookup_derivation_aterm_path_for_current_node(id, name, &aterm) {
+            return Ok(result);
         }
         self.calculate_derivation_path_from_aterm(id, span, name, derivation, &aterm)
+            .map(|path| DerivationAtermPathCacheResult {
+                path,
+                hash_derivation_modulo: None,
+            })
     }
 
     fn lookup_derivation_aterm_path_for_current_node(
@@ -44,13 +76,17 @@ impl TreeWalk {
         id: IrId,
         name: &str,
         aterm: &[u8],
-    ) -> Option<nix_compat::store_path::StorePath<String>> {
+    ) -> Option<DerivationAtermPathCacheResult> {
         if !self.eval_cache_runtime_enabled() {
             return None;
         }
         let (identity, free_var_value_hashes) =
             self.derivation_aterm_cache_subject_for_current_node(id)?;
-        let (path_bytes, mut dependency, persistent_hit) = if let Some((path_bytes, dependency)) = {
+        let (path_bytes, hash_derivation_modulo, mut dependency, persistent_hit) = if let Some((
+            path_bytes,
+            hash_derivation_modulo,
+            dependency,
+        )) = {
             let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -65,7 +101,8 @@ impl TreeWalk {
             ) {
                 Ok(Some(hit)) => {
                     let dependency = hit.node();
-                    Some((hit.into_path_bytes(), dependency))
+                    let hash_derivation_modulo = hit.hash_derivation_modulo();
+                    Some((hit.into_path_bytes(), hash_derivation_modulo, dependency))
                 }
                 Ok(None) => None,
                 Err(error) => {
@@ -78,11 +115,12 @@ impl TreeWalk {
                 }
             }
         } {
-            (path_bytes, Some(dependency), false)
+            (path_bytes, hash_derivation_modulo, Some(dependency), false)
         } else {
-            let path_bytes =
+            let payload =
                 self.lookup_persist_derivation_aterm_path(identity, &free_var_value_hashes, aterm)?;
-            (path_bytes, None, true)
+            let path_bytes = try_clone_bytes(payload.path_bytes()).ok()?;
+            (path_bytes, payload.hash_derivation_modulo(), None, true)
         };
         let Some(path_in_store) = self.strip_configured_store_dir(&path_bytes) else {
             tracing::warn!(
@@ -123,6 +161,7 @@ impl TreeWalk {
                 &free_var_value_hashes,
                 aterm,
                 &path_bytes,
+                hash_derivation_modulo,
             ) {
                 PersistSideRecordRuntimeObservation::Accepted(observed) => {
                     dependency = Some(observed);
@@ -138,7 +177,10 @@ impl TreeWalk {
             self.record_enclosing_memo_read(dependency);
         }
         self.increment_derivation_aterm_path_reuses();
-        Some(path)
+        Some(DerivationAtermPathCacheResult {
+            path,
+            hash_derivation_modulo: hash_derivation_modulo.map(DerivationHashModulo),
+        })
     }
 
     fn lookup_persist_derivation_aterm_path(
@@ -146,7 +188,7 @@ impl TreeWalk {
         identity: CacheExprIdentity,
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
-    ) -> Option<Vec<u8>> {
+    ) -> Option<CachedDerivationAtermPath> {
         if !self.options.eval_cache_enabled() {
             return None;
         }
@@ -204,7 +246,7 @@ impl TreeWalk {
         if payload.aterm_bytes() != aterm {
             return None;
         }
-        try_clone_bytes(payload.path_bytes()).ok()
+        Some(payload)
     }
 
     fn observe_persist_derivation_aterm_path_runtime_hit(
@@ -213,6 +255,7 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         path: &[u8],
+        hash_derivation_modulo: Option<[u8; 32]>,
     ) -> PersistSideRecordRuntimeObservation {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -221,11 +264,12 @@ impl TreeWalk {
             );
             return PersistSideRecordRuntimeObservation::Skipped;
         };
-        match cache.observe_derivation_aterm_expression_path(
+        match cache.observe_derivation_aterm_expression_path_with_hash(
             identity,
             free_var_value_hashes.iter().copied(),
             aterm,
             path,
+            hash_derivation_modulo,
         ) {
             Ok(Some(reconsideration)) => {
                 PersistSideRecordRuntimeObservation::Accepted(reconsideration.node())
@@ -248,6 +292,7 @@ impl TreeWalk {
         span: Span,
         drv_path: &nix_compat::store_path::StorePath<String>,
         derivation: &nix_compat::derivation::Derivation,
+        known_hash: DerivationHashModulo,
         output_resolution: DerivationOutputResolution,
     ) {
         if !self.eval_cache_runtime_enabled() {
@@ -285,11 +330,12 @@ impl TreeWalk {
                 );
                 return;
             };
-            match cache.observe_derivation_aterm_expression_path(
+            match cache.observe_derivation_aterm_expression_path_with_hash(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 &aterm,
                 &drv_path_bytes,
+                Some(known_hash.0),
             ) {
                 Ok(Some(reconsideration)) => {
                     (true, reconsideration.decision() == CutoffDecision::CutOff)
@@ -314,6 +360,7 @@ impl TreeWalk {
                 &free_var_value_hashes,
                 &aterm,
                 &drv_path_bytes,
+                Some(known_hash.0),
             );
         } else if rejected {
             self.clear_persist_derivation_aterm_path(identity, &free_var_value_hashes);
@@ -329,6 +376,7 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         drv_path: &[u8],
+        hash_derivation_modulo: Option<[u8; 32]>,
     ) {
         if !self.options.eval_cache_enabled() {
             return;
@@ -359,7 +407,15 @@ impl TreeWalk {
                 return;
             }
         };
-        let payload = CachedDerivationAtermPath::new(aterm, drv_path);
+        let payload = if let Some(hash_derivation_modulo) = hash_derivation_modulo {
+            CachedDerivationAtermPath::with_hash_derivation_modulo(
+                aterm,
+                drv_path,
+                hash_derivation_modulo,
+            )
+        } else {
+            CachedDerivationAtermPath::new(aterm, drv_path)
+        };
         let value_hash = payload.value_hash();
         let payload_bytes = match payload.encode_persistent_payload() {
             Ok(payload_bytes) => payload_bytes,

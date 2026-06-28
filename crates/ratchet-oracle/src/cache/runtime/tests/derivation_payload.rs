@@ -126,12 +126,24 @@ fn cached_derivation_aterm_paths_round_trip_through_persistent_encoding() {
     let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv".to_vec();
     let payload = CachedDerivationAtermPath::new(aterm.clone(), drv_path.clone());
     let value_hash = payload.value_hash();
+    let hash_derivation_modulo = [17; 32];
+    let hashed_payload = CachedDerivationAtermPath::with_hash_derivation_modulo(
+        aterm.clone(),
+        drv_path.clone(),
+        hash_derivation_modulo,
+    );
+    let hashed_value_hash = hashed_payload.value_hash();
 
     let encoded = payload
         .encode_persistent_payload()
         .expect("persistent payload encodes");
     let decoded = CachedDerivationAtermPath::decode_persistent_payload(&encoded)
         .expect("persistent payload decodes");
+    let hashed_encoded = hashed_payload
+        .encode_persistent_payload()
+        .expect("hashed persistent payload encodes");
+    let hashed_decoded = CachedDerivationAtermPath::decode_persistent_payload(&hashed_encoded)
+        .expect("hashed persistent payload decodes");
 
     assert_eq!(
         DurableBlake3Hash::for_bytes(&encoded),
@@ -139,7 +151,20 @@ fn cached_derivation_aterm_paths_round_trip_through_persistent_encoding() {
     );
     assert_eq!(decoded.aterm_bytes(), aterm.as_slice());
     assert_eq!(decoded.path_bytes(), drv_path.as_slice());
+    assert_eq!(decoded.hash_derivation_modulo(), None);
     assert_eq!(decoded.value_hash(), value_hash);
+    assert_ne!(hashed_value_hash, value_hash);
+    assert_eq!(
+        DurableBlake3Hash::for_bytes(&hashed_encoded),
+        hashed_value_hash.as_durable_hash()
+    );
+    assert_eq!(hashed_decoded.aterm_bytes(), aterm.as_slice());
+    assert_eq!(hashed_decoded.path_bytes(), drv_path.as_slice());
+    assert_eq!(
+        hashed_decoded.hash_derivation_modulo(),
+        Some(hash_derivation_modulo)
+    );
+    assert_eq!(hashed_decoded.value_hash(), hashed_value_hash);
 }
 
 #[test]

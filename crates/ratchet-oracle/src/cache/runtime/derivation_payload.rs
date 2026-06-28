@@ -185,12 +185,30 @@ impl CachedStaticDerivationOutputPathsPayload {
 pub(crate) struct CachedDerivationAtermPath {
     aterm: Vec<u8>,
     path: Vec<u8>,
+    hash_derivation_modulo: Option<[u8; 32]>,
 }
 
 impl CachedDerivationAtermPath {
     /// Creates a cached derivation side payload from exact ATerm and path bytes.
     pub(crate) fn new(aterm: Vec<u8>, path: Vec<u8>) -> Self {
-        Self { aterm, path }
+        Self {
+            aterm,
+            path,
+            hash_derivation_modulo: None,
+        }
+    }
+
+    /// Creates a cached derivation side payload with a known modulo hash.
+    pub(crate) fn with_hash_derivation_modulo(
+        aterm: Vec<u8>,
+        path: Vec<u8>,
+        hash_derivation_modulo: [u8; 32],
+    ) -> Self {
+        Self {
+            aterm,
+            path,
+            hash_derivation_modulo: Some(hash_derivation_modulo),
+        }
     }
 
     /// Returns the exact derivation ATerm bytes this path belongs to.
@@ -203,9 +221,18 @@ impl CachedDerivationAtermPath {
         &self.path
     }
 
+    /// Returns the resolved derivation hash modulo bytes, if this payload stores them.
+    pub(crate) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+        self.hash_derivation_modulo
+    }
+
     /// Returns the durable side-payload value hash.
     pub(crate) fn value_hash(&self) -> ValueHash {
-        derivation_aterm_path_payload_value_hash(&self.aterm, &self.path)
+        derivation_aterm_path_payload_value_hash(
+            &self.aterm,
+            &self.path,
+            self.hash_derivation_modulo,
+        )
     }
 
     /// Encodes this payload for the persistent `values/` pack.
@@ -223,7 +250,12 @@ impl CachedDerivationAtermPath {
             .saturating_add(self.aterm.len())
             .saturating_add(b"drv-path".len())
             .saturating_add(16)
-            .saturating_add(self.path.len());
+            .saturating_add(self.path.len())
+            .saturating_add(
+                self.hash_derivation_modulo
+                    .map(|_| b"hash-derivation-modulo".len().saturating_add(32))
+                    .unwrap_or(0),
+            );
         let mut out = Vec::new();
         out.try_reserve_exact(len)
             .map_err(|_| CachedDerivationSidePayloadError::PayloadAllocationFailed { len })?;
@@ -232,6 +264,10 @@ impl CachedDerivationAtermPath {
         append_derivation_length_prefixed_bytes(&mut out, &self.aterm)?;
         append_derivation_payload_bytes(&mut out, b"drv-path")?;
         append_derivation_length_prefixed_bytes(&mut out, &self.path)?;
+        if let Some(hash_derivation_modulo) = self.hash_derivation_modulo {
+            append_derivation_payload_bytes(&mut out, b"hash-derivation-modulo")?;
+            append_derivation_payload_bytes(&mut out, &hash_derivation_modulo)?;
+        }
         Ok(out)
     }
 
@@ -253,8 +289,20 @@ impl CachedDerivationAtermPath {
         let aterm = cursor.take_length_prefixed_bytes()?;
         cursor.take_marker(b"drv-path", "derivation path tag")?;
         let path = cursor.take_length_prefixed_bytes()?;
+        let hash_derivation_modulo = if cursor.remaining() == 0 {
+            None
+        } else {
+            cursor.take_marker(b"hash-derivation-modulo", "derivation modulo hash tag")?;
+            let mut hash = [0; 32];
+            hash.copy_from_slice(cursor.take_bytes(32)?);
+            Some(hash)
+        };
         cursor.finish()?;
-        Ok(Self { aterm, path })
+        Ok(Self {
+            aterm,
+            path,
+            hash_derivation_modulo,
+        })
     }
 }
 
@@ -308,6 +356,7 @@ pub(super) struct DerivationAtermPathRecord {
     pub(super) aterm_value_hash: ValueHash,
     pub(super) payload_value_hash: ValueHash,
     path: Vec<u8>,
+    hash_derivation_modulo: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,27 +367,41 @@ pub(super) struct StaticDerivationOutputPathRecord {
 }
 
 impl DerivationAtermPathRecord {
-    pub(super) fn new(aterm: &[u8], path: &[u8]) -> Self {
-        let payload_value_hash = derivation_aterm_path_payload_value_hash(aterm, path);
+    pub(super) fn new(aterm: &[u8], path: &[u8], hash_derivation_modulo: Option<[u8; 32]>) -> Self {
+        let payload_value_hash =
+            derivation_aterm_path_payload_value_hash(aterm, path, hash_derivation_modulo);
         Self {
             aterm_value_hash: ValueHash::from_derivation_aterm_bytes(aterm),
             payload_value_hash,
             path: path.to_vec(),
+            hash_derivation_modulo,
         }
     }
 
     pub(super) fn path_bytes(&self) -> Vec<u8> {
         self.path.clone()
     }
+
+    pub(super) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+        self.hash_derivation_modulo
+    }
 }
 
-fn derivation_aterm_path_payload_value_hash(aterm: &[u8], path: &[u8]) -> ValueHash {
+fn derivation_aterm_path_payload_value_hash(
+    aterm: &[u8],
+    path: &[u8],
+    hash_derivation_modulo: Option<[u8; 32]>,
+) -> ValueHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION);
     hasher.update(b"aterm");
     update_derivation_side_payload_hash_chunk(&mut hasher, aterm);
     hasher.update(b"drv-path");
     update_derivation_side_payload_hash_chunk(&mut hasher, path);
+    if let Some(hash_derivation_modulo) = hash_derivation_modulo {
+        hasher.update(b"hash-derivation-modulo");
+        hasher.update(&hash_derivation_modulo);
+    }
     ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
 }
 
@@ -403,8 +466,12 @@ impl<'a> DerivationSidePayloadCursor<'a> {
         Self { bytes, offset: 0 }
     }
 
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.offset
+    }
+
     fn finish(&self) -> Result<(), CachedDerivationSidePayloadError> {
-        let remaining = self.bytes.len() - self.offset;
+        let remaining = self.remaining();
         if remaining == 0 {
             Ok(())
         } else {

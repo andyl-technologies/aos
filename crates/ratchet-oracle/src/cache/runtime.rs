@@ -107,6 +107,7 @@ pub(crate) struct CachedExpressionPayloadHit {
 pub(crate) struct CachedDerivationAtermPathHit {
     node: DemandNodeId,
     path_bytes: Vec<u8>,
+    hash_derivation_modulo: Option<[u8; 32]>,
     reconsideration: Option<Reconsideration>,
 }
 
@@ -189,10 +190,15 @@ impl CachedExpressionPayloadHit {
 }
 
 impl CachedDerivationAtermPathHit {
-    pub(crate) fn new(node: DemandNodeId, path_bytes: Vec<u8>) -> Self {
+    pub(crate) fn new(
+        node: DemandNodeId,
+        path_bytes: Vec<u8>,
+        hash_derivation_modulo: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             node,
             path_bytes,
+            hash_derivation_modulo,
             reconsideration: None,
         }
     }
@@ -200,11 +206,13 @@ impl CachedDerivationAtermPathHit {
     pub(crate) fn with_reconsideration(
         node: DemandNodeId,
         path_bytes: Vec<u8>,
+        hash_derivation_modulo: Option<[u8; 32]>,
         reconsideration: Reconsideration,
     ) -> Self {
         Self {
             node,
             path_bytes,
+            hash_derivation_modulo,
             reconsideration: Some(reconsideration),
         }
     }
@@ -217,6 +225,11 @@ impl CachedDerivationAtermPathHit {
     /// Returns the value-hash reconsideration used to clean a dirty hit.
     pub(crate) fn reconsideration(&self) -> Option<&Reconsideration> {
         self.reconsideration.as_ref()
+    }
+
+    /// Returns the cached derivation hash modulo, if the side record stores it.
+    pub(crate) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+        self.hash_derivation_modulo
     }
 
     /// Consumes the hit into its cached derivation path bytes.

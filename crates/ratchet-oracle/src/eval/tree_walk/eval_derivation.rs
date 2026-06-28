@@ -615,21 +615,26 @@ impl TreeWalk {
             if let Some(output_resolution) = deferred_output_resolution {
                 match output_resolution {
                     DerivationOutputResolution::FloatingCa(floating_ca_output) => {
-                        let known_hash = self.hash_floating_ca_derivation_modulo_with_inputs(
-                            &derivation,
-                            floating_ca_output,
-                            &input_hashes.hashes,
-                        );
-                        let drv_path = self.calculate_derivation_path_with_aterm_cache(
+                        let path_result = self.calculate_derivation_path_with_aterm_cache_result(
                             id,
                             span,
                             &name,
                             &derivation,
                             DerivationOutputResolution::FloatingCa(floating_ca_output),
                         )?;
+                        let known_hash = path_result
+                            .hash_derivation_modulo
+                            .filter(|_| !input_hashes.has_deferred)
+                            .unwrap_or_else(|| {
+                                self.hash_floating_ca_derivation_modulo_with_inputs(
+                                    &derivation,
+                                    floating_ca_output,
+                                    &input_hashes.hashes,
+                                )
+                            });
                         (
                             known_hash,
-                            drv_path,
+                            path_result.path,
                             DerivationOutputResolution::FloatingCa(floating_ca_output),
                         )
                     }
@@ -700,6 +705,7 @@ impl TreeWalk {
             span,
             &drv_path,
             &derivation,
+            known_hash,
             output_resolution,
         );
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)

@@ -295,6 +295,7 @@ impl EvalCache {
         Ok(Some(CachedDerivationAtermPathHit::new(
             node,
             record.path_bytes(),
+            record.hash_derivation_modulo(),
         )))
     }
 
@@ -326,6 +327,7 @@ impl EvalCache {
             return Ok(Some(CachedDerivationAtermPathHit::new(
                 node,
                 record.path_bytes(),
+                record.hash_derivation_modulo(),
             )));
         }
         let reconsideration = self
@@ -334,6 +336,7 @@ impl EvalCache {
         Ok(Some(CachedDerivationAtermPathHit::with_reconsideration(
             node,
             record.path_bytes(),
+            record.hash_derivation_modulo(),
             reconsideration,
         )))
     }
@@ -812,8 +815,28 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        self.observe_derivation_aterm_expression_path_with_hash(
+            identity,
+            free_var_value_hashes,
+            aterm,
+            drv_path,
+            None,
+        )
+    }
+
+    pub(crate) fn observe_derivation_aterm_expression_path_with_hash<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+        drv_path: &[u8],
+        hash_derivation_modulo: Option<[u8; 32]>,
+    ) -> Result<Reconsideration, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
-        let record = DerivationAtermPathRecord::new(aterm, drv_path);
+        let record = DerivationAtermPathRecord::new(aterm, drv_path, hash_derivation_modulo);
         let reconsideration = self
             .graph
             .reconsider_node(node, record.payload_value_hash)?;

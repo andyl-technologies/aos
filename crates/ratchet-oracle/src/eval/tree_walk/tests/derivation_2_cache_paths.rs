@@ -448,8 +448,9 @@ fn derivation_strict_errors_preserve_prior_final_aterm_memo_read_edges() {
 
 #[test]
 fn derivation_strict_reuses_aterm_paths_for_floating_and_impure_outputs() {
-    for source in [
-        r#"derivationStrict {
+    for (source, replayed_hash_derivation_modulo) in [
+        (
+            r#"derivationStrict {
             name = "floating";
             system = "x86_64-linux";
             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
@@ -457,12 +458,17 @@ fn derivation_strict_reuses_aterm_paths_for_floating_and_impure_outputs() {
             outputHashAlgo = "sha256";
             outputHashMode = "recursive";
         }"#,
-        r#"derivationStrict {
+            true,
+        ),
+        (
+            r#"derivationStrict {
             name = "impure";
             system = "x86_64-linux";
             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
             __impure = true;
         }"#,
+            false,
+        ),
     ] {
         let ir = lower(source);
         let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -481,7 +487,63 @@ fn derivation_strict_reuses_aterm_paths_for_floating_and_impure_outputs() {
         assert_eq!(second.path_reuses, 1);
         assert_eq!(first.output_path_reuses, 0);
         assert_eq!(second.output_path_reuses, 0);
+        if replayed_hash_derivation_modulo {
+            assert!(first.hash_calculations > 0);
+            assert_eq!(second.hash_calculations, 0);
+        }
     }
+}
+
+#[test]
+fn floating_ca_path_reuse_recomputes_modulo_with_deferred_inputs() {
+    let source = r#"let
+        base = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        };
+    in derivationStrict {
+        name = "downstream";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        __contentAddressed = true;
+        outputHashAlgo = "sha256";
+        outputHashMode = "recursive";
+        input = base.out;
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let first = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect("first floating derivation graph evaluates");
+    let second = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache,
+    )
+    .expect("second floating derivation graph evaluates");
+
+    assert_eq!(derivation_surfaces(&second), derivation_surfaces(&first));
+    assert_eq!(first.stats().derivation_aterm_path_reuses(), 0);
+    assert_eq!(second.stats().derivation_aterm_path_reuses(), 2);
+    assert_eq!(second.stats().derivation_text_path_calculations(), 0);
+    assert!(
+        second.stats().derivation_hash_calculations() > 0,
+        "floating-CA derivations with deferred inputs must recompute the modulo hash"
+    );
+    assert!(
+        second.stats().derivation_hash_calculations()
+            < first.stats().derivation_hash_calculations()
+    );
 }
 
 #[test]
@@ -1209,7 +1271,7 @@ fn persistent_static_derivation_output_paths_miss_for_invalid_path_preserves_drv
 
 #[test]
 fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
-    for (source, expected_output_path_reuses) in [
+    for (source, expected_output_path_reuses, expected_hash_calculation_reuse) in [
         (
             r#"derivationStrict {
             name = "static";
@@ -1218,6 +1280,7 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
             env = "same";
         }"#,
             1,
+            true,
         ),
         (
             r#"derivationStrict {
@@ -1229,6 +1292,7 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
             outputHashMode = "recursive";
         }"#,
             0,
+            true,
         ),
         (
             r#"derivationStrict {
@@ -1238,6 +1302,7 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
             __impure = true;
         }"#,
             0,
+            false,
         ),
     ] {
         let ir = lower(source);
@@ -1264,7 +1329,7 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_drv_surfaces() {
         assert!(uncached.text_path_calculations > 0);
         assert!(first.text_path_calculations > 0);
         assert_eq!(reuse.text_path_calculations, 0);
-        if expected_output_path_reuses > 0 {
+        if expected_hash_calculation_reuse {
             assert!(first.hash_calculations > 0);
             assert_eq!(reuse.hash_calculations, 0);
         }
@@ -1314,6 +1379,8 @@ fn persistent_derivation_aterm_path_reuse_preserves_drv_surface() {
     assert_eq!(hit.path_reuses, 1);
     assert_eq!(first.output_path_reuses, 0);
     assert_eq!(hit.output_path_reuses, 0);
+    assert!(first.hash_calculations > 0);
+    assert_eq!(hit.hash_calculations, 0);
     assert!(first.text_path_calculations > 0);
     assert_eq!(hit.text_path_calculations, 0);
 
