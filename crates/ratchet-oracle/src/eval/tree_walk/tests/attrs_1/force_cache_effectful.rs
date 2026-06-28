@@ -170,6 +170,20 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
     let source = "{ a = builtins.pathExists ./marker; }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
+    let parent_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-effectful-memo-read-parent"),
+        IrId::new(9),
+    );
+    let parent_subject = ForceCacheSubject {
+        lookup_identity: Some(parent_identity),
+        pure_observation_identity: Some(parent_identity),
+        impure_observation_identity: Some(parent_identity),
+        metadata_identity: Some(parent_identity),
+        persistent_clear_identity: Some(parent_identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    };
 
     let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
     first_options
@@ -204,7 +218,26 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         source,
         shared_runtime.clone(),
     );
-    let forced_again = force_attr_a(&mut second, &ir, a);
+    let second_root = second.eval_root().expect("attrset evaluates again");
+    let second_thunk = {
+        let attrs = second
+            .heap()
+            .get_attrs(second_root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let parent_node = second
+        .active_force_cache_node_for_subject(Some(&parent_subject))
+        .expect("parent active node allocates");
+    second.active_force_cache_nodes.push(parent_node);
+    let forced_again = second
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("persistent effectful hit succeeds");
+    assert_eq!(
+        second.active_force_cache_nodes.pop(),
+        Some(parent_node),
+        "test-controlled active node stack should be balanced"
+    );
 
     assert_eq!(forced_again.as_bool(), Ok(true));
     assert_eq!(
@@ -230,14 +263,39 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         let cache = runtime.cache().expect("cache is enabled");
         assert_eq!(
             cache.len(),
-            2,
-            "persistent hits should seed the in-memory expression node and input leaf"
+            3,
+            "persistent hits should seed the active parent, child expression node, and input leaf"
         );
         assert_eq!(
             cache_nodes_with_dependencies(cache),
-            1,
-            "the seeded expression node must keep its revalidated input edge"
+            2,
+            "the active parent depends on the child expression, which keeps its revalidated input edge"
         );
+        let parent = cache
+            .graph()
+            .node(parent_node)
+            .expect("parent node is present");
+        let child_node = *parent
+            .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+            .expect("parent has memo-read edges")
+            .iter()
+            .next()
+            .expect("memo-read edge exists");
+        assert!(parent.dependencies().contains(&child_node));
+        let child = cache
+            .graph()
+            .node(child_node)
+            .expect("child node is present");
+        assert!(
+            child
+                .dependencies_in_group(crate::cache::DemandDependencyGroup::ImpureInput)
+                .expect("child has impure-input edges")
+                .iter()
+                .next()
+                .is_some(),
+            "trace-backed persistent hit should preserve the revalidated impure-input edge"
+        );
+        assert!(child.dependents().contains(&parent_node));
     }
 
     fs::remove_dir_all(&persist_root).expect("persistent temp tree removed");

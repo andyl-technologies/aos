@@ -313,6 +313,19 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
     assert_eq!(third.stats().thunk_cache_hits(), 1);
 }
 
+fn synthetic_selected_force_cache_subject(identity: CacheExprIdentity) -> ForceCacheSubject {
+    ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    }
+}
+
 #[test]
 fn source_backed_active_force_cache_hits_record_memo_read_edges() {
     let source = "1";
@@ -326,26 +339,8 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
         DurableBlake3Hash::for_bytes(b"memo-read-parent"),
         IrId::new(2),
     );
-    let child_subject = ForceCacheSubject {
-        lookup_identity: Some(child_identity),
-        pure_observation_identity: Some(child_identity),
-        impure_observation_identity: Some(child_identity),
-        metadata_identity: Some(child_identity),
-        persistent_clear_identity: Some(child_identity),
-        free_var_value_hashes: Vec::new(),
-        replay_position_module: None,
-        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
-    };
-    let parent_subject = ForceCacheSubject {
-        lookup_identity: Some(parent_identity),
-        pure_observation_identity: Some(parent_identity),
-        impure_observation_identity: Some(parent_identity),
-        metadata_identity: Some(parent_identity),
-        persistent_clear_identity: Some(parent_identity),
-        free_var_value_hashes: Vec::new(),
-        replay_position_module: None,
-        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
-    };
+    let child_subject = synthetic_selected_force_cache_subject(child_identity);
+    let parent_subject = synthetic_selected_force_cache_subject(parent_identity);
     let child_node = {
         let mut runtime = cache.lock().expect("cache lock is valid");
         runtime
@@ -405,6 +400,107 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
             .dependents()
             .contains(&parent_node)
     );
+}
+
+#[test]
+fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
+    let persist_root = unique_temp_dir("force-cache-persistent-memo-read");
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-memo-read-child"),
+        IrId::new(1),
+    );
+    let parent_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-memo-read-parent"),
+        IrId::new(2),
+    );
+    let child_subject = synthetic_selected_force_cache_subject(child_identity);
+    let parent_subject = synthetic_selected_force_cache_subject(parent_identity);
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    let child_persist_key = PersistNodeMetadataKey::for_expression(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            child_persist_key,
+            &child_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("child payload materializes");
+    persist
+        .record_node_trace(
+            child_persist_key,
+            child_value_hash,
+            &persistent_empty_trace_payload(),
+        )
+        .expect("child empty trace records");
+    drop(persist);
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let parent_node = evaluator
+        .active_force_cache_node_for_subject(Some(&parent_subject))
+        .expect("parent active node allocates");
+    evaluator.active_force_cache_nodes.push(parent_node);
+    let forced = evaluator
+        .lookup_forced_inline_expression_result(Some(child_subject))
+        .expect("child persistent force-cache payload hits");
+    assert_eq!(forced.as_int(), Ok(3));
+    assert_eq!(
+        evaluator.active_force_cache_nodes.pop(),
+        Some(parent_node),
+        "test-controlled active node stack should be balanced"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 1);
+    assert_eq!(evaluator.stats().cache_misses(), 0);
+
+    let child_key = crate::cache::DemandCacheKey::for_free_vars(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    )
+    .expect("child runtime key builds");
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let child_node = cache
+        .graph()
+        .node_id_for_key(child_key)
+        .expect("child persistent hit seeded runtime node");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    assert!(parent.dependencies().contains(&child_node));
+    assert!(
+        parent
+            .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+            .expect("parent has memo-read edges")
+            .contains(&child_node)
+    );
+    assert!(
+        cache
+            .graph()
+            .node(child_node)
+            .expect("child node is present")
+            .dependents()
+            .contains(&parent_node)
+    );
+    drop(runtime);
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
 
 #[test]

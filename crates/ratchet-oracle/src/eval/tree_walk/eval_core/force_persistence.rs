@@ -623,6 +623,7 @@ impl TreeWalk {
             return None;
         }
         let identity = subject.metadata_identity?;
+        let active_force_cache_node = self.active_force_cache_nodes.last().copied();
         self.open_persist_eval_cache();
         let persist_cache = self.persist_cache.as_ref()?;
         let key = PersistNodeMetadataKey::for_expression(
@@ -654,7 +655,11 @@ impl TreeWalk {
         let trace = revalidator.into_revalidated_trace();
         let value =
             self.value_for_cached_expression_payload_for_subject(payload.clone(), subject)?;
-        self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);
+        let dependency =
+            self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace);
+        if let Some(dependency) = dependency {
+            self.record_active_force_cache_memo_read(active_force_cache_node, dependency);
+        }
         for fingerprint in trace {
             self.record_impure_input(fingerprint);
         }
@@ -670,19 +675,19 @@ impl TreeWalk {
         subject: &ForceCacheSubject,
         payload: CachedExpressionValue,
         trace: &[ImpureInputFingerprint],
-    ) {
+    ) -> Option<DemandNodeId> {
         let Some(identity) = subject.lookup_identity else {
-            return;
+            return None;
         };
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping persistent forced expression runtime observation"
             );
-            return;
+            return None;
         };
         if !cache.is_enabled() {
-            return;
+            return None;
         }
         let observation = if trace.is_empty() {
             cache
@@ -691,7 +696,7 @@ impl TreeWalk {
                     subject.free_var_value_hashes.iter().copied(),
                     payload,
                 )
-                .map(|_| ())
+                .map(|observation| observation.map(|reconsideration| reconsideration.node()))
         } else {
             let mut runtime_trace = Vec::new();
             if runtime_trace.try_reserve_exact(trace.len()).is_err() {
@@ -699,7 +704,7 @@ impl TreeWalk {
                     target: "aos_nix::cache",
                     "tree-walk evaluator persistent forced expression runtime trace allocation failed"
                 );
-                return;
+                return None;
             }
             runtime_trace.extend_from_slice(trace);
             let source = ImpureInputTraceSegment {
@@ -713,14 +718,18 @@ impl TreeWalk {
                     payload,
                     &source,
                 )
-                .map(|_| ())
+                .map(|observation| observation.and_then(|observation| observation.node()))
         };
-        if let Err(error) = observation {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator persistent forced expression runtime observation failed"
-            );
+        match observation {
+            Ok(node) => node,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent forced expression runtime observation failed"
+                );
+                None
+            }
         }
     }
 
