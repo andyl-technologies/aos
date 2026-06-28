@@ -26,8 +26,9 @@ pub mod ir;
 pub mod scope;
 
 pub use analysis::{
-    CardinalityAnalysisError, CardinalityAnalysisReport, StrictnessAnalysisError,
-    StrictnessAnalysisReport, annotate_cardinality, annotate_strictness,
+    CardinalityAnalysisError, CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport,
+    StrictnessAnalysisError, StrictnessAnalysisReport, annotate_cardinality, annotate_escape,
+    annotate_strictness,
 };
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrArena,

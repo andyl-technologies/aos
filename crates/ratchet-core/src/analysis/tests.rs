@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ir::{
-    Cardinality, EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
+    Cardinality, EffectClass, Escape, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
     IrBindingSlice, IrData, IrFacts, IrId, IrKind, IrNode, Strictness, lower,
 };
 use crate::resolve;
@@ -25,6 +25,10 @@ fn cardinality(ir: &Ir, id: IrId) -> Cardinality {
     ir.facts.get(id).expect("fact exists").cardinality
 }
 
+fn escape(ir: &Ir, id: IrId) -> Escape {
+    ir.facts.get(id).expect("fact exists").escape
+}
+
 fn annotate(source: &str) -> Ir {
     let mut ir = lowered(source);
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
@@ -34,6 +38,12 @@ fn annotate(source: &str) -> Ir {
 fn annotate_usage(source: &str) -> Ir {
     let mut ir = lowered(source);
     annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
+    ir
+}
+
+fn annotate_allocations(source: &str) -> Ir {
+    let mut ir = lowered(source);
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
     ir
 }
 
@@ -188,6 +198,122 @@ fn cardinality_rejects_malformed_local_var_payloads() {
             expected: "local slot payload",
         } if id == IrId::new(1)
     ));
+}
+
+#[test]
+fn escape_marks_allocation_free_scalar_literals_no_escape() {
+    for source in ["1", "1.5", "true", "null"] {
+        let ir = annotate_allocations(source);
+        assert_eq!(escape(&ir, ir.root), Escape::NoEscape, "{source}");
+    }
+}
+
+#[test]
+fn escape_keeps_heap_and_thunk_values_escaping() {
+    let string_ir = annotate_allocations("\"value\"");
+    assert_eq!(escape(&string_ir, string_ir.root), Escape::Escapes);
+
+    let list_ir = annotate_allocations("[ (1 + 2) ]");
+    assert_eq!(escape(&list_ir, list_ir.root), Escape::Escapes);
+    let elements = list_elements(&list_ir, list_ir.root);
+    assert_eq!(escape(&list_ir, elements[0]), Escape::Escapes);
+}
+
+#[test]
+fn escape_resets_stale_no_escape_facts_for_unproven_nodes() {
+    let mut ir = lowered("\"value\"");
+    ir.facts.get_mut(ir.root).expect("root fact exists").escape = Escape::NoEscape;
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, ir.root), Escape::Escapes);
+}
+
+#[test]
+fn escape_rejects_malformed_scalar_payloads() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    let mut ir = Ir {
+        root: IrId::new(0),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_escape(&mut ir).expect_err("invalid scalar payload errors");
+
+    assert!(matches!(
+        error,
+        EscapeAnalysisError::InvalidPayload {
+            id,
+            kind: IrKind::Int,
+            expected: "integer payload",
+        } if id == IrId::new(0)
+    ));
+}
+
+#[test]
+fn escape_scrubs_stale_no_escape_facts_before_validation_errors() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"value").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+            IrNode::new(
+                IrKind::Str,
+                Span::new(2, 9),
+                EffectClass::pure(),
+                IrData::Symbol(symbol),
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut facts = IrFacts::conservative(arena.nodes().len());
+    facts
+        .get_mut(IrId::new(1))
+        .expect("second fact exists")
+        .escape = Escape::NoEscape;
+    let mut ir = Ir {
+        root: IrId::new(0),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_escape(&mut ir).expect_err("invalid scalar payload errors");
+
+    assert!(matches!(
+        error,
+        EscapeAnalysisError::InvalidPayload {
+            id,
+            kind: IrKind::Int,
+            expected: "integer payload",
+        } if id == IrId::new(0)
+    ));
+    assert_eq!(escape(&ir, IrId::new(1)), Escape::Escapes);
 }
 
 #[test]

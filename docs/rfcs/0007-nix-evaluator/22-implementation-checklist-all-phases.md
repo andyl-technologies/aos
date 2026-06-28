@@ -3313,6 +3313,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       demand fixpoint.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for
       non-escaping attrsets/thunks.
+- [x] Current `analysis/escape.rs` precursor: `ratchet-core` exposes a
+      conservative escape fact producer that marks only allocation-free immediate
+      scalar literals (`int`, `float`, `bool`, `null`) as `NoEscape` and resets
+      all other nodes to `Escapes`. It validates node kind/payload shapes so
+      malformed IR cannot silently retain stale `NoEscape` facts. Aggregate
+      escape analysis, primop escape signatures, scalar replacement, and
+      frame-local thunk integration remain open.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and
       later the JIT), and the strictness FV set reused by the cache key (`C-2`).
 - [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the

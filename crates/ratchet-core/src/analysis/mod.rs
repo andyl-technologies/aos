@@ -5,9 +5,11 @@
 //! uncertainty leaves the existing conservative fact unchanged.
 
 pub mod cardinality;
+pub mod escape;
 pub mod strictness;
 
 pub use cardinality::{CardinalityAnalysisError, CardinalityAnalysisReport, annotate_cardinality};
+pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
 pub use strictness::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
 
 #[cfg(test)]

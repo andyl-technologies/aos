@@ -882,6 +882,13 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 ### Escape analysis + scalar replacement (§7)
 
 - [ ] Escape analysis as a syntactic-reachability check over the closed program (returned-from-frame / stored-into-escaping-object / passed-to-non-transparent-primop) (§7.1, §7.3) — **P4**, `S-9`; depends on precise capture sets ([04](04-frontend-parser-and-ir.md) §6.4).
+- [x] Current escape-analysis precursor: `ratchet-core::analysis::escape`
+      owns the current escape fact approximation and marks only allocation-free
+      immediate scalar literals (`int`, `float`, `bool`, `null`) as `NoEscape`.
+      Every other node is reset to conservative `Escapes`, and malformed
+      kind/payload pairs are rejected. This does not yet prove non-escaping
+      attrsets, lists, thunks, or primop results, and it does not perform scalar
+      replacement.
 - [ ] Scalar Replacement of Aggregates: decompose a non-escaping attrset/list/thunk into SSA values (Cranelift block params as join points; unboxed multi-returns) — no heap object at all (§7.1, §7.4) — **P4** facts / **P6–P7** CLIF realization ([08](08-execution-tiers-and-cranelift.md)); reduction in [26](26-optimization-pass-catalog.md).
 - [ ] Escape-signature table for the ~120-primop surface, with the to-be-interned boundary treated as an escape (§7.3) — **P4**, `R-9`; property-test fuzzing (not just the closure diff), default-off until green.
 
