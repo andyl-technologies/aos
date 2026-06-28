@@ -865,6 +865,12 @@ GC must be observationally invisible (§8): every item is gated by the different
 ### Region inference (§5)
 
 - [ ] Lexical/escape-driven region pass: pop obvious non-escaping sub-arenas (the committed subset, dual of escape analysis) (§5.1–§5.2) — **P8** (`M4`-style escape-region pops), `M-14`; depends on escape analysis ([07](07-laziness-and-whole-program-analyses.md) **P4**); benchmark-gated.
+- [x] Current region precursor: `ratchet-value::heap::region` defines the
+      conservative region-placement decision table used by future IR/effect
+      analysis. Only private allocations with positive no-escape,
+      no-latent-force, speculable-effect, bounded-lexical-lifetime proofs select
+      `LexicalSubregion`; permanent shared values bypass region pop, and every
+      missing proof falls back to the active root arena or daemon GC heap.
 - [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
 
 ### Concurrent, low-pause collection (§6)

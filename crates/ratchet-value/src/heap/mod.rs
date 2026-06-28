@@ -6,5 +6,10 @@
 //! entry-point shape.
 
 pub mod arena;
+pub mod region;
 
 pub use arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind};
+pub use region::{
+    AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,
+    RegionPlan, RegionRuntimeTier, RegionSharing,
+};

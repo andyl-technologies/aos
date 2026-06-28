@@ -3626,6 +3626,12 @@ it ships).**
       **full effect-based region inference** as a committed deliverable (`R-5`)
       rather than a research-grade maybe; profiles (`M-14`) tune *where* regions
       replace generational allocation, not *whether* the analysis is built.
+- [x] Current `heap/region.rs` precursor: `ratchet-value` exposes the
+      conservative region-placement policy for later IR/effect analysis. Private
+      allocation sites require positive no-escape, no-latent-force,
+      speculable-effect, and bounded-lexical-lifetime proofs before selecting a
+      pop-safe lexical subregion; permanent shared values bypass region pop; all
+      missing proofs fall back to the active root arena or daemon GC heap.
 - [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
       (ZGC/Shenandoah-style colored pointers + load barriers), a committed
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode
