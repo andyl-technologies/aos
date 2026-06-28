@@ -2949,6 +2949,15 @@ alone (`M-1`/`Q-A`).
       for readFile fingerprints, not full dynamic dependency capture,
       persistent demand graph, generic value memoization, or currentTime taint
       propagation (`R-10`/`S-14`).
+- [x] Current precursor: durable hashFile input revalidation.
+      Forced-expression cache canaries now prove a binary-safe `hashFile`
+      string payload survives a fresh runtime through persistent value and
+      verifying-trace lookup when hashed file bytes are unchanged, and
+      misses/recomputes through a fresh runtime when those bytes change. This
+      is scoped to forced-expression value/trace replay for hashFile
+      fingerprints, not full dynamic dependency capture, persistent demand
+      graph, generic value memoization, or currentTime taint propagation
+      (`R-10`/`S-14`).
 - [x] Current precursor: durable metadata-style input revalidation. Forced
       expression cache canaries now prove `getEnv`, `readDir`, and
       `readFileType` payloads survive a fresh runtime through persistent value
