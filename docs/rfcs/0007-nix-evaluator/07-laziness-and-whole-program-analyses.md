@@ -677,9 +677,10 @@ them affordable:
   escape analysis land next (roadmap item 3) because they delete most allocations
   *even in the tree-walk tier*, before any Cranelift work. Each analysis is a
   pure function from IR to per-node facts; the lowering tiers consult facts if
-  present and fall back to the conservative THUNK strategy if absent. An analysis
-  bug therefore degrades to *slower*, never to *wrong* — and "wrong" would be
-  caught by the `.drv` differential gate regardless.
+  present and fall back to the conservative THUNK strategy if absent. Missing,
+  skipped, failed, or conservative facts therefore degrade to *slower*, never to
+  *wrong*. Incorrect positive facts can change behavior, so every fact producer
+  remains byte-gated by the `.drv` differential harness.
 
 ## 9. Where the analysis facts live, and how they are cached
 
@@ -692,8 +693,9 @@ compact per-node fact record:
 /// All fields default to the conservative choice so an absent or partial
 /// analysis is always sound: `Unknown` strictness forces nothing eagerly,
 /// `Many` cardinality keeps the full update thunk, `Escapes` keeps the heap
-/// allocation. A buggy or skipped analysis can only make code slower, never
-/// change the value it computes.
+/// allocation. Skipped or failed analysis can only make code slower; incorrect
+/// positive facts are semantic changes and must be caught by the differential
+/// gate.
 #[derive(Clone, Copy)]
 struct ExprFacts {
     /// `Strict` licenses EAGER lowering; `Unknown` keeps THUNK.
@@ -810,9 +812,14 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       mismatches. Parse-cache entries may also carry an optional `facts.bin`
       sidecar that overlays facts when present and fingerprint-matched, and
       falls back to conservative facts when absent, malformed, or stale. This is
-      only the default-safe annotation substrate; analysis passes, IR-hash
-      content-addressed fact persistence, and JIT THUNK/EAGER/SCALAR consumers
-      remain open.
+      only the default-safe annotation substrate; whole-program fixpoints,
+      IR-hash content-addressed fact persistence, and JIT THUNK/EAGER/SCALAR
+      consumers remain open.
+- [x] Current fact-refresh precursor: `ratchet-core::ir::annotate_ir` resets a
+      lowered `Ir` to conservative facts, runs the current strictness,
+      cardinality, and escape producers in a fixed order, returns a combined
+      report, and leaves conservative facts behind if any producer rejects
+      malformed IR. This is not yet the memoized closed-world fixpoint driver.
 - [ ] Facts cached content-addressed by IR hash in the same CA store as parse/compile artifacts (analyzed once per package-set version, reused across runs/CI) (§9, §8.1) — **P4**, ties to `S-14`/`S-15`.
 
 ### Strictness / demand analysis + worker-wrapper (§4)

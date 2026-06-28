@@ -627,7 +627,7 @@ The simplifier is the GHC-style Core-to-Core optimizer (decision `C-21`), a memo
 
 ### The driver (§1, §3)
 
-- [ ] Memoized fixpoint driver: phased `Gentle → Main → Final`, repeat-to-local-fixpoint per phase, analyses interleaved (`refresh_facts` on the smaller IR), capped at `MAX_ITERS`, the whole pipeline one compile-node keyed by input-IR hash (§1) — **P4**, `C-21`; iteration count / aggressiveness `M-24`.
+- [ ] Memoized fixpoint driver: phased `Gentle → Main → Final`, repeat-to-local-fixpoint per phase, analyses interleaved (`refresh_facts` on the smaller IR), capped at `MAX_ITERS`, the whole pipeline one compile-node keyed by input-IR hash (§1) — **P4**, `C-21`; iteration count / aggressiveness `M-24`. Current precursor: `ir::annotate_ir` refreshes facts from a conservative baseline and runs the current strictness/cardinality/escape producers once; memoization, phased rewrites, and fixpoint iteration remain open.
 - [ ] The "expose before exploit" phase ordering and the binding soundness floor — only observably-transparent rewrites, never fold a failing/effectful node eagerly (error quarantine), never make a binding strict unless *proven* (§1, §3) — **P4**, `C-21`.
 
 ### The 14 passes (§2.1–§2.14)

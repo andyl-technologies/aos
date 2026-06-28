@@ -3322,6 +3322,12 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       frame-local thunk integration remain open.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and
       later the JIT), and the strictness FV set reused by the cache key (`C-2`).
+- [x] Current `ir/annotate.rs` precursor: `ratchet-core::ir::annotate_ir`
+      refreshes the current fact table from a conservative baseline, runs the
+      strictness, cardinality, and escape fact producers, returns a combined
+      report, and leaves conservative facts behind on producer errors. The
+      tree-walk oracle already consumes the fact table carried by `Ir`, but
+      cache-key reuse, closed-world fixpoints, and JIT consumers remain open.
 - [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the
       conservative `ExprFacts` lattice (`Unknown` strictness, `Many`
       cardinality, `Escapes` allocation behavior) plus an `IrFacts` table
