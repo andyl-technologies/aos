@@ -584,6 +584,153 @@ fn materialized_context_bearing_path_captures_use_canonical_free_variable_hashes
 }
 
 #[test]
+fn materialized_capture_hashes_are_cached_on_heap_records() {
+    let ir = lower("[ 1 true null ]");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let string = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"seed".to_vec()))
+        .expect("string allocates");
+    let same_string = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"seed".to_vec()))
+        .expect("same string allocates");
+    let path = evaluator
+        .heap
+        .alloc_path(NixString::from_bytes(b"/tmp/seed".to_vec()))
+        .expect("path allocates");
+    let list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![string, Value::int(7)]))
+        .expect("list allocates");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(a, Value::int(1)),
+            AttrEntry::new(b, Value::bool(true)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    let positioned_attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            a,
+            Value::int(1),
+            AttrPosition::new(EvalModuleId::ROOT.as_u32(), Span::new(0, 1)),
+        )],
+        &evaluator.symbols,
+    )
+    .expect("positioned attrs build");
+    let positioned_attrs = evaluator
+        .heap
+        .alloc_attrs(0, positioned_attrs)
+        .expect("positioned attrs allocate");
+    let closed_literal_thunk = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(ir.root))
+        .expect("closed literal thunk allocates");
+    let lazy_list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![closed_literal_thunk]))
+        .expect("lazy list allocates");
+
+    assert!(string.raw_eq(same_string));
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(string)
+            .expect("string record exists"),
+        None
+    );
+    let string_hash = evaluator
+        .force_cache_free_var_value_hash(string)
+        .expect("string hashes");
+
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(same_string)
+            .expect("same string record exists"),
+        Some(string_hash)
+    );
+    assert_eq!(
+        evaluator
+            .force_cache_free_var_value_hash(same_string)
+            .expect("same string reuses cached hash"),
+        string_hash
+    );
+
+    let path_hash = evaluator
+        .force_cache_free_var_value_hash(path)
+        .expect("path hashes");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(path)
+            .expect("path record exists"),
+        Some(path_hash)
+    );
+
+    let list_hash = evaluator
+        .force_cache_free_var_value_hash(list)
+        .expect("list hashes");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(list)
+            .expect("list record exists"),
+        Some(list_hash)
+    );
+
+    let attrs_hash = evaluator
+        .force_cache_free_var_value_hash(attrs)
+        .expect("attrs hash");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(attrs)
+            .expect("attrs record exists"),
+        Some(attrs_hash)
+    );
+
+    let positioned_hash = evaluator
+        .force_cache_free_var_value_hash(positioned_attrs)
+        .expect("positioned attrs hash");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(positioned_attrs)
+            .expect("positioned attrs record exists"),
+        Some(positioned_hash)
+    );
+
+    let lazy_list_hash = evaluator
+        .force_cache_free_var_value_hash(lazy_list)
+        .expect("closed-literal lazy list hashes");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_captured_value_hash(lazy_list)
+            .expect("lazy list record exists"),
+        Some(lazy_list_hash)
+    );
+    let thunk = evaluator
+        .heap()
+        .get_thunk(closed_literal_thunk)
+        .expect("closed literal thunk exists");
+    assert_eq!(
+        thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "hashing a list containing a closed literal thunk must not force it"
+    );
+}
+
+#[test]
 fn captured_preforced_computed_context_bearing_string_thunks_use_materialized_capture_keys() {
     let source = r#"
       let s = builtins.appendContext "s" {

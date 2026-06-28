@@ -86,6 +86,9 @@ impl TreeWalk {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
         }
+        if let Ok(Some(hash)) = self.heap.cached_captured_value_hash(value) {
+            return Some(hash);
+        }
         match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
@@ -96,7 +99,7 @@ impl TreeWalk {
                 if string.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, string.context())?;
                 }
-                Some(DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
@@ -107,14 +110,14 @@ impl TreeWalk {
                 if path.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, path.context())?;
                 }
-                Some(DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value(value)?;
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
-                Some(DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::Thunk => {
                 let cached = {
@@ -134,6 +137,15 @@ impl TreeWalk {
             }
             _ => None,
         }
+    }
+
+    fn cache_force_capture_hash(
+        &self,
+        value: Value,
+        hash: DurableBlake3Hash,
+    ) -> Option<DurableBlake3Hash> {
+        self.heap.cache_captured_value_hash(value, hash).ok()?;
+        Some(hash)
     }
 
     fn force_cache_free_var_payload_hash(

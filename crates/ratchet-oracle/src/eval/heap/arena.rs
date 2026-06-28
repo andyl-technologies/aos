@@ -77,6 +77,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::String(string),
         });
         self.push_string_cons_value(cons_slot, value);
@@ -108,6 +109,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Path(path),
         });
         self.push_path_cons_value(cons_slot, value);
@@ -139,6 +141,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::List(list),
         });
         self.push_list_cons_value(cons_slot, value);
@@ -173,6 +176,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Attrs { shape, attrs },
         });
         self.push_attrs_cons_value(cons_slot, value);
@@ -199,6 +203,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
         Ok(value)
@@ -224,6 +229,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
         Ok(value)
@@ -246,9 +252,46 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
         Ok(value)
+    }
+
+    /// Returns the cached force-capture value hash for a reusable heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a string, path, list,
+    /// or attrset. Returns [`EvalHeapError::UnknownPointer`] if the heap handle
+    /// does not belong to this heap. Returns
+    /// [`EvalHeapError::RecordTypeMismatch`] if the handle belongs to this heap
+    /// but references a different typed record.
+    pub(crate) fn cached_captured_value_hash(
+        &self,
+        value: Value,
+    ) -> Result<Option<DurableBlake3Hash>, EvalHeapError> {
+        Ok(self.record_for_value(value)?.captured_value_hash.get())
+    }
+
+    /// Stores the force-capture value hash for a reusable heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a string, path, list,
+    /// or attrset. Returns [`EvalHeapError::UnknownPointer`] if the heap handle
+    /// does not belong to this heap. Returns
+    /// [`EvalHeapError::RecordTypeMismatch`] if the handle belongs to this heap
+    /// but references a different typed record.
+    pub(crate) fn cache_captured_value_hash(
+        &self,
+        value: Value,
+        hash: DurableBlake3Hash,
+    ) -> Result<(), EvalHeapError> {
+        self.record_for_value(value)?
+            .captured_value_hash
+            .set(Some(hash));
+        Ok(())
     }
 
     /// Returns the string object referenced by `value`.
@@ -690,6 +733,17 @@ impl EvalHeap {
             .find(|record| record.ptr.as_ptr() as usize == address)
     }
 
+    fn record_for_value(&self, value: Value) -> Result<&HeapRecord, EvalHeapError> {
+        let (tag, ptr) = value_heap_ptr(value)?;
+        let record = self.record_or_unknown(tag, ptr)?;
+        let actual = record.object.tag();
+        if actual == tag {
+            Ok(record)
+        } else {
+            Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+        }
+    }
+
     fn record_or_unknown(
         &self,
         tag: ValueTag,
@@ -697,6 +751,31 @@ impl EvalHeap {
     ) -> Result<&HeapRecord, EvalHeapError> {
         self.record(ptr)
             .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
+    }
+}
+
+fn value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
+    match value.tag() {
+        ValueTag::String => Ok((
+            ValueTag::String,
+            value.as_string_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Path => Ok((
+            ValueTag::Path,
+            value.as_path_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::List => Ok((
+            ValueTag::List,
+            value.as_list_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Attrs => Ok((
+            ValueTag::Attrs,
+            value.as_attrs_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        actual => Err(EvalHeapError::Value(ValueError::Type {
+            expected: "string, path, list, or attrs",
+            actual,
+        })),
     }
 }
 

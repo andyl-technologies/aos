@@ -1212,6 +1212,19 @@ alone (`M-1`/`Q-A`).
       is current heap-local consing, not generic post-force immutable-value
       hash-consing, maximal sharing across all values, O(1) equality for all
       values, durable value hashes, or field-load value-hash support.
+- [x] Current force-capture durable-hash field-load precursor: evaluator heap
+      records now carry an optional cached durable hash in the force-captured
+      value domain, and the force-cache captured-free-variable key path consults
+      and populates that field for heap strings, paths, replayable lists, and
+      replayable attrsets after the existing canonical payload hash succeeds.
+      Hash-consed heap records share the cached field, so repeated captures of
+      the same consed value avoid recomputing the BLAKE3 captured-value hash.
+      This is limited to the current tree-walk heap records and force-cache
+      subject keying; it is not generic post-force immutable-value hash-consing,
+      O(1) equality, persisted value hashes, demand-graph value-hash production,
+      or full field-load value hashing for all values. Gates:
+      `hash_consed_heap_records_share_cached_captured_value_hashes` and
+      `materialized_capture_hashes_are_cached_on_heap_records`.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration

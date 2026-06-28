@@ -100,6 +100,100 @@ fn identical_string_values_reuse_heap_record() {
 }
 
 #[test]
+fn hash_consed_heap_records_share_cached_captured_value_hashes() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let first = heap
+        .alloc_string(NixString::from_bytes(
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg".to_vec(),
+        ))
+        .expect("first string allocates");
+    let second = heap
+        .alloc_string(NixString::from_bytes(
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg".to_vec(),
+        ))
+        .expect("second string allocates");
+    let list = heap
+        .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
+        .expect("list allocates");
+    let hash = DurableBlake3Hash::for_bytes(b"captured string");
+
+    assert!(first.raw_eq(second));
+    assert_eq!(heap.cached_captured_value_hash(first), Ok(None));
+    assert_eq!(heap.cached_captured_value_hash(second), Ok(None));
+
+    heap.cache_captured_value_hash(first, hash)
+        .expect("captured hash caches");
+
+    assert_eq!(heap.cached_captured_value_hash(first), Ok(Some(hash)));
+    assert_eq!(heap.cached_captured_value_hash(second), Ok(Some(hash)));
+    assert_eq!(heap.cached_captured_value_hash(list), Ok(None));
+}
+
+#[test]
+fn captured_value_hash_cache_rejects_unsupported_values() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let hash = DurableBlake3Hash::for_bytes(b"captured");
+    let expected_int = EvalHeapError::Value(ValueError::Type {
+        expected: "string, path, list, or attrs",
+        actual: ValueTag::Int,
+    });
+    let expected_thunk = EvalHeapError::Value(ValueError::Type {
+        expected: "string, path, list, or attrs",
+        actual: ValueTag::Thunk,
+    });
+
+    assert_eq!(
+        heap.cached_captured_value_hash(Value::int(1)),
+        Err(expected_int.clone())
+    );
+    assert_eq!(
+        heap.cache_captured_value_hash(Value::int(1), hash),
+        Err(expected_int)
+    );
+    assert_eq!(
+        heap.cached_captured_value_hash(thunk),
+        Err(expected_thunk.clone())
+    );
+    assert_eq!(
+        heap.cache_captured_value_hash(thunk, hash),
+        Err(expected_thunk)
+    );
+}
+
+#[test]
+fn captured_value_hash_cache_validates_heap_ownership_and_record_type() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let list = heap.alloc_list(NixList::empty()).expect("list allocates");
+    let list_ptr = list.as_list_ptr().expect("list pointer");
+    let mislabeled_string = Value::string(list_ptr).expect("same pointer can carry string tag");
+    let mut other = EvalHeap::new();
+    let foreign = other
+        .alloc_string(NixString::from_bytes(b"foreign".to_vec()))
+        .expect("foreign string allocates");
+    let foreign_ptr = foreign.as_string_ptr().expect("foreign pointer");
+    let hash = DurableBlake3Hash::for_bytes(b"captured");
+    let mismatch = EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::List, list_ptr);
+    let unknown = EvalHeapError::unknown(ValueTag::String, foreign_ptr);
+
+    assert_eq!(
+        heap.cached_captured_value_hash(mislabeled_string),
+        Err(mismatch.clone())
+    );
+    assert_eq!(
+        heap.cache_captured_value_hash(mislabeled_string, hash),
+        Err(mismatch)
+    );
+    assert_eq!(
+        heap.cached_captured_value_hash(foreign),
+        Err(unknown.clone())
+    );
+    assert_eq!(heap.cache_captured_value_hash(foreign, hash), Err(unknown));
+}
+
+#[test]
 fn identical_string_bytes_with_different_contexts_do_not_collapse() {
     let context = StringContext::singleton(
         ContextElement::opaque_path(b"/nix/store/source".to_vec()).expect("context builds"),
