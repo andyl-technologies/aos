@@ -3237,14 +3237,25 @@ alone (`M-1`/`Q-A`).
       metadata even if a test caller configures a persistent root directly;
       the native expression
       disabled-persistent-root canary also proves parse persistence remains
-      active while force metadata and trace sidecars stay empty. This covers
+      active while force metadata and trace sidecars stay empty. The public
+      `AOS_NIX_CACHE=0` closure canaries cover stale-file and populated-root
+      cache paths for raw-expression and file-backed native closures, proving
+      the env/config kill switch maps those configured roots to no native cache
+      roots, preserves `.drv` closure bytes against explicitly uncached
+      baselines, and leaves seeded cache-root regular-file paths and bytes
+      unchanged. This covers
       the current parse-cache persistence layer, in-memory impure-trace leaf
       ingestion, replayable forced-expression value/trace cache, and
       derivation side-record persistence, not full demand/evaluating-node
       lifecycle, persistent demand graph, generic value memoization, or
-      in-process import result memoization. Gates:
+      in-process import result memoization, syscall-level no-read proof, or
+      cache metadata/symlink/directory-only state. Gates:
       `eval_config_parses_aos_nix_cache_env_values`,
       `eval_config_maps_native_cache_root_to_cache_options`,
+      `aos_nix_cache_zero_bypasses_native_closure_cache_root`,
+      `aos_nix_cache_zero_bypasses_file_backed_native_closure_cache_root`,
+      `aos_nix_cache_zero_bypasses_populated_native_closure_cache_root`,
+      `aos_nix_cache_zero_bypasses_populated_file_backed_native_closure_cache_root`,
       `native_expression_disabled_persistent_root_leaves_force_sidecars_empty`,
       `disabled_eval_cache_option_skips_persistent_derivation_side_records`,
       native/tree-walk parse-cache tests, and native/force eval-cache disabled
@@ -3352,9 +3363,18 @@ alone (`M-1`/`Q-A`).
       `NativeOnlyEval::instantiate_closure` with a real source file and `-A`
       selector, again proving that the disabled stale cache-root file is not
       touched and that the resulting closure bytes match the uncached baseline.
+      `aos_nix_cache_zero_bypasses_populated_native_closure_cache_root` and
+      `aos_nix_cache_zero_bypasses_populated_file_backed_native_closure_cache_root`
+      first seed real cache roots through cache-enabled raw-expression and
+      file-backed native-only instantiation until a loadable persistent
+      forced-expression payload exists, snapshot the populated cache-root file
+      contents, then apply the real `AOS_NIX_CACHE=0` config path and require
+      no native cache roots, byte-identical `.drv` closures, and unchanged
+      populated cache-root regular-file paths and bytes.
       This samples the public env/config kill switch at the raw-expression and
       file-backed native `.drv` closure boundaries; it is not the full periodic
-      cache-off/cold cached CI harness or future value-memoization safety net
+      cache-off/cold cached CI harness, syscall-level no-read proof, cache
+      metadata/symlink/directory-only proof, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically

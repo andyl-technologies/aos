@@ -2299,6 +2299,60 @@ mod tests {
     }
 
     #[cfg(feature = "native-eval")]
+    fn assert_persistent_force_cache_payload_entries(persist_root: &Path) -> Result<()> {
+        let persist = aos_nix::cache::PersistCache::open(persist_root)?;
+        let has_materialized_payload = persist
+            .node_metadata_index()
+            .latest_entries()?
+            .into_iter()
+            .any(|entry| {
+                entry.value().materialized_value_hash().is_some()
+                    && matches!(
+                        persist.load_cached_expression_node_value_indexed(entry.key()),
+                        Ok(Some(_))
+                    )
+            });
+        assert!(
+            has_materialized_payload,
+            "native force-cache run should write a loadable persistent forced-expression payload"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    fn snapshot_regular_file_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
+        let mut snapshot = BTreeMap::new();
+        if root.exists() {
+            snapshot_regular_file_tree_at(root, root, &mut snapshot)?;
+        }
+        Ok(snapshot)
+    }
+
+    #[cfg(feature = "native-eval")]
+    fn snapshot_regular_file_tree_at(
+        root: &Path,
+        current: &Path,
+        snapshot: &mut BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Result<()> {
+        let mut entries = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                snapshot_regular_file_tree_at(root, &path, snapshot)?;
+            } else if file_type.is_file() {
+                let relative = path.strip_prefix(root)?.to_path_buf();
+                assert!(
+                    snapshot.insert(relative, fs::read(path)?).is_none(),
+                    "persistent cache snapshot should not see duplicate paths"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
     #[derive(Clone)]
     struct FallbackWarningSubscriber {
         events: Arc<Mutex<Vec<(Level, String)>>>,
@@ -3108,6 +3162,86 @@ mod tests {
 
     #[cfg(feature = "native-eval")]
     #[test]
+    fn aos_nix_cache_zero_bypasses_populated_native_closure_cache_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let cache_root = root.path().join("cache");
+        let source = r#"derivationStrict {
+             name = "cache-zero-populated";
+             system = builtins.currentSystem;
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ builtins.currentSystem ];
+           }"#;
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.set_current_system("x86_64-linux")?;
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator.native.instantiate_expr_closure(source)?;
+
+        let mut seed_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        seed_config.set_eval_mode(NixEvalMode::Impure);
+        seed_config.set_current_system("x86_64-linux")?;
+        seed_config.set_native_cache_root(&cache_root)?;
+        let first_seed = NativeOnlyEval::new(0, seed_config.clone())?
+            .native
+            .instantiate_expr_closure(source)?;
+        let materialized_seed = NativeOnlyEval::new(0, seed_config)?
+            .native
+            .instantiate_expr_closure(source)?;
+        assert_eq!(first_seed, baseline);
+        assert_eq!(materialized_seed, baseline);
+
+        let persist_root = cache_root.join("persist");
+        assert_persistent_force_cache_payload_entries(&persist_root)?;
+        let cache_before = snapshot_regular_file_tree(&cache_root)?;
+        assert!(
+            !cache_before.is_empty(),
+            "cache-enabled seed should populate the native cache root"
+        );
+
+        let mut disabled_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        disabled_config.set_eval_mode(NixEvalMode::Impure);
+        disabled_config.set_current_system("x86_64-linux")?;
+        disabled_config.set_native_cache_root(&cache_root)?;
+        disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+        assert_eq!(disabled_config.native_cache_root(), None);
+        let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+        assert_eq!(disabled_options.parse_cache_root(), None);
+        assert_eq!(disabled_options.persist_cache_root(), None);
+        assert!(!disabled_options.eval_cache_enabled());
+        let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+        let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+
+        let (baseline_root, baseline_drvs) = baseline.into_parts();
+        let (disabled_root, disabled_drvs) = disabled.into_parts();
+        assert_eq!(disabled_root, baseline_root);
+        assert_eq!(disabled_drvs, baseline_drvs);
+        assert_eq!(
+            snapshot_regular_file_tree(&cache_root)?,
+            cache_before,
+            "AOS_NIX_CACHE=0 should not mutate the populated cache-root path"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
     fn aos_nix_cache_zero_bypasses_file_backed_native_closure_cache_root() -> Result<()> {
         let root = tempfile::tempdir()?;
         let store = root.path().join("store");
@@ -3169,6 +3303,98 @@ mod tests {
         assert!(
             disabled_cache_root.is_file(),
             "AOS_NIX_CACHE=0 should not touch the stale file-backed cache-root path"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn aos_nix_cache_zero_bypasses_populated_file_backed_native_closure_cache_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let cache_root = root.path().join("cache");
+        let source_dir = root.path().join("src");
+        fs::create_dir_all(&source_dir)?;
+        let file = source_dir.join("default.nix");
+        fs::write(
+            &file,
+            r#"{
+              pkgs.hello = derivationStrict {
+                name = "cache-zero-populated-file";
+                system = builtins.currentSystem;
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                args = [ builtins.currentSystem ];
+              };
+            }"#,
+        )?;
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.set_current_system("x86_64-linux")?;
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator
+            .instantiate_closure(&file, "pkgs.hello")?
+            .expect("native-only evaluator returns file closures");
+
+        let mut seed_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        seed_config.set_eval_mode(NixEvalMode::Impure);
+        seed_config.set_current_system("x86_64-linux")?;
+        seed_config.set_native_cache_root(&cache_root)?;
+        let first_seed = NativeOnlyEval::new(0, seed_config.clone())?
+            .instantiate_closure(&file, "pkgs.hello")?
+            .expect("native-only evaluator returns seeded file closures");
+        let materialized_seed = NativeOnlyEval::new(0, seed_config)?
+            .instantiate_closure(&file, "pkgs.hello")?
+            .expect("native-only evaluator returns materialized file closures");
+        assert_eq!(first_seed, baseline);
+        assert_eq!(materialized_seed, baseline);
+
+        let persist_root = cache_root.join("persist");
+        assert_persistent_force_cache_payload_entries(&persist_root)?;
+        let cache_before = snapshot_regular_file_tree(&cache_root)?;
+        assert!(
+            !cache_before.is_empty(),
+            "cache-enabled file seed should populate the native cache root"
+        );
+
+        let mut disabled_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        disabled_config.set_eval_mode(NixEvalMode::Impure);
+        disabled_config.set_current_system("x86_64-linux")?;
+        disabled_config.set_native_cache_root(&cache_root)?;
+        disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+        assert_eq!(disabled_config.native_cache_root(), None);
+        let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+        assert_eq!(disabled_options.parse_cache_root(), None);
+        assert_eq!(disabled_options.persist_cache_root(), None);
+        assert!(!disabled_options.eval_cache_enabled());
+        let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+        let disabled = disabled_evaluator
+            .instantiate_closure(&file, "pkgs.hello")?
+            .expect("native-only evaluator returns disabled file closures");
+
+        let (baseline_root, baseline_drvs) = baseline.into_parts();
+        let (disabled_root, disabled_drvs) = disabled.into_parts();
+        assert_eq!(disabled_root, baseline_root);
+        assert_eq!(disabled_drvs, baseline_drvs);
+        assert_eq!(
+            snapshot_regular_file_tree(&cache_root)?,
+            cache_before,
+            "AOS_NIX_CACHE=0 should not mutate the populated file-backed cache-root path"
         );
         Ok(())
     }
