@@ -861,6 +861,14 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 ### Cardinality / usage analysis 0/1/many (§5)
 
 - [ ] Usage component of the demand fixpoint computing absent / used-once / many per binding (§5) — **P4**, `S-9`.
+- [x] Current cardinality-analysis precursor: `ratchet-core::analysis::cardinality`
+      annotates simple same-frame `let` binding value nodes as `Absent` or
+      `Once` when syntactic slot use can be counted without crossing another
+      frame-producing node. Multi-use bindings, nested lambdas, nested lets,
+      formal patterns, and recursive attrsets stay at conservative `Many`.
+      This only produces facts for later passes; it does not yet lower
+      single-entry thunks, remove absent bindings, or run the whole-program
+      usage fixpoint.
 - [ ] Single-entry thunks: drop the `Blackhole`/`Forced` update machinery (or downgrade to call-by-name) for used-at-most-once bindings (§5.1) — **P4**; the blackhole-skip restricted to escape-proven *frame-local* thunks so it is sound under parallel forcing (§10 item 4, `C-8`); ties to [13](13-parallel-evaluation.md) **P3.5**.
 - [ ] Absence → dead-binding elimination via the dual of the demand fixpoint (worker takes a dummy, code never emitted) (§5.2) — **P4**, `S-9`; reduction in [26](26-optimization-pass-catalog.md).
 - [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).

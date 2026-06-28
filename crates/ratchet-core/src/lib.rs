@@ -25,7 +25,10 @@ pub mod builtins;
 pub mod ir;
 pub mod scope;
 
-pub use analysis::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
+pub use analysis::{
+    CardinalityAnalysisError, CardinalityAnalysisReport, StrictnessAnalysisError,
+    StrictnessAnalysisReport, annotate_cardinality, annotate_strictness,
+};
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,

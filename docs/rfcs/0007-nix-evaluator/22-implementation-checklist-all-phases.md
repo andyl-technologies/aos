@@ -3302,6 +3302,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       closed-call-graph fixpoint or worker/wrapper transform.
 - [ ] `analysis/cardinality.rs` — single-entry thunk detection (blackhole-skip
       only for escape-proven *frame-local* thunks, `C-8`) + dead-binding removal.
+- [x] Current `analysis/cardinality.rs` precursor: `ratchet-core` exposes a
+      local cardinality fact producer for simple `let` frames. It counts
+      same-frame slot references in binding values and the body, marks binding
+      value nodes `Absent` or `Once` only when the count is complete, and leaves
+      multi-use or nested-frame cases at conservative `Many`. This provides the
+      initial fact producer for usage analysis; it does not yet implement
+      single-entry thunk lowering, call-by-name downgrades, dead-binding
+      elimination, escape-proven frame-locality integration, or the whole-program
+      demand fixpoint.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for
       non-escaping attrsets/thunks.
 - [ ] `ir/annotate.rs` — IR annotations consumed by the tree-walk oracle (and

@@ -1,9 +1,12 @@
 //! Tests for IR analysis passes.
 
 use super::*;
-use crate::ir::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, Strictness, lower};
+use crate::ir::{
+    Cardinality, EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
+    IrBindingSlice, IrData, IrFacts, IrId, IrKind, IrNode, Strictness, lower,
+};
 use crate::resolve;
-use crate::syntax::parse_str;
+use crate::syntax::{Span, SymbolTable, parse_str};
 
 fn lowered(source: &str) -> Ir {
     lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -18,9 +21,19 @@ fn strictness(ir: &Ir, id: IrId) -> Strictness {
     ir.facts.get(id).expect("fact exists").strictness
 }
 
+fn cardinality(ir: &Ir, id: IrId) -> Cardinality {
+    ir.facts.get(id).expect("fact exists").cardinality
+}
+
 fn annotate(source: &str) -> Ir {
     let mut ir = lowered(source);
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+    ir
+}
+
+fn annotate_usage(source: &str) -> Ir {
+    let mut ir = lowered(source);
+    annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
     ir
 }
 
@@ -44,11 +57,137 @@ fn list_elements(ir: &Ir, id: IrId) -> Vec<IrId> {
         .to_vec()
 }
 
+fn let_binding_values(ir: &Ir, id: IrId) -> Vec<IrId> {
+    let IrData::Let { bindings, .. } = node(ir, id).data else {
+        panic!("let payload expected");
+    };
+    let start = bindings.start as usize;
+    let end = start + bindings.len();
+    ir.bindings[start..end]
+        .iter()
+        .map(|binding| binding.value)
+        .collect()
+}
+
 fn attr_path_segments(ir: &Ir, path: IrAttrPathId) -> Vec<IrAttrPathSegment> {
     ir.attr_paths
         .get(path.index())
         .expect("attribute path exists")
         .to_vec()
+}
+
+#[test]
+fn cardinality_marks_simple_let_binding_once() {
+    let ir = annotate_usage("let x = 1 + 2; in x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_marks_unreferenced_let_binding_absent() {
+    let ir = annotate_usage("let x = 1 / 0; in 1");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Absent);
+}
+
+#[test]
+fn cardinality_keeps_multi_use_let_binding_many() {
+    let ir = annotate_usage("let x = 1 + 2; in x + x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_counts_let_binding_value_uses() {
+    let ir = annotate_usage("let x = 1; y = x; in y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_stays_conservative_across_nested_frames() {
+    let ir = annotate_usage("let x = 1; in (y: x + y)");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_resets_stale_facts_when_frame_becomes_incomplete() {
+    let mut ir = lowered("let x = 1; in (y: x + y)");
+    let bindings = let_binding_values(&ir, ir.root);
+    ir.facts
+        .get_mut(bindings[0])
+        .expect("binding fact exists")
+        .cardinality = Cardinality::Once;
+
+    annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_rejects_malformed_local_var_payloads() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"x").expect("symbol interns");
+    let nodes = vec![
+        IrNode::new(
+            IrKind::Int,
+            Span::new(8, 9),
+            EffectClass::pure(),
+            IrData::Int(1),
+        ),
+        IrNode::new(
+            IrKind::LocalVar,
+            Span::new(16, 17),
+            EffectClass::pure(),
+            IrData::None,
+        ),
+        IrNode::new(
+            IrKind::Let,
+            Span::new(0, 17),
+            EffectClass::pure(),
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: IrId::new(1),
+                frame: None,
+            },
+        ),
+    ];
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
+    let mut ir = Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(symbol),
+            position: None,
+            value: IrId::new(0),
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_cardinality(&mut ir).expect_err("invalid local payload errors");
+
+    assert!(matches!(
+        error,
+        CardinalityAnalysisError::InvalidPayload {
+            id,
+            kind: IrKind::LocalVar,
+            expected: "local slot payload",
+        } if id == IrId::new(1)
+    ));
 }
 
 #[test]
