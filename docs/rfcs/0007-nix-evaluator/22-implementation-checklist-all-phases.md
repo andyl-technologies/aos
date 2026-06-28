@@ -3428,6 +3428,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       ICs, and deopt edges remain open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
+- [x] Current `attrs/repr.rs` precursor: `ratchet-value` exposes a safe
+      `Flat`/`Hamt` representation-policy classifier for static literals,
+      dynamic constructions, and `//` merge results. Static literals are
+      threshold-exempt and stay flat because their shape is known; existing HAMT
+      left operands, large results, and deep override chains prefer HAMT; HAMT
+      decisions require an ordered-view memo. HAMT nodes, `//` integration,
+      `FlatAttrs` changes, and observable order changes remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 

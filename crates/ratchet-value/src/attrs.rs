@@ -19,6 +19,7 @@ use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
 
 pub mod pic;
+pub mod repr;
 pub mod shape;
 
 /// Source provenance for one attribute binding.

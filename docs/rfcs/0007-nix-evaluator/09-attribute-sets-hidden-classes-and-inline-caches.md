@@ -779,6 +779,15 @@ harness, never cut for scope.
 - [ ] Small / shape-stable case: result-shape via transition tree + flat copy, preserving a-then-new-b order ([§6.1](#61-small--shape-stable-case-transition--flat-copy)) — P5.
 - [ ] Large / override-heavy case: persistent HAMT (CHAMP layout) with structural sharing ([§6.2](#62-large--override-heavy-case-hamt-persistent-map)) — P5, `S-10`; gate: benchmark.
 - [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
+- [x] Current representation-policy precursor: `ratchet-value::attrs::repr`
+      classifies static literals, dynamic constructions, and `//` merge results
+      as future `Flat` or `Hamt` candidates using tunable flat-size and
+      override-chain thresholds. Static literals are explicitly
+      threshold-exempt and stay flat because their shape is known; existing
+      HAMT left operands, large results, and deep override chains prefer HAMT;
+      HAMT decisions explicitly require a memoized ordered view. This does not
+      implement HAMT nodes, change `//`, change `FlatAttrs`, or affect
+      observable attr iteration / `.drv` bytes.
 - [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
 
 ### Iteration-order compatibility (acceptance-critical)
