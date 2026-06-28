@@ -812,6 +812,12 @@ harness, never cut for scope.
       runtime helper for `Flat` binary search and `Hamt` lookup, reached from
       the PIC miss/slow path and native `aos_select_ic` machinery
       ([§5.1](#51-the-mechanism), [§6.4](#64-interaction-with-inline-caches)) — P5.
+- [x] Current `select_slow` precursor: `ratchet-value::attrs::select`
+      dispatches slow selection over `FlatAttrs`, `HamtAttrs`, and `ShapedAttrs`.
+      Flat uses binary search, HAMT uses trie lookup, and shaped attrs resolve a
+      shape slot then load the value array. This helper is not called by
+      tree-walk `Select`, is not on the PIC miss path, and does not affect
+      runtime attr representation or `.drv` bytes.
 
 ### The update operator `//`
 

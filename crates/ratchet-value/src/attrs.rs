@@ -23,6 +23,7 @@ use crate::value::Value;
 pub mod hamt;
 pub mod pic;
 pub mod repr;
+pub mod select;
 pub mod shape;
 
 /// Source provenance for one attribute binding.
