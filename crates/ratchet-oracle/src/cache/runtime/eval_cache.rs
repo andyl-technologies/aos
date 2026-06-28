@@ -55,6 +55,14 @@ impl EvalCache {
         self.static_derivation_output_paths.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_mark_dirty_node(
+        &mut self,
+        node: DemandNodeId,
+    ) -> Result<(), DemandGraphError> {
+        self.graph.mark_dirty(node)
+    }
+
     /// Consumes this cache into its demand graph.
     pub fn into_graph(self) -> DemandGraph {
         self.graph
@@ -285,6 +293,46 @@ impl EvalCache {
         )))
     }
 
+    pub(crate) fn lookup_derivation_aterm_path_hit_revalidating<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        let Some(record) = self.derivation_aterm_paths.get(&node).cloned() else {
+            return Ok(None);
+        };
+        let aterm_value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
+        if record.aterm_value_hash != aterm_value_hash
+            || graph_node.value_hash() != Some(record.payload_value_hash)
+        {
+            return Ok(None);
+        }
+        if graph_node.freshness() == NodeFreshness::Clean {
+            return Ok(Some(CachedDerivationAtermPathHit::new(
+                node,
+                record.path_bytes(),
+            )));
+        }
+        let reconsideration = self
+            .graph
+            .reconsider_node(node, record.payload_value_hash)?;
+        Ok(Some(CachedDerivationAtermPathHit::with_reconsideration(
+            node,
+            record.path_bytes(),
+            reconsideration,
+        )))
+    }
+
     /// Looks up clean cached static derivation output paths for matching ATerm bytes.
     ///
     /// This is a pre-output-path precursor for future `derivationStrict`
@@ -347,6 +395,48 @@ impl EvalCache {
             node,
             record.output_paths(),
         )))
+    }
+
+    pub(crate) fn lookup_static_derivation_output_paths_hit_revalidating<I>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+    ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
+            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let Some(node) = self.graph.node_id_for_key(key) else {
+            return Ok(None);
+        };
+        let graph_node = self.graph.node(node)?;
+        let Some(record) = self.static_derivation_output_paths.get(&node).cloned() else {
+            return Ok(None);
+        };
+        let pre_output_value_hash = ValueHash::from_derivation_aterm_bytes(pre_output_aterm);
+        if record.pre_output_value_hash != pre_output_value_hash
+            || graph_node.value_hash() != Some(record.payload_value_hash)
+        {
+            return Ok(None);
+        }
+        if graph_node.freshness() == NodeFreshness::Clean {
+            return Ok(Some(CachedStaticDerivationOutputPathsHit::new(
+                node,
+                record.output_paths(),
+            )));
+        }
+        let reconsideration = self
+            .graph
+            .reconsider_node(node, record.payload_value_hash)?;
+        Ok(Some(
+            CachedStaticDerivationOutputPathsHit::with_reconsideration(
+                node,
+                record.output_paths(),
+                reconsideration,
+            ),
+        ))
     }
 
     /// Looks up a clean expression payload after impure-input revalidation.

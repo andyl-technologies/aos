@@ -14,8 +14,14 @@ impl TreeWalk {
     ) -> Result<DerivationHashModulo, TreeWalkError> {
         let pre_output_aterm =
             self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes);
-        if let Some((cached, persistent_hit, identity, free_var_value_hashes, dependency)) =
-            self.lookup_static_derivation_output_paths_for_current_node(id, &pre_output_aterm)
+        if let Some((
+            cached,
+            persistent_hit,
+            identity,
+            free_var_value_hashes,
+            dependency,
+            early_cutoff,
+        )) = self.lookup_static_derivation_output_paths_for_current_node(id, &pre_output_aterm)
             && let Some(known_hash) =
                 self.apply_static_derivation_output_paths_from_cache(id, name, derivation, &cached)
         {
@@ -31,6 +37,9 @@ impl TreeWalk {
             };
             if let Some(dependency) = dependency {
                 self.record_enclosing_memo_read(dependency);
+            }
+            if early_cutoff {
+                self.increment_early_cutoffs();
             }
             return Ok(known_hash);
         }
@@ -54,28 +63,33 @@ impl TreeWalk {
         CacheExprIdentity,
         Vec<DurableBlake3Hash>,
         Option<DemandNodeId>,
+        bool,
     )> {
         if !self.eval_cache_runtime_enabled() {
             return None;
         }
         let (identity, free_var_value_hashes) =
             self.static_derivation_outputs_cache_subject_for_current_node(id)?;
-        if let Some((paths, dependency)) = {
-            let Ok(cache) = self.eval_cache.lock() else {
+        if let Some((paths, dependency, early_cutoff)) = {
+            let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     "tree-walk evaluator cache lock was poisoned; skipping static derivation output path lookup"
                 );
                 return None;
             };
-            match cache.lookup_static_derivation_output_paths_hit(
+            match cache.lookup_static_derivation_output_paths_hit_revalidating(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 pre_output_aterm,
             ) {
                 Ok(Some(hit)) => {
+                    let early_cutoff = hit
+                        .reconsideration()
+                        .map(|reconsideration| reconsideration.decision() == CutoffDecision::CutOff)
+                        .unwrap_or(false);
                     let dependency = hit.node();
-                    Some((hit.into_output_paths(), dependency))
+                    Some((hit.into_output_paths(), dependency, early_cutoff))
                 }
                 Ok(None) => None,
                 Err(error) => {
@@ -94,6 +108,7 @@ impl TreeWalk {
                 identity,
                 free_var_value_hashes,
                 Some(dependency),
+                early_cutoff,
             ));
         }
         let paths = self.lookup_persist_static_derivation_output_paths(
@@ -101,7 +116,7 @@ impl TreeWalk {
             &free_var_value_hashes,
             pre_output_aterm,
         )?;
-        Some((paths, true, identity, free_var_value_hashes, None))
+        Some((paths, true, identity, free_var_value_hashes, None, false))
     }
 
     fn lookup_persist_static_derivation_output_paths(

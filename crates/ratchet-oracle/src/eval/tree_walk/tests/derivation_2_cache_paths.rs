@@ -5,8 +5,8 @@ use super::*;
 use crate::cache::{
     CacheExprIdentity, CachedDerivationAtermPath, CachedDerivationOutputPath,
     CachedDerivationOutputPaths, CachedStaticDerivationOutputPathsPayload, DemandCacheKey,
-    DemandDependencyGroup, DurableBlake3Hash, MaterializationDecision, PersistBlobKey,
-    PersistCache, PersistNodeMetadataKey,
+    DemandDependencyGroup, DurableBlake3Hash, MaterializationDecision, NodeFreshness,
+    PersistBlobKey, PersistCache, PersistNodeMetadataKey,
 };
 
 #[test]
@@ -210,6 +210,99 @@ fn derivation_strict_final_aterm_node_records_static_output_path_hits() {
             .dependents()
             .contains(&final_node),
         "the static output node should record the final ATerm node as a reverse dependent"
+    );
+}
+
+#[test]
+fn derivation_strict_revalidates_dirty_aterm_and_static_output_side_records() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (final_identity, final_free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    let (static_identity, static_free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let final_key =
+        DemandCacheKey::for_free_vars(final_identity, final_free_var_hashes.iter().copied())
+            .expect("final ATerm runtime key builds");
+    let static_key =
+        DemandCacheKey::for_free_vars(static_identity, static_free_var_hashes.iter().copied())
+            .expect("static output runtime key builds");
+    let (final_node, static_node) = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let cache_view = runtime.cache().expect("cache is enabled");
+        let final_node = cache_view
+            .graph()
+            .node_id_for_key(final_key)
+            .expect("final ATerm node is present");
+        let static_node = cache_view
+            .graph()
+            .node_id_for_key(static_key)
+            .expect("static output node is present");
+
+        runtime
+            .test_mark_dirty_node(static_node)
+            .expect("static output node dirties")
+            .expect("runtime is enabled");
+        runtime
+            .test_mark_dirty_node(final_node)
+            .expect("final ATerm node dirties")
+            .expect("runtime is enabled");
+
+        let cache_view = runtime.cache().expect("cache is enabled");
+        assert_eq!(
+            cache_view
+                .graph()
+                .node(static_node)
+                .expect("static output node is present")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+        assert_eq!(
+            cache_view
+                .graph()
+                .node(final_node)
+                .expect("final ATerm node is present")
+                .freshness(),
+            NodeFreshness::Dirty
+        );
+        (final_node, static_node)
+    };
+
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.aterm, first.aterm);
+    assert_eq!(second.output_path_reuses, 1);
+    assert_eq!(second.path_reuses, 1);
+    assert_eq!(second.hash_calculations, 0);
+    assert_eq!(second.text_path_calculations, 0);
+    assert_eq!(second.early_cutoffs, 2);
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache_view = runtime.cache().expect("cache is enabled");
+    assert_eq!(
+        cache_view
+            .graph()
+            .node(static_node)
+            .expect("static output node is present")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(
+        cache_view
+            .graph()
+            .node(final_node)
+            .expect("final ATerm node is present")
+            .freshness(),
+        NodeFreshness::Clean
     );
 }
 
@@ -430,6 +523,72 @@ fn derivation_strict_cached_aterm_paths_miss_for_invalid_cached_path_names() {
     assert_eq!(second.path_reuses, 0);
     assert_eq!(second.output_path_reuses, 1);
     assert_eq!(repaired_path, first.path.as_bytes());
+}
+
+#[test]
+fn derivation_strict_dirty_cached_aterm_path_validates_before_reuse_or_cutoff_stat() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    let final_key = DemandCacheKey::for_free_vars(identity, free_var_hashes.iter().copied())
+        .expect("final ATerm runtime key builds");
+    let final_node = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_derivation_aterm_expression_path(
+                identity,
+                free_var_hashes.iter().copied(),
+                &first.aterm,
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-wrong.drv",
+            )
+            .expect("corrupt derivation ATerm path record writes");
+        let final_node = runtime
+            .cache()
+            .expect("runtime is enabled")
+            .graph()
+            .node_id_for_key(final_key)
+            .expect("final ATerm node is present");
+        runtime
+            .test_mark_dirty_node(final_node)
+            .expect("final ATerm node dirties")
+            .expect("runtime is enabled");
+        final_node
+    };
+
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let repaired_path = cache
+        .lock()
+        .expect("cache lock is valid")
+        .lookup_derivation_aterm_path(identity, free_var_hashes.iter().copied(), &second.aterm)
+        .expect("repaired path lookup succeeds")
+        .expect("repaired path record exists");
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.path_reuses, 0);
+    assert_eq!(second.output_path_reuses, 1);
+    assert_eq!(second.early_cutoffs, 0);
+    assert_eq!(repaired_path, first.path.as_bytes());
+    assert_eq!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("runtime is enabled")
+            .graph()
+            .node(final_node)
+            .expect("final ATerm node is present")
+            .freshness(),
+        NodeFreshness::Clean
+    );
 }
 
 #[test]

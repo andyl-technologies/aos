@@ -107,6 +107,7 @@ pub(crate) struct CachedExpressionPayloadHit {
 pub(crate) struct CachedDerivationAtermPathHit {
     node: DemandNodeId,
     path_bytes: Vec<u8>,
+    reconsideration: Option<Reconsideration>,
 }
 
 /// One clean in-memory static derivation output-path cache hit.
@@ -114,6 +115,7 @@ pub(crate) struct CachedDerivationAtermPathHit {
 pub(crate) struct CachedStaticDerivationOutputPathsHit {
     node: DemandNodeId,
     output_paths: CachedDerivationOutputPaths,
+    reconsideration: Option<Reconsideration>,
 }
 
 impl ExpressionTraceObservation {
@@ -188,12 +190,33 @@ impl CachedExpressionPayloadHit {
 
 impl CachedDerivationAtermPathHit {
     pub(crate) fn new(node: DemandNodeId, path_bytes: Vec<u8>) -> Self {
-        Self { node, path_bytes }
+        Self {
+            node,
+            path_bytes,
+            reconsideration: None,
+        }
+    }
+
+    pub(crate) fn with_reconsideration(
+        node: DemandNodeId,
+        path_bytes: Vec<u8>,
+        reconsideration: Reconsideration,
+    ) -> Self {
+        Self {
+            node,
+            path_bytes,
+            reconsideration: Some(reconsideration),
+        }
     }
 
     /// Returns the demand-graph node that supplied this hit.
     pub(crate) const fn node(&self) -> DemandNodeId {
         self.node
+    }
+
+    /// Returns the value-hash reconsideration used to clean a dirty hit.
+    pub(crate) fn reconsideration(&self) -> Option<&Reconsideration> {
+        self.reconsideration.as_ref()
     }
 
     /// Consumes the hit into its cached derivation path bytes.
@@ -204,12 +227,33 @@ impl CachedDerivationAtermPathHit {
 
 impl CachedStaticDerivationOutputPathsHit {
     pub(crate) const fn new(node: DemandNodeId, output_paths: CachedDerivationOutputPaths) -> Self {
-        Self { node, output_paths }
+        Self {
+            node,
+            output_paths,
+            reconsideration: None,
+        }
+    }
+
+    pub(crate) const fn with_reconsideration(
+        node: DemandNodeId,
+        output_paths: CachedDerivationOutputPaths,
+        reconsideration: Reconsideration,
+    ) -> Self {
+        Self {
+            node,
+            output_paths,
+            reconsideration: Some(reconsideration),
+        }
     }
 
     /// Returns the demand-graph node that supplied this hit.
     pub(crate) const fn node(&self) -> DemandNodeId {
         self.node
+    }
+
+    /// Returns the value-hash reconsideration used to clean a dirty hit.
+    pub(crate) fn reconsideration(&self) -> Option<&Reconsideration> {
+        self.reconsideration.as_ref()
     }
 
     /// Consumes the hit into its cached static derivation output paths.

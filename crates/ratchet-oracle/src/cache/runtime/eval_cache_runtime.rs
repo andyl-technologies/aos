@@ -53,6 +53,17 @@ impl EvalCacheRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_mark_dirty_node(
+        &mut self,
+        node: DemandNodeId,
+    ) -> Result<Option<()>, DemandGraphError> {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.test_mark_dirty_node(node).map(Some)
+    }
+
     /// Returns a dirty-frontier snapshot when cache observation is enabled.
     ///
     /// Disabled runtimes return `None`; enabled runtimes delegate to
@@ -324,8 +335,8 @@ impl EvalCacheRuntime {
         cache.lookup_derivation_aterm_path(identity, free_var_value_hashes, aterm)
     }
 
-    pub(crate) fn lookup_derivation_aterm_path_hit<I>(
-        &self,
+    pub(crate) fn lookup_derivation_aterm_path_hit_revalidating<I>(
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         aterm: &[u8],
@@ -333,10 +344,10 @@ impl EvalCacheRuntime {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
-        cache.lookup_derivation_aterm_path_hit(identity, free_var_value_hashes, aterm)
+        cache.lookup_derivation_aterm_path_hit_revalidating(identity, free_var_value_hashes, aterm)
     }
 
     /// Looks up cached static derivation output paths for matching ATerm bytes when enabled.
@@ -368,8 +379,8 @@ impl EvalCacheRuntime {
         )
     }
 
-    pub(crate) fn lookup_static_derivation_output_paths_hit<I>(
-        &self,
+    pub(crate) fn lookup_static_derivation_output_paths_hit_revalidating<I>(
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         pre_output_aterm: &[u8],
@@ -377,10 +388,10 @@ impl EvalCacheRuntime {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
-        cache.lookup_static_derivation_output_paths_hit(
+        cache.lookup_static_derivation_output_paths_hit_revalidating(
             identity,
             free_var_value_hashes,
             pre_output_aterm,

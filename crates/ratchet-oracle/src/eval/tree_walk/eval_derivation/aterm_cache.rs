@@ -51,14 +51,14 @@ impl TreeWalk {
         let (identity, free_var_value_hashes) =
             self.derivation_aterm_cache_subject_for_current_node(id)?;
         let (path_bytes, mut dependency, persistent_hit) = if let Some((path_bytes, dependency)) = {
-            let Ok(cache) = self.eval_cache.lock() else {
+            let Ok(mut cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
                     "tree-walk evaluator cache lock was poisoned; skipping derivation ATerm path lookup"
                 );
                 return None;
             };
-            match cache.lookup_derivation_aterm_path_hit(
+            match cache.lookup_derivation_aterm_path_hit_revalidating(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 aterm,
