@@ -876,6 +876,13 @@ GC must be observationally invisible (§8): every item is gated by the different
 ### Concurrent, low-pause collection (§6)
 
 - [ ] Concurrent moving collector for interactive daemon use: colored pointers + load barriers (ZGC/Shenandoah model), co-designed with the existing WHNF/constructor pointer tag bits (§6.1–§6.2) — **P8**, `R-1`/`R-3` (research-grade, IN SCOPE), daemon-only; sidestepped by the bump arena in CLI mode.
+- [x] Current concurrent-GC precursor: `ratchet-value::heap::concurrent_gc`
+      defines the safe daemon-only barrier-address/load-barrier decision
+      contract. Already-uncolored aligned address bits with collector-supplied
+      `Current` color take the fast path in daemon mode, stale colors route to
+      relocation/marking repair, and one-shot arena mode disables concurrent
+      barriers. It does not decode high-bit-colored pointer words, move objects,
+      dereference addresses, allocate memory, or alter the bump arena.
 - [ ] Load-barrier fast-path inlining in the optimized tier without breaking `alloc-via-symbols` (cold tiers keep the symbol call) (§6.3) — **P8**, `R-2`; depends on tier-2 ([08](08-execution-tiers-and-cranelift.md) **P7**).
 - [ ] The hard interaction: thunk-update CAS made jointly atomic with load-barrier relocation repair on the `state` word (§6.4) — **P8**, `R-4` (the load-barrier proof remains research-grade with R-1/R-2); gated by `loom`/Miri + GC stress before shipping.
 

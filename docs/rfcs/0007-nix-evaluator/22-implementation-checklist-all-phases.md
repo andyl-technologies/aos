@@ -3637,6 +3637,13 @@ it ships).**
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode
       (`R-1`/`R-2`/`R-3`/`R-4`; the deepest coupling,
       [17](17-roadmap-and-risks.md) R9).
+- [x] Current `heap/concurrent_gc.rs` precursor: `ratchet-value` exposes the
+      safe daemon-only barrier-address/load-barrier decision contract.
+      Already-uncolored aligned address bits with collector-supplied `Current`
+      color take the fast path, stale colors route to relocation/marking repair,
+      one-shot arena mode disables concurrent barriers, and no high-bit colored
+      pointer decoding, object movement, dereference, allocation, or bump-arena
+      behavior changes are implemented yet.
 
 **Conformance (hold parity).**
 

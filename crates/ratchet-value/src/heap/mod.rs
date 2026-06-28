@@ -6,9 +6,14 @@
 //! entry-point shape.
 
 pub mod arena;
+pub mod concurrent_gc;
 pub mod region;
 
 pub use arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind};
+pub use concurrent_gc::{
+    BarrierAddress, ConcurrentGcError, ConcurrentGcTier, GcColor, LoadBarrierAction,
+    LoadBarrierSlowReason, classify_load_barrier,
+};
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,
     RegionPlan, RegionRuntimeTier, RegionSharing,
