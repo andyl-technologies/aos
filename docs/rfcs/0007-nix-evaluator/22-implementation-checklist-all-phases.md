@@ -3307,7 +3307,7 @@ alone (`M-1`/`Q-A`).
       measurement, full AOS closure coverage, the full leak invariant, or
       future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
-- [x] Current native forced-expression sidecar leak canaries:
+- [x] Current native forced-expression sidecar leak/bypass canaries:
       `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure`
       and
       `native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure`
@@ -3321,9 +3321,18 @@ alone (`M-1`/`Q-A`).
       ATerm closure surfaces for forced-expression node metadata BLAKE3
       addresses, materialized value BLAKE3 addresses, trace-side BLAKE3
       addresses when present, and a representative context-free `NixString`
-      xxh3 hot-hash sentinel. This extends the current native closure safety
-      net to forced-expression persistent sidecars on both native source entry
-      shapes; it is not the full cache-off AOS closure harness, full
+      xxh3 hot-hash sentinel.
+      `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects`
+      seeds a real persistent forced-expression payload, then reruns the same
+      raw-instantiation closure with eval-cache disabled and the same
+      persistent root configured, requiring byte-identical closure output, zero
+      force-cache hit/miss accounting, unchanged latest logical node metadata
+      and trace entries, byte-identical persistent cache file contents, and no
+      sidecar hash leak into the disabled closure. This
+      extends the current native closure safety net to forced-expression
+      persistent sidecars on both native source entry shapes and to one
+      populated-root disabled-cache side-effect bypass; it is not syscall-level
+      no-read instrumentation, the full cache-off AOS closure harness, full
       internal-hash leak invariant, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current `AOS_NIX_CACHE=0` native closure bypass canaries:

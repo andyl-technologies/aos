@@ -327,6 +327,141 @@ fn native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_clo
 }
 
 #[test]
+fn native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects() -> Result<()>
+{
+    use crate::cache::PersistCache;
+
+    let root = unique_temp_dir("native-instantiation-force-cache-disabled-sidecars");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let expr = r#"let
+         b = builtins;
+       in derivationStrict {
+         name = "native-force-cache-disabled-sidecars";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+         args = [ b.currentSystem ];
+       }"#;
+
+    let mut uncached_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    uncached_options.set_store_dir(store_bytes.clone())?;
+    let (uncached, uncached_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, uncached_options)?, expr)?;
+    assert_eq!(uncached_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_stats.force_cache_misses(), 0);
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    first_options.set_store_dir(store_bytes.clone())?;
+    first_options.set_persist_cache_root(&persist_root);
+    first_options.set_eval_cache_enabled(true);
+    let (first, first_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, first_options)?, expr)?;
+    assert_eq!(first, uncached);
+    assert_eq!(first_stats.force_cache_hits(), 0);
+    assert!(
+        first_stats.force_cache_misses() > 0,
+        "first native force-cache run should miss before recording demand"
+    );
+
+    let mut materialize_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    materialize_options.set_store_dir(store_bytes.clone())?;
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options.set_eval_cache_enabled(true);
+    let (materialized, materialized_stats) = instantiate_expr_closure_with_stats(
+        &NixNative::with_options(0, materialize_options)?,
+        expr,
+    )?;
+    assert_eq!(materialized, uncached);
+    assert_eq!(materialized_stats.force_cache_hits(), 0);
+    assert!(
+        materialized_stats.force_cache_misses() > 0,
+        "materializing native force-cache run should miss before writing persistent payloads"
+    );
+
+    let canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    let persist = PersistCache::open(&persist_root)?;
+    let metadata_before = persist.node_metadata_index().latest_entries()?;
+    let traces_before = persist.node_trace_log().latest_entries()?;
+    let files_before = snapshot_regular_file_tree(&persist_root)?;
+
+    let mut disabled_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
+    disabled_options.set_store_dir(store_bytes)?;
+    disabled_options.set_persist_cache_root(&persist_root);
+    let (disabled, disabled_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, disabled_options)?, expr)?;
+
+    assert_eq!(disabled, uncached);
+    assert_eq!(
+        disabled_stats.force_cache_hits(),
+        0,
+        "disabled eval-cache must not load existing persistent force payloads"
+    );
+    assert_eq!(
+        disabled_stats.force_cache_misses(),
+        0,
+        "disabled eval-cache must not record force-cache lookup misses"
+    );
+    assert_eq!(
+        persist.node_metadata_index().latest_entries()?,
+        metadata_before,
+        "disabled eval-cache must not mutate persistent node metadata"
+    );
+    assert_eq!(
+        persist.node_trace_log().latest_entries()?,
+        traces_before,
+        "disabled eval-cache must not mutate persistent node traces"
+    );
+    assert_eq!(
+        snapshot_regular_file_tree(&persist_root)?,
+        files_before,
+        "disabled eval-cache must not mutate persistent cache file contents"
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "disabled native force-cache closure",
+        &disabled,
+        &canaries,
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn snapshot_regular_file_tree(root: &Path) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    if root.exists() {
+        snapshot_regular_file_tree_at(root, root, &mut snapshot)?;
+    }
+    Ok(snapshot)
+}
+
+fn snapshot_regular_file_tree_at(
+    root: &Path,
+    current: &Path,
+    snapshot: &mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<()> {
+    let mut entries = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            snapshot_regular_file_tree_at(root, &path, snapshot)?;
+        } else if file_type.is_file() {
+            let relative = path.strip_prefix(root)?.as_os_str().as_bytes().to_vec();
+            assert!(
+                snapshot.insert(relative, fs::read(path)?).is_none(),
+                "persistent cache snapshot should not see duplicate paths"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_reified_builtins_do_not_force_nix_path() -> Result<()> {
     let (native, root, store) = native_with_temp_store("native-reified-builtins")?;
 
