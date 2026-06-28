@@ -3407,6 +3407,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
 - [ ] `attrs/shape.rs` — hidden classes (shapes): shape transitions, shape
       table, monomorphic/polymorphic shape sites
       ([09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
+- [x] Current `attrs/shape.rs` precursor: `ratchet-value` exposes the safe
+      `AttrShape` descriptor with symbol-sorted key vector, binary-search slot
+      lookup, construction-order permutation, raw-byte lexicographic iteration
+      permutation, and an in-process xxh3 key-vector fingerprint. Global shape
+      interning, transitions, pointer-identity equality, PIC integration, HAMT
+      dispatch, and runtime fast paths remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning

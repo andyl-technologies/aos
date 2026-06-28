@@ -18,6 +18,8 @@ use thiserror::Error;
 use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
 
+pub mod shape;
+
 /// Source provenance for one attribute binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttrPosition {

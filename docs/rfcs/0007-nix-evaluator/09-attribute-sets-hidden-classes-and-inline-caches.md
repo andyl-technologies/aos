@@ -731,6 +731,12 @@ harness, never cut for scope.
 ### Hidden classes (shapes) and the transition tree
 
 - [ ] `Shape` descriptor: ordered key vector, symbol → slot-offset map, cached iteration order, xxh3 key-vector fingerprint ([§4.1](#41-the-factoring)) — P5, `S-10`.
+- [x] Current shape descriptor precursor: `ratchet-value::attrs::shape`
+      exposes a safe `AttrShape` descriptor with symbol-sorted key vector,
+      binary-search slot lookup, construction-order permutation, raw-byte
+      lexicographic iteration permutation, and in-process xxh3 key-vector
+      fingerprint. This does not install a global shape table, transition tree,
+      shape interning, inline cache, HAMT representation, or runtime fast path.
 - [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.

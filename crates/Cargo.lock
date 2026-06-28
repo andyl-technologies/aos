@@ -3766,6 +3766,7 @@ version = "0.1.0"
 dependencies = [
  "aos-nix-syntax",
  "thiserror",
+ "xxhash-rust",
 ]
 
 [[package]]
