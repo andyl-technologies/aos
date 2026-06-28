@@ -1716,7 +1716,10 @@ alone (`M-1`/`Q-A`).
       blob-index sidecar, and swaps both into place via
       `ratchet-cache::file_replace::FileReplacementSet` with best-effort
       rollback for ordinary filesystem errors. It preserves latest indexed
-      value roots and omits unrooted value records. This is caller-driven
+      value roots, omits unrooted value records, and has direct stale-location
+      canaries proving pre-repack value offsets no longer verify after
+      relocation while rewritten indexes load the relocated payloads. This is
+      caller-driven
       maintenance only; crash transactionality, node metadata pruning, automatic
       GC policy, raw lower-level writer coordination, unrelated sidecar
       coordination, mmap reads, Attic transport, and harness proof remain open
@@ -1729,7 +1732,10 @@ alone (`M-1`/`Q-A`).
       relocated file blob, file-artifact, and parse-artifact sidecars, and
       swaps them into place via
       `ratchet-cache::file_replace::FileReplacementSet` with best-effort
-      rollback for ordinary filesystem errors. This is caller-driven
+      rollback for ordinary filesystem errors. It has direct stale-location
+      canaries proving pre-repack file-artifact, parse-artifact, and indexed
+      file-blob offsets no longer verify after relocation while rewritten
+      sidecars load the relocated payloads. This is caller-driven
       maintenance only; crash transactionality, automatic GC policy, raw
       lower-level writer coordination, cross-process pending artifact
       publication, mmap reads, Attic transport, and harness proof remain open
@@ -2428,7 +2434,9 @@ alone (`M-1`/`Q-A`).
       unrooted and can be omitted by the repack. Failure coverage pins the
       non-transactional boundaries where sidecar compaction remains
       committed if file-pack repack fails and value-pack repack may already be
-      committed before that failure. This is sequential caller-driven
+      committed before that failure, while the underlying pack-helper tests pin
+      stale pre-repack direct-location rejection after relocation. This is
+      sequential caller-driven
       maintenance only; automatic compaction/GC policy, transactionality across
       sidecar/repack phases, raw lower-level pack or sidecar writer
       coordination, cross-process pending artifact publication, LMDB/redb

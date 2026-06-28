@@ -87,6 +87,23 @@ fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
     let file_new_location = plan.record_relocations()[0].new_location();
     let parse_new_location = plan.record_relocations()[1].new_location();
     let indexed_new_location = plan.record_relocations()[2].new_location();
+    assert_ne!(file_old_value.location(), file_new_location);
+    assert_ne!(parse_old_value.location(), parse_new_location);
+    assert_ne!(indexed_old_entry.location(), indexed_new_location);
+    assert!(
+        cache.read_file_artifact(file_old_value).is_err(),
+        "stale pre-repack file-artifact location should not verify after relocation"
+    );
+    assert!(
+        cache.read_parse_artifact(parse_old_value).is_err(),
+        "stale pre-repack parse-artifact location should not verify after relocation"
+    );
+    assert!(
+        cache
+            .read_blob(indexed_key, indexed_old_entry.location())
+            .is_err(),
+        "stale pre-repack indexed file-blob location should not verify after relocation"
+    );
     assert_eq!(
         cache
             .lookup_file_artifact(file_artifact_key)

@@ -429,6 +429,26 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     );
     let node_new_location = plan.record_relocations()[0].new_location();
     let indexed_new_location = plan.record_relocations()[1].new_location();
+    assert_ne!(node_old_location, node_new_location);
+    assert_ne!(indexed_old_location, indexed_new_location);
+    assert!(
+        cache
+            .read_blob(
+                PersistBlobKey::for_value(node_value_hash.as_durable_hash()),
+                node_old_location,
+            )
+            .is_err(),
+        "stale pre-repack node-value location should not verify after relocation"
+    );
+    assert!(
+        cache
+            .read_blob(
+                PersistBlobKey::for_value(indexed_value_hash.as_durable_hash()),
+                indexed_old_location,
+            )
+            .is_err(),
+        "stale pre-repack indexed-value location should not verify after relocation"
+    );
     assert_eq!(
         cache
             .lookup_blob_location(PersistBlobKey::for_value(node_value_hash.as_durable_hash()))
