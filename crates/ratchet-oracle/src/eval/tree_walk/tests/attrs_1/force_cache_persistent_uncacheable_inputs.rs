@@ -85,3 +85,113 @@ fn current_time_forced_expression_never_replays_persistent_cache() {
 
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
 }
+
+#[test]
+fn current_time_dependent_forced_expression_tombstones_stale_persistent_cache() {
+    let persist_root = unique_temp_dir("force-cache-persistent-current-time-dependent-tombstone");
+    let source = "{ a = builtins.currentTime + 1; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options_and_source(
+        &ir,
+        current_time_options(1_700_000_000, &persist_root),
+        "current-time-dependent.nix",
+        source,
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("dependent currentTime node thunk has an observation subject")
+    };
+    assert!(
+        subject.lookup_identity.is_none() && subject.metadata_identity.is_none(),
+        "currentTime dependents must stay ineligible for hit selection and demand accounting"
+    );
+    let identity = subject
+        .persistent_clear_identity
+        .expect("dependent currentTime node thunk has a persistent clear identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let stale_trace_payload =
+        persistent_path_exists_trace_payload(b"/tmp/aos-stale-current-time-dependent", true);
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("seed persistent demand records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("dependent currentTime force succeeds");
+    assert_eq!(forced.as_int(), Ok(1_700_000_001));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "currentTime dependents must not replay stale persistent payloads"
+    );
+    assert_eq!(evaluator.stats().cache_misses(), 0);
+    assert_eq!(
+        evaluator.stats().thunks_forced(),
+        1,
+        "currentTime dependents must force normally"
+    );
+    drop(evaluator);
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(2, 3)),
+        "uncacheable currentTime dependents should clear stale values without recording demand"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "uncacheable currentTime dependents clear the stale persistent value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .expect("persistent trace tombstone records")
+            .payload()
+            .is_tombstone(),
+        "uncacheable currentTime dependents tombstone stale persistent traces"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+}

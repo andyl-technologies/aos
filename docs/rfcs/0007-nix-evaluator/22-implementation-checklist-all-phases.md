@@ -2984,8 +2984,12 @@ alone (`M-1`/`Q-A`).
       uncacheable trace, forces normally through configured persistent cache
       roots for repeated same-time and changed-time runs, reports no
       force-cache hits or misses, and records no persistent force metadata
-      entries or trace records. This is scoped to the direct currentTime
-      forced-expression boundary, not full currentTime taint propagation through
+      entries or trace records. A dependent forced-expression canary also seeds
+      stale durable payload metadata for `builtins.currentTime + 1` and proves
+      the dependent recomputes, preserves the uncacheable trace, clears the
+      stale value link, and tombstones the stale trace without recording demand.
+      This is scoped to the direct and force-dependent currentTime expression
+      boundaries, not full currentTime taint propagation through
       already-memoized dependents or the persistent demand graph
       (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
