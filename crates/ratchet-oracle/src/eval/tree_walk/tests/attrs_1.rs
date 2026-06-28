@@ -20,6 +20,7 @@ mod force_cache_identity;
 mod force_cache_imports;
 mod force_cache_persistent_demand_a;
 mod force_cache_persistent_demand_b;
+mod force_cache_persistent_effectful_inputs;
 mod force_cache_persistent_file_inputs;
 mod force_cache_persistent_imports;
 mod force_cache_persistent_metadata_inputs;

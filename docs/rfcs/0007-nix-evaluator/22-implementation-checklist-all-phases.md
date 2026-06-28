@@ -2941,6 +2941,14 @@ alone (`M-1`/`Q-A`).
       value/trace replay path for import fingerprints, not full dynamic
       dependency capture, import-result memoization persistence, the persistent
       demand graph, or currentTime taint propagation (`R-10`/`S-14`).
+- [x] Current precursor: durable pathExists input revalidation.
+      Forced-expression cache canaries now prove a `pathExists` boolean payload
+      survives a fresh runtime through persistent value and verifying-trace
+      lookup when path existence is unchanged, and misses/recomputes through a
+      fresh runtime when that existence bit changes. This is scoped to
+      forced-expression value/trace replay for pathExists fingerprints, not
+      full dynamic dependency capture, persistent demand graph, generic value
+      memoization, or currentTime taint propagation (`R-10`/`S-14`).
 - [x] Current precursor: durable readFile input revalidation. Forced-expression
       cache canaries now prove a `readFile` string payload survives a fresh
       runtime through persistent value and verifying-trace lookup when file
