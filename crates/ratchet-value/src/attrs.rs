@@ -18,6 +18,7 @@ use thiserror::Error;
 use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
 
+pub mod hamt;
 pub mod pic;
 pub mod repr;
 pub mod shape;

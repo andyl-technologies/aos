@@ -3428,6 +3428,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       ICs, and deopt edges remain open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
+- [x] Current `attrs/hamt.rs` precursor: `ratchet-value` exposes a safe
+      immutable bitmap-indexed attr map keyed by dense `Symbol` ids, with
+      persistent insert/replace, checked duplicate/unknown-key handling, and a
+      cached raw-byte lexicographic ordered view. The active `//` evaluator
+      path, HAMT-valued selection, final measured CHAMP layout, and observable
+      `.drv` effects remain open.
 - [x] Current `attrs/repr.rs` precursor: `ratchet-value` exposes a safe
       `Flat`/`Hamt` representation-policy classifier for static literals,
       dynamic constructions, and `//` merge results. Static literals are

@@ -778,6 +778,13 @@ harness, never cut for scope.
 
 - [ ] Small / shape-stable case: result-shape via transition tree + flat copy, preserving a-then-new-b order ([§6.1](#61-small--shape-stable-case-transition--flat-copy)) — P5.
 - [ ] Large / override-heavy case: persistent HAMT (CHAMP layout) with structural sharing ([§6.2](#62-large--override-heavy-case-hamt-persistent-map)) — P5, `S-10`; gate: benchmark.
+- [x] Current HAMT storage precursor: `ratchet-value::attrs::hamt`
+      provides a safe immutable bitmap-indexed attr map keyed by dense
+      `Symbol` ids, persistent insert/replace operations that preserve old
+      roots, checked duplicate/unknown-key handling, and a cached raw-byte
+      lexicographic ordered view. It does not change the active `//` evaluator
+      path, select from HAMT values, install the final measured CHAMP layout, or
+      affect observable attr iteration / `.drv` bytes.
 - [ ] `AttrSetRepr` `Flat` ↔ `Hamt` measured promotion policy, invisible to `.drv` bytes ([§6.3](#63-the-policy-and-the-unified-value-view)) — P5; gate: differential `.drv` harness (both representations diffed).
 - [x] Current representation-policy precursor: `ratchet-value::attrs::repr`
       classifies static literals, dynamic constructions, and `//` merge results
