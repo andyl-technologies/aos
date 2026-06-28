@@ -820,6 +820,22 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 - [ ] Backward demand-propagation fixpoint over the IR, seeded from strict primops / `if`-condition / `derivationStrict` / interpolation / `foldl'` etc., iterated to a fixed point over the closed AOS call graph (§4.1) — **P4**, `S-9`.
 - [ ] Worker/wrapper transform: split into an unboxed-strict-args worker + an always-inline lazy-convention wrapper that forces strict args and tail-calls the worker (§4.2) — **P4**, `S-9`; reductions in [26](26-optimization-pass-catalog.md).
 - [ ] Soundness discipline: eager lowering licensed only by *proven* strictness, never heuristic; an unproven binding stays a thunk (§4.3) — **P4**; harness byte-green is the hard gate (a forced should-be-lazy `throw` is a loud test failure).
+- [x] Current strictness-analysis precursor: `ratchet-core::analysis::strictness`
+      adds a conservative demanded-node worklist seeded at the IR root. It
+      annotates only child positions the tree-walk evaluator unconditionally
+      demands to WHNF: strict unary/binary/ternary builtin arguments where the
+      runtime semantics really demand them, `if`/assert conditions,
+      interpolation children, dynamic attrset keys, leading dynamic select/hasAttr
+      path segments, strict binary operands, thunk bodies, and direct literal
+      lambda arguments whose simple formal is unconditionally demanded by the
+      body. It deliberately leaves lazy list elements, attr values, skipped
+      higher-order callbacks, `foldl'`'s empty-list initial accumulator, assert
+      bodies, selected branches, option-dependent `traceVerbose` messages, and
+      shadowed-frame lambda arguments conservative. `ratchet-oracle` covers the
+      producer/consumer path by annotating `(x: x + 1) (1 + 2)` and observing
+      the argument `ThunkAlloc` elided with `thunks_elided == 1`, while
+      annotated foldl-empty and unreached dynamic attr-path regressions stay
+      lazy.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes the THUNK/EAGER/SCALAR decision lattice so conservative or
       escape-only facts still choose THUNK, `Eager` requires proven strictness,

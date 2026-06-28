@@ -3287,6 +3287,19 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
 
 - [ ] `analysis/strictness.rs` — whole-program strictness/demand analysis +
       worker-wrapper transform ([07](07-laziness-and-whole-program-analyses.md)).
+- [x] Current `analysis/strictness.rs` precursor: `ratchet-core` exposes an
+      initial conservative strictness fact producer that walks demanded IR nodes
+      from the root and marks only guaranteed-WHNF child positions as
+      `Strict`. It uses runtime builtin semantics rather than coarse direct
+      lowering metadata, so higher-order callbacks skipped by empty inputs,
+      `sort` comparators, and `foldl'` initial accumulators remain lazy unless a
+      later proof demands them; option-dependent `traceVerbose` messages also
+      remain conservative. Direct literal lambda applications can mark an
+      argument `ThunkAlloc` strict when a simple formal is unconditionally
+      demanded by the lambda body, and the tree-walk oracle verifies this
+      produced fact elides the argument thunk while preserving foldl-empty and
+      unreached dynamic attr-path laziness. This does not close the whole-program
+      closed-call-graph fixpoint or worker/wrapper transform.
 - [ ] `analysis/cardinality.rs` — single-entry thunk detection (blackhole-skip
       only for escape-proven *frame-local* thunks, `C-8`) + dead-binding removal.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for

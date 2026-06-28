@@ -20,10 +20,12 @@
 /// resolving their `crate::syntax::…` paths after the crate split.
 pub use aos_nix_syntax as syntax;
 
+pub mod analysis;
 pub mod builtins;
 pub mod ir;
 pub mod scope;
 
+pub use analysis::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp,

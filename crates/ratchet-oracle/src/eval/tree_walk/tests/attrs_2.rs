@@ -181,6 +181,43 @@ fn strict_thunk_alloc_facts_evaluate_eagerly() {
 }
 
 #[test]
+fn strictness_analysis_elides_direct_lambda_argument_thunk() {
+    let mut ir = lower("(x: x + 1) (1 + 2)");
+    crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+
+    let outcome = eval_whnf_owned(&ir).expect("annotated direct lambda evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(4));
+    assert_eq!(outcome.stats().thunks_allocated(), 0);
+    assert_eq!(outcome.stats().thunks_elided(), 1);
+}
+
+#[test]
+fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
+    let mut ir = lower(r#"builtins.foldl' (acc: x: acc + x) (builtins.throw "initial") []"#);
+    crate::compile::annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+
+    let outcome = eval_whnf_owned(&ir).expect("annotated empty foldl' evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Thunk);
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.stats().thunks_elided(), 0);
+}
+
+#[test]
+fn strictness_analysis_preserves_unreached_dynamic_attr_path_ordering() {
+    let mut select_ir = lower("({}).${\"a\"}.${1 / 0} or 2");
+    crate::compile::annotate_strictness(&mut select_ir).expect("strictness analysis succeeds");
+    let select = eval_whnf_owned(&select_ir).expect("unreached dynamic select key stays lazy");
+    assert_eq!(select.value().as_int(), Ok(2));
+
+    let mut has_attr_ir = lower("({} ? missing.${1 / 0})");
+    crate::compile::annotate_strictness(&mut has_attr_ir).expect("strictness analysis succeeds");
+    let has_attr = eval_whnf_owned(&has_attr_ir).expect("unreached dynamic hasAttr key stays lazy");
+    assert_eq!(has_attr.value().as_bool(), Ok(false));
+}
+
+#[test]
 fn strict_attr_binding_facts_do_not_preempt_dynamic_attr_name_errors() {
     let mut ir = lower(r#"({ a = builtins.throw "value"; ${builtins.throw "key"} = 1; }).a"#);
     mark_all_thunk_allocs_strict(&mut ir);
