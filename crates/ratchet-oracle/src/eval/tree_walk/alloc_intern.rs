@@ -799,7 +799,8 @@ impl TreeWalk {
             .then(|| self.active_force_cache_node_for_subject(cache_subject.as_ref()))
             .flatten();
         if let Some(node) = active_force_cache_node {
-            self.active_force_cache_nodes.push(node);
+            self.active_force_cache_nodes
+                .push(ActiveForceCacheNode::new(node));
         }
         let result = (|| -> Result<Value, TreeWalkError> {
             match thunk.kind() {
@@ -886,16 +887,25 @@ impl TreeWalk {
                 }
             }
         })();
-        if active_force_cache_node.is_some() {
+        let active_force_cache_node = if active_force_cache_node.is_some() {
             let popped = self.active_force_cache_nodes.pop();
-            debug_assert_eq!(popped, active_force_cache_node);
-        }
+            debug_assert_eq!(
+                popped.as_ref().map(ActiveForceCacheNode::node),
+                active_force_cache_node
+            );
+            popped
+        } else {
+            None
+        };
         let value = result?;
         let impure_trace =
             impure_trace_cursor.map(|cursor| self.force_cache_impure_input_trace_segment(cursor));
         let value = guard
             .finish(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        if let Some(active_force_cache_node) = active_force_cache_node {
+            self.replace_active_force_cache_memo_reads(active_force_cache_node);
+        }
         self.unmark_lazy_identity_thunk_payload(forced_payload);
         if let Some(subject) = &cache_subject {
             self.record_forced_expression_demand(subject);

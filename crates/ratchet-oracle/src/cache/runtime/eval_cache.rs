@@ -453,6 +453,21 @@ impl EvalCache {
             .add_dependency_to_group(dependent, DemandDependencyGroup::MemoRead, dependency)
     }
 
+    pub(crate) fn replace_memo_read_dependencies<I>(
+        &mut self,
+        dependent: DemandNodeId,
+        dependencies: I,
+    ) -> Result<(), DemandGraphError>
+    where
+        I: IntoIterator<Item = DemandNodeId>,
+    {
+        self.graph.replace_dependency_group(
+            dependent,
+            DemandDependencyGroup::MemoRead,
+            dependencies,
+        )
+    }
+
     /// Observes impure inputs from one completed evaluator trace source.
     ///
     /// This delegates to [`DemandGraph::observe_impure_trace`]. It records only

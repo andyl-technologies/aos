@@ -486,18 +486,38 @@ impl TreeWalk {
         if dependent == dependency {
             return;
         }
+        let Some(active) = self.active_force_cache_nodes.last_mut() else {
+            return;
+        };
+        if active.node() != dependent {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                dependent = dependent.as_u32(),
+                active = active.node().as_u32(),
+                "tree-walk evaluator active memo-read edge did not match the current force-cache node"
+            );
+            return;
+        }
+        active.memo_reads.insert(dependency);
+    }
+
+    pub(in crate::eval::tree_walk) fn replace_active_force_cache_memo_reads(
+        &mut self,
+        active: ActiveForceCacheNode,
+    ) {
+        let (dependent, memo_reads) = active.into_parts();
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
-                "tree-walk evaluator cache lock was poisoned; skipping memo-read edge recording"
+                "tree-walk evaluator cache lock was poisoned; skipping memo-read edge replacement"
             );
             return;
         };
-        if let Err(error) = cache.record_memo_read_dependency(dependent, dependency) {
+        if let Err(error) = cache.replace_memo_read_dependencies(dependent, memo_reads) {
             tracing::warn!(
                 target: "aos_nix::cache",
                 error = %error,
-                "tree-walk evaluator memo-read edge recording failed"
+                "tree-walk evaluator memo-read edge replacement failed"
             );
         }
     }
@@ -538,7 +558,10 @@ impl TreeWalk {
         let subject = subject?;
         let identity = subject.lookup_identity?;
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
-        let active_force_cache_node = self.active_force_cache_nodes.last().copied();
+        let active_force_cache_node = self
+            .active_force_cache_nodes
+            .last()
+            .map(ActiveForceCacheNode::node);
 
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -623,7 +646,10 @@ impl TreeWalk {
             return None;
         }
         let identity = subject.metadata_identity?;
-        let active_force_cache_node = self.active_force_cache_nodes.last().copied();
+        let active_force_cache_node = self
+            .active_force_cache_nodes
+            .last()
+            .map(ActiveForceCacheNode::node);
         self.open_persist_eval_cache();
         let persist_cache = self.persist_cache.as_ref()?;
         let key = PersistNodeMetadataKey::for_expression(

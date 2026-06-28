@@ -421,16 +421,19 @@ impl EvalCacheRuntime {
             .map(Some)
     }
 
-    pub(crate) fn record_memo_read_dependency(
+    pub(crate) fn replace_memo_read_dependencies<I>(
         &mut self,
         dependent: DemandNodeId,
-        dependency: DemandNodeId,
-    ) -> Result<Option<()>, DemandGraphError> {
+        dependencies: I,
+    ) -> Result<Option<()>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DemandNodeId>,
+    {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache
-            .record_memo_read_dependency(dependent, dependency)
+            .replace_memo_read_dependencies(dependent, dependencies)
             .map(Some)
     }
 

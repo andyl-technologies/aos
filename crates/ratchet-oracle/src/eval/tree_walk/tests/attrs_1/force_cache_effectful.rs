@@ -229,15 +229,22 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
     let parent_node = second
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
-    second.active_force_cache_nodes.push(parent_node);
+    second
+        .active_force_cache_nodes
+        .push(ActiveForceCacheNode::new(parent_node));
     let forced_again = second
         .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("persistent effectful hit succeeds");
+    let active = second
+        .active_force_cache_nodes
+        .pop()
+        .expect("test-controlled active node pops");
     assert_eq!(
-        second.active_force_cache_nodes.pop(),
-        Some(parent_node),
+        active.node(),
+        parent_node,
         "test-controlled active node stack should be balanced"
     );
+    second.replace_active_force_cache_memo_reads(active);
 
     assert_eq!(forced_again.as_bool(), Ok(true));
     assert_eq!(

@@ -363,16 +363,23 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
     let parent_node = evaluator
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
-    evaluator.active_force_cache_nodes.push(parent_node);
+    evaluator
+        .active_force_cache_nodes
+        .push(ActiveForceCacheNode::new(parent_node));
     let forced = evaluator
         .lookup_forced_inline_expression_result(Some(child_subject))
         .expect("child force-cache payload hits");
     assert_eq!(forced.as_int(), Ok(3));
+    let active = evaluator
+        .active_force_cache_nodes
+        .pop()
+        .expect("test-controlled active node pops");
     assert_eq!(
-        evaluator.active_force_cache_nodes.pop(),
-        Some(parent_node),
+        active.node(),
+        parent_node,
         "test-controlled active node stack should be balanced"
     );
+    evaluator.replace_active_force_cache_memo_reads(active);
     assert_eq!(
         evaluator.stats().cache_hits(),
         1,
@@ -399,6 +406,201 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
             .expect("child node is present")
             .dependents()
             .contains(&parent_node)
+    );
+}
+
+#[test]
+fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let stale_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"stale-memo-read-child"),
+        IrId::new(1),
+    );
+    let fresh_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"fresh-memo-read-child"),
+        IrId::new(2),
+    );
+    let parent_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"replacement-memo-read-parent"),
+        IrId::new(3),
+    );
+    let fresh_subject = synthetic_selected_force_cache_subject(fresh_identity);
+    let parent_subject = synthetic_selected_force_cache_subject(parent_identity);
+    let (stale_node, fresh_node) = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let stale_node = runtime
+            .observe_inline_expression_payload(
+                stale_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
+            )
+            .expect("stale child payload observes")
+            .expect("cache is enabled")
+            .node();
+        let fresh_node = runtime
+            .observe_inline_expression_payload(
+                fresh_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::immediate(Value::int(2)).expect("fresh int payload builds"),
+            )
+            .expect("fresh child payload observes")
+            .expect("cache is enabled")
+            .node();
+        (stale_node, fresh_node)
+    };
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let parent_node = evaluator
+        .active_force_cache_node_for_subject(Some(&parent_subject))
+        .expect("parent active node allocates");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .cache_mut()
+            .expect("cache is enabled")
+            .record_memo_read_dependency(parent_node, stale_node)
+            .expect("stale memo-read edge records");
+    }
+
+    evaluator
+        .active_force_cache_nodes
+        .push(ActiveForceCacheNode::new(parent_node));
+    let forced = evaluator
+        .lookup_forced_inline_expression_result(Some(fresh_subject))
+        .expect("fresh child force-cache payload hits");
+    assert_eq!(forced.as_int(), Ok(2));
+    let active = evaluator
+        .active_force_cache_nodes
+        .pop()
+        .expect("test-controlled active node pops");
+    assert_eq!(
+        active.node(),
+        parent_node,
+        "test-controlled active node stack should be balanced"
+    );
+    evaluator.replace_active_force_cache_memo_reads(active);
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    let memo_reads = parent
+        .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+        .expect("parent has replacement memo-read edges");
+    assert_eq!(memo_reads.len(), 1);
+    assert!(memo_reads.contains(&fresh_node));
+    assert!(!memo_reads.contains(&stale_node));
+    assert!(
+        cache
+            .graph()
+            .node(fresh_node)
+            .expect("fresh child node is present")
+            .dependents()
+            .contains(&parent_node)
+    );
+    assert!(
+        !cache
+            .graph()
+            .node(stale_node)
+            .expect("stale child node is present")
+            .dependents()
+            .contains(&parent_node),
+        "stale reverse dependent edge should be removed"
+    );
+}
+
+#[test]
+fn source_backed_parent_force_without_hits_clears_prior_memo_read_edges() {
+    let source = "{ parent = 2 + 3; }";
+    let ir = lower(source);
+    let parent = symbol_for(&ir, b"parent");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let stale_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"empty-replacement-stale-child"),
+        IrId::new(1),
+    );
+    let stale_node = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                stale_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
+            )
+            .expect("stale child payload observes")
+            .expect("cache is enabled")
+            .node()
+    };
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let parent_thunk = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(parent).expect("parent exists")
+    };
+    let parent_subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(parent_thunk)
+            .expect("parent remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("parent force-cache subject builds")
+    };
+    let parent_node = evaluator
+        .active_force_cache_node_for_subject(Some(&parent_subject))
+        .expect("parent active node allocates");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .cache_mut()
+            .expect("cache is enabled")
+            .record_memo_read_dependency(parent_node, stale_node)
+            .expect("stale memo-read edge records");
+    }
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), parent_thunk)
+        .expect("parent force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(5));
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    assert!(
+        parent
+            .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+            .is_none(),
+        "successful replacement with no hits should clear prior memo-read edges"
+    );
+    assert!(
+        !cache
+            .graph()
+            .node(stale_node)
+            .expect("stale child node is present")
+            .dependents()
+            .contains(&parent_node),
+        "stale reverse dependent edge should be removed"
     );
 }
 
@@ -455,16 +657,23 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
     let parent_node = evaluator
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
-    evaluator.active_force_cache_nodes.push(parent_node);
+    evaluator
+        .active_force_cache_nodes
+        .push(ActiveForceCacheNode::new(parent_node));
     let forced = evaluator
         .lookup_forced_inline_expression_result(Some(child_subject))
         .expect("child persistent force-cache payload hits");
     assert_eq!(forced.as_int(), Ok(3));
+    let active = evaluator
+        .active_force_cache_nodes
+        .pop()
+        .expect("test-controlled active node pops");
     assert_eq!(
-        evaluator.active_force_cache_nodes.pop(),
-        Some(parent_node),
+        active.node(),
+        parent_node,
         "test-controlled active node stack should be balanced"
     );
+    evaluator.replace_active_force_cache_memo_reads(active);
     assert_eq!(evaluator.stats().cache_hits(), 1);
     assert_eq!(evaluator.stats().cache_misses(), 0);
 
@@ -547,6 +756,99 @@ fn source_backed_admitted_force_error_balances_active_force_cache_stack() {
         runtime.cache().expect("cache is enabled").len(),
         1,
         "the admitted force must allocate its active expression node before the body error"
+    );
+}
+
+#[test]
+fn source_backed_admitted_force_error_preserves_prior_memo_read_edges() {
+    let source = "{ a = 1 / 0; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let stale_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"error-stale-memo-read-child"),
+        IrId::new(1),
+    );
+    let stale_node = {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .observe_inline_expression_payload(
+                stale_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
+            )
+            .expect("stale child payload observes")
+            .expect("cache is enabled")
+            .node()
+    };
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("force-cache subject builds")
+    };
+    let parent_node = evaluator
+        .active_force_cache_node_for_subject(Some(&subject))
+        .expect("parent active node allocates");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        runtime
+            .cache_mut()
+            .expect("cache is enabled")
+            .record_memo_read_dependency(parent_node, stale_node)
+            .expect("stale memo-read edge records");
+    }
+
+    let error = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect_err("admitted thunk body fails");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::DivisionByZero { .. }
+    ));
+    assert!(
+        evaluator.active_force_cache_nodes.is_empty(),
+        "erroring body evaluation must pop the active force-cache node"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("parent node is present");
+    assert!(
+        parent
+            .dependencies_in_group(crate::cache::DemandDependencyGroup::MemoRead)
+            .expect("parent has prior memo-read edges")
+            .contains(&stale_node),
+        "body errors must not clear a prior successful memo-read group"
+    );
+    assert!(
+        cache
+            .graph()
+            .node(stale_node)
+            .expect("stale child node is present")
+            .dependents()
+            .contains(&parent_node)
     );
 }
 

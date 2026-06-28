@@ -517,6 +517,29 @@ struct ForceCacheSubject {
     memoization_admission: ForceCacheMemoizationAdmission,
 }
 
+#[derive(Debug)]
+struct ActiveForceCacheNode {
+    node: DemandNodeId,
+    memo_reads: BTreeSet<DemandNodeId>,
+}
+
+impl ActiveForceCacheNode {
+    fn new(node: DemandNodeId) -> Self {
+        Self {
+            node,
+            memo_reads: BTreeSet::new(),
+        }
+    }
+
+    const fn node(&self) -> DemandNodeId {
+        self.node
+    }
+
+    fn into_parts(self) -> (DemandNodeId, BTreeSet<DemandNodeId>) {
+        (self.node, self.memo_reads)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ModuleSource {
     name: Vec<u8>,
@@ -734,7 +757,7 @@ pub struct TreeWalk {
     impure_input_trace: Vec<ImpureInputFingerprint>,
     impure_input_trace_complete: bool,
     force_cache_impure_trace_epoch: u64,
-    active_force_cache_nodes: Vec<DemandNodeId>,
+    active_force_cache_nodes: Vec<ActiveForceCacheNode>,
     #[cfg(test)]
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     stderr: EvalStderr,
