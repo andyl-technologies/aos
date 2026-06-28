@@ -883,6 +883,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
 ### Full laziness / let-floating (§6)
 
 - [ ] Float-outward: hoist a let-binding out of an enclosing lambda when it does not depend on the parameter, so a loop-invariant is computed once (§6.1) — **P8**, `S-9`; `analysis/full_laziness.rs`, benchmark-gated.
+- [x] Current full-laziness precursor: `ratchet-core::analysis::full_laziness`
+      reports only closed, pure static-key `let` binding values nested under simple
+      identifier lambdas. The root lazy binding thunk is allowed only when its
+      forced body is closed and pure; any local/upvalue reference, nested thunk
+      allocation, dynamic-scope probe, primop, nested frame producer, formal-set
+      pattern, dynamic `let` key, recursive attrset, or effectful node stays conservative. The
+      report includes the owning `let`, binding index, binding key, and binding
+      value. This is candidate discovery only; it performs no float-out/float-in
+      rewrite and does not yet move mutually-dependent groups.
 - [ ] Float-inward: sink a binding to the smallest scope dominating its uses (branch-gated allocation avoidance), run before the strictness fixpoint (§6.2) — **P8**.
 - [ ] Residency policy: float aggressively in Tier A (one-shot arena, no space-leak hazard); in daemon mode bound the size/cost of what is floated (§6.3) — **P8**, `R-6` (daemon residency tuning, research-grade, IN SCOPE).
 

@@ -3608,6 +3608,15 @@ it ships).**
 - [ ] `analysis/full_laziness.rs` — full-laziness / let-floating
       ([07](07-laziness-and-whole-program-analyses.md); daemon residency policy
       `R-6`).
+- [x] Current `analysis/full_laziness.rs` precursor: `ratchet-core` reports
+      closed, pure static-key `let` binding values nested under simple identifier lambdas
+      as future float-out candidates. It allows the root lazy binding thunk only
+      when its forced body is closed and pure, rejects any local/upvalue
+      reference, nested thunk allocation, dynamic-scope probe, primop, nested
+      frame producer, formal-set pattern, dynamic `let` key, recursive attrset, or effectful node,
+      preserves binding index/key context in the report, and performs no rewrite.
+      General float-out, float-in, mutually-dependent groups, and daemon
+      residency policy remain open.
 - [ ] `heap/region.rs` — region inference: lexical/escape regions, extended to
       **full effect-based region inference** as a committed deliverable (`R-5`)
       rather than a research-grade maybe; profiles (`M-14`) tune *where* regions

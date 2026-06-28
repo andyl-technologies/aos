@@ -27,8 +27,9 @@ pub mod scope;
 
 pub use analysis::{
     CardinalityAnalysisError, CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport,
-    StrictnessAnalysisError, StrictnessAnalysisReport, annotate_cardinality, annotate_escape,
-    annotate_strictness,
+    FullLazinessAnalysisError, FullLazinessAnalysisReport, FullLazinessCandidate,
+    StrictnessAnalysisError, StrictnessAnalysisReport, analyze_full_laziness, annotate_cardinality,
+    annotate_escape, annotate_strictness,
 };
 pub use ir::{
     BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrAnalysisError,
