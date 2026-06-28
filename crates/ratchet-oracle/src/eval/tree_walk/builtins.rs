@@ -118,14 +118,7 @@ impl BuiltinExecutor for TreeWalk {
             BuiltinExecution::DerivationStrict => {
                 let argument = args[0];
                 let argument_span = eval.node(argument)?.span;
-                let value = eval.eval_node(argument)?;
-                eval.eval_derivation_strict_value(
-                    call.id,
-                    call.span,
-                    argument,
-                    argument_span,
-                    value,
-                )
+                eval.eval_derivation_strict_argument(call.id, call.span, argument, argument_span)
             }
             BuiltinExecution::Import => {
                 let argument = args[0];

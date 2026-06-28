@@ -498,7 +498,7 @@ alone (`M-1`/`Q-A`).
       persistent graph serialization, and cached/uncached `.drv` parity proof
       remain open (`S-14`/`C-20`).
 - [x] Current force-cache memo-read edge precursor: tree-walk tracks a
-      stack of active force-cache expression nodes while policy-admitted
+      stack of active memo-read expression nodes while policy-admitted
       lookup-identity thunks evaluate, `EvalCache` can return the demand node
       that supplied an in-memory inline payload hit, persistent force-cache hits
       report the runtime node seeded by durable payload rehydration, and
@@ -971,25 +971,43 @@ alone (`M-1`/`Q-A`).
       nodes whose side record still matches the caller's ATerm bytes and whose
       current graph hash still matches the recorded ATerm/path payload. Dirty,
       changed, missing-key, missing-record, and disabled-runtime cases are
-      misses. This cache-side in-memory storage/lookup substrate is now
-      consumed by the later tree-walk cached `.drv` path reuse precursor for
-      eligible derivations; runtime-level generic side-record persistence,
-      dependency capture beyond hashable lexical captures, full SHA-256
+      misses. Hit variants return the supplying demand node for active
+      memo-read observers while the existing wrappers keep returning only path
+      bytes. This cache-side in-memory storage/lookup substrate is now consumed
+      by the later tree-walk cached `.drv` path reuse precursor for eligible
+      derivations; runtime-level generic side-record persistence, broader
+      dependency capture beyond active memo-read side-record hits, full SHA-256
       store-path short-circuiting, and full
-      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`). The
+      gate includes `eval_cache_derivation_aterm_path_hits_return_supplier_node_for_memo_read_edges`.
 - [x] Current derivationStrict ATerm evaluator observation substrate:
       tree-walk `derivationStrict` observes recorded `.drv` ATerm bytes into
       the enabled `EvalCacheRuntime` after normal output path and `.drv` path
       computation, using a derivation-specific expression identity salted by
       module identity, source span, and hashable captured lexical free
-      variables. Disabled runtimes, `with`/scoped-global environments, and
+      variables. Eligible direct final ATerm nodes open an active memo-read
+      frame before evaluating the derivation argument expression, and
+      first-class calls open the frame while processing the already-evaluated
+      argument value and forcing derivation fields; successful completion
+      replaces that node's `MemoRead` group with child expression nodes read
+      during the evaluation and records the final ATerm node into any enclosing
+      active frame, while failed derivations leave prior memo-read edges
+      unchanged. In-memory and persistent derivation ATerm path hits plus
+      static-output side-record hits return or seed runtime nodes so active
+      observers can collect those side-record reads when they are actually
+      used. Disabled runtimes, `with`/scoped-global environments, and
       unsupported captured values skip observation; repeated unchanged
       derivation ATerm/path payloads increment early-cutoff stats without
       counting cache hits or misses. This explicit observation path feeds the
       in-memory and persistent final-path precursors only: evaluator-owned
-      recomputation scheduling, dynamic dependency capture beyond hashable
-      lexical captures, full SHA-256 short-circuiting, and full
-      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+      recomputation scheduling, broader dynamic dependency capture beyond these
+      active memo-read edges, full SHA-256 short-circuiting, and full
+      cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`). The gate
+      includes tree-walk derivation ATerm cache-observation tests plus
+      `derivation_strict_final_aterm_node_records_argument_memo_read_edges`,
+      `derivation_strict_final_aterm_node_records_child_memo_read_edges`,
+      `derivation_strict_final_aterm_node_records_static_output_path_hits`, and
+      `derivation_strict_errors_preserve_prior_final_aterm_memo_read_edges`.
 - [x] Current derivationStrict ATerm path-record writeback substrate:
       tree-walk `derivationStrict` writes the already-computed absolute `.drv`
       path bytes into the derivation ATerm cache side record through
@@ -1013,12 +1031,13 @@ alone (`M-1`/`Q-A`).
       drives `derivation_text_path_calculations` to zero for matching clean
       root reuse tests, and
       leaves aggregate `cache_hits`/`cache_misses` and force-cache hit/miss
-      accounting unchanged; misses, stale records, disabled runtimes,
-      unsupported captured values, invalid cached paths, configured-store
-      mismatches, and wrong derivation names fall back to normal path
-      construction. Initial derivation modulo hashing, static-output misses,
-      deferred-placeholder derivations, dependency capture beyond hashable
-      lexical captures, full
+      accounting unchanged; accepted hits report their supplier node to
+      enclosing active memo-read observers. Misses, stale records, disabled
+      runtimes, unsupported captured values, invalid cached paths,
+      configured-store mismatches, and wrong derivation names fall back to
+      normal path construction. Initial derivation modulo hashing,
+      static-output misses, deferred-placeholder derivations, broader dynamic
+      dependency capture beyond active memo-read side-record hits, full
       derivationStrict-node SHA-256/store-path early cutoff, and
       full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
 - [x] Current persistent derivationStrict `.drv` path side-record precursor:
@@ -1029,11 +1048,12 @@ alone (`M-1`/`Q-A`).
       verify that the blob hash equals the recorded side-payload value hash,
       require the persisted ATerm bytes to match the freshly recomputed ATerm,
       and reuse the final `.drv` path through the same store-dir/name
-      validation as in-memory hits before seeding the runtime side record. This
-      skips only the final `.drv` text-path calculation for exact ATerm
-      matches; final ATerm serialization, initial derivation modulo hashing,
-      deferred-placeholder derivations, dynamic
-      dependency capture beyond hashable lexical captures, full
+      validation as in-memory hits before seeding the runtime side record and
+      reporting the seeded node to active memo-read observers. This skips only
+      the final `.drv` text-path calculation for exact ATerm matches; final
+      ATerm serialization, initial derivation modulo hashing,
+      deferred-placeholder derivations, broader dynamic dependency capture
+      beyond active memo-read side-record hits, full
       derivationStrict-node SHA-256/store-path early cutoff, and full
       cached/uncached `.drv` parity proof remain open. Gates: persistent
       derivation ATerm path payload round-trip, fresh-runtime path-reuse, and
@@ -1051,13 +1071,15 @@ alone (`M-1`/`Q-A`).
       current output set, is inside the configured store, and has the expected
       output basename, then restore output paths and skip the input-addressed
       output path computation plus both static-output modulo hash calculations.
-      Reuse increments `static_derivation_output_path_reuses` but does not count
-      as a generic force-cache hit; disabled runtimes, unsupported captured
-      values, stale/dirty/changed records, invalid payloads, and output-set
-      mismatches fall back to normal construction. Final ATerm serialization,
-      deferred-placeholder derivations, dynamic dependency capture beyond
-      hashable lexical captures, and full cached/uncached `.drv` parity proof
-      remain open (`S-14`/`S-15`).
+      Accepted hits report their supplier node to enclosing active memo-read
+      observers. Reuse increments `static_derivation_output_path_reuses` but
+      does not count as a generic force-cache hit; disabled runtimes,
+      unsupported captured values, stale/dirty/changed records, invalid
+      payloads, and output-set mismatches fall back to normal construction.
+      Final ATerm serialization, deferred-placeholder derivations, broader
+      dynamic dependency capture beyond active memo-read side-record hits, and
+      full cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`). The
+      gate includes `eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges`.
 - [x] Current persistent static derivation output-path side-record precursor:
       tree-walk `derivationStrict` materializes exact pre-output ATerm/static
       output side payloads into the persistent `values/` pack keyed from the
@@ -1067,12 +1089,15 @@ alone (`M-1`/`Q-A`).
       the persisted pre-output ATerm bytes to match the freshly recomputed
       pre-output ATerm, and reuse output paths only after the existing
       output-set, configured-store, output-basename, and duplicate-output
-      validation succeeds. This skips the static-output derivation hash/modulo
-      work for exact pre-output matches; final ATerm serialization, final
+      validation succeeds, seeding the runtime side record and reporting the
+      seeded node to active memo-read observers. This skips the static-output
+      derivation hash/modulo work for exact pre-output matches; final ATerm
+      serialization, final
       `.drv` path construction when no final-path side record exists,
-      deferred-placeholder derivations, dynamic dependency capture beyond
-      hashable lexical captures, full derivationStrict-node SHA-256/store-path
-      early cutoff, and full cached/uncached `.drv` parity proof remain open.
+      deferred-placeholder derivations, broader dynamic dependency capture
+      beyond active memo-read side-record hits, full derivationStrict-node
+      SHA-256/store-path early cutoff, and full cached/uncached `.drv` parity
+      proof remain open.
       Gates: persistent static-output payload round-trip, fresh-runtime reuse,
       stale-pre-output mismatch fallback, and invalid-output-path fallback
       tests (`S-14`/`S-15`).

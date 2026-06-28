@@ -4,6 +4,15 @@ use super::*;
 use crate::cache::{CachedDerivationAtermPath, PersistBlobKey};
 
 impl TreeWalk {
+    pub(super) fn active_derivation_aterm_memo_read_node_for_current_node(
+        &mut self,
+        id: IrId,
+    ) -> Option<DemandNodeId> {
+        let (identity, free_var_value_hashes) =
+            self.derivation_aterm_cache_subject_for_current_node(id)?;
+        self.active_memo_read_node_for_expression(identity, free_var_value_hashes.iter().copied())
+    }
+
     pub(super) fn calculate_derivation_path_with_aterm_cache(
         &mut self,
         id: IrId,
@@ -41,7 +50,7 @@ impl TreeWalk {
         }
         let (identity, free_var_value_hashes) =
             self.derivation_aterm_cache_subject_for_current_node(id)?;
-        let (path_bytes, persistent_hit) = if let Some(path_bytes) = {
+        let (path_bytes, mut dependency, persistent_hit) = if let Some((path_bytes, dependency)) = {
             let Ok(cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -49,12 +58,16 @@ impl TreeWalk {
                 );
                 return None;
             };
-            match cache.lookup_derivation_aterm_path(
+            match cache.lookup_derivation_aterm_path_hit(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 aterm,
             ) {
-                Ok(path_bytes) => path_bytes,
+                Ok(Some(hit)) => {
+                    let dependency = hit.node();
+                    Some((hit.into_path_bytes(), dependency))
+                }
+                Ok(None) => None,
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
@@ -65,12 +78,11 @@ impl TreeWalk {
                 }
             }
         } {
-            (path_bytes, false)
+            (path_bytes, Some(dependency), false)
         } else {
-            (
-                self.lookup_persist_derivation_aterm_path(identity, &free_var_value_hashes, aterm)?,
-                true,
-            )
+            let path_bytes =
+                self.lookup_persist_derivation_aterm_path(identity, &free_var_value_hashes, aterm)?;
+            (path_bytes, None, true)
         };
         let Some(path_in_store) = self.strip_configured_store_dir(&path_bytes) else {
             tracing::warn!(
@@ -106,12 +118,15 @@ impl TreeWalk {
             return None;
         }
         if persistent_hit {
-            self.observe_persist_derivation_aterm_path_runtime_hit(
+            dependency = self.observe_persist_derivation_aterm_path_runtime_hit(
                 identity,
                 &free_var_value_hashes,
                 aterm,
                 &path_bytes,
             );
+        }
+        if let Some(dependency) = dependency {
+            self.record_enclosing_memo_read(dependency);
         }
         self.increment_derivation_aterm_path_reuses();
         Some(path)
@@ -189,28 +204,30 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         path: &[u8],
-    ) {
+    ) -> Option<DemandNodeId> {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping persistent derivation ATerm path runtime observation"
             );
-            return;
+            return None;
         };
-        if let Err(error) = cache
-            .observe_derivation_aterm_expression_path(
-                identity,
-                free_var_value_hashes.iter().copied(),
-                aterm,
-                path,
-            )
-            .map(|_| ())
-        {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator persistent derivation ATerm path runtime observation failed"
-            );
+        match cache.observe_derivation_aterm_expression_path(
+            identity,
+            free_var_value_hashes.iter().copied(),
+            aterm,
+            path,
+        ) {
+            Ok(Some(reconsideration)) => Some(reconsideration.node()),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent derivation ATerm path runtime observation failed"
+                );
+                None
+            }
         }
     }
 

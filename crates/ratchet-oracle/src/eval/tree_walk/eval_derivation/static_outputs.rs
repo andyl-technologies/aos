@@ -14,18 +14,23 @@ impl TreeWalk {
     ) -> Result<DerivationHashModulo, TreeWalkError> {
         let pre_output_aterm =
             self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes);
-        if let Some((cached, persistent_hit, identity, free_var_value_hashes)) =
+        if let Some((cached, persistent_hit, identity, free_var_value_hashes, dependency)) =
             self.lookup_static_derivation_output_paths_for_current_node(id, &pre_output_aterm)
             && let Some(known_hash) =
                 self.apply_static_derivation_output_paths_from_cache(id, name, derivation, &cached)
         {
-            if persistent_hit {
+            let dependency = if persistent_hit {
                 self.observe_persist_static_derivation_output_paths_runtime_hit(
                     identity,
                     &free_var_value_hashes,
                     &pre_output_aterm,
                     cached,
-                );
+                )
+            } else {
+                dependency
+            };
+            if let Some(dependency) = dependency {
+                self.record_enclosing_memo_read(dependency);
             }
             return Ok(known_hash);
         }
@@ -48,13 +53,14 @@ impl TreeWalk {
         bool,
         CacheExprIdentity,
         Vec<DurableBlake3Hash>,
+        Option<DemandNodeId>,
     )> {
         if !self.eval_cache_runtime_enabled() {
             return None;
         }
         let (identity, free_var_value_hashes) =
             self.static_derivation_outputs_cache_subject_for_current_node(id)?;
-        if let Some(paths) = {
+        if let Some((paths, dependency)) = {
             let Ok(cache) = self.eval_cache.lock() else {
                 tracing::warn!(
                     target: "aos_nix::cache",
@@ -62,12 +68,16 @@ impl TreeWalk {
                 );
                 return None;
             };
-            match cache.lookup_static_derivation_output_paths(
+            match cache.lookup_static_derivation_output_paths_hit(
                 identity,
                 free_var_value_hashes.iter().copied(),
                 pre_output_aterm,
             ) {
-                Ok(paths) => paths,
+                Ok(Some(hit)) => {
+                    let dependency = hit.node();
+                    Some((hit.into_output_paths(), dependency))
+                }
+                Ok(None) => None,
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
@@ -78,14 +88,20 @@ impl TreeWalk {
                 }
             }
         } {
-            return Some((paths, false, identity, free_var_value_hashes));
+            return Some((
+                paths,
+                false,
+                identity,
+                free_var_value_hashes,
+                Some(dependency),
+            ));
         }
         let paths = self.lookup_persist_static_derivation_output_paths(
             identity,
             &free_var_value_hashes,
             pre_output_aterm,
         )?;
-        Some((paths, true, identity, free_var_value_hashes))
+        Some((paths, true, identity, free_var_value_hashes, None))
     }
 
     fn lookup_persist_static_derivation_output_paths(
@@ -162,28 +178,30 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         pre_output_aterm: &[u8],
         output_paths: CachedDerivationOutputPaths,
-    ) {
+    ) -> Option<DemandNodeId> {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
                 target: "aos_nix::cache",
                 "tree-walk evaluator cache lock was poisoned; skipping persistent static derivation output runtime observation"
             );
-            return;
+            return None;
         };
-        if let Err(error) = cache
-            .observe_static_derivation_output_paths(
-                identity,
-                free_var_value_hashes.iter().copied(),
-                pre_output_aterm,
-                output_paths,
-            )
-            .map(|_| ())
-        {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator persistent static derivation output runtime observation failed"
-            );
+        match cache.observe_static_derivation_output_paths(
+            identity,
+            free_var_value_hashes.iter().copied(),
+            pre_output_aterm,
+            output_paths,
+        ) {
+            Ok(Some(reconsideration)) => Some(reconsideration.node()),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent static derivation output runtime observation failed"
+                );
+                None
+            }
         }
     }
 

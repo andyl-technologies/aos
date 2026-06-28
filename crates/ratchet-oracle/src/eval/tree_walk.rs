@@ -518,12 +518,12 @@ struct ForceCacheSubject {
 }
 
 #[derive(Debug)]
-struct ActiveForceCacheNode {
+struct ActiveMemoReadNode {
     node: DemandNodeId,
     memo_reads: BTreeSet<DemandNodeId>,
 }
 
-impl ActiveForceCacheNode {
+impl ActiveMemoReadNode {
     fn new(node: DemandNodeId) -> Self {
         Self {
             node,
@@ -757,7 +757,7 @@ pub struct TreeWalk {
     impure_input_trace: Vec<ImpureInputFingerprint>,
     impure_input_trace_complete: bool,
     force_cache_impure_trace_epoch: u64,
-    active_force_cache_nodes: Vec<ActiveForceCacheNode>,
+    active_memo_read_nodes: Vec<ActiveMemoReadNode>,
     #[cfg(test)]
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     stderr: EvalStderr,

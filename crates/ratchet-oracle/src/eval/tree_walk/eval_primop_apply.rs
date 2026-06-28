@@ -429,7 +429,7 @@ impl TreeWalk {
                 scale_eval_work_by_payload,
             );
             if let Some(observed_node) = observed_node {
-                self.record_enclosing_force_cache_memo_read(observed_node);
+                self.record_enclosing_memo_read(observed_node);
             }
         }
         Ok(value)

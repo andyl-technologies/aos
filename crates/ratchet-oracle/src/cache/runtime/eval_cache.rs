@@ -247,6 +247,20 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        Ok(self
+            .lookup_derivation_aterm_path_hit(identity, free_var_value_hashes, aterm)?
+            .map(CachedDerivationAtermPathHit::into_path_bytes))
+    }
+
+    pub(crate) fn lookup_derivation_aterm_path_hit<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
         let Some(node) = self.graph.node_id_for_key(key) else {
@@ -265,7 +279,10 @@ impl EvalCache {
         {
             return Ok(None);
         }
-        Ok(Some(record.path_bytes()))
+        Ok(Some(CachedDerivationAtermPathHit::new(
+            node,
+            record.path_bytes(),
+        )))
     }
 
     /// Looks up clean cached static derivation output paths for matching ATerm bytes.
@@ -290,6 +307,24 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
+        Ok(self
+            .lookup_static_derivation_output_paths_hit(
+                identity,
+                free_var_value_hashes,
+                pre_output_aterm,
+            )?
+            .map(CachedStaticDerivationOutputPathsHit::into_output_paths))
+    }
+
+    pub(crate) fn lookup_static_derivation_output_paths_hit<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+    ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
         let Some(node) = self.graph.node_id_for_key(key) else {
@@ -308,7 +343,10 @@ impl EvalCache {
         {
             return Ok(None);
         }
-        Ok(Some(record.output_paths()))
+        Ok(Some(CachedStaticDerivationOutputPathsHit::new(
+            node,
+            record.output_paths(),
+        )))
     }
 
     /// Looks up a clean expression payload after impure-input revalidation.

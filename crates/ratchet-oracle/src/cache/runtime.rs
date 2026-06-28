@@ -102,6 +102,20 @@ pub(crate) struct CachedExpressionPayloadHit {
     value: CachedExpressionValue,
 }
 
+/// One clean in-memory derivation ATerm path cache hit.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedDerivationAtermPathHit {
+    node: DemandNodeId,
+    path_bytes: Vec<u8>,
+}
+
+/// One clean in-memory static derivation output-path cache hit.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedStaticDerivationOutputPathsHit {
+    node: DemandNodeId,
+    output_paths: CachedDerivationOutputPaths,
+}
+
 impl ExpressionTraceObservation {
     fn new(node: Option<DemandNodeId>, trace: ImpureTraceObservation) -> Self {
         Self {
@@ -169,6 +183,38 @@ impl CachedExpressionPayloadHit {
     /// Consumes the hit into its cached expression payload.
     pub(crate) fn into_value(self) -> CachedExpressionValue {
         self.value
+    }
+}
+
+impl CachedDerivationAtermPathHit {
+    pub(crate) fn new(node: DemandNodeId, path_bytes: Vec<u8>) -> Self {
+        Self { node, path_bytes }
+    }
+
+    /// Returns the demand-graph node that supplied this hit.
+    pub(crate) const fn node(&self) -> DemandNodeId {
+        self.node
+    }
+
+    /// Consumes the hit into its cached derivation path bytes.
+    pub(crate) fn into_path_bytes(self) -> Vec<u8> {
+        self.path_bytes
+    }
+}
+
+impl CachedStaticDerivationOutputPathsHit {
+    pub(crate) const fn new(node: DemandNodeId, output_paths: CachedDerivationOutputPaths) -> Self {
+        Self { node, output_paths }
+    }
+
+    /// Returns the demand-graph node that supplied this hit.
+    pub(crate) const fn node(&self) -> DemandNodeId {
+        self.node
+    }
+
+    /// Consumes the hit into its cached static derivation output paths.
+    pub(crate) fn into_output_paths(self) -> CachedDerivationOutputPaths {
+        self.output_paths
     }
 }
 

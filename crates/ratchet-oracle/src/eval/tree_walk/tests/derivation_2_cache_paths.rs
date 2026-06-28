@@ -3,8 +3,9 @@
 use super::derivation_2_support::*;
 use super::*;
 use crate::cache::{
-    CachedDerivationAtermPath, CachedDerivationOutputPath, CachedDerivationOutputPaths,
-    CachedStaticDerivationOutputPathsPayload, MaterializationDecision, PersistBlobKey,
+    CacheExprIdentity, CachedDerivationAtermPath, CachedDerivationOutputPath,
+    CachedDerivationOutputPaths, CachedStaticDerivationOutputPathsPayload, DemandCacheKey,
+    DemandDependencyGroup, DurableBlake3Hash, MaterializationDecision, PersistBlobKey,
     PersistCache, PersistNodeMetadataKey,
 };
 
@@ -61,6 +62,220 @@ fn derivation_strict_observes_aterm_early_cutoff_in_eval_cache() {
             .expect("runtime is enabled")
             .len(),
         2
+    );
+}
+
+#[test]
+fn derivation_strict_final_aterm_node_records_child_memo_read_edges() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        args = [ "alpha" "beta" ];
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+
+    let run = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+
+    assert_eq!(run.path_reuses, 0);
+    let parent_key = DemandCacheKey::for_free_vars(identity, free_var_hashes.iter().copied())
+        .expect("derivation ATerm runtime key builds");
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent_node = cache
+        .graph()
+        .node_id_for_key(parent_key)
+        .expect("final ATerm node is present");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("final ATerm graph node is present");
+    let memo_reads = parent
+        .dependencies_in_group(DemandDependencyGroup::MemoRead)
+        .expect("final ATerm node has memo-read dependencies");
+    assert!(
+        !memo_reads.is_empty(),
+        "forced derivation fields should become final ATerm memo-read dependencies"
+    );
+    for dependency in memo_reads {
+        assert!(
+            cache
+                .graph()
+                .node(*dependency)
+                .expect("memo-read dependency node is present")
+                .dependents()
+                .contains(&parent_node),
+            "memo-read dependencies should record the final ATerm node as a reverse dependent"
+        );
+    }
+}
+
+#[test]
+fn derivation_strict_final_aterm_node_records_argument_memo_read_edges() {
+    let source = r#"builtins.derivationStrict (
+        let forced = [ "from-argument" ]; in
+        builtins.seq forced {
+            name = "x";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        }
+    )"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+
+    let run = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+
+    assert_eq!(run.path_reuses, 0);
+    let parent_key = DemandCacheKey::for_free_vars(identity, free_var_hashes.iter().copied())
+        .expect("derivation ATerm runtime key builds");
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent_node = cache
+        .graph()
+        .node_id_for_key(parent_key)
+        .expect("final ATerm node is present");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("final ATerm graph node is present");
+    let memo_reads = parent
+        .dependencies_in_group(DemandDependencyGroup::MemoRead)
+        .expect("final ATerm node has memo-read dependencies");
+    assert!(
+        !memo_reads.is_empty(),
+        "memoized reads used while producing the derivation argument should be captured"
+    );
+}
+
+#[test]
+fn derivation_strict_final_aterm_node_records_static_output_path_hits() {
+    let source = r#"derivationStrict {
+        name = "x";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        env = "same";
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (final_identity, final_free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    let (static_identity, static_free_var_hashes) =
+        static_derivation_outputs_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+
+    let first = eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+    let second =
+        eval_single_derivation_with_cache(&ir, enabled_eval_cache_options(), cache.clone());
+
+    assert_eq!(second.path, first.path);
+    assert_eq!(second.aterm, first.aterm);
+    assert_eq!(second.output_path_reuses, 1);
+    assert_eq!(second.path_reuses, 1);
+    let final_key =
+        DemandCacheKey::for_free_vars(final_identity, final_free_var_hashes.iter().copied())
+            .expect("final ATerm runtime key builds");
+    let static_key =
+        DemandCacheKey::for_free_vars(static_identity, static_free_var_hashes.iter().copied())
+            .expect("static output runtime key builds");
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let final_node = cache
+        .graph()
+        .node_id_for_key(final_key)
+        .expect("final ATerm node is present");
+    let static_node = cache
+        .graph()
+        .node_id_for_key(static_key)
+        .expect("static output node is present");
+    let final_graph_node = cache
+        .graph()
+        .node(final_node)
+        .expect("final ATerm graph node is present");
+    assert!(
+        final_graph_node
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("final ATerm node has memo-read dependencies")
+            .contains(&static_node),
+        "reused static output paths should be a memo-read dependency of the final ATerm node"
+    );
+    assert!(
+        cache
+            .graph()
+            .node(static_node)
+            .expect("static output graph node is present")
+            .dependents()
+            .contains(&final_node),
+        "the static output node should record the final ATerm node as a reverse dependent"
+    );
+}
+
+#[test]
+fn derivation_strict_errors_preserve_prior_final_aterm_memo_read_edges() {
+    let source = r#"derivationStrict {
+        name = "broken";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        args = [ "child" ];
+        bad = {};
+    }"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (identity, free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, enabled_eval_cache_options(), cache.clone());
+    let parent_node;
+    let stale_node;
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        parent_node = runtime
+            .get_or_insert_expression_node(identity, free_var_hashes.iter().copied(), None)
+            .expect("parent node allocation succeeds")
+            .expect("cache is enabled");
+        stale_node = runtime
+            .get_or_insert_expression_node(
+                CacheExprIdentity::new(
+                    DurableBlake3Hash::for_bytes(b"stale-derivation-aterm-memo-read"),
+                    IrId::new(4096),
+                ),
+                std::iter::empty::<DurableBlake3Hash>(),
+                None,
+            )
+            .expect("stale node allocation succeeds")
+            .expect("cache is enabled");
+        runtime
+            .replace_memo_read_dependencies(parent_node, [stale_node])
+            .expect("stale memo-read replacement succeeds")
+            .expect("cache is enabled");
+    }
+
+    eval_whnf_owned_with_options_realizer_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        None,
+        cache.clone(),
+    )
+    .expect_err("invalid derivation field fails after forcing args");
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let parent = cache
+        .graph()
+        .node(parent_node)
+        .expect("final ATerm graph node is present");
+    let memo_reads = parent
+        .dependencies_in_group(DemandDependencyGroup::MemoRead)
+        .expect("prior memo-read dependencies remain present");
+    assert_eq!(
+        memo_reads.len(),
+        1,
+        "failed derivationStrict must leave prior final ATerm memo-read edges unchanged"
+    );
+    assert!(
+        memo_reads.contains(&stale_node),
+        "failed derivationStrict should preserve the stale memo-read dependency"
     );
 }
 

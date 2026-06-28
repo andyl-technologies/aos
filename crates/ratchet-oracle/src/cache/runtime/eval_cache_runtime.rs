@@ -324,6 +324,21 @@ impl EvalCacheRuntime {
         cache.lookup_derivation_aterm_path(identity, free_var_value_hashes, aterm)
     }
 
+    pub(crate) fn lookup_derivation_aterm_path_hit<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        aterm: &[u8],
+    ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_derivation_aterm_path_hit(identity, free_var_value_hashes, aterm)
+    }
+
     /// Looks up cached static derivation output paths for matching ATerm bytes when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
@@ -347,6 +362,25 @@ impl EvalCacheRuntime {
             return Ok(None);
         };
         cache.lookup_static_derivation_output_paths(
+            identity,
+            free_var_value_hashes,
+            pre_output_aterm,
+        )
+    }
+
+    pub(crate) fn lookup_static_derivation_output_paths_hit<I>(
+        &self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        pre_output_aterm: &[u8],
+    ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+    {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.lookup_static_derivation_output_paths_hit(
             identity,
             free_var_value_hashes,
             pre_output_aterm,

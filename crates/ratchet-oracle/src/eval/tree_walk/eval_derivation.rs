@@ -142,11 +142,67 @@ impl TreeWalk {
             return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
         };
         let argument_span = self.node(argument)?.span;
-        let value = self.eval_node(argument)?;
-        self.eval_derivation_strict_value(id, node.span, argument, argument_span, value)
+        self.eval_derivation_strict_argument(id, node.span, argument, argument_span)
+    }
+
+    pub(super) fn eval_derivation_strict_argument(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        self.with_active_derivation_aterm_memo_read_node(id, |eval| {
+            let value = eval.eval_node(argument)?;
+            eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+        })
     }
 
     pub(super) fn eval_derivation_strict_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.with_active_derivation_aterm_memo_read_node(id, |eval| {
+            eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+        })
+    }
+
+    fn with_active_derivation_aterm_memo_read_node<T>(
+        &mut self,
+        id: IrId,
+        evaluate: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let active_memo_read_node =
+            self.active_derivation_aterm_memo_read_node_for_current_node(id);
+        if let Some(node) = active_memo_read_node {
+            self.active_memo_read_nodes
+                .push(ActiveMemoReadNode::new(node));
+        }
+        let result = evaluate(self);
+        let active_memo_read_node = if active_memo_read_node.is_some() {
+            let popped = self.active_memo_read_nodes.pop();
+            debug_assert_eq!(
+                popped.as_ref().map(ActiveMemoReadNode::node),
+                active_memo_read_node
+            );
+            popped
+        } else {
+            None
+        };
+        let result = result?;
+        if let Some(active_memo_read_node) = active_memo_read_node {
+            let dependency = active_memo_read_node.node();
+            self.replace_active_memo_reads(active_memo_read_node);
+            self.record_enclosing_memo_read(dependency);
+        }
+        Ok(result)
+    }
+
+    fn eval_derivation_strict_value_inner(
         &mut self,
         id: IrId,
         span: Span,

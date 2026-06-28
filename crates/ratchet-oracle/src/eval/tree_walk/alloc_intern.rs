@@ -799,8 +799,8 @@ impl TreeWalk {
             .then(|| self.active_force_cache_node_for_subject(cache_subject.as_ref()))
             .flatten();
         if let Some(node) = active_force_cache_node {
-            self.active_force_cache_nodes
-                .push(ActiveForceCacheNode::new(node));
+            self.active_memo_read_nodes
+                .push(ActiveMemoReadNode::new(node));
         }
         let result = (|| -> Result<Value, TreeWalkError> {
             match thunk.kind() {
@@ -888,9 +888,9 @@ impl TreeWalk {
             }
         })();
         let active_force_cache_node = if active_force_cache_node.is_some() {
-            let popped = self.active_force_cache_nodes.pop();
+            let popped = self.active_memo_read_nodes.pop();
             debug_assert_eq!(
-                popped.as_ref().map(ActiveForceCacheNode::node),
+                popped.as_ref().map(ActiveMemoReadNode::node),
                 active_force_cache_node
             );
             popped
@@ -905,8 +905,8 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
         if let Some(active_force_cache_node) = active_force_cache_node {
             let dependency = active_force_cache_node.node();
-            self.replace_active_force_cache_memo_reads(active_force_cache_node);
-            self.record_enclosing_force_cache_memo_read(dependency);
+            self.replace_active_memo_reads(active_force_cache_node);
+            self.record_enclosing_memo_read(dependency);
         }
         self.unmark_lazy_identity_thunk_payload(forced_payload);
         if let Some(subject) = &cache_subject {

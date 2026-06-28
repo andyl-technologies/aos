@@ -76,6 +76,51 @@ fn eval_cache_looks_up_clean_derivation_aterm_path() {
 }
 
 #[test]
+fn eval_cache_derivation_aterm_path_hits_return_supplier_node_for_memo_read_edges() {
+    let mut cache = EvalCache::new();
+    let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+    let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv";
+    let parent = cache
+        .get_or_insert_expression_node(
+            identity(b"parent", 8),
+            std::iter::empty::<DurableBlake3Hash>(),
+            None,
+        )
+        .expect("parent node allocates");
+    let reconsideration = cache
+        .observe_derivation_aterm_expression_path(
+            identity(b"derivation", 7),
+            [durable_hash(b"free-var")],
+            aterm,
+            drv_path,
+        )
+        .expect("derivation ATerm path observes");
+    let hit = cache
+        .lookup_derivation_aterm_path_hit(
+            identity(b"derivation", 7),
+            [durable_hash(b"free-var")],
+            aterm,
+        )
+        .expect("derivation ATerm path hit lookup succeeds")
+        .expect("derivation ATerm path hit exists");
+
+    assert_eq!(hit.node(), reconsideration.node());
+    assert_eq!(hit.into_path_bytes(), drv_path);
+    cache
+        .record_memo_read_dependency(parent, reconsideration.node())
+        .expect("memo-read edge records");
+    assert!(
+        cache
+            .graph()
+            .node(parent)
+            .expect("parent node exists")
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("parent memo-read edges exist")
+            .contains(&reconsideration.node())
+    );
+}
+
+#[test]
 fn cached_derivation_aterm_paths_round_trip_through_persistent_encoding() {
     let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])".to_vec();
     let drv_path = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv".to_vec();
@@ -127,6 +172,57 @@ fn eval_cache_looks_up_clean_static_derivation_output_paths() {
 
     assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
     assert_eq!(lookup, Some(output_paths));
+}
+
+#[test]
+fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges() {
+    let mut cache = EvalCache::new();
+    let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+    let output_paths = CachedDerivationOutputPaths::new(
+        [7; 32],
+        vec![CachedDerivationOutputPath::new(
+            b"out".to_vec(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+        )],
+    );
+    let parent = cache
+        .get_or_insert_expression_node(
+            identity(b"parent-static", 8),
+            std::iter::empty::<DurableBlake3Hash>(),
+            None,
+        )
+        .expect("parent node allocates");
+    let reconsideration = cache
+        .observe_static_derivation_output_paths(
+            identity(b"derivation-outputs", 7),
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+            output_paths.clone(),
+        )
+        .expect("static derivation output paths observe");
+    let hit = cache
+        .lookup_static_derivation_output_paths_hit(
+            identity(b"derivation-outputs", 7),
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+        )
+        .expect("static output path hit lookup succeeds")
+        .expect("static output path hit exists");
+
+    assert_eq!(hit.node(), reconsideration.node());
+    assert_eq!(hit.into_output_paths(), output_paths);
+    cache
+        .record_memo_read_dependency(parent, reconsideration.node())
+        .expect("memo-read edge records");
+    assert!(
+        cache
+            .graph()
+            .node(parent)
+            .expect("parent node exists")
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("parent memo-read edges exist")
+            .contains(&reconsideration.node())
+    );
 }
 
 #[test]

@@ -167,14 +167,14 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
         .expect("parent active node allocates");
 
     evaluator
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced = evaluator
         .eval_node(apply_id)
         .expect("first-class pathExists call succeeds");
     assert_eq!(forced.as_bool(), Ok(true));
     let active = evaluator
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -182,7 +182,7 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    evaluator.replace_active_force_cache_memo_reads(active);
+    evaluator.replace_active_memo_reads(active);
 
     let primop_key = crate::cache::DemandCacheKey::for_free_vars(
         primop_identity,
@@ -363,13 +363,13 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
     second
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced_again = second
         .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
         .expect("persistent effectful hit succeeds");
     let active = second
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -377,7 +377,7 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    second.replace_active_force_cache_memo_reads(active);
+    second.replace_active_memo_reads(active);
 
     assert_eq!(forced_again.as_bool(), Ok(true));
     assert_eq!(

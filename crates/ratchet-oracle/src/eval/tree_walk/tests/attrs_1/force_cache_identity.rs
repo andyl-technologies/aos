@@ -364,14 +364,14 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
     evaluator
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced = evaluator
         .lookup_forced_inline_expression_result(Some(child_subject))
         .expect("child force-cache payload hits");
     assert_eq!(forced.as_int(), Ok(3));
     let active = evaluator
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -379,7 +379,7 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    evaluator.replace_active_force_cache_memo_reads(active);
+    evaluator.replace_active_memo_reads(active);
     assert_eq!(
         evaluator.stats().cache_hits(),
         1,
@@ -470,14 +470,14 @@ fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
     }
 
     evaluator
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced = evaluator
         .lookup_forced_inline_expression_result(Some(fresh_subject))
         .expect("fresh child force-cache payload hits");
     assert_eq!(forced.as_int(), Ok(2));
     let active = evaluator
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -485,7 +485,7 @@ fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    evaluator.replace_active_force_cache_memo_reads(active);
+    evaluator.replace_active_memo_reads(active);
 
     let runtime = cache.lock().expect("cache lock is valid");
     let cache = runtime.cache().expect("cache is enabled");
@@ -651,14 +651,14 @@ fn source_backed_active_force_cache_child_misses_record_memo_read_edges() {
         .expect("parent active node allocates");
 
     evaluator
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), child_thunk)
         .expect("child force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
     let active = evaluator
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -666,7 +666,7 @@ fn source_backed_active_force_cache_child_misses_record_memo_read_edges() {
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    evaluator.replace_active_force_cache_memo_reads(active);
+    evaluator.replace_active_memo_reads(active);
     assert_eq!(
         evaluator.stats().cache_misses(),
         1,
@@ -754,14 +754,14 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
         .active_force_cache_node_for_subject(Some(&parent_subject))
         .expect("parent active node allocates");
     evaluator
-        .active_force_cache_nodes
-        .push(ActiveForceCacheNode::new(parent_node));
+        .active_memo_read_nodes
+        .push(ActiveMemoReadNode::new(parent_node));
     let forced = evaluator
         .lookup_forced_inline_expression_result(Some(child_subject))
         .expect("child persistent force-cache payload hits");
     assert_eq!(forced.as_int(), Ok(3));
     let active = evaluator
-        .active_force_cache_nodes
+        .active_memo_read_nodes
         .pop()
         .expect("test-controlled active node pops");
     assert_eq!(
@@ -769,7 +769,7 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
         parent_node,
         "test-controlled active node stack should be balanced"
     );
-    evaluator.replace_active_force_cache_memo_reads(active);
+    evaluator.replace_active_memo_reads(active);
     assert_eq!(evaluator.stats().cache_hits(), 1);
     assert_eq!(evaluator.stats().cache_misses(), 0);
 
@@ -839,7 +839,7 @@ fn source_backed_admitted_force_error_balances_active_force_cache_stack() {
         TreeWalkErrorKind::DivisionByZero { .. }
     ));
     assert!(
-        evaluator.active_force_cache_nodes.is_empty(),
+        evaluator.active_memo_read_nodes.is_empty(),
         "erroring body evaluation must pop the active force-cache node"
     );
     assert!(
@@ -922,7 +922,7 @@ fn source_backed_admitted_force_error_preserves_prior_memo_read_edges() {
         TreeWalkErrorKind::DivisionByZero { .. }
     ));
     assert!(
-        evaluator.active_force_cache_nodes.is_empty(),
+        evaluator.active_memo_read_nodes.is_empty(),
         "erroring body evaluation must pop the active force-cache node"
     );
     let runtime = cache.lock().expect("cache lock is valid");
