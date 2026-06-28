@@ -447,16 +447,18 @@ impl EvalCache {
         ))
     }
 
-    /// Looks up a clean expression payload after impure-input revalidation.
+    /// Looks up an expression payload after impure-input revalidation.
     ///
     /// Pure payload records are handled identically to
     /// [`EvalCache::lookup_inline_expression_payload`]. Trace-backed payload
     /// records are returned only if every stored cacheable input identity can be
     /// revalidated, the fresh identity still matches the stored identity, the
     /// fresh observation hash still matches the stored observation hash, and the
-    /// expression node remains clean with the recorded value hash. Revalidation
-    /// observes fresh input leaves through the demand graph so changed inputs
-    /// dirty dependents through the ordinary cutoff path.
+    /// expression node is clean or can be cleaned with the recorded value hash.
+    /// Revalidation observes fresh input leaves through the demand graph so
+    /// changed inputs dirty dependents through the ordinary cutoff path. Dirty
+    /// trace-backed payload nodes whose inputs and payload hash still match are
+    /// reconsidered and can cut off locally.
     ///
     /// Inputs that cannot be revalidated, revalidate to an uncacheable
     /// fingerprint, or revalidate to a different identity invalidate the
@@ -502,9 +504,6 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
-        if graph_node.freshness() != NodeFreshness::Clean {
-            return Ok(None);
-        }
         let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
@@ -512,16 +511,31 @@ impl EvalCache {
             return Ok(None);
         }
         if record.is_reusable_without_revalidation() {
+            if graph_node.freshness() != NodeFreshness::Clean {
+                return Ok(None);
+            }
             return Ok(Some(CachedExpressionPayloadHit::new(node, record.value())));
         }
         if !self.revalidate_inline_record_inputs(node, &record, revalidator)? {
             return Ok(None);
         }
         let graph_node = self.graph.node(node)?;
-        if graph_node.freshness() != NodeFreshness::Clean {
+        if graph_node.value_hash() != Some(record.value_hash) {
             return Ok(None);
         }
-        if graph_node.value_hash() != Some(record.value_hash) {
+        if graph_node.freshness() == NodeFreshness::Dirty {
+            if self.has_dirty_memo_read_dependency(node)? {
+                self.invalidate_existing_inline_payload(Some(node))?;
+                return Ok(None);
+            }
+            let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+            return Ok(Some(CachedExpressionPayloadHit::with_reconsideration(
+                node,
+                record.value(),
+                reconsideration,
+            )));
+        }
+        if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
         Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))

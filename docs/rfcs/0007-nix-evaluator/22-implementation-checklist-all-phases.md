@@ -1178,6 +1178,22 @@ alone (`M-1`/`Q-A`).
       propagation, canonical hashes for all values, persistence-aware cutoff
       accounting, and cached/uncached `.drv` parity proof remain open
       (`S-14`/`M-11`).
+- [x] Current dirty trace-backed force-payload revalidation precursor:
+      in-memory force-cache lookup now revalidates trace-backed inline payload
+      records even when their expression node is dirty, provided the retained
+      impure-input identities and observation hashes still match and the node's
+      stored value hash still equals the side payload hash. Same-value dirty
+      hits clean the node through `DemandGraph::reconsider_node`, report the
+      reconsideration on the payload hit, and tree-walk counts `CutOff` hits in
+      `EvalStats::early_cutoffs`; changed, unavailable, or uncacheable inputs
+      still invalidate the payload and miss, and dirty memo-read suppliers still
+      block reuse. This is local dirty-node revalidation for trace-backed
+      forced-expression payloads only; evaluator-owned dirty-frontier
+      scheduling, transitive red/green propagation, persistence-aware dirty
+      revalidation, canonical hashes for all values, and cached/uncached `.drv`
+      parity proof remain open (`S-14`/`M-11`). Gates:
+      dirty trace-backed inline-payload cache tests and
+      `dirty_effectful_force_cache_hit_revalidates_and_counts_early_cutoff`.
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.

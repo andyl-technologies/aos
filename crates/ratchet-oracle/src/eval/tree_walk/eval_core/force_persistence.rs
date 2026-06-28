@@ -632,6 +632,9 @@ impl TreeWalk {
         ) {
             Ok(Some(hit)) => {
                 let dependency = hit.node();
+                let early_cutoff = hit.reconsideration().is_some_and(|reconsideration| {
+                    reconsideration.decision() == CutoffDecision::CutOff
+                });
                 let payload = hit.into_value();
                 if self
                     .payload_position_remap_for_subject(&payload, &subject)
@@ -664,6 +667,9 @@ impl TreeWalk {
                 self.record_active_memo_read(active_force_cache_node, dependency);
                 for fingerprint in trace {
                     self.record_impure_input(fingerprint);
+                }
+                if early_cutoff {
+                    self.increment_early_cutoffs();
                 }
                 self.record_forced_expression_demand(&subject);
                 self.increment_eval_cache_hit();

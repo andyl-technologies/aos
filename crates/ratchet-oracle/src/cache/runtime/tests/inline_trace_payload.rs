@@ -455,6 +455,148 @@ fn eval_cache_trace_backed_payload_reports_early_cutoff_reconsideration() {
 }
 
 #[test]
+fn dirty_trace_backed_inline_payload_revalidates_same_inputs_and_cuts_off() {
+    let fingerprint = read_file_trace(b"/tmp/version", b"same");
+    let source = TraceSource {
+        trace: vec![fingerprint.clone()],
+        complete: true,
+    };
+    let mut revalidator = StaticRevalidator::new(vec![fingerprint]);
+    let mut cache = EvalCache::new();
+    let identity = identity(b"source", 7);
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("inline result and trace observe");
+    let node = observation.node().expect("cacheable trace creates node");
+    cache.test_mark_dirty_node(node).expect("node marks dirty");
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("dirty lookup revalidates")
+        .expect("unchanged dirty payload hits");
+
+    assert_eq!(hit.node(), node);
+    assert_eq!(
+        hit.reconsideration()
+            .expect("dirty hit reports reconsideration")
+            .decision(),
+        CutoffDecision::CutOff
+    );
+    assert_eq!(
+        hit.into_value()
+            .immediate_value()
+            .expect("hit payload is immediate")
+            .as_int(),
+        Ok(3)
+    );
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(cache.inline_payload_record_count(), 1);
+}
+
+#[test]
+fn dirty_trace_backed_inline_payload_changed_input_stays_miss() {
+    let source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"same")],
+        complete: true,
+    };
+    let mut revalidator = StaticRevalidator::new(vec![read_file_trace(b"/tmp/version", b"new")]);
+    let mut cache = EvalCache::new();
+    let identity = identity(b"source", 7);
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("inline result and trace observe");
+    let node = observation.node().expect("cacheable trace creates node");
+    cache.test_mark_dirty_node(node).expect("node marks dirty");
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("dirty lookup revalidates");
+
+    assert!(hit.is_none());
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(cache.inline_payload_record_count(), 0);
+}
+
+#[test]
+fn dirty_trace_backed_inline_payload_with_dirty_memo_supplier_stays_miss() {
+    let fingerprint = read_file_trace(b"/tmp/version", b"same");
+    let source = TraceSource {
+        trace: vec![fingerprint.clone()],
+        complete: true,
+    };
+    let mut revalidator = StaticRevalidator::new(vec![fingerprint]);
+    let mut cache = EvalCache::new();
+    let expression_identity = identity(b"source", 7);
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("inline result and trace observe");
+    let node = observation.node().expect("cacheable trace creates node");
+    let supplier = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"supplier", 1), [durable_hash(b"supplier")])
+                .expect("supplier key builds"),
+            Some(value_hash(b"supplier")),
+        )
+        .expect("supplier inserts");
+    cache
+        .graph
+        .add_dependency(node, supplier)
+        .expect("memo-read edge records");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier marks dirty");
+    cache.test_mark_dirty_node(node).expect("node marks dirty");
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("dirty lookup revalidates");
+
+    assert!(hit.is_none());
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(cache.inline_payload_record_count(), 0);
+}
+
+#[test]
 fn eval_cache_expression_trace_adapter_invalidates_existing_trace_backed_payload() {
     let first_fingerprint = read_file_trace(b"/tmp/first", b"same");
     let first_source = TraceSource {

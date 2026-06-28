@@ -423,7 +423,7 @@ impl EvalCacheRuntime {
         )
     }
 
-    /// Looks up a clean expression payload with impure-input revalidation when enabled.
+    /// Looks up a revalidatable expression payload when enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression
     /// identity or calling `revalidator`. Enabled runtimes delegate to

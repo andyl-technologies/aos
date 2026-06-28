@@ -100,6 +100,7 @@ pub struct ExpressionTraceObservation {
 pub(crate) struct CachedExpressionPayloadHit {
     node: DemandNodeId,
     value: CachedExpressionValue,
+    reconsideration: Option<Reconsideration>,
 }
 
 /// One clean in-memory derivation ATerm path cache hit.
@@ -175,12 +176,33 @@ impl ExpressionTraceObservation {
 
 impl CachedExpressionPayloadHit {
     pub(crate) const fn new(node: DemandNodeId, value: CachedExpressionValue) -> Self {
-        Self { node, value }
+        Self {
+            node,
+            value,
+            reconsideration: None,
+        }
+    }
+
+    pub(crate) const fn with_reconsideration(
+        node: DemandNodeId,
+        value: CachedExpressionValue,
+        reconsideration: Reconsideration,
+    ) -> Self {
+        Self {
+            node,
+            value,
+            reconsideration: Some(reconsideration),
+        }
     }
 
     /// Returns the demand-graph node that supplied this hit.
     pub(crate) const fn node(&self) -> DemandNodeId {
         self.node
+    }
+
+    /// Returns the dirty-node reconsideration that admitted this hit, if any.
+    pub(crate) fn reconsideration(&self) -> Option<&Reconsideration> {
+        self.reconsideration.as_ref()
     }
 
     /// Consumes the hit into its cached expression payload.

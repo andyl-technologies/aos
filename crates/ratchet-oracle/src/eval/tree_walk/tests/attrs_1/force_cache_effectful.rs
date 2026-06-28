@@ -94,6 +94,68 @@ fn effectful_forced_inline_thunks_revalidate_impure_edges_before_hits() {
 }
 
 #[test]
+fn dirty_effectful_force_cache_hit_revalidates_and_counts_early_cutoff() {
+    let root = unique_temp_dir("force-cache-effectful-dirty-cutoff");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = builtins.pathExists ./marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut evaluator, &ir, a);
+    assert_eq!(forced.as_bool(), Ok(true));
+
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache_mut().expect("cache is enabled");
+        let owner = cache
+            .graph()
+            .node_id_for_key(owner_key)
+            .expect("forced expression node exists");
+        cache
+            .test_mark_dirty_node(owner)
+            .expect("forced expression node marks dirty");
+    }
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let (forced_again, second_owner_key) =
+        force_attr_a_with_impure_observation_key(&mut second, &ir, a);
+
+    assert_eq!(second_owner_key, owner_key);
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "dirty same-input trace-backed payload should replay after revalidation"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().early_cutoffs(), 1);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn effectful_primop_child_misses_record_memo_read_edges() {
     let root = unique_temp_dir("force-cache-effectful-cold-memo-read");
     fs::write(root.join("marker"), b"present").expect("marker exists");
