@@ -3,12 +3,14 @@
 //! A shape captures the key layout shared by attrset instances: the internal
 //! symbol-sorted key vector used for binary-search lookup, the construction
 //! order permutation, the observable raw-byte lexicographic iteration
-//! permutation, and an in-process xxh3 fingerprint of the key vector. This is a
-//! safe descriptor only. It does not install a global shape table, transition
-//! tree, inline cache, HAMT representation, or runtime fast path.
+//! permutation, and an in-process xxh3 fingerprint of the key vector. The
+//! process-local [`ShapeTable`] interns descriptors and caches transition edges
+//! for future runtime integration. It does not install a global/shared shape
+//! table, inline cache, HAMT representation, or runtime fast path.
 
 use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
@@ -26,6 +28,26 @@ pub struct ShapeFingerprint(u64);
 impl ShapeFingerprint {
     /// Returns the raw xxh3 fingerprint bits.
     pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// A process-local dense record id for an interned shape.
+///
+/// The id is stable only inside one [`ShapeTable`]. It is not durable, not a
+/// serialized cache key, not a pointer, and not meaningful across evaluator
+/// processes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShapeId(u32);
+
+impl ShapeId {
+    /// Creates a shape-table id from raw bits.
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the raw process-local id.
+    pub const fn as_u32(self) -> u32 {
         self.0
     }
 }
@@ -277,6 +299,314 @@ pub enum ShapeTransition {
     },
 }
 
+/// A pointer-identity handle to an interned shape.
+///
+/// Equality by id is valid only for handles produced by the same
+/// [`ShapeTable`]. Use [`ShapeHandle::ptr_eq`] when asserting that two handles
+/// point at the same interned descriptor.
+#[derive(Clone, Debug)]
+pub struct ShapeHandle {
+    id: ShapeId,
+    shape: Arc<AttrShape>,
+}
+
+impl ShapeHandle {
+    /// Returns the process-local shape id.
+    pub const fn id(&self) -> ShapeId {
+        self.id
+    }
+
+    /// Returns the interned shape descriptor.
+    pub fn shape(&self) -> &AttrShape {
+        &self.shape
+    }
+
+    /// Returns whether two handles point at the same interned descriptor.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shape, &other.shape)
+    }
+}
+
+/// A process-local shape interning table with cached transition edges.
+///
+/// Shape descriptors are interned by fingerprint-filtered raw descriptor
+/// equality. Parent transition edges are cached in this table and return the
+/// same child handle on repeated insertion of the same key. This table is not
+/// global, not lock-free, and not yet connected to runtime attrset allocation.
+#[derive(Debug)]
+pub struct ShapeTable {
+    records: Vec<ShapeRecord>,
+}
+
+impl ShapeTable {
+    /// Creates a shape table rooted at the empty shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::TableAllocationFailed`] if the initial table
+    /// storage cannot be reserved.
+    pub fn new() -> Result<Self, ShapeError> {
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(1)
+            .map_err(|_| ShapeError::TableAllocationFailed { shapes: 1 })?;
+        records.push(ShapeRecord {
+            shape: Arc::new(AttrShape::empty()),
+            key_bytes_by_symbol: Box::new([]),
+            transitions: Vec::new(),
+        });
+        Ok(Self { records })
+    }
+
+    /// Returns the interned empty root shape.
+    pub fn empty(&self) -> ShapeHandle {
+        self.handle_unchecked(ShapeId::new(0))
+    }
+
+    /// Interns a shape built from construction-order keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError`] when descriptor construction fails, or when the
+    /// table cannot reserve storage for a newly interned shape.
+    pub fn intern_construction_order(
+        &mut self,
+        keys: &[Symbol],
+        symbols: &SymbolTable,
+    ) -> Result<ShapeHandle, ShapeError> {
+        let shape = AttrShape::from_construction_order(keys, symbols)?;
+        self.intern_shape(shape, symbols)
+    }
+
+    fn intern_shape(
+        &mut self,
+        shape: AttrShape,
+        symbols: &SymbolTable,
+    ) -> Result<ShapeHandle, ShapeError> {
+        let key_bytes = shape_key_bytes(&shape, symbols)?;
+        for (index, record) in self.records.iter().enumerate() {
+            if record.shape.fingerprint() == shape.fingerprint()
+                && record.shape.raw_eq(&shape)
+                && record.key_bytes_by_symbol.as_ref() == key_bytes.as_ref()
+            {
+                return Ok(self.handle_unchecked(ShapeId::new(index as u32)));
+            }
+        }
+
+        let len = self.records.len();
+        let raw = u32::try_from(len).map_err(|_| ShapeError::TooManyShapes { len })?;
+        self.records
+            .try_reserve_exact(1)
+            .map_err(|_| ShapeError::TableAllocationFailed {
+                shapes: len.saturating_add(1),
+            })?;
+        self.records.push(ShapeRecord {
+            shape: Arc::new(shape),
+            key_bytes_by_symbol: key_bytes,
+            transitions: Vec::new(),
+        });
+        Ok(self.handle_unchecked(ShapeId::new(raw)))
+    }
+
+    /// Resolves an interned shape id to a handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::UnknownShapeId`] if `id` does not name a shape in
+    /// this table.
+    pub fn handle(&self, id: ShapeId) -> Result<ShapeHandle, ShapeError> {
+        self.record_index(id)?;
+        Ok(self.handle_unchecked(id))
+    }
+
+    /// Returns the transition produced by adding `key` to `parent`.
+    ///
+    /// Existing keys return the parent handle and current slot. New keys use
+    /// the parent edge cache when present; otherwise the child descriptor is
+    /// computed, interned, cached on the parent record, and returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::UnknownSymbol`] when `key` cannot be resolved
+    /// through `symbols`, [`ShapeError::UnknownShapeId`] or
+    /// [`ShapeError::ForeignShapeHandle`] when `parent` does not belong to this
+    /// table, or other [`ShapeError`] variants when child construction or table
+    /// storage fails.
+    pub fn transition_insert_key(
+        &mut self,
+        parent: &ShapeHandle,
+        key: Symbol,
+        symbols: &SymbolTable,
+    ) -> Result<ShapeTableTransition, ShapeError> {
+        let key_bytes = symbols
+            .resolve(key)
+            .ok_or(ShapeError::UnknownSymbol { key })?;
+        let parent_index = self.checked_record_index(parent)?;
+        self.validate_record_symbols(parent_index, symbols)?;
+        let parent_shape = self.records[parent_index].shape.clone();
+        if let Some(slot) = parent_shape.slot(key) {
+            return Ok(ShapeTableTransition::ExistingKey {
+                parent: parent.clone(),
+                key,
+                slot,
+            });
+        }
+
+        if let Some((_, edge)) = self.records[parent_index]
+            .transitions
+            .iter()
+            .find(|(cached_key, edge)| *cached_key == key && edge.key_bytes.as_ref() == key_bytes)
+        {
+            let child = self.handle(edge.child)?;
+            return Ok(ShapeTableTransition::AppendKey {
+                parent: parent.clone(),
+                child,
+                key,
+                source_slot: edge.source_slot,
+                symbol_slot: edge.symbol_slot,
+                cached: true,
+            });
+        }
+
+        let transition = parent_shape.transition_insert_key(key, symbols)?;
+        let ShapeTransition::AppendKey {
+            source_slot,
+            symbol_slot,
+            child,
+            ..
+        } = transition
+        else {
+            return Ok(ShapeTableTransition::ExistingKey {
+                parent: parent.clone(),
+                key,
+                slot: parent_shape
+                    .slot(key)
+                    .ok_or(ShapeError::UnknownSymbol { key })?,
+            });
+        };
+
+        self.records[parent_index]
+            .transitions
+            .try_reserve_exact(1)
+            .map_err(|_| ShapeError::TransitionAllocationFailed {
+                edges: self.records[parent_index]
+                    .transitions
+                    .len()
+                    .saturating_add(1),
+            })?;
+        let edge_key_bytes = key_bytes.to_vec().into_boxed_slice();
+        let child = self.intern_shape(child, symbols)?;
+        self.records[parent_index].transitions.push((
+            key,
+            ShapeEdge {
+                child: child.id(),
+                key_bytes: edge_key_bytes,
+                source_slot,
+                symbol_slot,
+            },
+        ));
+
+        Ok(ShapeTableTransition::AppendKey {
+            parent: parent.clone(),
+            child,
+            key,
+            source_slot,
+            symbol_slot,
+            cached: false,
+        })
+    }
+
+    fn checked_record_index(&self, handle: &ShapeHandle) -> Result<usize, ShapeError> {
+        let index = self.record_index(handle.id())?;
+        if !Arc::ptr_eq(&self.records[index].shape, &handle.shape) {
+            return Err(ShapeError::ForeignShapeHandle { id: handle.id() });
+        }
+        Ok(index)
+    }
+
+    fn record_index(&self, id: ShapeId) -> Result<usize, ShapeError> {
+        let index = id.as_u32() as usize;
+        if index >= self.records.len() {
+            return Err(ShapeError::UnknownShapeId { id });
+        }
+        Ok(index)
+    }
+
+    fn validate_record_symbols(
+        &self,
+        index: usize,
+        symbols: &SymbolTable,
+    ) -> Result<(), ShapeError> {
+        let record = &self.records[index];
+        for (key, expected) in record
+            .shape
+            .keys_by_symbol()
+            .iter()
+            .zip(record.key_bytes_by_symbol.iter())
+        {
+            let Some(actual) = symbols.resolve(*key) else {
+                return Err(ShapeError::UnknownSymbol { key: *key });
+            };
+            if actual != expected.as_ref() {
+                return Err(ShapeError::MismatchedSymbolUniverse { key: *key });
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_unchecked(&self, id: ShapeId) -> ShapeHandle {
+        let index = id.as_u32() as usize;
+        ShapeHandle {
+            id,
+            shape: self.records[index].shape.clone(),
+        }
+    }
+}
+
+/// A shape-table transition result.
+#[derive(Clone, Debug)]
+pub enum ShapeTableTransition {
+    /// The key already exists on the parent shape.
+    ExistingKey {
+        /// The parent shape.
+        parent: ShapeHandle,
+        /// The key that already exists.
+        key: Symbol,
+        /// The existing symbol-sorted slot for `key`.
+        slot: u32,
+    },
+    /// A new key appends to construction order and resolves to a child shape.
+    AppendKey {
+        /// The parent shape.
+        parent: ShapeHandle,
+        /// The interned child shape.
+        child: ShapeHandle,
+        /// The appended key.
+        key: Symbol,
+        /// The new key's construction-order slot.
+        source_slot: u32,
+        /// The new key's symbol-sorted slot in `child`.
+        symbol_slot: u32,
+        /// Whether the child came from an already cached parent edge.
+        cached: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ShapeRecord {
+    shape: Arc<AttrShape>,
+    key_bytes_by_symbol: Box<[Box<[u8]>]>,
+    transitions: Vec<(Symbol, ShapeEdge)>,
+}
+
+#[derive(Clone, Debug)]
+struct ShapeEdge {
+    child: ShapeId,
+    key_bytes: Box<[u8]>,
+    source_slot: u32,
+    symbol_slot: u32,
+}
+
 /// Iterator over shape keys through a cached slot permutation.
 #[derive(Clone, Debug)]
 pub struct ShapeOrderKeys<'a> {
@@ -317,6 +647,12 @@ pub enum ShapeError {
         /// The unresolved symbol.
         key: Symbol,
     },
+    /// A key resolved to different bytes than the shape table recorded.
+    #[error("shape key {key:?} resolved through a different symbol universe")]
+    MismatchedSymbolUniverse {
+        /// The symbol whose bytes differed from the interned shape record.
+        key: Symbol,
+    },
     /// The shape has more keys than the slot permutation can address.
     #[error("too many shape keys: {len}")]
     TooManyKeys {
@@ -329,6 +665,36 @@ pub enum ShapeError {
         /// The key count whose construction storage could not be reserved.
         keys: usize,
     },
+    /// A shape table id did not resolve in the active table.
+    #[error("unknown shape table id {id:?}")]
+    UnknownShapeId {
+        /// The unresolved process-local shape id.
+        id: ShapeId,
+    },
+    /// A shape handle was produced by a different shape table.
+    #[error("shape handle {id:?} belongs to a different shape table")]
+    ForeignShapeHandle {
+        /// The process-local id carried by the foreign handle.
+        id: ShapeId,
+    },
+    /// The shape table cannot allocate another process-local id.
+    #[error("too many interned shapes: {len}")]
+    TooManyShapes {
+        /// The rejected shape count.
+        len: usize,
+    },
+    /// Scratch storage for shape-table records could not be reserved.
+    #[error("failed to reserve shape table storage for {shapes} shapes")]
+    TableAllocationFailed {
+        /// The shape count whose table storage could not be reserved.
+        shapes: usize,
+    },
+    /// Scratch storage for a parent transition cache could not be reserved.
+    #[error("failed to reserve shape transition storage for {edges} edges")]
+    TransitionAllocationFailed {
+        /// The edge count whose transition storage could not be reserved.
+        edges: usize,
+    },
 }
 
 fn fingerprint_keys(keys: &[Symbol]) -> ShapeFingerprint {
@@ -339,6 +705,23 @@ fn fingerprint_keys(keys: &[Symbol]) -> ShapeFingerprint {
         key.as_u32().hash(&mut hasher);
     }
     ShapeFingerprint(hasher.finish())
+}
+
+fn shape_key_bytes(
+    shape: &AttrShape,
+    symbols: &SymbolTable,
+) -> Result<Box<[Box<[u8]>]>, ShapeError> {
+    let mut names = Vec::new();
+    names
+        .try_reserve_exact(shape.len())
+        .map_err(|_| ShapeError::AllocationFailed { keys: shape.len() })?;
+    for key in shape.keys_by_symbol() {
+        let bytes = symbols
+            .resolve(*key)
+            .ok_or(ShapeError::UnknownSymbol { key: *key })?;
+        names.push(bytes.to_vec().into_boxed_slice());
+    }
+    Ok(names.into_boxed_slice())
 }
 
 #[cfg(test)]
@@ -551,6 +934,234 @@ mod tests {
                 .transition_insert_key(ids[0], &empty_symbols)
                 .expect_err("mismatched symbol table is rejected"),
             ShapeError::UnknownSymbol { key: ids[0] }
+        );
+    }
+
+    #[test]
+    fn shape_table_starts_with_pointer_identity_empty_root() {
+        let table = ShapeTable::new().expect("shape table initializes");
+        let empty = table.empty();
+        let same_empty = table.empty();
+
+        assert_eq!(empty.id(), ShapeId::new(0));
+        assert!(empty.shape().is_empty());
+        assert!(empty.ptr_eq(&same_empty));
+    }
+
+    #[test]
+    fn shape_table_interns_raw_equal_shapes_to_one_handle() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+
+        let first = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("first shape interns");
+        let same = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("same shape interns");
+        let different_source_order = table
+            .intern_construction_order(&[ids[1], ids[0]], &symbols)
+            .expect("different source-order shape interns");
+
+        assert!(first.ptr_eq(&same));
+        assert_eq!(first.id(), same.id());
+        assert!(!first.ptr_eq(&different_source_order));
+        assert_ne!(first.id(), different_source_order.id());
+    }
+
+    #[test]
+    fn shape_table_transition_edges_are_cached_on_parent() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let empty = table.empty();
+
+        let first = table
+            .transition_insert_key(&empty, ids[0], &symbols)
+            .expect("first transition succeeds");
+        let ShapeTableTransition::AppendKey {
+            child: first_child,
+            source_slot,
+            symbol_slot,
+            cached,
+            ..
+        } = first
+        else {
+            panic!("new key should append");
+        };
+        assert_eq!(source_slot, 0);
+        assert_eq!(symbol_slot, 0);
+        assert!(!cached);
+
+        let second = table
+            .transition_insert_key(&empty, ids[0], &symbols)
+            .expect("cached transition succeeds");
+        let ShapeTableTransition::AppendKey {
+            child: second_child,
+            cached,
+            ..
+        } = second
+        else {
+            panic!("cached new-key edge should append");
+        };
+        assert!(cached);
+        assert_eq!(first_child.id(), second_child.id());
+        assert!(first_child.ptr_eq(&second_child));
+    }
+
+    #[test]
+    fn shape_table_cached_edges_preserve_distinct_source_and_symbol_slots() {
+        let (symbols, ids) = symbols(&[b"a", b"m", b"z"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let parent = table
+            .intern_construction_order(&[ids[1], ids[2]], &symbols)
+            .expect("parent shape interns");
+
+        let first = table
+            .transition_insert_key(&parent, ids[0], &symbols)
+            .expect("first transition succeeds");
+        let ShapeTableTransition::AppendKey {
+            child: first_child,
+            source_slot,
+            symbol_slot,
+            cached,
+            ..
+        } = first
+        else {
+            panic!("new key should append");
+        };
+        assert_eq!(source_slot, 2);
+        assert_eq!(symbol_slot, 0);
+        assert!(!cached);
+
+        let second = table
+            .transition_insert_key(&parent, ids[0], &symbols)
+            .expect("cached transition succeeds");
+        let ShapeTableTransition::AppendKey {
+            child: second_child,
+            source_slot,
+            symbol_slot,
+            cached,
+            ..
+        } = second
+        else {
+            panic!("cached new-key edge should append");
+        };
+        assert_eq!(source_slot, 2);
+        assert_eq!(symbol_slot, 0);
+        assert!(cached);
+        assert!(first_child.ptr_eq(&second_child));
+    }
+
+    #[test]
+    fn shape_table_transition_reuses_preinterned_child_shape() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let direct = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("direct shape interns");
+        let empty = table.empty();
+
+        let transition = table
+            .transition_insert_key(&empty, ids[0], &symbols)
+            .expect("transition succeeds");
+        let ShapeTableTransition::AppendKey { child, cached, .. } = transition else {
+            panic!("new key should append");
+        };
+
+        assert!(!cached);
+        assert_eq!(child.id(), direct.id());
+        assert!(child.ptr_eq(&direct));
+    }
+
+    #[test]
+    fn shape_table_existing_key_transition_returns_parent_handle() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let parent = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("parent shape interns");
+
+        let transition = table
+            .transition_insert_key(&parent, ids[0], &symbols)
+            .expect("existing-key transition succeeds");
+        let ShapeTableTransition::ExistingKey {
+            parent: returned,
+            key,
+            slot,
+        } = transition
+        else {
+            panic!("existing key should not append");
+        };
+
+        assert_eq!(key, ids[0]);
+        assert_eq!(slot, 0);
+        assert_eq!(returned.id(), parent.id());
+        assert!(returned.ptr_eq(&parent));
+    }
+
+    #[test]
+    fn shape_table_rejects_foreign_or_unknown_handles() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let foreign = ShapeTable::new()
+            .expect("foreign table initializes")
+            .empty();
+
+        assert_eq!(
+            table
+                .transition_insert_key(&foreign, ids[0], &symbols)
+                .expect_err("foreign handle is rejected"),
+            ShapeError::ForeignShapeHandle {
+                id: ShapeId::new(0)
+            }
+        );
+
+        let unknown = ShapeHandle {
+            id: ShapeId::new(99),
+            shape: std::sync::Arc::new(AttrShape::empty()),
+        };
+        assert_eq!(
+            table
+                .transition_insert_key(&unknown, ids[0], &symbols)
+                .expect_err("unknown shape id is rejected"),
+            ShapeError::UnknownShapeId {
+                id: ShapeId::new(99),
+            }
+        );
+    }
+
+    #[test]
+    fn shape_table_rejects_existing_key_when_symbol_table_is_mismatched() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let parent = table
+            .intern_construction_order(&ids, &symbols)
+            .expect("parent shape interns");
+        let empty_symbols = SymbolTable::new();
+
+        assert_eq!(
+            table
+                .transition_insert_key(&parent, ids[0], &empty_symbols)
+                .expect_err("mismatched symbol table is rejected"),
+            ShapeError::UnknownSymbol { key: ids[0] }
+        );
+    }
+
+    #[test]
+    fn shape_table_rejects_overlapping_raw_ids_from_different_symbol_universe() {
+        let (primary_symbols, ids) = symbols(&[b"a", b"b"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let parent = table
+            .intern_construction_order(&[ids[0]], &primary_symbols)
+            .expect("parent shape interns");
+        let (foreign_symbols, foreign_ids) = symbols(&[b"not-a", b"not-b"]);
+        assert_eq!(foreign_ids, ids);
+
+        assert_eq!(
+            table
+                .transition_insert_key(&parent, ids[1], &foreign_symbols)
+                .expect_err("foreign symbol universe is rejected"),
+            ShapeError::MismatchedSymbolUniverse { key: ids[0] }
         );
     }
 

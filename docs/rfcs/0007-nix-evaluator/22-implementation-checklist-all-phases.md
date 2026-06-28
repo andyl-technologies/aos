@@ -3410,14 +3410,20 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
 - [x] Current `attrs/shape.rs` precursor: `ratchet-value` exposes the safe
       `AttrShape` descriptor with symbol-sorted key vector, binary-search slot
       lookup, construction-order permutation, raw-byte lexicographic iteration
-      permutation, and an in-process xxh3 key-vector fingerprint. Global shape
-      interning, transitions, pointer-identity equality, PIC integration, HAMT
-      dispatch, and runtime fast paths remain open.
+      permutation, and an in-process xxh3 key-vector fingerprint. Global/shared
+      shape interning, PIC integration, HAMT dispatch, and runtime fast paths
+      remain open.
 - [x] Current shape-transition precursor: `AttrShape` can locally plan key
       insertions. Existing keys return the current symbol-sorted slot; new keys
       append to construction order and produce a child descriptor with updated
-      source/lexicographic permutations. Parent-edge caches, global child
-      interning, and pointer-identity shape equality remain open.
+      source/lexicographic permutations. The local descriptor API itself has no
+      parent-edge cache; the process-local table precursor below owns cached
+      edges and pointer-identity handles.
+- [x] Current shape-table precursor: `ratchet-value` exposes a process-local
+      `ShapeTable` rooted at the empty shape, pointer-identity `ShapeHandle`s,
+      fingerprint-filtered descriptor interning, and parent-record transition
+      edge caching. Global/shared table behavior, lock-free reads, runtime attr
+      allocation, select-site use, and `.drv` effects remain open.
 - [ ] `attrs/pic.rs` — polymorphic inline caches at `select` sites
       (shape-check → constant-offset load; megamorphic fallback).
 - [x] Current `attrs/pic.rs` precursor: `ratchet-value` exposes the safe

@@ -735,16 +735,24 @@ harness, never cut for scope.
       exposes a safe `AttrShape` descriptor with symbol-sorted key vector,
       binary-search slot lookup, construction-order permutation, raw-byte
       lexicographic iteration permutation, and in-process xxh3 key-vector
-      fingerprint. This does not install a global shape table, transition tree,
-      shape interning, inline cache, HAMT representation, or runtime fast path.
+      fingerprint. The descriptor alone does not install a global/shared shape
+      table, inline cache, HAMT representation, or runtime fast path.
 - [ ] Instance layout `{ shape: &Shape, values: [Value; n] }` (pointer + flat value array) ([§4.1](#41-the-factoring)) — P5.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
 - [x] Current shape-transition precursor: `ratchet-value::attrs::shape`
       can locally plan a key insertion against an `AttrShape`. Existing keys
       return the current symbol-sorted slot; new keys append to construction
       order and produce a child descriptor with updated source/lexicographic
-      permutations. This does not cache edges on parent shapes, intern children
-      in a global table, or claim pointer-identity shape equality.
+      permutations. This local descriptor API does not itself cache parent
+      edges or claim pointer-identity shape equality; the process-local table
+      precursor below provides that substrate without making it global/shared.
+- [x] Current shape-table precursor: `ratchet-value::attrs::shape`
+      exposes a process-local `ShapeTable` rooted at the empty shape, interns
+      `AttrShape` descriptors behind pointer-identity handles, reuses
+      fingerprint-filtered raw-equal shapes, and caches new-key transition edges
+      on the parent record. This is not a global/shared shape table, does not
+      provide lock-free reads, and is not wired into attr allocation, select
+      sites, or `.drv`-observable behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
 
