@@ -115,6 +115,42 @@ impl LoadBarrierAction {
     }
 }
 
+/// The thunk-state mutation operation being protected by a GC barrier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ThunkMutation {
+    /// Claim a suspended thunk before forcing it.
+    ClaimForForce,
+    /// Publish the forced result into the thunk cell.
+    PublishForced,
+}
+
+/// The barrier discipline required before a thunk-state mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ThunkMutationBarrier {
+    /// No concurrent collector is active for this tier.
+    Disabled,
+    /// The mutation may proceed after the daemon load barrier fast path.
+    BarrierFastPath {
+        /// The protected thunk-state mutation.
+        mutation: ThunkMutation,
+    },
+    /// The collector must repair or mark the thunk address before mutation.
+    RepairBeforeMutation {
+        /// The protected thunk-state mutation.
+        mutation: ThunkMutation,
+        /// The reason the collector slow path is required.
+        reason: LoadBarrierSlowReason,
+    },
+}
+
+impl ThunkMutationBarrier {
+    /// Returns whether the mutation can proceed without calling the collector
+    /// runtime.
+    pub const fn permits_immediate_mutation(self) -> bool {
+        matches!(self, Self::Disabled | Self::BarrierFastPath { .. })
+    }
+}
+
 /// Classifies a barrier address for a daemon load barrier.
 pub const fn classify_load_barrier(
     tier: ConcurrentGcTier,
@@ -131,6 +167,26 @@ pub const fn classify_load_barrier(
                 reason: LoadBarrierSlowReason::Marking,
             },
         },
+    }
+}
+
+/// Classifies the barrier step required before mutating a thunk state word.
+///
+/// The future concurrent collector must run the load barrier before claiming or
+/// publishing a thunk state transition. This decision table keeps that ordering
+/// explicit while the active single-threaded tree-walk thunk machinery remains
+/// unchanged.
+pub const fn classify_thunk_mutation_barrier(
+    tier: ConcurrentGcTier,
+    thunk: BarrierAddress,
+    mutation: ThunkMutation,
+) -> ThunkMutationBarrier {
+    match classify_load_barrier(tier, thunk) {
+        LoadBarrierAction::Disabled => ThunkMutationBarrier::Disabled,
+        LoadBarrierAction::FastPath => ThunkMutationBarrier::BarrierFastPath { mutation },
+        LoadBarrierAction::Repair { reason } => {
+            ThunkMutationBarrier::RepairBeforeMutation { mutation, reason }
+        }
     }
 }
 
@@ -204,6 +260,62 @@ mod tests {
             LoadBarrierAction::Disabled
         );
         assert!(classify_load_barrier(ConcurrentGcTier::OneShotArena, address).is_fast());
+    }
+
+    #[test]
+    fn thunk_mutation_barrier_runs_after_load_barrier_fast_path() {
+        let thunk =
+            BarrierAddress::new(0x1000, GcColor::Current).expect("aligned address is accepted");
+
+        let barrier = classify_thunk_mutation_barrier(
+            ConcurrentGcTier::Daemon,
+            thunk,
+            ThunkMutation::ClaimForForce,
+        );
+
+        assert_eq!(
+            barrier,
+            ThunkMutationBarrier::BarrierFastPath {
+                mutation: ThunkMutation::ClaimForForce,
+            }
+        );
+        assert!(barrier.permits_immediate_mutation());
+    }
+
+    #[test]
+    fn thunk_mutation_barrier_repairs_stale_addresses_before_state_cas() {
+        let thunk = BarrierAddress::new(0x1000, GcColor::RemapRequired)
+            .expect("aligned address is accepted");
+
+        let barrier = classify_thunk_mutation_barrier(
+            ConcurrentGcTier::Daemon,
+            thunk,
+            ThunkMutation::PublishForced,
+        );
+
+        assert_eq!(
+            barrier,
+            ThunkMutationBarrier::RepairBeforeMutation {
+                mutation: ThunkMutation::PublishForced,
+                reason: LoadBarrierSlowReason::Relocation,
+            }
+        );
+        assert!(!barrier.permits_immediate_mutation());
+    }
+
+    #[test]
+    fn thunk_mutation_barrier_is_disabled_in_one_shot_mode() {
+        let thunk = BarrierAddress::new(0x1000, GcColor::RemapRequired)
+            .expect("aligned address is accepted");
+
+        let barrier = classify_thunk_mutation_barrier(
+            ConcurrentGcTier::OneShotArena,
+            thunk,
+            ThunkMutation::ClaimForForce,
+        );
+
+        assert_eq!(barrier, ThunkMutationBarrier::Disabled);
+        assert!(barrier.permits_immediate_mutation());
     }
 
     #[test]

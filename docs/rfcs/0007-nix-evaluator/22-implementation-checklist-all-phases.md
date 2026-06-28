@@ -3654,6 +3654,12 @@ it ships).**
 - [ ] Concurrent-GC × thunk-mutation interactions verified under `loom`/`miri`
       before shipping (`R-4`), daemon-mode only — the memory-ordering audit is an
       **absolute** gate, not relaxed by the budget mandate.
+- [x] Current thunk-mutation barrier precursor: `ratchet-value` classifies the
+      load-barrier ordering required before thunk claim/publish mutations.
+      Daemon-mode current addresses proceed after the load-barrier fast path,
+      stale colors require relocation/marking repair first, and one-shot arena
+      mode disables the barrier. The real CAS integration and `loom`/Miri proof
+      remain open.
 
 **Decisions closed/measured.**
 

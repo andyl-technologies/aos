@@ -885,6 +885,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       dereference addresses, allocate memory, or alter the bump arena.
 - [ ] Load-barrier fast-path inlining in the optimized tier without breaking `alloc-via-symbols` (cold tiers keep the symbol call) (§6.3) — **P8**, `R-2`; depends on tier-2 ([08](08-execution-tiers-and-cranelift.md) **P7**).
 - [ ] The hard interaction: thunk-update CAS made jointly atomic with load-barrier relocation repair on the `state` word (§6.4) — **P8**, `R-4` (the load-barrier proof remains research-grade with R-1/R-2); gated by `loom`/Miri + GC stress before shipping.
+- [x] Current thunk-mutation barrier precursor: `ratchet-value::heap::concurrent_gc`
+      classifies the required ordering before a thunk-state mutation. In daemon
+      mode, a `Current` thunk address permits the mutation only after the
+      load-barrier fast path; stale colors require relocation/marking repair
+      before claim/publish; one-shot arena mode disables the barrier. The real
+      CAS integration and `loom`/Miri proof remain open.
 
 ### Correctness gates (§8)
 
