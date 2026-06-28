@@ -3431,6 +3431,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       iterates through the shape's source/lexicographic permutations. Source
       positions, evaluator heap allocation, active `FlatAttrs` replacement,
       select-site/runtime use, and `.drv` effects remain open.
+- [x] Current static-shape-plan precursor: `ratchet-value` exposes
+      `StaticShapePlan`, which resolves static literal construction-order keys
+      through the process-local transition tree once, stores the final
+      `ShapeHandle`, and records source-slot to symbol-slot placement for
+      filling shaped value arrays. IR lowering, evaluator attr allocation,
+      active `FlatAttrs` replacement, and `.drv` effects remain open.
 - [x] Current shaped hash-consing precursor: `ratchet-value` exposes
       `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an in-process
       shaped fingerprint and reuses only candidates confirmed by the same

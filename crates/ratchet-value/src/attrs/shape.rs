@@ -640,6 +640,182 @@ pub enum ShapeTableTransition {
     },
 }
 
+/// A compile-time resolved shape plan for a static attrset literal.
+///
+/// The plan stores the final interned shape plus the placement map from binding
+/// source slots to symbol-sorted value slots. Future runtime integration can
+/// reuse this descriptor so static literals fill a values array directly instead
+/// of looking up the shape for every instance. This precursor is not connected
+/// to active evaluator attr allocation.
+#[derive(Clone, Debug)]
+pub struct StaticShapePlan {
+    shape: ShapeHandle,
+    source_to_symbol_slots: Box<[u32]>,
+}
+
+impl StaticShapePlan {
+    /// Resolves a static attrset's construction-order keys through `table`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StaticShapePlanError::DuplicateKey`] when `keys` repeats a
+    /// static key. Returns [`StaticShapePlanError::Shape`] when transition-tree
+    /// lookup or shape construction fails. Returns
+    /// [`StaticShapePlanError::AllocationFailed`] when the placement table
+    /// cannot be reserved.
+    pub fn resolve(
+        table: &mut ShapeTable,
+        keys: &[Symbol],
+        symbols: &SymbolTable,
+    ) -> Result<Self, StaticShapePlanError> {
+        let mut shape = table.empty();
+        for (source_slot, key) in keys.iter().copied().enumerate() {
+            let source_slot = u32::try_from(source_slot).map_err(|_| {
+                StaticShapePlanError::Shape(ShapeError::TooManyKeys { len: keys.len() })
+            })?;
+            match table.transition_insert_key(&shape, key, symbols)? {
+                ShapeTableTransition::ExistingKey { slot, .. } => {
+                    return Err(StaticShapePlanError::DuplicateKey {
+                        key,
+                        source_slot,
+                        symbol_slot: slot,
+                    });
+                }
+                ShapeTableTransition::AppendKey { child, .. } => {
+                    shape = child;
+                }
+            }
+        }
+
+        let mut source_to_symbol_slots = Vec::new();
+        source_to_symbol_slots
+            .try_reserve_exact(shape.shape().source_order().len())
+            .map_err(|_| StaticShapePlanError::AllocationFailed {
+                slots: shape.shape().source_order().len(),
+            })?;
+        source_to_symbol_slots.extend_from_slice(shape.shape().source_order());
+
+        Ok(Self {
+            shape,
+            source_to_symbol_slots: source_to_symbol_slots.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the resolved interned shape.
+    pub fn shape(&self) -> &ShapeHandle {
+        &self.shape
+    }
+
+    /// Returns the number of static bindings in the plan.
+    pub fn len(&self) -> usize {
+        self.source_to_symbol_slots.len()
+    }
+
+    /// Returns whether the plan has no bindings.
+    pub fn is_empty(&self) -> bool {
+        self.source_to_symbol_slots.is_empty()
+    }
+
+    /// Returns the value placement map from source slots to symbol slots.
+    pub fn source_to_symbol_slots(&self) -> &[u32] {
+        &self.source_to_symbol_slots
+    }
+
+    /// Returns the symbol-sorted slot for `source_slot`.
+    pub fn symbol_slot_for_source_slot(&self, source_slot: u32) -> Option<u32> {
+        self.source_to_symbol_slots
+            .get(source_slot as usize)
+            .copied()
+    }
+
+    /// Instantiates shaped attrs from values supplied in static source order.
+    ///
+    /// This uses the precomputed slot map rather than resolving the shape again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StaticShapePlanError::ValueCountMismatch`] when `values` does
+    /// not contain one value per planned static binding. Returns
+    /// [`StaticShapePlanError::AllocationFailed`] if the value array cannot be
+    /// reserved. Returns [`StaticShapePlanError::PlanSlotOutOfRange`] if the
+    /// cached plan placement is internally inconsistent, and
+    /// [`StaticShapePlanError::ShapedAttrs`] if final shaped attrset
+    /// construction fails.
+    pub fn instantiate(&self, values: &[Value]) -> Result<ShapedAttrs, StaticShapePlanError> {
+        let expected = self.len();
+        if values.len() != expected {
+            return Err(StaticShapePlanError::ValueCountMismatch {
+                expected,
+                actual: values.len(),
+            });
+        }
+
+        let mut values_by_symbol = Vec::new();
+        values_by_symbol
+            .try_reserve_exact(expected)
+            .map_err(|_| StaticShapePlanError::AllocationFailed { slots: expected })?;
+        values_by_symbol.resize(expected, Value::null());
+        for (source_slot, symbol_slot) in self.source_to_symbol_slots.iter().copied().enumerate() {
+            let Some(target) = values_by_symbol.get_mut(symbol_slot as usize) else {
+                return Err(StaticShapePlanError::PlanSlotOutOfRange {
+                    slot: symbol_slot,
+                    len: expected,
+                });
+            };
+            *target = values[source_slot];
+        }
+
+        ShapedAttrs::from_symbol_order_boxed(
+            self.shape.clone(),
+            values_by_symbol.into_boxed_slice(),
+        )
+        .map_err(StaticShapePlanError::ShapedAttrs)
+    }
+}
+
+/// A failed static shape-plan operation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum StaticShapePlanError {
+    /// Transition-tree or shape descriptor construction failed.
+    #[error("static shape plan failed: {0}")]
+    Shape(#[from] ShapeError),
+    /// The static key list repeated a key.
+    #[error("duplicate static shape key {key:?} at source slot {source_slot}")]
+    DuplicateKey {
+        /// The duplicated static key.
+        key: Symbol,
+        /// The duplicate key's construction-order slot.
+        source_slot: u32,
+        /// The existing symbol-sorted slot for the key.
+        symbol_slot: u32,
+    },
+    /// The value array length did not match the planned key count.
+    #[error("static shape plan expected {expected} values, got {actual}")]
+    ValueCountMismatch {
+        /// The number of values required by the plan.
+        expected: usize,
+        /// The number of values supplied by the caller.
+        actual: usize,
+    },
+    /// A precomputed placement slot referenced a non-existent value slot.
+    #[error("static shape plan slot {slot} is out of range for {len} values")]
+    PlanSlotOutOfRange {
+        /// The invalid symbol slot.
+        slot: u32,
+        /// The number of values in the instance.
+        len: usize,
+    },
+    /// Scratch storage for the plan or value array could not be reserved.
+    #[error("failed to reserve static shape-plan storage for {slots} slots")]
+    AllocationFailed {
+        /// The slot count whose storage could not be reserved.
+        slots: usize,
+    },
+    /// The final shaped attrset construction failed.
+    #[error("static shape-plan attr construction failed: {0}")]
+    ShapedAttrs(#[from] ShapedAttrsError),
+}
+
 /// A flat attrset instance paired with an interned shape handle.
 ///
 /// Values are stored in the shape's symbol-sorted slot order. This is the safe
@@ -725,6 +901,24 @@ impl ShapedAttrs {
         Ok(Self {
             shape,
             values_by_symbol: values_by_symbol.into_boxed_slice(),
+        })
+    }
+
+    fn from_symbol_order_boxed(
+        shape: ShapeHandle,
+        values_by_symbol: Box<[Value]>,
+    ) -> Result<Self, ShapedAttrsError> {
+        let expected = shape.shape().len();
+        if values_by_symbol.len() != expected {
+            return Err(ShapedAttrsError::ValueCountMismatch {
+                expected,
+                actual: values_by_symbol.len(),
+            });
+        }
+
+        Ok(Self {
+            shape,
+            values_by_symbol,
         })
     }
 
@@ -1534,6 +1728,78 @@ mod tests {
                 .transition_insert_key(&parent, ids[1], &foreign_symbols)
                 .expect_err("foreign symbol universe is rejected"),
             ShapeError::MismatchedSymbolUniverse { key: ids[0] }
+        );
+    }
+
+    #[test]
+    fn static_shape_plan_resolves_shape_and_instantiates_values() {
+        let (symbols, ids) = symbols(&[b"z", b"a", b"m"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+
+        let plan = StaticShapePlan::resolve(&mut table, &[ids[2], ids[0], ids[1]], &symbols)
+            .expect("static shape resolves");
+
+        assert_eq!(plan.len(), 3);
+        assert!(!plan.is_empty());
+        assert_eq!(plan.source_to_symbol_slots(), &[2, 0, 1]);
+        assert_eq!(plan.symbol_slot_for_source_slot(0), Some(2));
+        assert_eq!(plan.symbol_slot_for_source_slot(1), Some(0));
+        assert_eq!(plan.symbol_slot_for_source_slot(2), Some(1));
+        assert_eq!(plan.symbol_slot_for_source_slot(3), None);
+
+        let attrs = plan
+            .instantiate(&[Value::int(30), Value::int(10), Value::int(20)])
+            .expect("static attrs instantiate");
+
+        assert!(attrs.shape().ptr_eq(plan.shape()));
+        assert_eq!(
+            attrs
+                .values_by_symbol()
+                .iter()
+                .map(|value| value.as_int().expect("int"))
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(attrs.get(ids[0]).expect("z").as_int().expect("int"), 10);
+        assert_eq!(attrs.get(ids[1]).expect("a").as_int().expect("int"), 20);
+        assert_eq!(attrs.get(ids[2]).expect("m").as_int().expect("int"), 30);
+
+        let second = plan
+            .instantiate(&[Value::int(3), Value::int(1), Value::int(2)])
+            .expect("second static attrs instantiate");
+        assert!(attrs.shape().ptr_eq(second.shape()));
+    }
+
+    #[test]
+    fn static_shape_plan_rejects_duplicate_keys() {
+        let (symbols, ids) = symbols(&[b"a"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+
+        assert_eq!(
+            StaticShapePlan::resolve(&mut table, &[ids[0], ids[0]], &symbols)
+                .expect_err("duplicate static key is rejected"),
+            StaticShapePlanError::DuplicateKey {
+                key: ids[0],
+                source_slot: 1,
+                symbol_slot: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn static_shape_plan_rejects_mismatched_value_counts() {
+        let (symbols, ids) = symbols(&[b"a", b"b"]);
+        let mut table = ShapeTable::new().expect("shape table initializes");
+        let plan =
+            StaticShapePlan::resolve(&mut table, &ids, &symbols).expect("static shape resolves");
+
+        assert_eq!(
+            plan.instantiate(&[Value::int(1)])
+                .expect_err("value count is checked"),
+            StaticShapePlanError::ValueCountMismatch {
+                expected: 2,
+                actual: 1,
+            }
         );
     }
 

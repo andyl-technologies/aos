@@ -766,6 +766,12 @@ harness, never cut for scope.
       provide lock-free reads, and is not wired into attr allocation, select
       sites, or `.drv`-observable behavior.
 - [ ] Compile-time shape resolution for static `{ ... }` literals (no per-instance shape lookup; runtime just fills a values array) ([§4.2](#42-the-transition-tree)) — P5.
+- [x] Current static-shape-plan precursor: `ratchet-value::attrs::shape`
+      exposes `StaticShapePlan`, which resolves a static literal's
+      construction-order keys through the process-local transition tree once,
+      stores the final `ShapeHandle`, and records source-slot to symbol-slot
+      placement for filling shaped value arrays. It is not wired into IR
+      lowering, evaluator attr allocation, or `.drv`-observable behavior.
 - [ ] Shape interning by fingerprint + instance hash-consing (same shape + pointerwise-equal values collapse to one heap object) ([§4.3](#43-interaction-with-hash-consing)) — P5, `S-7`.
 - [x] Current shaped hash-consing precursor: `ratchet-value::attrs::shape`
       exposes `ShapedAttrConsTable`, which buckets `ShapedAttrs` by an
