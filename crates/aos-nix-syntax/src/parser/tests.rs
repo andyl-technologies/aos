@@ -355,8 +355,14 @@ fn parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds() {
     assert!(
         cases
             .iter()
-            .any(|case| case.name.starts_with("fuzz/corpus/")),
-        "expected source-seed fuzz cases in rnix oracle corpus"
+            .any(|case| case.name.starts_with("fuzz/corpus/internal_diff_raw/")),
+        "expected internal-diff source-seed fuzz cases in rnix oracle corpus"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name.starts_with("fuzz/corpus/parity_json/")),
+        "expected parity-json source-seed fuzz cases in rnix oracle corpus"
     );
 
     for case in cases {
@@ -375,6 +381,22 @@ fn parser_acceptance_matches_rnix_oracle_on_workspace_nix_sources() {
     assert!(
         cases.iter().any(|case| case.name == "pkgs/default.nix"),
         "expected package-set root in workspace parser corpus"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name == "pkgs/toolchain/cmake.nix"),
+        "expected toolchain package source in workspace parser corpus"
+    );
+    assert!(
+        cases.iter().any(|case| case.name == "modules/default.nix"),
+        "expected module root in workspace parser corpus"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|case| case.name == "modules/systemd/system.nix"),
+        "expected systemd module source in workspace parser corpus"
     );
     assert!(
         cases.iter().any(|case| case.name == "systems/server.nix"),

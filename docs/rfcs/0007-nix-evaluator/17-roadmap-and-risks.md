@@ -592,8 +592,9 @@ AOS package set. Build it in this order.
       oracle now runs as `aos-nix-syntax`'s test-only
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
       automatically enumerated local language fixtures, source-seed fuzz
-      corpora, and the real workspace `.nix` source tree (package/module/system
-      files); `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
+      corpora with explicit `internal_diff_raw` and `parity_json` sentinels, and
+      the real workspace `.nix` source tree with package, toolchain, module, and
+      system sentinels; `aos nix-fuzz-corpus` now populates ignored parity-fuzzer source
       seeds from the full §2.7 package/toolchain/system corpus and configured
       generated conformance corpus. Full parity-fuzzer budget/quiescence and
       full conformance diff-green remain acceptance gates.
