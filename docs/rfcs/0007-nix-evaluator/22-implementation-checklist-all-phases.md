@@ -3492,6 +3492,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       left operands, large results, and deep override chains prefer HAMT; HAMT
       decisions require an ordered-view memo. HAMT nodes, `//` integration,
       `FlatAttrs` changes, and observable order changes remain open.
+- [x] Current update-dispatch precursor: `ratchet-value` exposes
+      `AttrSetReprValue`, a safe `FlatAttrs`/`HamtAttrs` wrapper with
+      `update_from_flat_right` policy dispatch. Small flat-left merges copy into
+      a new flat attrset preserving left slots plus right-only append order;
+      HAMT-classified merges convert flat left operands as needed and call the
+      persistent HAMT merge helper. The precursor assumes `self`, `right`, and
+      `symbols` share one symbol universe. Active evaluator `//` wiring, HAMT
+      right source-order semantics, measured threshold calibration, and `.drv`
+      differential proof remain open.
 - [ ] Deterministic iteration order preserved across shape transitions
       (the ordering invariant of [09](09-attribute-sets-hidden-classes-and-inline-caches.md)).
 - [x] Current cached ordering-rank precursor: `aos-nix-syntax::SymbolTable`

@@ -9,6 +9,11 @@
 
 use thiserror::Error;
 
+use crate::attrs::hamt::{HamtAttrs, HamtError, HamtMergeSummary};
+use crate::attrs::{AttrError, FlatAttrs};
+use crate::syntax::{Symbol, SymbolTable};
+use crate::value::Value;
+
 /// Default size threshold above which dynamic attrsets prefer HAMT storage.
 pub const DEFAULT_FLAT_ATTR_THRESHOLD: usize = 64;
 /// Default override-chain depth at which repeated updates prefer HAMT.
@@ -233,6 +238,20 @@ impl AttrSetReprDecision {
     pub const fn requires_hamt_ordered_view(self) -> bool {
         matches!(self, Self::Hamt { .. })
     }
+
+    /// Returns the conservative upper bound on the result binding count.
+    pub const fn result_len_upper_bound(self) -> usize {
+        match self {
+            Self::Flat {
+                result_len_upper_bound,
+                ..
+            }
+            | Self::Hamt {
+                result_len_upper_bound,
+                ..
+            } => result_len_upper_bound,
+        }
+    }
 }
 
 /// The policy reason behind an attrset representation decision.
@@ -250,6 +269,244 @@ pub enum AttrSetReprReason {
     DeepOverrideChain,
     /// A dynamic construction exceeded the flat-size threshold.
     LargeDynamicConstruction,
+}
+
+/// A safe Flat/HAMT attrset value used by representation-policy precursors.
+///
+/// This wrapper is not the active evaluator attrset representation. It gives
+/// RFC-0007 phase-5 helpers one dispatch point for exercising flat copy versus
+/// HAMT structural sharing under [`AttrSetReprPolicy`].
+#[derive(Clone, Debug)]
+pub enum AttrSetReprValue {
+    /// A flat attrset.
+    Flat(FlatAttrs),
+    /// A HAMT-backed attrset.
+    Hamt(HamtAttrs),
+}
+
+impl AttrSetReprValue {
+    /// Wraps a flat attrset.
+    pub const fn from_flat(attrs: FlatAttrs) -> Self {
+        Self::Flat(attrs)
+    }
+
+    /// Wraps a HAMT attrset.
+    pub const fn from_hamt(attrs: HamtAttrs) -> Self {
+        Self::Hamt(attrs)
+    }
+
+    /// Returns the backing representation kind.
+    pub const fn kind(&self) -> AttrSetReprKind {
+        match self {
+            Self::Flat(_) => AttrSetReprKind::Flat,
+            Self::Hamt(_) => AttrSetReprKind::Hamt,
+        }
+    }
+
+    /// Returns the number of bindings.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Flat(attrs) => attrs.len(),
+            Self::Hamt(attrs) => attrs.len(),
+        }
+    }
+
+    /// Returns whether this attrset has no bindings.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the value for `key`.
+    ///
+    /// `key` must come from the same symbol universe used to construct this
+    /// attrset.
+    pub fn get(&self, key: Symbol) -> Option<Value> {
+        match self {
+            Self::Flat(attrs) => attrs.get(key),
+            Self::Hamt(attrs) => attrs.get(key),
+        }
+    }
+
+    /// Returns the flat attrset if this value is flat.
+    pub const fn as_flat(&self) -> Option<&FlatAttrs> {
+        match self {
+            Self::Flat(attrs) => Some(attrs),
+            Self::Hamt(_) => None,
+        }
+    }
+
+    /// Returns the HAMT attrset if this value is HAMT-backed.
+    pub const fn as_hamt(&self) -> Option<&HamtAttrs> {
+        match self {
+            Self::Flat(_) => None,
+            Self::Hamt(attrs) => Some(attrs),
+        }
+    }
+
+    /// Applies a flat right-hand operand using the representation policy.
+    ///
+    /// Small flat-left merges are copied into a new [`FlatAttrs`] preserving
+    /// left source-order slots, right-biased values for shared keys, and
+    /// right-only keys appended in right source order. Merges classified as
+    /// HAMT convert a flat left operand as needed, then use persistent HAMT
+    /// insert/replace operations. `self`, `right`, and `symbols` must belong
+    /// to the same symbol universe.
+    ///
+    /// This is a value-level precursor only; it is not wired into tree-walk
+    /// `//` evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrSetReprValueError::Policy`] if policy classification
+    /// fails, [`AttrSetReprValueError::InconsistentPolicyDecision`] if a
+    /// policy decision violates representation-dispatch invariants,
+    /// [`AttrSetReprValueError::LengthOverflow`] if flat result planning
+    /// overflows, [`AttrSetReprValueError::Flat`] if flat result construction
+    /// fails, or [`AttrSetReprValueError::Hamt`] if HAMT conversion or merge
+    /// fails.
+    pub fn update_from_flat_right(
+        &self,
+        right: &FlatAttrs,
+        policy: AttrSetReprPolicy,
+        override_chain_depth: usize,
+        symbols: &SymbolTable,
+    ) -> Result<AttrSetUpdateMerge, AttrSetReprValueError> {
+        let decision = policy.classify(AttrSetConstruction::UpdateMerge {
+            left_repr: self.kind(),
+            left_len: self.len(),
+            right_len: right.len(),
+            override_chain_depth,
+        })?;
+
+        match (decision.kind(), self) {
+            (AttrSetReprKind::Flat, Self::Flat(left)) => {
+                let flat = merge_flat_right(left, right, symbols)?;
+                Ok(AttrSetUpdateMerge {
+                    value: Self::Flat(flat),
+                    decision,
+                    hamt_summary: None,
+                })
+            }
+            (AttrSetReprKind::Flat, Self::Hamt(_)) => {
+                Err(AttrSetReprValueError::InconsistentPolicyDecision {
+                    left_repr: AttrSetReprKind::Hamt,
+                    decision_repr: AttrSetReprKind::Flat,
+                })
+            }
+            (AttrSetReprKind::Hamt, Self::Flat(left)) => {
+                let base = HamtAttrs::from_flat(left, symbols)?;
+                let (hamt, summary) = base.update_from_flat(right, symbols)?;
+                Ok(AttrSetUpdateMerge {
+                    value: Self::Hamt(hamt),
+                    decision,
+                    hamt_summary: Some(summary),
+                })
+            }
+            (AttrSetReprKind::Hamt, Self::Hamt(left)) => {
+                let (hamt, summary) = left.update_from_flat(right, symbols)?;
+                Ok(AttrSetUpdateMerge {
+                    value: Self::Hamt(hamt),
+                    decision,
+                    hamt_summary: Some(summary),
+                })
+            }
+        }
+    }
+}
+
+/// The result of a policy-dispatched update merge.
+#[derive(Clone, Debug)]
+pub struct AttrSetUpdateMerge {
+    value: AttrSetReprValue,
+    decision: AttrSetReprDecision,
+    hamt_summary: Option<HamtMergeSummary>,
+}
+
+impl AttrSetUpdateMerge {
+    /// Returns the merged attrset value.
+    pub const fn value(&self) -> &AttrSetReprValue {
+        &self.value
+    }
+
+    /// Consumes this result and returns the merged attrset value.
+    pub fn into_value(self) -> AttrSetReprValue {
+        self.value
+    }
+
+    /// Returns the policy decision used for the merge.
+    pub const fn decision(&self) -> AttrSetReprDecision {
+        self.decision
+    }
+
+    /// Returns HAMT merge accounting when the selected result is HAMT-backed.
+    pub const fn hamt_summary(&self) -> Option<HamtMergeSummary> {
+        self.hamt_summary
+    }
+}
+
+fn merge_flat_right(
+    left: &FlatAttrs,
+    right: &FlatAttrs,
+    symbols: &SymbolTable,
+) -> Result<FlatAttrs, AttrSetReprValueError> {
+    let appended_right = right
+        .iter_source_order()
+        .filter(|entry| !left.contains_key(entry.key))
+        .count();
+    let result_len =
+        left.len()
+            .checked_add(appended_right)
+            .ok_or(AttrSetReprValueError::LengthOverflow {
+                left_len: left.len(),
+                right_len: appended_right,
+            })?;
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(result_len).map_err(|_| {
+        AttrSetReprValueError::Flat(AttrError::AllocationFailed {
+            entries: result_len,
+        })
+    })?;
+
+    for entry in left.iter_source_order() {
+        entries.push(right.get_entry(entry.key).copied().unwrap_or(*entry));
+    }
+    for entry in right.iter_source_order() {
+        if !left.contains_key(entry.key) {
+            entries.push(*entry);
+        }
+    }
+
+    FlatAttrs::new(entries, symbols).map_err(AttrSetReprValueError::Flat)
+}
+
+/// A failed policy-dispatched attrset representation operation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AttrSetReprValueError {
+    /// Representation-policy classification failed.
+    #[error("attrset representation policy failed: {0}")]
+    Policy(#[from] AttrSetReprPolicyError),
+    /// The policy returned a result representation that violates dispatch invariants.
+    #[error("policy selected {decision_repr:?} result for {left_repr:?} left operand")]
+    InconsistentPolicyDecision {
+        /// The left operand representation.
+        left_repr: AttrSetReprKind,
+        /// The selected result representation.
+        decision_repr: AttrSetReprKind,
+    },
+    /// A planned flat update result length overflowed.
+    #[error("flat attrset update length overflow while combining {left_len} and {right_len}")]
+    LengthOverflow {
+        /// The left operand length.
+        left_len: usize,
+        /// The right-only binding count.
+        right_len: usize,
+    },
+    /// Flat attrset construction failed.
+    #[error("flat attrset update failed: {0}")]
+    Flat(#[from] AttrError),
+    /// HAMT construction or update failed.
+    #[error("HAMT attrset update failed: {0}")]
+    Hamt(#[from] HamtError),
 }
 
 /// A failed attrset representation-policy operation.
@@ -274,6 +531,29 @@ pub enum AttrSetReprPolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attrs::{AttrEntry, AttrPosition};
+    use crate::syntax::Span;
+
+    fn symbols(names: &[&[u8]]) -> (SymbolTable, Vec<Symbol>) {
+        let mut table = SymbolTable::new();
+        let mut ids = Vec::new();
+        for name in names {
+            ids.push(table.intern(name).expect("symbol interns"));
+        }
+        (table, ids)
+    }
+
+    fn source_ints(attrs: &FlatAttrs, symbols: &SymbolTable) -> Vec<(Vec<u8>, i64)> {
+        attrs
+            .iter_source_order()
+            .map(|entry| {
+                (
+                    symbols.resolve(entry.key).expect("key resolves").to_vec(),
+                    entry.value.as_int().expect("value is int"),
+                )
+            })
+            .collect()
+    }
 
     #[test]
     fn default_policy_keeps_static_literals_flat_regardless_of_size() {
@@ -413,5 +693,193 @@ mod tests {
                 right_len: 1,
             })
         );
+    }
+
+    #[test]
+    fn update_dispatch_keeps_small_flat_merge_flat() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c", b"d"]);
+        let left = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[1], Value::int(20)),
+                AttrEntry::new(ids[2], Value::int(30)),
+                AttrEntry::new(ids[0], Value::int(10)),
+            ],
+            &symbols,
+        )
+        .expect("left flat attrs build");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::with_position(
+                    ids[1],
+                    Value::int(200),
+                    AttrPosition::new(1, Span::new(4, 5)),
+                ),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+        let policy = AttrSetReprPolicy::new(8, 4).expect("thresholds are nonzero");
+
+        let result = AttrSetReprValue::from_flat(left)
+            .update_from_flat_right(&right, policy, 1, &symbols)
+            .expect("update dispatch succeeds");
+
+        assert_eq!(
+            result.decision(),
+            AttrSetReprDecision::Flat {
+                result_len_upper_bound: 5,
+                reason: AttrSetReprReason::SmallShapeStable,
+            }
+        );
+        assert_eq!(result.hamt_summary(), None);
+        let flat = result.value().as_flat().expect("small merge stays flat");
+        assert_eq!(
+            source_ints(flat, &symbols),
+            vec![
+                (b"b".to_vec(), 200),
+                (b"c".to_vec(), 30),
+                (b"a".to_vec(), 10),
+                (b"d".to_vec(), 40),
+            ]
+        );
+        assert_eq!(
+            flat.get_entry(ids[1]).expect("b exists").position,
+            Some(AttrPosition::new(1, Span::new(4, 5)))
+        );
+    }
+
+    #[test]
+    fn update_dispatch_flat_result_recomputes_raw_byte_lexicographic_order() {
+        let (symbols, ids) = symbols(&[b"b", b"a\xff", b"a", b"a\x00"]);
+        let left = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("left flat attrs build");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[2], Value::int(30)),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+        let policy = AttrSetReprPolicy::new(8, 4).expect("thresholds are nonzero");
+
+        let result = AttrSetReprValue::from_flat(left)
+            .update_from_flat_right(&right, policy, 1, &symbols)
+            .expect("update dispatch succeeds");
+
+        let flat = result.value().as_flat().expect("small merge stays flat");
+        let names: Vec<&[u8]> = flat
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("key resolves"))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                b"a".as_slice(),
+                b"a\x00".as_slice(),
+                b"a\xff".as_slice(),
+                b"b".as_slice(),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_dispatch_promotes_large_flat_merge_to_hamt() {
+        let (symbols, ids) = symbols(&[b"b", b"a\xff", b"a", b"a\x00"]);
+        let left = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("left flat attrs build");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(100)),
+                AttrEntry::new(ids[2], Value::int(30)),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+        let policy = AttrSetReprPolicy::new(2, 4).expect("thresholds are nonzero");
+
+        let result = AttrSetReprValue::from_flat(left)
+            .update_from_flat_right(&right, policy, 1, &symbols)
+            .expect("update dispatch succeeds");
+
+        assert_eq!(
+            result.decision(),
+            AttrSetReprDecision::Hamt {
+                result_len_upper_bound: 5,
+                reason: AttrSetReprReason::LargeUpdateMerge,
+            }
+        );
+        let summary = result.hamt_summary().expect("HAMT summary is recorded");
+        assert_eq!(summary.inserted(), 2);
+        assert_eq!(summary.replaced(), 1);
+        let hamt = result.value().as_hamt().expect("large merge promotes");
+        assert_eq!(hamt.get(ids[0]).expect("b exists").as_int(), Ok(100));
+        let names: Vec<&[u8]> = hamt
+            .iter_lexicographic()
+            .map(|entry| symbols.resolve(entry.key).expect("key resolves"))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                b"a".as_slice(),
+                b"a\x00".as_slice(),
+                b"a\xff".as_slice(),
+                b"b".as_slice(),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_dispatch_keeps_hamt_left_operand_hamt() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c"]);
+        let left = HamtAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+            ],
+            &symbols,
+        )
+        .expect("left HAMT builds");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[1], Value::int(200)),
+                AttrEntry::new(ids[2], Value::int(30)),
+            ],
+            &symbols,
+        )
+        .expect("right flat attrs build");
+        let policy = AttrSetReprPolicy::new(100, 100).expect("thresholds are nonzero");
+
+        let result = AttrSetReprValue::from_hamt(left)
+            .update_from_flat_right(&right, policy, 1, &symbols)
+            .expect("update dispatch succeeds");
+
+        assert_eq!(
+            result.decision(),
+            AttrSetReprDecision::Hamt {
+                result_len_upper_bound: 4,
+                reason: AttrSetReprReason::LeftAlreadyHamt,
+            }
+        );
+        let summary = result.hamt_summary().expect("HAMT summary is recorded");
+        assert_eq!(summary.inserted(), 1);
+        assert_eq!(summary.replaced(), 1);
+        let hamt = result.value().as_hamt().expect("HAMT left stays HAMT");
+        assert_eq!(hamt.len(), 3);
+        assert_eq!(hamt.get(ids[1]).expect("b exists").as_int(), Ok(200));
     }
 }

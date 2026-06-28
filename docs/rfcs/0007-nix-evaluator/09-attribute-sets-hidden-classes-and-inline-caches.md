@@ -854,6 +854,15 @@ harness, never cut for scope.
       HAMT decisions explicitly require a memoized ordered view. This does not
       implement HAMT nodes, change `//`, change `FlatAttrs`, or affect
       observable attr iteration / `.drv` bytes.
+- [x] Current update-dispatch precursor: `ratchet-value::attrs::repr`
+      exposes `AttrSetReprValue`, a safe `FlatAttrs`/`HamtAttrs` wrapper with
+      `update_from_flat_right` policy dispatch. Small flat-left merges copy into
+      a new flat attrset preserving left slots plus right-only append order;
+      HAMT-classified merges convert flat left operands as needed and call the
+      persistent HAMT merge helper. The precursor assumes `self`, `right`, and
+      `symbols` share one symbol universe. Active evaluator `//` wiring, HAMT
+      right source-order semantics, measured threshold calibration, and `.drv`
+      differential proof remain open.
 - [ ] HAMT-valued select-site IC policy (distinguished HAMT entry vs fold into megamorphic) ([§6.4](#64-interaction-with-inline-caches)) — P5.
 
 ### Iteration-order compatibility (acceptance-critical)
