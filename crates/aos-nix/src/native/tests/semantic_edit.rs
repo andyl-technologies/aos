@@ -1,7 +1,191 @@
 //! Tests for semantic no-op native source edits at the `.drv` closure boundary.
 
 use super::*;
-use crate::cache::{DurableBlake3Hash, ParseCache, ParseFileKey};
+use crate::cache::{
+    DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistParseArtifactKey,
+};
+
+#[test]
+fn native_instantiation_expr_comment_only_edit_preserves_drv_closure() -> Result<()> {
+    let root = unique_temp_dir("native-instantiation-raw-semantic-edit");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let third_parse_root = root.join("third-parse");
+    let persist_root = root.join("persist");
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let first_expr = r#"# first raw wrapper comment
+       let
+         base = derivationStrict {
+           name = "raw-semantic-edit-base";
+           system = "x86_64-linux";
+           builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+           env = "stable";
+         };
+       in derivationStrict {
+         name = "raw-semantic-edit-consumer";
+         system = "x86_64-linux";
+         builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+         input = "${base.out}";
+       }"#;
+    let second_expr = r#"
+       # changed raw wrapper comment and whitespace
+
+       let
+         base = derivationStrict {
+           name = "raw-semantic-edit-base";
+           system = "x86_64-linux";
+           builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+           env = "stable";
+         };
+       in derivationStrict {
+         name = "raw-semantic-edit-consumer";
+         system = "x86_64-linux";
+         builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+         input = "${base.out}";
+       }"#;
+    let first_source = derivation_path_wrapper_source(first_expr);
+    let second_source = derivation_path_wrapper_source(second_expr);
+
+    let uncached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_first =
+        NixNative::with_options(0, uncached_first_options)?.instantiate_expr_closure(first_expr)?;
+    assert_eq!(uncached_first.drvs().len(), 2);
+
+    let mut cached_first_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    cached_first_options.set_parse_cache_root(&first_parse_root);
+    cached_first_options.set_persist_cache_root(&persist_root);
+    cached_first_options.set_eval_cache_enabled(true);
+    let cached_first =
+        NixNative::with_options(0, cached_first_options)?.instantiate_expr_closure(first_expr)?;
+    assert_eq!(cached_first, uncached_first);
+    let first_parse_cache = ParseCache::new(&first_parse_root);
+    let first_parse_key = first_parse_cache.key_for_source(first_source.as_bytes());
+    assert!(
+        first_parse_cache
+            .entry_for_key(first_parse_key)
+            .is_complete()
+    );
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(
+                first_parse_key
+            ))?
+            .is_some(),
+        "first raw expression should write a durable parse artifact"
+    );
+
+    let uncached_second_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    let uncached_second = NixNative::with_options(0, uncached_second_options)?
+        .instantiate_expr_closure(second_expr)?;
+    assert_eq!(uncached_second, uncached_first);
+
+    let observed_second_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_second_hits_for_hook = Arc::clone(&observed_second_hits);
+    let mut cached_second_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+    cached_second_options.set_parse_cache_root(&second_parse_root);
+    cached_second_options.set_persist_cache_root(&persist_root);
+    cached_second_options.set_eval_cache_enabled(true);
+    let mut cached_second_native = NixNative::with_options(0, cached_second_options)?;
+    cached_second_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_second_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let cached_second = cached_second_native.instantiate_expr_closure(second_expr)?;
+    assert_eq!(cached_second, uncached_first);
+    assert!(
+        observed_second_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .is_empty(),
+        "changed raw source should miss the first parse artifact"
+    );
+    let second_parse_cache = ParseCache::new(&second_parse_root);
+    let second_parse_key = second_parse_cache.key_for_source(second_source.as_bytes());
+    assert!(
+        second_parse_cache
+            .entry_for_key(second_parse_key)
+            .is_complete()
+    );
+    assert!(
+        PersistCache::open(&persist_root)?
+            .lookup_parse_artifact(PersistParseArtifactKey::from_parse_cache_key(
+                second_parse_key
+            ))?
+            .is_some(),
+        "changed raw expression should write its own durable parse artifact"
+    );
+
+    let observed_third_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_third_hits_for_hook = Arc::clone(&observed_third_hits);
+    let mut hit_options = TreeWalkOptions::with_store_dir(store_bytes)?;
+    hit_options.set_parse_cache_root(&third_parse_root);
+    hit_options.set_persist_cache_root(&persist_root);
+    hit_options.set_eval_cache_enabled(true);
+    let mut hit_native = NixNative::with_options(0, hit_options)?;
+    hit_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_third_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let changed_hit = hit_native.instantiate_expr_closure(second_expr)?;
+    assert_eq!(changed_hit, uncached_first);
+    assert_eq!(
+        observed_third_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Bytes]
+    );
+    assert!(
+        ParseCache::new(&third_parse_root)
+            .entry_for_key(second_parse_key)
+            .is_complete(),
+        "persistent changed raw parse hit should hydrate the fresh parse-cache entry"
+    );
+
+    let mut canaries = durable_hash_surface_canaries(
+        "initial raw comment parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+    );
+    canaries.extend(durable_hash_surface_canaries(
+        "changed raw comment parse-cache BLAKE3",
+        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached initial raw semantic-edit closure",
+        &uncached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached initial raw semantic-edit closure",
+        &cached_first,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached changed raw semantic-edit closure",
+        &uncached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cached changed raw semantic-edit closure",
+        &cached_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit changed raw semantic-edit closure",
+        &changed_hit,
+        &canaries,
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
 
 #[test]
 fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure() -> Result<()> {
