@@ -768,6 +768,90 @@ fn materialized_capture_hashes_are_cached_on_heap_records() {
 }
 
 #[test]
+fn replayable_payload_extraction_caches_heap_value_hashes() {
+    let ir = lower("[ 1 true null ]");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let b = evaluator.symbols.intern(b"b").expect("b interns");
+    let string = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"seed".to_vec()))
+        .expect("string allocates");
+    let path = evaluator
+        .heap
+        .alloc_path(NixString::from_bytes(b"/tmp/seed".to_vec()))
+        .expect("path allocates");
+    let list = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![string, Value::int(7)]))
+        .expect("list allocates");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(a, Value::int(1)),
+            AttrEntry::new(b, Value::bool(true)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    let positioned_attrs = FlatAttrs::new(
+        vec![AttrEntry::with_position(
+            a,
+            Value::int(1),
+            AttrPosition::new(EvalModuleId::ROOT.as_u32(), Span::new(0, 1)),
+        )],
+        &evaluator.symbols,
+    )
+    .expect("positioned attrs build");
+    let positioned_attrs = evaluator
+        .heap
+        .alloc_attrs(0, positioned_attrs)
+        .expect("positioned attrs allocate");
+
+    for value in [string, path, list, attrs, positioned_attrs] {
+        assert_eq!(
+            evaluator
+                .heap()
+                .cached_value_hash(value)
+                .expect("heap record exists"),
+            None
+        );
+        let payload = evaluator
+            .force_cache_payload_for_value(value)
+            .expect("payload extraction succeeds");
+        let value_hash = payload.value_hash().expect("payload hashes");
+
+        assert_eq!(
+            evaluator
+                .heap()
+                .cached_value_hash(value)
+                .expect("heap record exists"),
+            Some(value_hash)
+        );
+    }
+
+    let stale_hash = crate::cache::ValueHash::from_context_free_string_bytes(b"stale");
+    evaluator
+        .heap()
+        .cache_value_hash(path, stale_hash)
+        .expect("stale test hash stores");
+    let _payload = evaluator
+        .force_cache_payload_for_value(path)
+        .expect("payload extraction succeeds");
+    assert_eq!(
+        evaluator
+            .heap()
+            .cached_value_hash(path)
+            .expect("heap record exists"),
+        Some(stale_hash),
+        "a recomputed mismatch must not silently overwrite an existing heap value hash"
+    );
+}
+
+#[test]
 fn captured_preforced_computed_context_bearing_string_thunks_use_materialized_capture_keys() {
     let source = r#"
       let s = builtins.appendContext "s" {

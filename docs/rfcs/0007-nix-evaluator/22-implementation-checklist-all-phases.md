@@ -1358,6 +1358,20 @@ alone (`M-1`/`Q-A`).
       value hashes, or full demand-graph value-hash integration. Gates:
       cached-expression payload encoding tests and inline-payload record replay
       tests.
+- [x] Current heap canonical value-hash field precursor: tree-walk heap records
+      now carry a separate optional canonical `ValueHash` field, distinct from
+      the existing force-capture identity hash field, and successful replayable
+      payload extraction for heap strings, paths, lists, and attrsets stores the
+      payload's canonical hash on the originating hash-consed heap record. The
+      field is available after payload canonicalization, while current
+      production use is limited to preserving an existing matching field and
+      warning without overwrite on mismatches; it is not yet a demand-graph hash
+      source. This is still scoped to current tree-walk heap records and
+      replayable force-cache payload extraction; it is not generic post-force
+      immutable-value hash-consing, O(1) equality for all values, persisted heap
+      value hashes, or demand-graph value-hash production. Gates: evaluator heap
+      value-hash cache tests and materialized capture payload-extraction cache
+      tests.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration

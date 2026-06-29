@@ -89,6 +89,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::String(string),
         });
@@ -133,6 +134,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Path(path),
         });
@@ -177,6 +179,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::List(list),
         });
@@ -224,6 +227,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Attrs { shape, attrs },
         });
@@ -251,6 +255,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
@@ -277,6 +282,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
@@ -300,10 +306,45 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
         Ok(value)
+    }
+
+    /// Returns the cached canonical value hash for a reusable heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a string, path, list,
+    /// or attrset. Returns [`EvalHeapError::UnknownPointer`] if the heap handle
+    /// does not belong to this heap. Returns
+    /// [`EvalHeapError::RecordTypeMismatch`] if the handle belongs to this heap
+    /// but references a different typed record.
+    pub(crate) fn cached_value_hash(
+        &self,
+        value: Value,
+    ) -> Result<Option<ValueHash>, EvalHeapError> {
+        Ok(self.record_for_value(value)?.value_hash.get())
+    }
+
+    /// Stores the canonical value hash for a reusable heap value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not a string, path, list,
+    /// or attrset. Returns [`EvalHeapError::UnknownPointer`] if the heap handle
+    /// does not belong to this heap. Returns
+    /// [`EvalHeapError::RecordTypeMismatch`] if the handle belongs to this heap
+    /// but references a different typed record.
+    pub(crate) fn cache_value_hash(
+        &self,
+        value: Value,
+        hash: ValueHash,
+    ) -> Result<(), EvalHeapError> {
+        self.record_for_value(value)?.value_hash.set(Some(hash));
+        Ok(())
     }
 
     /// Returns the cached force-capture value hash for a reusable heap value.

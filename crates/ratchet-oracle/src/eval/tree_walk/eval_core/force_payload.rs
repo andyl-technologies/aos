@@ -3,7 +3,7 @@
 use super::*;
 
 impl TreeWalk {
-    pub(super) fn force_cache_payload_for_value(
+    pub(in crate::eval::tree_walk) fn force_cache_payload_for_value(
         &self,
         value: Value,
     ) -> Option<CachedExpressionValue> {
@@ -451,15 +451,15 @@ impl TreeWalk {
         if let Ok(value) = CachedExpressionValue::immediate(value) {
             return Some(value);
         }
-        match value.tag() {
+        let payload = match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
                 let bytes = try_clone_bytes(string.bytes()).ok()?;
                 if string.has_context() {
                     let context = string.context().try_clone_context().ok()?;
-                    Some(CachedExpressionValue::context_string(bytes, context))
+                    CachedExpressionValue::context_string(bytes, context)
                 } else {
-                    Some(CachedExpressionValue::context_free_string(bytes))
+                    CachedExpressionValue::context_free_string(bytes)
                 }
             }
             ValueTag::Path => {
@@ -467,15 +467,15 @@ impl TreeWalk {
                 let bytes = try_clone_bytes(path.bytes()).ok()?;
                 if path.has_context() {
                     let context = path.context().try_clone_context().ok()?;
-                    Some(CachedExpressionValue::context_path(bytes, context))
+                    CachedExpressionValue::context_path(bytes, context)
                 } else {
-                    Some(CachedExpressionValue::path(bytes))
+                    CachedExpressionValue::path(bytes)
                 }
             }
             ValueTag::List => {
                 let list = self.heap.get_list(value).ok()?;
                 if list.is_empty() {
-                    Some(CachedExpressionValue::empty_list())
+                    CachedExpressionValue::empty_list()
                 } else {
                     let mut elements = Vec::new();
                     elements.try_reserve_exact(list.len()).ok()?;
@@ -487,13 +487,13 @@ impl TreeWalk {
                             allow_suspended_capture_aliases,
                         )?);
                     }
-                    Some(CachedExpressionValue::strict_list(elements))
+                    CachedExpressionValue::strict_list(elements)
                 }
             }
             ValueTag::Attrs => {
                 let attrs = self.heap.get_attrs(value).ok()?;
                 if attrs.is_empty() {
-                    Some(CachedExpressionValue::empty_attrs())
+                    CachedExpressionValue::empty_attrs()
                 } else {
                     let mut entries = Vec::new();
                     entries.try_reserve_exact(attrs.len()).ok()?;
@@ -532,9 +532,9 @@ impl TreeWalk {
                     }
                     if has_positions {
                         if source_order_is_lexicographic {
-                            CachedExpressionValue::positioned_attrs(entries).ok()
+                            CachedExpressionValue::positioned_attrs(entries).ok()?
                         } else {
-                            CachedExpressionValue::source_ordered_positioned_attrs(entries).ok()
+                            CachedExpressionValue::source_ordered_positioned_attrs(entries).ok()?
                         }
                     } else if source_order_is_lexicographic {
                         CachedExpressionValue::strict_attrs(
@@ -543,7 +543,7 @@ impl TreeWalk {
                                 .map(|(name, _, value)| (name, value))
                                 .collect(),
                         )
-                        .ok()
+                        .ok()?
                     } else {
                         CachedExpressionValue::source_ordered_attrs(
                             entries
@@ -551,7 +551,7 @@ impl TreeWalk {
                                 .map(|(name, _, value)| (name, value))
                                 .collect(),
                         )
-                        .ok()
+                        .ok()?
                     }
                 }
             }
@@ -585,9 +585,45 @@ impl TreeWalk {
                     }
                 };
                 seen_thunks.remove(&thunk_key);
-                result
+                return result;
             }
-            _ => None,
+            _ => return None,
+        };
+        self.cache_heap_value_hash(value, &payload);
+        Some(payload)
+    }
+
+    fn cache_heap_value_hash(&self, value: Value, payload: &CachedExpressionValue) {
+        let Ok(value_hash) = payload.value_hash() else {
+            return;
+        };
+        match self.heap.cached_value_hash(value) {
+            Ok(Some(existing)) if existing == value_hash => return,
+            Ok(Some(existing)) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    existing = %existing.as_durable_hash(),
+                    recomputed = %value_hash.as_durable_hash(),
+                    "tree-walk evaluator heap value-hash cache mismatch"
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator heap value-hash lookup failed"
+                );
+                return;
+            }
+        }
+        if let Err(error) = self.heap.cache_value_hash(value, value_hash) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator heap value-hash caching failed"
+            );
         }
     }
 }

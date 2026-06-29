@@ -17,7 +17,7 @@ use super::env::{EvalEnv, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
-use crate::cache::{DurableBlake3Hash, HotXxh3Hash};
+use crate::cache::{DurableBlake3Hash, HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
@@ -170,6 +170,7 @@ impl Default for EvalHeap {
 struct HeapRecord {
     ptr: NonNull<HeapObject>,
     structural_hash: Option<HotXxh3Hash>,
+    value_hash: Cell<Option<ValueHash>>,
     captured_value_hash: Cell<Option<DurableBlake3Hash>>,
     object: HeapObjectValue,
 }
