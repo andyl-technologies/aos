@@ -55,19 +55,13 @@ in
             grep -F -q -- "$text" "$file" || fail "missing '$text' in $file"
           }
 
-          require_absent_regex() {
+          require_present_regex() {
             path="$1"
             regex="$2"
             description="$3"
             [ -e "$path" ] || fail "S12 scan target missing: $path"
-            set +e
-            grep -E -R -q -- "$regex" "$path"
-            status="$?"
-            set -e
-            if [ "$status" -eq 0 ]; then
-              fail "S12 fallback expected no $description in $path"
-            fi
-            [ "$status" -eq 1 ] || fail "S12 failed to scan $description in $path"
+            grep -E -R -q -- "$regex" "$path" \
+              || fail "S12 expected $description in $path"
           }
 
           cp "$qemuNixPath" qemu.nix
@@ -88,10 +82,12 @@ in
           require_fixed qemu-patches/0002-crucible-rr-fingerprint-helpers.patch 'qemu_plugin_crucible_pause_vm'
 
           preemption_regex='preempt|preemption|interrupt_at|vcpu_switch|crucible_.*inject|qemu_plugin_crucible_.*(irq|interrupt)'
-          require_absent_regex qemu.nix "$preemption_regex" "preemption-injection patch wiring"
-          require_absent_regex qemu-patches "$preemption_regex" "preemption-injection API"
-          require_absent_regex crucible-qemu-trace-plugin.c "$preemption_regex" "production preemption-injection path"
-          require_absent_regex crates "$preemption_regex" "implemented preemption explorer"
+          require_fixed qemu.nix 'patch -p1 < ''${./qemu-patches/0030-crucible-preemption-inject.patch}'
+          require_fixed qemu-patches/0030-crucible-preemption-inject.patch 'qemu_plugin_inject_preemption'
+          require_fixed qemu-patches/0030-crucible-preemption-inject.patch 'crucible_sim_preemption_clamp_cpu_budget'
+          require_present_regex qemu-patches "$preemption_regex" "preemption-injection API"
+          require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL'
+          require_fixed crates/crucible-qemu-plugin/src/preemption.rs 'preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu'
 
           decision_doc="rfc-docs/31-decision-register.md"
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
@@ -112,19 +108,19 @@ in
           cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
           cp "$decision_doc" "$out/31-decision-register.md"
           {
-            echo PASS_WITH_FALLBACK
+            echo PASS_WITH_PATCH_SURFACE
             echo spike=decision-preemption
             echo check=checks.crucible.phase0.s12PreemptionDecision
             echo qemu_package=qemu-crucible
             echo preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates
-            echo known_preemption_injection_surface_found=false
-            echo preemption_injection_api_available=not_detected
-            echo preemption_patch_present=not_detected
-            echo plugin_preemption_surface_present=not_detected
-            echo vcpu_switch_injection_tested=false
-            echo interrupt_timing_injection_tested=false
-            echo commanded_preemption_choices_tested=0
-            echo commanded_preemption_reproducible=not_tested
+            echo known_preemption_injection_surface_found=true
+            echo preemption_injection_api_available=qemu_plugin_inject_preemption
+            echo preemption_patch_present=0030-crucible-preemption-inject.patch
+            echo plugin_preemption_surface_present=true
+            echo vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject
+            echo interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject
+            echo commanded_preemption_choices_tested=2
+            echo commanded_preemption_reproducible=patch_microtest
             echo commanded_preemption_discriminating=not_tested
             echo known_race_manifested_under_one_choice=not_tested
             echo known_race_absent_under_another_choice=not_tested
@@ -144,7 +140,7 @@ in
             echo s11_horizon_fingerprint_match=true
             echo s11_final_extended_hash=16e7a49bfce0eb0f
             echo decision_preemption_exploration_enabled=false
-            echo fallback_adopted=default_deterministic_interleaving_only_until_preemption_injection
+            echo fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending
             echo s12_complete=true
           } > "$out/result"
         '';

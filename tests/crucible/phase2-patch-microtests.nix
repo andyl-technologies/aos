@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23"],
+  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -13,6 +13,7 @@
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
   qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
+  qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
@@ -199,6 +200,13 @@
         patchName = "0029-crucible-vcpu-introspect.patch";
       };
     }
+    {
+      patch = "0030-crucible-preemption-inject.patch";
+      check = import ./phase2-qemu-preemption-inject.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0030-crucible-preemption-inject.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -329,6 +337,7 @@ in
               qemu_plugin_crucible_register_ipi_delivery_cb \
               qemu_plugin_read_vcpu_regs \
               qemu_plugin_rr_cursor \
+              qemu_plugin_inject_preemption \
               qemu_plugin_register_blk_cb \
               qemu_plugin_register_9p_cb
             do
@@ -387,6 +396,21 @@ in
             grep -q '^rr_cursor_reads_current_vcpu_position_and_quantum=true$' "$out/qemu-vcpu-introspect.result"
             grep -q '^rr_cursor_boundary_rejected=true$' "$out/qemu-vcpu-introspect.result"
             grep -q '^rr_cursor_out_of_range_current_vcpu_rejected=true$' "$out/qemu-vcpu-introspect.result"
+            cp "${qemuPreemptionInject}/result" "$out/qemu-preemption-inject.result"
+            grep -q '^PASS$' "$out/qemu-preemption-inject.result"
+            grep -q '^formal_preemption_export=qemu_plugin_inject_preemption$' "$out/qemu-preemption-inject.result"
+            grep -q '^vcpu_switch_cross_run_icount_match=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^interrupt_cross_run_icount_match=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^out_of_window_rejected_distinctly=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^before_deadline_rejected_distinctly=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^past_icount_rejected_distinctly=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^invalid_window_rejected_distinctly=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^duplicate_pending_rejected_distinctly=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^preemption_budget_clamped_to_commanded_icount=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^preemption_no_clamp_no_defer_on_invalid_window=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^commanded_interrupt_delivered_as_apic_fixed_vector=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^real_qemu_patch_apply_clean=true$' "$out/qemu-preemption-inject.result"
+            grep -q '^stock_negative_control_symbols_absent=true$' "$out/qemu-preemption-inject.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -442,6 +466,13 @@ in
             register_size_mismatch_rejected=true
             rr_cursor_boundary_rejected=true
             rr_cursor_out_of_range_current_vcpu_rejected=true
+            qemu_preemption_inject_gate_passed=true
+            formal_preemption_export_present=true
+            commanded_vcpu_switch_cross_run_icount_match=true
+            commanded_interrupt_cross_run_icount_match=true
+            out_of_window_preemption_rejected_distinctly=true
+            before_deadline_preemption_rejected_distinctly=true
+            preemption_budget_clamped_to_commanded_icount=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true
@@ -457,6 +488,7 @@ in
             qemu_plugin_sim_correctness_exports_present=true
             qemu_plugin_det_ipi_exports_present=true
             qemu_plugin_vcpu_introspection_exports_present=true
+            qemu_plugin_preemption_inject_export_present=true
             qemu_plugin_block_exports_present=true
             qemu_plugin_9p_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert

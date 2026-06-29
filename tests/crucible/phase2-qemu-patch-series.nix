@@ -223,6 +223,13 @@
       enforces = "PATCH-46,DET-29,INV-10";
       capability = "formal per-vCPU register-file and RR cursor plugin exports";
     }
+    {
+      file = "0030-crucible-preemption-inject.patch";
+      catalogName = "crucible-preemption-inject";
+      class = "D";
+      enforces = "PATCH-47,DET-1,PLUG-50";
+      capability = "sim-mode commanded vCPU-switch and interrupt preemption injection";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

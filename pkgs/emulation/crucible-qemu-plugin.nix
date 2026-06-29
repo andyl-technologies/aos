@@ -35,6 +35,7 @@ in
       grep -q 'qemu_plugin_crucible_rr_switch_quantum' "$header"
       grep -q 'qemu_plugin_read_vcpu_regs' "$header"
       grep -q 'qemu_plugin_rr_cursor' "$header"
+      grep -q 'qemu_plugin_inject_preemption' "$header"
 
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
@@ -47,6 +48,10 @@ in
           qemu_plugin_read_vcpu_regs;
       int (*crucible_probe_rr_cursor)(struct qemu_plugin_rr_cursor *) =
           qemu_plugin_rr_cursor;
+      int (*crucible_probe_inject_preemption)(uint64_t, uint64_t, uint64_t,
+                                              unsigned int, uint32_t,
+                                              uint32_t, uint32_t) =
+          qemu_plugin_inject_preemption;
       EOF
 
       cc -fPIC -I"${qemu-crucible}/include" $(pkg-config --cflags glib-2.0) \

@@ -661,7 +661,8 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 
 - **Enforces:** [DET-1], [PLUG-50]; makes the vCPU-switch + interrupt timing an
   explorable, plugin-applied decision.
-- **Mechanism:** exports `qemu_plugin_inject_preemption(at_icount, kind, ...)`
+- **Mechanism:** exports
+  `qemu_plugin_inject_preemption(at_icount, deadline_icount, ceiling_icount, kind, ...)`
   letting the time-controlling plugin force a round-robin vCPU switch or deliver
   an interrupt to a target vCPU at a **commanded node-icount**, so the scheduler's
   `Decision::Preemption` (08) can be applied deterministically. The injection is
@@ -1472,7 +1473,20 @@ time-control primitives the whole design rests on.
     reads, side-effect-free current-CPU behavior, short-buffer and register-size
     mismatch rejection, invalid-vCPU rejection, and cursor
     boundary/zero/out-of-range/no-current negative controls.
-- [ ] **T-PATCH-24** Implement `crucible-preemption-inject`: plugin-callable
+- [x] **T-PATCH-24** Implement `crucible-preemption-inject`: plugin-callable
   commanded vCPU switch / interrupt delivery at a node-icount anchored to the
   round-robin event path, rejecting out-of-`[deadline, ceiling]` commands loudly;
   cross-run identical-application micro-test. — satisfies [PATCH-47]; spec §11.5.
+  - Completed by `0030-crucible-preemption-inject.patch`,
+    `checks.crucible.phase2.qemuPreemptionInject`, and
+    `gate:patch-microtests`: QEMU now exports
+    `qemu_plugin_inject_preemption` with stable vCPU-switch and interrupt kind
+    tags, queues one sim-mode precise-icount RR command, clamps the TCG budget to
+    the commanded node-icount, and applies due commands from the same RR boundary
+    path. The export receives the inclusive scheduler deadline/ceiling window and
+    rejects inactive mode, duplicate commands, malformed operands, invalid
+    windows, before-deadline commands, past icounts, and commands beyond the
+    scheduler-published shmem ceiling. The microtest applies the real patch stack to pinned QEMU source,
+    proves the stock header lacks the symbol, compiles the patched header API,
+    and exercises jittered cross-run vCPU-switch and interrupt application plus
+    distinct out-of-window rejection.

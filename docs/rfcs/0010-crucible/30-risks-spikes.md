@@ -976,9 +976,9 @@ effect), or no choice surfaces the known race.
   different horizon fingerprints, and that a known race manifests under one choice
   and not another, or it MUST adopt the default-deterministic-interleaving fallback
   and keep `Decision::Preemption` exploration disabled until the commanded
-  preemption-injection surface lands and S12 is rerun. For `N=1`, a successful S12
-  MUST produce distinct reproducible trajectories by varying the timer-interrupt
-  delivery icount. *Gate:* `gate:layer1-injection`,
+  preemption-injection surface is paired with a non-fallback S12 race-yield
+  proof. For `N=1`, a successful S12 MUST produce distinct reproducible
+  trajectories by varying the timer-interrupt delivery icount. *Gate:* `gate:layer1-injection`,
   `gate:single-vm-fingerprint`. *Spec:* §30.11b. A successful non-fallback S12
   satisfies [G-11], [SCHED-46], and [DET-12]; the fallback branch satisfies only
   this risk-resolution requirement and keeps those capabilities disabled.
@@ -1590,22 +1590,21 @@ diagnostic attempt produced a reproducible first-difference artifact and is
 treated as a separate device-path determinism concern, not as an `-smp 1`
 fallback for [G-10].
 
-**RISK-26** is resolved by `T-RISK-18` with the default deterministic interleaving fallback:
+**RISK-26** is resolved by `T-RISK-18` with the preemption-injection patch surface landed and explorer enablement still pending:
 `checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
 wiring, every local QEMU patch, the production trace plugin, and the Rust crates,
-and found no known commanded
-preemption-injection surface. The spike also required the decision-register
+and found the commanded preemption-injection surface. The spike also required the decision-register
 entries for the green `checks.crucible.phase0.s1Fingerprint` and
 `checks.crucible.phase0.s11MultiVcpuFingerprint` prerequisites, then recorded
 `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
-`known_preemption_injection_surface_found=false`,
-`preemption_injection_api_available=not_detected`,
-`preemption_patch_present=not_detected`,
-`plugin_preemption_surface_present=not_detected`,
-`vcpu_switch_injection_tested=false`,
-`interrupt_timing_injection_tested=false`,
-`commanded_preemption_choices_tested=0`,
-`commanded_preemption_reproducible=not_tested`,
+`known_preemption_injection_surface_found=true`,
+`preemption_injection_api_available=qemu_plugin_inject_preemption`,
+`preemption_patch_present=0030-crucible-preemption-inject.patch`,
+`plugin_preemption_surface_present=true`,
+`vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
+`interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
+`commanded_preemption_choices_tested=2`,
+`commanded_preemption_reproducible=patch_microtest`,
 `commanded_preemption_discriminating=not_tested`,
 `known_race_manifested_under_one_choice=not_tested`,
 `known_race_absent_under_another_choice=not_tested`,
@@ -1616,12 +1615,11 @@ entries for the green `checks.crucible.phase0.s1Fingerprint` and
 `s11_extended_fingerprint_match=true`,
 `s11_horizon_fingerprint_match=true`,
 `decision_preemption_exploration_enabled=false`, and
-`fallback_adopted=default_deterministic_interleaving_only_until_preemption_injection`.
+`fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending`.
 Phase 0 therefore does not enable `Decision::Preemption` exploration yet. It
 keeps only the default deterministic interleaving whose prerequisites are
-recorded by S1/S11 until the patch-series preemption-injection capability exists
-and S12 can be rerun as the real commanded vCPU-switch / interrupt-timing race
-test.
+recorded by S1/S11 until S12 is rerun as the real commanded vCPU-switch /
+interrupt-timing race test on top of the now-available patch-series capability.
 
 **RISK-27** is resolved by `T-RISK-19` with the modeled-throughput default-only fallback:
 `checks.crucible.phase0.s13RrSwitchQuantumFallback` consumed the S12 fallback
@@ -1639,9 +1637,9 @@ above the throughput floor. The run reported
 `selected_phase0_default_rr_switch_quantum=4096`,
 `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
 `race_yield_tested=false`,
-`race_yield_source=not_available_s12_preemption_explorer_disabled`,
-`d25_status=open_until_s12_passes_without_fallback`, and
-`fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection`.
+`race_yield_source=preemption_patch_surface_available_explorer_disabled`,
+`d25_status=open_until_preemption_explorer_enabled`, and
+`fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer`.
 Phase 0 therefore keeps the S11-proven `rr_switch_quantum=4096` as a
 modeled-throughput default-only value, but it does not claim empirical throughput
 against the §25 budget and does not close D-25's race-yield half. The real
@@ -1850,14 +1848,15 @@ never tolerated). Results live in the decision register (31).
   manifests under one choice and not another; for `N=1` confirm interrupt-timing
   variation gives distinct reproducible trajectories. Fall back to
   interrupt-timing-only exploration if that surface is reliable, or default-only
-  deterministic interleaving if no commanded surface is reliable. Phase 0 found
-  no commanded preemption-injection API, so neither vCPU-switch nor
-  interrupt-timing injection can be exercised yet; `Decision::Preemption`
+  deterministic interleaving if no commanded surface is reliable. Phase 0 now
+  finds the `qemu_plugin_inject_preemption` patch/API surface and the phase2
+  patch microtest exercises deterministic vCPU-switch and interrupt landing, but
+  S12 has not yet run the full known-race/yield proof; `Decision::Preemption`
   exploration remains disabled and the system keeps the default deterministic
-  interleaving until the patch capability lands and S12 is rerun. — resolves
-  [RISK-26] by disabling the [G-11] exploration surface for now; satisfies
-  [RISK-26] via the accepted fallback; does not yet satisfy [SCHED-46] or
-  [DET-12] for commanded preemption; spec §30.11b.
+  interleaving until that non-fallback proof lands. — resolves [RISK-26] by
+  disabling the [G-11] exploration surface for now; satisfies [RISK-26] via the
+  accepted fallback; does not yet satisfy [SCHED-46] or [DET-12] for full
+  commanded-preemption exploration; spec §30.11b.
 - [x] **T-RISK-19** Run **S13** fallback: consume the S12 fallback, model the
   default-only `rr_switch_quantum` throughput side, select the S11-green
   `rr_switch_quantum=4096`, and record `race_yield_tested=false`. The full S13

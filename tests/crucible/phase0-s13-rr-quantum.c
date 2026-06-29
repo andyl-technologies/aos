@@ -121,11 +121,11 @@ main(void)
   printf("coarse_baseline_efficiency_x1000=%u\n", coarse_baseline.efficiency_x1000);
   printf("selected_vs_coarse_efficiency_x1000=%u\n", relative_to_coarse_x1000);
   puts("race_yield_tested=false");
-  puts("race_yield_source=not_available_s12_preemption_explorer_disabled");
+  puts("race_yield_source=preemption_patch_surface_available_explorer_disabled");
   puts("s12_decision_entry_consumed=true");
   puts("decision_preemption_exploration_enabled=false");
-  puts("d25_status=open_until_s12_passes_without_fallback");
-  puts("fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection");
+  puts("d25_status=open_until_preemption_explorer_enabled");
+  puts("fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer");
   puts("s13_complete=true");
 
   return pass ? 0 : 1;

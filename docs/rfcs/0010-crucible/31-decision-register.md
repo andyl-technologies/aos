@@ -646,8 +646,8 @@ genuinely unresolved and is tracked as a spike in
   default, but **branchable by the explorer** to explore concurrency interleavings.
   It works for single-vCPU guests too — varying the timer-interrupt delivery icount
   explores intra-thread races without a second vCPU. Phase 0 does not enable this
-  branchable surface until the commanded preemption-injection capability exists
-  and S12 passes without fallback.
+  branchable surface until the commanded preemption-injection capability is paired
+  with a non-fallback S12 race-yield proof.
 - **Rationale:** Once the vCPU switch is an icount-commandable quantum (D-22), the
   *choice* of switch point (or interrupt-delivery point) is exactly the kind of
   resolved, reproducible decision the temporal graph already branches on for faults
@@ -663,12 +663,12 @@ genuinely unresolved and is tracked as a spike in
     `T = f(Configuration)` model; it must be a branch in the temporal graph.
 - **Affects:** [G-11], the EXEC Decision taxonomy, [SCHED-46], [ADV-39]; files 03,
   07, 08, 22.
-- **Phase-0 S12 outcome:** `checks.crucible.phase0.s12PreemptionDecision` found
-  no known current preemption-injection surface in the QEMU wiring, local patch
-  directory, production trace plugin, or Rust crates. This decision remains a
-  target architecture decision rather than an enabled implementation surface.
-  Crucible keeps default deterministic interleaving only until the patch-series
-  injection capability lands and S12 is rerun.
+- **Phase-0 S12 outcome:** `checks.crucible.phase0.s12PreemptionDecision` now
+  finds the `qemu_plugin_inject_preemption` QEMU/plugin surface and the phase2
+  patch microtest covers deterministic commanded landing. This decision remains a
+  target architecture decision rather than an enabled explorer surface until S12
+  is rerun as a full race-yield proof. Crucible keeps default deterministic
+  interleaving only until that non-fallback proof lands.
 - **Engine schedule surface:** T-EXEC-19 now implements the Rust execution-model
   recording discipline: nonzero RR-boundary default preemptions are derived
   without schedule entries, while explorer-supplied `Decision::Preemption`
@@ -1580,21 +1580,21 @@ register.
   - **Fallback:** no `-smp 1` fallback adopted.
 
 - **RISK-26 / T-RISK-18 — S12 `Decision::Preemption`**
-  - **Status:** PASS WITH FALLBACK; no known commanded preemption exploration
-    surface is available in the current QEMU/plugin implementation, so
-    branchable `Decision::Preemption` exploration remains disabled and only the
-    default deterministic interleaving is enabled.
+  - **Status:** PASS WITH PATCH SURFACE; the commanded preemption QEMU/plugin
+    capability now exists and is covered by the phase2 patch microtest, while
+    branchable `Decision::Preemption` exploration remains disabled until the
+    explorer policy is enabled on top of that capability.
   - **Check:** `checks.crucible.phase0.s12PreemptionDecision`.
   - **Result:**
     `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
-    `known_preemption_injection_surface_found=false`,
-    `preemption_injection_api_available=not_detected`,
-    `preemption_patch_present=not_detected`,
-    `plugin_preemption_surface_present=not_detected`,
-    `vcpu_switch_injection_tested=false`,
-    `interrupt_timing_injection_tested=false`,
-    `commanded_preemption_choices_tested=0`,
-    `commanded_preemption_reproducible=not_tested`,
+    `known_preemption_injection_surface_found=true`,
+    `preemption_injection_api_available=qemu_plugin_inject_preemption`,
+    `preemption_patch_present=0030-crucible-preemption-inject.patch`,
+    `plugin_preemption_surface_present=true`,
+    `vcpu_switch_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
+    `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
+    `commanded_preemption_choices_tested=2`,
+    `commanded_preemption_reproducible=patch_microtest`,
     `commanded_preemption_discriminating=not_tested`,
     `known_race_manifested_under_one_choice=not_tested`,
     `known_race_absent_under_another_choice=not_tested`,
@@ -1610,21 +1610,22 @@ register.
     `s11_horizon_fingerprint_match=true`,
     `s11_final_extended_hash=16e7a49bfce0eb0f`,
     `decision_preemption_exploration_enabled=false`,
-    `fallback_adopted=default_deterministic_interleaving_only_until_preemption_injection`,
+    `fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending`,
     `s12_complete=true`.
   - **Scope:** validates the Phase-0 S12 decision for the current repository
-    surface. The check proves the active QEMU patch exports RR/fingerprint
-    helpers and finds no known commanded preemption-injection API across the
-    scanned QEMU wiring, patch directory, production trace plugin, and Rust
-    crates. It requires the recorded green S1 and S11 decision-register entries
-    as default-determinism prerequisites. It does not run a forced vCPU-switch or
-    interrupt-timing branch and does not prove the known race can be surfaced by
-    commanded preemption.
-  - **Fallback:** keep `Decision::Preemption` exploration disabled and ship only
-    default deterministic interleaving until preemption injection lands in the
-    AOS QEMU patch series; rerun S12 before enabling the explorer branch.
-    T-EXEC-19 supplies the engine schedule representation for that future branch,
-    but does not change this fallback.
+    surface. The check proves the active QEMU patch series now carries
+    `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
+    `checks.crucible.phase2.qemuPreemptionInject` covers commanded vCPU-switch
+    and interrupt application at fixed icounts with out-of-window rejection. It
+    requires the recorded green S1 and S11 decision-register entries as
+    default-determinism prerequisites. It does not yet run a full explorer race
+    branch and does not prove the known race can be surfaced by commanded
+    preemption.
+  - **Fallback:** keep branchable `Decision::Preemption` exploration disabled
+    until the explorer policy is enabled and S12 is rerun as a real race-yield
+    test over the now-available QEMU/plugin preemption capability. T-EXEC-19
+    supplies the engine schedule representation for that future branch, but does
+    not change this fallback.
 
 - **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
   - **Status:** PASS WITH FALLBACK; the throughput side of the default-only RR
@@ -1642,19 +1643,19 @@ register.
     `selected_phase0_default_rr_switch_quantum=4096`,
     `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
     `race_yield_tested=false`,
-    `race_yield_source=not_available_s12_preemption_explorer_disabled`,
+    `race_yield_source=preemption_patch_surface_available_explorer_disabled`,
     `s12_decision_entry_consumed=true`,
     `decision_preemption_exploration_enabled=false`,
-    `d25_status=open_until_s12_passes_without_fallback`,
-    `fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection`,
+    `d25_status=open_until_preemption_explorer_enabled`,
+    `fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer`,
     `s13_complete=true`.
   - **Scope:** validates only the Phase-0 default-only fallback. It does not
     measure S12 race yield, does not claim the final D-25 default is resolved, and
     does not exercise commanded vCPU-switch or interrupt-timing branches.
   - **Fallback:** use `rr_switch_quantum=4096` for default deterministic
     interleaving based on the modeled overhead check until commanded preemption
-    injection lands; rerun S12 and S13 before closing D-25 or enabling per-branch
-    explorer quantum overrides.
+    explorer enablement lands; rerun S12 and S13 before closing D-25 or enabling
+    per-branch explorer quantum overrides.
 
 - **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
   - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is

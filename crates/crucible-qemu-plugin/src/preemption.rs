@@ -85,9 +85,10 @@ pub fn plan_deterministic_ipi_delivery(
 ///
 /// The patched QEMU plugin API exports this symbol as a no-handle function. The
 /// first argument is the aggregate node icount where the command must land, the
-/// second is one of the `QEMU_PREEMPTION_KIND_*` tags, and the remaining three
-/// arguments carry kind-specific vCPU/vector operands.
-pub type QemuInjectPreemptionFn = extern "C" fn(u64, c_uint, u32, u32, u32) -> c_int;
+/// next two arguments carry the inclusive scheduler authorization window, the
+/// kind argument is one of the `QEMU_PREEMPTION_KIND_*` tags, and the remaining
+/// three arguments carry kind-specific vCPU/vector operands.
+pub type QemuInjectPreemptionFn = extern "C" fn(u64, u64, u64, c_uint, u32, u32, u32) -> c_int;
 
 /// Inclusive scheduler authorization window for a preemption command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,6 +288,8 @@ impl PluginPreemptionDecision {
                 }
                 Ok(QemuPreemptionCommand {
                     at_icount: self.at_icount,
+                    deadline_icount: window.deadline_icount(),
+                    ceiling_icount: window.ceiling_icount(),
                     raw_kind: QEMU_PREEMPTION_KIND_VCPU_SWITCH,
                     arg0: from_vcpu,
                     arg1: to_vcpu,
@@ -297,6 +300,8 @@ impl PluginPreemptionDecision {
                 validate_vcpu(target_vcpu, vcpu_count)?;
                 Ok(QemuPreemptionCommand {
                     at_icount: self.at_icount,
+                    deadline_icount: window.deadline_icount(),
+                    ceiling_icount: window.ceiling_icount(),
                     raw_kind: QEMU_PREEMPTION_KIND_INTERRUPT_AT,
                     arg0: target_vcpu,
                     arg1: irq,
@@ -330,6 +335,8 @@ pub enum PluginPreemptionKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuPreemptionCommand {
     at_icount: u64,
+    deadline_icount: u64,
+    ceiling_icount: u64,
     raw_kind: c_uint,
     arg0: u32,
     arg1: u32,
@@ -341,6 +348,18 @@ impl QemuPreemptionCommand {
     #[must_use]
     pub const fn at_icount(self) -> u64 {
         self.at_icount
+    }
+
+    /// Returns the inclusive scheduler deadline sent to QEMU.
+    #[must_use]
+    pub const fn deadline_icount(self) -> u64 {
+        self.deadline_icount
+    }
+
+    /// Returns the inclusive scheduler ceiling sent to QEMU.
+    #[must_use]
+    pub const fn ceiling_icount(self) -> u64 {
+        self.ceiling_icount
     }
 
     /// Returns the raw QEMU preemption kind tag.
@@ -418,6 +437,8 @@ impl PluginPreemptionInjector {
 
         let status = (self.inject_preemption)(
             command.at_icount,
+            command.deadline_icount,
+            command.ceiling_icount,
             command.raw_kind,
             command.arg0,
             command.arg1,
@@ -613,6 +634,8 @@ mod tests {
 
     extern "C" fn accept_preemption(
         at_icount: u64,
+        deadline_icount: u64,
+        ceiling_icount: u64,
         raw_kind: c_uint,
         arg0: u32,
         arg1: u32,
@@ -621,6 +644,8 @@ mod tests {
         match TEST_PREEMPTION_CALLS.lock() {
             Ok(mut calls) => calls.push(QemuPreemptionCommand {
                 at_icount,
+                deadline_icount,
+                ceiling_icount,
                 raw_kind,
                 arg0,
                 arg1,
@@ -628,6 +653,8 @@ mod tests {
             }),
             Err(poisoned) => poisoned.into_inner().push(QemuPreemptionCommand {
                 at_icount,
+                deadline_icount,
+                ceiling_icount,
                 raw_kind,
                 arg0,
                 arg1,
@@ -639,6 +666,8 @@ mod tests {
 
     extern "C" fn reject_preemption(
         at_icount: u64,
+        deadline_icount: u64,
+        ceiling_icount: u64,
         raw_kind: c_uint,
         arg0: u32,
         arg1: u32,
@@ -647,6 +676,8 @@ mod tests {
         match TEST_PREEMPTION_CALLS.lock() {
             Ok(mut calls) => calls.push(QemuPreemptionCommand {
                 at_icount,
+                deadline_icount,
+                ceiling_icount,
                 raw_kind,
                 arg0,
                 arg1,
@@ -654,6 +685,8 @@ mod tests {
             }),
             Err(poisoned) => poisoned.into_inner().push(QemuPreemptionCommand {
                 at_icount,
+                deadline_icount,
+                ceiling_icount,
                 raw_kind,
                 arg0,
                 arg1,
@@ -789,6 +822,8 @@ mod tests {
             application.command(),
             QemuPreemptionCommand {
                 at_icount: 120,
+                deadline_icount: 100,
+                ceiling_icount: 200,
                 raw_kind: QEMU_PREEMPTION_KIND_VCPU_SWITCH,
                 arg0: 0,
                 arg1: 2,
@@ -830,6 +865,8 @@ mod tests {
             application.command(),
             QemuPreemptionCommand {
                 at_icount: 140,
+                deadline_icount: 100,
+                ceiling_icount: 200,
                 raw_kind: QEMU_PREEMPTION_KIND_INTERRUPT_AT,
                 arg0: 1,
                 arg1: 32,
@@ -935,6 +972,8 @@ mod tests {
             recorded_calls(),
             vec![QemuPreemptionCommand {
                 at_icount: 120,
+                deadline_icount: 100,
+                ceiling_icount: 200,
                 raw_kind: QEMU_PREEMPTION_KIND_VCPU_SWITCH,
                 arg0: 0,
                 arg1: 2,

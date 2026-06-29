@@ -37,6 +37,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0027-crucible-sim-batch-tcg-exec.patch",
     "0028-crucible-det-ipi.patch",
     "0029-crucible-vcpu-introspect.patch",
+    "0030-crucible-preemption-inject.patch",
 ];
 
 #[test]
@@ -73,6 +74,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &aggregate,
         "qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix",
+    );
+    assert_contains(
+        &aggregate,
+        "qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix",
     );
     assert_contains(
         &aggregate,
@@ -175,6 +180,37 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_vcpu_introspect_gate_passed=true");
     assert_contains(&aggregate, "formal_vcpu_register_export_present=true");
     assert_contains(&aggregate, "formal_rr_cursor_export_present=true");
+    assert_contains(&aggregate, "cp \"${qemuPreemptionInject}/result\"");
+    assert_contains(
+        &aggregate,
+        "grep -q '^formal_preemption_export=qemu_plugin_inject_preemption$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^vcpu_switch_cross_run_icount_match=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^interrupt_cross_run_icount_match=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^out_of_window_rejected_distinctly=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^before_deadline_rejected_distinctly=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^preemption_budget_clamped_to_commanded_icount=true$'",
+    );
+    assert_contains(&aggregate, "qemu_preemption_inject_gate_passed=true");
+    assert_contains(&aggregate, "formal_preemption_export_present=true");
+    assert_contains(
+        &aggregate,
+        "before_deadline_preemption_rejected_distinctly=true",
+    );
     assert_contains(
         &aggregate,
         "grep -q '^regenerated_patch_bytes_match_committed=true$'",
@@ -230,6 +266,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_crucible_register_ipi_delivery_cb");
     assert_contains(&aggregate, "qemu_plugin_read_vcpu_regs");
     assert_contains(&aggregate, "qemu_plugin_rr_cursor");
+    assert_contains(&aggregate, "qemu_plugin_inject_preemption");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
     assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
     assert_contains(&aggregate, "qemu_plugin_register_net_tx_cb");
@@ -241,6 +278,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &aggregate,
         "qemu_plugin_vcpu_introspection_exports_present=true",
+    );
+    assert_contains(
+        &aggregate,
+        "qemu_plugin_preemption_inject_export_present=true",
     );
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
@@ -308,6 +349,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix",
     );
     assert_contains(
         &default_checks,
