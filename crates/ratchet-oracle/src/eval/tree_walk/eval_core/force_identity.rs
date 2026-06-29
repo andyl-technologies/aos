@@ -321,7 +321,7 @@ impl TreeWalk {
             .ir
             .arena
             .node(body.id())
-            .is_some_and(Self::search_path_has_cacheable_ambient_origin)
+            .is_some_and(|node| Self::search_path_has_cacheable_origin(&module.ir, node))
         {
             return Self::cache_expression_identity_for_node(module, body.id());
         }
@@ -340,7 +340,7 @@ impl TreeWalk {
             .ir
             .arena
             .node(body.id())
-            .is_some_and(Self::search_path_has_cacheable_ambient_origin)
+            .is_some_and(|node| Self::search_path_has_cacheable_origin(&module.ir, node))
         {
             return Self::cache_expression_identity_for_node(module, body.id());
         }
@@ -688,7 +688,9 @@ impl TreeWalk {
         let Some(first_arg) = ir.arena.node(*first_arg) else {
             return false;
         };
-        first_arg.kind == IrKind::List || Self::node_is_builtin_nix_path_attr(ir, first_arg)
+        first_arg.kind == IrKind::List
+            || Self::node_is_builtin_nix_path_attr(ir, first_arg)
+            || Self::node_is_captured_search_path_value(first_arg)
     }
 
     fn node_is_builtin_nix_path_attr(ir: &Ir, node: &IrNode) -> bool {
@@ -696,14 +698,20 @@ impl TreeWalk {
             && Self::builtin_attr_execution(ir, node) == Some(BuiltinExecution::NixPathValue)
     }
 
-    fn search_path_has_cacheable_ambient_origin(node: &IrNode) -> bool {
-        matches!(
-            node.data,
-            IrData::SearchPath {
-                search_path: None,
-                ..
-            }
-        )
+    fn search_path_has_cacheable_origin(ir: &Ir, node: &IrNode) -> bool {
+        let IrData::SearchPath { search_path, .. } = node.data else {
+            return false;
+        };
+        let Some(search_path) = search_path else {
+            return true;
+        };
+        ir.arena
+            .node(search_path)
+            .is_some_and(Self::node_is_captured_search_path_value)
+    }
+
+    fn node_is_captured_search_path_value(node: &IrNode) -> bool {
+        matches!(node.data, IrData::Local { .. } | IrData::Upval { .. })
     }
 
     fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
