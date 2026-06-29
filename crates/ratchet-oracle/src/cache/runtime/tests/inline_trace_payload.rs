@@ -599,6 +599,75 @@ fn dirty_trace_backed_inline_payload_with_dirty_memo_supplier_stays_miss() {
 }
 
 #[test]
+fn dirty_trace_backed_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
+    let fingerprint = read_file_trace(b"/tmp/version", b"same");
+    let source = TraceSource {
+        trace: vec![fingerprint.clone()],
+        complete: true,
+    };
+    let mut revalidator = StaticRevalidator::new(vec![fingerprint]);
+    let mut cache = EvalCache::new();
+    let expression_identity = identity(b"trace-parent", 7);
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(10),
+            &source,
+        )
+        .expect("trace-backed result observes");
+    let node = observation.node().expect("cacheable trace creates node");
+    let supplier_observation = cache
+        .observe_inline_expression_result(
+            identity(b"trace-child", 1),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("supplier payload observes");
+    cache
+        .record_memo_read_dependency(node, supplier_observation.node())
+        .expect("memo-read edge records");
+
+    let supplier_change = cache
+        .graph
+        .reconsider_node(
+            supplier_observation.node(),
+            ValueHash::from_inline_value(Value::int(4)).expect("inline value hashes"),
+        )
+        .expect("supplier recomputation records changed hash");
+    assert_eq!(supplier_change.decision(), CutoffDecision::Propagate);
+    assert_eq!(supplier_change.dirtied_dependents(), &[node]);
+    assert_eq!(
+        cache
+            .graph()
+            .node(supplier_observation.node())
+            .expect("supplier node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Dirty
+    );
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("dirty lookup succeeds");
+
+    assert!(hit.is_none());
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(cache.inline_payload_record_count(), 2);
+}
+
+#[test]
 fn clean_trace_backed_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
     let fingerprint = read_file_trace(b"/tmp/version", b"same");
     let source = TraceSource {

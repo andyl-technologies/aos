@@ -875,7 +875,7 @@ fn eval_cache_lookup_requires_side_payload_record() {
 }
 
 #[test]
-fn eval_cache_lookup_rejects_dirty_inline_expression_nodes() {
+fn dirty_pure_inline_payload_lookup_reconsiders_same_hash_and_cuts_off() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);
     let observation = cache
@@ -890,11 +890,123 @@ fn eval_cache_lookup_rejects_dirty_inline_expression_nodes() {
         .mark_dirty(observation.node())
         .expect("node can be marked dirty");
 
-    let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
-        .expect("lookup succeeds");
+    let hit = cache
+        .lookup_inline_expression_payload_hit(identity, std::iter::empty::<DurableBlake3Hash>())
+        .expect("lookup succeeds")
+        .expect("dirty pure payload cuts off");
 
-    assert!(value.is_none());
+    assert_eq!(hit.node(), observation.node());
+    assert_eq!(
+        hit.reconsideration()
+            .expect("dirty pure hit reports reconsideration")
+            .decision(),
+        CutoffDecision::CutOff
+    );
+    assert_eq!(
+        hit.into_value()
+            .immediate_value()
+            .expect("payload is immediate")
+            .as_int(),
+        Ok(3)
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(observation.node())
+            .expect("node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(cache.inline_payload_record_count(), 1);
+}
+
+#[test]
+fn dirty_pure_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
+    let mut cache = EvalCache::new();
+    let parent_identity = identity(b"parent", 1);
+    let child_identity = identity(b"child", 2);
+    let parent_observation = cache
+        .observe_inline_expression_result(
+            parent_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(10),
+        )
+        .expect("parent result observes");
+    let child_observation = cache
+        .observe_inline_expression_result(
+            child_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("child result observes");
+    cache
+        .record_memo_read_dependency(parent_observation.node(), child_observation.node())
+        .expect("memo-read edge records");
+
+    let child_change = cache
+        .graph
+        .reconsider_node(
+            child_observation.node(),
+            ValueHash::from_inline_value(Value::int(4)).expect("inline value hashes"),
+        )
+        .expect("child recomputation records changed hash");
+    assert_eq!(child_change.decision(), CutoffDecision::Propagate);
+    assert_eq!(
+        child_change.dirtied_dependents(),
+        &[parent_observation.node()]
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(child_observation.node())
+            .expect("child node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(parent_observation.node())
+            .expect("parent node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+
+    let plain_hit = cache
+        .lookup_inline_expression_payload_hit(
+            parent_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("plain lookup succeeds");
+    assert!(plain_hit.is_none());
+    assert_eq!(
+        cache
+            .graph()
+            .node(parent_observation.node())
+            .expect("parent node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+
+    let mut revalidator = StaticRevalidator::new(Vec::new());
+    let impure_aware_hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            parent_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("impure-aware lookup succeeds");
+    assert!(impure_aware_hit.is_none());
+    assert_eq!(revalidator.calls(), 0);
+    assert_eq!(
+        cache
+            .graph()
+            .node(parent_observation.node())
+            .expect("parent node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(cache.inline_payload_record_count(), 2);
 }
 
 #[test]
@@ -921,6 +1033,137 @@ fn eval_cache_lookup_rejects_stale_inline_payload_records() {
         .expect("lookup succeeds");
 
     assert!(value.is_none());
+}
+
+#[test]
+fn pure_inline_observation_clears_prior_impure_edges() {
+    let source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: true,
+    };
+    let mut cache = EvalCache::new();
+    let identity = identity(b"source", 7);
+    let trace_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("trace-backed result observes");
+    let node = trace_observation
+        .node()
+        .expect("cacheable trace creates node");
+    let input_leaf = trace_observation.trace().leaves()[0].node();
+
+    cache
+        .observe_inline_expression_result(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("pure result observes");
+
+    let node_record = cache.graph().node(node).expect("node exists");
+    assert!(node_record.dependencies().is_empty());
+    assert!(
+        node_record
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+    assert!(
+        !cache
+            .graph()
+            .node(input_leaf)
+            .expect("input leaf exists")
+            .dependents()
+            .contains(&node)
+    );
+
+    cache
+        .graph
+        .observe_impure_trace(&[read_file_trace(b"/tmp/version", b"2")], true)
+        .expect("changed stale input observes");
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Clean
+    );
+    let value = cache
+        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .expect("lookup succeeds")
+        .expect("pure payload still hits");
+    assert_eq!(value.as_int(), Ok(3));
+}
+
+#[test]
+fn pure_inline_observation_preserves_memo_read_edges_while_clearing_impure_edges() {
+    let source = TraceSource {
+        trace: vec![read_file_trace(b"/tmp/version", b"1")],
+        complete: true,
+    };
+    let mut cache = EvalCache::new();
+    let expression_identity = identity(b"source", 7);
+    let memo_dependency = cache
+        .get_or_insert_expression_node(
+            identity(b"memo", 1),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"memo")),
+        )
+        .expect("memo dependency inserts");
+    let trace_observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("trace-backed result observes");
+    let node = trace_observation
+        .node()
+        .expect("cacheable trace creates node");
+    let input_leaf = trace_observation.trace().leaves()[0].node();
+    cache
+        .record_memo_read_dependency(node, memo_dependency)
+        .expect("memo-read edge records");
+
+    cache
+        .observe_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("pure result observes");
+
+    let node_record = cache.graph().node(node).expect("node exists");
+    assert!(
+        node_record
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none()
+    );
+    assert!(
+        node_record
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .expect("memo-read group remains")
+            .contains(&memo_dependency)
+    );
+    assert!(node_record.dependencies().contains(&memo_dependency));
+    assert!(!node_record.dependencies().contains(&input_leaf));
+    assert!(
+        cache
+            .graph()
+            .node(memo_dependency)
+            .expect("memo dependency exists")
+            .dependents()
+            .contains(&node)
+    );
+    assert!(
+        !cache
+            .graph()
+            .node(input_leaf)
+            .expect("input leaf exists")
+            .dependents()
+            .contains(&node)
+    );
 }
 
 #[test]

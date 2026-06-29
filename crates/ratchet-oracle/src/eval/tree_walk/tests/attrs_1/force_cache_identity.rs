@@ -318,6 +318,93 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
 }
 
 #[test]
+fn dirty_same_runtime_pure_force_cache_hit_counts_early_cutoff() {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let shared_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut prime = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        shared_runtime.clone(),
+    );
+    let (primed, subject) = force_attr_a_with_force_cache_subject(&mut prime, &ir, a);
+    assert_eq!(primed.as_int(), Ok(3));
+    let identity = subject
+        .lookup_identity
+        .expect("source-backed pure attr has a lookup identity");
+    let owner_key =
+        DemandCacheKey::for_free_vars(identity, subject.free_var_value_hashes.iter().copied())
+            .expect("owner key builds");
+    let owner = {
+        let runtime = shared_runtime.lock().expect("cache lock is valid");
+        let cache = runtime.cache().expect("cache is enabled");
+        cache
+            .graph()
+            .node_id_for_key(owner_key)
+            .expect("forced expression node exists")
+    };
+    {
+        let mut runtime = shared_runtime.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime
+                .test_mark_dirty_node(owner)
+                .expect("node marks dirty"),
+            Some(())
+        );
+        let cache = runtime.cache().expect("cache is enabled");
+        assert_eq!(
+            cache
+                .graph()
+                .node(owner)
+                .expect("owner node exists")
+                .freshness(),
+            crate::cache::NodeFreshness::Dirty
+        );
+    }
+    drop(prime);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        shared_runtime.clone(),
+    );
+    let (forced_again, _) = force_attr_a_with_force_cache_subject(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_int(), Ok(3));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "dirty same-hash in-memory hit should replay without forcing the thunk body"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(
+        second.stats().early_cutoffs(),
+        1,
+        "dirty same-hash in-memory hit should count local early cutoff"
+    );
+    let runtime = shared_runtime.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime
+            .cache()
+            .expect("cache is enabled")
+            .graph()
+            .node(owner)
+            .expect("owner node exists")
+            .freshness(),
+        crate::cache::NodeFreshness::Clean
+    );
+}
+
+#[test]
 fn dirty_persistent_pure_force_cache_hit_counts_early_cutoff() {
     let persist_root = unique_temp_dir("force-cache-persistent-pure-dirty-cutoff");
     let source = "{ a = 1 + 2; }";

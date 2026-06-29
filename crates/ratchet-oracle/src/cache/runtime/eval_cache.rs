@@ -170,15 +170,17 @@ impl EvalCache {
         self.graph.recompute_ready_dirty_nodes(recompute)
     }
 
-    /// Looks up a clean memoized expression payload.
+    /// Looks up a memoized expression payload.
     ///
     /// This is a precursor memo path for force-time cache hits. It returns a
-    /// payload only when the expression key already exists, its demand node is
-    /// clean, the side payload record is reusable without input revalidation,
-    /// and that payload still matches the node's value hash. Unknown, dirty,
-    /// missing-payload, trace-backed, stale-payload, and dirty memo-read
-    /// supplier nodes are cache misses. Dirty memo-read suppliers also purge
-    /// the node's side payload records.
+    /// payload when the expression key already exists, the side payload record
+    /// is reusable without input revalidation, and that payload still matches
+    /// the node's value hash. Clean nodes hit directly. Dependency-free dirty
+    /// nodes may cut off locally by reconsidering the stored payload hash,
+    /// mirroring trace-backed revalidation for pure records. Unknown,
+    /// missing-payload, trace-backed, stale-payload, dirty nodes with
+    /// dependencies, and dirty memo-read supplier nodes are cache misses. Dirty
+    /// memo-read suppliers also purge the node's side payload records.
     ///
     /// # Errors
     ///
@@ -212,9 +214,8 @@ impl EvalCache {
         };
         let graph_node = self.graph.node(node)?;
         let graph_value_hash = graph_node.value_hash();
-        if graph_node.freshness() != NodeFreshness::Clean {
-            return Ok(None);
-        }
+        let graph_freshness = graph_node.freshness();
+        let graph_has_dependencies = !graph_node.dependencies().is_empty();
         let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
@@ -225,6 +226,20 @@ impl EvalCache {
             return Ok(None);
         }
         if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(None);
+        }
+        if graph_freshness == NodeFreshness::Dirty {
+            if graph_has_dependencies {
+                return Ok(None);
+            }
+            let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+            return Ok(Some(CachedExpressionPayloadHit::with_reconsideration(
+                node,
+                record.value(),
+                reconsideration,
+            )));
+        }
+        if graph_freshness != NodeFreshness::Clean {
             return Ok(None);
         }
         Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))
@@ -263,8 +278,9 @@ impl EvalCache {
     /// expression node is clean or can be cleaned with the recorded value hash.
     /// Revalidation observes fresh input leaves through the demand graph so
     /// changed inputs dirty dependents through the ordinary cutoff path. Dirty
-    /// trace-backed payload nodes whose inputs and payload hash still match are
-    /// reconsidered and can cut off locally.
+    /// trace-backed payload nodes whose inputs and payload hash still match and
+    /// that have no memo-read dependencies are reconsidered and can cut off
+    /// locally.
     ///
     /// Inputs that cannot be revalidated, revalidate to an uncacheable
     /// fingerprint, revalidate to a different identity, or depend on a dirty
@@ -312,6 +328,7 @@ impl EvalCache {
         let graph_node = self.graph.node(node)?;
         let graph_value_hash = graph_node.value_hash();
         let graph_freshness = graph_node.freshness();
+        let graph_has_dependencies = !graph_node.dependencies().is_empty();
         let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
@@ -322,6 +339,17 @@ impl EvalCache {
             return Ok(None);
         }
         if record.is_reusable_without_revalidation() {
+            if graph_freshness == NodeFreshness::Dirty {
+                if graph_has_dependencies {
+                    return Ok(None);
+                }
+                let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+                return Ok(Some(CachedExpressionPayloadHit::with_reconsideration(
+                    node,
+                    record.value(),
+                    reconsideration,
+                )));
+            }
             if graph_freshness != NodeFreshness::Clean {
                 return Ok(None);
             }
@@ -335,6 +363,12 @@ impl EvalCache {
             return Ok(None);
         }
         if graph_node.freshness() == NodeFreshness::Dirty {
+            if graph_node
+                .dependencies_in_group(DemandDependencyGroup::MemoRead)
+                .is_some_and(|dependencies| !dependencies.is_empty())
+            {
+                return Ok(None);
+            }
             if self.has_dirty_memo_read_dependency(node)? {
                 self.invalidate_existing_inline_payload(Some(node))?;
                 return Ok(None);
@@ -615,13 +649,16 @@ impl EvalCache {
         Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
-    /// Observes one recomputed expression payload.
+    /// Observes one recomputed pure expression payload.
     ///
     /// This is the first force-path integration point for the demand graph:
     /// callers still provide the expression identity and ordered free-variable
     /// hashes, and the cache only records/reconsiders the payload value hash.
     /// It does not perform memo lookup, compute free-variable hashes, or
-    /// serialize general heap-backed values.
+    /// serialize general heap-backed values. Pure observations own no
+    /// impure-input edges, so replacing a prior trace-backed payload clears only
+    /// the node's impure-input dependency group while preserving memo-read
+    /// dependencies.
     ///
     /// # Errors
     ///
@@ -640,6 +677,11 @@ impl EvalCache {
             .map_err(|source| DemandGraphError::ValueHash { source })?;
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
         let reconsideration = self.graph.reconsider_node(node, record.value_hash)?;
+        self.graph.replace_dependency_group(
+            node,
+            DemandDependencyGroup::ImpureInput,
+            std::iter::empty::<DemandNodeId>(),
+        )?;
         if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(reconsideration);
         }

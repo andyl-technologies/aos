@@ -1006,6 +1006,25 @@ alone (`M-1`/`Q-A`).
       value-hash production, `force_memoized`, evaluator node lifecycle,
       automatic `NixNative` use, persistence, and harness proof remain open
       (`S-14`/`S-15`).
+- [x] Current dirty pure inline-payload lifecycle precursor:
+      reusable dependency-free pure inline payload lookups can now reconsider a
+      dirty demand node against the side record's stored payload `ValueHash`,
+      return the in-memory hit when the hash cuts off locally, clean the node,
+      and let tree-walk account for the in-memory early cutoff without
+      re-forcing the thunk body. Dirty pure nodes with dependencies remain
+      misses until dependency hash snapshots or scheduler-owned recomputation
+      can prove the payload. Pure payload observations also clear only the
+      node's `ImpureInput` dependency group when replacing a prior trace-backed
+      observation, while preserving `MemoRead` edges, so stale file/env leaves
+      no longer dirty a now-pure expression. This is the pure reusable side
+      record lifecycle only; evaluator-owned dirty-frontier scheduling, dynamic
+      dependency capture for arbitrary computations, heap/composite canonical
+      hashing beyond replayable payloads, persistence-wide graph serialization,
+      and cached/uncached `.drv` parity proof remain open (`S-14`/`S-15`).
+      Gates: dirty dependency-free pure inline payload cutoff runtime test,
+      clean changed memo-supplier miss regression, pure-over-trace impure-edge
+      clearing tests, trace-backed clean changed memo-supplier miss regression,
+      and same-runtime source-backed force-cache early-cutoff integration test.
 - [x] Current derivation ATerm value-hash precursor:
       `ValueHash::from_derivation_aterm_bytes` hashes recorded `.drv` ATerm
       bytes in a separate durable BLAKE3 value-hash domain and can drive
