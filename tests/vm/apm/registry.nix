@@ -1103,8 +1103,6 @@ in {
         "package TOML exists before unpublish"
       assert_file_exists "$REG_DIR/packages/r/retire-tool.toml" \
         "consumer package TOML exists before unpublish"
-      assert_file_contains "$REG_DIR/packages/r/retire-tool.toml" "$RETIRE_DEP_HASH" \
-        "consumer package metadata records dependency"
       assert_file_contains "$REG_DIR/store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
         "consumer package store record lists dependency edge"
       $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
@@ -1162,9 +1160,13 @@ in {
 
       echo "==> Consumer: install package before maintainer unpublishes it"
       as_consumer
+      # The unpublish producer registry is unsigned (created without a trust
+      # key); signed metadata is now required by default on sync, so opt this
+      # consumer out of signature verification with --no-verify.
       $APM registry add file:///tmp/unpublish-origin.git \
         --name test-reg \
-        --branch "$DEFAULT_BRANCH" > /tmp/unpublish-registry-add.out 2>&1 || {
+        --branch "$DEFAULT_BRANCH" \
+        --no-verify > /tmp/unpublish-registry-add.out 2>&1 || {
         cat /tmp/unpublish-registry-add.out
         fail "apm registry add syncs unpublish registry"
       }

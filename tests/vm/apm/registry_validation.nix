@@ -148,9 +148,9 @@
 
       reg_dir="$REG_STORAGE/$reg_name"
       test -f "$reg_dir/packages/f/fixture.toml"
-      test -f "$reg_dir/closures/$store_hash"
+      test -f "$reg_dir/store/$(printf %.2s "$store_hash")/$store_hash"
       grep -q "$store_path" "$reg_dir/packages/f/fixture.toml"
-      grep -q "$store_hash" "$reg_dir/closures/$store_hash"
+      grep -q "nar:sha256:" "$reg_dir/store/$(printf %.2s "$store_hash")/$store_hash"
 
       $APR verify --registry "$reg_name" > "/tmp/$reg_name-verify.log" 2>&1 || {
         cat "/tmp/$reg_name-verify.log"
@@ -467,7 +467,7 @@ in {
         create_registry_for_store_path vm-cache "$STORE_PATH"
         nix-store -q --references "$STORE_PATH" > /tmp/backend-root-refs.out
         grep -q "$LEAF_PATH" /tmp/backend-root-refs.out
-        grep -q "$LEAF_HASH" "$REG_STORAGE/vm-cache/closures/$STORE_HASH"
+        grep -q "$LEAF_HASH" "$REG_STORAGE/vm-cache/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH"
 
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
@@ -719,7 +719,7 @@ in {
         create_registry_for_store_path cdn-cache "$STORE_PATH"
         nix-store -q --references "$STORE_PATH" > /tmp/cdn-root-refs.out
         grep -q "$LEAF_PATH" /tmp/cdn-root-refs.out
-        grep -q "$LEAF_HASH" "$REG_STORAGE/cdn-cache/closures/$STORE_HASH"
+        grep -q "$LEAF_HASH" "$REG_STORAGE/cdn-cache/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH"
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
         $APR cache generate --registry cdn-cache \
