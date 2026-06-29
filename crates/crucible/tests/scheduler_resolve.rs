@@ -226,7 +226,8 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
             | Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_) => Vec::new(),
+            | Decision::AppRandom(_)
+            | Decision::ControlFault(_) => Vec::new(),
         })
         .collect()
 }

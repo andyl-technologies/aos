@@ -2560,6 +2560,8 @@ pub enum Decision {
     Preemption(PreemptionDecision),
     /// A served application-requested random value.
     AppRandom(AppRandomDecision),
+    /// A boundary-applied imperative fault-control action.
+    ControlFault(ControlFaultDecision),
 }
 
 impl Decision {
@@ -6318,6 +6320,34 @@ pub struct AppRandomDecision {
     pub width: u8,
     /// The served random value.
     pub value: u64,
+}
+
+/// A boundary-applied imperative fault-control decision.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ControlFaultDecision {
+    /// The virtual time at which the control action applied.
+    pub at: VirtualTime,
+    /// The session-local control operation sequence.
+    pub sequence: u64,
+    /// The fault action applied at the boundary.
+    pub action: ControlFaultAction,
+}
+
+/// A fault action admitted through the control plane.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ControlFaultAction {
+    /// Inject or replace a full-taxonomy fault under `tag`.
+    Inject {
+        /// Stable handle used for later healing.
+        tag: FaultTag,
+        /// Full fault taxonomy value to activate.
+        fault: Fault,
+    },
+    /// Heal an active fault by tag.
+    Heal {
+        /// Stable handle naming the active fault.
+        tag: FaultTag,
+    },
 }
 
 /// A per-VM snapshot reference captured by a fat checkpoint.
@@ -10218,7 +10248,8 @@ fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
         Decision::DeliveryOrder(_)
         | Decision::FaultFires(_)
         | Decision::RngDraw(_)
-        | Decision::Override(_) => None,
+        | Decision::Override(_)
+        | Decision::ControlFault(_) => None,
     }
 }
 
@@ -13911,6 +13942,12 @@ fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter)
             writer.write_u8(random.width);
             writer.write_u64(random.value);
         }
+        Decision::ControlFault(control) => {
+            writer.write_u8(6);
+            writer.write_u64(control.at.ticks);
+            writer.write_u64(control.sequence);
+            write_control_fault_action_binary(&control.action, writer);
+        }
     }
 }
 
@@ -13973,7 +14010,52 @@ fn read_decision_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Decisio
             width: reader.read_u8()?,
             value: reader.read_u64()?,
         })),
+        6 => Ok(Decision::ControlFault(ControlFaultDecision {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            sequence: reader.read_u64()?,
+            action: read_control_fault_action_binary(reader)?,
+        })),
         _ => Err(scenario_serialization_error("invalid decision tag")),
+    }
+}
+
+fn write_control_fault_action_binary(
+    action: &ControlFaultAction,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            writer.write_u8(0);
+            writer.write_string(&tag.name);
+            write_fault_binary(fault, writer);
+        }
+        ControlFaultAction::Heal { tag } => {
+            writer.write_u8(1);
+            writer.write_string(&tag.name);
+        }
+    }
+}
+
+fn read_control_fault_action_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ControlFaultAction, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(ControlFaultAction::Inject {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_fault_binary(reader)?,
+        }),
+        1 => Ok(ControlFaultAction::Heal {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error(
+            "invalid control-fault action tag",
+        )),
     }
 }
 
@@ -17418,6 +17500,24 @@ fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String
             lines.push(format!("{prefix}.request_id={}", random.request_id));
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));
+        }
+        Decision::ControlFault(control) => {
+            lines.push(format!("{prefix}.kind=control-fault"));
+            lines.push(format!("{prefix}.at_ticks={}", control.at.ticks));
+            lines.push(format!("{prefix}.sequence={}", control.sequence));
+            match &control.action {
+                ControlFaultAction::Inject { tag, fault } => {
+                    lines.push(format!("{prefix}.action=inject-fault"));
+                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
+                    lines.push(format!("{prefix}.tag={}", tag.name));
+                    lines.push(fault.canonical_material());
+                }
+                ControlFaultAction::Heal { tag } => {
+                    lines.push(format!("{prefix}.action=heal-fault"));
+                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
+                    lines.push(format!("{prefix}.tag={}", tag.name));
+                }
+            }
         }
     }
 }

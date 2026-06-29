@@ -19,9 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crucible::{
-    Configuration, ControlOperation, ControlOperationKind, EngineError, QuantumLoop,
-    QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError, TemporalGraph, VirtualTime,
-    instantiate,
+    Configuration, ControlOperation, ControlOperationKind, EngineError, Fault, FaultTag,
+    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError, TemporalGraph,
+    VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -169,7 +169,7 @@ pub enum StepMode {
 }
 
 /// A control command consumed by the session actor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SessionCommand {
     /// Instantiate the loaded configuration.
     Start,
@@ -188,6 +188,18 @@ pub enum SessionCommand {
     Fork,
     /// Inject a deterministic control-plane fault at the next boundary.
     Inject,
+    /// Inject or replace a full-taxonomy fault at the next boundary.
+    InjectFault {
+        /// Stable handle used for later healing.
+        tag: FaultTag,
+        /// Full fault taxonomy value to activate.
+        fault: Fault,
+    },
+    /// Heal a full-taxonomy fault at the next boundary.
+    HealFault {
+        /// Stable handle naming the active fault.
+        tag: FaultTag,
+    },
     /// Transition to a terminal operator-stopped state.
     Stop,
     /// Read the current boundary state without mutation.
@@ -197,21 +209,32 @@ pub enum SessionCommand {
 impl SessionCommand {
     /// Returns whether the command is observation-only.
     #[must_use]
-    pub const fn is_read_only(self) -> bool {
+    pub const fn is_read_only(&self) -> bool {
         matches!(self, Self::Query | Self::Snapshot)
     }
 
-    const fn is_control_acknowledged(self) -> bool {
+    const fn is_control_acknowledged(&self) -> bool {
         matches!(
             self,
-            Self::Pause | Self::Snapshot | Self::Fork | Self::Inject | Self::Query
+            Self::Pause
+                | Self::Snapshot
+                | Self::Fork
+                | Self::Inject
+                | Self::InjectFault { .. }
+                | Self::HealFault { .. }
+                | Self::Query
         )
     }
 
-    const fn requires_running_quantum_ack(self) -> bool {
+    const fn requires_running_quantum_ack(&self) -> bool {
         matches!(
             self,
-            Self::Snapshot | Self::Fork | Self::Inject | Self::Query
+            Self::Snapshot
+                | Self::Fork
+                | Self::Inject
+                | Self::InjectFault { .. }
+                | Self::HealFault { .. }
+                | Self::Query
         )
     }
 }
@@ -543,12 +566,12 @@ impl<L: QuantumLoop> Engine<L> {
         &mut self,
         command: SessionCommand,
     ) -> Result<EngineSnapshot, SessionError> {
-        match command {
+        match &command {
             SessionCommand::Start => {
                 if matches!(self.state, EngineState::Loaded) {
                     self.instantiate_runtime()
                 } else {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
                 }
             }
             SessionCommand::Continue => {
@@ -556,7 +579,7 @@ impl<L: QuantumLoop> Engine<L> {
                     self.state = EngineState::Running;
                     Ok(self.snapshot())
                 } else {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
                 }
             }
             SessionCommand::Pause => match self.state {
@@ -567,7 +590,7 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
                 }
             },
             SessionCommand::Step {
@@ -587,7 +610,7 @@ impl<L: QuantumLoop> Engine<L> {
                     };
                     Ok(self.snapshot())
                 } else {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
                 }
             }
             SessionCommand::Snapshot => {
@@ -603,7 +626,7 @@ impl<L: QuantumLoop> Engine<L> {
                     }
                     Ok(self.snapshot())
                 }
-                EngineState::Loaded => Err(self.invalid_transition(command)),
+                EngineState::Loaded => Err(self.invalid_transition(command.clone())),
             },
             SessionCommand::Inject => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
@@ -613,12 +636,39 @@ impl<L: QuantumLoop> Engine<L> {
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::InjectFault { tag, fault } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.admit_control_operation(ControlOperationKind::InjectFault {
+                            tag: tag.clone(),
+                            fault: fault.clone(),
+                        });
+                    }
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::HealFault { tag } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    if matches!(self.state, EngineState::Running) {
+                        self.admit_control_operation(ControlOperationKind::HealFault {
+                            tag: tag.clone(),
+                        });
+                    }
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
                 }
             },
             SessionCommand::Stop => {
                 if matches!(self.state, EngineState::Stopped { .. }) {
-                    Err(self.invalid_transition(command))
+                    Err(self.invalid_transition(command.clone()))
                 } else {
                     self.state = EngineState::Stopped {
                         outcome: Outcome::Stopped,
@@ -898,8 +948,9 @@ impl<L: QuantumLoop> SessionActor<L> {
         let quanta_before = self.engine.quanta();
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
+        let control_acknowledged = command.is_control_acknowledged();
         self.engine.apply_command(command)?;
-        if command.is_control_acknowledged() && !quantum_ack {
+        if control_acknowledged && !quantum_ack {
             self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
         }
         self.publish_live_snapshot();
@@ -1578,17 +1629,11 @@ mod tests {
     }
 
     fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
-        let material = format!("sequence={sequence}");
-        crucible::SchedulerEventLogEntry {
+        crucible::SchedulerEventLogEntry::evaluation_boundary(
             sequence,
-            at: VirtualTime { ticks: sequence },
-            class: crucible::SchedulerEventLogClass::Causal,
-            payload: crucible::SchedulerEventLogPayload::Decision(generated_decision(sequence)),
-            content_hash: crucible::ContentHash::from_canonical_material(
-                "crucible.session.test.event-log-entry",
-                &material,
-            ),
-        }
+            VirtualTime { ticks: sequence },
+            crucible::SchedulerEvaluationBoundaryKind::Quantum,
+        )
     }
 
     fn generated_decision(seed: u64) -> Decision {

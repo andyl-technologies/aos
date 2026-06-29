@@ -28,13 +28,13 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, BackendError, BackendInput, CombinedFaults, CombinedNetworkFaults,
-    CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, Decision,
-    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
-    EventSequenceState, Fault, FaultId, FaultRateBasisPoints, Icount, LinkId, MembershipFault,
-    NodeCounter, NodeId, NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind,
-    RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
-    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction,
+    ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision,
+    EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints, FaultTag,
+    Icount, LinkId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
+    PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
+    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -174,7 +174,7 @@ impl SchedulerEventLogEntry {
 
     /// Builds a deterministic condition-evaluation boundary entry.
     #[must_use]
-    pub(crate) fn evaluation_boundary(
+    pub fn evaluation_boundary(
         sequence: u64,
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
@@ -1318,7 +1318,7 @@ pub struct ControlOperation {
 }
 
 /// A session control action that can be handled between quanta.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlOperationKind {
     /// Pause after the current boundary.
     Pause,
@@ -1332,6 +1332,18 @@ pub enum ControlOperationKind {
     Fork,
     /// Inject a control-plane fault or input at the boundary.
     Inject,
+    /// Inject or replace a full-taxonomy fault at the boundary.
+    InjectFault {
+        /// Stable handle used for later healing.
+        tag: FaultTag,
+        /// Full fault taxonomy value to activate.
+        fault: Fault,
+    },
+    /// Heal a full-taxonomy fault at the boundary.
+    HealFault {
+        /// Stable handle naming the active fault.
+        tag: FaultTag,
+    },
     /// Query boundary state without mutating the engine.
     Query,
 }
@@ -3490,15 +3502,39 @@ fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
             choice.stream.name,
             choice.rate.basis_points(),
         ),
-        ScheduledEventPayload::Control(operation) => format!(
-            "payload=control\ncontrol_sequence={}\ncontrol_kind={}",
-            operation.sequence,
-            control_operation_kind_label(operation.kind),
-        ),
+        ScheduledEventPayload::Control(operation) => {
+            format!("payload=control\n{}", control_operation_material(operation))
+        }
     }
 }
 
-fn control_operation_kind_label(kind: ControlOperationKind) -> &'static str {
+fn control_operation_material(operation: &ControlOperation) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("control_sequence={}", operation.sequence));
+    lines.push(format!(
+        "control_kind={}",
+        control_operation_kind_label(&operation.kind)
+    ));
+    match &operation.kind {
+        ControlOperationKind::InjectFault { tag, fault } => {
+            lines.push(trigger_fault_tag_material("control_tag", tag));
+            lines.push(fault.canonical_material());
+        }
+        ControlOperationKind::HealFault { tag } => {
+            lines.push(trigger_fault_tag_material("control_tag", tag));
+        }
+        ControlOperationKind::Pause
+        | ControlOperationKind::Resume
+        | ControlOperationKind::Step
+        | ControlOperationKind::Snapshot
+        | ControlOperationKind::Fork
+        | ControlOperationKind::Inject
+        | ControlOperationKind::Query => {}
+    }
+    lines.join("\n")
+}
+
+fn control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
     match kind {
         ControlOperationKind::Pause => "pause",
         ControlOperationKind::Resume => "resume",
@@ -3506,6 +3542,8 @@ fn control_operation_kind_label(kind: ControlOperationKind) -> &'static str {
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
         ControlOperationKind::Inject => "inject",
+        ControlOperationKind::InjectFault { .. } => "inject-fault",
+        ControlOperationKind::HealFault { .. } => "heal-fault",
         ControlOperationKind::Query => "query",
     }
 }
@@ -3929,17 +3967,10 @@ fn apply_trigger_effect(
 ) -> Result<(), SchedulerError> {
     match &application.action {
         Action::InjectFault { tag, fault } => {
-            state.active_taxonomy_faults.remove(tag);
-            if let Some(fault) = fault.as_taxonomy_fault() {
-                state
-                    .active_taxonomy_faults
-                    .insert(tag.clone(), fault.clone());
-            }
-            state.active_faults.insert(tag.clone(), fault.clone());
+            activate_fault_tag(state, tag, fault);
         }
         Action::HealFault { tag } => {
-            state.active_taxonomy_faults.remove(tag);
-            state.active_faults.remove(tag);
+            heal_fault_tag(state, tag);
         }
         Action::ArmTimer { name, after } => {
             let ticks = application
@@ -4048,6 +4079,64 @@ fn apply_trigger_verdict_effect(
     }
 }
 
+fn activate_fault_tag(state: &mut TriggerActionState, tag: &FaultTag, fault: &MembershipFault) {
+    state.active_taxonomy_faults.remove(tag);
+    if let Some(fault) = fault.as_taxonomy_fault() {
+        state
+            .active_taxonomy_faults
+            .insert(tag.clone(), fault.clone());
+    }
+    state.active_faults.insert(tag.clone(), fault.clone());
+}
+
+fn heal_fault_tag(state: &mut TriggerActionState, tag: &FaultTag) {
+    state.active_taxonomy_faults.remove(tag);
+    state.active_faults.remove(tag);
+}
+
+fn control_fault_action_for_operation(operation: &ControlOperation) -> Option<ControlFaultAction> {
+    match &operation.kind {
+        ControlOperationKind::InjectFault { tag, fault } => Some(ControlFaultAction::Inject {
+            tag: tag.clone(),
+            fault: fault.clone(),
+        }),
+        ControlOperationKind::HealFault { tag } => {
+            Some(ControlFaultAction::Heal { tag: tag.clone() })
+        }
+        ControlOperationKind::Pause
+        | ControlOperationKind::Resume
+        | ControlOperationKind::Step
+        | ControlOperationKind::Snapshot
+        | ControlOperationKind::Fork
+        | ControlOperationKind::Inject
+        | ControlOperationKind::Query => None,
+    }
+}
+
+fn apply_control_fault_action(state: &mut TriggerActionState, action: &ControlFaultAction) {
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            activate_fault_tag(state, tag, &MembershipFault::taxonomy(fault.clone()));
+        }
+        ControlFaultAction::Heal { tag } => heal_fault_tag(state, tag),
+    }
+}
+
+fn trigger_action_state_from_control_fault_decisions(
+    decisions: &[Decision],
+) -> (TriggerActionState, Option<u64>) {
+    let mut state = TriggerActionState::default();
+    let mut sequence = None;
+    for decision in decisions {
+        let Decision::ControlFault(control) = decision else {
+            continue;
+        };
+        apply_control_fault_action(&mut state, &control.action);
+        sequence = Some(control.sequence);
+    }
+    (state, sequence)
+}
+
 fn validate_trigger_node_schedule_target(
     static_topology: Option<&WorldStaticTopology>,
     node: &NodeId,
@@ -4136,6 +4225,7 @@ fn scheduler_decision_event_log_time(
     match decision {
         Decision::DeliveryOrder(order) => Ok(order.at),
         Decision::FaultFires(fault) => Ok(fault.at),
+        Decision::ControlFault(control) => Ok(control.at),
         Decision::Preemption(preemption) => {
             if let Some((_, virtual_time)) = preemption_times
                 .iter()
@@ -4230,6 +4320,28 @@ fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("request_id={}", random.request_id));
             lines.push(format!("width={}", random.width));
             lines.push(format!("value={}", random.value));
+        }
+        Decision::ControlFault(control) => {
+            lines.push(String::from("decision=control-fault"));
+            lines.push(format!("decision_at={}", control.at.ticks));
+            lines.push(format!("control_sequence={}", control.sequence));
+            lines.push(control_fault_action_material("control", &control.action));
+        }
+    }
+    lines.join("\n")
+}
+
+fn control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
+    let mut lines = Vec::new();
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            lines.push(format!("{prefix}.kind=inject-fault"));
+            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
+            lines.push(fault.canonical_material());
+        }
+        ControlFaultAction::Heal { tag } => {
+            lines.push(format!("{prefix}.kind=heal-fault"));
+            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
         }
     }
     lines.join("\n")
@@ -4528,8 +4640,10 @@ impl SingleScheduler {
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
         let event_log_prefix = scheduler_event_log_empty_prefix();
+        let (trigger_actions, replay_fault_sequence) =
+            trigger_action_state_from_control_fault_decisions(configuration.schedule.decisions());
 
-        Ok(Self {
+        let mut scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
@@ -4558,7 +4672,7 @@ impl SingleScheduler {
             condition_event_log_entries: Vec::new(),
             condition_event_log_prefix: ConditionEventLogPrefix::genesis()
                 .with_event_log_offset(EventLogOffset::new(event_log_prefix, 0, 0)),
-            trigger_actions: TriggerActionState::default(),
+            trigger_actions,
             trigger_static_topology: scenario.trigger_static_topology,
             frontier,
             quanta: 0,
@@ -4572,7 +4686,9 @@ impl SingleScheduler {
             lock_held: false,
             last_advance: None,
             last_topology_recompute: false,
-        })
+        };
+        scheduler.hydrate_control_fault_schedule_prefix(replay_fault_sequence)?;
+        Ok(scheduler)
     }
 
     /// Returns the current scheduler configuration.
@@ -5137,6 +5253,71 @@ impl SingleScheduler {
         self.apply_trigger_node_faults(sequence, previous, next)?;
         self.apply_trigger_network_partitions(sequence, previous, next)?;
         self.apply_trigger_device_faults(next)?;
+        Ok(())
+    }
+
+    fn hydrate_control_fault_schedule_prefix(
+        &mut self,
+        sequence: Option<u64>,
+    ) -> Result<(), SchedulerError> {
+        let Some(sequence) = sequence else {
+            return Ok(());
+        };
+        let previous = CombinedFaults::default();
+        let next = self.trigger_actions.combined_faults();
+        if previous == next {
+            return Ok(());
+        }
+
+        self.apply_trigger_node_faults(sequence, &previous, &next)?;
+        self.hydrate_network_partition_faults(sequence, &next)?;
+        self.apply_trigger_device_faults(&next)
+    }
+
+    fn hydrate_network_partition_faults(
+        &mut self,
+        sequence: u64,
+        next: &CombinedFaults,
+    ) -> Result<(), SchedulerError> {
+        if network_partitions(&next.network).is_empty() {
+            return Ok(());
+        }
+        let Some(static_topology) = &self.trigger_static_topology else {
+            return Ok(());
+        };
+        let effective_edges = static_topology
+            .lookahead_graph
+            .iter()
+            .filter(|edge| !world_edge_removed_by_network_faults(edge, &next.network))
+            .map(SchedulerLookaheadEdge::from_world_edge)
+            .collect::<Vec<_>>();
+        let graph = SchedulerLookaheadGraph::from_edges(effective_edges);
+        let graph = self.suppress_down_edges(graph);
+        let mut updates = Vec::with_capacity(self.nodes.len());
+        for node in &mut self.nodes {
+            let previous_lookahead = node.network_lookahead;
+            let recomputed_lookahead = graph.lookahead(&node.id);
+            node.network_lookahead = recomputed_lookahead;
+            updates.push(SchedulerTopologyLookaheadUpdate {
+                node: node.id.clone(),
+                previous_lookahead,
+                recomputed_lookahead,
+            });
+        }
+        self.effective_topology = graph;
+        self.topology_epoch = self.topology_epoch.checked_add(1).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("scheduler topology epoch overflow"),
+            }
+        })?;
+        self.topology_change_applications
+            .push(SchedulerTopologyChangeApplication {
+                topology_epoch: self.topology_epoch,
+                sequence,
+                trigger: SchedulerTopologyChangeTrigger::FaultActivation,
+                activation_time: None,
+                updates,
+            });
         Ok(())
     }
 
@@ -7596,6 +7777,18 @@ impl SingleScheduler {
             }
             decisions.extend(probabilistic.decisions);
         }
+        for event in ordered_scheduled_events(resolved_events) {
+            let ScheduledEventPayload::Control(operation) = &event.payload else {
+                continue;
+            };
+            if let Some(action) = control_fault_action_for_operation(operation) {
+                decisions.push(Decision::ControlFault(ControlFaultDecision {
+                    at: event.key.virtual_time(),
+                    sequence: operation.sequence,
+                    action,
+                }));
+            }
+        }
         // Device I/O completions drew their fault decisions (RngDraw + FaultFires)
         // at COMPUTE and buffered them; they are appended on the LIVE RESOLVE path
         // in delivery order ([SCHED-30]). Each device RngDraw advances the owning
@@ -7779,7 +7972,7 @@ impl SingleScheduler {
                 message: format!(
                     "scheduler control operation missing boundary admission: sequence={} kind={}",
                     operation.sequence,
-                    control_operation_kind_label(operation.kind)
+                    control_operation_kind_label(&operation.kind)
                 ),
             });
         };
@@ -7818,7 +8011,7 @@ impl SingleScheduler {
                     message: format!(
                         "scheduler control operation applied before admission: sequence={} kind={}",
                         operation.sequence,
-                        control_operation_kind_label(operation.kind)
+                        control_operation_kind_label(&operation.kind)
                     ),
                 })?;
             if application_delta_quanta > SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA {
@@ -7826,7 +8019,7 @@ impl SingleScheduler {
                     message: format!(
                         "scheduler control operation exceeded quantum response bound: sequence={} kind={} delta={} bound={}",
                         operation.sequence,
-                        control_operation_kind_label(operation.kind),
+                        control_operation_kind_label(&operation.kind),
                         application_delta_quanta,
                         SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA
                     ),
@@ -7847,10 +8040,34 @@ impl SingleScheduler {
                 payload: ScheduledEventPayload::Control(operation),
             });
         }
+        self.apply_control_faults_at_boundary(&applications)?;
         Ok(SchedulerControlDrain {
             events,
             applications,
         })
+    }
+
+    fn apply_control_faults_at_boundary(
+        &mut self,
+        applications: &[SchedulerControlApplication],
+    ) -> Result<(), SchedulerError> {
+        let previous_faults = self.trigger_actions.combined_faults();
+        let mut trigger_actions = self.trigger_actions.clone();
+        let mut fault_sequence = None;
+        for application in applications {
+            let Some(action) = control_fault_action_for_operation(&application.operation) else {
+                continue;
+            };
+            apply_control_fault_action(&mut trigger_actions, &action);
+            fault_sequence = Some(application.sequence);
+        }
+        let Some(fault_sequence) = fault_sequence else {
+            return Ok(());
+        };
+        let next_faults = trigger_actions.combined_faults();
+        self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
+        self.trigger_actions = trigger_actions;
+        Ok(())
     }
 
     fn advance_decision_rng_cursor(&mut self) {
