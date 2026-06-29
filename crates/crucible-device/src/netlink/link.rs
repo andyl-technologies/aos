@@ -26,7 +26,7 @@
 //!   if delivery_icount <= consumer_frontier: FAIL-LOUD or clamp (IO-34)
 //!   loss?      DROP (no delivery)
 //!   duplicate? emit a 2nd delivery at delivery_ns + gap
-//!   corrupt?   flip seeded payload bits
+//!   corrupt?   mutate payload bytes
 //! advance_to(limit): drain frames with delivery_icount <= limit  (DESTINATION sees)
 //! ```
 //!
@@ -50,7 +50,7 @@ use crate::request::{Response, ResponseStatus};
 use crate::fault::DeviceRng;
 
 use super::fault::{
-    LinkFaults, corrupt_payload, jitter_shift_ns, reorder_shift_ns, serialization_delay_ns,
+    LinkCorruptionStrategy, LinkFaults, corrupt_payload, jitter_shift_ns, reorder_shift_ns,
 };
 
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
@@ -144,13 +144,13 @@ pub struct ResolveOutcome {
 /// The injected RNG draws one frame's fault resolution consumes, in fixed order.
 ///
 /// Each probabilistic fault draws from this struct in the order the model
-/// applies them: jitter, reorder, loss, duplicate, corrupt (with `corrupt_bits`
-/// supplying one draw per flipped bit). Supplying the same draws and the same
-/// frame yields byte-identical deliveries ([IO-4], [IO-22]).
+/// applies them: jitter, reorder, loss rates, duplicate, corrupt (with
+/// `corrupt_bits` supplying one draw per flipped bit). Supplying the same draws
+/// and the same frame yields byte-identical deliveries ([IO-4], [IO-22]).
 ///
 /// The seeded per-device RNG ([`DeviceRng`]) produces these draws in this exact
-/// consumption order via [`FrameDraws::from_rng`] ([IO-21]); callers may still
-/// inject draws directly for unit tests.
+/// consumption order via [`FrameDraws::from_rng_for_faults`] ([IO-21]); callers
+/// may still inject draws directly for unit tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameDraws {
     /// The jitter-window draw.
@@ -159,6 +159,8 @@ pub struct FrameDraws {
     pub reorder: u64,
     /// The loss-Bernoulli draw.
     pub loss: u64,
+    /// Additional loss-Bernoulli draws for overlapping loss rates.
+    pub additional_loss: Vec<u64>,
     /// The duplicate-Bernoulli draw.
     pub duplicate: u64,
     /// The corrupt-Bernoulli draw.
@@ -178,9 +180,32 @@ impl FrameDraws {
     /// the corrupt fault ultimately fires, so the next frame's draws are stable.
     #[must_use]
     pub fn from_rng(rng: &mut DeviceRng, bit_flips: u32) -> Self {
+        Self::from_rng_parts(rng, bit_flips, 0)
+    }
+
+    /// Draws one frame's fault draws for an effective link fault table.
+    ///
+    /// This is the RFC-level path used by [`NetLink::emit_with_rng_draws`]. It
+    /// consumes one draw for each overlapping loss probability before duplicate
+    /// and corruption draws, preserving the highest-first any-fires evaluation
+    /// order while keeping the legacy single-loss path byte-identical.
+    #[must_use]
+    pub fn from_rng_for_faults(rng: &mut DeviceRng, faults: &LinkFaults) -> Self {
+        Self::from_rng_parts(
+            rng,
+            faults.corrupt_bit_draws(),
+            faults.additional_loss.len(),
+        )
+    }
+
+    fn from_rng_parts(rng: &mut DeviceRng, bit_flips: u32, additional_loss_count: usize) -> Self {
         let jitter = rng.next_u64();
         let reorder = rng.next_u64();
         let loss = rng.next_u64();
+        let mut additional_loss = Vec::with_capacity(additional_loss_count);
+        for _ in 0..additional_loss_count {
+            additional_loss.push(rng.next_u64());
+        }
         let duplicate = rng.next_u64();
         let corrupt = rng.next_u64();
         let mut corrupt_bits = Vec::with_capacity(bit_flips as usize);
@@ -191,6 +216,7 @@ impl FrameDraws {
             jitter,
             reorder,
             loss,
+            additional_loss,
             duplicate,
             corrupt,
             corrupt_bits,
@@ -384,8 +410,8 @@ impl NetLink {
     /// [IO-33]) plus bandwidth serialization and seeded jitter/reorder shifts,
     /// then applies the probabilistic faults from `draws` ([IO-20]): loss drops
     /// the frame (zero deliveries), duplicate emits a second delivery at a
-    /// deterministically-derived later icount, and corrupt flips seeded payload
-    /// bits. Each produced delivery is inserted into the delivery-ordered
+    /// deterministically-derived later icount, and corrupt mutates payload bytes.
+    /// Each produced delivery is inserted into the delivery-ordered
     /// in-flight queue and is also returned in the [`ResolveOutcome`].
     ///
     /// The `draws` are injected here for unit testing;
@@ -407,11 +433,18 @@ impl NetLink {
         draws: &FrameDraws,
         policy: PastDeliveryPolicy,
     ) -> Result<ResolveOutcome, DeviceError> {
+        let mut outcome = ResolveOutcome::default();
+
+        // --- partition (IO-20): drop the frame, no delivery ---
+        if self.faults.partitioned {
+            return Ok(outcome);
+        }
+
         // --- delivery-time computation (deterministic shifts) ---
         let base_ns = self.clock.virtual_ns(frame.emit_icount)?;
         let eff_latency = self.effective_latency_ns();
         let len = frame.payload.len() as u64;
-        let serialization = serialization_delay_ns(len, self.faults.bandwidth_bytes_per_sec);
+        let serialization = self.faults.serialization_delay_ns(len);
         let jitter = jitter_shift_ns(draws.jitter, self.faults.jitter_window_ns);
         let reorder = reorder_shift_ns(draws.reorder, self.faults.reorder_window_ns);
 
@@ -431,21 +464,15 @@ impl NetLink {
         // --- into-the-past guard (IO-34): never silently deliver late ---
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
 
-        let mut outcome = ResolveOutcome::default();
-
         // --- loss (IO-20): drop the frame, no delivery ---
-        if self.faults.loss.fires(draws.loss) {
+        if loss_fires(&self.faults, draws) {
             return Ok(outcome);
         }
 
-        // --- corrupt (IO-20): flip seeded payload bits ---
+        // --- corrupt (IO-20): mutate payload bytes deterministically ---
         let mut payload = frame.payload.clone();
         if self.faults.corrupt.fires(draws.corrupt) {
-            corrupt_payload(
-                &mut payload,
-                &draws.corrupt_bits,
-                self.faults.corrupt_bit_flips,
-            );
+            corrupt_link_payload(&self.faults, &mut payload, &draws.corrupt_bits);
         }
 
         // --- the primary delivery ---
@@ -487,7 +514,7 @@ impl NetLink {
     ///
     /// Identical to [`NetLink::emit`] except the [`FrameDraws`] are produced by
     /// the seeded per-device RNG in the fixed model order
-    /// ([`FrameDraws::from_rng`]) rather than injected, and the link's RNG cursor
+    /// ([`FrameDraws::from_rng_for_faults`]) rather than injected, and the link's RNG cursor
     /// ([`NetLink::rng_position`]) advances to match. The cursor is captured in the
     /// snapshot so a fork resumes the same draw sequence ([IO-23]). The draws are
     /// taken before any early-out so the cursor stays aligned whether or not the
@@ -524,7 +551,7 @@ impl NetLink {
         rng: &mut DeviceRng,
         policy: PastDeliveryPolicy,
     ) -> Result<(ResolveOutcome, FrameDraws), DeviceError> {
-        let draws = FrameDraws::from_rng(rng, self.faults.corrupt_bit_flips);
+        let draws = FrameDraws::from_rng_for_faults(rng, &self.faults);
         let outcome = self.emit(frame, &draws, policy)?;
         self.rng_position = rng.position();
         Ok((outcome, draws))
@@ -664,7 +691,7 @@ impl NetLink {
             src_node: self.src_node,
             base_latency_ns: self.base_latency_ns,
             floor_ns: self.floor_ns,
-            faults: self.faults,
+            faults: self.faults.clone(),
             next_seq: self.next_seq,
             lookahead_recompute_pending: self.lookahead_recompute_pending,
             rng_position: self.rng_position,
@@ -698,11 +725,68 @@ impl NetLink {
             src_node: snapshot.src_node,
             base_latency_ns: snapshot.base_latency_ns,
             floor_ns: snapshot.floor_ns,
-            faults: snapshot.faults,
+            faults: snapshot.faults.clone(),
             next_seq: snapshot.next_seq,
             lookahead_recompute_pending: snapshot.lookahead_recompute_pending,
             rng_position: snapshot.rng_position,
         })
+    }
+}
+
+fn loss_fires(faults: &LinkFaults, draws: &FrameDraws) -> bool {
+    if faults.loss.fires(draws.loss) {
+        return true;
+    }
+
+    faults
+        .additional_loss
+        .iter()
+        .enumerate()
+        .any(|(index, probability)| {
+            let draw = draws
+                .additional_loss
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| non_firing_draw(probability));
+            probability.fires(draw)
+        })
+}
+
+fn non_firing_draw(probability: &crate::fault::Probability) -> u64 {
+    if probability.denominator == 0 || probability.numerator >= probability.denominator {
+        0
+    } else {
+        probability.numerator
+    }
+}
+
+fn corrupt_link_payload(faults: &LinkFaults, payload: &mut Vec<u8>, bit_draws: &[u64]) {
+    if faults.corruption_strategies.is_empty() {
+        corrupt_payload(payload, bit_draws, faults.corrupt_bit_flips);
+        return;
+    }
+
+    let mut bit_offset = 0usize;
+    for strategy in &faults.corruption_strategies {
+        match *strategy {
+            LinkCorruptionStrategy::BitFlip { max_bits } => {
+                let count = max_bits as usize;
+                let end = bit_offset.saturating_add(count).min(bit_draws.len());
+                corrupt_payload(payload, &bit_draws[bit_offset..end], max_bits);
+                bit_offset = bit_offset.saturating_add(count);
+            }
+            LinkCorruptionStrategy::FieldMutation => {
+                if let Some(first) = payload.first_mut() {
+                    *first ^= 0x80;
+                }
+            }
+            LinkCorruptionStrategy::Truncation { max_bytes } => {
+                let remove = usize::try_from(max_bytes)
+                    .unwrap_or(usize::MAX)
+                    .min(payload.len());
+                payload.truncate(payload.len().saturating_sub(remove));
+            }
+        }
     }
 }
 

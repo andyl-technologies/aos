@@ -100,8 +100,8 @@ pub use harness::{
 };
 pub use inflight::{InflightQueue, PendingResponse};
 pub use netlink::{
-    Delivery, Frame, FrameDraws, LINK_SLOT, LinkFaults, LinkSnapshot, NetLink, PastDeliveryPolicy,
-    ResolveOutcome,
+    Delivery, Frame, FrameDraws, LINK_SLOT, LinkCorruptionStrategy, LinkFaults, LinkSnapshot,
+    NetLink, PastDeliveryPolicy, ResolveOutcome,
 };
 pub use ninep::{
     FsTree, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot, NinepSnapshot, Node, Qid,
