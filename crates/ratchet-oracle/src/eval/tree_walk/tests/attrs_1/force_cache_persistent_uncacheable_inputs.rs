@@ -195,3 +195,150 @@ fn current_time_dependent_forced_expression_tombstones_stale_persistent_cache() 
 
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
 }
+
+#[test]
+fn current_time_unsupported_forced_expression_tombstones_stale_persistent_cache() {
+    let persist_root = unique_temp_dir("force-cache-persistent-current-time-unsupported-tombstone");
+    let nested_list = format!("{}0{}", "[".repeat(70), "]".repeat(70));
+    let source = format!("{{ a = if builtins.currentTime > 0 then {nested_list} else 0; }}");
+    let ir = lower(&source);
+    let a = symbol_for(&ir, b"a");
+    let runtime = persistent_runtime();
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        current_time_options(1_700_000_000, &persist_root),
+        "current-time-unsupported.nix",
+        source.as_bytes().to_vec(),
+        Arc::clone(&runtime),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("unsupported currentTime node thunk has an observation subject")
+    };
+    assert!(
+        subject.lookup_identity.is_none() && subject.metadata_identity.is_none(),
+        "currentTime-tainted unsupported payloads must stay ineligible for hit selection"
+    );
+    let identity = subject
+        .persistent_clear_identity
+        .expect("unsupported currentTime node thunk has a persistent clear identity");
+    let key = PersistNodeMetadataKey::for_expression(
+        identity,
+        subject.free_var_value_hashes.iter().copied(),
+    );
+    let stale_payload = CachedExpressionValue::immediate(Value::int(123))
+        .expect("stale scalar payload is cacheable");
+    let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
+    let stale_trace_payload =
+        persistent_path_exists_trace_payload(b"/tmp/aos-stale-current-time-unsupported", true);
+
+    {
+        let mut cache = runtime.lock().expect("cache lock is valid");
+        cache
+            .observe_inline_expression_payload(
+                identity,
+                subject.free_var_value_hashes.iter().copied(),
+                stale_payload.clone(),
+            )
+            .expect("stale runtime payload is seeded");
+        assert!(
+            cache
+                .lookup_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied(),
+                )
+                .expect("runtime lookup succeeds")
+                .is_some(),
+            "stale runtime payload is present before forcing"
+        );
+    }
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .record_node_materialization_reuse(key, MaterializationReuse::new(2, 3))
+        .expect("seed persistent demand records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            key,
+            &stale_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("stale persistent payload materializes");
+    persist
+        .record_node_trace(key, stale_value_hash, &stale_trace_payload)
+        .expect("stale persistent trace records");
+    drop(persist);
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("unsupported currentTime force succeeds");
+    assert!(
+        evaluator.heap().get_list(forced).is_ok(),
+        "the currentTime branch returns the unsupported nested list"
+    );
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "unsupported currentTime payloads must not replay stale runtime payloads"
+    );
+    assert_eq!(evaluator.stats().cache_misses(), 0);
+    drop(evaluator);
+
+    {
+        let mut cache = runtime.lock().expect("cache lock is valid");
+        assert!(
+            cache
+                .lookup_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied(),
+                )
+                .expect("runtime lookup succeeds")
+                .is_none(),
+            "unsupported currentTime recomputation invalidates stale runtime payloads"
+        );
+    }
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");
+    assert_eq!(
+        persist
+            .lookup_node_materialization_reuse(key)
+            .expect("metadata lookup succeeds"),
+        Some(MaterializationReuse::new(2, 3)),
+        "unsupported currentTime should clear stale values without recording demand"
+    );
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "unsupported currentTime clears the stale persistent value link"
+    );
+    assert!(
+        persist
+            .lookup_node_trace(key)
+            .expect("persistent trace lookup succeeds")
+            .expect("persistent trace tombstone records")
+            .payload()
+            .is_tombstone(),
+        "unsupported currentTime tombstones stale persistent traces"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+}

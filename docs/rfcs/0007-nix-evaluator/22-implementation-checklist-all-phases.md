@@ -3440,8 +3440,13 @@ alone (`M-1`/`Q-A`).
       stale durable payload metadata for `builtins.currentTime + 1` and proves
       the dependent recomputes, preserves the uncacheable trace, clears the
       stale value link, and tombstones the stale trace without recording demand.
-      This is scoped to the direct and force-dependent currentTime expression
-      boundaries, not full currentTime taint propagation through
+      An unsupported-payload canary seeds stale runtime and durable payload
+      metadata under a `currentTime` observation-only identity, returns a
+      too-deep nested list that cannot be serialized as a force-cache payload,
+      and proves the stale runtime payload is invalidated while the stale
+      persistent value link is cleared and its trace tombstoned.
+      This is scoped to direct, force-dependent, and unsupported-payload
+      currentTime expression boundaries, not full currentTime taint propagation through
       already-memoized dependents or the persistent demand graph
       (`R-10`/`S-14`).
 - [x] Current precursor: force-cache option identity includes access policy.

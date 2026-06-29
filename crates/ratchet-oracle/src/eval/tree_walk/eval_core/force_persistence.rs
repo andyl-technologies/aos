@@ -50,9 +50,8 @@ impl TreeWalk {
             return None;
         };
         let Some(payload) = self.force_cache_payload_for_value(value) else {
-            if self.invalidate_cached_forced_expression_payload(&subject) {
-                self.clear_persist_forced_expression_payload(&subject);
-            }
+            self.invalidate_cached_forced_expression_payload(&subject);
+            self.clear_persist_forced_expression_payload(&subject);
             return None;
         };
         let trace_is_empty_complete = trace.is_empty_complete();
@@ -175,7 +174,11 @@ impl TreeWalk {
     }
 
     fn invalidate_cached_forced_expression_payload(&mut self, subject: &ForceCacheSubject) -> bool {
-        let Some(identity) = subject.lookup_identity else {
+        let Some(identity) = subject
+            .lookup_identity
+            .or(subject.persistent_clear_identity)
+            .or(subject.impure_observation_identity)
+        else {
             return false;
         };
         let Ok(mut cache) = self.eval_cache.lock() else {
