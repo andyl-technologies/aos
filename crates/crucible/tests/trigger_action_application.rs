@@ -4,9 +4,10 @@
 
 use crucible::{
     Action, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event, EventGraph,
-    EventGraphState, EventId, FaultTag, LogLevel, MembershipFault, NodeId, NodeLifecycle,
-    PartitionDirection, SchedulerEventLogClass, SchedulerEventLogPayload,
+    EventGraphState, EventId, FaultTag, Icount, LogLevel, MembershipFault, NodeId, NodeLifecycle,
+    NodeTemplate, PartitionDirection, ReadyPoint, SchedulerEventLogClass, SchedulerEventLogPayload,
     SchedulerLivenessScenario, Shift, SimDuration, SimInstant, SingleScheduler, TimerId,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -42,6 +43,34 @@ fn scenario(name: &str) -> SchedulerLivenessScenario {
         Vec::new(),
         Vec::new(),
     )
+    .with_trigger_world(&action_world())
+}
+
+fn ready_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
+
+fn action_world() -> World {
+    World::from_nodes(vec![
+        ready_node("db-0"),
+        ready_node("db-1"),
+        ready_node("standby"),
+    ])
+    .expect("action test world should build")
 }
 
 fn full_action_set() -> Action {
@@ -86,11 +115,14 @@ fn full_action_set() -> Action {
 }
 
 fn action_graph() -> EventGraph {
-    EventGraph::new(vec![Event::once(
-        event_id("all-actions"),
-        None,
-        full_action_set(),
-    )])
+    EventGraph::new_for_world(
+        vec![Event::once(
+            event_id("all-actions"),
+            None,
+            full_action_set(),
+        )],
+        &action_world(),
+    )
     .expect("full action graph should build")
 }
 

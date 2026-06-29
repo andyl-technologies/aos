@@ -16,7 +16,7 @@ use crate::model::{
     AssertionId, AssertionPhase, CodePoint, ContentHash, EventLogOffset, FaultTag, FramePredicate,
     Icount, IoEventKind, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
     NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy,
-    World,
+    World, WorldStaticTopology,
 };
 use crate::scheduler::{
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
@@ -1363,9 +1363,11 @@ impl EventGraph {
     /// those graphs. [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] is
     /// returned for any guest-marker trigger because this constructor has no
     /// world to prove white-box opt-in; use [`Self::new_for_world`] for those
-    /// graphs.
+    /// graphs. [`EventGraphError::NodeScheduleTargetRequiresWorld`] is returned
+    /// for any `StartNode` or `StopNode` action because this constructor has no
+    /// world topology to validate against.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_white_box_nodes(events, [], [])
+        Self::new_with_assertions_and_world(events, [], [], None)
     }
 
     /// Builds an event graph with declared assertion ids available to triggers.
@@ -1383,48 +1385,69 @@ impl EventGraph {
     /// [`EventGraphError::UnknownAssertionReference`] when an
     /// `AssertionState` predicate names no declared assertion, or
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
-    /// trigger is present but no white-box-enabled node namespace was supplied.
+    /// trigger is present but no white-box-enabled node namespace was supplied,
+    /// or [`EventGraphError::NodeScheduleTargetRequiresWorld`] when `StartNode`
+    /// or `StopNode` is present without a world topology.
     pub fn new_with_assertions(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_white_box_nodes(events, assertions, [])
+        Self::new_with_assertions_and_world(events, assertions, [], None)
     }
 
     /// Builds an event graph using white-box opt-in data from `world`.
     ///
     /// # Errors
     ///
-    /// Returns the same construction errors as [`Self::new`] plus
+    /// Returns the common event-id, trigger-reference, assertion-reference,
+    /// guest-marker, and regex construction errors plus
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
-    /// trigger is present but `world` has no white-box-enabled node.
+    /// trigger is present but `world` has no white-box-enabled node,
+    /// [`EventGraphError::UndeclaredNodeScheduleTarget`] when `StartNode` or
+    /// `StopNode` references a node outside `world`, or
+    /// [`EventGraphError::UnbakedNodeScheduleTarget`] when that action references
+    /// a declared node outside the world's bake set.
     pub fn new_for_world(events: Vec<Event>, world: &World) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_white_box_nodes(events, [], enabled_white_box_nodes(world))
+        let static_topology = world.static_topology();
+        Self::new_with_assertions_and_world(
+            events,
+            [],
+            enabled_white_box_nodes(world),
+            Some(&static_topology),
+        )
     }
 
     /// Builds an event graph using assertion and white-box data from `world`.
     ///
     /// # Errors
     ///
-    /// Returns the same construction errors as [`Self::new_with_assertions`] plus
+    /// Returns the common event-id, trigger-reference, assertion-reference,
+    /// guest-marker, and regex construction errors plus
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
-    /// trigger is present but `world` has no white-box-enabled node.
+    /// trigger is present but `world` has no white-box-enabled node,
+    /// [`EventGraphError::UndeclaredNodeScheduleTarget`] when `StartNode` or
+    /// `StopNode` references a node outside `world`, or
+    /// [`EventGraphError::UnbakedNodeScheduleTarget`] when that action references
+    /// a declared node outside the world's bake set.
     pub fn new_with_assertions_for_world(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
         world: &World,
     ) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_white_box_nodes(
+        let static_topology = world.static_topology();
+        Self::new_with_assertions_and_world(
             events,
             assertions,
             enabled_white_box_nodes(world),
+            Some(&static_topology),
         )
     }
 
-    fn new_with_assertions_and_white_box_nodes(
+    fn new_with_assertions_and_world(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
         white_box_nodes: impl IntoIterator<Item = NodeId>,
+        static_topology: Option<&WorldStaticTopology>,
     ) -> Result<Self, EventGraphError> {
         let assertion_ids = assertions.into_iter().collect::<BTreeSet<_>>();
         let white_box_nodes = white_box_nodes.into_iter().collect::<BTreeSet<_>>();
@@ -1453,6 +1476,7 @@ impl EventGraph {
                     &white_box_nodes,
                 )?;
             }
+            validate_action_references(event, &event.action, static_topology)?;
         }
         Ok(Self { events })
     }
@@ -1839,6 +1863,27 @@ pub enum EventGraphError {
         /// Referenced guest marker.
         marker: MarkerId,
     },
+    /// A `StartNode` or `StopNode` action was used without a world.
+    NodeScheduleTargetRequiresWorld {
+        /// Event containing the invalid action.
+        event: EventId,
+        /// Referenced node id.
+        node: NodeId,
+    },
+    /// A `StartNode` or `StopNode` action references no world participant.
+    UndeclaredNodeScheduleTarget {
+        /// Event containing the invalid action.
+        event: EventId,
+        /// Referenced node id.
+        node: NodeId,
+    },
+    /// A `StartNode` or `StopNode` action references no baked node.
+    UnbakedNodeScheduleTarget {
+        /// Event containing the invalid action.
+        event: EventId,
+        /// Referenced node id.
+        node: NodeId,
+    },
     /// A console-match predicate contains an invalid regex program.
     InvalidRegex {
         /// Event containing the invalid regex.
@@ -1902,6 +1947,27 @@ impl fmt::Display for EventGraphError {
                     event.name, marker.name
                 )
             }
+            Self::NodeScheduleTargetRequiresWorld { event, node } => {
+                write!(
+                    formatter,
+                    "event `{}` schedules node `{}` without a world",
+                    event.name, node.name
+                )
+            }
+            Self::UndeclaredNodeScheduleTarget { event, node } => {
+                write!(
+                    formatter,
+                    "event `{}` schedules undeclared node `{}`",
+                    event.name, node.name
+                )
+            }
+            Self::UnbakedNodeScheduleTarget { event, node } => {
+                write!(
+                    formatter,
+                    "event `{}` schedules unbaked node `{}`",
+                    event.name, node.name
+                )
+            }
             Self::InvalidRegex { event, reason, .. } => {
                 write!(
                     formatter,
@@ -1943,6 +2009,51 @@ fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
         | Action::Pass
         | Action::Fail { .. }
         | Action::Log { .. } => {}
+    }
+}
+
+fn validate_action_references(
+    event: &Event,
+    action: &Action,
+    static_topology: Option<&WorldStaticTopology>,
+) -> Result<(), EventGraphError> {
+    match action {
+        Action::StartNode { node } | Action::StopNode { node } => {
+            let Some(static_topology) = static_topology else {
+                return Err(EventGraphError::NodeScheduleTargetRequiresWorld {
+                    event: event.id.clone(),
+                    node: node.clone(),
+                });
+            };
+            if !static_topology.participants.contains(node) {
+                return Err(EventGraphError::UndeclaredNodeScheduleTarget {
+                    event: event.id.clone(),
+                    node: node.clone(),
+                });
+            }
+            if !static_topology.bake_nodes.contains(node) {
+                return Err(EventGraphError::UnbakedNodeScheduleTarget {
+                    event: event.id.clone(),
+                    node: node.clone(),
+                });
+            }
+            Ok(())
+        }
+        Action::Group(actions) => {
+            for action in actions {
+                validate_action_references(event, action, static_topology)?;
+            }
+            Ok(())
+        }
+        Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => Ok(()),
     }
 }
 

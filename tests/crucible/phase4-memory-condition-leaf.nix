@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.memoryConditionLeaf`";
       }
       {
-        label = "start stop validation remains open";
-        needle = "- [ ] **T-TRIG-13**";
+        label = "relative timer phase remains open";
+        needle = "- [ ] **T-TRIG-14**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

@@ -68,11 +68,7 @@ fn firing_records(firings: &[EventFiring]) -> Vec<(EventId, VirtualTime, Action)
 
 #[test]
 fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
-    let bootstrap = Event::once(
-        event_id("bootstrap"),
-        None,
-        Action::StartNode { node: node("db-0") },
-    );
+    let bootstrap = Event::once(event_id("bootstrap"), None, Action::Pass);
     let ready_injection = Event::once(
         event_id("inject-on-ready"),
         Some(Condition::named("ready")),
