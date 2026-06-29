@@ -10,11 +10,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::ops::Deref;
 
 use crate::model::{
-    AssertionId, AssertionPhase, CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId,
-    MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram,
-    SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World,
+    AssertionId, AssertionPhase, CodePoint, ContentHash, EventLogOffset, FaultTag, FramePredicate,
+    Icount, IoEventKind, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
+    NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy,
+    World,
 };
 use crate::scheduler::{
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
@@ -357,6 +359,9 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     /// Returns the deterministic point where this evaluator observes the log.
     fn evaluation_point(&self) -> EventEvaluationPoint;
 
+    /// Returns the event-log prefix identity observed by this evaluator.
+    fn event_log_offset(&self) -> EventLogOffset;
+
     /// Resolves a leaf predicate at [`Self::evaluation_point`].
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
 
@@ -482,6 +487,7 @@ impl Error for ConditionEvaluationError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionEventLogPrefix {
     point: EventEvaluationPoint,
+    event_log_offset: EventLogOffset,
     observable_events: Vec<ObservableEvent>,
 }
 
@@ -491,6 +497,7 @@ impl ConditionEventLogPrefix {
     pub fn genesis() -> Self {
         Self {
             point: EventEvaluationPoint::genesis(),
+            event_log_offset: EventLogOffset::default(),
             observable_events: Vec::new(),
         }
     }
@@ -555,14 +562,35 @@ impl ConditionEventLogPrefix {
         }
         Ok(Self {
             point,
+            event_log_offset: EventLogOffset::new(
+                ContentHash::default(),
+                0,
+                u64::try_from(entries.len()).map_err(|_| {
+                    ConditionEvaluationError::NonPrefixEventLogSequence {
+                        expected: u64::MAX,
+                        actual: u64::MAX,
+                    }
+                })?,
+            ),
             observable_events,
         })
+    }
+
+    pub(crate) fn with_event_log_offset(mut self, event_log_offset: EventLogOffset) -> Self {
+        self.event_log_offset = event_log_offset;
+        self
     }
 
     /// Returns the deterministic evaluation point this prefix is visible at.
     #[must_use]
     pub fn point(&self) -> EventEvaluationPoint {
         self.point
+    }
+
+    /// Returns the event-log prefix identity this condition prefix was derived from.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
     }
 
     /// Returns observable event-log entries visible at [`Self::point`].
@@ -892,6 +920,7 @@ where
 #[derive(Clone, Debug)]
 pub struct ConditionEvaluation<O> {
     point: EventEvaluationPoint,
+    event_log_offset: EventLogOffset,
     oracle: O,
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
@@ -909,6 +938,7 @@ impl<O> ConditionEvaluation<O> {
     pub fn from_log_prefix(prefix: ConditionEventLogPrefix, oracle: O) -> Self {
         Self {
             point: prefix.point,
+            event_log_offset: prefix.event_log_offset,
             oracle,
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
@@ -925,6 +955,12 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn point(&self) -> EventEvaluationPoint {
         self.point
+    }
+
+    /// Returns the event-log prefix identity visible to this evaluator.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
     }
 
     /// Adds event firing history visible to `After` predicates.
@@ -1096,7 +1132,7 @@ impl<O> ConditionEvaluationPass<O> {
         &mut self,
         graph: &EventGraph,
         state: &mut EventGraphState,
-    ) -> Vec<EventFiring>
+    ) -> EventFirings
     where
         O: ConditionLeafOracle,
     {
@@ -1112,6 +1148,10 @@ where
 {
     fn evaluation_point(&self) -> EventEvaluationPoint {
         self.point
+    }
+
+    fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
     }
 
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
@@ -1522,6 +1562,71 @@ pub struct EventFiring {
     action: Action,
 }
 
+/// Ordered trigger firings computed by one deterministic evaluation pass.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventFirings {
+    point: EventEvaluationPoint,
+    event_log_offset: EventLogOffset,
+    firings: Vec<EventFiring>,
+}
+
+impl EventFirings {
+    pub(crate) fn new(
+        point: EventEvaluationPoint,
+        event_log_offset: EventLogOffset,
+        firings: Vec<EventFiring>,
+    ) -> Self {
+        Self {
+            point,
+            event_log_offset,
+            firings,
+        }
+    }
+
+    /// Returns the deterministic point where these firings were computed.
+    #[must_use]
+    pub fn point(&self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Returns the event-log prefix identity where these firings were computed.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns the number of firings in the ordered batch.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.firings.len()
+    }
+
+    /// Returns whether no trigger fired in this pass.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.firings.is_empty()
+    }
+
+    /// Returns the ordered firings as a read-only slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &[EventFiring] {
+        &self.firings
+    }
+
+    /// Iterates over the ordered firings.
+    pub fn iter(&self) -> std::slice::Iter<'_, EventFiring> {
+        self.firings.iter()
+    }
+}
+
+impl Deref for EventFirings {
+    type Target = [EventFiring];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
 impl EventFiring {
     /// Returns the event that fired.
     #[must_use]
@@ -1569,12 +1674,13 @@ impl EventGraphState {
     /// `evaluator` is the deterministic predicate evaluator for non-entrypoint
     /// conditions. This method is the single local producer of [`EventFiring`]
     /// values; callers apply the returned actions at the same quantum boundary.
-    pub(crate) fn evaluate<E>(&mut self, graph: &EventGraph, evaluator: &mut E) -> Vec<EventFiring>
+    pub(crate) fn evaluate<E>(&mut self, graph: &EventGraph, evaluator: &mut E) -> EventFirings
     where
         E: ConditionEvaluator,
     {
         let mut firings = Vec::new();
         let point = evaluator.evaluation_point();
+        let event_log_offset = evaluator.event_log_offset();
         for event in graph.events() {
             let truth = match &event.trigger {
                 Some(condition) => {
@@ -1606,7 +1712,7 @@ impl EventGraphState {
                 self.last_firing.insert(event.id.clone(), point.at());
             }
         }
-        firings
+        EventFirings::new(point, event_log_offset, firings)
     }
 }
 
@@ -1626,6 +1732,10 @@ where
 {
     fn evaluation_point(&self) -> EventEvaluationPoint {
         self.inner.evaluation_point()
+    }
+
+    fn event_log_offset(&self) -> EventLogOffset {
+        self.inner.event_log_offset()
     }
 
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {

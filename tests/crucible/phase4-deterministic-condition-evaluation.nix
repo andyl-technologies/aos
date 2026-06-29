@@ -72,8 +72,8 @@
         needle = "Completed by `checks.crucible.phase4.deterministicConditionEvaluation`";
       }
       {
-        label = "trigger firing causal record remains open";
-        needle = "- [ ] **T-TRIG-11**";
+        label = "action implementation remains open";
+        needle = "- [ ] **T-TRIG-12**";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [

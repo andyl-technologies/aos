@@ -14,13 +14,16 @@ use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use crate::trigger::{ConditionEventLogPrefix, ObservableEventPayload};
+use crate::trigger::{
+    Action, ConditionEventLogPrefix, EventFiring, EventFirings, LogLevel, ObservableEventPayload,
+};
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, TimeConversionError, VcpuId, VirtualTime, WorldLookaheadEdge, step,
+    Icount, MembershipFault, NodeCounter, NodeId, PartitionDirection, PreemptionDecision,
+    PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
+    VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -252,6 +255,8 @@ pub enum SchedulerEventLogPayload {
     Observable(ObservableEventPayload),
     /// A deterministic evaluation boundary appended to the event log.
     EvaluationBoundary(SchedulerEvaluationBoundaryKind),
+    /// A deterministic trigger firing computed from a checked condition prefix.
+    TriggerFired(EventFiring),
 }
 
 /// Result of appending one scheduler quantum to the event log.
@@ -3150,6 +3155,11 @@ fn scheduler_event_log_entry_material(
             lines.push(String::from("payload=evaluation-boundary"));
             lines.push(format!("kind={kind:?}"));
         }
+        SchedulerEventLogPayload::TriggerFired(firing) => {
+            lines.push(String::from("class=causal"));
+            lines.push(String::from("payload=trigger_fired"));
+            lines.push(trigger_firing_material(firing));
+        }
     }
     lines.join("\n")
 }
@@ -3158,8 +3168,184 @@ fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> Sche
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(_)
         | SchedulerEventLogPayload::Decision(_)
-        | SchedulerEventLogPayload::EvaluationBoundary(_) => SchedulerEventLogClass::Causal,
+        | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::TriggerFired(_) => SchedulerEventLogClass::Causal,
         SchedulerEventLogPayload::Observable(_) => SchedulerEventLogClass::Observational,
+    }
+}
+
+fn trigger_firing_material(firing: &EventFiring) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("event_len={}", firing.event().name.len()));
+    lines.push(format!("event={}", firing.event().name));
+    lines.push(format!("fired_at_ticks={}", firing.at().ticks));
+    lines.push(trigger_action_material("action", firing.action()));
+    lines.join("\n")
+}
+
+fn trigger_action_material(prefix: &str, action: &Action) -> String {
+    let mut lines = Vec::new();
+    match action {
+        Action::InjectFault { tag, fault } => {
+            lines.push(format!("{prefix}.kind=inject-fault"));
+            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
+            lines.push(trigger_membership_fault_material(
+                &format!("{prefix}.fault"),
+                fault,
+            ));
+        }
+        Action::HealFault { tag } => {
+            lines.push(format!("{prefix}.kind=heal-fault"));
+            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
+        }
+        Action::ArmTimer { name, after } => {
+            lines.push(format!("{prefix}.kind=arm-timer"));
+            lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
+            lines.push(format!("{prefix}.after_nanos={}", after.nanos));
+        }
+        Action::CancelTimer { name } => {
+            lines.push(format!("{prefix}.kind=cancel-timer"));
+            lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
+        }
+        Action::StartNode { node } => {
+            lines.push(format!("{prefix}.kind=start-node"));
+            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
+        }
+        Action::StopNode { node } => {
+            lines.push(format!("{prefix}.kind=stop-node"));
+            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
+        }
+        Action::CreateSavepoint { label } => {
+            lines.push(format!("{prefix}.kind=create-savepoint"));
+            lines.push(trigger_optional_label_material(
+                &format!("{prefix}.label"),
+                label,
+            ));
+        }
+        Action::Fork { label } => {
+            lines.push(format!("{prefix}.kind=fork"));
+            lines.push(trigger_optional_label_material(
+                &format!("{prefix}.label"),
+                label,
+            ));
+        }
+        Action::Pass => {
+            lines.push(format!("{prefix}.kind=pass"));
+        }
+        Action::Fail { reason } => {
+            lines.push(format!("{prefix}.kind=fail"));
+            lines.push(format!("{prefix}.reason_len={}", reason.len()));
+            lines.push(format!("{prefix}.reason={reason}"));
+        }
+        Action::Log { level, message } => {
+            lines.push(format!("{prefix}.kind=log"));
+            lines.push(format!(
+                "{prefix}.level={}",
+                trigger_log_level_label(*level)
+            ));
+            lines.push(format!("{prefix}.message_len={}", message.len()));
+            lines.push(format!("{prefix}.message={message}"));
+        }
+        Action::Group(actions) => {
+            lines.push(format!("{prefix}.kind=group"));
+            lines.push(format!("{prefix}.actions={}", actions.len()));
+            for (index, action) in actions.iter().enumerate() {
+                lines.push(trigger_action_material(
+                    &format!("{prefix}.action.{index}"),
+                    action,
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
+    let mut lines = Vec::new();
+    match fault {
+        MembershipFault::Crash { node, restart } => {
+            lines.push(format!("{prefix}.kind=crash"));
+            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
+            lines.push(format!(
+                "{prefix}.restart={}",
+                trigger_restart_policy_label(*restart)
+            ));
+        }
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => {
+            lines.push(format!("{prefix}.kind=partition"));
+            lines.push(trigger_node_material(
+                &format!("{prefix}.endpoint_a"),
+                endpoint_a,
+            ));
+            lines.push(trigger_node_material(
+                &format!("{prefix}.endpoint_b"),
+                endpoint_b,
+            ));
+            lines.push(format!(
+                "{prefix}.direction={}",
+                trigger_partition_direction_label(*direction)
+            ));
+        }
+        MembershipFault::Isolate { node } => {
+            lines.push(format!("{prefix}.kind=isolate"));
+            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
+        }
+        MembershipFault::NotYetJoined { node } => {
+            lines.push(format!("{prefix}.kind=not-yet-joined"));
+            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
+        }
+    }
+    lines.join("\n")
+}
+
+fn trigger_fault_tag_material(prefix: &str, tag: &crate::FaultTag) -> String {
+    format!("{prefix}.len={}\n{prefix}={}", tag.name.len(), tag.name)
+}
+
+fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
+    format!("{prefix}.len={}\n{prefix}={}", node.name.len(), node.name)
+}
+
+fn trigger_timer_material(prefix: &str, timer: &TimerId) -> String {
+    format!("{prefix}.len={}\n{prefix}={}", timer.name.len(), timer.name)
+}
+
+fn trigger_optional_label_material(prefix: &str, label: &Option<String>) -> String {
+    match label {
+        Some(label) => format!(
+            "{prefix}.present=true\n{prefix}.len={}\n{prefix}={label}",
+            label.len()
+        ),
+        None => format!("{prefix}.present=false"),
+    }
+}
+
+fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
+    match policy {
+        RestartPolicy::FromReadyPoint => "from-ready-point",
+        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
+        RestartPolicy::StayDown => "stay-down",
+    }
+}
+
+fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static str {
+    match direction {
+        PartitionDirection::Bidirectional => "bidirectional",
+        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
+        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
+}
+
+fn trigger_log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
     }
 }
 
@@ -3594,6 +3780,7 @@ impl SingleScheduler {
         )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
+        let event_log_prefix = scheduler_event_log_empty_prefix();
 
         Ok(Self {
             configuration,
@@ -3618,11 +3805,12 @@ impl SingleScheduler {
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
             decision_rng_cursor: DecisionRngState::empty(),
-            event_log_prefix: scheduler_event_log_empty_prefix(),
+            event_log_prefix,
             event_log_bytes: 0,
             event_log_events: 0,
             condition_event_log_entries: Vec::new(),
-            condition_event_log_prefix: ConditionEventLogPrefix::genesis(),
+            condition_event_log_prefix: ConditionEventLogPrefix::genesis()
+                .with_event_log_offset(EventLogOffset::new(event_log_prefix, 0, 0)),
             frontier,
             quanta: 0,
             topology_epoch: 0,
@@ -3942,6 +4130,50 @@ impl SingleScheduler {
     #[must_use]
     pub fn condition_event_log_prefix(&self) -> &ConditionEventLogPrefix {
         &self.condition_event_log_prefix
+    }
+
+    /// Appends deterministic trigger firings as causal event-log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the firings were computed at a different
+    /// condition prefix than the scheduler's current prefix, or when appending the
+    /// event-log segment would overflow the event-log offsets.
+    pub fn append_trigger_firings(
+        &mut self,
+        firings: &EventFirings,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let current_point = self.condition_event_log_prefix.point();
+        let current_offset = self.event_log_offset();
+        if firings.point() != current_point {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "trigger firings were evaluated at {:?}, but scheduler condition prefix is {:?}",
+                    firings.point(),
+                    current_point
+                ),
+            });
+        }
+        if firings.event_log_offset() != current_offset {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "trigger firings were evaluated at event-log offset {:?}, but scheduler offset is {:?}",
+                    firings.event_log_offset(),
+                    current_offset
+                ),
+            });
+        }
+
+        let mut entries = Vec::with_capacity(firings.len());
+        for firing in firings.iter() {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                firing.at(),
+                SchedulerEventLogPayload::TriggerFired(firing.clone()),
+            ));
+        }
+        self.append_event_log_entries(entries)
     }
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
@@ -5641,6 +5873,13 @@ impl SingleScheduler {
             ));
         }
 
+        self.append_event_log_entries(entries)
+    }
+
+    fn append_event_log_entries(
+        &mut self,
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         if entries.is_empty() {
             return Ok(SchedulerEventLogAppend {
                 entries,
@@ -5649,15 +5888,6 @@ impl SingleScheduler {
                 offset: self.event_log_offset(),
             });
         }
-
-        let mut condition_event_log_entries = self.condition_event_log_entries.clone();
-        condition_event_log_entries.extend(entries.iter().cloned());
-        let condition_event_log_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(
-            condition_event_log_entries.clone(),
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
-        })?;
 
         let segment_bytes = scheduler_event_log_segment_bytes(self.event_log_prefix, &entries);
         let segment_hash = ContentHash::from_bytes(&segment_bytes);
@@ -5699,6 +5929,16 @@ impl SingleScheduler {
         );
         self.event_log_bytes = bytes;
         self.event_log_events = events;
+        let current_offset = self.event_log_offset();
+        let mut condition_event_log_entries = self.condition_event_log_entries.clone();
+        condition_event_log_entries.extend(entries.iter().cloned());
+        let condition_event_log_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(
+            condition_event_log_entries.clone(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
+        })?
+        .with_event_log_offset(current_offset);
         self.condition_event_log_entries = condition_event_log_entries;
         self.condition_event_log_prefix = condition_event_log_prefix;
 

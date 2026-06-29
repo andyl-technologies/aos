@@ -116,9 +116,9 @@ pub use sim_backend::{
 pub use trigger::{
     Action, Condition, ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass,
     ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
-    EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph, EventGraphError,
-    EventGraphState, FirePolicy, LogLevel, ObservableEvent, ObservableEventPayload,
-    ResolvedCodePoint, ResolvedMemPlace,
+    EventEvaluationKind, EventEvaluationPoint, EventFiring, EventFirings, EventGraph,
+    EventGraphError, EventGraphState, FirePolicy, LogLevel, ObservableEvent,
+    ObservableEventPayload, ResolvedCodePoint, ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]
