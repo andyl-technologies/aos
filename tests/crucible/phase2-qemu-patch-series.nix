@@ -216,6 +216,13 @@
       enforces = "PATCH-45,DET-1,INV-7";
       capability = "sim-mode inter-vCPU IPI/SIPI/INIT delivery queued to deterministic RR handoff";
     }
+    {
+      file = "0029-crucible-vcpu-introspect.patch";
+      catalogName = "crucible-vcpu-introspect";
+      class = "F";
+      enforces = "PATCH-46,DET-29,INV-10";
+      capability = "formal per-vCPU register-file and RR cursor plugin exports";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

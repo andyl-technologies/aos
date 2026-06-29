@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22"],
+  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -12,6 +12,7 @@
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
   qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
+  qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
@@ -191,6 +192,13 @@
         patchName = "0028-crucible-det-ipi.patch";
       };
     }
+    {
+      patch = "0029-crucible-vcpu-introspect.patch";
+      check = import ./phase2-qemu-vcpu-introspect.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0029-crucible-vcpu-introspect.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -319,6 +327,8 @@ in
               qemu_plugin_register_vcpu_idle_resume_cb \
               qemu_plugin_register_sim_shmem_dispatch_cb \
               qemu_plugin_crucible_register_ipi_delivery_cb \
+              qemu_plugin_read_vcpu_regs \
+              qemu_plugin_rr_cursor \
               qemu_plugin_register_blk_cb \
               qemu_plugin_register_9p_cb
             do
@@ -366,6 +376,17 @@ in
             grep -q '^deterministic_ipi_event_count_match=true$' "$out/qemu-det-ipi.result"
             grep -q '^deterministic_ipi_delivery_icount_trace_match=true$' "$out/qemu-det-ipi.result"
             grep -q '^deterministic_ipi_source_target_distinct=true$' "$out/qemu-det-ipi.result"
+            cp "${qemuVcpuIntrospect}/result" "$out/qemu-vcpu-introspect.result"
+            grep -q '^PASS$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^formal_register_export=qemu_plugin_read_vcpu_regs$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^formal_cursor_export=qemu_plugin_rr_cursor$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^arbitrary_vcpu_register_read=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^register_read_side_effect_free=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^register_short_buffer_fails_closed=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^register_size_mismatch_rejected=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^rr_cursor_reads_current_vcpu_position_and_quantum=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^rr_cursor_boundary_rejected=true$' "$out/qemu-vcpu-introspect.result"
+            grep -q '^rr_cursor_out_of_range_current_vcpu_rejected=true$' "$out/qemu-vcpu-introspect.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -413,6 +434,14 @@ in
             deterministic_ipi_init_mode_trace=true
             deterministic_ipi_sipi_mode_trace=true
             deterministic_ipi_delivery_icount_trace_match=true
+            qemu_vcpu_introspect_gate_passed=true
+            formal_vcpu_register_export_present=true
+            formal_rr_cursor_export_present=true
+            arbitrary_vcpu_register_read=true
+            register_read_side_effect_free=true
+            register_size_mismatch_rejected=true
+            rr_cursor_boundary_rejected=true
+            rr_cursor_out_of_range_current_vcpu_rejected=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true
@@ -427,6 +456,7 @@ in
             qemu_plugin_runtime_api_exports_present=true
             qemu_plugin_sim_correctness_exports_present=true
             qemu_plugin_det_ipi_exports_present=true
+            qemu_plugin_vcpu_introspection_exports_present=true
             qemu_plugin_block_exports_present=true
             qemu_plugin_9p_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert

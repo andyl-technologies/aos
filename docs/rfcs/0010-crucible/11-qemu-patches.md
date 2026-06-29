@@ -638,9 +638,13 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   fingerprint over **all N vCPUs** plus the interleaving state, so two runs that
   differ only in vCPU-switch phase are caught. With `-smp 1` it reduces to the
   single register file plus a trivial cursor.
-- **Micro-test:** on a 2-vCPU guest, read both register files and the cursor at a
-  fixed icount twice; assert bit-identical results across runs; assert reading
-  vCPU1's registers does not perturb `S`/`T` (the read is side-effect-free).
+- **Micro-test:** apply the patch to a 2-vCPU API fixture, read an arbitrary
+  non-current vCPU register file and the cursor, and assert the read does not
+  perturb `S`/`T` (the read is side-effect-free); assert short output buffers,
+  register-size mismatches, invalid vCPU indexes, boundary cursors, zero
+  quanta, out-of-range current-vCPU cursors, and no-current-vCPU cursors fail
+  closed; assert the patched QEMU binary exports the dynamic symbols and the
+  unpatched reference QEMU header does not declare them.
 - **Inertness:** [PATCH-3](c) — a new plugin-API export that does nothing unless a
   plugin calls it.
 - **Risk:** F (loud failure if a register read is wrong or missing).
@@ -1451,10 +1455,23 @@ time-control primitives the whole design rests on.
     non-sim, unpinned, and self-IPI paths fall through to upstream behavior; and
     the trace plugin records `det_ipi` delivery rows while the multi-vCPU S11
     fixture diffs fixed/INIT/SIPI delivery-icount traces across jittered runs.
-- [ ] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
+- [x] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
   read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
   side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec
   §11.5.
+  - Completed by `0029-crucible-vcpu-introspect.patch`,
+    `checks.crucible.phase2.qemuVcpuIntrospect`, and
+    `gate:patch-microtests`: QEMU now exports the formal
+    `qemu_plugin_read_vcpu_regs` and `qemu_plugin_rr_cursor` plugin APIs while
+    preserving the older `qemu_plugin_crucible_*` helpers; the register export
+    canonicalizes each named register descriptor/value for an arbitrary vCPU,
+    reports required length on short buffers, and fails closed instead of
+    truncating; the cursor export returns current vCPU, cursor position, and
+    pinned quantum only when a valid in-quantum RR cursor is active; the trace
+    plugin consumes the formal exports and the microtest verifies arbitrary-vCPU
+    reads, side-effect-free current-CPU behavior, short-buffer and register-size
+    mismatch rejection, invalid-vCPU rejection, and cursor
+    boundary/zero/out-of-range/no-current negative controls.
 - [ ] **T-PATCH-24** Implement `crucible-preemption-inject`: plugin-callable
   commanded vCPU switch / interrupt delivery at a node-icount anchored to the
   round-robin event path, rejecting out-of-`[deadline, ceiling]` commands loudly;
