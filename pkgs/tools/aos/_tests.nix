@@ -858,7 +858,7 @@ in {
           "$work/apr-unpublish-invalid-package-name.out"
         grep -qx "must stay put" "$reg/escaped-package.toml"
         pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        mkdir -p "$reg/packages/h" "$reg/closures"
+        mkdir -p "$reg/packages/h" "$reg/store/$(printf %.2s "$pkg_hash")"
         printf '%s\n' \
           '[package]' \
           'name = "hostpkg"' \
@@ -879,7 +879,7 @@ in {
           'source_nar_hash = ""' \
           'references = []' \
           > "$reg/packages/h/hostpkg.toml"
-        printf '%s\n' "$pkg_hash" > "$reg/closures/$pkg_hash"
+        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$reg/store/$(printf %.2s "$pkg_hash")/$pkg_hash"
         printf '%s\n' \
           "" \
           '[[caches]]' \
@@ -890,10 +890,10 @@ in {
         run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-dirty.out" 2>&1
         grep -q "registry.toml" "$work/apr-status-dirty.out"
         grep -q "packages/h/hostpkg.toml" "$work/apr-status-dirty.out"
-        grep -q "closures/$pkg_hash" "$work/apr-status-dirty.out"
+        grep -q "store/$(printf %.2s "$pkg_hash")/$pkg_hash" "$work/apr-status-dirty.out"
         run_clean ${self}/bin/apr --json status --registry host-reg \
           > "$work/apr-status-dirty.json"
-        ${pkgs.jq}/bin/jq -e --arg closure "closures/$pkg_hash" \
+        ${pkgs.jq}/bin/jq -e --arg closure "store/$(printf %.2s "$pkg_hash")/$pkg_hash" \
           '.clean == false
             and (.entries | any(.path == "registry.toml"))
             and (.entries | any(.path == "packages/h/hostpkg.toml"))
@@ -1053,7 +1053,7 @@ in {
         run_clean ${self}/bin/apr show hostpkg --registry host-reg --raw > "$work/apr-show-raw.out" 2>&1
         grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
         run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
-        grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
+        grep -q "Verified 1 package(s), 1 closure root(s), no errors" "$work/apr-verify.out"
         run_clean ${self}/bin/apr --json verify --registry host-reg \
           > "$work/apr-verify.json"
         ${pkgs.jq}/bin/jq -e \
@@ -1063,7 +1063,7 @@ in {
             and .package == null
             and .fix == false
             and .checked == 1
-            and .closures == 1
+            and .roots == 1
             and .repaired == 0
             and .errors == 0' \
           "$work/apr-verify.json" >/dev/null
@@ -1604,7 +1604,7 @@ in {
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
         resume_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        mkdir -p "$resume_reg/packages/h" "$resume_reg/closures"
+        mkdir -p "$resume_reg/packages/h" "$resume_reg/store/$(printf %.2s "$resume_hash")"
         printf '%s\n' \
           '[package]' \
           'name = "hostresume"' \
@@ -1624,7 +1624,7 @@ in {
           'source_nar_hash = ""' \
           'references = []' \
           > "$resume_reg/packages/h/hostresume.toml"
-        printf '%s\n' "$resume_hash" > "$resume_reg/closures/$resume_hash"
+        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$resume_reg/store/$(printf %.2s "$resume_hash")/$resume_hash"
         git -C "$resume_reg" add -A
         run_clean git -C "$resume_reg" commit -m "release: hostresume 1.0.0" \
           > "$work/git-commit-host-resume.out" 2>&1
@@ -1733,7 +1733,8 @@ in {
           'source_nar_hash = ""' \
           'references = []' \
           >> "$reg/packages/h/hostpkg.toml"
-        printf '%s\n' "$v2_hash" > "$reg/closures/$v2_hash"
+        mkdir -p "$reg/store/$(printf %.2s "$v2_hash")"
+        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$reg/store/$(printf %.2s "$v2_hash")/$v2_hash"
         git -C "$reg" add -A
         git -C "$reg" commit -m "release: hostpkg 2.0.0" > "$work/git-commit-v2-package.out" 2>&1
 
@@ -2233,7 +2234,6 @@ in {
             and .previous == null
             and .images == []
             and .package_file == "packages/h/hostinstall.toml"
-            and (.closure_file | startswith("closures/"))
             and .committed == false
             and .commit_message == null
             and .current == "stable"
@@ -2266,13 +2266,12 @@ in {
             and .previous == null
             and .images == []
             and .package_file == "packages/h/hostbulk.toml"
-            and (.closure_file | startswith("closures/"))
             and .committed == false
             and .commit_message == null
             and .current == "stable"
             and (.head | length == 64)' \
           "$work/apr-publish-host-bulk.json" >/dev/null
-        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        grep -q "$install_leaf_hash" "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         run_clean ${self}/bin/apr --json verify \
           --registry host-install-channel > "$work/apr-verify-host-install-all.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2282,11 +2281,11 @@ in {
             and .package == null
             and .fix == false
             and .checked == 3
-            and .closures == 3
+            and .roots == 3
             and .repaired == 0
             and .errors == 0' \
           "$work/apr-verify-host-install-all.json" >/dev/null
-        ${pkgs.coreutils}/bin/rm "$install_reg/closures/$install_hash"
+        ${pkgs.coreutils}/bin/rm "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         run_clean ${self}/bin/apr --json verify \
           --registry host-install-channel \
           --package hostinstall \
@@ -2298,11 +2297,11 @@ in {
             and .package == "hostinstall"
             and .fix == true
             and .checked == 1
-            and .closures == 1
+            and .roots == 1
             and .repaired == 1
             and .errors == 0' \
           "$work/apr-verify-host-install-fix.json" >/dev/null
-        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        grep -q "$install_leaf_hash" "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         install_default_upload="file://$work/install-static-cache-upload/cache"
         install_default_upload_mirror="file://$work/install-static-cache-upload/cache-mirror"
         run_clean ${self}/bin/apr --json origin config \
@@ -7677,9 +7676,9 @@ in {
             and (.head | length == 64)' \
           "$work/apr-unpublish-host-install-v2.json" >/dev/null
         test ! -e "$install_reg/packages/h/hostinstall.toml"
-        test -f "$install_reg/closures/$install_hash"
-        test -f "$install_reg/closures/$install_hash_v11"
-        test -f "$install_reg/closures/$install_hash_v2"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash_v11")/$install_hash_v11"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash_v2")/$install_hash_v2"
         if run_clean ${self}/bin/apr --json show hostinstall \
           --registry host-install-channel > "$work/apr-show-host-install-after-unpublish.json" 2>&1; then
           cat "$work/apr-show-host-install-after-unpublish.json"
