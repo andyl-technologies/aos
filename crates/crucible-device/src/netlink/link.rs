@@ -145,8 +145,9 @@ pub struct ResolveOutcome {
 ///
 /// Each probabilistic fault draws from this struct in the order the model
 /// applies them: jitter, reorder, loss rates, duplicate, corrupt (with
-/// `corrupt_bits` supplying one draw per flipped bit). Supplying the same draws
-/// and the same frame yields byte-identical deliveries ([IO-4], [IO-22]).
+/// `corrupt_bits` supplying selectors for payload corruption strategies).
+/// Supplying the same draws and the same frame yields byte-identical deliveries
+/// ([IO-4], [IO-22]).
 ///
 /// The seeded per-device RNG ([`DeviceRng`]) produces these draws in this exact
 /// consumption order via [`FrameDraws::from_rng_for_faults`] ([IO-21]); callers
@@ -165,7 +166,12 @@ pub struct FrameDraws {
     pub duplicate: u64,
     /// The corrupt-Bernoulli draw.
     pub corrupt: u64,
-    /// One draw per corruption bit flip (a bit position selector each).
+    /// Corruption selector draws.
+    ///
+    /// Legacy bit-flip-only faults interpret each draw as a bit position.
+    /// Strategy-based corruption consumes these in strategy order: bit flips use
+    /// bit-position selectors, field mutation uses one byte selector, and
+    /// truncation uses one truncation-length selector.
     pub corrupt_bits: Vec<u64>,
 }
 
@@ -465,7 +471,7 @@ impl NetLink {
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
 
         // --- loss (IO-20): drop the frame, no delivery ---
-        if loss_fires(&self.faults, draws) {
+        if self.faults.loss_fires(draws.loss, &draws.additional_loss) {
             return Ok(outcome);
         }
 
@@ -733,58 +739,39 @@ impl NetLink {
     }
 }
 
-fn loss_fires(faults: &LinkFaults, draws: &FrameDraws) -> bool {
-    if faults.loss.fires(draws.loss) {
-        return true;
-    }
-
-    faults
-        .additional_loss
-        .iter()
-        .enumerate()
-        .any(|(index, probability)| {
-            let draw = draws
-                .additional_loss
-                .get(index)
-                .copied()
-                .unwrap_or_else(|| non_firing_draw(probability));
-            probability.fires(draw)
-        })
-}
-
-fn non_firing_draw(probability: &crate::fault::Probability) -> u64 {
-    if probability.denominator == 0 || probability.numerator >= probability.denominator {
-        0
-    } else {
-        probability.numerator
-    }
-}
-
 fn corrupt_link_payload(faults: &LinkFaults, payload: &mut Vec<u8>, bit_draws: &[u64]) {
     if faults.corruption_strategies.is_empty() {
         corrupt_payload(payload, bit_draws, faults.corrupt_bit_flips);
         return;
     }
 
-    let mut bit_offset = 0usize;
+    let mut draw_offset = 0usize;
     for strategy in &faults.corruption_strategies {
         match *strategy {
             LinkCorruptionStrategy::BitFlip { max_bits } => {
                 let count = max_bits as usize;
-                let end = bit_offset.saturating_add(count).min(bit_draws.len());
-                corrupt_payload(payload, &bit_draws[bit_offset..end], max_bits);
-                bit_offset = bit_offset.saturating_add(count);
+                let end = draw_offset.saturating_add(count).min(bit_draws.len());
+                corrupt_payload(payload, &bit_draws[draw_offset..end], max_bits);
+                draw_offset = draw_offset.saturating_add(count);
             }
             LinkCorruptionStrategy::FieldMutation => {
-                if let Some(first) = payload.first_mut() {
-                    *first ^= 0x80;
+                let draw = bit_draws.get(draw_offset).copied().unwrap_or(0);
+                draw_offset = draw_offset.saturating_add(1);
+                if !payload.is_empty() {
+                    let index = (draw % payload.len() as u64) as usize;
+                    payload[index] ^= 0x80;
                 }
             }
             LinkCorruptionStrategy::Truncation { max_bytes } => {
-                let remove = usize::try_from(max_bytes)
+                let draw = bit_draws.get(draw_offset).copied().unwrap_or(0);
+                draw_offset = draw_offset.saturating_add(1);
+                let limit = usize::try_from(max_bytes)
                     .unwrap_or(usize::MAX)
                     .min(payload.len());
-                payload.truncate(payload.len().saturating_sub(remove));
+                if limit != 0 {
+                    let remove = (draw % limit as u64) as usize + 1;
+                    payload.truncate(payload.len().saturating_sub(remove));
+                }
             }
         }
     }

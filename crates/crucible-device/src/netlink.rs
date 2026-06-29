@@ -30,15 +30,16 @@
 //!
 //! # Determinism and the RNG seam
 //!
-//! Every probabilistic transform (jitter magnitude, reorder shift, loss decisions,
-//! duplicate timing, corruption decision, and corrupt bit positions) is a pure function of a **draw value**
-//! carried in [`FrameDraws`]. The seeded per-device RNG ([`crate::fault::DeviceRng`])
-//! forked by name-hash produces those draws in their fixed consumption order via
-//! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`] ([IO-21]); the snapshot
-//! captures the RNG cursor so a fork resumes the same sequence ([IO-23]). The same
-//! frame and the same draws always yield byte-identical deliveries ([IO-4],
-//! [IO-22]). No floating point, no host clock, and no default-hasher iteration
-//! appears on any delivery path ([IO-24]).
+//! Every probabilistic transform (jitter magnitude, reorder shift, loss
+//! decisions, duplicate timing, corruption decision, and corruption selectors)
+//! is a pure function of draw values carried in [`FrameDraws`]. The seeded
+//! per-device RNG ([`crate::fault::DeviceRng`]) forked by name-hash produces
+//! those draws in their fixed consumption order via
+//! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`] ([IO-21]);
+//! the snapshot captures the RNG cursor so a fork resumes the same sequence
+//! ([IO-23]). The same frame and the same draws always yield byte-identical
+//! deliveries ([IO-4], [IO-22]). No floating point, no host clock, and no
+//! default-hasher iteration appears on any delivery path ([IO-24]).
 
 pub mod fault;
 pub mod link;
@@ -361,6 +362,42 @@ mod tests {
             PastDeliveryPolicy::FailLoud,
         ));
         assert_eq!(out2.deliveries[0].payload, vec![0; 4]);
+    }
+
+    #[test]
+    fn corruption_strategies_use_seeded_selectors() {
+        let mut faults = LinkFaults::none();
+        faults.corrupt = Probability::ALWAYS;
+        faults.corruption_strategies = vec![
+            LinkCorruptionStrategy::FieldMutation,
+            LinkCorruptionStrategy::Truncation { max_bytes: 3 },
+        ];
+
+        let mut first = link(faults.clone());
+        let first_out = ok(first.emit(
+            &frame(vec![0, 0, 0, 0, 0]),
+            &FrameDraws {
+                corrupt_bits: vec![1, 0],
+                ..FrameDraws::default()
+            },
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert_eq!(first_out.deliveries[0].payload, vec![0, 0x80, 0, 0]);
+
+        let mut second = link(faults);
+        let second_out = ok(second.emit(
+            &frame(vec![0, 0, 0, 0, 0]),
+            &FrameDraws {
+                corrupt_bits: vec![3, 2],
+                ..FrameDraws::default()
+            },
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert_eq!(
+            second_out.deliveries[0].payload,
+            vec![0, 0],
+            "different selectors mutate a different byte and choose a different truncation length"
+        );
     }
 
     // ---- into-the-past: fail-loud (IO-34) ----

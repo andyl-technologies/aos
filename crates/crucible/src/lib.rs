@@ -37,9 +37,11 @@ pub use backend::{
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{
-    LinkEmitDecisionRecord, NetworkLinkDirection, apply_combined_network_faults_to_link,
-    device_overlay, device_rng, device_stream_id, emit_link_frame_with_recorded_faults,
-    io_fault_id, io_fault_state, link_faults_from_combined_network, network_partition_change,
+    LinkEmitDecisionRecord, NetworkFaultApplication, NetworkLinkDirection,
+    apply_combined_network_faults, apply_combined_network_faults_to_link,
+    apply_combined_network_faults_to_scheduler, device_overlay, device_rng, device_stream_id,
+    emit_link_frame_with_recorded_faults, heal_combined_network_faults_to_scheduler, io_fault_id,
+    io_fault_state, link_faults_from_combined_network, network_partition_change,
     network_partition_removed_edges, record_device_fault, with_active_io_faults,
 };
 pub use device_subnode::DeviceSchedulingSubNode;

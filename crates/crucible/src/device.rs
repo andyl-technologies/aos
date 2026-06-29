@@ -34,7 +34,7 @@
 //! `device_rng_cursor_or_active_fault_omission_fails_replay_oracle` test proves
 //! this end to end.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_device::{
     DeviceError, DeviceRng, Frame, FrameDraws, IoFaults, LinkCorruptionStrategy, LinkFaults,
@@ -45,9 +45,9 @@ use crate::decision::DecisionRecorder;
 use crate::{
     CombinedNetworkFaults, CombinedPartitionFault, Decision, DeviceId, DeviceOverlayDelta,
     DeviceRngState, FaultDecision, FaultId, FaultRateBasisPoints, FaultState,
-    NetworkCorruptionFault, RngDecision, RngStreamId, RngStreamPosition,
-    SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState, SchedulerTopologyChange, Seed,
-    VirtualTime,
+    NetworkCorruptionFault, RngDecision, RngStreamId, RngStreamPosition, SchedulerError,
+    SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState,
+    SchedulerTopologyChange, Seed, SingleScheduler, VirtualTime,
 };
 
 /// Builds a device's seeded RNG, forked by name-hash from the scenario seed.
@@ -114,6 +114,15 @@ pub struct LinkEmitDecisionRecord {
     pub decisions: Vec<Decision>,
 }
 
+/// The engine-side result of applying a combined network fault set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkFaultApplication {
+    /// The concrete fault table installed on the directed link.
+    pub link_faults: LinkFaults,
+    /// The scheduler topology mutations produced by partition activation or heal.
+    pub topology_changes: Vec<SchedulerTopologyChange>,
+}
+
 /// The orientation of one directed [`NetLink`] relative to a declared logical link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkLinkDirection {
@@ -139,7 +148,7 @@ impl NetworkLinkDirection {
 /// [`FrameDraws`] through [`NetLink::emit_with_rng_draws`], so the deliveries are
 /// produced by the real link implementation and the returned schedule decisions
 /// record the exact same raw draw values in fixed model order: jitter, reorder,
-/// loss rates, duplicate, corrupt, and corruption-bit positions. The derived
+/// loss rates, duplicate, corrupt, and corruption selectors. The derived
 /// loss/duplicate/corrupt outcomes are appended as [`Decision::FaultFires`] using
 /// the same device-scoped [`FaultId`] namespace as block and 9p faults.
 ///
@@ -154,6 +163,7 @@ pub fn emit_link_frame_with_recorded_faults(
     frame: &Frame,
     policy: PastDeliveryPolicy,
 ) -> Result<LinkEmitDecisionRecord, DeviceError> {
+    let fault_table = link.faults().clone();
     let mut rng = device_rng(seed, link_id, link.rng_position());
     let (outcome, draws) = link.emit_with_rng_draws(frame, &mut rng, policy)?;
     let stream = device_stream_id(link_id);
@@ -161,9 +171,11 @@ pub fn emit_link_frame_with_recorded_faults(
         ticks: frame.emit_icount,
     };
     let mut decisions = link_rng_draw_decisions(&stream, &draws);
-    let loss_fired = outcome.deliveries.is_empty();
-    let duplicate_fired = !loss_fired && outcome.deliveries.len() > 1;
-    let corrupt_fired = !loss_fired && link.faults().corrupt.fires(draws.corrupt);
+    let partitioned = fault_table.partitioned;
+    let loss_fired = !partitioned && fault_table.loss_fires(draws.loss, &draws.additional_loss);
+    let duplicate_fired =
+        !partitioned && !loss_fired && fault_table.duplicate.fires(draws.duplicate);
+    let corrupt_fired = !partitioned && !loss_fired && fault_table.corrupt.fires(draws.corrupt);
     push_link_fault_outcome(&mut decisions, at, link_id, "loss", loss_fired);
     push_link_fault_outcome(&mut decisions, at, link_id, "duplicate", duplicate_fired);
     push_link_fault_outcome(&mut decisions, at, link_id, "corrupt", corrupt_fired);
@@ -205,15 +217,128 @@ fn push_link_fault_outcome(
 ///
 /// The model layer reduces active faults into [`CombinedNetworkFaults`]; this
 /// helper lowers that target-local table to the concrete [`LinkFaults`] consumed
-/// by [`NetLink`] at RESOLVE. Partition coverage is intentionally excluded from
-/// the link table because it mutates scheduler topology, not per-frame payload
-/// or delivery timing; use [`network_partition_removed_edges`] for that half.
+/// by [`NetLink`] at RESOLVE, including directed partition drops. This legacy
+/// helper applies only the link half; use [`apply_combined_network_faults`] when
+/// the scheduler topology mutation must be queued with the link update.
 pub fn apply_combined_network_faults_to_link(
     link: &mut NetLink,
     faults: &CombinedNetworkFaults,
     direction: NetworkLinkDirection,
 ) {
     link.set_faults(link_faults_from_combined_network(faults, direction));
+}
+
+/// Applies combined RFC network faults to a link and builds the topology effect.
+///
+/// This is the one-call bridge for activation: it installs the concrete
+/// [`LinkFaults`] on the directed [`NetLink`] and, when the same combined set
+/// contains a partition, returns the scheduler effective-topology removal that
+/// must be queued at the same boundary.
+#[must_use]
+pub fn apply_combined_network_faults(
+    sequence: u64,
+    endpoint_a: SchedulerNodeId,
+    endpoint_b: SchedulerNodeId,
+    link: &mut NetLink,
+    faults: &CombinedNetworkFaults,
+    direction: NetworkLinkDirection,
+) -> NetworkFaultApplication {
+    let link_faults = link_faults_from_combined_network(faults, direction);
+    link.set_faults(link_faults.clone());
+    let topology_changes = network_partition_change(sequence, endpoint_a, endpoint_b, faults)
+        .into_iter()
+        .collect();
+    NetworkFaultApplication {
+        link_faults,
+        topology_changes,
+    }
+}
+
+/// Applies combined network faults and queues their scheduler topology effect.
+///
+/// This activation bridge installs the concrete directed-link table and, when
+/// the combined fault set contains a partition, schedules the matching
+/// effective-edge removal on `scheduler` for the next quantum boundary.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when the scheduler rejects the topology change,
+/// for example because an activation-timed change is already in the past.
+pub fn apply_combined_network_faults_to_scheduler(
+    sequence: u64,
+    endpoint_a: SchedulerNodeId,
+    endpoint_b: SchedulerNodeId,
+    link: &mut NetLink,
+    faults: &CombinedNetworkFaults,
+    direction: NetworkLinkDirection,
+    scheduler: &mut SingleScheduler,
+) -> Result<NetworkFaultApplication, SchedulerError> {
+    let application =
+        apply_combined_network_faults(sequence, endpoint_a, endpoint_b, link, faults, direction);
+    for change in application.topology_changes.clone() {
+        scheduler.schedule_topology_change(change)?;
+    }
+    Ok(application)
+}
+
+/// Re-applies remaining network faults after a heal and queues topology restore.
+///
+/// `remaining_faults` is the combined fault table after the healed tag has been
+/// removed. The link receives that remaining table. If another partition still
+/// covers the directed link, the helper queues the remaining partition removal;
+/// otherwise it queues a heal restoration for `restored_edges`.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when the scheduler rejects the topology change,
+/// for example because an activation-timed change is already in the past.
+pub fn heal_combined_network_faults_to_scheduler(
+    sequence: u64,
+    endpoint_a: SchedulerNodeId,
+    endpoint_b: SchedulerNodeId,
+    link: &mut NetLink,
+    remaining_faults: &CombinedNetworkFaults,
+    direction: NetworkLinkDirection,
+    restored_edges: Vec<SchedulerLookaheadEdge>,
+    scheduler: &mut SingleScheduler,
+) -> Result<NetworkFaultApplication, SchedulerError> {
+    let link_faults = link_faults_from_combined_network(remaining_faults, direction);
+    link.set_faults(link_faults.clone());
+
+    let remaining_removed_edges = remaining_faults
+        .partition
+        .as_ref()
+        .map(|partition| {
+            network_partition_removed_edges(endpoint_a.clone(), endpoint_b.clone(), partition)
+        })
+        .unwrap_or_default();
+    let remaining_removed_endpoints = remaining_removed_edges
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let restored_edges = restored_edges
+        .into_iter()
+        .filter(|edge| !remaining_removed_endpoints.contains(&edge.endpoint()))
+        .collect::<Vec<_>>();
+
+    let mut topology_changes = Vec::new();
+    if !remaining_removed_edges.is_empty() {
+        topology_changes.push(SchedulerTopologyChange::partition(
+            sequence,
+            remaining_removed_edges,
+        ));
+    }
+    if !restored_edges.is_empty() {
+        topology_changes.push(SchedulerTopologyChange::heal(sequence, restored_edges));
+    }
+
+    for change in topology_changes.clone() {
+        scheduler.schedule_topology_change(change)?;
+    }
+    Ok(NetworkFaultApplication {
+        link_faults,
+        topology_changes,
+    })
 }
 
 /// Lowers combined RFC network faults into a concrete link fault table.

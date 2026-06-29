@@ -45,10 +45,10 @@ pub enum LinkCorruptionStrategy {
         /// Number of bit-position draws consumed for this strategy.
         max_bits: u32,
     },
-    /// Mutates one stable modeled field of the opaque frame.
+    /// Mutates one seeded modeled field of the opaque frame.
     ///
-    /// Network frames are opaque at this layer, so the modeled field is the first
-    /// payload byte when one exists.
+    /// Network frames are opaque at this layer, so the modeled field is a
+    /// payload byte selected by a deterministic corruption selector draw.
     FieldMutation,
     /// Removes up to `max_bytes` bytes from the end of the payload.
     Truncation {
@@ -58,12 +58,16 @@ pub enum LinkCorruptionStrategy {
 }
 
 impl LinkCorruptionStrategy {
-    /// Returns the number of seeded bit-position draws this strategy needs.
+    /// Returns the number of seeded selector draws this strategy needs.
+    ///
+    /// Bit-flip selectors choose payload bit positions. Field mutation and
+    /// truncation each consume one selector so the mutated byte and truncation
+    /// length are schedule material rather than fixed constants.
     #[must_use]
     pub fn bit_draws(self) -> u32 {
         match self {
             Self::BitFlip { max_bits } => max_bits,
-            Self::FieldMutation | Self::Truncation { .. } => 0,
+            Self::FieldMutation | Self::Truncation { .. } => 1,
         }
     }
 }
@@ -189,9 +193,33 @@ impl LinkFaults {
             })
     }
 
-    /// Returns the number of corruption bit-position draws required per frame.
+    /// Returns whether the loss fault table fires for the supplied draws.
     ///
-    /// When concrete strategies are present this is the sum of their bit-flip
+    /// The primary loss probability is evaluated first, followed by additional
+    /// overlapping loss rates in their stored order. Missing additional draws are
+    /// treated as deterministic non-firing draws so hand-written tests that omit
+    /// them do not accidentally fire a loss fault.
+    #[must_use]
+    pub fn loss_fires(&self, loss_draw: u64, additional_loss_draws: &[u64]) -> bool {
+        if self.loss.fires(loss_draw) {
+            return true;
+        }
+
+        self.additional_loss
+            .iter()
+            .enumerate()
+            .any(|(index, probability)| {
+                let draw = additional_loss_draws
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| non_firing_draw(*probability));
+                probability.fires(draw)
+            })
+    }
+
+    /// Returns the number of corruption selector draws required per frame.
+    ///
+    /// When concrete strategies are present this is the sum of their selector
     /// needs. Otherwise it is the legacy [`Self::corrupt_bit_flips`] field.
     #[must_use]
     pub fn corrupt_bit_draws(&self) -> u32 {
@@ -203,6 +231,14 @@ impl LinkFaults {
             .fold(0u32, |total, strategy| {
                 total.saturating_add(strategy.bit_draws())
             })
+    }
+}
+
+fn non_firing_draw(probability: Probability) -> u64 {
+    if probability.denominator == 0 || probability.numerator >= probability.denominator {
+        0
+    } else {
+        probability.numerator
     }
 }
 
