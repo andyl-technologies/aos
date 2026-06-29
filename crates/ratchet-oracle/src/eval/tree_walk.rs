@@ -758,7 +758,6 @@ pub struct TreeWalk {
     impure_input_trace_complete: bool,
     force_cache_impure_trace_epoch: u64,
     active_memo_read_nodes: Vec<ActiveMemoReadNode>,
-    #[cfg(test)]
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,

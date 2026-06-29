@@ -756,7 +756,6 @@ impl TreeWalk {
         }
         self.record_forced_expression_demand(subject);
         self.increment_eval_cache_hit();
-        #[cfg(test)]
         self.persist_force_cache_hit_keys.push(key);
         Some(value)
     }

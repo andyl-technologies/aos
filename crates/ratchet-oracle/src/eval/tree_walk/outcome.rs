@@ -16,7 +16,6 @@ pub struct EvalOutcome {
     pub(crate) warning_output: Vec<EvalWarningOutput>,
     pub(crate) impure_input_trace: Vec<ImpureInputFingerprint>,
     pub(crate) impure_input_trace_complete: bool,
-    #[cfg(test)]
     pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
 }
@@ -77,8 +76,10 @@ impl EvalOutcome {
     }
 
     /// Returns persistent force-cache metadata keys loaded during evaluation.
-    #[cfg(test)]
-    pub(crate) fn persist_force_cache_hit_keys(&self) -> &[PersistNodeMetadataKey] {
+    ///
+    /// This is diagnostic evaluator metadata and is not serialized into any
+    /// Nix-observable value, derivation path, or ATerm surface.
+    pub fn persist_force_cache_hit_keys(&self) -> &[PersistNodeMetadataKey] {
         &self.persist_force_cache_hit_keys
     }
 

@@ -130,7 +130,6 @@ impl TreeWalk {
             impure_input_trace_complete: true,
             force_cache_impure_trace_epoch: 0,
             active_memo_read_nodes: Vec::new(),
-            #[cfg(test)]
             persist_force_cache_hit_keys: Vec::new(),
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),

@@ -128,7 +128,6 @@ fn eval_whnf_owned_with_evaluator(
         warning_output: evaluator.warning_output,
         impure_input_trace: evaluator.impure_input_trace,
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
-        #[cfg(test)]
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
     })
@@ -235,7 +234,6 @@ fn eval_instantiation_attr_path_with_evaluator(
         warning_output: evaluator.warning_output,
         impure_input_trace: evaluator.impure_input_trace,
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
-        #[cfg(test)]
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
     })

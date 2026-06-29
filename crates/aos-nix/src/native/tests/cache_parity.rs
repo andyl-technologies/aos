@@ -6,6 +6,8 @@ use crate::cache::{
     ParseFileKey, PersistCache, PersistFileArtifactKey, PersistNodeMetadataKey, ValueHash,
 };
 
+mod stale_metadata;
+
 #[test]
 fn native_file_cache_parity_harness_covers_empty_foldl_update_regression() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-foldl-update");
@@ -710,4 +712,19 @@ fn extend_impure_input_canaries(
         &format!("{label} observation BLAKE3"),
         cacheable.observation_hash(),
     ));
+}
+
+fn impure_trace_surface_canaries(
+    label: &str,
+    trace: &[ImpureInputFingerprint],
+) -> Vec<(String, Vec<u8>)> {
+    let mut canaries = Vec::new();
+    for (index, fingerprint) in trace.iter().enumerate() {
+        extend_impure_input_canaries(
+            &mut canaries,
+            &format!("{label} input {index}"),
+            fingerprint.clone(),
+        );
+    }
+    canaries
 }

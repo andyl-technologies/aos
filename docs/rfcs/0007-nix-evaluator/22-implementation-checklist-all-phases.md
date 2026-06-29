@@ -3392,10 +3392,19 @@ alone (`M-1`/`Q-A`).
       digest; it also requires stale force-cache miss activity, replacement of
       the original `readFile`/`hashFile` trace value hashes under the same
       metadata keys, post-recompute force-cache hits with no misses, and scans
-      original/changed impure-input plus persistent sidecar hashes. This broadens
-      the reusable direct-file cache-parity harness across
-      filesystem-sensitive forced inputs and stale `readFile`/`hashFile`
-      recomputation; it is not currentSystem support, full impure-input
+      original/changed impure-input plus persistent sidecar hashes.
+      `native_file_cache_parity_harness_covers_stale_metadata_impure_inputs`
+      performs the same closure-level stale-cache check for `readDir`,
+      `readFileType`, and `pathExists`: it mutates a directory entry, turns a
+      regular file into a directory, removes a probed path, then requires stale
+      cached and post-recompute persistent runs to match the changed uncached
+      closure, replace the same force-cache metadata keys with changed value
+      hashes, load the keys for the changed metadata observations after
+      recomputation, and keep all impure-input and persistent sidecar hashes out
+      of `.drv` surfaces.
+      This broadens the reusable direct-file cache-parity harness across
+      filesystem-sensitive forced inputs and stale content, metadata, and
+      existence recomputation; it is not currentSystem support, full impure-input
       demand-graph integration, full AOS package-set coverage, syscall-level
       cache-off no-read proof, or the full cached-vs-uncached CI safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).

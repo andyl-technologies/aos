@@ -47,7 +47,6 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         warning_output: evaluator.warning_output,
         impure_input_trace: evaluator.impure_input_trace,
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
-        #[cfg(test)]
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
     }

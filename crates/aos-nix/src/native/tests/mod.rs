@@ -3,6 +3,7 @@
 use super::*;
 use crate::cache::{
     DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
+    PersistNodeMetadataKey,
 };
 use crate::eval::IfdRealizationError;
 use crate::string::NixString;
@@ -51,6 +52,20 @@ fn instantiate_file_closure_with_stats(
     file: &Path,
     attr: &str,
 ) -> Result<(NativeDrvClosure, crate::eval::EvalStats)> {
+    let (closure, stats, _persistent_hit_keys) =
+        instantiate_file_closure_with_stats_and_hits(native, file, attr)?;
+    Ok((closure, stats))
+}
+
+fn instantiate_file_closure_with_stats_and_hits(
+    native: &NixNative,
+    file: &Path,
+    attr: &str,
+) -> Result<(
+    NativeDrvClosure,
+    crate::eval::EvalStats,
+    Vec<PersistNodeMetadataKey>,
+)> {
     let attr_path = attr_path_drv_path_segments(attr)?;
     let mut options = native.instantiation_options();
     let file = native_source_file(file, &options)?;
@@ -98,9 +113,10 @@ fn instantiate_file_closure_with_stats(
         None => native_eval_error(error, None),
     })?;
     let stats = *outcome.stats();
+    let persistent_hit_keys = outcome.persist_force_cache_hit_keys().to_vec();
     native.observe_eval_cache(&outcome);
     let closure = native.native_drv_closure_from_outcome(outcome)?;
-    Ok((closure, stats))
+    Ok((closure, stats, persistent_hit_keys))
 }
 
 #[derive(Debug)]
