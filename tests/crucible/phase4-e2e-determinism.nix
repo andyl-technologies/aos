@@ -227,8 +227,8 @@
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
-        label = "implemented harness e2e target";
-        needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible-harness\",\n        test_target: \"gate_e2e_determinism\",\n        required_features: &[],\n        placeholder: false,";
+        label = "implemented crucible e2e target";
+        needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_e2e_determinism_concurrency\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
       }
       {
         label = "CLI final e2e target remains pending";
@@ -257,8 +257,8 @@
         needle = "placeholder_targets=3";
       }
       {
-        label = "implemented harness e2e target in Nix lint";
-        needle = "gate = \"gate:e2e-determinism\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_e2e_determinism\";\n      requiredFeatures = [];\n      placeholder = false;";
+        label = "implemented crucible e2e target in Nix lint";
+        needle = "gate = \"gate:e2e-determinism\";\n      package = \"crucible\";\n      testTarget = \"gate_e2e_determinism_concurrency\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -320,8 +320,9 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-e2e-determinism-target" \
-              -p crucible-harness \
-              --test gate_e2e_determinism \
+              -p crucible \
+              --features test-double \
+              --test gate_e2e_determinism_concurrency \
               -- --test-threads=1
           '';
         }
@@ -335,8 +336,8 @@ in
             check=${attrPath}
             gate=gate:e2e-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
-            backend=mock
-            scenario=mock-partition-recovery
+            backend=crucible-scheduler
+            scenario=serial-vs-concurrent-authoritative-drive
             artifact=self-contained-seed-scenario-schedule-build-identity
             adversarial_profiles=canonical-host-adversary-matrix
             final_acceptance_cli_target=pending

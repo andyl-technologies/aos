@@ -242,7 +242,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         gate: "gate:e2e-determinism",
         package: "crucible",
         test_target: "gate_e2e_determinism_concurrency",
-        required_features: &[],
+        required_features: &["test-double"],
         placeholder: false,
     },
     GateTargetSpec {
