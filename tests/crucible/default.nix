@@ -582,6 +582,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerGraphValidator";
       taskIds = ["T-TRIG-15"];
     };
+    triggerPlanLowering = import ./phase4-trigger-plan-lowering.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerPlanLowering";
+      taskIds = ["T-TRIG-16"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

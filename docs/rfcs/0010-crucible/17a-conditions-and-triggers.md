@@ -942,23 +942,22 @@ pub enum TriggerGraphError {
 
 [`06-spatial-graph.md`](06-spatial-graph.md) §5.1 and
 [`17-fault-injection.md`](17-fault-injection.md) §17.6.1 define the declarative
-**`Plan`**: a list of `PlanEntry`s — `At { at, duration, fault, tag }`,
-`PermanentAt { at, fault, tag }`, `Heal { at, tag }` — scheduled over virtual
-time. This file unifies that with the event graph: **the Plan is a set of events
-whose triggers are pure `At` conditions.** The declarative time-scheduled Plan is
-the **degenerate case** of the event graph, not a separate model.
+**`Plan`**: authored fault rows (`At`, `PermanentAt`, and `Heal`) scheduled over
+virtual time. The implemented canonical `Plan` representation normalizes those
+rows into `PlanEntry::Activate` and `PlanEntry::Heal`: finite `At` authoring is
+an activation plus a heal, and `PermanentAt` authoring is an activation with no
+paired heal. This file unifies that canonical Plan with the event graph: **the
+Plan is a set of events whose triggers are pure `At` conditions.** The
+declarative time-scheduled Plan is the **degenerate case** of the event graph,
+not a separate model.
 
 The lowering is mechanical:
 
 ```text
-  PlanEntry                              event graph
+  canonical PlanEntry                    event graph
   ───────────────────────────────────   ─────────────────────────────────────────
-  PermanentAt { at, fault, tag }     ⇒   Event{ trigger: At{at},
+  Activate { at, fault, tag }        ⇒   Event{ trigger: At{at},
                                                 action:  InjectFault{tag, fault} }
-  At { at, duration, fault, tag }    ⇒   Event{ trigger: At{at},
-                                                action:  InjectFault{tag, fault} }
-                                       +  Event{ trigger: At{at+duration},
-                                                action:  HealFault{tag} }
   Heal { at, tag }                   ⇒   Event{ trigger: At{at},
                                                 action:  HealFault{tag} }
 ```
@@ -967,33 +966,35 @@ So 17's `FaultPlan` and this file's event graph are **one model**: a fault Plan 
 exactly the subset of the event graph whose every trigger is `At` and whose every
 action is `InjectFault`/`HealFault`. An author who only needs time-scheduled faults
 writes the Plan and never touches a `ConsoleMatch`; an author who needs
-observation-anchored choreography writes events with richer triggers; both produce
-the same kind of value (a content-addressed graph of `(trigger, action)` events),
-hash and reduce identically, and are validated by the same validator (§17a.6 ⊇
-06 §9 for the fault rows). The Plan's content-addressing ([SPAT-3], [SPAT-19]) and
-its build-time validation ([SPAT-31]) are the `At`-restricted special case of this
-file's contract.
+observation-anchored choreography writes events with richer triggers. The Plan
+lowering preserves the source Plan's canonical bytes and content hash in the
+lowered graph wrapper and reduces identically through the scheduler. Native
+event-graph canonical serialization and graph-owned content hashing land with the
+code-first/serializable event-graph form in §17a.10. The Plan's
+content-addressing ([SPAT-3], [SPAT-19]) and build-time validation ([SPAT-31])
+remain the stricter `At`-restricted special case; the general event-graph
+validator (§17a.6) validates references and graph shape for both time and
+observation-triggered graphs.
 
-- **[TRIG-28]** The declarative time-scheduled `Plan` ([SPAT-19],
-  [`17-fault-injection.md`](17-fault-injection.md) §17.6.1 — `At` / `PermanentAt`
-  / `Heal`) MUST be the **degenerate case** of the event graph: every `PlanEntry`
-  MUST lower to one or more `Event`s whose trigger is a pure `At` condition and
-  whose action is `InjectFault`/`HealFault` (a finite `At { duration }` lowering to
-  an inject event plus an `At { at+duration }` heal event). The fault `Plan` and
-  the event graph MUST be **one model** — a content-addressed graph of
-  `(trigger, action)` events — sharing one canonicalization ([SPAT-30]), one
-  content hash ([SPAT-3]), and one validator (§17a.6 subsumes the fault rows of
-  06 §9). *Gate:* `gate:content-address`, `gate:e2e-determinism`. *Spec:* §17a.7;
-  cross-ref 06 §5.1, 17 §17.6.1.
+- **[TRIG-28]** The canonical declarative time-scheduled `Plan` ([SPAT-19],
+  [`17-fault-injection.md`](17-fault-injection.md) §17.6.1, normalized from
+  authored `At` / `PermanentAt` / `Heal` rows into `Activate` / `Heal` entries)
+  MUST be the **degenerate case** of the event graph: every canonical `PlanEntry`
+  MUST lower to an `Event` whose trigger is a pure `At` condition and whose action
+  is `InjectFault` or `HealFault`. The fault `Plan` and the lowered event graph
+  MUST preserve one content-addressed identity for the Plan ([SPAT-3]) and must
+  run through the same trigger action application path; graph-owned
+  canonicalization and serialization are completed by §17a.10. *Gate:*
+  `gate:content-address`, `gate:e2e-determinism`. *Spec:* §17a.7; cross-ref
+  06 §5.1, 17 §17.6.1.
 
 - **[TRIG-29]** A scenario that needs only time-scheduled faults MUST be authorable
-  as a pure-`At` Plan with no richer conditions, and MUST hash and reduce
-  identically whether expressed as a `Plan` or as the equivalent `At`-triggered
-  event graph (the lowering of [TRIG-28] is identity-preserving on the
-  content-addressed value). Conversely, adding an observation-anchored event MUST
-  NOT change the meaning or hash of the pre-existing `At`-triggered entries
-  ([SPAT-5], meaning-not-spelling). *Gate:* `gate:content-address`. *Spec:* §17a.7;
-  cross-ref 06 §2, §8.
+  as a pure-`At` Plan with no richer conditions, and the lowering of [TRIG-28] MUST
+  preserve the Plan's canonical bytes/content hash while reducing identically as
+  trigger actions. Conversely, adding an observation-anchored event MUST NOT change
+  the meaning, lowered prefix, or identity of the pre-existing `At`-triggered Plan
+  entries ([SPAT-5], meaning-not-spelling). *Gate:* `gate:content-address`. *Spec:*
+  §17a.7; cross-ref 06 §2, §8.
 
 ## 17a.8 Pass/fail and the run verdict
 
@@ -1150,8 +1151,9 @@ RELATIVE TIMERS (TRIG-25): "heal 30s AFTER the partition was OBSERVED" — the t
 VALIDATOR build-time (TRIG-26,27): dangling-ref · empty-compound · CYCLE (DFS) ·
   reachability — fail early, not at runtime (06 §9 discipline)
 
-PLAN = degenerate event graph (TRIG-28,29): At/PermanentAt/Heal lower to At-triggered
-  Inject/Heal events; 17's fault Plan and this graph are ONE content-addressed model
+PLAN = degenerate event graph (TRIG-28,29): canonical Activate/Heal Plan entries
+  lower to At-triggered Inject/Heal events; the lowered wrapper preserves Plan
+  hash and reduction
 
 VERDICT (TRIG-30): Pass/Fail compose with the assertion verdict — a violated Always
   fails regardless. AUTHORING (TRIG-32): code-first builder + serializable form,
@@ -1191,9 +1193,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   named trigger handles, once/repeatable policy, deterministic declared-order
   firings, duplicate-id and repeatable-entrypoint rejection, and a focused
   static guardrail against current direct scenario poke/inject/heal APIs in the
-  engine-facing control surfaces. Full condition leaf semantics, action
-  application, build-time reference validation, Plan lowering, and verdict
-  composition remain T-TRIG-3 through T-TRIG-20.
+  engine-facing control surfaces. Verdict composition, serializable event-graph
+  authoring, black-box guarantee wiring, and replay gates remain T-TRIG-17
+  through T-TRIG-20.
 - [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
@@ -1207,8 +1209,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   identical predicate evaluation over a shared condition value and evaluation
   point, `Eventually` trigger/property reuse, compound predicate reuse in
   `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
-  enum. Specialized action validation, Plan lowering, verdict composition, and the
-  broader validator remain T-TRIG-16 through T-TRIG-20.
+  enum. Verdict composition, serializable event-graph authoring, black-box
+  guarantee wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
@@ -1222,9 +1224,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   evaluation, and rejects `After` references to undeclared events plus `Timer`
   references without an armable `Action::ArmTimer` declaration. Assertion
   properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only. Full timer action
-  application, the broader reference/cycle validator, and verdict composition
-  remain T-TRIG-16 through T-TRIG-20.
+  edge-shaped `After` and `Timer` leaves as trigger-only. Verdict composition,
+  serializable event-graph authoring, black-box guarantee wiring, and replay
+  gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1240,8 +1242,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
-  catalog integration, named-link topology validation, and the broader validator
-  remain T-OBS-* and T-TRIG-16 through T-TRIG-20.
+  catalog integration remains T-OBS-*; verdict composition, serializable
+  event-graph authoring, black-box guarantee wiring, and replay gates remain
+  T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1256,8 +1259,10 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   point. Prior executions of the same resolved code point in the observable-log
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
-  production symbol-table loading, coverage-guided search consumption, and the
-  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-16 through T-TRIG-20.
+  production symbol-table loading, and coverage-guided search consumption remain
+  T-OBS-9 and T-ADV-10; verdict composition, serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies
@@ -1272,8 +1277,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   conservative default; virtual-address and symbol places require host-supplied
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
-  cadence, RFC 19 memory-sample catalog integration, and the broader validator
-  remain T-OBS-* and T-TRIG-16 through T-TRIG-20.
+  cadence, and RFC 19 memory-sample catalog integration remain T-OBS-*; verdict
+  composition, serializable event-graph authoring, black-box guarantee wiring,
+  and replay gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1289,9 +1295,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   references within the same properties bundle, and event-graph construction
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
-  cooperation. Specialized action validation, full validator reachability/cycle checks,
-  and production RFC 19 catalog integration remain T-TRIG-16 through T-TRIG-20
-  and T-OBS-*.
+  cooperation. Production RFC 19 catalog integration remains T-OBS-*; verdict
+  composition, serializable event-graph authoring, black-box guarantee wiring,
+  and replay gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
   with zero `GuestMarker` conditions. — satisfies [TRIG-3], [TRIG-14]; spec
@@ -1310,9 +1316,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   conditions when no world node enables white-box; event-graph firing does not
   require named-predicate fallback; zero-`GuestMarker` graphs run without any
   guest-marker support; and unrelated guest-marker events are additive to
-  non-marker conditions. Specialized action validation, full validator
-  reachability/cycle checks, and production RFC 19 catalog integration remain
-  T-TRIG-16 through T-TRIG-20 and T-OBS-*.
+  non-marker conditions. Production RFC 19 catalog integration remains T-OBS-*;
+  verdict composition, serializable event-graph authoring, black-box guarantee
+  wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
@@ -1326,8 +1332,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   condition even when another branch decides the current truth value. Event-graph
   construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
   deterministic `EmptyCompound` error; property validation already rejects the
-  same empty compounds. Specialized action validation and the broader validator remain
-  T-TRIG-16 through T-TRIG-20.
+  same empty compounds. Verdict composition, serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  T-TRIG-20.
 - [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
   on icount), in the same deterministic pass as assertion evaluation, never
@@ -1348,8 +1355,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   old raw observable-event injection path, public raw point constructors, public
   raw prefix construction, public graph-evaluation bypasses, direct
   assertion-evaluation bypasses, and host wall-clock APIs in the trigger
-  evaluation surface. Specialized action validation and the broader validator remain
-  T-TRIG-16 through T-TRIG-20.
+  evaluation surface. Verdict composition, serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  T-TRIG-20.
 - [x] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
   recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
   outcomes are Decisions; prove triggers re-derive identically on a forked schedule
@@ -1367,8 +1375,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   EMIT. Focused tests prove a firing is not recorded as a `Decision`, same-prefix
   forked schedulers rederive byte-identical trigger-firing entries, and a trigger
   whose action activates a fault still keeps the deterministic firing separate
-  from later probabilistic fault outcome `Decision`s. Specialized action
-  validation and the broader validator remain T-TRIG-16 through T-TRIG-20.
+  from later probabilistic fault outcome `Decision`s. Verdict composition,
+  serializable event-graph authoring, black-box guarantee wiring, and replay
+  gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-12** Implement the `Action` set (InjectFault/HealFault,
   ArmTimer/CancelTimer, StartNode/StopNode, CreateSavepoint/Fork, Pass/Fail, Log,
   Group), each applied deterministically at the firing virtual time at a quantum
@@ -1388,8 +1397,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   variant through a nested group, prove log actions are observational rather than
   causal, prove trigger actions do not append `Decision`s, and prove same-prefix
   forked schedulers rederive identical action state and event-log bytes.
-  Relative timer phase semantics, Plan lowering, verdict/assertion composition,
-  and broader graph validation remain T-TRIG-16 through T-TRIG-20.
+  Verdict/assertion composition, serializable event-graph authoring, black-box
+  guarantee wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
 - [x] **T-TRIG-13** Implement `StartNode`/`StopNode` as scheduling of a declared,
   baked node (not topology mutation): verify the participant set, RNG-stream set,
   lookahead graph, and bake set stay functions of the `World` alone. — satisfies
@@ -1442,11 +1451,23 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   tests cover world-required and unknown node/link errors, missing fault tags,
   injected faults with dangling topology, empty compounds, non-repeatable
   cycles, unreachable events, and reachable repeatable feedback.
-- [ ] **T-TRIG-16** Unify the time-scheduled `Plan` with the event graph: lower
-  `At`/`PermanentAt`/`Heal` to `At`-triggered Inject/Heal events; prove the Plan
-  and the equivalent event graph hash and reduce identically and that adding an
-  observation-anchored event does not perturb pre-existing `At` entries. —
-  satisfies [TRIG-28], [TRIG-29]; spec §17a.7; cross-ref 06 §5.1, 17 §17.6.1.
+- [x] **T-TRIG-16** Unify the time-scheduled `Plan` with the event graph: lower
+  canonical `PlanEntry::Activate`/`PlanEntry::Heal` rows to `At`-triggered
+  Inject/Heal events; prove the lowered wrapper preserves the Plan hash, reduces
+  identically, and that adding an observation-anchored event does not perturb
+  pre-existing `At` entries. — satisfies [TRIG-28], [TRIG-29]; spec §17a.7;
+  cross-ref 06 §5.1, 17 §17.6.1.
+
+  Completed by `checks.crucible.phase4.triggerPlanLowering`:
+  `Plan::lower_to_event_graph_for_world` lowers the current canonical
+  `PlanEntry::Activate`/`PlanEntry::Heal` model into once-only pure-`At`
+  `Action::InjectFault`/`Action::HealFault` events validated against the source
+  `World`. The lowering preserves the source plan's canonical bytes and content
+  hash through `LoweredPlanEventGraph`, exposes the exact virtual-time evaluation
+  schedule, and reduces through `SingleScheduler` to the same active-fault state
+  and same-time action order as replaying the plan entries directly. Focused
+  tests also compose an observation-anchored event onto the lowered graph and
+  prove the existing `At` event prefix and plan identity are unchanged.
 - [ ] **T-TRIG-17** Implement `Pass`/`Fail` verdict actions composing with the
   assertion verdict (a violated `Always` fails regardless), as a deterministic
   function of the log identical online and offline. — satisfies [TRIG-30]; spec

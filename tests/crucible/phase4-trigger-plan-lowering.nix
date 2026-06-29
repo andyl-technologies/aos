@@ -1,8 +1,8 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase4.triggerGraphValidator",
-  taskIds ? ["T-TRIG-15"],
+  attrPath ? "checks.crucible.phase4.triggerPlanLowering",
+  taskIds ? ["T-TRIG-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,7 +12,8 @@
   };
 
   trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
-  validatorTest = builtins.readFile ../../crates/crucible/tests/trigger_graph_validator.rs;
+  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
+  planLoweringTest = builtins.readFile ../../crates/crucible/tests/trigger_plan_lowering.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -50,19 +51,20 @@
     requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
-  validatorSources = builtins.concatStringsSep "\n" [
+  planLoweringSources = builtins.concatStringsSep "\n" [
     trigger
-    validatorTest
+    libRs
+    planLoweringTest
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
       {
-        label = "T-TRIG-15 checked off";
-        needle = "- [x] **T-TRIG-15**";
+        label = "T-TRIG-16 checked off";
+        needle = "- [x] **T-TRIG-16**";
       }
       {
-        label = "T-TRIG-15 completion note";
-        needle = "Completed by `checks.crucible.phase4.triggerGraphValidator`";
+        label = "T-TRIG-16 completion note";
+        needle = "Completed by `checks.crucible.phase4.triggerPlanLowering`";
       }
       {
         label = "verdict actions remain open";
@@ -71,127 +73,113 @@
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
       {
-        label = "world-required node error";
-        needle = "NodeReferenceRequiresWorld";
+        label = "lowered Plan graph wrapper";
+        needle = "pub struct LoweredPlanEventGraph";
       }
       {
-        label = "world-required link error";
-        needle = "LinkReferenceRequiresWorld";
+        label = "Plan lowering API";
+        needle = "pub fn lower_to_event_graph_for_world";
       }
       {
-        label = "unknown node error";
-        needle = "UnknownNodeReference";
+        label = "activation lowering arm";
+        needle = "PlanEntry::Activate";
       }
       {
-        label = "unknown link error";
-        needle = "UnknownLinkReference";
+        label = "heal lowering arm";
+        needle = "PlanEntry::Heal";
       }
       {
-        label = "unknown fault tag error";
-        needle = "UnknownFaultTagReference";
+        label = "pure At trigger lowering";
+        needle = "Condition::At { at: *at }";
       }
       {
-        label = "non-repeatable cycle error";
-        needle = "NonRepeatableCycle";
+        label = "inject action lowering";
+        needle = "Action::InjectFault";
       }
       {
-        label = "unreachable event error";
-        needle = "UnreachableEvent";
+        label = "heal action lowering";
+        needle = "Action::HealFault";
       }
       {
-        label = "topology helper";
-        needle = "EventGraphTopology";
+        label = "source Plan hash identity";
+        needle = "content_hash: self.content_hash()";
       }
       {
-        label = "membership fault reference validator";
-        needle = "fn validate_membership_fault_reference";
+        label = "source Plan canonical bytes identity";
+        needle = "canonical_bytes: self.canonical_bytes()";
       }
       {
-        label = "canonical link id helper";
-        needle = "fn link_id_for_endpoint_pair";
+        label = "evaluation time collection";
+        needle = "fn plan_evaluation_times";
       }
       {
-        label = "dependency validator entrypoint";
-        needle = "fn validate_event_graph_dependencies";
-      }
-      {
-        label = "non-repeatable cycle validator";
-        needle = "fn validate_non_repeatable_cycles";
-      }
-      {
-        label = "cycle DFS visitor";
-        needle = "fn visit_non_repeatable_event";
-      }
-      {
-        label = "cycle gray mark";
-        needle = "DfsMark::Gray";
-      }
-      {
-        label = "reachability validator";
-        needle = "fn validate_event_reachability";
-      }
-      {
-        label = "injected fault tag collection";
-        needle = "fn injected_fault_tags";
+        label = "world-validated lowered graph";
+        needle = "EventGraph::new_for_world(events, world)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/trigger_graph_validator.rs" validatorTest [
+    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
       {
-        label = "dangling topology and tag test";
-        needle = "validator_rejects_dangling_topology_and_fault_tag_references";
+        label = "lowering wrapper exported";
+        needle = "LoweredPlanEventGraph";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/trigger_plan_lowering.rs" planLoweringTest [
+      {
+        label = "identity-preserving lowering test";
+        needle = "plan_lowers_to_identity_preserving_at_triggered_fault_events";
       }
       {
-        label = "dangling injected fault topology test";
-        needle = "validator_rejects_injected_faults_with_unknown_nodes_or_links";
+        label = "scheduler reduction equivalence test";
+        needle = "lowered_plan_graph_reduces_to_the_same_fault_state_as_plan_entries";
       }
       {
-        label = "empty compound error locality test";
-        needle = "validator_rejects_empty_compounds_with_local_event_errors";
+        label = "same-time canonical firing order";
+        needle = "same-time Plan entries must fire in canonical lowered order";
       }
       {
-        label = "non-repeatable cycle test";
-        needle = "validator_rejects_non_repeatable_after_cycles";
+        label = "same-time canonical activation before heal";
+        needle = "plan:0000000000000002:activate:crash-db-1";
       }
       {
-        label = "unreachable event test";
-        needle = "validator_rejects_unreachable_events_after_cycle_exclusions";
+        label = "lowering API exercised";
+        needle = "lower_to_event_graph_for_world";
       }
       {
-        label = "repeatable feedback acceptance test";
-        needle = "validator_accepts_reachable_repeatable_feedback";
+        label = "content hash identity asserted";
+        needle = "lowered.content_hash(), plan.content_hash()";
       }
       {
-        label = "world-aware validation exercised";
-        needle = "EventGraph::new_for_world";
+        label = "canonical byte identity asserted";
+        needle = "lowered.canonical_bytes(), plan.canonical_bytes()";
       }
       {
-        label = "unknown link fixture";
-        needle = "db-0--db-2";
+        label = "observation event composition";
+        needle = "observe-ready";
       }
       {
-        label = "world-required error assertion";
-        needle = "EventGraphError::NodeReferenceRequiresWorld";
+        label = "scheduler evaluation boundaries";
+        needle = "append_evaluation_boundary";
       }
       {
-        label = "world-required link error assertion";
-        needle = "EventGraphError::LinkReferenceRequiresWorld";
+        label = "scheduler trigger action application";
+        needle = "apply_trigger_firings";
       }
       {
-        label = "missing injected partition link fixture";
-        needle = "partition-without-link";
+        label = "Plan-state oracle";
+        needle = "plan_active_faults_at";
       }
       {
-        label = "cycle error assertion";
-        needle = "EventGraphError::NonRepeatableCycle";
+        label = "black-box observation composition";
+        needle = "Predicate::console_match";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase4 exposes trigger graph validator check";
-        needle = "triggerGraphValidator = import ./phase4-trigger-graph-validator.nix";
+        label = "phase4 exposes trigger Plan lowering check";
+        needle = "triggerPlanLowering = import ./phase4-trigger-plan-lowering.nix";
       }
     ]
-    ++ forbiddenFor "trigger graph validator sources" validatorSources [
+    ++ forbiddenFor "trigger Plan lowering sources" planLoweringSources [
       {
         label = "trigger action decision variant";
         needle = "Decision::Trigger";
@@ -219,10 +207,10 @@
     ];
 in
   if failures != []
-  then throw "crucible phase4 trigger-graph-validator check failed:\n${builtins.concatStringsSep "\n" failures}"
+  then throw "crucible phase4 trigger-Plan-lowering check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
     pkgs.mkDerivation {
-      pname = "crucible-phase4-trigger-graph-validator";
+      pname = "crucible-phase4-trigger-plan-lowering";
       version = "0";
       src = crucibleSrc;
 
@@ -259,12 +247,12 @@ in
           '';
         }
         {
-          name = "run-trigger-graph-validator";
+          name = "run-trigger-plan-lowering";
           script = ''
             cargo test \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --test trigger_graph_validator \
+              --test trigger_plan_lowering \
               -- --test-threads=1
           '';
         }
@@ -275,10 +263,10 @@ in
             {
               echo "attr=${attrPath}"
               echo "tasks=${taskList}"
-              echo "gate=phase4-trigger-graph-validator"
-              echo "topology_refs_validate_against_world=true"
-              echo "non_repeatable_cycles_reject_before_run=true"
-              echo "unreachable_events_reject_before_run=true"
+              echo "gate=phase4-trigger-plan-lowering"
+              echo "plan_hash_identity_preserved=true"
+              echo "pure_at_plan_reduces_as_event_graph=true"
+              echo "observation_event_preserves_lowered_plan_prefix=true"
             } > "$out/nix-support/metadata"
           '';
         }

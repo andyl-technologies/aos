@@ -73,11 +73,11 @@
       }
       {
         label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-16**";
+        needle = "- [ ] **T-TRIG-17**";
       }
       {
-        label = "legacy Plan lowering remains open";
-        needle = "Plan lowering";
+        label = "verdict actions remain open";
+        needle = "Pass`/`Fail` verdict actions";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -365,7 +365,8 @@ in
             gates=gate:layer1-injection,gate:e2e-determinism
             model=event-graph-control-flow-spine
             condition_semantics=implemented-T-TRIG-2-through-T-TRIG-11
-            plan_lowering_and_verdicts=pending-T-TRIG-16-through-T-TRIG-17
+            plan_lowering=implemented-T-TRIG-16
+            verdicts=pending-T-TRIG-17
             RESULT
           '';
         }

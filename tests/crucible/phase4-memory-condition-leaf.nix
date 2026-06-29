@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.memoryConditionLeaf`";
       }
       {
-        label = "Plan lowering remains open";
-        needle = "- [ ] **T-TRIG-16**";
+        label = "verdict actions remain open";
+        needle = "- [ ] **T-TRIG-17**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
