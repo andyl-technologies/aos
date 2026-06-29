@@ -217,9 +217,9 @@
     }
     {
       gate = "gate:e2e-determinism";
-      package = "crucible-harness";
-      testTarget = "gate_e2e_determinism";
-      requiredFeatures = [];
+      package = "crucible";
+      testTarget = "gate_e2e_determinism_concurrency";
+      requiredFeatures = ["test-double"];
       placeholder = false;
     }
     {

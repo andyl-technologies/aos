@@ -55,3 +55,8 @@ required-features = ["test-double"]
 name = "gate_scheduler_liveness"
 path = "tests/gate_scheduler_liveness.rs"
 required-features = ["test-double"]
+
+[[test]]
+name = "gate_e2e_determinism_concurrency"
+path = "tests/gate_e2e_determinism_concurrency.rs"
+required-features = ["test-double"]

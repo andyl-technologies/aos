@@ -72,8 +72,8 @@
         needle = "Completed by `checks.crucible.phase4.eventGraphControlFlow`";
       }
       {
-        label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-20**";
+        label = "event graph replay gate complete";
+        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
       {
         label = "event graph serialization task text";
@@ -369,7 +369,7 @@ in
             verdicts=implemented-T-TRIG-17
             event_graph_serialization=implemented-T-TRIG-18
             black_box_guarantee=implemented-T-TRIG-19
-            replay_oracle=pending-T-TRIG-20
+            replay_oracle=implemented-T-TRIG-20
             RESULT
           '';
         }

@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.observableConditionLeaves`";
       }
       {
-        label = "replay gates remain open";
-        needle = "- [ ] **T-TRIG-20**";
+        label = "event graph replay gate complete";
+        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

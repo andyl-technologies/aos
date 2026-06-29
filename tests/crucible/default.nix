@@ -603,13 +603,10 @@ in {
       taskIds = ["T-TRIG-19"];
     };
     gates = {
-      replayOracle = redGate {
+      replayOracle = import ./phase4-event-graph-replay-oracle.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase4.gates.replayOracle";
-        gateName = "gate:replay-oracle";
-        owner = "crucible";
-        phase = "phase4";
-        taskIds = ["T-PLAN-3" "T-HARN-12"];
-        reason = "full replay oracle gate is intentionally pending";
+        taskIds = ["T-TRIG-20"];
       };
       e2eDeterminism = import ./phase4-e2e-determinism.nix {
         inherit pkgs lib;

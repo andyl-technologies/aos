@@ -60,8 +60,8 @@
         needle = "Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`";
       }
       {
-        label = "replay gates remain open";
-        needle = "- [ ] **T-TRIG-20**";
+        label = "event graph replay gate complete";
+        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
     ++ failuresFor "crates/crucible/tests/black_box_first_guarantee.rs" blackBoxTest [
