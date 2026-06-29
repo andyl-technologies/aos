@@ -1600,7 +1600,7 @@ in {
         resume_reg="$data/apm/registries/host-resume"
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
-        resume_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        resume_hash="dddddddddddddddddddddddddddddddd"
         mkdir -p "$resume_reg/packages/h" "$resume_reg/store/$(printf %.2s "$resume_hash")"
         printf '%s\n' \
           '[package]' \
