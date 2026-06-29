@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crucible::{
-    ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring, EventGraph,
-    EventGraphState, ObservableEvent, SchedulerEventLogEntry, VirtualTime,
+    ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFirings,
+    EventGraph, EventGraphState, ObservableEvent, SchedulerEventLogEntry, VirtualTime,
 };
 
 pub fn time(ticks: u64) -> VirtualTime {
@@ -43,7 +43,7 @@ pub fn evaluate_graph<O>(
     graph: &EventGraph,
     state: &mut EventGraphState,
     mut pass: ConditionEvaluationPass<O>,
-) -> Vec<EventFiring>
+) -> EventFirings
 where
     O: ConditionLeafOracle,
 {

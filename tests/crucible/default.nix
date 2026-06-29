@@ -557,6 +557,11 @@ in {
       attrPath = "checks.crucible.phase4.deterministicConditionEvaluation";
       taskIds = ["T-TRIG-10"];
     };
+    triggerFiringCausalLog = import ./phase4-trigger-firing-causal-log.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerFiringCausalLog";
+      taskIds = ["T-TRIG-11"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

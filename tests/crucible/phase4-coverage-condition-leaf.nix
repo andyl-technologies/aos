@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.coverageConditionLeaf`";
       }
       {
-        label = "causal trigger recording remains open";
-        needle = "- [ ] **T-TRIG-11**";
+        label = "action implementation remains open";
+        needle = "- [ ] **T-TRIG-12**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
