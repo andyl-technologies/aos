@@ -2492,6 +2492,7 @@ in {
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18083 \
+        --upload-url file:///tmp/maint-cache \
         > /tmp/dirty-release.out 2>&1; then
         cat /tmp/dirty-release.out
         fail "apr release should refuse dirty registry before cache pointer commit"
@@ -2521,6 +2522,7 @@ in {
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18082 \
+        --upload-url file:///tmp/maint-cache \
         > /tmp/release.json 2>&1 || {
         cat /tmp/release.json
         fail "apr release signs merged release"
