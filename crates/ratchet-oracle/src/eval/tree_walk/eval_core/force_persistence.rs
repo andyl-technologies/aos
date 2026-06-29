@@ -137,7 +137,8 @@ impl TreeWalk {
                     &subject,
                     &payload,
                     materialization_cost_observation,
-                ) && !self.record_persist_forced_expression_pure_trace(&subject, value_hash)
+                ) && !self
+                    .record_persist_forced_expression_pure_trace(&subject, node, value_hash)
                 {
                     self.clear_persist_forced_expression_payload(&subject);
                 }
@@ -151,7 +152,8 @@ impl TreeWalk {
                     &subject,
                     &payload,
                     materialization_cost_observation,
-                ) && !self.record_persist_forced_expression_trace(&subject, value_hash, &trace)
+                ) && !self
+                    .record_persist_forced_expression_trace(&subject, node, value_hash, &trace)
                 {
                     self.clear_persist_forced_expression_payload(&subject);
                 }
@@ -309,6 +311,7 @@ impl TreeWalk {
     fn record_persist_forced_expression_pure_trace(
         &mut self,
         subject: &ForceCacheSubject,
+        node: DemandNodeId,
         value_hash: ValueHash,
     ) -> bool {
         let payload = match PersistNodeTracePayload::from_impure_trace(std::iter::empty::<
@@ -324,12 +327,16 @@ impl TreeWalk {
                 return false;
             }
         };
+        let Some(payload) = self.persistent_trace_payload_with_memo_reads(node, payload) else {
+            return false;
+        };
         self.record_persist_forced_expression_trace_payload(subject, value_hash, &payload)
     }
 
     fn record_persist_forced_expression_trace(
         &mut self,
         subject: &ForceCacheSubject,
+        node: DemandNodeId,
         value_hash: ValueHash,
         trace: &ImpureInputTraceSegment,
     ) -> bool {
@@ -344,7 +351,105 @@ impl TreeWalk {
                 return false;
             }
         };
+        let Some(payload) = self.persistent_trace_payload_with_memo_reads(node, payload) else {
+            return false;
+        };
         self.record_persist_forced_expression_trace_payload(subject, value_hash, &payload)
+    }
+
+    fn persistent_trace_payload_with_memo_reads(
+        &mut self,
+        node: DemandNodeId,
+        payload: PersistNodeTracePayload,
+    ) -> Option<PersistNodeTracePayload> {
+        let Ok(cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "tree-walk evaluator cache lock was poisoned; skipping persistent force trace dependencies"
+            );
+            return None;
+        };
+        let dependencies = match cache.memo_read_dependency_persist_keys(node, payload.inputs()) {
+            Ok(Some(dependencies)) => dependencies,
+            Ok(None) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    node = node.as_u32(),
+                    "tree-walk evaluator persistent force trace has memo-read dependencies without durable keys"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force trace dependency lookup failed"
+                );
+                return None;
+            }
+        };
+        drop(cache);
+        let dependencies = self.persistently_traceable_memo_read_dependencies(dependencies)?;
+        match payload.with_memo_read_dependency_records(dependencies) {
+            Ok(payload) => Some(payload),
+            Err(error) => {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "tree-walk evaluator persistent force trace dependencies could not be encoded"
+                );
+                None
+            }
+        }
+    }
+
+    fn persistently_traceable_memo_read_dependencies(
+        &mut self,
+        dependencies: Vec<(PersistNodeMetadataKey, bool)>,
+    ) -> Option<Vec<(PersistNodeMetadataKey, ValueHash)>> {
+        if dependencies.is_empty() {
+            return Some(Vec::new());
+        }
+        let Some(persist_cache) = &self.persist_cache else {
+            return None;
+        };
+        let mut traceable = Vec::new();
+        for (dependency, covered_by_parent_trace) in dependencies {
+            let value_hash = match persist_cache.lookup_node_materialized_value_hash(dependency) {
+                Ok(Some(value_hash)) => value_hash,
+                Ok(None) if covered_by_parent_trace => continue,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator persistent force trace dependency metadata lookup failed"
+                    );
+                    return None;
+                }
+            };
+            let trace = match persist_cache.lookup_node_trace(dependency) {
+                Ok(Some(trace)) => trace,
+                Ok(None) if covered_by_parent_trace => continue,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator persistent force trace dependency trace lookup failed"
+                    );
+                    return None;
+                }
+            };
+            if trace.value_hash() != value_hash || trace.payload().is_tombstone() {
+                if covered_by_parent_trace {
+                    continue;
+                }
+                return None;
+            }
+            traceable.push((dependency, value_hash));
+        }
+        Some(traceable)
     }
 
     fn record_persist_forced_expression_trace_payload(
@@ -726,10 +831,10 @@ impl TreeWalk {
             subject.free_var_value_hashes.iter().copied(),
         );
         let mut revalidator = TreeWalkImpureInputRevalidator::new(&self.options);
-        let payload = match persist_cache
-            .load_cached_expression_node_value_with_trace_revalidation(key, &mut revalidator)
+        let hit = match persist_cache
+            .load_cached_expression_node_value_trace_hit_with_revalidation(key, &mut revalidator)
         {
-            Ok(Some(payload)) => payload,
+            Ok(Some(hit)) => hit,
             Ok(None) => return None,
             Err(error) => {
                 tracing::warn!(
@@ -740,6 +845,8 @@ impl TreeWalk {
                 return None;
             }
         };
+        let memo_read_dependencies = hit.memo_read_dependencies().to_vec();
+        let payload = hit.into_value();
         if self
             .payload_position_remap_for_subject(&payload, subject)
             .is_none()
@@ -750,7 +857,12 @@ impl TreeWalk {
         let trace = revalidator.into_revalidated_trace();
         let value =
             self.value_for_cached_expression_payload_for_subject(payload.clone(), subject)?;
-        match self.observe_persist_forced_expression_runtime_hit(subject, payload, &trace) {
+        match self.observe_persist_forced_expression_runtime_hit(
+            subject,
+            payload,
+            &trace,
+            &memo_read_dependencies,
+        ) {
             PersistRuntimeHitObservation::Accepted(dependency) => {
                 self.record_active_memo_read(active_force_cache_node, dependency);
             }
@@ -774,6 +886,7 @@ impl TreeWalk {
         subject: &ForceCacheSubject,
         payload: CachedExpressionValue,
         trace: &[ImpureInputFingerprint],
+        memo_read_dependencies: &[PersistNodeMetadataKey],
     ) -> PersistRuntimeHitObservation {
         let Some(identity) = subject.lookup_identity else {
             return PersistRuntimeHitObservation::Skipped;
@@ -820,7 +933,21 @@ impl TreeWalk {
                 .map(|observation| observation.and_then(|observation| observation.node()))
         };
         match observation {
-            Ok(Some(node)) => PersistRuntimeHitObservation::Accepted(node),
+            Ok(Some(node)) => match cache
+                .replace_memo_read_dependencies_by_persist_keys(node, memo_read_dependencies)
+            {
+                Ok(Some(true)) => PersistRuntimeHitObservation::Rejected,
+                Ok(Some(false)) => PersistRuntimeHitObservation::Accepted(node),
+                Ok(None) => PersistRuntimeHitObservation::Accepted(node),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator persistent forced expression memo-read rehydration failed"
+                    );
+                    PersistRuntimeHitObservation::Rejected
+                }
+            },
             Ok(None) => PersistRuntimeHitObservation::Rejected,
             Err(error) => {
                 tracing::warn!(

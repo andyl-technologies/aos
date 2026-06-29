@@ -117,9 +117,39 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-impure"),
         IrId::new(9),
     );
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-impure-child"),
+        IrId::new(10),
+    );
     let key =
         PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let child_key = PersistNodeMetadataKey::for_expression(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("child payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let child_node = runtime
+            .get_or_insert_expression_node(
+                child_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(child_value_hash),
+            )
+            .expect("child node inserts")
+            .expect("cache is enabled");
+        let parent_node = runtime
+            .get_or_insert_expression_node(identity, std::iter::empty::<DurableBlake3Hash>(), None)
+            .expect("parent node inserts")
+            .expect("cache is enabled");
+        runtime
+            .replace_memo_read_dependencies(parent_node, [child_node])
+            .expect("memo-read edge records")
+            .expect("cache is enabled");
+    }
     let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
     options.set_persist_cache_root(&persist_root);
     let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
@@ -137,10 +167,27 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         .expect("persistent cache opens")
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
         .expect("prior-run demand records");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            child_key,
+            &child_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("child payload materializes");
+    persist
+        .record_node_trace(
+            child_key,
+            child_value_hash,
+            &persistent_empty_trace_payload(),
+        )
+        .expect("child trace records");
     let trace_input = ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
         .expect("pathExists fingerprint builds");
-    let expected_trace_payload =
-        PersistNodeTracePayload::from_impure_trace([&trace_input]).expect("trace payload builds");
+    let expected_trace_payload = PersistNodeTracePayload::from_impure_trace([&trace_input])
+        .expect("trace payload builds")
+        .with_memo_read_dependency_records([(child_key, child_value_hash)])
+        .expect("trace dependency encodes");
     evaluator.observe_forced_inline_expression_result(
         Some(subject),
         Value::bool(true),
@@ -184,6 +231,92 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
             expected_trace_payload
         )),
         "cacheable impure observations write the value-associated persistent verifying trace"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn force_observation_with_unproven_memo_supplier_clears_persistent_value_link() {
+    let persist_root = unique_temp_dir("force-cache-persistent-unproven-memo-supplier");
+    let ir = lower("1");
+    let identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-unproven-parent"),
+        IrId::new(11),
+    );
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-force-unproven-child"),
+        IrId::new(12),
+    );
+    let key =
+        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("child payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let child_node = runtime
+            .get_or_insert_expression_node(
+                child_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(child_value_hash),
+            )
+            .expect("child node inserts")
+            .expect("cache is enabled");
+        let parent_node = runtime
+            .get_or_insert_expression_node(identity, std::iter::empty::<DurableBlake3Hash>(), None)
+            .expect("parent node inserts")
+            .expect("cache is enabled");
+        runtime
+            .replace_memo_read_dependencies(parent_node, [child_node])
+            .expect("memo-read edge records")
+            .expect("cache is enabled");
+    }
+    let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(&ir, options, cache);
+    let subject = ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
+    };
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
+        .expect("prior-run demand records");
+    let trace_input = ImpureInputFingerprint::path_exists(b"/tmp/aos-cacheable-input", true)
+        .expect("pathExists fingerprint builds");
+
+    evaluator.observe_forced_inline_expression_result(
+        Some(subject),
+        Value::bool(true),
+        ImpureInputTraceSegment {
+            trace: vec![trace_input],
+            complete: true,
+        },
+    );
+
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .load_cached_expression_node_value_indexed(key)
+            .expect("persistent payload lookup succeeds"),
+        None,
+        "persistent writeback must not omit an unproven memo-read supplier"
+    );
+    let trace = persist
+        .lookup_node_trace(key)
+        .expect("persistent trace lookup succeeds")
+        .expect("persistent trace tombstone records");
+    assert!(
+        trace.payload().is_tombstone(),
+        "cleared parent writeback should tombstone any prior durable trace"
     );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");

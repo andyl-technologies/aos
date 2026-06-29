@@ -511,6 +511,30 @@ impl EvalCacheRuntime {
             .map(Some)
     }
 
+    pub(crate) fn memo_read_dependency_persist_keys(
+        &self,
+        node: DemandNodeId,
+        trace_inputs: &[CacheableInputFingerprint],
+    ) -> Result<Option<Vec<(PersistNodeMetadataKey, bool)>>, DemandGraphError> {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.memo_read_dependency_persist_keys(node, trace_inputs)
+    }
+
+    pub(crate) fn replace_memo_read_dependencies_by_persist_keys(
+        &mut self,
+        dependent: DemandNodeId,
+        dependency_keys: &[PersistNodeMetadataKey],
+    ) -> Result<Option<bool>, DemandGraphError> {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .replace_memo_read_dependencies_by_persist_keys(dependent, dependency_keys)
+            .map(Some)
+    }
+
     /// Observes one inline expression result when cache observation is enabled.
     ///
     /// Disabled runtimes return `Ok(None)` without validating the expression

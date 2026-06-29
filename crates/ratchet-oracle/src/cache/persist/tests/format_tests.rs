@@ -89,7 +89,7 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     let encoded = payload.encode().expect("payload encodes");
     let mut expected = Vec::new();
     expected.extend_from_slice(b"AOS-NIX-NTRACE01");
-    expected.extend_from_slice(&4u32.to_le_bytes());
+    expected.extend_from_slice(&5u32.to_le_bytes());
     expected.extend_from_slice(&4u64.to_le_bytes());
     expected.push(2);
     expected.push(1);
@@ -164,7 +164,7 @@ fn node_trace_payload_tombstone_uses_stable_wire_bytes() {
 
     assert_eq!(encoded.len(), PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN);
     assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
-    assert_eq!(&encoded[16..20], 4u32.to_le_bytes().as_slice());
+    assert_eq!(&encoded[16..20], 5u32.to_le_bytes().as_slice());
     assert_eq!(&encoded[20..28], u64::MAX.to_le_bytes().as_slice());
     assert!(decoded.is_tombstone());
     assert_eq!(decoded.inputs(), &[]);
@@ -282,7 +282,7 @@ fn node_trace_payload_round_trips_memo_read_dependencies() {
     let encoded = payload.encode().expect("payload encodes");
     let decoded = PersistNodeTracePayload::decode(&encoded).expect("payload decodes");
     let dependency_count_offset =
-        encoded.len() - 8 - (expected_dependencies.len() * PERSIST_NODE_METADATA_INDEX_KEY_LEN);
+        encoded.len() - 8 - (expected_dependencies.len() * PERSIST_NODE_TRACE_DEPENDENCY_FIXED_LEN);
     let dependency_bytes_offset = dependency_count_offset + 8;
 
     assert_eq!(payload.inputs(), &[input]);
@@ -297,9 +297,13 @@ fn node_trace_payload_round_trips_memo_read_dependencies() {
             .as_slice()
     );
     for (index, dependency) in expected_dependencies.iter().enumerate() {
-        let start = dependency_bytes_offset + (index * PERSIST_NODE_METADATA_INDEX_KEY_LEN);
+        let start = dependency_bytes_offset + (index * PERSIST_NODE_TRACE_DEPENDENCY_FIXED_LEN);
         let end = start + PERSIST_NODE_METADATA_INDEX_KEY_LEN;
         assert_eq!(&encoded[start..end], dependency.index_bytes().as_slice());
+        assert_eq!(
+            &encoded[end..start + PERSIST_NODE_TRACE_DEPENDENCY_FIXED_LEN],
+            [0; PERSIST_NODE_METADATA_VALUE_HASH_LEN].as_slice()
+        );
     }
     assert_eq!(decoded, payload);
     assert_eq!(
@@ -541,6 +545,40 @@ fn node_trace_payload_rejects_malformed_dependency_records() {
         PersistNodeTracePayloadError::Dependency {
             source: PersistPackFormatError::InvalidNodeMetadataIndexTag { tag: 0xff },
         }
+    );
+
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let mut invalid_dependency_value_tag = Vec::new();
+    invalid_dependency_value_tag.extend_from_slice(b"AOS-NIX-NTRACE01");
+    invalid_dependency_value_tag.extend_from_slice(&5u32.to_le_bytes());
+    invalid_dependency_value_tag.extend_from_slice(&0u64.to_le_bytes());
+    invalid_dependency_value_tag.extend_from_slice(&1u64.to_le_bytes());
+    invalid_dependency_value_tag.extend_from_slice(&dependency_key.index_bytes());
+    invalid_dependency_value_tag.push(99);
+    invalid_dependency_value_tag.extend_from_slice(&[0; PERSIST_NODE_METADATA_VALUE_HASH_LEN - 1]);
+    let error = PersistNodeTracePayload::decode(&invalid_dependency_value_tag)
+        .expect_err("invalid dependency value-hash tag errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::InvalidDependencyValueHashTag { tag: 99 }
+    );
+
+    let mut nonzero_dependency_value_padding = Vec::new();
+    nonzero_dependency_value_padding.extend_from_slice(b"AOS-NIX-NTRACE01");
+    nonzero_dependency_value_padding.extend_from_slice(&5u32.to_le_bytes());
+    nonzero_dependency_value_padding.extend_from_slice(&0u64.to_le_bytes());
+    nonzero_dependency_value_padding.extend_from_slice(&1u64.to_le_bytes());
+    nonzero_dependency_value_padding.extend_from_slice(&dependency_key.index_bytes());
+    nonzero_dependency_value_padding.push(0);
+    nonzero_dependency_value_padding.push(1);
+    nonzero_dependency_value_padding
+        .extend_from_slice(&[0; PERSIST_NODE_METADATA_VALUE_HASH_LEN - 2]);
+    let error = PersistNodeTracePayload::decode(&nonzero_dependency_value_padding)
+        .expect_err("non-zero dependency value-hash padding errors");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::NonZeroDependencyValueHashPadding
     );
 
     let mut trailing = encoded;

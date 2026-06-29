@@ -13,6 +13,8 @@ pub struct EvalCache {
     pub(super) static_derivation_output_paths:
         BTreeMap<DemandNodeId, StaticDerivationOutputPathRecord>,
     pub(super) memoization_demands: HashMap<DemandCacheKey, MemoizationDemand>,
+    persist_node_keys: BTreeMap<DemandNodeId, PersistNodeMetadataKey>,
+    nodes_by_persist_key: BTreeMap<PersistNodeMetadataKey, DemandNodeId>,
 }
 
 impl EvalCache {
@@ -29,6 +31,8 @@ impl EvalCache {
             derivation_aterm_paths: BTreeMap::new(),
             static_derivation_output_paths: BTreeMap::new(),
             memoization_demands: HashMap::new(),
+            persist_node_keys: BTreeMap::new(),
+            nodes_by_persist_key: BTreeMap::new(),
         }
     }
 
@@ -397,8 +401,10 @@ impl EvalCache {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        self.graph
-            .get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)
+        let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
+        let node = self.graph.get_or_insert_node(key, value_hash)?;
+        self.remember_persist_node_key(node, persist_key)?;
+        Ok(node)
     }
 
     pub(crate) fn record_memo_read_dependency(
@@ -424,6 +430,63 @@ impl EvalCache {
             dependent,
             DemandDependencyGroup::MemoRead,
             dependencies.iter().copied(),
+        )?;
+        let has_dirty_dependency = self.has_dirty_memo_read_dependency(dependent)?;
+        if has_dirty_dependency {
+            self.invalidate_existing_inline_payload(Some(dependent))?;
+        }
+        Ok(has_dirty_dependency)
+    }
+
+    pub(crate) fn memo_read_dependency_persist_keys(
+        &self,
+        node: DemandNodeId,
+        trace_inputs: &[CacheableInputFingerprint],
+    ) -> Result<Option<Vec<(PersistNodeMetadataKey, bool)>>, DemandGraphError> {
+        let Some(dependencies) = self
+            .graph
+            .node(node)?
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+        else {
+            return Ok(Some(Vec::new()));
+        };
+        let trace_leaves = self.trace_leaf_nodes_for_inputs(trace_inputs);
+        let mut keys = Vec::new();
+        for dependency in dependencies {
+            let Some(key) = self.persist_node_keys.get(dependency).copied() else {
+                return Ok(None);
+            };
+            let covered_by_trace =
+                self.memo_read_dependency_is_covered_by_trace(*dependency, &trace_leaves)?;
+            keys.push((key, covered_by_trace));
+        }
+        Ok(Some(keys))
+    }
+
+    pub(crate) fn replace_memo_read_dependencies_by_persist_keys(
+        &mut self,
+        dependent: DemandNodeId,
+        dependency_keys: &[PersistNodeMetadataKey],
+    ) -> Result<bool, DemandGraphError> {
+        self.graph.node(dependent)?;
+        let mut resolved = Vec::new();
+        for key in dependency_keys {
+            match self.nodes_by_persist_key.get(key).copied() {
+                Some(node) if node == dependent => {
+                    self.invalidate_existing_inline_payload(Some(dependent))?;
+                    return Ok(true);
+                }
+                Some(node) => resolved.push(node),
+                None => {
+                    self.invalidate_existing_inline_payload(Some(dependent))?;
+                    return Ok(true);
+                }
+            }
+        }
+        self.graph.replace_dependency_group(
+            dependent,
+            DemandDependencyGroup::MemoRead,
+            resolved.iter().copied(),
         )?;
         let has_dirty_dependency = self.has_dirty_memo_read_dependency(dependent)?;
         if has_dirty_dependency {
@@ -526,8 +589,7 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
         T: ImpureInputTraceSource + ?Sized,
     {
-        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
-            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
         let existing_node = self.graph.node_id_for_key(key);
         let trace = self.observe_impure_inputs(source)?;
         if trace.status() != ImpureTraceStatus::Cacheable {
@@ -544,6 +606,7 @@ impl EvalCache {
 
         self.invalidate_existing_inline_payload_if_present(existing_node)?;
         let node = self.graph.get_or_insert_node(key, value_hash)?;
+        self.remember_persist_node_key(node, persist_key)?;
         self.graph.replace_dependency_group(
             node,
             DemandDependencyGroup::ImpureInput,
@@ -666,14 +729,19 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
         T: ImpureInputTraceSource + ?Sized,
     {
-        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
-            .map_err(|source| DemandGraphError::CacheKey { source })?;
-        self.observe_inline_expression_payload_for_key_with_impure_inputs(key, value, source)
+        let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
+        self.observe_inline_expression_payload_for_key_with_impure_inputs(
+            key,
+            persist_key,
+            value,
+            source,
+        )
     }
 
     fn observe_inline_expression_payload_for_key_with_impure_inputs<T>(
         &mut self,
         key: DemandCacheKey,
+        persist_key: PersistNodeMetadataKey,
         value: CachedExpressionValue,
         source: &T,
     ) -> Result<ExpressionTraceObservation, DemandGraphError>
@@ -709,6 +777,7 @@ impl EvalCache {
             }
         };
         let node = self.graph.get_or_insert_node(key, None)?;
+        self.remember_persist_node_key(node, persist_key)?;
         self.graph.replace_dependency_group(
             node,
             DemandDependencyGroup::ImpureInput,
@@ -751,8 +820,7 @@ impl EvalCache {
         I: IntoIterator<Item = DurableBlake3Hash>,
         T: ImpureInputTraceSource + ?Sized,
     {
-        let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
-            .map_err(|source| DemandGraphError::CacheKey { source })?;
+        let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
         let value = match CachedExpressionValue::immediate(value) {
             Ok(value) => value,
             Err(source) => {
@@ -761,7 +829,12 @@ impl EvalCache {
                 return Err(DemandGraphError::ValueHash { source });
             }
         };
-        self.observe_inline_expression_payload_for_key_with_impure_inputs(key, value, source)
+        self.observe_inline_expression_payload_for_key_with_impure_inputs(
+            key,
+            persist_key,
+            value,
+            source,
+        )
     }
 
     /// Reconsiders one node from a recomputed inline scalar value.
@@ -815,6 +888,64 @@ impl EvalCache {
         self.inline_values.remove(&node);
         self.derivation_aterm_paths.remove(&node);
         self.static_derivation_output_paths.remove(&node);
+    }
+
+    fn remember_persist_node_key(
+        &mut self,
+        node: DemandNodeId,
+        key: PersistNodeMetadataKey,
+    ) -> Result<(), DemandGraphError> {
+        self.persist_node_keys.insert(node, key);
+        self.nodes_by_persist_key.insert(key, node);
+        Ok(())
+    }
+
+    fn trace_leaf_nodes_for_inputs(
+        &self,
+        trace_inputs: &[CacheableInputFingerprint],
+    ) -> BTreeSet<DemandNodeId> {
+        let mut leaves = BTreeSet::new();
+        for input in trace_inputs {
+            let key = DemandCacheKey::for_impure_input(input.identity().hash());
+            let Some(node) = self.graph.node_id_for_key(key) else {
+                continue;
+            };
+            let Ok(graph_node) = self.graph.node(node) else {
+                continue;
+            };
+            let observed = ValueHash::from_impure_input_observation_hash(input.observation_hash());
+            if graph_node.value_hash() == Some(observed) {
+                leaves.insert(node);
+            }
+        }
+        leaves
+    }
+
+    fn memo_read_dependency_is_covered_by_trace(
+        &self,
+        dependency: DemandNodeId,
+        trace_leaves: &BTreeSet<DemandNodeId>,
+    ) -> Result<bool, DemandGraphError> {
+        let node = self.graph.node(dependency)?;
+        if node.freshness() != NodeFreshness::Clean {
+            return Ok(false);
+        }
+        if !self.inline_values.contains_key(&dependency) {
+            return Ok(false);
+        }
+        if node
+            .dependencies_in_group(DemandDependencyGroup::MemoRead)
+            .is_some_and(|dependencies| !dependencies.is_empty())
+        {
+            return Ok(false);
+        }
+        let Some(impure_inputs) = node.dependencies_in_group(DemandDependencyGroup::ImpureInput)
+        else {
+            return Ok(true);
+        };
+        Ok(impure_inputs
+            .iter()
+            .all(|dependency| trace_leaves.contains(dependency)))
     }
 
     fn invalidate_existing_inline_payload_if_present(
@@ -902,4 +1033,19 @@ impl EvalCache {
         }
         Ok(true)
     }
+}
+
+fn expression_cache_keys<I>(
+    identity: CacheExprIdentity,
+    free_var_value_hashes: I,
+) -> Result<(DemandCacheKey, PersistNodeMetadataKey), DemandGraphError>
+where
+    I: IntoIterator<Item = DurableBlake3Hash>,
+{
+    let free_var_value_hashes = free_var_value_hashes.into_iter().collect::<Vec<_>>();
+    let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes.iter().copied())
+        .map_err(|source| DemandGraphError::CacheKey { source })?;
+    let persist_key =
+        PersistNodeMetadataKey::for_expression(identity, free_var_value_hashes.iter().copied());
+    Ok((key, persist_key))
 }

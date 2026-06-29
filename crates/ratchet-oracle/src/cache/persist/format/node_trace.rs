@@ -15,16 +15,18 @@ use ratchet_cache::node_trace_log::{
 /// Ordinary payloads preserve evaluator trace order and store only cacheable
 /// impure-input fingerprints: each record carries the typed input identity
 /// parts plus the observed-result hash. Version 4 payloads additionally carry
-/// sorted memo-read dependency keys so the durable trace has a place for
-/// `dep-keys[]` before runtime graph rehydration is wired. Tombstone payloads
-/// carry no inputs or dependencies and explicitly invalidate older trace
-/// records for the same node. The eventual persistent demand-graph sidecar can
-/// attach ordinary payload bytes to an expression node and replay the
+/// sorted memo-read dependency keys. Version 5 dependency records also pin the
+/// supplier value hash that the parent observed, so durable-hit revalidation can
+/// reject parents whose suppliers advanced to a different value. Tombstone
+/// payloads carry no inputs or dependencies and explicitly invalidate older
+/// trace records for the same node. The eventual persistent demand-graph sidecar
+/// can attach ordinary payload bytes to an expression node and replay the
 /// fingerprints during durable-hit revalidation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistNodeTracePayload {
     inputs: Vec<CacheableInputFingerprint>,
     memo_read_dependencies: Vec<PersistNodeMetadataKey>,
+    memo_read_dependency_value_hashes: Vec<Option<ValueHash>>,
     tombstone: bool,
 }
 
@@ -34,6 +36,7 @@ impl PersistNodeTracePayload {
         Self {
             inputs: Vec::new(),
             memo_read_dependencies: Vec::new(),
+            memo_read_dependency_value_hashes: Vec::new(),
             tombstone: true,
         }
     }
@@ -90,6 +93,7 @@ impl PersistNodeTracePayload {
         let memo_read_dependencies = collect_memo_read_dependencies(dependencies)?;
         Ok(Self {
             inputs: stored,
+            memo_read_dependency_value_hashes: vec![None; memo_read_dependencies.len()],
             memo_read_dependencies,
             tombstone: false,
         })
@@ -132,6 +136,7 @@ impl PersistNodeTracePayload {
         Ok(Self {
             inputs,
             memo_read_dependencies: Vec::new(),
+            memo_read_dependency_value_hashes: Vec::new(),
             tombstone: false,
         })
     }
@@ -153,8 +158,39 @@ impl PersistNodeTracePayload {
     {
         if self.tombstone {
             self.memo_read_dependencies.clear();
+            self.memo_read_dependency_value_hashes.clear();
         } else {
             self.memo_read_dependencies = collect_memo_read_dependencies(dependencies)?;
+            self.memo_read_dependency_value_hashes = vec![None; self.memo_read_dependencies.len()];
+        }
+        Ok(self)
+    }
+
+    /// Returns this payload with supplied memo-read dependency keys and value hashes.
+    ///
+    /// Records are sorted by key and deduplicated before storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if storage for the dependency
+    /// list cannot be reserved.
+    pub fn with_memo_read_dependency_records<D>(
+        mut self,
+        dependencies: D,
+    ) -> Result<Self, PersistNodeTracePayloadError>
+    where
+        D: IntoIterator<Item = (PersistNodeMetadataKey, ValueHash)>,
+    {
+        if self.tombstone {
+            self.memo_read_dependencies.clear();
+            self.memo_read_dependency_value_hashes.clear();
+        } else {
+            let dependencies = collect_memo_read_dependency_records(dependencies)?;
+            self.memo_read_dependencies = dependencies.iter().map(|(key, _)| *key).collect();
+            self.memo_read_dependency_value_hashes = dependencies
+                .into_iter()
+                .map(|(_, value_hash)| Some(value_hash))
+                .collect();
         }
         Ok(self)
     }
@@ -172,6 +208,16 @@ impl PersistNodeTracePayload {
     /// Returns the sorted memo-read dependency metadata keys.
     pub fn memo_read_dependencies(&self) -> &[PersistNodeMetadataKey] {
         &self.memo_read_dependencies
+    }
+
+    /// Returns the sorted memo-read dependency metadata keys and pinned value hashes.
+    pub fn memo_read_dependency_records(
+        &self,
+    ) -> impl Iterator<Item = (PersistNodeMetadataKey, Option<ValueHash>)> + '_ {
+        self.memo_read_dependencies
+            .iter()
+            .copied()
+            .zip(self.memo_read_dependency_value_hashes.iter().copied())
     }
 
     /// Encodes this node trace payload as stable little-endian bytes.
@@ -231,6 +277,11 @@ impl PersistNodeTracePayload {
         })?;
         let dependency_bytes_len = PERSIST_NODE_METADATA_INDEX_KEY_LEN
             .checked_mul(self.memo_read_dependencies.len())
+            .and_then(|len| {
+                PERSIST_NODE_METADATA_VALUE_HASH_LEN
+                    .checked_mul(self.memo_read_dependencies.len())
+                    .and_then(|hashes_len| len.checked_add(hashes_len))
+            })
             .and_then(|len| len.checked_add(8))
             .ok_or(PersistNodeTracePayloadError::PayloadAllocationFailed { len: usize::MAX })?;
         bytes.try_reserve_exact(dependency_bytes_len).map_err(|_| {
@@ -239,8 +290,18 @@ impl PersistNodeTracePayload {
             }
         })?;
         bytes.extend_from_slice(&dependency_count.to_le_bytes());
-        for dependency in &self.memo_read_dependencies {
+        for (dependency, value_hash) in self.memo_read_dependency_records() {
             bytes.extend_from_slice(&dependency.index_bytes());
+            match value_hash {
+                Some(value_hash) => {
+                    bytes.push(PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG);
+                    bytes.extend_from_slice(&value_hash.as_durable_hash().as_bytes());
+                }
+                None => {
+                    bytes.push(PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG);
+                    bytes.extend_from_slice(&[0; 32]);
+                }
+            }
         }
 
         Ok(bytes)
@@ -371,7 +432,7 @@ impl PersistNodeTracePayload {
             }
         }
 
-        let memo_read_dependencies = if version >= 4 {
+        let (memo_read_dependencies, memo_read_dependency_value_hashes) = if version >= 4 {
             let count_end =
                 cursor
                     .checked_add(8)
@@ -392,8 +453,13 @@ impl PersistNodeTracePayload {
                     count: dependency_count,
                 }
             })?;
+            let dependency_record_len = if version >= 5 {
+                PERSIST_NODE_TRACE_DEPENDENCY_FIXED_LEN
+            } else {
+                PERSIST_NODE_METADATA_INDEX_KEY_LEN
+            };
             let dependencies_len = dependency_count_usize
-                .checked_mul(PERSIST_NODE_METADATA_INDEX_KEY_LEN)
+                .checked_mul(dependency_record_len)
                 .ok_or(PersistNodeTracePayloadError::ShortPayload {
                     expected: usize::MAX,
                     actual: bytes.len(),
@@ -420,15 +486,22 @@ impl PersistNodeTracePayload {
                 )?;
             while cursor < dependencies_end {
                 let key_end = cursor + PERSIST_NODE_METADATA_INDEX_KEY_LEN;
-                dependencies.push(
-                    PersistNodeMetadataKey::decode_index_bytes(&bytes[cursor..key_end])
-                        .map_err(|source| PersistNodeTracePayloadError::Dependency { source })?,
-                );
+                let key = PersistNodeMetadataKey::decode_index_bytes(&bytes[cursor..key_end])
+                    .map_err(|source| PersistNodeTracePayloadError::Dependency { source })?;
                 cursor = key_end;
+                let value_hash = if version >= 5 {
+                    let value_hash_end = cursor + PERSIST_NODE_METADATA_VALUE_HASH_LEN;
+                    let value_hash = decode_dependency_value_hash(&bytes[cursor..value_hash_end])?;
+                    cursor = value_hash_end;
+                    value_hash
+                } else {
+                    None
+                };
+                dependencies.push((key, value_hash));
             }
-            collect_memo_read_dependencies(dependencies)?
+            collect_decoded_memo_read_dependencies(dependencies)?
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         if cursor != bytes.len() {
@@ -440,8 +513,31 @@ impl PersistNodeTracePayload {
         Ok(Self {
             inputs,
             memo_read_dependencies,
+            memo_read_dependency_value_hashes,
             tombstone: false,
         })
+    }
+}
+
+fn decode_dependency_value_hash(
+    bytes: &[u8],
+) -> Result<Option<ValueHash>, PersistNodeTracePayloadError> {
+    let value_hash_payload = &bytes[1..PERSIST_NODE_METADATA_VALUE_HASH_LEN];
+    match bytes[0] {
+        PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG => {
+            if value_hash_payload.iter().any(|byte| *byte != 0) {
+                return Err(PersistNodeTracePayloadError::NonZeroDependencyValueHashPadding);
+            }
+            Ok(None)
+        }
+        PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG => {
+            let mut hash = [0; 32];
+            hash.copy_from_slice(value_hash_payload);
+            Ok(Some(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_bytes(hash),
+            )))
+        }
+        tag => Err(PersistNodeTracePayloadError::InvalidDependencyValueHashTag { tag }),
     }
 }
 
@@ -473,6 +569,82 @@ where
     stored.sort_unstable();
     stored.dedup();
     Ok(stored)
+}
+
+fn collect_memo_read_dependency_records<D>(
+    dependencies: D,
+) -> Result<Vec<(PersistNodeMetadataKey, ValueHash)>, PersistNodeTracePayloadError>
+where
+    D: IntoIterator<Item = (PersistNodeMetadataKey, ValueHash)>,
+{
+    let dependencies = dependencies.into_iter();
+    let (minimum, _) = dependencies.size_hint();
+    let mut stored = Vec::new();
+    stored.try_reserve_exact(minimum).map_err(|_| {
+        PersistNodeTracePayloadError::DependencyAllocationFailed {
+            dependencies: minimum,
+        }
+    })?;
+    for dependency in dependencies {
+        if stored.len() == stored.capacity() {
+            let requested = stored.len().saturating_add(1);
+            stored.try_reserve_exact(1).map_err(|_| {
+                PersistNodeTracePayloadError::DependencyAllocationFailed {
+                    dependencies: requested,
+                }
+            })?;
+        }
+        stored.push(dependency);
+    }
+    stored.sort_unstable_by_key(|(key, _)| *key);
+    stored.dedup_by_key(|(key, _)| *key);
+    Ok(stored)
+}
+
+fn collect_decoded_memo_read_dependencies<D>(
+    dependencies: D,
+) -> Result<(Vec<PersistNodeMetadataKey>, Vec<Option<ValueHash>>), PersistNodeTracePayloadError>
+where
+    D: IntoIterator<Item = (PersistNodeMetadataKey, Option<ValueHash>)>,
+{
+    let dependencies = dependencies.into_iter();
+    let (minimum, _) = dependencies.size_hint();
+    let mut stored = Vec::new();
+    stored.try_reserve_exact(minimum).map_err(|_| {
+        PersistNodeTracePayloadError::DependencyAllocationFailed {
+            dependencies: minimum,
+        }
+    })?;
+    for dependency in dependencies {
+        if stored.len() == stored.capacity() {
+            let requested = stored.len().saturating_add(1);
+            stored.try_reserve_exact(1).map_err(|_| {
+                PersistNodeTracePayloadError::DependencyAllocationFailed {
+                    dependencies: requested,
+                }
+            })?;
+        }
+        stored.push(dependency);
+    }
+    stored.sort_unstable_by_key(|(key, _)| *key);
+    stored.dedup_by_key(|(key, _)| *key);
+    let mut keys = Vec::new();
+    let mut value_hashes = Vec::new();
+    keys.try_reserve_exact(stored.len()).map_err(|_| {
+        PersistNodeTracePayloadError::DependencyAllocationFailed {
+            dependencies: stored.len(),
+        }
+    })?;
+    value_hashes.try_reserve_exact(stored.len()).map_err(|_| {
+        PersistNodeTracePayloadError::DependencyAllocationFailed {
+            dependencies: stored.len(),
+        }
+    })?;
+    for (key, value_hash) in stored {
+        keys.push(key);
+        value_hashes.push(value_hash);
+    }
+    Ok((keys, value_hashes))
 }
 
 fn node_trace_input_kind_tag(kind: ImpureInputKind) -> u8 {

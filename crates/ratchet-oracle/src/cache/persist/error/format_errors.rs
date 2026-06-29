@@ -317,6 +317,15 @@ pub enum PersistNodeTracePayloadError {
         /// The underlying persistent index-key error.
         source: PersistPackFormatError,
     },
+    /// A dependency value-hash field used the absent tag with non-zero padding.
+    #[error("persistent node trace dependency value hash has non-zero absent padding")]
+    NonZeroDependencyValueHashPadding,
+    /// A dependency value-hash field had an unexpected presence tag.
+    #[error("persistent node trace dependency value hash has invalid tag {tag}")]
+    InvalidDependencyValueHashTag {
+        /// The malformed optional value-hash tag.
+        tag: u8,
+    },
 }
 
 /// Node trace log bytes had an invalid on-disk shape.

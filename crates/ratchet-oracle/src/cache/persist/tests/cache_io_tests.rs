@@ -187,7 +187,263 @@ fn cache_cached_expression_node_payload_load_with_trace_revalidation_hits_matchi
             .expect("trace-verified payload lookup succeeds"),
         Some(payload)
     );
-    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        revalidator.calls(),
+        1,
+        "matching trace should revalidate its input"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_checks_memo_read_dependencies() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let dependency_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("dependency payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let dependency_value_hash = dependency_payload
+        .value_hash()
+        .expect("dependency payload hashes");
+    let dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 7);
+    let changed_dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 8);
+    let node_trace = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("node trace builds")
+    .with_memo_read_dependency_records([(dependency_key, dependency_value_hash)])
+    .expect("node trace dependency records");
+    let dependency_trace =
+        PersistNodeTracePayload::from_cacheable_inputs([dependency_input.clone()])
+            .expect("dependency trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &node_trace)
+        .expect("node trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, dependency_value_hash, &dependency_trace)
+        .expect("dependency trace records");
+
+    let mut matching =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(dependency_input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut matching)
+            .expect("trace-verified payload lookup succeeds"),
+        Some(payload)
+    );
+    assert_eq!(
+        matching.calls(),
+        1,
+        "dependency trace input should be revalidated through the parent hit"
+    );
+
+    let mut changed = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(
+        changed_dependency_input,
+    )]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut changed)
+            .expect("changed dependency trace lookup succeeds"),
+        None
+    );
+    assert_eq!(changed.calls(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_rejects_changed_memo_read_value_hash() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let old_dependency_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("old dependency payload builds");
+    let new_dependency_payload =
+        CachedExpressionValue::immediate(Value::int(8)).expect("new dependency payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let old_dependency_value_hash = old_dependency_payload
+        .value_hash()
+        .expect("old dependency payload hashes");
+    let new_dependency_value_hash = new_dependency_payload
+        .value_hash()
+        .expect("new dependency payload hashes");
+    let dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 7);
+    let node_trace = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("node trace builds")
+    .with_memo_read_dependency_records([(dependency_key, old_dependency_value_hash)])
+    .expect("node trace dependency records");
+    let dependency_trace =
+        PersistNodeTracePayload::from_cacheable_inputs([dependency_input.clone()])
+            .expect("dependency trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &node_trace)
+        .expect("node trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &old_dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("old dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, old_dependency_value_hash, &dependency_trace)
+        .expect("old dependency trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &new_dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("new dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, new_dependency_value_hash, &dependency_trace)
+        .expect("new dependency trace records");
+
+    let mut revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(dependency_input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("trace-verified payload lookup succeeds"),
+        None,
+        "parent hit must miss when a memo-read supplier advances to another value hash"
+    );
+    assert_eq!(
+        revalidator.calls(),
+        0,
+        "supplier value-hash mismatch should reject before input revalidation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_rejects_key_only_memo_read_dependency() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let dependency_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("dependency payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let dependency_value_hash = dependency_payload
+        .value_hash()
+        .expect("dependency payload hashes");
+    let dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 7);
+    let node_trace = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("node trace builds")
+    .with_memo_read_dependencies([dependency_key])
+    .expect("node trace dependency records");
+    let dependency_trace =
+        PersistNodeTracePayload::from_cacheable_inputs([dependency_input.clone()])
+            .expect("dependency trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &node_trace)
+        .expect("node trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, dependency_value_hash, &dependency_trace)
+        .expect("dependency trace records");
+
+    let mut revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(dependency_input)]);
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("trace-verified payload lookup succeeds"),
+        None,
+        "key-only memo-read dependencies do not prove the supplier value observed by the parent"
+    );
+    assert_eq!(revalidator.calls(), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_cached_expression_node_payload_trace_revalidation_rejects_memo_read_cycles() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let node_trace = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("node trace builds")
+    .with_memo_read_dependency_records([(node_key, value_hash)])
+    .expect("node trace dependency records");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &node_trace)
+        .expect("node trace records");
+
+    let mut revalidator = StaticRevalidator::new(Vec::new());
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("trace-verified payload lookup succeeds"),
+        None,
+        "cyclic memo-read dependency proofs should miss instead of accepting themselves"
+    );
+    assert_eq!(revalidator.calls(), 0);
 
     let _ = fs::remove_dir_all(root);
 }

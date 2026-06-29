@@ -573,3 +573,187 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }
+
+#[test]
+fn persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key() {
+    let persist_root = unique_temp_dir("force-cache-persistent-dirty-dependency-key");
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-dirty-key-child"),
+        IrId::new(1),
+    );
+    let supplier_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-dirty-key-supplier"),
+        IrId::new(2),
+    );
+    let child_subject = synthetic_selected_force_cache_subject(child_identity);
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
+    let supplier_payload =
+        CachedExpressionValue::immediate(Value::int(5)).expect("supplier payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    let supplier_value_hash = supplier_payload
+        .value_hash()
+        .expect("supplier payload hashes");
+    let child_persist_key = PersistNodeMetadataKey::for_expression(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let supplier_persist_key = PersistNodeMetadataKey::for_expression(
+        supplier_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let child_trace = persistent_empty_trace_payload()
+        .with_memo_read_dependency_records([(supplier_persist_key, supplier_value_hash)])
+        .expect("child trace dependency encodes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            supplier_persist_key,
+            &supplier_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("supplier payload materializes");
+    persist
+        .record_node_trace(
+            supplier_persist_key,
+            supplier_value_hash,
+            &persistent_empty_trace_payload(),
+        )
+        .expect("supplier empty trace records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            child_persist_key,
+            &child_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("child payload materializes");
+    persist
+        .record_node_trace(child_persist_key, child_value_hash, &child_trace)
+        .expect("child trace records");
+    drop(persist);
+    {
+        let mut runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache_mut().expect("cache is enabled");
+        let supplier = cache
+            .get_or_insert_expression_node(
+                supplier_identity,
+                std::iter::empty::<DurableBlake3Hash>(),
+                Some(supplier_value_hash),
+            )
+            .expect("supplier runtime node inserts");
+        cache
+            .test_mark_dirty_node(supplier)
+            .expect("supplier node dirties");
+    }
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator =
+        TreeWalk::with_options_and_source_and_eval_cache(&ir, options, "expr.nix", source, cache);
+    let forced = evaluator.lookup_forced_inline_expression_result(Some(child_subject));
+
+    assert!(
+        forced.is_none(),
+        "dirty supplier named only by the persistent trace should reject the hit"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 1);
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    assert_eq!(
+        persist
+            .lookup_node_materialized_value_hash(child_persist_key)
+            .expect("persistent metadata lookup succeeds"),
+        None,
+        "rejected persistent force-cache hit should clear the durable child value link"
+    );
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}
+
+#[test]
+fn persistent_force_cache_hit_rejects_unresolved_supplier_without_runtime_payload_hit() {
+    let persist_root = unique_temp_dir("force-cache-persistent-unresolved-dependency-key");
+    let source = "1";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let child_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-unresolved-key-child"),
+        IrId::new(1),
+    );
+    let supplier_identity = CacheExprIdentity::new(
+        DurableBlake3Hash::for_bytes(b"persistent-unresolved-key-supplier"),
+        IrId::new(2),
+    );
+    let child_subject = synthetic_selected_force_cache_subject(child_identity);
+    let child_payload =
+        CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
+    let supplier_payload =
+        CachedExpressionValue::immediate(Value::int(5)).expect("supplier payload builds");
+    let child_value_hash = child_payload.value_hash().expect("child payload hashes");
+    let supplier_value_hash = supplier_payload
+        .value_hash()
+        .expect("supplier payload hashes");
+    let child_persist_key = PersistNodeMetadataKey::for_expression(
+        child_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let supplier_persist_key = PersistNodeMetadataKey::for_expression(
+        supplier_identity,
+        std::iter::empty::<DurableBlake3Hash>(),
+    );
+    let child_trace = persistent_empty_trace_payload()
+        .with_memo_read_dependency_records([(supplier_persist_key, supplier_value_hash)])
+        .expect("child trace dependency encodes");
+    let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            supplier_persist_key,
+            &supplier_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("supplier payload materializes");
+    persist
+        .record_node_trace(
+            supplier_persist_key,
+            supplier_value_hash,
+            &persistent_empty_trace_payload(),
+        )
+        .expect("supplier empty trace records");
+    persist
+        .materialize_cached_expression_node_value_indexed(
+            child_persist_key,
+            &child_payload,
+            crate::cache::MaterializationDecision::Materialize,
+        )
+        .expect("child payload materializes");
+    persist
+        .record_node_trace(child_persist_key, child_value_hash, &child_trace)
+        .expect("child trace records");
+    drop(persist);
+
+    let mut options = TreeWalkOptions::new();
+    options.set_eval_cache_enabled(true);
+    options.set_persist_cache_root(&persist_root);
+    let mut evaluator =
+        TreeWalk::with_options_and_source_and_eval_cache(&ir, options, "expr.nix", source, cache);
+
+    let first = evaluator.lookup_forced_inline_expression_result(Some(child_subject.clone()));
+    let second = evaluator.lookup_forced_inline_expression_result(Some(child_subject));
+
+    assert!(
+        first.is_none(),
+        "unresolved supplier key should reject the persistent hit"
+    );
+    assert!(
+        second.is_none(),
+        "rejected rehydration must purge the just-observed runtime payload"
+    );
+    assert_eq!(evaluator.stats().cache_hits(), 0);
+    assert_eq!(evaluator.stats().cache_misses(), 2);
+
+    fs::remove_dir_all(persist_root).expect("temp tree removed");
+}

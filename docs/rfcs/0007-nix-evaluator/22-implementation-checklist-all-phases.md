@@ -540,10 +540,25 @@ alone (`M-1`/`Q-A`).
       seed an in-memory runtime node, admitted thunk child misses with runtime
       nodes, and admitted first-class cacheable impure primop misses with runtime
       nodes; it also covers transitive dirty memo-read supplier side-record
-      purges. General evaluator-owned dynamic dependency capture, separate
-      inner/outer observers, evaluator-integrated ready-dirty recomputation,
-      persistent graph serialization, and cached/uncached `.drv` parity proof
-      remain open (`S-14`/`C-20`). The gate covers
+      purges. Persistent force-cache trace writeback now attaches every
+      committed direct `MemoRead` supplier that needs its own durable proof as a
+      durable node metadata key plus pinned supplier value hash, and
+      rejects/clears the parent writeback if any committed supplier is neither
+      backed by a matching materialized value link plus live verifying trace nor
+      a clean live inline supplier with no nested memo-read suppliers and no
+      impure-input leaves outside the parent trace's cacheable leaves.
+      Trace-backed durable loads recursively revalidate those supplier traces
+      and pinned hashes before accepting the parent payload. Durable hits also
+      replace the current runtime node's memo-read group from dependency keys
+      when every supplier node is already present, and reject/clear the durable
+      parent payload when any supplier key is unresolved, any pinned supplier
+      hash changed, or any rehydrated supplier is already dirty. Rejected
+      rehydration also purges the just-observed runtime payload so the same run
+      cannot hit an unproven in-memory side record. General evaluator-owned
+      dynamic dependency capture, separate inner/outer observers,
+      evaluator-integrated ready-dirty recomputation, full persistent graph serialization, and
+      cached/uncached `.drv` parity proof remain open (`S-14`/`C-20`). The gate
+      covers
       `eval_cache_payload_hits_return_supplier_node_for_memo_read_edges` and
       `clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record`,
       `clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_record`,
@@ -559,6 +574,11 @@ alone (`M-1`/`Q-A`).
       `effectful_primop_child_misses_record_memo_read_edges`,
       `source_backed_active_persistent_force_cache_hits_record_memo_read_edges`,
       trace-backed `effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation`,
+      `cache_cached_expression_node_payload_trace_revalidation_checks_memo_read_dependencies`,
+      `cacheable_impure_force_observation_writes_persistent_value_link`,
+      `force_observation_with_unproven_memo_supplier_clears_persistent_value_link`,
+      `persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key`,
+      `persistent_force_cache_hit_rejects_unresolved_supplier_without_runtime_payload_hit`,
       `source_backed_admitted_force_error_balances_active_force_cache_stack`,
       and `source_backed_admitted_force_error_preserves_prior_memo_read_edges`.
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
@@ -2526,9 +2546,10 @@ alone (`M-1`/`Q-A`).
       as versioned little-endian bytes with a magic header, typed input
       kind/mode tags including binary-safe `hashFile` and version-3 `findFile`
       candidate path-existence mode, raw identity subjects, observed-result
-      hashes, and version-4 sorted/deduplicated memo-read dependency
-      `PersistNodeMetadataKey` records, plus a header-only tombstone marker for
-      explicitly invalidating older trace records.
+      hashes, version-4 sorted/deduplicated memo-read dependency
+      `PersistNodeMetadataKey` records, and version-5 dependency records with
+      pinned optional supplier value hashes, plus a header-only tombstone marker
+      for explicitly invalidating older trace records.
       `CacheableInputFingerprint::from_observation_hash` reconstructs the
       persisted fingerprints without re-reading the host. The standalone
       payload decoder preserves trace order, decodes older version-1 through
@@ -2556,8 +2577,8 @@ alone (`M-1`/`Q-A`).
       Cache-level trace appends and tombstones acquire exclusive
       `.locks/node-traces.lock` before the same-root trace write lock, and
       cache-level trace lookups acquire shared `.locks/node-traces.lock` before
-      the same-root trace read lock. Record/lookup paths preserve version-4
-      memo-read dependency keys. This schema-version-7 log is a simple
+      the same-root trace read lock. Record/lookup paths preserve version-5
+      memo-read dependency records. This schema-version-8 log is a simple
       append-only substrate only; LMDB/redb node tables, transactionality with
       node metadata or value blobs, automatic evaluator writeback beyond the
       force-cache bridge below, runtime memo-read dependency recording,
@@ -2571,7 +2592,7 @@ alone (`M-1`/`Q-A`).
       `nodes/traces.log` into the newest trace entry per node key, preserving
       tombstones when they are newest; `compact_latest_entries` rewrites those
       newest entries in stable key order through a temporary log and rename
-      while preserving any version-4 memo-read dependency keys; and
+      while preserving any version-5 memo-read dependency records; and
       `PersistCache::compact_node_traces` exposes the operation at cache level.
       This is an explicit caller-driven maintenance primitive with cache-level
       writers serialized by `.locks/node-traces.lock` plus the same-root trace

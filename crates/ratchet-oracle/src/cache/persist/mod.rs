@@ -29,7 +29,7 @@ use super::{
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
-pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 7;
+pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 8;
 /// The fixed magic bytes at the start of every immutable blob packfile.
 pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
 /// The immutable blob packfile format version.
@@ -76,13 +76,16 @@ pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 /// The fixed magic bytes at the start of a node verifying-trace payload.
 pub const PERSIST_NODE_TRACE_PAYLOAD_MAGIC: [u8; 16] = *b"AOS-NIX-NTRACE01";
 /// The node verifying-trace payload format version.
-pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 4;
+pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 5;
 /// The encoded length of a node verifying-trace payload header.
 pub const PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN: usize = 28;
 const PERSIST_NODE_TRACE_PAYLOAD_MIN_VERSION: u32 = 1;
 const PERSIST_NODE_TRACE_PAYLOAD_TOMBSTONE_COUNT: u64 = u64::MAX;
 /// The fixed encoded bytes in one node verifying-trace input record.
 pub const PERSIST_NODE_TRACE_INPUT_FIXED_LEN: usize = 42;
+/// The fixed encoded bytes in one node verifying-trace memo-read dependency record.
+const PERSIST_NODE_TRACE_DEPENDENCY_FIXED_LEN: usize =
+    PERSIST_NODE_METADATA_INDEX_KEY_LEN + PERSIST_NODE_METADATA_VALUE_HASH_LEN;
 /// The encoded length of a trace-associated materialized value hash.
 pub const PERSIST_NODE_TRACE_LOG_VALUE_HASH_LEN: usize = 32;
 /// The fixed header bytes in one node trace log record.

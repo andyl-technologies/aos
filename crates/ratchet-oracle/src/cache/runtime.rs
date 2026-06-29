@@ -20,7 +20,8 @@ use super::{
     DemandGraph, DemandGraphError, DemandNodeId, DirtyFrontier, DurableBlake3Hash,
     ImpureInputFingerprint, ImpureInputIdentity, ImpureTraceObservation, ImpureTraceStatus,
     MemoizationDecision, MemoizationDemand, MemoizationSubject, NixSha256Digest, NodeFreshness,
-    RecomputeReadyDirty, Reconsideration, UncacheableInput, ValueHash, ValueHashError,
+    PersistNodeMetadataKey, RecomputeReadyDirty, Reconsideration, UncacheableInput, ValueHash,
+    ValueHashError,
 };
 use crate::attrs::AttrPosition;
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};

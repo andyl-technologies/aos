@@ -1,6 +1,36 @@
 //! Indexed blob, cached-expression value, and node-linked value operations.
 
 use super::*;
+use std::collections::BTreeSet;
+
+/// A trace-verified node-linked cached expression payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PersistCachedExpressionNodeValueTraceHit {
+    value: CachedExpressionValue,
+    memo_read_dependencies: Vec<PersistNodeMetadataKey>,
+}
+
+impl PersistCachedExpressionNodeValueTraceHit {
+    fn new(
+        value: CachedExpressionValue,
+        memo_read_dependencies: Vec<PersistNodeMetadataKey>,
+    ) -> Self {
+        Self {
+            value,
+            memo_read_dependencies,
+        }
+    }
+
+    /// Returns the sorted durable memo-read dependency keys recorded with the trace.
+    pub(crate) fn memo_read_dependencies(&self) -> &[PersistNodeMetadataKey] {
+        &self.memo_read_dependencies
+    }
+
+    /// Consumes this hit into its cached expression payload.
+    pub(crate) fn into_value(self) -> CachedExpressionValue {
+        self.value
+    }
+}
 
 impl PersistCache {
     /// Appends a blob and records its location in the sidecar index.
@@ -339,31 +369,111 @@ impl PersistCache {
     where
         R: ImpureInputRevalidator + ?Sized,
     {
-        let Some(value_hash) =
-            self.lookup_node_materialized_value_hash(node_key)
-                .map_err(
-                    |source| PersistCachedExpressionNodeValueTraceLoadError::Metadata { source },
-                )?
-        else {
-            return Ok(None);
-        };
-        let Some(trace) = self
-            .lookup_node_trace(node_key)
-            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Trace { source })?
-        else {
-            return Ok(None);
-        };
-        if trace.value_hash() != value_hash {
+        Ok(self
+            .load_cached_expression_node_value_trace_hit_with_revalidation(node_key, revalidator)?
+            .map(PersistCachedExpressionNodeValueTraceHit::into_value))
+    }
+
+    pub(crate) fn load_cached_expression_node_value_trace_hit_with_revalidation<R>(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        revalidator: &mut R,
+    ) -> Result<
+        Option<PersistCachedExpressionNodeValueTraceHit>,
+        PersistCachedExpressionNodeValueTraceLoadError,
+    >
+    where
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        let mut active = BTreeSet::new();
+        self.load_cached_expression_node_value_trace_hit_with_revalidation_active(
+            node_key,
+            None,
+            revalidator,
+            &mut active,
+        )
+    }
+
+    fn load_cached_expression_node_value_trace_hit_with_revalidation_active<R>(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        expected_value_hash: Option<ValueHash>,
+        revalidator: &mut R,
+        active: &mut BTreeSet<PersistNodeMetadataKey>,
+    ) -> Result<
+        Option<PersistCachedExpressionNodeValueTraceHit>,
+        PersistCachedExpressionNodeValueTraceLoadError,
+    >
+    where
+        R: ImpureInputRevalidator + ?Sized,
+    {
+        if !active.insert(node_key) {
             return Ok(None);
         }
-        if trace.payload().is_tombstone() {
-            return Ok(None);
-        }
-        if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
-            return Ok(None);
-        }
-        self.load_cached_expression_value_indexed(value_hash)
-            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Value { source })
+        let result =
+            (|| {
+                let Some(value_hash) =
+                    self.lookup_node_materialized_value_hash(node_key)
+                        .map_err(|source| {
+                            PersistCachedExpressionNodeValueTraceLoadError::Metadata { source }
+                        })?
+                else {
+                    return Ok(None);
+                };
+                if expected_value_hash.is_some_and(|expected| expected != value_hash) {
+                    return Ok(None);
+                }
+                let Some(trace) = self.lookup_node_trace(node_key).map_err(|source| {
+                    PersistCachedExpressionNodeValueTraceLoadError::Trace { source }
+                })?
+                else {
+                    return Ok(None);
+                };
+                if trace.value_hash() != value_hash {
+                    return Ok(None);
+                }
+                if trace.payload().is_tombstone() {
+                    return Ok(None);
+                }
+                if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
+                    return Ok(None);
+                }
+                for (dependency, dependency_value_hash) in
+                    trace.payload().memo_read_dependency_records()
+                {
+                    if active.contains(&dependency) {
+                        return Ok(None);
+                    }
+                    let Some(dependency_value_hash) = dependency_value_hash else {
+                        return Ok(None);
+                    };
+                    let dependency_hit = self
+                        .load_cached_expression_node_value_trace_hit_with_revalidation_active(
+                            dependency,
+                            Some(dependency_value_hash),
+                            revalidator,
+                            active,
+                        )?;
+                    if dependency_hit.is_none() {
+                        return Ok(None);
+                    }
+                }
+                let dependencies = trace.payload().memo_read_dependencies().to_vec();
+                let Some(value) = self
+                    .load_cached_expression_value_indexed(value_hash)
+                    .map_err(
+                        |source| PersistCachedExpressionNodeValueTraceLoadError::Value { source },
+                    )?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(PersistCachedExpressionNodeValueTraceHit::new(
+                    value,
+                    dependencies,
+                )))
+            })();
+        active.remove(&node_key);
+        result
     }
 }
 
