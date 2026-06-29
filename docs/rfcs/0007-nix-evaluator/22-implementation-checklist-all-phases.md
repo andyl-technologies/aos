@@ -4018,6 +4018,18 @@ alone (`M-1`/`Q-A`).
       `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`
       and `cache_validation_byte_mode_detects_cold_closure_byte_drift`
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current cache-validation side-config planning unit witness:
+      cache-validation side construction routes through explicit cache-off and
+      cold-cache config helpers. Unit coverage proves the cache-off side clears
+      only `native_cache_root`, the cold-cache side sets only the per-attribute
+      absolute cache root, the caller config is left unchanged, and eval mode,
+      store directories, allowlists, `NIX_PATH`, `HOME`, working directory,
+      current system, and trace verbosity are preserved. This pins the local
+      root-selection contract only; native evaluator selection, runtime
+      syscall/no-read proof, full AOS package-set closure coverage, CI
+      scheduling, and future value-memoization bypass proof remain open. Gate:
+      `cache_validation_side_configs_only_change_native_cache_root`
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation

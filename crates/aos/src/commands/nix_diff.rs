@@ -348,8 +348,7 @@ fn run_cache_validation(
     systems: bool,
     mode: DiffMode,
 ) -> Result<()> {
-    let mut cache_off_config = eval_config.clone();
-    cache_off_config.clear_native_cache_root();
+    let cache_off_config = cache_validation_cache_off_config(eval_config);
     let cache_off = select_native_diff_candidate_with_config(verbose, cache_off_config)?;
 
     let entries = if smoke || all || systems {
@@ -379,8 +378,7 @@ fn run_cache_validation(
     let mut reports = Vec::with_capacity(entries.len());
     for entry in &entries {
         let cold_cache_root = create_cold_cache_validation_root()?;
-        let mut cold_cache_config = eval_config.clone();
-        cold_cache_config.set_native_cache_root(&cold_cache_root)?;
+        let cold_cache_config = cache_validation_cold_cache_config(eval_config, &cold_cache_root)?;
         let cold_cache = select_native_diff_candidate_with_config(verbose, cold_cache_config)?;
         reports.push(cache_validation_attr_report(
             oracle,
@@ -1578,6 +1576,21 @@ fn corpus_failure(reports: &[AttrDiffReport]) -> Option<NixDiffReportedFailure> 
     ))
 }
 
+fn cache_validation_cache_off_config(eval_config: &NixEvalConfig) -> NixEvalConfig {
+    let mut config = eval_config.clone();
+    config.clear_native_cache_root();
+    config
+}
+
+fn cache_validation_cold_cache_config(
+    eval_config: &NixEvalConfig,
+    cold_cache_root: &Path,
+) -> Result<NixEvalConfig> {
+    let mut config = eval_config.clone();
+    config.set_native_cache_root(cold_cache_root)?;
+    Ok(config)
+}
+
 fn cache_validation_attr_report(
     oracle: &dyn NixEval,
     cache_off: &dyn NixEval,
@@ -2769,6 +2782,51 @@ mod tests {
             r#"Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out","","")],[],[],"x86_64-linux","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash",[],[("builder","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash"),("name","{marker}"),("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out"),("system","x86_64-linux")])"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn cache_validation_side_configs_only_change_native_cache_root() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let work_dir = temp.path().join("work");
+        let home_dir = temp.path().join("home");
+        fs::create_dir(&work_dir)?;
+        fs::create_dir(&home_dir)?;
+        let configured_root = temp.path().join("configured-cache");
+        let cold_root = temp.path().join("cold-cache");
+
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.set_allowed_paths([temp.path().to_string_lossy().into_owned()])?;
+        config.set_allowed_uris(["https://cache.example/".to_string()])?;
+        config.set_current_system("aos-test-target")?;
+        config.set_store_dirs("/nix/store", "/nix/var/nix", "/nix/var/log/nix")?;
+        config.set_nix_path_env(format!("pkgs={}", temp.path().display()));
+        config.set_working_dir(work_dir)?;
+        config.set_home_dir(home_dir)?;
+        config.set_native_cache_root(&configured_root)?;
+        config.set_trace_verbose(true);
+        let original = config.clone();
+
+        let cache_off = cache_validation_cache_off_config(&config);
+        let mut expected_cache_off = original.clone();
+        expected_cache_off.clear_native_cache_root();
+        assert_eq!(cache_off, expected_cache_off);
+        assert_eq!(config, original);
+
+        let cold_cache = cache_validation_cold_cache_config(&config, &cold_root)?;
+        let mut expected_cold_cache = original.clone();
+        expected_cold_cache.set_native_cache_root(&cold_root)?;
+        assert_eq!(cold_cache, expected_cold_cache);
+        assert_eq!(config, original);
+        assert_eq!(cold_cache.native_cache_root(), Some(cold_root.as_path()));
+        assert!(
+            cold_cache
+                .native_cache_root()
+                .expect("cold cache root is configured")
+                .is_absolute()
+        );
+
+        Ok(())
     }
 
     #[test]

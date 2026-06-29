@@ -1453,6 +1453,18 @@ harness, never cut for scope.
       — P2, `S-14`; gate:
       `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`
       and `cache_validation_byte_mode_detects_cold_closure_byte_drift`.
+- [x] Current cache-validation side-config planning unit witness:
+      cache-validation side construction now routes through explicit cache-off
+      and cold-cache config helpers. Unit coverage proves the cache-off side
+      clears only `native_cache_root`, the cold-cache side sets only the
+      per-attribute absolute cache root, the caller config is left unchanged,
+      and eval mode, store directories, allowlists, `NIX_PATH`, `HOME`, working
+      directory, current system, and trace verbosity are preserved. This pins
+      the local root-selection contract only; native evaluator selection,
+      runtime syscall/no-read proof, full AOS package-set closure coverage, CI
+      scheduling, and future value-memoization bypass proof remain open.
+      ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-14`;
+      gate: `cache_validation_side_configs_only_change_native_cache_root`.
 - [ ] Full cache-off/cold-validation safety net remains: `AOS_NIX_CACHE=0` must bypass the future incremental persistence/value memoization layer, and CI must periodically compare cached vs uncached cold full-closure `.drv` results with the differential harness. ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-14`.
 
 ## References
