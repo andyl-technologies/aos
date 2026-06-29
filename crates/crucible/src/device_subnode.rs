@@ -4,12 +4,15 @@
 //! §8.4.1, §8.9.4.
 //!
 //! This module is the integration capstone that wires the `crucible-device` (L1)
-//! disk/9p/network sub-nodes into the [`SingleScheduler`](crate::SingleScheduler)
-//! (L3) so that **cross-node I/O injection is icount-deterministic** (Contract B,
-//! [IO-2], [IO-4], [SCHED-29]). A [`DeviceSchedulingSubNode`] holds a concrete
-//! device's [`IoCore`](crucible_device::IoCore) — the in-flight queue of
+//! block and 9p exact-completion sub-nodes into the
+//! [`SingleScheduler`](crate::SingleScheduler) (L3) so that **cross-node I/O
+//! injection is icount-deterministic** (Contract B, [IO-2], [IO-4],
+//! [SCHED-29]). A [`DeviceSchedulingSubNode`] holds a concrete device's
+//! [`IoCore`](crucible_device::IoCore) — the in-flight queue of
 //! computed-not-delivered responses — together with its scheduling identity and
-//! the per-device fault table.
+//! the per-device fault table. Network-link sub-nodes have their own delivery
+//! queue in `crucible-device`; their live latency changes enter the scheduler
+//! through [`SingleScheduler::schedule_link_latency_recompute`](crate::SingleScheduler::schedule_link_latency_recompute).
 //!
 //! # The two scheduler couplings
 //!
@@ -51,7 +54,9 @@
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
 //! ```
 
-use crucible_device::{BlockDevice, BlockRequest, DeviceError, ResponseStatus};
+use crucible_device::{
+    BlockDevice, BlockRequest, DeviceError, NinepDevice, PendingResponse, ResponseStatus,
+};
 
 use crate::scheduler::IoCompletion;
 use crate::{
@@ -101,12 +106,12 @@ struct PendingCompletion {
     decisions: Vec<Decision>,
 }
 
-/// A disk/9p/network device modeled as a first-class scheduling sub-node ([IO-1]).
+/// A disk/9p device modeled as a first-class scheduling sub-node ([IO-1]).
 ///
-/// Holds a concrete [`BlockDevice`] (the canonical disk sub-node), its scheduling
-/// identity ([`SchedulerNodeId`]), the target VM [`NodeId`] that observes its
-/// completions, and the seeded per-device RNG forked by name-hash from the
-/// scenario seed ([IO-21], [DET-25]). The scheduler reads
+/// Holds a concrete block or 9p sub-node, its scheduling identity
+/// ([`SchedulerNodeId`]), the target VM [`NodeId`] that observes its completions,
+/// and the seeded per-device RNG forked by name-hash from the scenario seed
+/// ([IO-21], [DET-25]). The scheduler reads
 /// [`DeviceSchedulingSubNode::next_exact_local_event`] to bound the requester's
 /// horizon and calls [`DeviceSchedulingSubNode::deliver_due`] at RESOLVE to make
 /// completions visible at their exact icount.
@@ -115,7 +120,7 @@ pub struct DeviceSchedulingSubNode {
     sub_node: SchedulerNodeId,
     target: NodeId,
     device_id: DeviceId,
-    device: BlockDevice,
+    device: ScheduledDevice,
     seed: Seed,
     /// The modeled (pre-fault) completions, kept in delivery-key order. Fault
     /// resolution recomputes [`resolved`] from this set, so the result is a pure
@@ -151,7 +156,36 @@ impl DeviceSchedulingSubNode {
             sub_node,
             target,
             device_id,
-            device,
+            device: ScheduledDevice::Block(device),
+            seed,
+            modeled: Vec::new(),
+            resolved: Vec::new(),
+            next_delivery: 0,
+            rng_position: 0,
+        }
+    }
+
+    /// Builds a scheduling sub-node over a 9p device for a target VM node.
+    ///
+    /// This is the filesystem twin of [`DeviceSchedulingSubNode::new`]: the same
+    /// scheduler-facing machinery owns the device, resolves its completion faults
+    /// through the per-device RNG, records the resulting decisions, and exposes
+    /// the final post-fault in-flight head as the requester's exact local event.
+    /// Keeping 9p on the same path as block is the load-bearing uniformity claim
+    /// of [IO-25] and [IO-26].
+    #[must_use]
+    pub fn new_ninep(
+        sub_node: SchedulerNodeId,
+        target: NodeId,
+        device_id: DeviceId,
+        device: NinepDevice,
+        seed: Seed,
+    ) -> Self {
+        Self {
+            sub_node,
+            target,
+            device_id,
+            device: ScheduledDevice::Ninep(device),
             seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
@@ -184,10 +218,35 @@ impl DeviceSchedulingSubNode {
         self.rng_position
     }
 
-    /// Returns a shared view of the held block device.
+    /// Returns a shared view of the held block device, when this is a disk sub-node.
     #[must_use]
-    pub fn device(&self) -> &BlockDevice {
-        &self.device
+    pub fn block_device(&self) -> Option<&BlockDevice> {
+        match &self.device {
+            ScheduledDevice::Block(device) => Some(device),
+            ScheduledDevice::Ninep(_) => None,
+        }
+    }
+
+    /// Returns a shared view of the held block device, when this is a disk sub-node.
+    ///
+    /// This migration accessor is equivalent to
+    /// [`DeviceSchedulingSubNode::block_device`]. It returns `None` for a 9p
+    /// sub-node because [`DeviceSchedulingSubNode`] now owns either concrete
+    /// device kind. New code should use [`DeviceSchedulingSubNode::block_device`]
+    /// or [`DeviceSchedulingSubNode::ninep_device`] so the expected concrete
+    /// device kind is visible at the call site.
+    #[must_use]
+    pub fn device(&self) -> Option<&BlockDevice> {
+        self.block_device()
+    }
+
+    /// Returns a shared view of the held 9p device, when this is a filesystem sub-node.
+    #[must_use]
+    pub fn ninep_device(&self) -> Option<&NinepDevice> {
+        match &self.device {
+            ScheduledDevice::Block(_) => None,
+            ScheduledDevice::Ninep(device) => Some(device),
+        }
     }
 
     /// Submits a block request at `request_icount` and COMPUTEs its completion.
@@ -206,17 +265,50 @@ impl DeviceSchedulingSubNode {
     ///
     /// Returns [`DeviceError`] when the device cannot encode the request, when its
     /// inbound ring is full ([IO-32]), or when its COMPUTE step fails (a
-    /// clock/overflow/past-delivery guard).
+    /// clock/overflow/past-delivery guard). Returns
+    /// [`DeviceError::WrongDeviceKind`] when called on a 9p sub-node.
     pub fn submit(
         &mut self,
         request_icount: u64,
         request: &BlockRequest,
     ) -> Result<(), DeviceError> {
-        self.device.submit(request_icount, request)?;
+        self.device.submit_block(request_icount, request)?;
+        self.collect_modeled_completions();
+        self.resolve_all();
+        Ok(())
+    }
+
+    /// Submits a raw 9p request frame at `request_icount` and COMPUTEs its reply.
+    ///
+    /// This mirrors [`DeviceSchedulingSubNode::submit`] for the 9p sub-node:
+    /// COMPUTE pins the modeled reply, the bridge resolves active I/O faults
+    /// through the per-device RNG in sorted delivery-key order, and
+    /// [`DeviceSchedulingSubNode::deliver_due`] later records the buffered
+    /// `RngDraw` / `FaultFires` decisions when the reply becomes visible
+    /// ([IO-21], [IO-25], [SCHED-30]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the 9p device cannot enqueue or COMPUTE the
+    /// frame, including ring-full backpressure and clock/overflow guards. Returns
+    /// [`DeviceError::WrongDeviceKind`] when called on a block sub-node.
+    pub fn submit_ninep_frame(
+        &mut self,
+        request_icount: u64,
+        frame: &[u8],
+    ) -> Result<(), DeviceError> {
+        self.device.submit_ninep(request_icount, frame)?;
+        self.collect_modeled_completions();
+        self.resolve_all();
+        Ok(())
+    }
+
+    /// Pulls newly modeled completions out of the held device in canonical order.
+    fn collect_modeled_completions(&mut self) {
         // Pull every modeled completion the device has COMPUTEd into the modeled
         // set (deduplicated by delivery key), keeping it in delivery-key order so
         // fault resolution is submit-order-independent.
-        for modeled in self.device.core().snapshot().inflight {
+        for modeled in self.device.inflight() {
             let candidate = ModeledCompletion {
                 modeled_icount: modeled.key.delivery_icount,
                 src_node: modeled.key.src_node,
@@ -237,8 +329,6 @@ impl DeviceSchedulingSubNode {
             });
             self.modeled.insert(pos, candidate);
         }
-        self.resolve_all();
-        Ok(())
     }
 
     /// Recomputes every modeled completion through the fault table, in delivery
@@ -253,17 +343,13 @@ impl DeviceSchedulingSubNode {
         let mut rng = crate::device::device_rng(self.seed, &self.device_id, 0);
         let stream = crate::device::device_stream_id(&self.device_id);
         let mut resolved: Vec<PendingCompletion> = Vec::new();
-        for modeled in &self.modeled {
+        for modeled in self.modeled.clone() {
             let before = rng.position();
-            let outcome = self.device.faults().resolve(
+            let outcome = self.device.resolve_response(
                 modeled.modeled_icount,
                 modeled.status,
-                modeled.payload.clone(),
+                modeled.payload,
                 &mut rng,
-                |ns| {
-                    crucible_device::ceil_ns_to_icount(ns, self.device.core().shift_bits())
-                        .unwrap_or(u64::MAX)
-                },
             );
             let after = rng.position();
 
@@ -385,6 +471,73 @@ impl DeviceSchedulingSubNode {
     }
 }
 
+/// The concrete device a scheduler sub-node owns.
+///
+/// The scheduler bridge treats block and 9p uniformly after COMPUTE: each
+/// exposes modeled in-flight completions, an active fault table, and a fixed
+/// clock shift. The concrete request submission step remains device-specific.
+#[derive(Clone, Debug)]
+enum ScheduledDevice {
+    /// A block device sub-node.
+    Block(BlockDevice),
+    /// A 9p filesystem sub-node.
+    Ninep(NinepDevice),
+}
+
+impl ScheduledDevice {
+    /// Submits a block request to the held device.
+    fn submit_block(
+        &mut self,
+        request_icount: u64,
+        request: &BlockRequest,
+    ) -> Result<(), DeviceError> {
+        match self {
+            ScheduledDevice::Block(device) => device.submit(request_icount, request),
+            ScheduledDevice::Ninep(_) => Err(DeviceError::WrongDeviceKind {
+                expected: "block",
+                actual: "9p",
+            }),
+        }
+    }
+
+    /// Submits a 9p frame to the held device.
+    fn submit_ninep(&mut self, request_icount: u64, frame: &[u8]) -> Result<(), DeviceError> {
+        match self {
+            ScheduledDevice::Block(_) => Err(DeviceError::WrongDeviceKind {
+                expected: "9p",
+                actual: "block",
+            }),
+            ScheduledDevice::Ninep(device) => device.submit(request_icount, frame),
+        }
+    }
+
+    /// Returns the modeled in-flight completions currently held by the device.
+    fn inflight(&self) -> Vec<PendingResponse> {
+        match self {
+            ScheduledDevice::Block(device) => device.core().snapshot().inflight,
+            ScheduledDevice::Ninep(device) => device.core().snapshot().inflight,
+        }
+    }
+
+    /// Resolves a modeled response through the held device's active fault table.
+    fn resolve_response(
+        &mut self,
+        primary_icount: u64,
+        status: ResponseStatus,
+        payload: Vec<u8>,
+        rng: &mut crucible_device::DeviceRng,
+    ) -> crucible_device::IoFaultOutcome {
+        match self {
+            ScheduledDevice::Block(device) => {
+                device.resolve_response(primary_icount, status, payload, rng)
+            }
+            ScheduledDevice::Ninep(device) => {
+                device.resolve_response(primary_icount, status, payload, rng)
+            }
+        }
+    }
+}
+
 /// Pushes a [`Decision::FaultFires`] for one I/O fault kind that could fire.
 ///
 /// The fault id is the device-scoped tag [`crate::device::io_fault_id`] keys an
@@ -403,7 +556,13 @@ fn push_fault_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible_device::{BaseImage, BlockLatency, IoCore, IoFaults, Probability};
+    use std::collections::BTreeMap;
+
+    use crucible_device::ninep::codec;
+    use crucible_device::{
+        BaseImage, BlockLatency, FsTree, IoCore, IoFaults, NinepDevice, NinepLatency, Node,
+        Probability,
+    };
 
     use crate::SchedulingNodeKind;
 
@@ -426,6 +585,13 @@ mod tests {
         }
     }
 
+    fn ninep_sub_node_id(name: &str) -> SchedulerNodeId {
+        SchedulerNodeId {
+            node: node_id(name),
+            kind: SchedulingNodeKind::NineP,
+        }
+    }
+
     /// Builds a fault-free disk sub-node over a small base image.
     fn fresh_disk(seed: Seed, faults: IoFaults) -> DeviceSchedulingSubNode {
         let core = match IoCore::new(0, 7, 16, 16) {
@@ -444,8 +610,56 @@ mod tests {
         )
     }
 
+    /// Builds a 9p sub-node over a read-only tree.
+    fn fresh_ninep(seed: Seed, faults: IoFaults) -> DeviceSchedulingSubNode {
+        let core = match IoCore::new(0, 9, 16, 16) {
+            Ok(core) => core,
+            Err(error) => panic!("io core should construct: {error}"),
+        };
+        let mut root = BTreeMap::new();
+        root.insert(
+            "alpha".to_owned(),
+            Node::File {
+                content: b"alpha".to_vec(),
+            },
+        );
+        let tree = FsTree::new(Node::Directory { children: root });
+        let mut device = NinepDevice::new(core, tree, NinepLatency::default());
+        device.set_faults(faults);
+        DeviceSchedulingSubNode::new_ninep(
+            ninep_sub_node_id("ninep-sub"),
+            node_id("vm-a"),
+            device_id("fs"),
+            device,
+            seed,
+        )
+    }
+
     fn read_request(request_id: u32, offset: u64, count: u32) -> BlockRequest {
         BlockRequest::read(request_id, offset, count)
+    }
+
+    fn frame(msg_type: u8, tag: u16, body: &[u8]) -> Vec<u8> {
+        let size = (codec::HEADER_LEN + body.len()) as u32;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&size.to_le_bytes());
+        frame.push(msg_type);
+        frame.extend_from_slice(&tag.to_le_bytes());
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    fn string_bytes(value: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+        bytes
+    }
+
+    fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
+        let mut body = msize.to_le_bytes().to_vec();
+        body.extend_from_slice(&string_bytes(version));
+        frame(codec::TVERSION, tag, &body)
     }
 
     #[test]
@@ -523,6 +737,98 @@ mod tests {
         );
         // The RNG cursor advanced (the faults consumed draws).
         assert!(disk.rng_position() > 0);
+        let block_rng_position = disk
+            .block_device()
+            .unwrap_or_else(|| panic!("disk sub-node should hold a block device"))
+            .rng_position();
+        assert_eq!(
+            block_rng_position,
+            disk.rng_position(),
+            "the concrete block device cursor must match the scheduler bridge cursor"
+        );
+    }
+
+    #[test]
+    fn ninep_fault_choices_use_the_same_scheduler_bridge() {
+        let faults = IoFaults {
+            duplicate: Probability::ALWAYS,
+            duplicate_gap_ns: 1,
+            corrupt: Probability::ALWAYS,
+            corrupt_bit_flips: 1,
+            ..IoFaults::none()
+        };
+        let mut fs = fresh_ninep(Seed::from_u64(0x9f5), faults);
+        fs.submit_ninep_frame(0, &tversion(7, 4096, codec::PROTOCOL_VERSION))
+            .unwrap_or_else(|error| panic!("9p submit should succeed: {error}"));
+
+        let first_delivery = fs
+            .next_exact_local_event()
+            .unwrap_or_else(|| panic!("a 9p completion must be in flight"));
+        let delivered = fs.deliver_due(u64::MAX);
+        assert!(
+            delivered.len() >= 2,
+            "duplicate fault should emit a second 9p reply"
+        );
+        let (event, decisions) = &delivered[0];
+        assert_eq!(event.delivery_icount.retired, first_delivery);
+        assert_eq!(event.target, node_id("vm-a"));
+        assert!(
+            decisions
+                .iter()
+                .any(|decision| matches!(decision, Decision::RngDraw(_))),
+            "9p device RNG draws must be recorded as decisions"
+        );
+        assert!(
+            decisions.iter().any(|decision| matches!(
+                decision,
+                Decision::FaultFires(FaultDecision { fired: true, fault, .. })
+                    if fault == &crate::device::io_fault_id(&device_id("fs"), "duplicate")
+            )),
+            "the 9p duplicate fault outcome must be recorded as fired"
+        );
+        assert!(
+            decisions.iter().any(|decision| matches!(
+                decision,
+                Decision::FaultFires(FaultDecision { fired: true, fault, .. })
+                    if fault == &crate::device::io_fault_id(&device_id("fs"), "corrupt")
+            )),
+            "the 9p corrupt fault outcome must be recorded as fired"
+        );
+        assert!(fs.rng_position() > 0);
+        let ninep_rng_position = fs
+            .ninep_device()
+            .unwrap_or_else(|| panic!("9p sub-node should hold a 9p device"))
+            .rng_position();
+        assert_eq!(
+            ninep_rng_position,
+            fs.rng_position(),
+            "the concrete 9p device cursor must match the scheduler bridge cursor"
+        );
+    }
+
+    #[test]
+    fn wrong_request_kind_fails_loudly_without_computing() {
+        let mut fs = fresh_ninep(Seed::from_u64(0x9f5), IoFaults::none());
+        let result = fs.submit(0, &read_request(1, 0, 8));
+        assert!(matches!(
+            result,
+            Err(DeviceError::WrongDeviceKind {
+                expected: "block",
+                actual: "9p"
+            })
+        ));
+        assert!(fs.next_exact_local_event().is_none());
+
+        let mut disk = fresh_disk(Seed::from_u64(0xd15c), IoFaults::none());
+        let result = disk.submit_ninep_frame(0, &tversion(7, 4096, codec::PROTOCOL_VERSION));
+        assert!(matches!(
+            result,
+            Err(DeviceError::WrongDeviceKind {
+                expected: "9p",
+                actual: "block"
+            })
+        ));
+        assert!(disk.next_exact_local_event().is_none());
     }
 
     #[test]

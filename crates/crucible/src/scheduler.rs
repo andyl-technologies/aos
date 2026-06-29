@@ -8,6 +8,7 @@
 //! advances the frontier.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
@@ -347,6 +348,8 @@ pub enum SchedulerTopologyChangeTrigger {
 pub enum SchedulerTopologyChangeEffect {
     /// Replaces the complete effective edge set.
     ReplaceEffectiveEdges(Vec<SchedulerLookaheadEdge>),
+    /// Updates matching directed edges without restoring absent edges.
+    UpdateEffectiveEdges(Vec<SchedulerLookaheadEdge>),
     /// Removes effective edges matching the listed directed endpoints.
     RemoveEffectiveEdges(Vec<SchedulerLookaheadEdgeEndpoint>),
     /// Restores effective edges into the current edge set.
@@ -401,6 +404,25 @@ impl SchedulerTopologyChange {
             trigger: SchedulerTopologyChangeTrigger::Heal,
             activation_time: None,
             effect: SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges),
+        }
+    }
+
+    /// Builds a latency change that updates existing directed effective edges.
+    ///
+    /// The updated edges replace only matching endpoints that are still present in
+    /// the current effective topology. This preserves pending partition effects:
+    /// a latency refresh cannot re-add an edge that a partition removed.
+    #[must_use]
+    pub fn update_effective_edges(
+        sequence: u64,
+        trigger: SchedulerTopologyChangeTrigger,
+        updated_edges: Vec<SchedulerLookaheadEdge>,
+    ) -> Self {
+        Self {
+            sequence,
+            trigger,
+            activation_time: None,
+            effect: SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges),
         }
     }
 
@@ -1156,6 +1178,30 @@ impl SchedulerLookaheadGraph {
         I: IntoIterator<Item = SchedulerLookaheadEdge>,
     {
         Self::from_edges(self.edges.iter().cloned().chain(restored_edges))
+    }
+
+    /// Updates existing directed edges by endpoint, without adding absent edges.
+    #[must_use]
+    pub fn update_effective_edges<I>(&self, updated_edges: I) -> Self
+    where
+        I: IntoIterator<Item = SchedulerLookaheadEdge>,
+    {
+        let updates = updated_edges
+            .into_iter()
+            .map(|edge| (edge.endpoint(), edge))
+            .collect::<BTreeMap<_, _>>();
+        let mut emitted = BTreeSet::new();
+        let mut edges = Vec::new();
+        for edge in &self.edges {
+            if let Some(updated) = updates.get(&edge.endpoint()) {
+                if emitted.insert(edge.endpoint()) {
+                    edges.push(updated.clone());
+                }
+            } else {
+                edges.push(edge.clone());
+            }
+        }
+        Self::from_edges(edges)
     }
 
     /// Computes `lookahead(node)` as the minimum inbound live-link latency.
@@ -2730,6 +2776,17 @@ fn topology_change_material(change: &SchedulerTopologyChange) -> String {
             ));
             lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
         }
+        SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => {
+            let graph = SchedulerLookaheadGraph::from_edges(updated_edges.clone());
+            lines.push(String::from(
+                "topology_change_effect=update-effective-edges",
+            ));
+            lines.push(format!(
+                "topology_change_updated_edges={}",
+                graph.edges().len()
+            ));
+            lines.extend(graph.edges().iter().map(scheduler_lookahead_edge_material));
+        }
         SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
             let mut endpoints = endpoints.clone();
             endpoints.sort();
@@ -4023,6 +4080,83 @@ impl SingleScheduler {
         self.topology_changes.sort_by(topology_change_order);
     }
 
+    /// Consumes a network-link latency recompute signal and schedules lookahead refresh.
+    ///
+    /// `crucible-device` owns the live network-link fault table. When a link's
+    /// conservative minimum-latency bound changes, [`crucible_device::NetLink`]
+    /// raises a one-shot recompute flag. This adapter consumes that flag and, when
+    /// set, queues a [`SchedulerTopologyChangeTrigger::LatencyChange`] that updates
+    /// exactly the directed scheduler edge `from -> to`, when that edge is still
+    /// present, with the link's current
+    /// [`crucible_device::NetLink::effective_latency_ns`] value. The existing
+    /// topology-change path then applies the new edge set at the next quantum
+    /// boundary before PICK, preserving the scheduler's boundary invariant while
+    /// making live I/O fault latency changes visible to lookahead ([IO-33]).
+    ///
+    /// Returns `Ok(true)` when a change was queued and `Ok(false)` when the link
+    /// had no pending recompute flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if the link reports a zero
+    /// effective latency or if the directed edge is absent from the current
+    /// effective topology. Returns [`SchedulerError::TopologyActivationInPast`] if
+    /// enqueue-time validation observes an impossible activation time, which does
+    /// not occur for this no-activation latency-change path but is propagated from
+    /// [`SingleScheduler::schedule_topology_change`] for uniformity.
+    pub fn schedule_link_latency_recompute(
+        &mut self,
+        sequence: u64,
+        from: SchedulerNodeId,
+        to: SchedulerNodeId,
+        link: &mut crucible_device::NetLink,
+    ) -> Result<bool, SchedulerError> {
+        if !link.lookahead_recompute_pending() {
+            return Ok(false);
+        }
+        let effective_latency_ns = link.effective_latency_ns();
+        if effective_latency_ns == 0 {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network link effective latency must be strictly positive"),
+            });
+        }
+        let endpoint = SchedulerLookaheadEdgeEndpoint::new(from.clone(), to.clone());
+        let mut found = false;
+        let updated_edge = SchedulerLookaheadEdge::new(
+            from.clone(),
+            to.clone(),
+            SimDuration {
+                nanos: effective_latency_ns,
+            },
+        );
+        for edge in self.effective_topology.edges() {
+            if edge.endpoint() == endpoint {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "network link latency recompute has no effective topology edge: producer={}:{:?} consumer={}:{:?}",
+                    from.node.name, from.kind, to.node.name, to.kind
+                ),
+            });
+        }
+        self.schedule_topology_change(SchedulerTopologyChange::update_effective_edges(
+            sequence,
+            SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![updated_edge],
+        ))?;
+        let consumed = link.take_lookahead_recompute();
+        if !consumed {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network link recompute flag disappeared before queueing"),
+            });
+        }
+        Ok(true)
+    }
+
     /// Schedules a topology change for the next quantum boundary, validating the
     /// activation time at enqueue time.
     ///
@@ -4106,6 +4240,9 @@ impl SingleScheduler {
                 SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
                     self.effective_topology.remove_effective_edges(endpoints)
                 }
+                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => self
+                    .effective_topology
+                    .update_effective_edges(updated_edges),
                 SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => self
                     .effective_topology
                     .restore_effective_edges(restored_edges),

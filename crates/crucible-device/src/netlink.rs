@@ -10,9 +10,9 @@
 //!   schedules each [`Frame`] over the
 //!   [`SLOT_NET_ROUTER`](crucible_shmem::SLOT_NET_ROUTER) slot, enforces the
 //!   strictly-positive latency floor, clamps sub-floor latency faults, raises the
-//!   scheduler lookahead-recompute signal on any effective-latency change
-//!   ([IO-33]), and clamps-or-fails-loud on a reorder/jitter shift into the
-//!   consumer's past ([IO-34]).
+//!   scheduler lookahead-recompute signal when the conservative minimum latency
+//!   bound changes ([IO-33]), and clamps-or-fails-loud on a reorder/jitter shift
+//!   into the consumer's past ([IO-34]).
 //!
 //! # Why the link is special among sub-nodes
 //!
@@ -20,10 +20,13 @@
 //! the **one source of conservative uncertainty** (§15.4.2). Its base latency
 //! `L(A->B)` is what *sets* the scheduler's lookahead bound, so the floor lives
 //! at the link: a zero-latency link would give a peer zero lookahead and collapse
-//! the system to single-instruction lockstep. A latency/jitter fault that
-//! *raises* the effective latency only widens lookahead (safe); a fault that
-//! would *lower* it below the floor is clamped; and any effective-latency change
-//! triggers a lookahead recompute at the next quantum boundary, never mid-RUN.
+//! the system to single-instruction lockstep. A fixed latency fault that raises
+//! the conservative minimum effective latency only widens lookahead (safe); a
+//! fault that would lower it below the floor is clamped; and any change to that
+//! scalar bound triggers a lookahead recompute at the next quantum boundary,
+//! never mid-RUN. Jitter, reorder, and bandwidth can delay individual frames, but
+//! their minimum additional delay is zero and therefore does not change the
+//! scheduler's scalar lookahead edge.
 //!
 //! # Determinism and the RNG seam
 //!
@@ -428,47 +431,40 @@ mod tests {
         );
     }
 
-    // ---- REGRESSION (MAJOR): recompute fires for EVERY latency-relevant field ----
+    // ---- REGRESSION: recompute tracks the conservative lookahead bound ----
 
     #[test]
-    fn regression_recompute_fires_for_jitter_reorder_bandwidth_not_just_added_latency() {
-        // The original `set_faults` keyed the signal off `effective_latency_ns()`
-        // alone (= (base+added).max(floor)), so jitter/reorder/bandwidth changes
-        // left the flag false even though they shift delivery later — an [IO-33]
-        // violation. Each latency-relevant field MUST raise the signal; each
-        // non-latency field MUST NOT.
+    fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
+        // The scheduler consumes NetLink::effective_latency_ns(), the conservative
+        // minimum edge latency. Jitter/reorder/bandwidth can push individual
+        // frames later, but their minimum additional delay is zero, so they do not
+        // change the scalar lookahead edge and must not raise this signal.
 
         // A named mutation of one fault-table field, for the table-driven cases.
         type FieldMutation = (&'static str, fn(&mut LinkFaults));
 
-        // A change to each latency-relevant field, in isolation, raises the flag.
-        let latency_changes: [FieldMutation; 4] = [
-            ("added_latency_ns", |f| f.added_latency_ns = 5_000),
+        let mut l = link(LinkFaults::none());
+        let mut faults = LinkFaults::none();
+        faults.added_latency_ns = 5_000;
+        l.set_faults(faults);
+        assert!(
+            l.take_lookahead_recompute(),
+            "added_latency_ns changes the conservative lookahead bound"
+        );
+        // Re-setting the SAME table is a no-op: no spurious recompute.
+        l.set_faults(faults);
+        assert!(
+            !l.take_lookahead_recompute(),
+            "unchanged added latency must not raise the signal"
+        );
+
+        // A change to each non-bound field, in isolation, does NOT raise it.
+        let non_bound_changes: [FieldMutation; 7] = [
             ("jitter_window_ns", |f| f.jitter_window_ns = 100_000),
             ("reorder_window_ns", |f| f.reorder_window_ns = 100_000),
             ("bandwidth_bytes_per_sec", |f| {
                 f.bandwidth_bytes_per_sec = 1_000
             }),
-        ];
-        for (name, mutate) in latency_changes {
-            let mut l = link(LinkFaults::none());
-            let mut faults = LinkFaults::none();
-            mutate(&mut faults);
-            l.set_faults(faults);
-            assert!(
-                l.take_lookahead_recompute(),
-                "{name} change must raise the lookahead-recompute signal"
-            );
-            // Re-setting the SAME table is a no-op: no spurious recompute.
-            l.set_faults(faults);
-            assert!(
-                !l.take_lookahead_recompute(),
-                "{name} unchanged must not raise the signal"
-            );
-        }
-
-        // A change to each non-latency field, in isolation, does NOT raise it.
-        let non_latency_changes: [FieldMutation; 4] = [
             ("loss", |f| f.loss = Probability::ALWAYS),
             ("duplicate", |f| f.duplicate = Probability::ALWAYS),
             ("duplicate_gap_ns", |f| f.duplicate_gap_ns = 9_999),
@@ -477,7 +473,7 @@ mod tests {
                 f.corrupt_bit_flips = 3;
             }),
         ];
-        for (name, mutate) in non_latency_changes {
+        for (name, mutate) in non_bound_changes {
             let mut l = link(LinkFaults::none());
             let mut faults = LinkFaults::none();
             mutate(&mut faults);

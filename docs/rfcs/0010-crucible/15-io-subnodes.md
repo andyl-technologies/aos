@@ -481,22 +481,27 @@ minimum inbound link latency over `B`'s live links ([SCHED-6]).
 
 This is why the minimum link-latency floor ([SCHED-20]) lives at the link: a
 zero-latency link would give a peer zero lookahead and collapse the system to
-single-instruction lockstep. A **jitter or latency fault that raises** a link's
-effective latency only *increases* lookahead (safe — more parallelism); a fault
-that would *lower* a link's latency below the floor MUST be clamped to the floor,
-and any change to a link's effective latency MUST trigger the scheduler's
-lookahead recompute at the quantum boundary ([SCHED-37]) so the conservative
-guarantee is never violated by a stale bound.
+single-instruction lockstep. A fixed **latency fault that raises** a link's
+conservative minimum effective latency only *increases* lookahead (safe — more
+parallelism); a fault that would *lower* a link's latency below the floor MUST be
+clamped to the floor, and any change to that scalar conservative bound MUST
+trigger the scheduler's lookahead recompute at the quantum boundary ([SCHED-37])
+so the guarantee is never violated by a stale bound. Jitter, reorder, and
+bandwidth faults still shift individual frame deliveries, but their minimum
+additional delay is zero, so they do not widen the scheduler's scalar lookahead
+edge.
 
 - **[IO-33]** A network link's **base latency MUST be strictly positive and at or
   above the minimum link-latency floor** ([SCHED-20]); the link is what supplies
-  the conservative lookahead bound to the scheduler ([SCHED-6]). A latency/jitter
-  fault that *raises* a link's effective latency MUST be honored as-is (it only
-  widens lookahead); a fault that would lower it below the floor MUST be clamped
-  to the floor; and any effective-latency change MUST trigger the scheduler's
-  lookahead/horizon recompute at the quantum boundary ([SCHED-37]), never
-  mid-RUN. *Gate:* `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:*
-  §15.4.2; cross-ref 08 §8.7, §8.11.
+  the conservative lookahead bound to the scheduler ([SCHED-6]). A fixed latency
+  fault that *raises* a link's conservative minimum effective latency MUST be
+  honored as-is (it only widens lookahead); a fault that would lower it below the
+  floor MUST be clamped to the floor; and any change to that scalar effective
+  latency bound MUST trigger the scheduler's lookahead/horizon recompute at the
+  quantum boundary ([SCHED-37]), never mid-RUN. Jitter, reorder, and bandwidth
+  remain per-frame delivery shifts, not changes to the minimum lookahead bound.
+  *Gate:* `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §15.4.2;
+  cross-ref 08 §8.7, §8.11.
 
 - **[IO-34]** A **reorder** fault on a link (a per-frame seeded delivery-icount
   shift that may move one frame's delivery past another's) MUST keep every
@@ -847,11 +852,27 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   of `MaterializedState`, proving a snapshot that omits RNG position or active
   faults fails the replay oracle. — satisfies [IO-23], [IO-26]; spec §15.5,
   §15.6; cross-ref 07 §3, §6.
-- [ ] **T-IO-12** Implement uniform I/O fault injection (latency/jitter/failure/
+- [x] **T-IO-12** Implement uniform I/O fault injection (latency/jitter/failure/
   reorder/duplicate/corrupt/bandwidth) on block and 9p as perturbations of the
   modeled completion/response, sharing the fault taxonomy and activation
   mechanism with network faults. — satisfies [IO-25], [IO-26]; spec §15.6;
   cross-ref 17.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`
+  and `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  device_subnode`.
+  `IoFaults` is the shared block/9p completion fault table using the same
+  integer-only taxonomy as `LinkFaults`: latency and bandwidth add deterministic
+  virtual-time shifts; jitter and reorder consume seeded shifts; loss maps a
+  completion to an error-status response; duplicate emits a second response; and
+  corruption flips seeded payload bits. `BlockDevice` and `NinepDevice` snapshot
+  both the active fault table and RNG cursor. `DeviceSchedulingSubNode` resolves
+  block requests and raw 9p frames through the same sorted modeled-completion
+  path, updates the concrete device cursor from the same RNG stream, and exposes
+  the final post-fault `delivery_icount` to the scheduler. Active I/O faults fold
+  into scheduler state with the same device-scoped `FaultId` namespace used for
+  network-link faults.
+  Summary: block and 9p faults perturb modeled completions/responses, not host
+  I/O, and use the same taxonomy and activation-state shape as network faults.
 - [ ] **T-IO-13** Build the in-process device test harness (construct node,
   enqueue requests, advance clock, assert responses + delivery icounts + overlay/
   fid state) and the per-device run-twice determinism + divergence-localization
@@ -866,9 +887,24 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   `next_exact_local_event`, and deterministic full-ring backpressure (block-and-
   wake, never drop/reorder). — satisfies [IO-31], [IO-32]; spec §15.1.1;
   cross-ref 08, 13.
-- [ ] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
+- [x] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
   positive latency floor at the link, clamp sub-floor latency faults, trigger the
-  lookahead/horizon recompute on any effective-latency change at the quantum
-  boundary, and clamp/fail-loud reorder shifts that would land in the consumer's
-  past. — satisfies [IO-33], [IO-34]; spec §15.4.2; cross-ref 08 §8.7, §8.11, 13
-  §13.9.
+  lookahead/horizon recompute on any conservative effective-latency-bound change
+  at the quantum boundary, and clamp/fail-loud reorder shifts that would land in
+  the consumer's past. — satisfies [IO-33], [IO-34]; spec §15.4.2; cross-ref 08
+  §8.7, §8.11, 13 §13.9.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`
+  and `cargo test --manifest-path crates/Cargo.toml -p crucible --test
+  scheduler_topology_change`.
+  `NetLink` rejects zero/sub-floor base latency, clamps effective latency to its
+  strictly-positive floor, raises a one-shot recompute flag when the conservative
+  minimum latency bound changes, and guards reorder/jitter deliveries with either
+  fail-loud or future-clamp policy. `SingleScheduler::schedule_link_latency_recompute`
+  validates the flagged edge before consuming the flag, incrementally updates the
+  existing directed effective lookahead edge with the link's current
+  `effective_latency_ns`, freezes cross-node sends while the change is pending,
+  and lets the existing topology-change pipeline recompute node lookahead before
+  the next PICK. Incremental edge updates preserve unrelated pending recomputes
+  and do not restore edges removed by a partition.
+  Summary: live link latency changes now flow into scheduler lookahead at the
+  quantum boundary; stale sends are frozen until the recompute applies.

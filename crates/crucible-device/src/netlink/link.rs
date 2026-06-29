@@ -11,9 +11,9 @@
 //! event), the link is **the one source of conservative uncertainty**
 //! (§15.4.2): its base latency supplies the scheduler's lookahead bound, so the
 //! link enforces a strictly positive latency floor ([IO-33]), clamps sub-floor
-//! latency faults up to that floor, raises a recompute signal on any
-//! effective-latency change, and fails loudly when a reorder/jitter shift would
-//! deliver into the consumer's past ([IO-34]).
+//! latency faults up to that floor, raises a recompute signal when the
+//! conservative minimum latency bound changes, and fails loudly when a
+//! reorder/jitter shift would deliver into the consumer's past ([IO-34]).
 //!
 //! ```text
 //! emit(frame, t):                                  (SOURCE emits)
@@ -219,7 +219,7 @@ pub struct NetLink {
     faults: LinkFaults,
     /// The next per-frame sequence number, for deterministic tie-breaking.
     next_seq: u32,
-    /// Set when an effective-latency change requires a scheduler recompute ([IO-33]).
+    /// Set when a conservative latency-bound change requires scheduler recompute.
     lookahead_recompute_pending: bool,
     /// The per-device RNG stream cursor (draws consumed so far, [IO-23]).
     ///
@@ -329,23 +329,21 @@ impl NetLink {
 
     /// Replaces the effective fault table, flagging a lookahead recompute if needed.
     ///
-    /// If the new table changes the link's effective latency ([IO-33]) — added
-    /// latency, jitter, reorder, or bandwidth differing from the current table —
-    /// the link sets the lookahead-recompute flag so the scheduler recomputes its
-    /// lookahead/horizon at the **next quantum boundary**, never mid-RUN. The
-    /// signal is exposed via [`NetLink::take_lookahead_recompute`]; this method
-    /// cannot call the scheduler (it lives in another crate), so it records the
-    /// flag for the integration layer (CS-INT) to consume.
+    /// If the new table changes the link's conservative minimum effective latency
+    /// ([IO-33]) — currently the `added_latency_ns` component — the link sets the
+    /// lookahead-recompute flag so the scheduler recomputes its lookahead/horizon
+    /// at the **next quantum boundary**, never mid-RUN. The signal is exposed via
+    /// [`NetLink::take_lookahead_recompute`]; this method cannot call the
+    /// scheduler (it lives in another crate), so it records the flag for the
+    /// integration layer (CS-INT) to consume.
     ///
-    /// Loss/duplicate/corrupt changes do not affect latency and do not raise the
-    /// flag ([`LinkFaults::affects_latency`]).
+    /// Jitter, reorder, bandwidth, loss, duplicate, and corrupt changes do not
+    /// raise the flag ([`LinkFaults::affects_latency`]). They may shift or alter
+    /// individual frames, but they do not raise the scalar lower bound consumed by
+    /// the scheduler's lookahead graph.
     ///
-    /// The recompute predicate compares the four **latency-relevant** fields
-    /// (added latency, jitter window, reorder window, bandwidth) before and after
-    /// the swap, not merely the scalar `effective_latency_ns()`. The scalar bound
-    /// alone is insufficient: jitter, reorder, and bandwidth shift delivery later
-    /// without changing `(base + added).max(floor)`, yet they change the link's
-    /// effective-latency *profile*, which [IO-33] requires the scheduler to see.
+    /// The recompute predicate compares the fields that can change the scalar
+    /// bound, not the full per-frame latency profile.
     pub fn set_faults(&mut self, faults: LinkFaults) {
         if Self::latency_profile_changed(&self.faults, &faults) {
             self.lookahead_recompute_pending = true;
@@ -353,25 +351,23 @@ impl NetLink {
         self.faults = faults;
     }
 
-    /// Returns whether two fault tables differ in any latency-relevant field.
+    /// Returns whether two fault tables differ in the conservative latency bound.
     ///
-    /// The latency-relevant fields are exactly those [`LinkFaults::affects_latency`]
-    /// reports: added latency, jitter window, reorder window, and bandwidth. Loss,
-    /// duplicate, and corrupt parameters are deliberately excluded — they perturb
-    /// the payload or delivery count, never the latency bound the scheduler reads
+    /// The bound-relevant fields are exactly those
+    /// [`LinkFaults::affects_latency`] reports. Other fields can perturb a
+    /// specific delivery after EMIT, but their minimum additional delay is zero and
+    /// therefore they do not change the lookahead edge the scheduler reads
     /// ([IO-33]).
     fn latency_profile_changed(before: &LinkFaults, after: &LinkFaults) -> bool {
         before.added_latency_ns != after.added_latency_ns
-            || before.jitter_window_ns != after.jitter_window_ns
-            || before.reorder_window_ns != after.reorder_window_ns
-            || before.bandwidth_bytes_per_sec != after.bandwidth_bytes_per_sec
     }
 
     /// Takes and clears the pending lookahead-recompute signal ([IO-33]).
     ///
-    /// Returns `true` exactly once after any effective-latency change, then resets
-    /// to `false`. The integration layer (CS-INT) consumes this at the quantum
-    /// boundary to trigger the scheduler's lookahead/horizon recompute ([SCHED-37]).
+    /// Returns `true` exactly once after any conservative latency-bound change,
+    /// then resets to `false`. The integration layer (CS-INT) consumes this at
+    /// the quantum boundary to trigger the scheduler's lookahead/horizon
+    /// recompute ([SCHED-37]).
     pub fn take_lookahead_recompute(&mut self) -> bool {
         core::mem::replace(&mut self.lookahead_recompute_pending, false)
     }

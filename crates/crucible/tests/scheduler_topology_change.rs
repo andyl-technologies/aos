@@ -93,6 +93,347 @@ fn runtime_topology_change_queue_recomputes_before_next_pick() {
 }
 
 #[test]
+fn netlink_latency_recompute_signal_queues_boundary_recompute() {
+    let producer = scheduler_node("producer");
+    let consumer = scheduler_node("consumer");
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "netlink-latency-recompute-signal",
+        shift(0),
+        64,
+        SimInstant { nanos: 40 },
+        vec![scenario_node(
+            "consumer",
+            0,
+            SchedulerNodeActivity::Runnable,
+            finite_lookahead(20),
+        )],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link should build");
+
+    assert!(
+        !scheduler
+            .schedule_link_latency_recompute(9, producer.clone(), consumer.clone(), &mut link)
+            .expect("no-op recompute should succeed"),
+        "a link with no pending recompute must not queue a topology change"
+    );
+
+    let mut faults = crucible_device::LinkFaults::none();
+    faults.added_latency_ns = 7;
+    link.set_faults(faults);
+    assert!(
+        scheduler
+            .schedule_link_latency_recompute(9, producer.clone(), consumer.clone(), &mut link)
+            .expect("recompute should queue"),
+        "the link's pending recompute flag must be consumed into the scheduler"
+    );
+    assert!(
+        !link.lookahead_recompute_pending(),
+        "the scheduler adapter consumes the link flag exactly once"
+    );
+    assert!(
+        matches!(
+            scheduler.authorize_cross_node_send(&producer, &consumer),
+            Err(SchedulerError::BoundaryViolation { .. })
+        ),
+        "cross-node sends must freeze while the recompute waits for the boundary"
+    );
+
+    let outcome = drive_one_quantum(&mut scheduler);
+
+    assert_eq!(outcome.advanced_node, Some(consumer.clone()));
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 27 });
+    let application = only_topology_application(&scheduler);
+    assert_eq!(application.sequence, 9);
+    assert_eq!(
+        application.trigger,
+        SchedulerTopologyChangeTrigger::LatencyChange
+    );
+    assert_eq!(
+        application.updates[0].previous_lookahead,
+        finite_lookahead(20)
+    );
+    assert_eq!(
+        application.updates[0].recomputed_lookahead,
+        finite_lookahead(27)
+    );
+    assert!(
+        scheduler
+            .authorize_cross_node_send(&producer, &consumer)
+            .is_ok(),
+        "send authorization resumes after the boundary recompute"
+    );
+}
+
+#[test]
+fn netlink_recompute_validation_failure_keeps_signal_pending() {
+    let producer = scheduler_node("producer");
+    let consumer = scheduler_node("consumer");
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "netlink-recompute-retains-signal-on-error",
+        shift(0),
+        64,
+        SimInstant { nanos: 40 },
+        vec![scenario_node(
+            "consumer",
+            0,
+            SchedulerNodeActivity::Runnable,
+            finite_lookahead(20),
+        )],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(Vec::new());
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link should build");
+    let mut faults = crucible_device::LinkFaults::none();
+    faults.added_latency_ns = 7;
+    link.set_faults(faults);
+
+    let error = scheduler
+        .schedule_link_latency_recompute(9, producer, consumer, &mut link)
+        .expect_err("missing edge should reject the recompute");
+
+    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
+    assert!(
+        link.lookahead_recompute_pending(),
+        "failed validation must not consume the link recompute signal"
+    );
+    assert!(
+        scheduler.topology_change_applications().is_empty(),
+        "a rejected recompute must not apply any topology changes"
+    );
+}
+
+#[test]
+fn netlink_latency_update_does_not_restore_pending_partition_edge() {
+    let producer = scheduler_node("producer");
+    let consumer = scheduler_node("consumer");
+    let endpoint = edge(&producer, &consumer, 20).endpoint();
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "netlink-latency-update-preserves-partition",
+        shift(0),
+        64,
+        SimInstant { nanos: 40 },
+        vec![scenario_node(
+            "consumer",
+            0,
+            SchedulerNodeActivity::Runnable,
+            finite_lookahead(20),
+        )],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
+    .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link should build");
+    let mut faults = crucible_device::LinkFaults::none();
+    faults.added_latency_ns = 7;
+    link.set_faults(faults);
+
+    assert!(
+        scheduler
+            .schedule_link_latency_recompute(2, producer.clone(), consumer.clone(), &mut link)
+            .expect("latency recompute should queue behind the partition"),
+        "pending recompute must queue"
+    );
+
+    let outcome = drive_one_quantum(&mut scheduler);
+
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 40 });
+    assert_eq!(scheduler.topology_change_applications().len(), 2);
+    assert_eq!(
+        scheduler.topology_change_applications()[0].trigger,
+        SchedulerTopologyChangeTrigger::FaultActivation
+    );
+    assert_eq!(
+        scheduler.topology_change_applications()[1].trigger,
+        SchedulerTopologyChangeTrigger::LatencyChange
+    );
+    assert!(
+        matches!(
+            scheduler.authorize_cross_node_send(&producer, &consumer),
+            Err(SchedulerError::BoundaryViolation { .. })
+        ),
+        "incremental latency updates must not re-add a partitioned edge"
+    );
+}
+
+#[test]
+fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency() {
+    let producer = scheduler_node("producer");
+    let consumer = scheduler_node("consumer");
+    let endpoint = edge(&producer, &consumer, 20).endpoint();
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "netlink-latency-after-partition-heals-current-latency",
+        shift(0),
+        64,
+        SimInstant { nanos: 80 },
+        vec![scenario_node(
+            "consumer",
+            0,
+            SchedulerNodeActivity::Done,
+            finite_lookahead(20),
+        )],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
+    .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link should build");
+    let mut faults = crucible_device::LinkFaults::none();
+    faults.added_latency_ns = 7;
+    link.set_faults(faults);
+
+    assert!(
+        scheduler
+            .schedule_link_latency_recompute(2, producer.clone(), consumer.clone(), &mut link)
+            .expect("latency recompute should queue behind the partition")
+    );
+    assert!(
+        !link.lookahead_recompute_pending(),
+        "the recompute signal is consumed once the boundary update is queued"
+    );
+
+    drive_one_quantum(&mut scheduler);
+    assert!(
+        matches!(
+            scheduler.authorize_cross_node_send(&producer, &consumer),
+            Err(SchedulerError::BoundaryViolation { .. })
+        ),
+        "the skipped latency update must not restore the partitioned edge"
+    );
+
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::heal(
+            3,
+            vec![edge(&producer, &consumer, link.effective_latency_ns())],
+        ))
+        .expect("heal should queue");
+
+    drive_one_quantum(&mut scheduler);
+
+    assert!(
+        scheduler
+            .authorize_cross_node_send(&producer, &consumer)
+            .is_ok(),
+        "heal restores the edge explicitly"
+    );
+    assert_eq!(scheduler.topology_change_applications().len(), 3);
+    let heal_application = &scheduler.topology_change_applications()[2];
+    assert_eq!(
+        heal_application.trigger,
+        SchedulerTopologyChangeTrigger::Heal
+    );
+    let consumer_heal_update = heal_application
+        .updates
+        .iter()
+        .find(|update| update.node == consumer)
+        .unwrap_or_else(|| panic!("consumer update should exist after heal"));
+    assert_eq!(
+        consumer_heal_update.recomputed_lookahead,
+        finite_lookahead(27),
+        "the heal edge must use the link's current effective latency"
+    );
+}
+
+#[test]
+fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
+    let producer_a = scheduler_node("producer-a");
+    let producer_b = scheduler_node("producer-b");
+    let consumer_a = scheduler_node("consumer-a");
+    let consumer_b = scheduler_node("consumer-b");
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "multiple-netlink-latency-updates-preserve-unrelated-edges",
+        shift(0),
+        64,
+        SimInstant { nanos: 40 },
+        vec![
+            scenario_node(
+                "consumer-a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                finite_lookahead(20),
+            ),
+            scenario_node(
+                "consumer-b",
+                0,
+                SchedulerNodeActivity::Runnable,
+                finite_lookahead(30),
+            ),
+        ],
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![
+        edge(&producer_a, &consumer_a, 20),
+        edge(&producer_b, &consumer_b, 30),
+    ]);
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+    let mut link_a =
+        crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+            .expect("link a should build");
+    let mut link_b =
+        crucible_device::NetLink::new(0, 99, 30, 1, crucible_device::LinkFaults::none())
+            .expect("link b should build");
+    let mut faults_a = crucible_device::LinkFaults::none();
+    faults_a.added_latency_ns = 7;
+    link_a.set_faults(faults_a);
+    let mut faults_b = crucible_device::LinkFaults::none();
+    faults_b.added_latency_ns = 5;
+    link_b.set_faults(faults_b);
+
+    assert!(
+        scheduler
+            .schedule_link_latency_recompute(1, producer_a.clone(), consumer_a.clone(), &mut link_a)
+            .expect("first recompute should queue")
+    );
+    assert!(
+        scheduler
+            .schedule_link_latency_recompute(2, producer_b, consumer_b.clone(), &mut link_b)
+            .expect("second recompute should queue")
+    );
+
+    drive_one_quantum(&mut scheduler);
+
+    assert_eq!(scheduler.topology_change_applications().len(), 2);
+    let first_application = &scheduler.topology_change_applications()[0];
+    let second_application = &scheduler.topology_change_applications()[1];
+    let consumer_a_after_first = first_application
+        .updates
+        .iter()
+        .find(|update| update.node == consumer_a)
+        .unwrap_or_else(|| panic!("consumer-a update should exist after first recompute"));
+    assert_eq!(
+        consumer_a_after_first.recomputed_lookahead,
+        finite_lookahead(27)
+    );
+    let consumer_a_after_second = second_application
+        .updates
+        .iter()
+        .find(|update| update.node == consumer_a)
+        .unwrap_or_else(|| panic!("consumer-a update should exist after second recompute"));
+    assert_eq!(
+        consumer_a_after_second.recomputed_lookahead,
+        finite_lookahead(27),
+        "the second recompute must not reset the first edge to its stale latency"
+    );
+    let consumer_b_after_second = second_application
+        .updates
+        .iter()
+        .find(|update| update.node == consumer_b)
+        .unwrap_or_else(|| panic!("consumer-b update should exist after second recompute"));
+    assert_eq!(
+        consumer_b_after_second.recomputed_lookahead,
+        finite_lookahead(35)
+    );
+}
+
+#[test]
 fn actor_topology_change_message_recomputes_before_next_pick() {
     let producer = scheduler_node("producer");
     let consumer = scheduler_node("consumer");

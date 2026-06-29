@@ -107,18 +107,17 @@ impl LinkFaults {
         Self::default()
     }
 
-    /// Returns whether any latency-affecting fault is active.
+    /// Returns whether any fault raises the conservative minimum latency bound.
     ///
-    /// This is the set of faults that change the link's effective latency and so
-    /// require the scheduler's lookahead recompute ([IO-33]): added latency,
-    /// jitter, reorder, and a bandwidth limit (which adds size-dependent delay).
-    /// Loss, duplicate, and corrupt do not change the latency bound.
+    /// This is the set of faults that change the scalar effective latency the
+    /// scheduler uses as its conservative lookahead edge ([IO-33]). Added latency
+    /// raises that lower bound for every frame. Jitter, reorder, and bandwidth can
+    /// delay individual frames, but their minimum additional delay is zero, so they
+    /// do not change this conservative bound. Loss, duplicate, and corrupt do not
+    /// change it either.
     #[must_use]
     pub fn affects_latency(&self) -> bool {
         self.added_latency_ns != 0
-            || self.jitter_window_ns != 0
-            || self.reorder_window_ns != 0
-            || self.bandwidth_bytes_per_sec != 0
     }
 }
 
@@ -191,17 +190,22 @@ mod tests {
     }
 
     #[test]
-    fn affects_latency_excludes_loss_dup_corrupt() {
+    fn affects_latency_reports_only_minimum_bound_changes() {
         let mut f = LinkFaults::none();
         assert!(!f.affects_latency());
         f.loss = Probability::ALWAYS;
         f.duplicate = Probability::ALWAYS;
+        f.duplicate_gap_ns = 5;
         f.corrupt = Probability::ALWAYS;
+        f.corrupt_bit_flips = 3;
+        f.jitter_window_ns = 5;
+        f.reorder_window_ns = 7;
+        f.bandwidth_bytes_per_sec = 1_000;
         assert!(
             !f.affects_latency(),
-            "loss/dup/corrupt do not change latency"
+            "faults whose minimum added delay is zero do not raise the conservative bound"
         );
-        f.jitter_window_ns = 5;
+        f.added_latency_ns = 1;
         assert!(f.affects_latency());
     }
 }

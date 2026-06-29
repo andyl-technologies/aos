@@ -185,6 +185,20 @@ pub enum DeviceError {
         /// The fixed ring capacity in entries.
         capacity: u64,
     },
+
+    /// A scheduler bridge attempted to submit a request to the wrong device kind.
+    ///
+    /// This is a wiring error at the typed sub-node boundary: a block request must
+    /// be submitted only to a block sub-node, and a 9p frame only to a 9p
+    /// sub-node. The error is deterministic and fails loudly before any response
+    /// can be computed or enqueued.
+    #[error("wrong I/O sub-node kind: expected {expected}, found {actual}")]
+    WrongDeviceKind {
+        /// The device kind the request path requires.
+        expected: &'static str,
+        /// The concrete device kind held by the sub-node.
+        actual: &'static str,
+    },
 }
 
 impl From<NodeSlotError> for DeviceError {
