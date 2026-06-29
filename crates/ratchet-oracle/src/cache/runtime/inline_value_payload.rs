@@ -93,32 +93,6 @@ impl InlineValuePayload {
         }
     }
 
-    pub(super) fn value_hash(&self) -> Result<ValueHash, ValueHashError> {
-        match self {
-            Self::Int(value) => ValueHash::from_inline_value(Value::int(*value)),
-            Self::Float(bits) => ValueHash::from_inline_value(Value::float(f64::from_bits(*bits))),
-            Self::Bool(value) => ValueHash::from_inline_value(Value::bool(*value)),
-            Self::Null => ValueHash::from_inline_value(Value::null()),
-            Self::ContextFreeString(bytes) => Ok(ValueHash::from_context_free_string_bytes(bytes)),
-            Self::ContextString { bytes, context } => {
-                Ok(ValueHash::from_context_string_parts(bytes, context))
-            }
-            Self::Path(bytes) => Ok(ValueHash::from_path_bytes(bytes)),
-            Self::ContextPath { bytes, context } => {
-                Ok(ValueHash::from_context_path_parts(bytes, context))
-            }
-            Self::EmptyList => Ok(ValueHash::from_empty_list()),
-            Self::List(_) => Ok(self.value_hash_from_persistent_payload()),
-            Self::EmptyAttrs => Ok(ValueHash::from_empty_attrs()),
-            Self::Attrs(_)
-            | Self::SourceOrderedAttrs(_)
-            | Self::PositionedAttrs(_)
-            | Self::SourceOrderedPositionedAttrs(_) => {
-                Ok(self.value_hash_from_persistent_payload())
-            }
-        }
-    }
-
     pub(super) fn retains_attr_positions(&self) -> bool {
         match self {
             Self::PositionedAttrs(_) | Self::SourceOrderedPositionedAttrs(_) => true,
@@ -202,7 +176,7 @@ impl InlineValuePayload {
         }
     }
 
-    fn value_hash_from_persistent_payload(&self) -> ValueHash {
+    pub(super) fn value_hash_from_persistent_payload(&self) -> ValueHash {
         let mut hasher = blake3::Hasher::new();
         self.update_persistent_payload_preimage(&mut hasher);
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))

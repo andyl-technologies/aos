@@ -718,6 +718,113 @@ fn attr_position_source_envelope_reports_persistent_payload_length() {
 }
 
 #[test]
+fn attr_position_source_envelope_decode_preserves_cached_value_hash() {
+    let source_hash = DurableBlake3Hash::for_bytes(b"source");
+    let payload = CachedExpressionValue::positioned_attrs(vec![(
+        b"a".to_vec(),
+        Some(AttrPosition::new(0, Span::new(4, 5))),
+        CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+    )])
+    .expect("positioned attrs payload builds")
+    .with_attr_position_source_hash(source_hash);
+    let encoded = payload
+        .encode_persistent_payload()
+        .expect("position-source payload encodes");
+
+    let decoded = CachedExpressionValue::decode_persistent_payload(&encoded)
+        .expect("position-source payload decodes");
+
+    assert_eq!(decoded.attr_position_source_hash(), Some(source_hash));
+    assert_eq!(
+        decoded.value_hash().expect("decoded payload hashes"),
+        payload.value_hash().expect("source payload hashes")
+    );
+    assert_eq!(
+        decoded
+            .value_hash()
+            .expect("decoded payload hashes")
+            .as_durable_hash(),
+        DurableBlake3Hash::for_bytes(&encoded)
+    );
+}
+
+#[test]
+fn empty_payload_const_constructors_cache_expected_value_hashes() {
+    const EMPTY_LIST: CachedExpressionValue = CachedExpressionValue::empty_list();
+    const EMPTY_ATTRS: CachedExpressionValue = CachedExpressionValue::empty_attrs();
+
+    assert_eq!(
+        EMPTY_LIST.value_hash().expect("empty list hashes"),
+        ValueHash::from_empty_list()
+    );
+    assert_eq!(
+        EMPTY_ATTRS.value_hash().expect("empty attrs hashes"),
+        ValueHash::from_empty_attrs()
+    );
+}
+
+#[test]
+fn inline_payload_records_replay_cached_value_hashes() {
+    let mut cache = EvalCache::new();
+    let identity = identity(b"source", 7);
+    let payload = CachedExpressionValue::strict_list(vec![
+        CachedExpressionValue::context_free_string(b"cached".to_vec()),
+        CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
+    ]);
+    let value_hash = payload.value_hash().expect("payload hashes");
+
+    cache
+        .observe_inline_expression_payload(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            payload,
+        )
+        .expect("payload observes");
+    let replayed = cache
+        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .expect("payload lookup succeeds")
+        .expect("memoized payload is present");
+
+    assert_eq!(
+        replayed.value_hash().expect("replayed payload hashes"),
+        value_hash
+    );
+}
+
+#[test]
+fn inline_payload_records_replay_attr_position_source_value_hashes() {
+    let mut cache = EvalCache::new();
+    let identity = identity(b"source", 8);
+    let source_hash = DurableBlake3Hash::for_bytes(b"source");
+    let payload = CachedExpressionValue::positioned_attrs(vec![(
+        b"a".to_vec(),
+        Some(AttrPosition::new(0, Span::new(4, 5))),
+        CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
+    )])
+    .expect("positioned attrs payload builds")
+    .with_attr_position_source_hash(source_hash);
+    let value_hash = payload.value_hash().expect("payload hashes");
+
+    cache
+        .observe_inline_expression_payload(
+            identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            payload,
+        )
+        .expect("payload observes");
+    let replayed = cache
+        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .expect("payload lookup succeeds")
+        .expect("memoized payload is present");
+
+    assert_eq!(replayed.attr_position_source_hash(), Some(source_hash));
+    assert_eq!(
+        replayed.value_hash().expect("replayed payload hashes"),
+        value_hash
+    );
+}
+
+#[test]
 fn position_free_positioned_attrs_canonicalize_to_plain_attrs() {
     let plain = CachedExpressionValue::strict_attrs(vec![(
         b"a".to_vec(),

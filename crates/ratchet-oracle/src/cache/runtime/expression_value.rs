@@ -2,6 +2,20 @@
 
 use super::*;
 
+// Precomputed BLAKE3 hashes of the canonical empty payload preimages keep the
+// public empty constructors const while every cached value carries a hash field.
+const EMPTY_LIST_VALUE_HASH: ValueHash =
+    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes([
+        54, 154, 29, 29, 98, 143, 209, 209, 178, 225, 27, 65, 134, 247, 216, 4, 24, 162, 28, 201,
+        95, 112, 180, 91, 27, 211, 47, 234, 71, 240, 246, 20,
+    ]));
+
+const EMPTY_ATTRS_VALUE_HASH: ValueHash =
+    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes([
+        208, 38, 121, 20, 160, 193, 6, 66, 13, 195, 48, 174, 248, 48, 164, 106, 51, 179, 197, 106,
+        209, 182, 57, 99, 242, 188, 73, 48, 52, 151, 114, 248,
+    ]));
+
 /// A memoized force-cache payload that can be replayed by an evaluator.
 ///
 /// Immediate values can be returned directly because they carry their payload
@@ -11,6 +25,7 @@ use super::*;
 pub struct CachedExpressionValue {
     pub(super) payload: InlineValuePayload,
     pub(super) attr_position_source_hash: Option<DurableBlake3Hash>,
+    value_hash: ValueHash,
 }
 
 /// One cached attrset entry with an optional source position.
@@ -24,18 +39,12 @@ impl CachedExpressionValue {
     /// Returns [`ValueHashError`] if `value` is invalid or is not an inline
     /// scalar supported by the current force-cache payload precursor.
     pub fn immediate(value: Value) -> Result<Self, ValueHashError> {
-        Ok(Self {
-            payload: InlineValuePayload::from_value(value)?,
-            attr_position_source_hash: None,
-        })
+        Ok(Self::from_payload(InlineValuePayload::from_value(value)?))
     }
 
     /// Creates a cached context-free Nix string payload from canonical bytes.
     pub fn context_free_string(bytes: Vec<u8>) -> Self {
-        Self {
-            payload: InlineValuePayload::ContextFreeString(bytes),
-            attr_position_source_hash: None,
-        }
+        Self::from_payload(InlineValuePayload::ContextFreeString(bytes))
     }
 
     /// Creates a cached Nix string payload from canonical bytes and context.
@@ -45,18 +54,12 @@ impl CachedExpressionValue {
         if context.is_empty() {
             return Self::context_free_string(bytes);
         }
-        Self {
-            payload: InlineValuePayload::ContextString { bytes, context },
-            attr_position_source_hash: None,
-        }
+        Self::from_payload(InlineValuePayload::ContextString { bytes, context })
     }
 
     /// Creates a cached Nix path payload from canonical path bytes.
     pub fn path(bytes: Vec<u8>) -> Self {
-        Self {
-            payload: InlineValuePayload::Path(bytes),
-            attr_position_source_hash: None,
-        }
+        Self::from_payload(InlineValuePayload::Path(bytes))
     }
 
     /// Creates a cached Nix path payload from canonical path bytes and context.
@@ -66,10 +69,7 @@ impl CachedExpressionValue {
         if context.is_empty() {
             return Self::path(bytes);
         }
-        Self {
-            payload: InlineValuePayload::ContextPath { bytes, context },
-            attr_position_source_hash: None,
-        }
+        Self::from_payload(InlineValuePayload::ContextPath { bytes, context })
     }
 
     /// Creates a cached empty Nix list payload.
@@ -77,6 +77,7 @@ impl CachedExpressionValue {
         Self {
             payload: InlineValuePayload::EmptyList,
             attr_position_source_hash: None,
+            value_hash: EMPTY_LIST_VALUE_HASH,
         }
     }
 
@@ -89,12 +90,9 @@ impl CachedExpressionValue {
         if elements.is_empty() {
             return Self::empty_list();
         }
-        Self {
-            payload: InlineValuePayload::List(
-                elements.into_iter().map(|value| value.payload).collect(),
-            ),
-            attr_position_source_hash: None,
-        }
+        Self::from_payload(InlineValuePayload::List(
+            elements.into_iter().map(|value| value.payload).collect(),
+        ))
     }
 
     /// Creates a cached strict Nix attrset payload from replayable bindings.
@@ -123,18 +121,15 @@ impl CachedExpressionValue {
                 );
             }
         }
-        Ok(Self {
-            payload: InlineValuePayload::Attrs(
-                entries
-                    .into_iter()
-                    .map(|(name, value)| AttrPayloadEntry {
-                        name,
-                        value: value.payload,
-                    })
-                    .collect(),
-            ),
-            attr_position_source_hash: None,
-        })
+        Ok(Self::from_payload(InlineValuePayload::Attrs(
+            entries
+                .into_iter()
+                .map(|(name, value)| AttrPayloadEntry {
+                    name,
+                    value: value.payload,
+                })
+                .collect(),
+        )))
     }
 
     /// Creates a cached strict Nix attrset payload with binding source positions.
@@ -172,19 +167,16 @@ impl CachedExpressionValue {
                 );
             }
         }
-        Ok(Self {
-            payload: InlineValuePayload::PositionedAttrs(
-                entries
-                    .into_iter()
-                    .map(|(name, position, value)| PositionedAttrPayloadEntry {
-                        name,
-                        position,
-                        value: value.payload,
-                    })
-                    .collect(),
-            ),
-            attr_position_source_hash: None,
-        })
+        Ok(Self::from_payload(InlineValuePayload::PositionedAttrs(
+            entries
+                .into_iter()
+                .map(|(name, position, value)| PositionedAttrPayloadEntry {
+                    name,
+                    position,
+                    value: value.payload,
+                })
+                .collect(),
+        )))
     }
 
     /// Creates a cached strict Nix attrset payload that preserves source order.
@@ -204,18 +196,15 @@ impl CachedExpressionValue {
             return Ok(Self::empty_attrs());
         }
         ensure_unique_attr_payload_names(entries.iter().map(|(name, _)| name.as_slice()))?;
-        Ok(Self {
-            payload: InlineValuePayload::SourceOrderedAttrs(
-                entries
-                    .into_iter()
-                    .map(|(name, value)| AttrPayloadEntry {
-                        name,
-                        value: value.payload,
-                    })
-                    .collect(),
-            ),
-            attr_position_source_hash: None,
-        })
+        Ok(Self::from_payload(InlineValuePayload::SourceOrderedAttrs(
+            entries
+                .into_iter()
+                .map(|(name, value)| AttrPayloadEntry {
+                    name,
+                    value: value.payload,
+                })
+                .collect(),
+        )))
     }
 
     /// Creates a cached strict Nix attrset payload with source order and positions.
@@ -245,8 +234,8 @@ impl CachedExpressionValue {
             );
         }
         ensure_unique_attr_payload_names(entries.iter().map(|(name, _, _)| name.as_slice()))?;
-        Ok(Self {
-            payload: InlineValuePayload::SourceOrderedPositionedAttrs(
+        Ok(Self::from_payload(
+            InlineValuePayload::SourceOrderedPositionedAttrs(
                 entries
                     .into_iter()
                     .map(|(name, position, value)| PositionedAttrPayloadEntry {
@@ -256,8 +245,7 @@ impl CachedExpressionValue {
                     })
                     .collect(),
             ),
-            attr_position_source_hash: None,
-        })
+        ))
     }
 
     /// Creates a cached empty Nix attrset payload.
@@ -265,12 +253,14 @@ impl CachedExpressionValue {
         Self {
             payload: InlineValuePayload::EmptyAttrs,
             attr_position_source_hash: None,
+            value_hash: EMPTY_ATTRS_VALUE_HASH,
         }
     }
 
     pub(crate) fn with_attr_position_source_hash(mut self, source_hash: DurableBlake3Hash) -> Self {
         if self.retains_attr_positions() {
             self.attr_position_source_hash = Some(source_hash);
+            self.value_hash = Self::value_hash_for_attr_position_source(&self.payload, source_hash);
         }
         self
     }
@@ -283,21 +273,11 @@ impl CachedExpressionValue {
     ///
     /// # Errors
     ///
-    /// Returns [`ValueHashError`] if an immediate scalar payload cannot be
-    /// represented as a supported inline value.
+    /// This is currently infallible because the hash is computed when the
+    /// payload is constructed. The `Result` return type is retained for the
+    /// existing cache-runtime API boundary.
     pub fn value_hash(&self) -> Result<ValueHash, ValueHashError> {
-        if let Some(source_hash) = self.attr_position_source_hash {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG);
-            hasher.update(&source_hash.as_bytes());
-            hasher.update(&self.payload.persistent_payload_len().to_le_bytes());
-            self.payload.update_persistent_payload_preimage(&mut hasher);
-            Ok(ValueHash::from_canonical_value_hash(
-                DurableBlake3Hash::from_hasher(hasher),
-            ))
-        } else {
-            self.payload.value_hash()
-        }
+        Ok(self.value_hash)
     }
 
     /// Returns the canonical persistent payload byte length.
@@ -364,15 +344,14 @@ impl CachedExpressionValue {
                 return Err(CachedExpressionValuePayloadError::PositionSourceWithoutPositions);
             }
             cursor.finish()?;
-            return Ok(Self {
+            return Ok(Self::from_payload_with_attr_position_source_hash(
                 payload,
-                attr_position_source_hash: Some(source_hash),
-            });
+                source_hash,
+            ));
         }
-        Ok(Self {
-            payload: InlineValuePayload::decode_persistent_payload(bytes)?,
-            attr_position_source_hash: None,
-        })
+        Ok(Self::from_payload(
+            InlineValuePayload::decode_persistent_payload(bytes)?,
+        ))
     }
 
     /// Returns the immediate scalar value, if this payload is immediate.
@@ -500,10 +479,7 @@ impl CachedExpressionValue {
                     elements
                         .iter()
                         .cloned()
-                        .map(|payload| CachedExpressionValue {
-                            payload,
-                            attr_position_source_hash: None,
-                        }),
+                        .map(CachedExpressionValue::from_payload),
                 );
                 Some(out)
             }
@@ -563,10 +539,7 @@ impl CachedExpressionValue {
                 out.extend(entries.iter().map(|entry| {
                     (
                         entry.name.clone(),
-                        CachedExpressionValue {
-                            payload: entry.value.clone(),
-                            attr_position_source_hash: None,
-                        },
+                        CachedExpressionValue::from_payload(entry.value.clone()),
                     )
                 }));
                 Some(out)
@@ -598,10 +571,7 @@ impl CachedExpressionValue {
                     (
                         entry.name.clone(),
                         None,
-                        CachedExpressionValue {
-                            payload: entry.value.clone(),
-                            attr_position_source_hash: None,
-                        },
+                        CachedExpressionValue::from_payload(entry.value.clone()),
                     )
                 }));
                 Some(out)
@@ -614,10 +584,7 @@ impl CachedExpressionValue {
                     (
                         entry.name.clone(),
                         entry.position,
-                        CachedExpressionValue {
-                            payload: entry.value.clone(),
-                            attr_position_source_hash: None,
-                        },
+                        CachedExpressionValue::from_payload(entry.value.clone()),
                     )
                 }));
                 Some(out)
@@ -645,5 +612,38 @@ impl CachedExpressionValue {
 
     pub(crate) fn collect_attr_position_modules(&self, modules: &mut BTreeSet<u32>) {
         self.payload.collect_attr_position_modules(modules);
+    }
+
+    pub(super) fn from_payload(payload: InlineValuePayload) -> Self {
+        let value_hash = payload.value_hash_from_persistent_payload();
+        Self {
+            payload,
+            attr_position_source_hash: None,
+            value_hash,
+        }
+    }
+
+    pub(super) fn from_payload_with_attr_position_source_hash(
+        payload: InlineValuePayload,
+        source_hash: DurableBlake3Hash,
+    ) -> Self {
+        let value_hash = Self::value_hash_for_attr_position_source(&payload, source_hash);
+        Self {
+            payload,
+            attr_position_source_hash: Some(source_hash),
+            value_hash,
+        }
+    }
+
+    fn value_hash_for_attr_position_source(
+        payload: &InlineValuePayload,
+        source_hash: DurableBlake3Hash,
+    ) -> ValueHash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG);
+        hasher.update(&source_hash.as_bytes());
+        hasher.update(&payload.persistent_payload_len().to_le_bytes());
+        payload.update_persistent_payload_preimage(&mut hasher);
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
     }
 }

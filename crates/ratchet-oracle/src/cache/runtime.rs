@@ -479,9 +479,13 @@ impl InlineValueRecord {
     }
 
     fn value(&self) -> CachedExpressionValue {
-        CachedExpressionValue {
-            payload: self.payload.clone(),
-            attr_position_source_hash: self.attr_position_source_hash,
+        if let Some(source_hash) = self.attr_position_source_hash {
+            CachedExpressionValue::from_payload_with_attr_position_source_hash(
+                self.payload.clone(),
+                source_hash,
+            )
+        } else {
+            CachedExpressionValue::from_payload(self.payload.clone())
         }
     }
 

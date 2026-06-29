@@ -1346,6 +1346,18 @@ alone (`M-1`/`Q-A`).
       values, persisted value hashes, or demand-graph value-hash integration.
       Gates: `ratchet-value` hashcons admission/reservation tests and evaluator
       heap consing tests.
+- [x] Current cached expression value-hash field-load precursor:
+      `CachedExpressionValue` stores its canonical `ValueHash` at payload
+      construction/decode time, including attr-position source envelopes, and
+      in-memory force-cache side records replay values through constructors that
+      restore the cached hash field. Demand graph observation and persistent
+      materialization paths now read the cached payload hash instead of
+      rehashing replayable cached-expression payloads. This covers current
+      replayable force-cache payloads only; it is not generic post-force
+      immutable-value hash-consing, O(1) equality for all values, persisted heap
+      value hashes, or full demand-graph value-hash integration. Gates:
+      cached-expression payload encoding tests and inline-payload record replay
+      tests.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration
