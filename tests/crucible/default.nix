@@ -572,6 +572,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerNodeScheduling";
       taskIds = ["T-TRIG-13"];
     };
+    triggerRelativeTimers = import ./phase4-trigger-relative-timers.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerRelativeTimers";
+      taskIds = ["T-TRIG-14"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
