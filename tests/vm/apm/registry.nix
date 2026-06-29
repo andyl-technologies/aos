@@ -2120,18 +2120,20 @@ in {
         "persisted upload destination has dependency narinfo"
 
       rm -f /tmp/origin-default-upload/info/refs
+      ORIGIN_DEFAULT_CACHE_DIR="$HOME/.cache/apm/registry-static/origin-default-reg"
       $APR --json origin upload --registry origin-default-reg \
-        --cache-dir /tmp/origin-default-cache \
+        --cache-dir "$ORIGIN_DEFAULT_CACHE_DIR" \
         > /tmp/origin-default-upload.json 2>&1 || {
         cat /tmp/origin-default-upload.json
         fail "apr origin upload reuses persisted upload defaults"
       }
       ${pkgs.jq}/bin/jq -e \
         --arg upload "$ORIGIN_UPLOAD_URL" \
+        --arg cache_dir "$ORIGIN_DEFAULT_CACHE_DIR" \
         '.action == "origin_upload"
           and .registry == "origin-default-reg"
           and .upload_urls == [$upload]
-          and .cache_dir == "/tmp/origin-default-cache"
+          and .cache_dir == $cache_dir
           and (.files | type == "number" and . > 0)
           and (.bytes | type == "number" and . > 0)' \
         /tmp/origin-default-upload.json >/dev/null || {
