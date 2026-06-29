@@ -30,8 +30,8 @@ fn derivation_strict_unions_input_hash_replacement_outputs() {
 
     let shared_hash = [42_u8; 32];
     let mut input_hashes = BTreeMap::new();
-    input_hashes.insert(first, DerivationHashModulo(shared_hash));
-    input_hashes.insert(second, DerivationHashModulo(shared_hash));
+    input_hashes.insert(first, DerivationHashModulo::from_sha256_bytes(shared_hash));
+    input_hashes.insert(second, DerivationHashModulo::from_sha256_bytes(shared_hash));
 
     let replacements = TreeWalk::input_hash_replacements(&derivation, &input_hashes);
     assert_eq!(replacements.len(), 1);

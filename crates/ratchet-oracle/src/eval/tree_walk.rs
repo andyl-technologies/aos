@@ -58,8 +58,9 @@ use crate::cache::{
     ImpureInputIdentity, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
     ImpureInputTraceSource, InputFingerprintError, MaterializationCostObservation,
     MaterializationCosts, MaterializationDecision, MemoizationDecision, MemoizationSubject,
-    ParseCache, ParseCacheError, ParseFileKey, PersistCache, PersistMaterialization,
-    PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
+    NixSha256Digest, ParseCache, ParseCacheError, ParseFileKey, PersistCache,
+    PersistMaterialization, PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash,
+    lowered_ir_fingerprint,
 };
 use crate::compile::{
     BindingLowering, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
@@ -791,12 +792,29 @@ pub struct TreeWalk {
 /// easy to conflate when all are bare `[u8; 32]`: the derivation-hash-modulo (the
 /// recursive ATerm-with-input-substitution hash that seeds input-addressed output
 /// paths), the raw `.drv` ATerm hash, and an output/content-address digest. This
-/// newtype gives the hash-modulo a distinct type so it cannot be passed where a
-/// raw ATerm hash or an output digest is expected. The wrapped bytes are the
-/// modulo digest itself; unwrap with `.0` only at the points that serialize it
-/// (hex into an ATerm) or feed it to `makeStorePath` for an output path.
+/// newtype carries only a [`NixSha256Digest`] and exposes named accessors at the
+/// serialization/output-path boundary so internal BLAKE3 cache hashes cannot be
+/// passed as derivation modulo hashes without an explicit domain conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DerivationHashModulo(pub(crate) [u8; 32]);
+pub(crate) struct DerivationHashModulo(NixSha256Digest);
+
+impl DerivationHashModulo {
+    fn from_nix_sha256_digest(digest: NixSha256Digest) -> Self {
+        Self(digest)
+    }
+
+    fn from_sha256_bytes(bytes: [u8; 32]) -> Self {
+        Self::from_nix_sha256_digest(NixSha256Digest::from_bytes(bytes))
+    }
+
+    const fn nix_sha256_digest(self) -> NixSha256Digest {
+        self.0
+    }
+
+    const fn as_bytes(&self) -> &[u8; 32] {
+        self.0.as_bytes()
+    }
+}
 
 #[derive(Clone, Debug)]
 struct KnownDerivation {

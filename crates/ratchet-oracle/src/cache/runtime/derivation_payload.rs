@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::cache::{DurableBlake3Hash, ValueHash};
+use crate::cache::{DurableBlake3Hash, NixSha256Digest, ValueHash};
 
 const DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-derivation-aterm-path-value-hash-v1";
@@ -36,27 +36,27 @@ impl CachedDerivationOutputPath {
 /// Cached static output paths for a resolved `derivationStrict` expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CachedDerivationOutputPaths {
-    hash_derivation_modulo: [u8; 32],
+    hash_derivation_modulo: NixSha256Digest,
     output_paths: Vec<CachedDerivationOutputPath>,
 }
 
 impl CachedDerivationOutputPaths {
     /// Creates a cached static-output-path record.
     pub(crate) fn new(
-        hash_derivation_modulo: [u8; 32],
+        hash_derivation_modulo: impl Into<NixSha256Digest>,
         mut output_paths: Vec<CachedDerivationOutputPath>,
     ) -> Self {
         output_paths.sort_unstable_by(|left, right| {
             left.name.cmp(&right.name).then(left.path.cmp(&right.path))
         });
         Self {
-            hash_derivation_modulo,
+            hash_derivation_modulo: hash_derivation_modulo.into(),
             output_paths,
         }
     }
 
     /// Returns the resolved derivation hash modulo bytes.
-    pub(crate) const fn hash_derivation_modulo(&self) -> [u8; 32] {
+    pub(crate) const fn hash_derivation_modulo(&self) -> NixSha256Digest {
         self.hash_derivation_modulo
     }
 
@@ -71,7 +71,7 @@ impl CachedDerivationOutputPaths {
         hasher.update(b"pre-output-aterm");
         update_derivation_side_payload_hash_chunk(&mut hasher, pre_output_aterm);
         hasher.update(b"hash-derivation-modulo");
-        hasher.update(&self.hash_derivation_modulo);
+        hasher.update(self.hash_derivation_modulo.as_bytes());
         hasher.update(b"output-paths");
         hasher.update(&(self.output_paths.len() as u128).to_le_bytes());
         for output_path in &self.output_paths {
@@ -132,7 +132,10 @@ impl CachedStaticDerivationOutputPathsPayload {
         append_derivation_payload_bytes(&mut out, b"pre-output-aterm")?;
         append_derivation_length_prefixed_bytes(&mut out, &self.pre_output_aterm)?;
         append_derivation_payload_bytes(&mut out, b"hash-derivation-modulo")?;
-        append_derivation_payload_bytes(&mut out, &self.output_paths.hash_derivation_modulo)?;
+        append_derivation_payload_bytes(
+            &mut out,
+            self.output_paths.hash_derivation_modulo.as_bytes(),
+        )?;
         append_derivation_payload_bytes(&mut out, b"output-paths")?;
         append_derivation_payload_u128(&mut out, self.output_paths.output_paths.len() as u128)?;
         for output_path in &self.output_paths.output_paths {
@@ -175,7 +178,10 @@ impl CachedStaticDerivationOutputPathsPayload {
         cursor.finish()?;
         Ok(Self {
             pre_output_aterm,
-            output_paths: CachedDerivationOutputPaths::new(hash_derivation_modulo, output_paths),
+            output_paths: CachedDerivationOutputPaths::new(
+                NixSha256Digest::from_bytes(hash_derivation_modulo),
+                output_paths,
+            ),
         })
     }
 }
@@ -185,7 +191,7 @@ impl CachedStaticDerivationOutputPathsPayload {
 pub(crate) struct CachedDerivationAtermPath {
     aterm: Vec<u8>,
     path: Vec<u8>,
-    hash_derivation_modulo: Option<[u8; 32]>,
+    hash_derivation_modulo: Option<NixSha256Digest>,
 }
 
 impl CachedDerivationAtermPath {
@@ -202,12 +208,12 @@ impl CachedDerivationAtermPath {
     pub(crate) fn with_hash_derivation_modulo(
         aterm: Vec<u8>,
         path: Vec<u8>,
-        hash_derivation_modulo: [u8; 32],
+        hash_derivation_modulo: impl Into<NixSha256Digest>,
     ) -> Self {
         Self {
             aterm,
             path,
-            hash_derivation_modulo: Some(hash_derivation_modulo),
+            hash_derivation_modulo: Some(hash_derivation_modulo.into()),
         }
     }
 
@@ -222,7 +228,7 @@ impl CachedDerivationAtermPath {
     }
 
     /// Returns the resolved derivation hash modulo bytes, if this payload stores them.
-    pub(crate) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+    pub(crate) const fn hash_derivation_modulo(&self) -> Option<NixSha256Digest> {
         self.hash_derivation_modulo
     }
 
@@ -266,7 +272,7 @@ impl CachedDerivationAtermPath {
         append_derivation_length_prefixed_bytes(&mut out, &self.path)?;
         if let Some(hash_derivation_modulo) = self.hash_derivation_modulo {
             append_derivation_payload_bytes(&mut out, b"hash-derivation-modulo")?;
-            append_derivation_payload_bytes(&mut out, &hash_derivation_modulo)?;
+            append_derivation_payload_bytes(&mut out, hash_derivation_modulo.as_bytes())?;
         }
         Ok(out)
     }
@@ -295,7 +301,7 @@ impl CachedDerivationAtermPath {
             cursor.take_marker(b"hash-derivation-modulo", "derivation modulo hash tag")?;
             let mut hash = [0; 32];
             hash.copy_from_slice(cursor.take_bytes(32)?);
-            Some(hash)
+            Some(NixSha256Digest::from_bytes(hash))
         };
         cursor.finish()?;
         Ok(Self {
@@ -356,7 +362,7 @@ pub(super) struct DerivationAtermPathRecord {
     pub(super) aterm_value_hash: ValueHash,
     pub(super) payload_value_hash: ValueHash,
     path: Vec<u8>,
-    hash_derivation_modulo: Option<[u8; 32]>,
+    hash_derivation_modulo: Option<NixSha256Digest>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,7 +373,11 @@ pub(super) struct StaticDerivationOutputPathRecord {
 }
 
 impl DerivationAtermPathRecord {
-    pub(super) fn new(aterm: &[u8], path: &[u8], hash_derivation_modulo: Option<[u8; 32]>) -> Self {
+    pub(super) fn new(
+        aterm: &[u8],
+        path: &[u8],
+        hash_derivation_modulo: Option<NixSha256Digest>,
+    ) -> Self {
         let payload_value_hash =
             derivation_aterm_path_payload_value_hash(aterm, path, hash_derivation_modulo);
         Self {
@@ -382,7 +392,7 @@ impl DerivationAtermPathRecord {
         self.path.clone()
     }
 
-    pub(super) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+    pub(super) const fn hash_derivation_modulo(&self) -> Option<NixSha256Digest> {
         self.hash_derivation_modulo
     }
 }
@@ -390,7 +400,7 @@ impl DerivationAtermPathRecord {
 fn derivation_aterm_path_payload_value_hash(
     aterm: &[u8],
     path: &[u8],
-    hash_derivation_modulo: Option<[u8; 32]>,
+    hash_derivation_modulo: Option<NixSha256Digest>,
 ) -> ValueHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION);
@@ -400,7 +410,7 @@ fn derivation_aterm_path_payload_value_hash(
     update_derivation_side_payload_hash_chunk(&mut hasher, path);
     if let Some(hash_derivation_modulo) = hash_derivation_modulo {
         hasher.update(b"hash-derivation-modulo");
-        hasher.update(&hash_derivation_modulo);
+        hasher.update(hash_derivation_modulo.as_bytes());
     }
     ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
 }

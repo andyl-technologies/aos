@@ -19,8 +19,8 @@ use super::{
     CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandDependencyGroup,
     DemandGraph, DemandGraphError, DemandNodeId, DirtyFrontier, DurableBlake3Hash,
     ImpureInputFingerprint, ImpureInputIdentity, ImpureTraceObservation, ImpureTraceStatus,
-    MemoizationDecision, MemoizationDemand, MemoizationSubject, NodeFreshness, RecomputeReadyDirty,
-    Reconsideration, UncacheableInput, ValueHash, ValueHashError,
+    MemoizationDecision, MemoizationDemand, MemoizationSubject, NixSha256Digest, NodeFreshness,
+    RecomputeReadyDirty, Reconsideration, UncacheableInput, ValueHash, ValueHashError,
 };
 use crate::attrs::AttrPosition;
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
@@ -108,7 +108,7 @@ pub(crate) struct CachedExpressionPayloadHit {
 pub(crate) struct CachedDerivationAtermPathHit {
     node: DemandNodeId,
     path_bytes: Vec<u8>,
-    hash_derivation_modulo: Option<[u8; 32]>,
+    hash_derivation_modulo: Option<NixSha256Digest>,
     reconsideration: Option<Reconsideration>,
 }
 
@@ -215,7 +215,7 @@ impl CachedDerivationAtermPathHit {
     pub(crate) fn new(
         node: DemandNodeId,
         path_bytes: Vec<u8>,
-        hash_derivation_modulo: Option<[u8; 32]>,
+        hash_derivation_modulo: Option<NixSha256Digest>,
     ) -> Self {
         Self {
             node,
@@ -228,7 +228,7 @@ impl CachedDerivationAtermPathHit {
     pub(crate) fn with_reconsideration(
         node: DemandNodeId,
         path_bytes: Vec<u8>,
-        hash_derivation_modulo: Option<[u8; 32]>,
+        hash_derivation_modulo: Option<NixSha256Digest>,
         reconsideration: Reconsideration,
     ) -> Self {
         Self {
@@ -250,7 +250,7 @@ impl CachedDerivationAtermPathHit {
     }
 
     /// Returns the cached derivation hash modulo, if the side record stores it.
-    pub(crate) const fn hash_derivation_modulo(&self) -> Option<[u8; 32]> {
+    pub(crate) const fn hash_derivation_modulo(&self) -> Option<NixSha256Digest> {
         self.hash_derivation_modulo
     }
 

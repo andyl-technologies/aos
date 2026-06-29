@@ -297,7 +297,7 @@ impl EvalCache {
         free_var_value_hashes: I,
         aterm: &[u8],
         drv_path: &[u8],
-        hash_derivation_modulo: Option<[u8; 32]>,
+        hash_derivation_modulo: Option<NixSha256Digest>,
     ) -> Result<Reconsideration, DemandGraphError>
     where
         I: IntoIterator<Item = DurableBlake3Hash>,

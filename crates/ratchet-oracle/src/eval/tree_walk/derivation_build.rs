@@ -329,7 +329,7 @@ impl TreeWalk {
                     id,
                     span,
                     format!("output:{output_name}").as_bytes(),
-                    &hash_derivation_modulo.0,
+                    hash_derivation_modulo.as_bytes(),
                     &path_name,
                 )?
             };
@@ -354,7 +354,9 @@ impl TreeWalk {
             return Ok(digest);
         }
         let aterm = self.derivation_aterm_bytes_with_input_hashes(derivation, input_hashes);
-        Ok(DerivationHashModulo(Self::sha256_array(&aterm)))
+        Ok(DerivationHashModulo::from_sha256_bytes(Self::sha256_array(
+            &aterm,
+        )))
     }
 
     pub(super) fn fixed_output_derivation_digest(
@@ -383,7 +385,9 @@ impl TreeWalk {
         bytes.extend_from_slice(ca_hash.hash().to_nix_lowerhex_string().as_bytes());
         bytes.push(b':');
         bytes.extend_from_slice(&output_path);
-        Ok(Some(DerivationHashModulo(Self::sha256_array(&bytes))))
+        Ok(Some(DerivationHashModulo::from_sha256_bytes(
+            Self::sha256_array(&bytes),
+        )))
     }
 
     pub(super) fn build_text_path(
@@ -567,11 +571,11 @@ impl TreeWalk {
             floating_ca_output,
             Some(input_hashes),
         );
-        DerivationHashModulo(Self::sha256_array(&aterm))
+        DerivationHashModulo::from_sha256_bytes(Self::sha256_array(&aterm))
     }
 
     pub(super) fn impure_derivation_hash_modulo() -> DerivationHashModulo {
-        DerivationHashModulo(Self::sha256_array(b"impure"))
+        DerivationHashModulo::from_sha256_bytes(Self::sha256_array(b"impure"))
     }
 
     pub(super) fn floating_ca_derivation_aterm_bytes(
@@ -686,7 +690,7 @@ impl TreeWalk {
                 continue;
             };
             replacements
-                .entry(hash.0)
+                .entry(hash.nix_sha256_digest().into_bytes())
                 .or_default()
                 .extend(outputs.iter().cloned());
         }

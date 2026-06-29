@@ -8,7 +8,8 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
-//! Nix-observed hashes stay in the store/hash builtin adapters, not here
+//! NixSha256Digest    -> Nix-observed store path and `.drv` hash bytes
+//! Nix-observed hash bytes cross cache code only through NixSha256Digest
 //! ```
 
 use std::fmt;
@@ -91,6 +92,40 @@ impl fmt::Display for DurableBlake3Hash {
     }
 }
 
+/// A SHA-256 digest that is part of Nix-observed store or `.drv` identity.
+///
+/// This type marks the boundary where RFC-0007 requires internal xxh3 and
+/// BLAKE3 cache hashes to stop. It is intentionally distinct from
+/// [`DurableBlake3Hash`] even though both are 32 bytes, because derivation
+/// modulo hashes and content-addressed store paths are Nix format data rather
+/// than evaluator-cache addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NixSha256Digest([u8; 32]);
+
+impl NixSha256Digest {
+    /// Wraps bytes that were already produced by a Nix-observed SHA-256 hash.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the raw SHA-256 digest bytes.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Consumes the digest and returns the raw SHA-256 digest bytes.
+    pub const fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+#[cfg(test)]
+impl From<[u8; 32]> for NixSha256Digest {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::from_bytes(bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +152,13 @@ mod tests {
             DurableBlake3Hash::from_blake3_hash(blake3::hash(b"cache input")),
             hash
         );
+    }
+
+    #[test]
+    fn nix_sha256_digest_is_distinct_from_durable_cache_hash() {
+        let digest = NixSha256Digest::from_bytes([7; 32]);
+
+        assert_eq!(digest.as_bytes(), &[7; 32]);
+        assert_eq!(digest.into_bytes(), [7; 32]);
     }
 }

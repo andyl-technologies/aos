@@ -337,7 +337,9 @@ impl TreeWalk {
             derivation.environment.insert(output_name, env_value);
         }
         self.increment_static_derivation_output_path_reuses();
-        Some(DerivationHashModulo(cached.hash_derivation_modulo()))
+        Some(DerivationHashModulo::from_nix_sha256_digest(
+            cached.hash_derivation_modulo(),
+        ))
     }
 
     fn observe_static_derivation_output_paths(
@@ -502,6 +504,9 @@ impl TreeWalk {
                 self.store_path_absolute_bytes(path),
             ));
         }
-        Some(CachedDerivationOutputPaths::new(known_hash.0, output_paths))
+        Some(CachedDerivationOutputPaths::new(
+            known_hash.nix_sha256_digest(),
+            output_paths,
+        ))
     }
 }

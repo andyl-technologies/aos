@@ -1,6 +1,7 @@
 //! Derivation payload cache tests.
 
 use super::*;
+use crate::cache::NixSha256Digest;
 
 mod runtime_delegation;
 
@@ -166,7 +167,7 @@ fn cached_derivation_aterm_paths_round_trip_through_persistent_encoding() {
     assert_eq!(hashed_decoded.path_bytes(), drv_path.as_slice());
     assert_eq!(
         hashed_decoded.hash_derivation_modulo(),
-        Some(hash_derivation_modulo)
+        Some(NixSha256Digest::from_bytes(hash_derivation_modulo))
     );
     assert_eq!(hashed_decoded.value_hash(), hashed_value_hash);
 }

@@ -179,7 +179,8 @@ impl TreeWalk {
         self.increment_derivation_aterm_path_reuses();
         Some(DerivationAtermPathCacheResult {
             path,
-            hash_derivation_modulo: hash_derivation_modulo.map(DerivationHashModulo),
+            hash_derivation_modulo: hash_derivation_modulo
+                .map(DerivationHashModulo::from_nix_sha256_digest),
         })
     }
 
@@ -255,7 +256,7 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         path: &[u8],
-        hash_derivation_modulo: Option<[u8; 32]>,
+        hash_derivation_modulo: Option<NixSha256Digest>,
     ) -> PersistSideRecordRuntimeObservation {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(
@@ -335,7 +336,7 @@ impl TreeWalk {
                 free_var_value_hashes.iter().copied(),
                 &aterm,
                 &drv_path_bytes,
-                Some(known_hash.0),
+                Some(known_hash.nix_sha256_digest()),
             ) {
                 Ok(Some(reconsideration)) => {
                     (true, reconsideration.decision() == CutoffDecision::CutOff)
@@ -360,7 +361,7 @@ impl TreeWalk {
                 &free_var_value_hashes,
                 &aterm,
                 &drv_path_bytes,
-                Some(known_hash.0),
+                Some(known_hash.nix_sha256_digest()),
             );
         } else if rejected {
             self.clear_persist_derivation_aterm_path(identity, &free_var_value_hashes);
@@ -376,7 +377,7 @@ impl TreeWalk {
         free_var_value_hashes: &[DurableBlake3Hash],
         aterm: &[u8],
         drv_path: &[u8],
-        hash_derivation_modulo: Option<[u8; 32]>,
+        hash_derivation_modulo: Option<NixSha256Digest>,
     ) {
         if !self.options.eval_cache_enabled() {
             return;

@@ -1413,6 +1413,19 @@ alone (`M-1`/`Q-A`).
       `fetchGit`/`fetchTree`/`builtins.path`/`findFile`/`filterSource`/`toFile`
       output surfaces only; they do not prove the full hash/fetch/source/text-path
       leak-invariant gate (`S-15`).
+- [x] Current derivation modulo SHA-256 type boundary: `cache::hashing` exposes
+      `NixSha256Digest` as the typed Nix-observed SHA-256 domain, distinct from
+      `HotXxh3Hash` and `DurableBlake3Hash`; `DerivationHashModulo` wraps that
+      type behind named constructors/accessors instead of exposing raw
+      `[u8; 32]`; and derivation ATerm/static-output side-record APIs carry
+      `NixSha256Digest` for replayed `hashDerivationModulo` bytes while keeping
+      BLAKE3 `ValueHash` for side-payload cache identity. The persistent
+      side-payload format remains byte-compatible, but fresh SHA-256 computation
+      and persistent decode are the explicit raw-bytes-to-Nix-SHA crossings,
+      while output-path/ATerm serialization extracts bytes through named Nix SHA
+      accessors. This type-enforces the current derivation side-record modulo
+      path only; other store-path/hash builtin SHA-256 preimages and the full
+      differential `.drv` harness remain open (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
