@@ -1034,6 +1034,8 @@ fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalida
     let source = "{ a = (let f = builtins.findFile; in f [ { prefix = \"pkg\"; path = ./hit; } ] \"pkg/subdir\"); }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
+    let apply_id = first_class_find_file_apply_id(&ir);
+    let builtin = lookup_builtin(b"findFile").expect("findFile builtin is registered");
     let expected_trace = vec![
         ImpureInputFingerprint::path_exists_with_mode(
             &path_bytes(&hit_candidate),
@@ -1086,14 +1088,22 @@ fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalida
         materialize.stats().force_cache_misses() > 0,
         "the second first-class explicit-list findFile demand should materialize a trace-backed child payload"
     );
+    let child_persist_key =
+        first_class_primop_persist_key_for_current_node(&mut materialize, apply_id, builtin)
+            .expect("first-class explicit-list findFile child persistent subject builds");
     let trace_entry = assert_persistent_find_file_trace_log_contains(
         &persist_root,
         &expected_trace,
         "first-class explicit-list findFile materialization run",
     );
+    assert_eq!(
+        trace_entry.0, child_persist_key,
+        "the materialized persistent trace should belong to the first-class explicit-list findFile child call"
+    );
     materialize.advance_persist_eval_cache_run_boundary();
     drop(materialize);
 
+    let second_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
     second_options.set_persist_cache_root(&persist_root);
     second_options
@@ -1104,7 +1114,7 @@ fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalida
         second_options,
         "default.nix",
         source,
-        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+        second_runtime.clone(),
     );
     let forced_again = force_attr_a(&mut second, &ir, a);
     assert_eq!(
@@ -1118,6 +1128,9 @@ fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalida
     assert_eq!(second.stats().force_cache_hits(), 1);
     assert_eq!(second.stats().force_cache_misses(), 0);
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    let child_key = first_class_primop_subject_key_for_current_node(&mut second, apply_id, builtin)
+        .expect("first-class explicit-list findFile child subject builds after persistent hit");
+    assert_force_cache_impure_edges_match_trace(&second_runtime, child_key, &expected_trace);
     assert_eq!(
         second.persist_force_cache_hit_keys.as_slice(),
         &[trace_entry.0],

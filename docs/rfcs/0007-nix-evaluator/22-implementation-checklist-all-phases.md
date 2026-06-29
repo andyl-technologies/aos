@@ -3366,7 +3366,8 @@ alone (`M-1`/`Q-A`).
       `findFile`/first-class `findFile builtins.nixPath`/first-class
       explicit-list `findFile` subset; it does not cover broader
       nested/multi-input traces, search-path allowed-path/fetch interactions,
-      persistent graph replay, or `currentTime` taint propagation (`R-10`/`S-14`).
+      broad persistent graph replay, or `currentTime` taint propagation
+      (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
@@ -3464,11 +3465,14 @@ alone (`M-1`/`Q-A`).
       base/search-path payload identity changes. The exact-edge canary
       `find_file_first_class_explicit_list_records_exact_force_cache_graph_edges`
       proves the admitted child-call key owns the observed miss-then-hit
-      `FindFileCandidate` leaves. This is scoped to closed/replayable
-      explicit-list child-call replay only; the enclosing thunk still evaluates
-      unless separately admitted, captured/non-replayable explicit-list entries
-      are still rejected by the child-call key, and fetch interactions and broad
-      search-path edge-exactness remain open (`R-10`/`S-14`).
+      `FindFileCandidate` leaves. The persistent-hit canary also verifies the
+      trace-log metadata key belongs to that child call and the fresh runtime
+      graph owns the revalidated candidate edge. This is scoped to
+      closed/replayable explicit-list child-call replay only; the enclosing
+      thunk still evaluates unless separately admitted, captured/non-replayable
+      explicit-list entries are still rejected by the child-call key, and fetch
+      interactions, broad persistent graph replay, and broad search-path
+      edge-exactness remain open (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
