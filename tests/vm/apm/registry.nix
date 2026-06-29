@@ -731,12 +731,14 @@ in {
         "store_path" "TOML has store_path"
       assert_file_contains "$REG_DIR/packages/t/testpkg.toml" \
         "nar_hash" "TOML has nar_hash"
-      assert_file_contains "$REG_DIR/packages/t/testpkg.toml" \
-        "references" "TOML has references"
 
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
       assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
         "apr publish writes store realisation record"
+      # References no longer live in the package TOML (RFC-0005): the per-path
+      # store record carries them as `ia:` dependency edges instead.
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "ia:sha256:" "store record lists dependency edges"
 
       # Verify git log shows the publish commit
       cd "$REG_DIR"
@@ -3563,6 +3565,7 @@ in {
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --init-channel \
         > /tmp/channel-release-dirty.out 2>&1; then
@@ -3598,6 +3601,7 @@ in {
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --init-channel \
         > /tmp/channel-release-v1.out 2>&1 || {
@@ -3744,6 +3748,7 @@ in {
         --previous 1.0.0 \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         --channel stable \
         --partitions "$BUCKET" \
         > /tmp/channel-release-v2.out 2>&1 || {
@@ -3837,6 +3842,7 @@ in {
         --previous 2.0.0 \
         --key /tmp/channel-release-key \
         --cache-url http://127.0.0.1:18091 \
+        --upload-url file:///tmp/channel-cache \
         > /tmp/channel-release-v3.out 2>&1 || {
         cat /tmp/channel-release-v3.out
         fail "apr release creates v3 before direct channel advance"
