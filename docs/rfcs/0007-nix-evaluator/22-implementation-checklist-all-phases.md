@@ -3345,7 +3345,10 @@ alone (`M-1`/`Q-A`).
       `impure_input_builtins_record_exact_force_cache_graph_edges` forces one
       source-backed attr thunk each for ordinary filesystem `readFile`,
       `hashFile`, `readDir`, `readFileType`, `pathExists`, and impure-mode
-      `getEnv` plus a two-leaf `pathExists (readFile ./target)` trace, and
+      `getEnv` plus a two-leaf `pathExists (readFile ./target)` trace;
+      `nested_multi_input_builtins_record_exact_force_cache_graph_edges` covers
+      a composed three-leaf `readFile`-fed `pathExists` plus a second
+      `pathExists` trace; and
       `import_backed_inline_thunks_record_exact_force_cache_graph_edges` covers
       canonical plain-file `import`;
       `find_file_forced_inline_thunks_revalidate_candidate_edges_before_hits`
@@ -3365,7 +3368,7 @@ alone (`M-1`/`Q-A`).
       currently admitted ordinary filesystem/import/direct explicit-list
       `findFile`/first-class `findFile builtins.nixPath`/first-class
       explicit-list `findFile` subset; it does not cover broader
-      nested/multi-input traces, search-path allowed-path/fetch interactions,
+      composed multi-input traces, search-path allowed-path/fetch interactions,
       broad persistent graph replay, or `currentTime` taint propagation
       (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/

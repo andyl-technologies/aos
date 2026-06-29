@@ -382,6 +382,47 @@ fn impure_input_builtins_record_exact_force_cache_graph_edges() {
 }
 
 #[test]
+fn nested_multi_input_builtins_record_exact_force_cache_graph_edges() {
+    let root = unique_temp_dir("force-cache-nested-multi-input-edge-exactness");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let first_missing_path = path_bytes(&root.join("first-missing"));
+    let second_missing_path = path_bytes(&root.join("second-missing"));
+    let target_path = path_bytes(&root.join("target"));
+    fs::write(root.join("target"), first_missing_path.as_slice())
+        .expect("nested path target writes");
+    let source = "{ a = builtins.pathExists (builtins.readFile ./target) || builtins.pathExists ./second-missing; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut eval = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut eval, &ir, a);
+    assert_eq!(forced.as_bool(), Ok(false));
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_file(&target_path, first_missing_path.as_slice())
+            .expect("readFile fingerprint builds"),
+        ImpureInputFingerprint::path_exists(&first_missing_path, false)
+            .expect("nested pathExists fingerprint builds"),
+        ImpureInputFingerprint::path_exists(&second_missing_path, false)
+            .expect("second pathExists fingerprint builds"),
+    ];
+
+    assert_eq!(eval.impure_input_trace(), expected_trace.as_slice());
+    assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn read_dir_attrset_payload_thunks_hit_and_miss_after_revalidation() {
     let root = unique_temp_dir("force-cache-read-dir-list-payload");
     fs::create_dir(root.join("dir")).expect("directory creates");
