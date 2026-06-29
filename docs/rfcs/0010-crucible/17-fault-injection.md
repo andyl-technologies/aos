@@ -1020,10 +1020,16 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   removals. The link table now carries overlapping loss rates, exact
   bit-per-second caps, and corruption strategy lists while retaining the existing
   floor clamp and lookahead recompute signal for conservative latency changes.
-  The focused regression
-  drives a combined fault set through `NetLink::emit`, proving delivery shifts,
-  duplicate emission, payload mutation, any-fires loss drop, and scheduler
-  effective-edge removal for partitions.
+  Partition drops are recorded separately from probabilistic loss decisions, and
+  the scheduler-facing application bridge queues the topology mutation with the
+  link fault table. The heal bridge re-applies the remaining fault table and
+  queues both remaining partition removals and restored directed edges that no
+  active partition still covers. The focused regression drives a combined fault
+  set through `NetLink::emit`, proves seeded payload mutation, duplicate
+  emission, any-fires loss drop, partition drop recording, and applies the
+  bridge-produced partition, partial-heal, and full-heal changes through
+  `SingleScheduler` so removed directed edges stop authorizing sends or
+  contributing lookahead until restored.
 - [ ] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
   without altering the retired instruction stream; clock-skew offsets only the
   perceived time-of-day source, never virtual time/icount. — satisfies
