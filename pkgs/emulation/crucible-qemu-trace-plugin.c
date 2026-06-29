@@ -167,6 +167,10 @@ init_register_set(unsigned int vcpu_index)
 static uint64_t
 hash_registers_for_vcpu(uint64_t hash, unsigned int vcpu_index, uint64_t *failures)
 {
+  unsigned char canonical_registers[4096];
+  size_t canonical_register_len = 0;
+  uint64_t canonical_retired = 0;
+
   if (!init_register_set(vcpu_index)) {
     *failures += 1;
     return fnv1a_u64(hash, UINT64_MAX);
@@ -201,7 +205,45 @@ hash_registers_for_vcpu(uint64_t hash, unsigned int vcpu_index, uint64_t *failur
   }
 
   g_byte_array_free(buffer, true);
+
+  const int canonical_status = qemu_plugin_read_vcpu_regs(
+      vcpu_index,
+      canonical_registers,
+      sizeof(canonical_registers),
+      &canonical_register_len,
+      &canonical_retired);
+  if (canonical_status != 0 || canonical_register_len == 0 ||
+      canonical_register_len > sizeof(canonical_registers)) {
+    *failures += 1;
+    hash = fnv1a_u64(hash, UINT64_MAX - 2U);
+  } else {
+    hash = fnv1a_u64(hash, canonical_register_len);
+    hash = fnv1a_bytes(hash, canonical_registers, canonical_register_len);
+    hash = fnv1a_u64(hash, canonical_retired);
+  }
+
   return hash;
+}
+
+static bool
+read_rr_cursor_snapshot(
+    uint64_t *rr_current_vcpu,
+    uint64_t *rr_cursor_position,
+    uint64_t *rr_switch_quantum)
+{
+  struct qemu_plugin_rr_cursor cursor;
+
+  if (qemu_plugin_rr_cursor(&cursor) != 0) {
+    *rr_current_vcpu = UINT64_MAX;
+    *rr_cursor_position = UINT64_MAX;
+    *rr_switch_quantum = 0;
+    return false;
+  }
+
+  *rr_current_vcpu = cursor.current_vcpu;
+  *rr_cursor_position = cursor.cursor_position;
+  *rr_switch_quantum = cursor.rr_switch_quantum;
+  return true;
 }
 
 static struct register_hash_summary
@@ -257,12 +299,15 @@ record_sample(unsigned int vcpu_index, bool final)
   const struct register_hash_summary register_hashes = compute_register_hash();
   uint64_t ram_bytes = 0;
   const uint64_t ram_hash = qemu_plugin_crucible_ram_hash(&ram_bytes);
-  const uint64_t rr_current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
-  const uint64_t rr_cursor_position = qemu_plugin_crucible_rr_cursor_position();
-  const uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
+  uint64_t rr_current_vcpu;
+  uint64_t rr_cursor_position;
+  uint64_t rr_switch_quantum;
   const uint64_t device_component_hash =
       capture_memory_events ? current_device_event_hash() : 0;
   uint64_t extended_hash = FNV1A64_OFFSET;
+
+  const bool rr_cursor_valid = read_rr_cursor_snapshot(
+      &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
 
   extended_hash = fnv1a_u64(extended_hash, stream_hash);
   extended_hash = fnv1a_u64(extended_hash, register_hashes.aggregate);
@@ -272,6 +317,7 @@ record_sample(unsigned int vcpu_index, bool final)
   extended_hash = fnv1a_u64(extended_hash, rr_current_vcpu);
   extended_hash = fnv1a_u64(extended_hash, rr_cursor_position);
   extended_hash = fnv1a_u64(extended_hash, rr_switch_quantum);
+  extended_hash = fnv1a_u64(extended_hash, rr_cursor_valid ? 1U : 0U);
   extended_hash = fnv1a_u64(extended_hash, tracked_vcpus);
   extended_hash = fnv1a_u64(extended_hash, stop_at);
 
@@ -286,6 +332,7 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"rr_current_vcpu\":%" PRIu64
       ",\"rr_cursor_position\":%" PRIu64
       ",\"rr_switch_quantum\":%" PRIu64
+      ",\"rr_cursor_valid\":%s"
       ",\"stream_hash\":\"%016" PRIx64 "\""
       ",\"register_hash\":\"%016" PRIx64 "\""
       ",\"register_hashes\":[",
@@ -298,6 +345,7 @@ record_sample(unsigned int vcpu_index, bool final)
       rr_current_vcpu,
       rr_cursor_position,
       rr_switch_quantum,
+      rr_cursor_valid ? "true" : "false",
       stream_hash,
       register_hashes.aggregate);
 
@@ -358,16 +406,18 @@ record_rr_switch_event(void)
     return;
   }
 
-  const uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
-  if (rr_switch_quantum == 0) {
+  uint64_t rr_current_vcpu;
+  uint64_t rr_cursor_position;
+  uint64_t rr_switch_quantum;
+
+  if (!read_rr_cursor_snapshot(
+          &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum)) {
     rr_switch_trace_initialized = false;
     last_rr_current_vcpu = UINT64_MAX;
     last_rr_cursor_position = UINT64_MAX;
     return;
   }
 
-  const uint64_t rr_current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
-  const uint64_t rr_cursor_position = qemu_plugin_crucible_rr_cursor_position();
   if (rr_current_vcpu == UINT64_MAX || rr_current_vcpu >= tracked_vcpus) {
     return;
   }

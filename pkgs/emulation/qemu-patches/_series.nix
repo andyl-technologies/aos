@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "aa865acf3d761252cf90811e2eaba4ec8e8cf15d8be2337489bce5e154c3a861";
+  patchBranchBundleSha256 = "b1e65daa44fc291842727f84f7659f261c6a7c1d4505d645b33ad599fd26d520";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "fbf8e4ce171ad2bc47c49a13b269c5f2b712ec1e";
+  patchBranchHeadCommit = "400a43550486eabb4299a6a33414c721207e1b9b";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -267,6 +267,15 @@ let
       class = "D";
       enforces = "PATCH-45,DET-1,INV-7";
       capability = "sim-mode inter-vCPU IPI/SIPI/INIT delivery queued to deterministic RR handoff";
+    }
+    {
+      file = "0029-crucible-vcpu-introspect.patch";
+      branchCommit = "400a43550486eabb4299a6a33414c721207e1b9b";
+      branchTree = "48045dd5a23a745c5e64f4d614a0559b256a2fc9";
+      catalogName = "crucible-vcpu-introspect";
+      class = "F";
+      enforces = "PATCH-46,DET-29,INV-10";
+      capability = "formal per-vCPU register-file and RR cursor plugin exports";
     }
   ];
 in {

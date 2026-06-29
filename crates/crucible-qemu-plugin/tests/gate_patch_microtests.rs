@@ -36,6 +36,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0026-crucible-sim-shmem-dispatch.patch",
     "0027-crucible-sim-batch-tcg-exec.patch",
     "0028-crucible-det-ipi.patch",
+    "0029-crucible-vcpu-introspect.patch",
 ];
 
 #[test]
@@ -69,6 +70,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix",
     );
     assert_contains(&aggregate, "qemuDetIpi = import ./phase2-qemu-det-ipi.nix");
+    assert_contains(
+        &aggregate,
+        "qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix",
+    );
     assert_contains(
         &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
@@ -144,6 +149,32 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "grep -q '^deterministic_ipi_delivery_icount_trace_match=true$'",
     );
     assert_contains(&aggregate, "qemu_det_ipi_gate_passed=true");
+    assert_contains(&aggregate, "cp \"${qemuVcpuIntrospect}/result\"");
+    assert_contains(
+        &aggregate,
+        "grep -q '^formal_register_export=qemu_plugin_read_vcpu_regs$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^formal_cursor_export=qemu_plugin_rr_cursor$'",
+    );
+    assert_contains(&aggregate, "grep -q '^arbitrary_vcpu_register_read=true$'");
+    assert_contains(
+        &aggregate,
+        "grep -q '^register_read_side_effect_free=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^register_size_mismatch_rejected=true$'",
+    );
+    assert_contains(&aggregate, "grep -q '^rr_cursor_boundary_rejected=true$'");
+    assert_contains(
+        &aggregate,
+        "grep -q '^rr_cursor_out_of_range_current_vcpu_rejected=true$'",
+    );
+    assert_contains(&aggregate, "qemu_vcpu_introspect_gate_passed=true");
+    assert_contains(&aggregate, "formal_vcpu_register_export_present=true");
+    assert_contains(&aggregate, "formal_rr_cursor_export_present=true");
     assert_contains(
         &aggregate,
         "grep -q '^regenerated_patch_bytes_match_committed=true$'",
@@ -197,6 +228,8 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_register_vcpu_idle_resume_cb");
     assert_contains(&aggregate, "qemu_plugin_register_sim_shmem_dispatch_cb");
     assert_contains(&aggregate, "qemu_plugin_crucible_register_ipi_delivery_cb");
+    assert_contains(&aggregate, "qemu_plugin_read_vcpu_regs");
+    assert_contains(&aggregate, "qemu_plugin_rr_cursor");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
     assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
     assert_contains(&aggregate, "qemu_plugin_register_net_tx_cb");
@@ -205,6 +238,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "qemu_plugin_sim_correctness_exports_present=true",
     );
     assert_contains(&aggregate, "qemu_plugin_det_ipi_exports_present=true");
+    assert_contains(
+        &aggregate,
+        "qemu_plugin_vcpu_introspection_exports_present=true",
+    );
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -267,6 +304,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuDetIpi = import ./phase2-qemu-det-ipi.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix",
     );
     assert_contains(
         &default_checks,
@@ -464,6 +505,41 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &qemu_det_ipi,
         "stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path",
+    );
+
+    let qemu_vcpu_introspect =
+        fs::read_to_string(root.join("tests/crucible/phase2-qemu-vcpu-introspect.nix"))?;
+    assert_contains(&qemu_vcpu_introspect, "T-PATCH-23");
+    assert_contains(&qemu_vcpu_introspect, "0029-crucible-vcpu-introspect.patch");
+    assert_contains(&qemu_vcpu_introspect, "qemu_plugin_read_vcpu_regs");
+    assert_contains(&qemu_vcpu_introspect, "qemu_plugin_rr_cursor");
+    assert_contains(&qemu_vcpu_introspect, "aos-qemu-vcpu-regs-v1");
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "register_short_buffer_fails_closed=true",
+    );
+    assert_contains(&qemu_vcpu_introspect, "register_read_side_effect_free=true");
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "register_size_mismatch_rejected=true",
+    );
+    assert_contains(&qemu_vcpu_introspect, "rr_cursor_boundary_rejected=true");
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "rr_cursor_out_of_range_current_vcpu_rejected=true",
+    );
+    assert_contains(&qemu_vcpu_introspect, "qemu-crucible-reference");
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "trace plugin publishes formal cursor validity",
+    );
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "dynamic_symbol_qemu_plugin_read_vcpu_regs=true",
+    );
+    assert_contains(
+        &qemu_vcpu_introspect,
+        "dynamic_symbol_qemu_plugin_rr_cursor=true",
     );
 
     let qemu_patch_regeneration =
@@ -694,6 +770,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "",
             "0028-crucible-det-ipi.patch",
         ),
+        (
+            "tests/crucible/phase2-qemu-vcpu-introspect.nix",
+            "tests/crucible/phase2-qemu-vcpu-introspect.c",
+            "0029-crucible-vcpu-introspect.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -755,6 +836,23 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
                 "deterministic_ipi_delivery_icount_trace_match=true",
             );
             assert_contains(&nix_source, "deterministic_ipi_source_target_distinct=true");
+        } else if nix_path == "tests/crucible/phase2-qemu-vcpu-introspect.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+            assert_contains(
+                &nix_source,
+                "formal_register_export=qemu_plugin_read_vcpu_regs",
+            );
+            assert_contains(&nix_source, "formal_cursor_export=qemu_plugin_rr_cursor");
+            assert_contains(&nix_source, "arbitrary_vcpu_register_read=true");
+            assert_contains(&nix_source, "register_read_side_effect_free=true");
+            assert_contains(&nix_source, "register_short_buffer_fails_closed=true");
+            assert_contains(&nix_source, "register_size_mismatch_rejected=true");
+            assert_contains(&nix_source, "rr_cursor_boundary_rejected=true");
+            assert_contains(
+                &nix_source,
+                "rr_cursor_out_of_range_current_vcpu_rejected=true",
+            );
         } else {
             assert_contains(&nix_source, &format!("patch={patch}"));
         }
