@@ -566,6 +566,237 @@ fn native_file_cache_parity_harness_covers_source_path_inputs() -> Result<()> {
 }
 
 #[test]
+fn native_file_cache_parity_harness_covers_stale_source_path_input() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-cache-parity-stale-source-path");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let payload_file = dir.join("payload.txt");
+    let original_payload = b"stale source path original payload";
+    let changed_payload = b"stale source path changed payload";
+    fs::write(&payload_file, original_payload)?;
+    let payload_realpath = fs::canonicalize(&payload_file)?;
+    let payload_path = path_bytes(&payload_realpath)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+          source = b.path {
+            path = ./payload.txt;
+            name = "stale-source-path-input";
+            recursive = false;
+          };
+        in {
+          pkgs.staleSourcePath = derivationStrict {
+            name = "stale-source-path-derivation";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [ source ];
+          };
+        }"#,
+    )?;
+
+    let original = native_file_closure_cache_parity(
+        &root,
+        &store,
+        &persist_root,
+        &file,
+        "pkgs.staleSourcePath",
+        |_| Ok(()),
+    )?;
+    assert_eq!(original.uncached.drvs().len(), 1);
+    assert_drv_aterm_contains_all(
+        "original stale source-path closure",
+        &original.uncached,
+        &[("source path store name", b"stale-source-path-input")],
+    );
+    assert_drv_aterm_lacks_all(
+        "original stale source-path closure",
+        &original.uncached,
+        &[
+            ("original source payload", original_payload),
+            ("changed source payload", changed_payload),
+        ],
+    );
+
+    fs::write(&payload_file, changed_payload)?;
+
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let options_for =
+        |parse_root: Option<&Path>, persist: bool, eval_cache_enabled: bool| -> Result<_> {
+            let mut options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+            if let Some(parse_root) = parse_root {
+                options.set_parse_cache_root(parse_root);
+            } else {
+                options.clear_parse_cache_root();
+            }
+            if persist {
+                options.set_persist_cache_root(&persist_root);
+            } else {
+                options.clear_persist_cache_root();
+            }
+            options.set_eval_cache_enabled(eval_cache_enabled);
+            Ok(options)
+        };
+
+    let (uncached_changed, uncached_changed_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(None, false, false)?)?,
+        &file,
+        "pkgs.staleSourcePath",
+    )?;
+    assert_eq!(uncached_changed_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_changed_stats.force_cache_misses(), 0);
+    assert_ne!(
+        uncached_changed, original.uncached,
+        "changed builtins.path payload must change the uncached .drv closure"
+    );
+    assert_ne!(
+        uncached_changed.root(),
+        original.uncached.root(),
+        "changed builtins.path payload must change the root .drv path"
+    );
+    assert_drv_aterm_contains_all(
+        "changed uncached stale source-path closure",
+        &uncached_changed,
+        &[("source path store name", b"stale-source-path-input")],
+    );
+    assert_drv_aterm_lacks_all(
+        "changed uncached stale source-path closure",
+        &uncached_changed,
+        &[
+            ("original source payload", original_payload),
+            ("changed source payload", changed_payload),
+        ],
+    );
+
+    let stale_cached_parse_root = root.join("stale-source-path-parse");
+    let stale_cached_hits = Arc::new(Mutex::new(Vec::new()));
+    let stale_cached_hits_for_hook = Arc::clone(&stale_cached_hits);
+    let mut stale_cached_native =
+        NixNative::with_options(0, options_for(Some(&stale_cached_parse_root), true, true)?)?;
+    stale_cached_native.set_persistent_parse_hit_hook(move |hit| {
+        stale_cached_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let (stale_cached, _stale_cached_stats) =
+        instantiate_file_closure_with_stats(&stale_cached_native, &file, "pkgs.staleSourcePath")?;
+    assert_eq!(
+        stale_cached_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source],
+        "stale source-path run should hydrate the unchanged file root from the durable source artifact"
+    );
+    assert!(
+        ParseCache::new(&stale_cached_parse_root)
+            .entry_for_source(&fs::read(&file)?)
+            .is_complete(),
+        "stale source-path run should hydrate the fresh parse-cache entry"
+    );
+    assert_eq!(
+        stale_cached, uncached_changed,
+        "stale persistent source-path payloads must recompute to the changed closure"
+    );
+    assert_ne!(
+        stale_cached, original.uncached,
+        "stale persistent source-path payloads must not replay the original closure"
+    );
+
+    let changed_hit_parse_root = root.join("changed-source-path-hit-parse");
+    let changed_hit_hits = Arc::new(Mutex::new(Vec::new()));
+    let changed_hit_hits_for_hook = Arc::clone(&changed_hit_hits);
+    let mut changed_hit_native =
+        NixNative::with_options(0, options_for(Some(&changed_hit_parse_root), true, true)?)?;
+    changed_hit_native.set_persistent_parse_hit_hook(move |hit| {
+        changed_hit_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let (changed_hit, _changed_hit_stats) =
+        instantiate_file_closure_with_stats(&changed_hit_native, &file, "pkgs.staleSourcePath")?;
+    assert_eq!(
+        changed_hit_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source],
+        "post-recompute source-path run should hydrate the unchanged file root from the durable source artifact"
+    );
+    assert!(
+        ParseCache::new(&changed_hit_parse_root)
+            .entry_for_source(&fs::read(&file)?)
+            .is_complete(),
+        "post-recompute source-path run should hydrate the fresh parse-cache entry"
+    );
+    assert_eq!(
+        changed_hit, uncached_changed,
+        "post-recompute persistent source-path run should preserve the changed closure"
+    );
+
+    let mut canaries = persistent_force_cache_surface_canaries(&persist_root)?;
+    canaries.extend(file_parse_artifact_surface_canaries(
+        &root,
+        "stale source-path root file",
+        &file,
+    )?);
+    canaries.extend(durable_hash_surface_canaries(
+        "original stale source-path payload BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(original_payload),
+    ));
+    canaries.extend(durable_hash_surface_canaries(
+        "changed stale source-path payload BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(changed_payload),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "stale source-path input name",
+        context_free_nix_string_xxh3(b"stale-source-path-input"),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "stale source-path realpath",
+        context_free_nix_string_xxh3(payload_path.as_slice()),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "original stale source-path payload",
+        context_free_nix_string_xxh3(original_payload),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "changed stale source-path payload",
+        context_free_nix_string_xxh3(changed_payload),
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "original stale source-path closure",
+        &original.uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "changed uncached stale source-path closure",
+        &uncached_changed,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "stale cached source-path closure",
+        &stale_cached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "changed persistent source-path hit closure",
+        &changed_hit,
+        &canaries,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-stale-fs-inputs");
     fs::create_dir_all(&root)?;

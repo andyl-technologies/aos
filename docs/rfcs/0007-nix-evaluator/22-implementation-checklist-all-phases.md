@@ -3456,6 +3456,14 @@ alone (`M-1`/`Q-A`).
       persistent-hit legs, and scans all closure surfaces for root/imported
       parse-cache, root/imported file-content, and filesystem impure-input
       identity/observation BLAKE3 renderings.
+      `native_file_cache_parity_harness_covers_stale_source_path_input` seeds a
+      derivation whose only variable argument is an unfixed local flat
+      `builtins.path` source, mutates the source file, then requires stale
+      cached and post-recompute persistent runs to hydrate the unchanged file
+      root from the durable source artifact, match the changed uncached closure,
+      differ from the original closure, keep the root `.drv` path changed by the
+      source store path, and scan root parse/file-content/source-payload
+      canaries out of all closure surfaces.
       `native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs`
       seeds the same native file-closure persistent root with `readFile` and
       `hashFile` payloads, mutates the payload file, then requires stale cached
@@ -3482,10 +3490,12 @@ alone (`M-1`/`Q-A`).
       value-hash metadata entry, and keep persistent sidecar hashes plus both
       `currentSystem` hot hashes out of `.drv` surfaces.
       This broadens the reusable direct-file cache-parity harness across
-      filesystem-sensitive forced inputs, stale content/metadata/existence
-      recomputation, and ambient currentSystem option-sensitive reuse; it is not full
+      filesystem-sensitive forced inputs, source-path stale-content
+      recomputation, filesystem stale content/metadata/existence recomputation,
+      and ambient currentSystem option-sensitive reuse; it is not full
       impure-input demand-graph integration, full AOS package-set coverage,
-      syscall-level cache-off no-read proof, or the full cached-vs-uncached CI safety net
+      syscall-level cache-off no-read proof, or the full cached-vs-uncached CI
+      safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
 - [x] Current reusable native file-closure ambient-input parity witness:
       `native_file_cache_parity_harness_covers_get_env_impure_input` seeds a
