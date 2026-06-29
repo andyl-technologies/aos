@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "later guest-marker leaf remains open";
-        needle = "- [ ] **T-TRIG-8**";
+        label = "later compound combinators remain open";
+        needle = "- [ ] **T-TRIG-9**";
       }
       {
         label = "full timer action semantics remain open";

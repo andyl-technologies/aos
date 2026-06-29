@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.memoryConditionLeaf`";
       }
       {
-        label = "guest marker remains open";
-        needle = "- [ ] **T-TRIG-8**";
+        label = "compound combinators remain open";
+        needle = "- [ ] **T-TRIG-9**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

@@ -186,6 +186,10 @@
         needle = "Some(condition.clone())";
       }
       {
+        label = "guest-marker trigger uses world-backed graph validation";
+        needle = "EventGraph::new_with_assertions_for_world";
+      }
+      {
         label = "assertion receives shared condition";
         needle = "predicate: condition.clone()";
       }
@@ -222,6 +226,10 @@
       {
         label = "pending implementation panic";
         needle = "implementation is pending";
+      }
+      {
+        label = "fabricated white-box namespace constructor";
+        needle = "new_with_assertions_and_white_box_nodes";
       }
     ];
 in
