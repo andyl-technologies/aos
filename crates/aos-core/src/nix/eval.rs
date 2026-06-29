@@ -2352,6 +2352,60 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(all(feature = "native-eval", unix))]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum CacheRootSnapshotEntry {
+        Directory,
+        File(Vec<u8>),
+        Symlink(PathBuf),
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    fn snapshot_cache_root_tree(root: &Path) -> Result<BTreeMap<PathBuf, CacheRootSnapshotEntry>> {
+        let mut snapshot = BTreeMap::new();
+        if fs::symlink_metadata(root).is_ok() {
+            snapshot_cache_root_tree_at(root, root, &mut snapshot)?;
+        }
+        Ok(snapshot)
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    fn snapshot_cache_root_tree_at(
+        root: &Path,
+        current: &Path,
+        snapshot: &mut BTreeMap<PathBuf, CacheRootSnapshotEntry>,
+    ) -> Result<()> {
+        let metadata = fs::symlink_metadata(current)?;
+        let relative = current.strip_prefix(root).unwrap_or(Path::new("."));
+        let relative = if relative.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            relative.to_path_buf()
+        };
+        let file_type = metadata.file_type();
+        let entry = if file_type.is_dir() {
+            CacheRootSnapshotEntry::Directory
+        } else if file_type.is_symlink() {
+            CacheRootSnapshotEntry::Symlink(fs::read_link(current)?)
+        } else if file_type.is_file() {
+            CacheRootSnapshotEntry::File(fs::read(current)?)
+        } else {
+            return Ok(());
+        };
+        assert!(
+            snapshot.insert(relative, entry).is_none(),
+            "cache-root snapshot should not see duplicate paths"
+        );
+        if file_type.is_dir() {
+            let mut entries = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|entry| entry.path());
+            for entry in entries {
+                snapshot_cache_root_tree_at(root, &entry.path(), snapshot)?;
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "native-eval")]
     #[derive(Clone)]
     struct FallbackWarningSubscriber {
@@ -3236,6 +3290,101 @@ mod tests {
             snapshot_regular_file_tree(&cache_root)?,
             cache_before,
             "AOS_NIX_CACHE=0 should not mutate the populated cache-root path"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    #[test]
+    fn aos_nix_cache_zero_leaves_non_file_cache_roots_untouched() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let source = r#"derivationStrict {
+             name = "cache-zero-non-file-roots";
+             system = builtins.currentSystem;
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ builtins.currentSystem ];
+           }"#;
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.set_current_system("x86_64-linux")?;
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator.native.instantiate_expr_closure(source)?;
+
+        let directory_root = root.path().join("cache-directory-only");
+        fs::create_dir_all(directory_root.join("parse/entry"))?;
+        fs::create_dir_all(directory_root.join("persist/nodes"))?;
+        let directory_before = snapshot_cache_root_tree(&directory_root)?;
+
+        let symlink_target = root.path().join("cache-symlink-target");
+        fs::create_dir_all(symlink_target.join("persist/values"))?;
+        fs::write(symlink_target.join("sentinel"), b"target payload")?;
+        let symlink_root = root.path().join("cache-symlink");
+        std::os::unix::fs::symlink(&symlink_target, &symlink_root)?;
+        let symlink_before = snapshot_cache_root_tree(&symlink_root)?;
+        let symlink_target_before = snapshot_cache_root_tree(&symlink_target)?;
+
+        let stale_metadata_root = root.path().join("cache-stale-metadata");
+        fs::create_dir_all(stale_metadata_root.join("parse"))?;
+        fs::create_dir_all(stale_metadata_root.join("persist/nodes"))?;
+        fs::write(
+            stale_metadata_root.join("schema.toml"),
+            b"format = \"aos-nix-cache\"\nversion = 999\n",
+        )?;
+        fs::write(
+            stale_metadata_root.join("persist/schema.toml"),
+            b"format = \"aos-nix-persist-cache\"\nversion = 999\n",
+        )?;
+        let stale_metadata_before = snapshot_cache_root_tree(&stale_metadata_root)?;
+
+        for cache_root in [&directory_root, &symlink_root, &stale_metadata_root] {
+            let mut disabled_config = NixEvalConfig::with_store_dirs(
+                store.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+                log.to_string_lossy().into_owned(),
+            )?;
+            disabled_config.set_eval_mode(NixEvalMode::Impure);
+            disabled_config.set_current_system("x86_64-linux")?;
+            disabled_config.set_native_cache_root(cache_root)?;
+            disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+            assert_eq!(disabled_config.native_cache_root(), None);
+            let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+            assert_eq!(disabled_options.parse_cache_root(), None);
+            assert_eq!(disabled_options.persist_cache_root(), None);
+            assert!(!disabled_options.eval_cache_enabled());
+            let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+            let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+
+            assert_eq!(disabled, baseline);
+        }
+
+        assert_eq!(
+            snapshot_cache_root_tree(&directory_root)?,
+            directory_before,
+            "AOS_NIX_CACHE=0 should not mutate directory-only cache roots"
+        );
+        assert_eq!(
+            snapshot_cache_root_tree(&symlink_root)?,
+            symlink_before,
+            "AOS_NIX_CACHE=0 should not rewrite cache-root symlinks"
+        );
+        assert_eq!(
+            snapshot_cache_root_tree(&symlink_target)?,
+            symlink_target_before,
+            "AOS_NIX_CACHE=0 should not touch symlinked cache-root targets"
+        );
+        assert_eq!(
+            snapshot_cache_root_tree(&stale_metadata_root)?,
+            stale_metadata_before,
+            "AOS_NIX_CACHE=0 should not mutate stale metadata-shaped cache roots"
         );
         Ok(())
     }

@@ -3472,10 +3472,15 @@ alone (`M-1`/`Q-A`).
       contents, then apply the real `AOS_NIX_CACHE=0` config path and require
       no native cache roots, byte-identical `.drv` closures, and unchanged
       populated cache-root regular-file paths and bytes.
+      `aos_nix_cache_zero_leaves_non_file_cache_roots_untouched` additionally
+      drives the same public config path over directory-only cache roots,
+      cache-root symlinks, and stale metadata-shaped cache directories, requiring
+      byte-identical native closures and unchanged directory, symlink, target,
+      and metadata-shaped tree snapshots.
       This samples the public env/config kill switch at the raw-expression and
       file-backed native `.drv` closure boundaries; it is not the full periodic
-      cache-off/cold cached CI harness, syscall-level no-read proof, cache
-      metadata/symlink/directory-only proof, or future value-memoization safety net
+      cache-off/cold cached CI harness, syscall-level no-read proof, complete
+      cache metadata/symlink/directory-only proof, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
