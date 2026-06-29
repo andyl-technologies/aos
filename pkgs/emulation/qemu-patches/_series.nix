@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "b1e65daa44fc291842727f84f7659f261c6a7c1d4505d645b33ad599fd26d520";
+  patchBranchBundleSha256 = "7303bd3457f99949472161dc4230c2cd49f4040c023b128c4e802dd4d85db96c";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "400a43550486eabb4299a6a33414c721207e1b9b";
+  patchBranchHeadCommit = "7139b855b35536eb5a975c1e0fe23b1d55637598";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -276,6 +276,15 @@ let
       class = "F";
       enforces = "PATCH-46,DET-29,INV-10";
       capability = "formal per-vCPU register-file and RR cursor plugin exports";
+    }
+    {
+      file = "0030-crucible-preemption-inject.patch";
+      branchCommit = "7139b855b35536eb5a975c1e0fe23b1d55637598";
+      branchTree = "2494d9ccf97f83a6bef0778f16b2f2f33ae282df";
+      catalogName = "crucible-preemption-inject";
+      class = "D";
+      enforces = "PATCH-47,DET-1,PLUG-50";
+      capability = "sim-mode commanded vCPU-switch and interrupt preemption injection";
     }
   ];
 in {

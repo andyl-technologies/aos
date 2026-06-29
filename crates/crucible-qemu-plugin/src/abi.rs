@@ -1061,8 +1061,9 @@ pub const fn resolve_qemu_advance_virtual_time_direct_symbol()
 pub fn resolve_qemu_inject_preemption_symbol() -> Option<QemuInjectPreemptionFn> {
     // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
     // either null or a process symbol address. QEMU's patch defines this symbol
-    // with the exact `extern "C" fn(u64, c_uint, u32, u32, u32) -> c_int` ABI
-    // used by `QemuInjectPreemptionFn`; callers fail closed when absent.
+    // with the exact
+    // `extern "C" fn(u64, u64, u64, c_uint, u32, u32, u32) -> c_int` ABI used
+    // by `QemuInjectPreemptionFn`; callers fail closed when absent.
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
@@ -1989,6 +1990,8 @@ mod tests {
 
     extern "C" fn abi_test_inject_preemption(
         _at_icount: u64,
+        _deadline_icount: u64,
+        _ceiling_icount: u64,
         _raw_kind: c_uint,
         _arg0: u32,
         _arg1: u32,

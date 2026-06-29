@@ -153,6 +153,7 @@
   # patch -p1 < ${./qemu-patches/0027-crucible-sim-batch-tcg-exec.patch}
   # patch -p1 < ${./qemu-patches/0028-crucible-det-ipi.patch}
   # patch -p1 < ${./qemu-patches/0029-crucible-vcpu-introspect.patch}
+  # patch -p1 < ${./qemu-patches/0030-crucible-preemption-inject.patch}
 in
   mkDerivation {
     inherit pname;
