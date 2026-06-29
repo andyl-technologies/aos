@@ -8362,12 +8362,20 @@ impl Database {
             return Ok(None);
         };
         let permissions = parse_permission_names(&perms_json);
-        self.backend
+        // Stamping `last_used_at` is bookkeeping, not part of the validation
+        // decision: a failure here (e.g. a schema drift on the touch column)
+        // must never turn a valid token into an authentication error. Log and
+        // continue so the caller still receives the resolved `TokenAuth`.
+        if let Err(e) = self
+            .backend
             .execute(
                 "UPDATE tokens SET last_used_at = ?2 WHERE id = ?1",
                 &vals![id, now],
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
+        }
         Ok(Some(TokenAuth {
             token_id: id,
             owner: crate::domain::Principal { kind, id: owner_id },
