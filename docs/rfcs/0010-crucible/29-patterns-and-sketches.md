@@ -1177,9 +1177,25 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     Summary: the shared-memory transport now follows the §29.3 SPSC + ceiling +
     futex pattern, with focused model/property and wake-order tests covering the
     concurrency invariants.
-- [ ] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
+- [x] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
   with round-trip + no-panic fuzz properties. — satisfies [PAT-10]; realized by
   **T-SHM-7**, **T-SHM-14** and the 14 protocol tasks (spec 13 §13.6, 14).
+  - Completed by `checks.crucible.phase2.gates.abiConformance`,
+    `checks.crucible.phase2.protocolCodecFuzz`, and the local Rust gates for
+    shmem, protocol, and plugin wire codecs. `SpscRingSnapshot` now has a
+    symmetric `canonical_bytes` / `from_canonical_bytes` pair with typed
+    truncation, trailing-byte, frame-count, and over-length errors; the snapshot
+    restore and shmem ABI gates cover byte round-trip, padding normalization, and
+    malformed-byte no-panic cases. The control protocol gate keeps frozen
+    versioned golden frames plus deterministic decode/no-panic regression corpus
+    coverage, and the QEMU plugin ABI owner gate executes the real
+    `crucible-qemu-plugin --lib io_wire_fuzz` unit target for block and 9p
+    round-trip, truncation, typed rejection, and no-panic properties while
+    preserving the plugin's `cdylib` artifact contract. The engine aggregate
+    owner and phase2 ABI Nix gate now include the shmem, protocol, API golden
+    vector, plugin I/O wire, and engine ABI owner tests. RPC API coverage here is
+    limited to frozen encoder/golden-vector ABI checks; full RPC reference-client
+    decode coverage remains scoped to pending **T-API-13**.
 - [ ] **T-PAT-2** Ensure the scheduler is built to the §29.2 PICK/RUN/RESOLVE/
   EMIT/STEP quantum shape with a single ceiling per RUN and total-order
   RESOLVE. — satisfies [PAT-3]; realized by **T-SCHED-12**, **T-SCHED-13**,

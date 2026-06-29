@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use crucible_shmem::{FrameEntry, MAX_FRAME_DATA, RingHeader, SpscRingError, SpscRingSnapshot};
 
 #[test]
@@ -28,7 +30,12 @@ fn snapshot_captures_fifo_after_wraparound_and_canonicalizes_entries() {
             .all(FrameEntry::padding_bytes_are_zero)
     );
     assert_eq!(snapshot.frames[1].data[128], 0);
-    assert_eq!(snapshot.canonical_bytes(), Ok(canonical_bytes(&expected)));
+    let encoded = canonical_bytes(&expected);
+    assert_eq!(snapshot.canonical_bytes(), Ok(encoded.clone()));
+    assert_eq!(
+        SpscRingSnapshot::from_canonical_bytes(&encoded),
+        Ok(snapshot)
+    );
 }
 
 #[test]
@@ -111,6 +118,48 @@ fn canonical_bytes_reject_corrupt_snapshot_frame_length() {
     );
 }
 
+#[test]
+fn canonical_bytes_decoder_round_trips_and_normalizes_padding() {
+    let mut source = frame_with_unused_tail(60, 7, 0, b"payload", 128, 0xfe);
+    source.len = 7;
+    let snapshot = SpscRingSnapshot {
+        frames: vec![source],
+    };
+
+    let encoded = match snapshot.canonical_bytes() {
+        Ok(encoded) => encoded,
+        Err(error) => panic!("snapshot should encode: {error}"),
+    };
+    let decoded = match SpscRingSnapshot::from_canonical_bytes(&encoded) {
+        Ok(decoded) => decoded,
+        Err(error) => panic!("snapshot should decode: {error}"),
+    };
+
+    assert_eq!(decoded.frames, vec![frame(60, 7, 0, b"payload")]);
+    assert!(decoded.frames[0].padding_bytes_are_zero());
+    assert_eq!(decoded.canonical_bytes(), Ok(encoded));
+}
+
+#[test]
+fn canonical_bytes_decoder_rejects_malformed_corpus_without_panicking() {
+    for case in malformed_snapshot_cases() {
+        let decoded = match catch_unwind(AssertUnwindSafe(|| {
+            SpscRingSnapshot::from_canonical_bytes(&case.bytes)
+        })) {
+            Ok(decoded) => decoded,
+            Err(_) => panic!("snapshot decode panicked for {}", case.name),
+        };
+
+        assert_eq!(decoded, Err(case.error), "case {}", case.name);
+    }
+}
+
+struct MalformedSnapshotCase {
+    name: &'static str,
+    bytes: Vec<u8>,
+    error: SpscRingError,
+}
+
 fn blank_entries(capacity: usize) -> Vec<FrameEntry> {
     vec![frame(0, 0, 0, b""); capacity]
 }
@@ -171,6 +220,114 @@ fn canonical_bytes(frames: &[FrameEntry]) -> Vec<u8> {
         bytes.extend_from_slice(&frame.len.to_le_bytes());
         bytes.extend_from_slice(payload(frame));
     }
+    bytes
+}
+
+fn malformed_snapshot_cases() -> Vec<MalformedSnapshotCase> {
+    let mut trailing_after_empty = Vec::new();
+    trailing_after_empty.extend_from_slice(&0_u64.to_le_bytes());
+    trailing_after_empty.push(0xa5);
+
+    let mut missing_delivery_icount = Vec::new();
+    missing_delivery_icount.extend_from_slice(&1_u64.to_le_bytes());
+
+    let mut truncated_seq = missing_delivery_icount.clone();
+    truncated_seq.extend_from_slice(&10_u64.to_le_bytes());
+    truncated_seq.extend_from_slice(&1_u32.to_le_bytes());
+
+    let oversized_payload = snapshot_frame_prefix(70, 8, 0, (MAX_FRAME_DATA + 1) as u16);
+
+    let mut truncated_payload = snapshot_frame_prefix(71, 8, 1, 3);
+    truncated_payload.extend_from_slice(b"ab");
+
+    let huge_count_error = if usize::try_from(u64::MAX).is_ok() {
+        SpscRingError::SnapshotDecodeTruncated {
+            offset: 8,
+            needed: 8,
+            available: 0,
+        }
+    } else {
+        SpscRingError::SnapshotFrameCountOverflow { count: u64::MAX }
+    };
+    let huge_count = u64::MAX.to_le_bytes().to_vec();
+
+    vec![
+        MalformedSnapshotCase {
+            name: "empty",
+            bytes: Vec::new(),
+            error: SpscRingError::SnapshotDecodeTruncated {
+                offset: 0,
+                needed: 8,
+                available: 0,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "truncated-count",
+            bytes: vec![1, 0, 0],
+            error: SpscRingError::SnapshotDecodeTruncated {
+                offset: 0,
+                needed: 8,
+                available: 3,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "huge-count-without-frame",
+            bytes: huge_count,
+            error: huge_count_error,
+        },
+        MalformedSnapshotCase {
+            name: "missing-delivery-icount",
+            bytes: missing_delivery_icount,
+            error: SpscRingError::SnapshotDecodeTruncated {
+                offset: 8,
+                needed: 8,
+                available: 0,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "truncated-seq",
+            bytes: truncated_seq,
+            error: SpscRingError::SnapshotDecodeTruncated {
+                offset: 20,
+                needed: 4,
+                available: 0,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "oversized-payload",
+            bytes: oversized_payload,
+            error: SpscRingError::InvalidFrameLength {
+                len: MAX_FRAME_DATA + 1,
+                capacity: MAX_FRAME_DATA,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "truncated-payload",
+            bytes: truncated_payload,
+            error: SpscRingError::SnapshotDecodeTruncated {
+                offset: 26,
+                needed: 3,
+                available: 2,
+            },
+        },
+        MalformedSnapshotCase {
+            name: "trailing-after-empty-snapshot",
+            bytes: trailing_after_empty,
+            error: SpscRingError::SnapshotDecodeTrailingBytes {
+                offset: 8,
+                available: 1,
+            },
+        },
+    ]
+}
+
+fn snapshot_frame_prefix(delivery_icount: u64, src_node: u32, seq: u32, len: u16) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes());
+    bytes.extend_from_slice(&delivery_icount.to_le_bytes());
+    bytes.extend_from_slice(&src_node.to_le_bytes());
+    bytes.extend_from_slice(&seq.to_le_bytes());
+    bytes.extend_from_slice(&len.to_le_bytes());
     bytes
 }
 

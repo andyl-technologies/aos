@@ -2,10 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use crucible_shmem::{
     ABI_VERSION, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
-    MAX_FRAME_DATA, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
+    FrameEntry, MAX_FRAME_DATA, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE,
     NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, REGION_HEADER_ABI_VERSION_OFFSET,
@@ -16,7 +18,7 @@ use crucible_shmem::{
     REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET,
     REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
     RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionConfig,
-    RegionLayout, STATUS_IDLE, generated_c_header,
+    RegionLayout, STATUS_IDLE, SpscRingSnapshot, generated_c_header,
 };
 
 const COMMITTED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
@@ -40,6 +42,7 @@ fn gate_abi_conformance_checks_generated_header_and_golden_vectors() {
     let state = assert_decode_encode_roundtrip(&fixture);
     assert_version_bump_regenerates_vectors(&fixture);
     assert_structure_aware_fuzz_corpus(&fixture, &state);
+    assert_snapshot_canonical_codec_corpus();
     golden_vector_negative_control_detects_layout_drift();
 }
 
@@ -108,6 +111,7 @@ fn rust_golden_vector_round_trip_matches_fixture() {
     assert_abi_version_field(&fixture);
     let state = assert_decode_encode_roundtrip(&fixture);
     assert_structure_aware_fuzz_corpus(&fixture, &state);
+    assert_snapshot_canonical_codec_corpus();
 }
 
 #[test]
@@ -212,8 +216,76 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     );
 }
 
+fn assert_snapshot_canonical_codec_corpus() {
+    let snapshot = SpscRingSnapshot {
+        frames: vec![frame(1, 2, 3, b"first"), frame(5, 8, 13, b"second")],
+    };
+    let encoded = match snapshot.canonical_bytes() {
+        Ok(encoded) => encoded,
+        Err(error) => panic!("snapshot should encode: {error}"),
+    };
+    assert_eq!(
+        SpscRingSnapshot::from_canonical_bytes(&encoded),
+        Ok(snapshot)
+    );
+
+    for bytes in snapshot_malformed_byte_corpus() {
+        let decoded = match catch_unwind(AssertUnwindSafe(|| {
+            SpscRingSnapshot::from_canonical_bytes(&bytes)
+        })) {
+            Ok(decoded) => decoded,
+            Err(_) => panic!("snapshot canonical byte decoder must not panic"),
+        };
+        assert!(
+            decoded.is_err(),
+            "malformed snapshot bytes must be rejected: {bytes:?}"
+        );
+    }
+}
+
 fn regression_corpus() -> &'static str {
     GOLDEN_VECTOR_FIXTURE
+}
+
+fn snapshot_malformed_byte_corpus() -> Vec<Vec<u8>> {
+    let mut trailing = Vec::new();
+    trailing.extend_from_slice(&0_u64.to_le_bytes());
+    trailing.push(0xff);
+
+    let mut missing_frame = Vec::new();
+    missing_frame.extend_from_slice(&1_u64.to_le_bytes());
+
+    let oversized = snapshot_frame_prefix(9, 10, 11, (MAX_FRAME_DATA + 1) as u16);
+
+    let mut truncated_payload = snapshot_frame_prefix(9, 10, 11, 4);
+    truncated_payload.extend_from_slice(b"abc");
+
+    vec![
+        Vec::new(),
+        vec![0, 1, 2],
+        u64::MAX.to_le_bytes().to_vec(),
+        trailing,
+        missing_frame,
+        oversized,
+        truncated_payload,
+    ]
+}
+
+fn snapshot_frame_prefix(delivery_icount: u64, src_node: u32, seq: u32, len: u16) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes());
+    bytes.extend_from_slice(&delivery_icount.to_le_bytes());
+    bytes.extend_from_slice(&src_node.to_le_bytes());
+    bytes.extend_from_slice(&seq.to_le_bytes());
+    bytes.extend_from_slice(&len.to_le_bytes());
+    bytes
+}
+
+fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
+    match FrameEntry::new(delivery_icount, src_node, seq, payload) {
+        Ok(frame) => frame,
+        Err(error) => panic!("test frame should fit: {error}"),
+    }
 }
 
 fn live_golden_bytes() -> Vec<u8> {

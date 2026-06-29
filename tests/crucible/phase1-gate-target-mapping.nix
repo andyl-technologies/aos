@@ -111,6 +111,20 @@
       placeholder = false;
     }
     {
+      gate = "gate:abi-conformance";
+      package = "crucible-qemu-plugin";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = false;
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = ["test-double"];
+      placeholder = false;
+    }
+    {
       gate = "gate:replay-oracle";
       package = "crucible";
       testTarget = "gate_replay_oracle";

@@ -313,7 +313,7 @@ in {
       abiConformance = import ./phase2-abi-conformance.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.abiConformance";
-        taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12"];
+        taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
       };
       qemuInert = import ./phase2-qemu-inert.nix {
         inherit pkgs lib;

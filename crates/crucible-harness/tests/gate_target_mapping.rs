@@ -186,6 +186,12 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-api",
                 "gate_abi_conformance"
             ),
+            (
+                "gate:abi-conformance",
+                "crucible-qemu-plugin",
+                "gate_abi_conformance"
+            ),
+            ("gate:abi-conformance", "crucible", "gate_abi_conformance"),
             ("gate:replay-oracle", "crucible", "gate_replay_oracle"),
             ("gate:content-address", "crucible", "gate_content_address"),
             (

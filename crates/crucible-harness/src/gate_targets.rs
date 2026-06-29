@@ -128,6 +128,20 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-qemu-plugin",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible",
+        test_target: "gate_abi_conformance",
+        required_features: &["test-double"],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:replay-oracle",
         package: "crucible",
         test_target: "gate_replay_oracle",
