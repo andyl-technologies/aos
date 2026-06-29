@@ -12,8 +12,9 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId, MarkerId, MembershipFault,
-    NodeId, NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
+    CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId, MarkerId, MemPlace,
+    MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram, SimDuration,
+    TimerId, VirtualTime,
 };
 
 pub use crate::model::EventId;
@@ -42,6 +43,55 @@ impl ResolvedCodePoint {
     #[must_use]
     pub const fn address(self) -> u64 {
         self.address
+    }
+}
+
+/// Host-resolved guest memory or register coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResolvedMemPlace {
+    /// Guest physical address sampled out of band.
+    PhysicalAddress {
+        /// Guest physical address.
+        address: u64,
+        /// Sample width in bytes.
+        bytes: u8,
+    },
+    /// Guest virtual address sampled out of band.
+    VirtualAddress {
+        /// Guest virtual address.
+        address: u64,
+        /// Sample width in bytes.
+        bytes: u8,
+    },
+    /// Architectural register sampled out of band.
+    Register {
+        /// Stable register name.
+        name: String,
+        /// Sample width in bytes.
+        bytes: u8,
+    },
+}
+
+impl ResolvedMemPlace {
+    /// Builds a resolved physical-address place.
+    #[must_use]
+    pub const fn physical_address(address: u64, bytes: u8) -> Self {
+        Self::PhysicalAddress { address, bytes }
+    }
+
+    /// Builds a resolved virtual-address place.
+    #[must_use]
+    pub const fn virtual_address(address: u64, bytes: u8) -> Self {
+        Self::VirtualAddress { address, bytes }
+    }
+
+    /// Builds a resolved register place.
+    #[must_use]
+    pub fn register(name: impl Into<String>, bytes: u8) -> Self {
+        Self::Register {
+            name: name.into(),
+            bytes,
+        }
     }
 }
 
@@ -98,6 +148,26 @@ impl ObservableEvent {
                 node,
                 guest_pc,
                 block_len,
+            },
+        }
+    }
+
+    /// Builds a deterministic memory/register sample observation.
+    #[must_use]
+    pub fn memory_sample(
+        at: VirtualTime,
+        sample_icount: Icount,
+        node: NodeId,
+        place: ResolvedMemPlace,
+        value: u64,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::MemorySample {
+                sample_icount,
+                node,
+                place,
+                value,
             },
         }
     }
@@ -169,6 +239,17 @@ pub enum ObservableEventPayload {
         guest_pc: u64,
         /// Translated block length supplied by QEMU.
         block_len: u32,
+    },
+    /// A deterministic guest memory or register sample became visible.
+    MemorySample {
+        /// Exact guest instruction count at which the sample was taken.
+        sample_icount: Icount,
+        /// Node whose memory/register was sampled.
+        node: NodeId,
+        /// Host-resolved place that was sampled.
+        place: ResolvedMemPlace,
+        /// Unsigned sampled value.
+        value: u64,
     },
     /// A deterministic device I/O completion became visible.
     IoCompletion {
@@ -257,6 +338,19 @@ pub trait ConditionEvaluator {
             CodePoint::Symbol { .. } => None,
         }
     }
+
+    /// Resolves an authored memory place using host-side symbol metadata.
+    fn resolve_mem_place(&self, _node: &NodeId, place: &MemPlace) -> Option<ResolvedMemPlace> {
+        match place {
+            MemPlace::PhysicalAddress { address, width } => {
+                Some(ResolvedMemPlace::physical_address(*address, width.bytes()))
+            }
+            MemPlace::Register { name, width } => {
+                Some(ResolvedMemPlace::register(name.clone(), width.bytes()))
+            }
+            MemPlace::VirtualAddress { .. } | MemPlace::Symbol { .. } => None,
+        }
+    }
 }
 
 /// Evaluates a condition through the shared assertion/trigger evaluator.
@@ -291,6 +385,12 @@ where
             regex,
         ),
         Condition::CoveragePoint { node, point } => coverage_point_matches(evaluator, node, point),
+        Condition::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => memory_predicate_matches(evaluator, node, place, *cmp, *value),
         Condition::IoPattern { node, kind } => observable_event_matches(
             evaluator.evaluation_point().at(),
             evaluator.observable_events(),
@@ -430,6 +530,58 @@ fn block_contains_address(guest_pc: u64, block_len: u32, address: u64) -> bool {
     guest_pc <= address && address < end
 }
 
+fn memory_predicate_matches<E>(
+    evaluator: &E,
+    expected_node: &NodeId,
+    place: &MemPlace,
+    cmp: MemoryCmp,
+    expected_value: u64,
+) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    let Some(resolved) = evaluator.resolve_mem_place(expected_node, place) else {
+        return false;
+    };
+    observable_event_matches(
+        evaluator.evaluation_point().at(),
+        evaluator.observable_events(),
+        |event| memory_event_matches(event, expected_node, &resolved, cmp, expected_value),
+    )
+}
+
+fn memory_event_matches(
+    event: &ObservableEventPayload,
+    expected_node: &NodeId,
+    expected_place: &ResolvedMemPlace,
+    cmp: MemoryCmp,
+    expected_value: u64,
+) -> bool {
+    let ObservableEventPayload::MemorySample {
+        sample_icount: _,
+        node,
+        place,
+        value,
+    } = event
+    else {
+        return false;
+    };
+    node == expected_node
+        && place == expected_place
+        && memory_cmp_matches(cmp, *value, expected_value)
+}
+
+fn memory_cmp_matches(cmp: MemoryCmp, actual: u64, expected: u64) -> bool {
+    match cmp {
+        MemoryCmp::Eq => actual == expected,
+        MemoryCmp::Ne => actual != expected,
+        MemoryCmp::Lt => actual < expected,
+        MemoryCmp::Le => actual <= expected,
+        MemoryCmp::Gt => actual > expected,
+        MemoryCmp::Ge => actual >= expected,
+    }
+}
+
 fn io_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
@@ -461,6 +613,7 @@ pub struct ConditionEvaluation<O> {
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
 
 impl<O> ConditionEvaluation<O> {
@@ -474,6 +627,7 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: BTreeMap::new(),
             observable_events: Vec::new(),
             code_points: BTreeMap::new(),
+            mem_places: BTreeMap::new(),
         }
     }
 
@@ -511,6 +665,16 @@ impl<O> ConditionEvaluation<O> {
         code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
     ) -> Self {
         self.code_points = code_points.into_iter().collect();
+        self
+    }
+
+    /// Adds host-side memory place resolutions visible to memory predicates.
+    #[must_use]
+    pub fn with_resolved_mem_places(
+        mut self,
+        mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
+    ) -> Self {
+        self.mem_places = mem_places.into_iter().collect();
         self
     }
 
@@ -554,6 +718,20 @@ where
                 .code_points
                 .get(&(node.clone(), point.clone()))
                 .copied(),
+        }
+    }
+
+    fn resolve_mem_place(&self, node: &NodeId, place: &MemPlace) -> Option<ResolvedMemPlace> {
+        match place {
+            MemPlace::PhysicalAddress { address, width } => {
+                Some(ResolvedMemPlace::physical_address(*address, width.bytes()))
+            }
+            MemPlace::Register { name, width } => {
+                Some(ResolvedMemPlace::register(name.clone(), width.bytes()))
+            }
+            MemPlace::VirtualAddress { .. } | MemPlace::Symbol { .. } => {
+                self.mem_places.get(&(node.clone(), place.clone())).cloned()
+            }
         }
     }
 }
@@ -913,6 +1091,10 @@ where
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
         self.inner.resolve_code_point(node, point)
     }
+
+    fn resolve_mem_place(&self, node: &NodeId, place: &MemPlace) -> Option<ResolvedMemPlace> {
+        self.inner.resolve_mem_place(node, place)
+    }
 }
 
 /// Event graph construction errors.
@@ -1068,6 +1250,7 @@ fn validate_condition_references(
         Condition::At { .. }
         | Condition::NetworkMatch { .. }
         | Condition::CoveragePoint { .. }
+        | Condition::MemoryPredicate { .. }
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::Named { .. }

@@ -3907,6 +3907,114 @@ impl CodePoint {
     }
 }
 
+/// Width of a deterministic guest memory or register sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemoryWidth {
+    /// One byte.
+    U8,
+    /// Two bytes.
+    U16,
+    /// Four bytes.
+    U32,
+    /// Eight bytes.
+    U64,
+}
+
+impl MemoryWidth {
+    /// Returns the byte width of the sampled value.
+    #[must_use]
+    pub const fn bytes(self) -> u8 {
+        match self {
+            Self::U8 => 1,
+            Self::U16 => 2,
+            Self::U32 => 4,
+            Self::U64 => 8,
+        }
+    }
+}
+
+/// Host-side reference to a deterministic guest memory or register sample.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemPlace {
+    /// Guest physical address sampled out of band.
+    PhysicalAddress {
+        /// Guest physical address.
+        address: u64,
+        /// Width to sample.
+        width: MemoryWidth,
+    },
+    /// Guest virtual address sampled out of band.
+    VirtualAddress {
+        /// Guest virtual address.
+        address: u64,
+        /// Width to sample.
+        width: MemoryWidth,
+    },
+    /// Host-resolved guest symbol.
+    Symbol {
+        /// Stable symbol name.
+        name: String,
+        /// Width to sample at the resolved symbol address.
+        width: MemoryWidth,
+    },
+    /// Architectural register sampled out of band.
+    Register {
+        /// Stable register name.
+        name: String,
+        /// Width to sample.
+        width: MemoryWidth,
+    },
+}
+
+impl MemPlace {
+    /// Builds a physical-address memory place.
+    #[must_use]
+    pub const fn physical_address(address: u64, width: MemoryWidth) -> Self {
+        Self::PhysicalAddress { address, width }
+    }
+
+    /// Builds a virtual-address memory place.
+    #[must_use]
+    pub const fn virtual_address(address: u64, width: MemoryWidth) -> Self {
+        Self::VirtualAddress { address, width }
+    }
+
+    /// Builds a symbol memory place resolved host-side.
+    #[must_use]
+    pub fn symbol(name: impl Into<String>, width: MemoryWidth) -> Self {
+        Self::Symbol {
+            name: name.into(),
+            width,
+        }
+    }
+
+    /// Builds a register memory place.
+    #[must_use]
+    pub fn register(name: impl Into<String>, width: MemoryWidth) -> Self {
+        Self::Register {
+            name: name.into(),
+            width,
+        }
+    }
+}
+
+/// Unsigned comparison for deterministic memory samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemoryCmp {
+    /// Equal to the expected value.
+    Eq,
+    /// Not equal to the expected value.
+    Ne,
+    /// Less than the expected value.
+    Lt,
+    /// Less than or equal to the expected value.
+    Le,
+    /// Greater than the expected value.
+    Gt,
+    /// Greater than or equal to the expected value.
+    Ge,
+}
+
 /// Observable I/O operation class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IoEventKind {
@@ -3996,6 +4104,17 @@ pub enum Predicate {
         node: NodeId,
         /// Guest code point observed by the TCG-exec hook.
         point: CodePoint,
+    },
+    /// True when a deterministic memory/register sample satisfies a comparison.
+    MemoryPredicate {
+        /// Node whose memory or register is sampled.
+        node: NodeId,
+        /// Host-side memory/register place.
+        place: MemPlace,
+        /// Unsigned comparison to apply to the sampled value.
+        cmp: MemoryCmp,
+        /// Expected comparison value.
+        value: u64,
     },
     /// True when a node performs an I/O completion of the requested kind.
     IoPattern {
@@ -4098,6 +4217,17 @@ impl Predicate {
     #[must_use]
     pub fn coverage_point(node: NodeId, point: CodePoint) -> Self {
         Self::CoveragePoint { node, point }
+    }
+
+    /// Builds a deterministic memory/register sample predicate.
+    #[must_use]
+    pub fn memory_predicate(node: NodeId, place: MemPlace, cmp: MemoryCmp, value: u64) -> Self {
+        Self::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        }
     }
 
     /// Builds an I/O completion predicate.
@@ -9140,6 +9270,7 @@ fn validate_property_predicate_for_world(
             validate_property_regex(regex)
         }
         Predicate::CoveragePoint { node, .. }
+        | Predicate::MemoryPredicate { node, .. }
         | Predicate::IoPattern { node, .. }
         | Predicate::NodeState { node, .. } => validate_property_node(node, node_ids),
         Predicate::Named { nodes, .. } => {
@@ -9352,6 +9483,17 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
         Predicate::CoveragePoint { node, point } => Predicate::CoveragePoint {
             node: node.clone(),
             point: point.clone(),
+        },
+        Predicate::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => Predicate::MemoryPredicate {
+            node: node.clone(),
+            place: place.clone(),
+            cmp: *cmp,
+            value: *value,
         },
         Predicate::IoPattern { node, kind } => Predicate::IoPattern {
             node: node.clone(),
@@ -9644,6 +9786,12 @@ enum PredicateToml {
         node: String,
         point: CodePointToml,
     },
+    MemoryPredicate {
+        node: String,
+        place: MemPlaceToml,
+        cmp: MemoryCmpToml,
+        value: u64,
+    },
     IoPattern {
         node: String,
         io_kind: IoEventKindToml,
@@ -9690,6 +9838,50 @@ enum FramePredicateToml {
 enum CodePointToml {
     GuestAddress { address: u64 },
     Symbol { name: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MemPlaceToml {
+    PhysicalAddress {
+        address: u64,
+        width: MemoryWidthToml,
+    },
+    VirtualAddress {
+        address: u64,
+        width: MemoryWidthToml,
+    },
+    Symbol {
+        name: String,
+        width: MemoryWidthToml,
+    },
+    Register {
+        name: String,
+        width: MemoryWidthToml,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum MemoryWidthToml {
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum MemoryCmpToml {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -10171,6 +10363,17 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             node: node.name.clone(),
             point: code_point_to_toml(point),
         },
+        Predicate::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => PredicateToml::MemoryPredicate {
+            node: node.name.clone(),
+            place: mem_place_to_toml(place),
+            cmp: memory_cmp_to_toml(*cmp),
+            value: *value,
+        },
         Predicate::IoPattern { node, kind } => PredicateToml::IoPattern {
             node: node.name.clone(),
             io_kind: io_event_kind_to_toml(*kind),
@@ -10226,6 +10429,17 @@ fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
         PredicateToml::CoveragePoint { node, point } => Predicate::CoveragePoint {
             node: NodeId { name: node },
             point: code_point_from_toml(point),
+        },
+        PredicateToml::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => Predicate::MemoryPredicate {
+            node: NodeId { name: node },
+            place: mem_place_from_toml(place),
+            cmp: memory_cmp_from_toml(cmp),
+            value,
         },
         PredicateToml::IoPattern { node, io_kind } => Predicate::IoPattern {
             node: NodeId { name: node },
@@ -10304,6 +10518,88 @@ fn code_point_from_toml(toml: CodePointToml) -> CodePoint {
     match toml {
         CodePointToml::GuestAddress { address } => CodePoint::GuestAddress { address },
         CodePointToml::Symbol { name } => CodePoint::Symbol { name },
+    }
+}
+
+fn mem_place_to_toml(place: &MemPlace) -> MemPlaceToml {
+    match place {
+        MemPlace::PhysicalAddress { address, width } => MemPlaceToml::PhysicalAddress {
+            address: *address,
+            width: memory_width_to_toml(*width),
+        },
+        MemPlace::VirtualAddress { address, width } => MemPlaceToml::VirtualAddress {
+            address: *address,
+            width: memory_width_to_toml(*width),
+        },
+        MemPlace::Symbol { name, width } => MemPlaceToml::Symbol {
+            name: name.clone(),
+            width: memory_width_to_toml(*width),
+        },
+        MemPlace::Register { name, width } => MemPlaceToml::Register {
+            name: name.clone(),
+            width: memory_width_to_toml(*width),
+        },
+    }
+}
+
+fn mem_place_from_toml(toml: MemPlaceToml) -> MemPlace {
+    match toml {
+        MemPlaceToml::PhysicalAddress { address, width } => MemPlace::PhysicalAddress {
+            address,
+            width: memory_width_from_toml(width),
+        },
+        MemPlaceToml::VirtualAddress { address, width } => MemPlace::VirtualAddress {
+            address,
+            width: memory_width_from_toml(width),
+        },
+        MemPlaceToml::Symbol { name, width } => MemPlace::Symbol {
+            name,
+            width: memory_width_from_toml(width),
+        },
+        MemPlaceToml::Register { name, width } => MemPlace::Register {
+            name,
+            width: memory_width_from_toml(width),
+        },
+    }
+}
+
+fn memory_width_to_toml(width: MemoryWidth) -> MemoryWidthToml {
+    match width {
+        MemoryWidth::U8 => MemoryWidthToml::U8,
+        MemoryWidth::U16 => MemoryWidthToml::U16,
+        MemoryWidth::U32 => MemoryWidthToml::U32,
+        MemoryWidth::U64 => MemoryWidthToml::U64,
+    }
+}
+
+fn memory_width_from_toml(toml: MemoryWidthToml) -> MemoryWidth {
+    match toml {
+        MemoryWidthToml::U8 => MemoryWidth::U8,
+        MemoryWidthToml::U16 => MemoryWidth::U16,
+        MemoryWidthToml::U32 => MemoryWidth::U32,
+        MemoryWidthToml::U64 => MemoryWidth::U64,
+    }
+}
+
+fn memory_cmp_to_toml(cmp: MemoryCmp) -> MemoryCmpToml {
+    match cmp {
+        MemoryCmp::Eq => MemoryCmpToml::Eq,
+        MemoryCmp::Ne => MemoryCmpToml::Ne,
+        MemoryCmp::Lt => MemoryCmpToml::Lt,
+        MemoryCmp::Le => MemoryCmpToml::Le,
+        MemoryCmp::Gt => MemoryCmpToml::Gt,
+        MemoryCmp::Ge => MemoryCmpToml::Ge,
+    }
+}
+
+fn memory_cmp_from_toml(toml: MemoryCmpToml) -> MemoryCmp {
+    match toml {
+        MemoryCmpToml::Eq => MemoryCmp::Eq,
+        MemoryCmpToml::Ne => MemoryCmp::Ne,
+        MemoryCmpToml::Lt => MemoryCmp::Lt,
+        MemoryCmpToml::Le => MemoryCmp::Le,
+        MemoryCmpToml::Gt => MemoryCmp::Gt,
+        MemoryCmpToml::Ge => MemoryCmp::Ge,
     }
 }
 
@@ -11304,6 +11600,18 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
             writer.write_string(&node.name);
             write_code_point_binary(point, writer);
         }
+        Predicate::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => {
+            writer.write_u8(14);
+            writer.write_string(&node.name);
+            write_mem_place_binary(place, writer);
+            write_memory_cmp_binary(*cmp, writer);
+            writer.write_u64(*value);
+        }
         Predicate::IoPattern { node, kind } => {
             writer.write_u8(11);
             writer.write_string(&node.name);
@@ -11440,6 +11748,14 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
             },
             point: read_code_point_binary(reader)?,
         }),
+        14 => Ok(Predicate::MemoryPredicate {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            place: read_mem_place_binary(reader)?,
+            cmp: read_memory_cmp_binary(reader)?,
+            value: reader.read_u64()?,
+        }),
         11 => Ok(Predicate::IoPattern {
             node: NodeId {
                 name: reader.read_string()?,
@@ -11514,6 +11830,99 @@ fn read_code_point_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<CodeP
             name: reader.read_string()?,
         }),
         _ => Err(scenario_serialization_error("invalid code point tag")),
+    }
+}
+
+fn write_mem_place_binary(place: &MemPlace, writer: &mut ScenarioBinaryWriter) {
+    match place {
+        MemPlace::PhysicalAddress { address, width } => {
+            writer.write_u8(0);
+            writer.write_u64(*address);
+            write_memory_width_binary(*width, writer);
+        }
+        MemPlace::VirtualAddress { address, width } => {
+            writer.write_u8(1);
+            writer.write_u64(*address);
+            write_memory_width_binary(*width, writer);
+        }
+        MemPlace::Symbol { name, width } => {
+            writer.write_u8(2);
+            writer.write_string(name);
+            write_memory_width_binary(*width, writer);
+        }
+        MemPlace::Register { name, width } => {
+            writer.write_u8(3);
+            writer.write_string(name);
+            write_memory_width_binary(*width, writer);
+        }
+    }
+}
+
+fn read_mem_place_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<MemPlace, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(MemPlace::PhysicalAddress {
+            address: reader.read_u64()?,
+            width: read_memory_width_binary(reader)?,
+        }),
+        1 => Ok(MemPlace::VirtualAddress {
+            address: reader.read_u64()?,
+            width: read_memory_width_binary(reader)?,
+        }),
+        2 => Ok(MemPlace::Symbol {
+            name: reader.read_string()?,
+            width: read_memory_width_binary(reader)?,
+        }),
+        3 => Ok(MemPlace::Register {
+            name: reader.read_string()?,
+            width: read_memory_width_binary(reader)?,
+        }),
+        _ => Err(scenario_serialization_error("invalid memory place tag")),
+    }
+}
+
+fn write_memory_width_binary(width: MemoryWidth, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match width {
+        MemoryWidth::U8 => 0,
+        MemoryWidth::U16 => 1,
+        MemoryWidth::U32 => 2,
+        MemoryWidth::U64 => 3,
+    });
+}
+
+fn read_memory_width_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<MemoryWidth, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(MemoryWidth::U8),
+        1 => Ok(MemoryWidth::U16),
+        2 => Ok(MemoryWidth::U32),
+        3 => Ok(MemoryWidth::U64),
+        _ => Err(scenario_serialization_error("invalid memory width tag")),
+    }
+}
+
+fn write_memory_cmp_binary(cmp: MemoryCmp, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match cmp {
+        MemoryCmp::Eq => 0,
+        MemoryCmp::Ne => 1,
+        MemoryCmp::Lt => 2,
+        MemoryCmp::Le => 3,
+        MemoryCmp::Gt => 4,
+        MemoryCmp::Ge => 5,
+    });
+}
+
+fn read_memory_cmp_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<MemoryCmp, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(MemoryCmp::Eq),
+        1 => Ok(MemoryCmp::Ne),
+        2 => Ok(MemoryCmp::Lt),
+        3 => Ok(MemoryCmp::Le),
+        4 => Ok(MemoryCmp::Gt),
+        5 => Ok(MemoryCmp::Ge),
+        _ => Err(scenario_serialization_error(
+            "invalid memory comparison tag",
+        )),
     }
 }
 
@@ -12364,6 +12773,19 @@ fn predicate_material(predicate: &Predicate) -> String {
                 code_point_material(point)
             )
         }
+        Predicate::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => {
+            format!(
+                "predicate=memory-predicate\n{}\n{}\nmemory_cmp={}\nmemory_value={value}",
+                node_ref_material("memory_node", node),
+                mem_place_material(place),
+                memory_cmp_label(*cmp)
+            )
+        }
         Predicate::IoPattern { node, kind } => {
             format!(
                 "predicate=io-pattern\n{}\nio_kind={}",
@@ -12471,6 +12893,51 @@ fn code_point_material(point: &CodePoint) -> String {
                 name
             )
         }
+    }
+}
+
+fn mem_place_material(place: &MemPlace) -> String {
+    match place {
+        MemPlace::PhysicalAddress { address, width } => format!(
+            "mem_place=physical-address\nmem_address={address}\nmem_width={}",
+            memory_width_label(*width)
+        ),
+        MemPlace::VirtualAddress { address, width } => format!(
+            "mem_place=virtual-address\nmem_address={address}\nmem_width={}",
+            memory_width_label(*width)
+        ),
+        MemPlace::Symbol { name, width } => format!(
+            "mem_place=symbol\nsymbol_len={}\nsymbol={}\nmem_width={}",
+            name.len(),
+            name,
+            memory_width_label(*width)
+        ),
+        MemPlace::Register { name, width } => format!(
+            "mem_place=register\nregister_len={}\nregister={}\nmem_width={}",
+            name.len(),
+            name,
+            memory_width_label(*width)
+        ),
+    }
+}
+
+fn memory_width_label(width: MemoryWidth) -> &'static str {
+    match width {
+        MemoryWidth::U8 => "u8",
+        MemoryWidth::U16 => "u16",
+        MemoryWidth::U32 => "u32",
+        MemoryWidth::U64 => "u64",
+    }
+}
+
+fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
+    match cmp {
+        MemoryCmp::Eq => "eq",
+        MemoryCmp::Ne => "ne",
+        MemoryCmp::Lt => "lt",
+        MemoryCmp::Le => "le",
+        MemoryCmp::Gt => "gt",
+        MemoryCmp::Ge => "ge",
     }
 }
 

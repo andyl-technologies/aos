@@ -532,6 +532,11 @@ in {
       attrPath = "checks.crucible.phase4.coverageConditionLeaf";
       taskIds = ["T-TRIG-5"];
     };
+    memoryConditionLeaf = import ./phase4-memory-condition-leaf.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.memoryConditionLeaf";
+      taskIds = ["T-TRIG-6"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
