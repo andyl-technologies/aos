@@ -52,7 +52,7 @@ impl TreeWalk {
             let hash = self.context_free_string_bytes(id, span, hash_value, "fetchurl")?;
             if hash.is_empty() {
                 self.emit_warning_output(id, span, EMPTY_FETCHURL_SHA256_WARNING.to_vec())?;
-                Some([0_u8; 32])
+                Some(NixSha256Digest::from_bytes([0_u8; 32]))
             } else {
                 let (algorithm, digest) =
                     self.decode_convert_hash(id, span, &hash, Some(HashStringAlgorithm::Sha256))?;
@@ -78,7 +78,7 @@ impl TreeWalk {
                 }
                 let mut fixed = [0_u8; 32];
                 fixed.copy_from_slice(&digest);
-                Some(fixed)
+                Some(NixSha256Digest::from_bytes(fixed))
             }
         } else {
             None
@@ -171,7 +171,7 @@ impl TreeWalk {
         span: Span,
         url: &[u8],
         name: &str,
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<Vec<u8>, TreeWalkError> {
         let fixed_digest = Self::flat_source_fixed_output_digest(id, span, digest)?;
         self.store_path_bytes_from_fingerprint_parts(

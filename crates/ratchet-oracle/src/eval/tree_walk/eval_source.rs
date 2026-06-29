@@ -241,7 +241,11 @@ impl TreeWalk {
                 NixSha256Digest::from_bytes(digest),
             )?
         } else {
-            let fixed_digest = Self::flat_source_fixed_output_digest(id, span, &digest)?;
+            let fixed_digest = Self::flat_source_fixed_output_digest(
+                id,
+                span,
+                NixSha256Digest::from_bytes(digest),
+            )?;
             self.store_path_bytes_from_fingerprint_parts(
                 id,
                 span,
@@ -461,9 +465,9 @@ impl TreeWalk {
     pub(super) fn flat_source_fixed_output_digest(
         id: IrId,
         span: Span,
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<NixSha256Digest, TreeWalkError> {
-        let digest = Self::lower_hex_bytes(id, span, digest)?;
+        let digest = Self::lower_hex_bytes(id, span, digest.as_bytes())?;
         let len = b"fixed:out:sha256:"
             .len()
             .checked_add(digest.len())

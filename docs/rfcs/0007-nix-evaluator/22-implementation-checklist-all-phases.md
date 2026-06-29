@@ -1440,6 +1440,17 @@ alone (`M-1`/`Q-A`).
       construction helpers only; hash builtin outputs, every source/fetch
       variant, and the full differential leak-invariant harness remain open
       (`S-15`).
+- [x] Current fetch expected-SHA type boundary: decoded `builtins.fetchurl` and
+      `builtins.fetchTarball` `sha256` arguments, including empty placeholder
+      hashes, now become `NixSha256Digest` at argument parsing; their store-path
+      construction helpers require that typed digest, and fetchTarball
+      existing-store validation plus fetch mismatch diagnostics unwrap only at
+      the Nix validation or error-reporting edge. This type-enforces the
+      current fixed `sha256` fetch argument path only; `builtins.path` expected
+      hashes, hash builtin outputs/conversions, other source/fetch variants, and
+      the full differential leak-invariant harness remain open (`S-15`). Gate:
+      fetchurl/fetchTarball store-path surface canaries and fetch hash mismatch
+      tests.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

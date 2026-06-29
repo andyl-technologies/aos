@@ -618,14 +618,14 @@ struct TreeWalkImpureInputRevalidator<'a> {
 struct FetchUrlArguments {
     url: Vec<u8>,
     name: String,
-    expected_sha256: Option<[u8; 32]>,
+    expected_sha256: Option<NixSha256Digest>,
 }
 
 #[derive(Clone, Debug)]
 struct FetchTarballArguments {
     url: Vec<u8>,
     name: String,
-    expected_sha256: Option<[u8; 32]>,
+    expected_sha256: Option<NixSha256Digest>,
 }
 
 #[derive(Clone, Debug)]

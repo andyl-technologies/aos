@@ -392,7 +392,7 @@ impl TreeWalk {
                 argument_span,
                 &args.url,
                 &args.name,
-                &expected,
+                expected,
             )?;
             if self.fetch_tarball_can_reuse_store_path(
                 argument,
@@ -400,7 +400,7 @@ impl TreeWalk {
                 &args.url,
                 &parsed,
                 &path,
-                &expected,
+                expected,
             )? {
                 return self.alloc_fetchurl_path_value(id, span, path);
             }
@@ -442,15 +442,16 @@ impl TreeWalk {
                     return Err(error);
                 }
             };
+        let nix_digest = NixSha256Digest::from_bytes(digest);
         if let Some(expected) = args.expected_sha256
-            && expected != digest
+            && expected != nix_digest
         {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::FetchTarballHashMismatch {
                     id: argument,
                     url: args.url,
-                    expected: expected.to_vec(),
+                    expected: expected.as_bytes().to_vec(),
                     actual: digest.to_vec(),
                 },
                 argument_span,
@@ -464,7 +465,7 @@ impl TreeWalk {
                 argument_span,
                 &args.url,
                 &args.name,
-                &digest,
+                nix_digest,
             )?,
         };
         let materialize_result = self.materialize_fetch_tarball_store_path(
@@ -526,7 +527,7 @@ impl TreeWalk {
             let hash = self.context_free_string_bytes(id, span, hash_value, "fetchTarball")?;
             if hash.is_empty() {
                 self.emit_warning_output(id, span, EMPTY_FETCHURL_SHA256_WARNING.to_vec())?;
-                Some([0_u8; 32])
+                Some(NixSha256Digest::from_bytes([0_u8; 32]))
             } else {
                 let (algorithm, digest) =
                     self.decode_convert_hash(id, span, &hash, Some(HashStringAlgorithm::Sha256))?;
@@ -542,7 +543,7 @@ impl TreeWalk {
                 }
                 let mut fixed = [0_u8; 32];
                 fixed.copy_from_slice(&digest);
-                Some(fixed)
+                Some(NixSha256Digest::from_bytes(fixed))
             }
         } else {
             None
@@ -613,16 +614,9 @@ impl TreeWalk {
         span: Span,
         url: &[u8],
         name: &str,
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        self.store_path_bytes_from_fingerprint_parts(
-            id,
-            span,
-            url,
-            b"source",
-            name,
-            NixSha256Digest::from_bytes(*digest),
-        )
+        self.store_path_bytes_from_fingerprint_parts(id, span, url, b"source", name, digest)
     }
 
     pub(super) fn check_fetch_tarball_access(
@@ -664,7 +658,7 @@ impl TreeWalk {
         url: &[u8],
         parsed: &Url,
         store_path: &[u8],
-        expected_digest: &[u8; 32],
+        expected_digest: NixSha256Digest,
     ) -> Result<bool, TreeWalkError> {
         if !Path::new(OsStr::from_bytes(store_path)).exists() {
             return Ok(false);
@@ -679,7 +673,12 @@ impl TreeWalk {
             return Ok(true);
         }
 
-        self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
+        self.fetch_tarball_store_path_matches_digest(
+            id,
+            span,
+            store_path,
+            expected_digest.as_bytes(),
+        )
     }
 
     pub(super) fn can_trust_existing_fetch_tarball_store_path(&self, store_path: &[u8]) -> bool {
