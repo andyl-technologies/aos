@@ -3724,25 +3724,27 @@ tag = "negative-time"
 
     #[test]
     fn properties_content_address_is_orthogonal_and_validated() {
-        let world = world_from_nodes_and_links(
-            two_ready_nodes(),
-            vec![transport_link("a", "b", 10, 1, 0, None)],
-        );
+        let mut world_nodes = two_ready_nodes();
+        world_nodes[0].white_box = WhiteBoxPolicy::Enabled;
+        let world =
+            world_from_nodes_and_links(world_nodes, vec![transport_link("a", "b", 10, 1, 0, None)]);
+        let mut changed_world_nodes = vec![
+            ready_node(
+                "a",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 11 },
+                },
+            ),
+            ready_node(
+                "b",
+                ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 12 },
+                },
+            ),
+        ];
+        changed_world_nodes[0].white_box = WhiteBoxPolicy::Enabled;
         let changed_world = world_from_nodes_and_links(
-            vec![
-                ready_node(
-                    "a",
-                    ReadyPoint::FixedIcount {
-                        icount: Icount { retired: 11 },
-                    },
-                ),
-                ready_node(
-                    "b",
-                    ReadyPoint::FixedIcount {
-                        icount: Icount { retired: 12 },
-                    },
-                ),
-            ],
+            changed_world_nodes,
             vec![transport_link("a", "b", 20, 1, 0, None)],
         );
         let incompatible_world = world_from_nodes_and_links(

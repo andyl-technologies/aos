@@ -4386,6 +4386,8 @@ impl Properties {
     /// when a predicate names a node that is not declared by `world`,
     /// [`EngineError::PropertyPredicateUnknownAssertion`] when an
     /// `AssertionState` predicate names no declared assertion,
+    /// [`EngineError::PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn`] when a
+    /// `GuestMarker` predicate is used but `world` has no white-box-enabled node,
     /// [`EngineError::PropertyPredicateEmptyCompound`] when an `AllOf` or
     /// `AnyOf` predicate has no children, or
     /// [`EngineError::PropertyPredicateTriggerOnly`] when a property uses an
@@ -4473,6 +4475,7 @@ impl Properties {
     /// Returns [`EngineError::PropertyDuplicateAssertionId`],
     /// [`EngineError::PropertyPredicateUnknownNode`],
     /// [`EngineError::PropertyPredicateUnknownAssertion`], or
+    /// [`EngineError::PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn`], or
     /// [`EngineError::PropertyPredicateEmptyCompound`], or
     /// [`EngineError::PropertyPredicateTriggerOnly`] when an assertion cannot be
     /// layered over the static world topology.
@@ -7909,6 +7912,11 @@ pub enum EngineError {
         /// The undeclared assertion.
         assertion: AssertionId,
     },
+    /// A property predicate uses `GuestMarker` without any white-box-enabled node.
+    PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn {
+        /// The guest marker that requires a white-box-enabled node.
+        marker: MarkerId,
+    },
     /// A compound property predicate has no child predicates.
     PropertyPredicateEmptyCompound {
         /// Stable name of the empty compound predicate kind.
@@ -8119,6 +8127,9 @@ impl fmt::Display for EngineError {
             }
             Self::PropertyPredicateUnknownAssertion { .. } => {
                 f.write_str("property predicate references an undeclared assertion")
+            }
+            Self::PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn { .. } => {
+                f.write_str("property predicate guest marker requires white-box opt-in")
             }
             Self::PropertyPredicateEmptyCompound { kind } => {
                 write!(f, "property predicate compound {kind} has no children")
@@ -9264,6 +9275,12 @@ fn validate_properties_for_world(
     assertions: &[AssertionDef],
 ) -> Result<(), EngineError> {
     let node_ids = world.nodes.iter().map(|node| &node.id).collect();
+    let white_box_node_ids = world
+        .nodes
+        .iter()
+        .filter(|node| node.white_box == WhiteBoxPolicy::Enabled)
+        .map(|node| &node.id)
+        .collect();
     let mut assertion_ids = BTreeSet::new();
 
     for assertion in assertions {
@@ -9275,7 +9292,12 @@ fn validate_properties_for_world(
     }
 
     for assertion in assertions {
-        validate_property_for_world(&assertion.property, &node_ids, &assertion_ids)?;
+        validate_property_for_world(
+            &assertion.property,
+            &node_ids,
+            &assertion_ids,
+            &white_box_node_ids,
+        )?;
     }
 
     Ok(())
@@ -9285,19 +9307,33 @@ fn validate_property_for_world(
     property: &Property,
     node_ids: &BTreeSet<&NodeId>,
     assertion_ids: &BTreeSet<AssertionId>,
+    white_box_node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match property {
         Property::Always { predicate }
         | Property::Sometimes { predicate }
         | Property::AfterQuiescence { predicate }
-        | Property::Reachable { predicate, .. } => {
-            validate_property_predicate_for_world(predicate, node_ids, assertion_ids)
-        }
+        | Property::Reachable { predicate, .. } => validate_property_predicate_for_world(
+            predicate,
+            node_ids,
+            assertion_ids,
+            white_box_node_ids,
+        ),
         Property::Eventually {
             trigger, property, ..
         } => {
-            validate_property_predicate_for_world(trigger, node_ids, assertion_ids)?;
-            validate_property_predicate_for_world(property, node_ids, assertion_ids)
+            validate_property_predicate_for_world(
+                trigger,
+                node_ids,
+                assertion_ids,
+                white_box_node_ids,
+            )?;
+            validate_property_predicate_for_world(
+                property,
+                node_ids,
+                assertion_ids,
+                white_box_node_ids,
+            )
         }
     }
 }
@@ -9306,6 +9342,7 @@ fn validate_property_predicate_for_world(
     predicate: &Predicate,
     node_ids: &BTreeSet<&NodeId>,
     assertion_ids: &BTreeSet<AssertionId>,
+    white_box_node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match predicate {
         Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(()),
@@ -9334,15 +9371,38 @@ fn validate_property_predicate_for_world(
             }
             Ok(())
         }
-        Predicate::GuestMarker { .. } => Ok(()),
-        Predicate::AllOf { predicates } => {
-            validate_compound_predicate("all-of", predicates, node_ids, assertion_ids)
+        Predicate::GuestMarker { marker } => {
+            if white_box_node_ids.is_empty() {
+                Err(
+                    EngineError::PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn {
+                        marker: marker.clone(),
+                    },
+                )
+            } else {
+                Ok(())
+            }
         }
-        Predicate::AnyOf { predicates } => {
-            validate_compound_predicate("any-of", predicates, node_ids, assertion_ids)
-        }
+        Predicate::AllOf { predicates } => validate_compound_predicate(
+            "all-of",
+            predicates,
+            node_ids,
+            assertion_ids,
+            white_box_node_ids,
+        ),
+        Predicate::AnyOf { predicates } => validate_compound_predicate(
+            "any-of",
+            predicates,
+            node_ids,
+            assertion_ids,
+            white_box_node_ids,
+        ),
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            validate_property_predicate_for_world(predicate, node_ids, assertion_ids)
+            validate_property_predicate_for_world(
+                predicate,
+                node_ids,
+                assertion_ids,
+                white_box_node_ids,
+            )
         }
     }
 }
@@ -9352,13 +9412,19 @@ fn validate_compound_predicate(
     predicates: &[Predicate],
     node_ids: &BTreeSet<&NodeId>,
     assertion_ids: &BTreeSet<AssertionId>,
+    white_box_node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     if predicates.is_empty() {
         return Err(EngineError::PropertyPredicateEmptyCompound { kind });
     }
 
     for predicate in predicates {
-        validate_property_predicate_for_world(predicate, node_ids, assertion_ids)?;
+        validate_property_predicate_for_world(
+            predicate,
+            node_ids,
+            assertion_ids,
+            white_box_node_ids,
+        )?;
     }
 
     Ok(())

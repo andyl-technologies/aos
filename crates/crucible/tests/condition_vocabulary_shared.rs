@@ -4,8 +4,9 @@
 
 use crucible::{
     Action, AssertionDef, AssertionId, Condition, ConditionEvaluation, ConditionLeaf,
-    ConditionLeafOracle, Event, EventEvaluationPoint, EventGraph, EventGraphState, EventId,
-    MarkerId, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    ConditionLeafOracle, Event, EventEvaluationPoint, EventGraph, EventGraphState, EventId, Icount,
+    MarkerId, NodeId, NodeTemplate, Predicate, Properties, Property, ReachabilityExpectation,
+    ReachableDisposition, ReadyPoint, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -29,7 +30,9 @@ fn predicate_used_by_assertion_is_the_trigger_condition_type() {
             message: String::from("shared condition fired"),
         },
     );
-    let graph = EventGraph::new(vec![event]).expect("shared condition event graph should build");
+    let world = world_with_white_box_guest();
+    let graph = EventGraph::new_with_assertions_for_world(vec![event], [], &world)
+        .expect("shared condition event graph should build");
 
     assert_eq!(assertion_predicate(&assertion), Some(&condition));
     assert_eq!(graph.events()[0].trigger.as_ref(), Some(&condition));
@@ -194,4 +197,25 @@ impl ConditionLeafOracle for TrueNames<'_> {
             }
         }
     }
+}
+
+fn world_with_white_box_guest() -> World {
+    World::from_nodes(vec![WorldNode {
+        id: NodeId {
+            name: String::from("guest"),
+        },
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])
+    .expect("white-box shared-vocabulary world should build")
 }

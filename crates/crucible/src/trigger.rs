@@ -14,7 +14,7 @@ use std::fmt;
 use crate::model::{
     AssertionId, AssertionPhase, CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId,
     MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram,
-    SimDuration, TimerId, VirtualTime,
+    SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World,
 };
 use crate::scheduler::SchedulerQuiescence;
 
@@ -213,6 +213,21 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds an optional white-box guest-marker observation.
+    #[must_use]
+    pub fn guest_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
     /// Returns the deterministic virtual-time coordinate of the observation.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
@@ -226,7 +241,7 @@ impl ObservableEvent {
     }
 }
 
-/// Typed black-box observable event payloads used by condition leaves.
+/// Typed observable event payloads used by condition leaves.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObservableEventPayload {
     /// A network frame was delivered at RESOLVE.
@@ -287,6 +302,15 @@ pub enum ObservableEventPayload {
         name: AssertionId,
         /// Terminal assertion state entered at this log point.
         state: AssertionPhase,
+    },
+    /// An optional white-box doorbell marker was observed.
+    GuestMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Stable marker identity carried by the doorbell payload.
+        marker: MarkerId,
     },
 }
 
@@ -354,6 +378,12 @@ pub trait ConditionEvaluator {
 
     /// Returns scheduler-owned quiescence evidence for the evaluation point.
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        None
+    }
+
+    /// Returns the authoritative white-box opt-in policy for a node.
+    fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
+        let _ = node;
         None
     }
 
@@ -439,9 +469,7 @@ where
             name: name.as_str(),
             nodes,
         }),
-        Condition::GuestMarker { marker } => {
-            evaluator.leaf_is_true(ConditionLeaf::GuestMarker { marker })
-        }
+        Condition::GuestMarker { marker } => guest_marker_matches(evaluator, marker),
         Condition::AllOf { predicates } => predicates
             .iter()
             .all(|condition| evaluate_condition(evaluator, condition)),
@@ -649,6 +677,37 @@ fn assertion_state_event_matches(
     name == expected_name && *state == expected_state
 }
 
+fn guest_marker_matches<E>(evaluator: &E, expected_marker: &MarkerId) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    observable_event_matches(
+        evaluator.evaluation_point().at(),
+        evaluator.observable_events(),
+        |event| guest_marker_event_matches(evaluator, event, expected_marker),
+    )
+}
+
+fn guest_marker_event_matches<E>(
+    evaluator: &E,
+    event: &ObservableEventPayload,
+    expected_marker: &MarkerId,
+) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    let ObservableEventPayload::GuestMarker {
+        retired_icount: _,
+        node,
+        marker,
+    } = event
+    else {
+        return false;
+    };
+    marker == expected_marker
+        && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+}
+
 /// Condition evaluator backed by a leaf oracle.
 #[derive(Clone, Debug)]
 pub struct ConditionEvaluation<O> {
@@ -658,6 +717,7 @@ pub struct ConditionEvaluation<O> {
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
+    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
@@ -673,6 +733,7 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: BTreeMap::new(),
             observable_events: Vec::new(),
             scheduler_quiescence: None,
+            white_box_policies: BTreeMap::new(),
             code_points: BTreeMap::new(),
             mem_places: BTreeMap::new(),
         }
@@ -710,6 +771,27 @@ impl<O> ConditionEvaluation<O> {
     pub fn with_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
         self.scheduler_quiescence = Some(quiescence);
         self
+    }
+
+    /// Adds authoritative white-box opt-in policies for guest-marker leaves.
+    #[must_use]
+    pub fn with_white_box_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
+    ) -> Self {
+        self.white_box_policies = policies.into_iter().collect();
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies from a world definition.
+    #[must_use]
+    pub fn with_world_white_box_policies(self, world: &World) -> Self {
+        self.with_white_box_policies(
+            world
+                .nodes()
+                .iter()
+                .map(|node| (node.id.clone(), node.white_box)),
+        )
     }
 
     /// Adds host-side code point resolutions visible to coverage leaves.
@@ -767,6 +849,10 @@ where
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence.as_ref()
+    }
+
+    fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
+        self.white_box_policies.get(node).copied()
     }
 
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
@@ -926,7 +1012,7 @@ pub struct EventGraph {
 }
 
 impl EventGraph {
-    /// Builds an event graph with no declared assertion namespace.
+    /// Builds an event graph with no declared assertion or white-box namespace.
     ///
     /// # Errors
     ///
@@ -939,9 +1025,12 @@ impl EventGraph {
     /// [`EventGraphError::UnknownAssertionReference`] is returned for any
     /// assertion-state trigger because this constructor has no assertion
     /// declarations to validate against; use [`Self::new_with_assertions`] for
-    /// those graphs.
+    /// those graphs. [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] is
+    /// returned for any guest-marker trigger because this constructor has no
+    /// world to prove white-box opt-in; use [`Self::new_for_world`] for those
+    /// graphs.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions(events, [])
+        Self::new_with_assertions_and_white_box_nodes(events, [], [])
     }
 
     /// Builds an event graph with declared assertion ids available to triggers.
@@ -953,14 +1042,55 @@ impl EventGraph {
     /// entrypoint tries to use repeatable firing policy,
     /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
     /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
-    /// a `Timer` predicate names no armable timer, or
+    /// a `Timer` predicate names no armable timer,
     /// [`EventGraphError::UnknownAssertionReference`] when an
-    /// `AssertionState` predicate names no declared assertion.
+    /// `AssertionState` predicate names no declared assertion, or
+    /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
+    /// trigger is present but no white-box-enabled node namespace was supplied.
     pub fn new_with_assertions(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<Self, EventGraphError> {
+        Self::new_with_assertions_and_white_box_nodes(events, assertions, [])
+    }
+
+    /// Builds an event graph using white-box opt-in data from `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same construction errors as [`Self::new`] plus
+    /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
+    /// trigger is present but `world` has no white-box-enabled node.
+    pub fn new_for_world(events: Vec<Event>, world: &World) -> Result<Self, EventGraphError> {
+        Self::new_with_assertions_and_white_box_nodes(events, [], enabled_white_box_nodes(world))
+    }
+
+    /// Builds an event graph using assertion and white-box data from `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same construction errors as [`Self::new_with_assertions`] plus
+    /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
+    /// trigger is present but `world` has no white-box-enabled node.
+    pub fn new_with_assertions_for_world(
+        events: Vec<Event>,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        world: &World,
+    ) -> Result<Self, EventGraphError> {
+        Self::new_with_assertions_and_white_box_nodes(
+            events,
+            assertions,
+            enabled_white_box_nodes(world),
+        )
+    }
+
+    fn new_with_assertions_and_white_box_nodes(
+        events: Vec<Event>,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        white_box_nodes: impl IntoIterator<Item = NodeId>,
+    ) -> Result<Self, EventGraphError> {
         let assertion_ids = assertions.into_iter().collect::<BTreeSet<_>>();
+        let white_box_nodes = white_box_nodes.into_iter().collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
         for event in &events {
             if !seen.insert(event.id.clone()) {
@@ -983,6 +1113,7 @@ impl EventGraph {
                     &seen,
                     &timer_names,
                     &assertion_ids,
+                    &white_box_nodes,
                 )?;
             }
         }
@@ -1180,6 +1311,10 @@ where
         self.inner.scheduler_quiescence()
     }
 
+    fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
+        self.inner.white_box_policy_for_node(node)
+    }
+
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
         self.inner.resolve_code_point(node, point)
     }
@@ -1222,6 +1357,13 @@ pub enum EventGraphError {
         event: EventId,
         /// Referenced assertion id.
         assertion: AssertionId,
+    },
+    /// A `GuestMarker` trigger was used without any white-box-enabled node.
+    GuestMarkerWithoutWhiteBoxOptIn {
+        /// Event containing the guest-marker trigger.
+        event: EventId,
+        /// Referenced guest marker.
+        marker: MarkerId,
     },
     /// A console-match predicate contains an invalid regex program.
     InvalidRegex {
@@ -1272,6 +1414,13 @@ impl fmt::Display for EventGraphError {
                     event.name, assertion.name
                 )
             }
+            Self::GuestMarkerWithoutWhiteBoxOptIn { event, marker } => {
+                write!(
+                    formatter,
+                    "event `{}` uses guest marker `{}` without a white-box-enabled node",
+                    event.name, marker.name
+                )
+            }
             Self::InvalidRegex { event, reason, .. } => {
                 write!(
                     formatter,
@@ -1316,12 +1465,22 @@ fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
     }
 }
 
+fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
+    world
+        .nodes()
+        .iter()
+        .filter(|node| node.white_box == WhiteBoxPolicy::Enabled)
+        .map(|node| node.id.clone())
+        .collect()
+}
+
 fn validate_condition_references(
     event: &Event,
     condition: &Condition,
     event_ids: &BTreeSet<EventId>,
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
+    white_box_nodes: &BTreeSet<NodeId>,
 ) -> Result<(), EventGraphError> {
     match condition {
         Condition::After { of, .. } => {
@@ -1354,6 +1513,16 @@ fn validate_condition_references(
                 })
             }
         }
+        Condition::GuestMarker { marker } => {
+            if white_box_nodes.is_empty() {
+                Err(EventGraphError::GuestMarkerWithoutWhiteBoxOptIn {
+                    event: event.id.clone(),
+                    marker: marker.clone(),
+                })
+            } else {
+                Ok(())
+            }
+        }
         Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
             for predicate in predicates {
                 validate_condition_references(
@@ -1362,12 +1531,20 @@ fn validate_condition_references(
                     event_ids,
                     timer_names,
                     assertion_ids,
+                    white_box_nodes,
                 )?;
             }
             Ok(())
         }
         Condition::Once { predicate } | Condition::Not { predicate } => {
-            validate_condition_references(event, predicate, event_ids, timer_names, assertion_ids)
+            validate_condition_references(
+                event,
+                predicate,
+                event_ids,
+                timer_names,
+                assertion_ids,
+                white_box_nodes,
+            )
         }
         Condition::ConsoleMatch { regex, .. } => validate_condition_regex(event, regex),
         Condition::At { .. }
@@ -1377,8 +1554,7 @@ fn validate_condition_references(
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::Quiescent
-        | Condition::Named { .. }
-        | Condition::GuestMarker { .. } => Ok(()),
+        | Condition::Named { .. } => Ok(()),
     }
 }
 

@@ -542,6 +542,11 @@ in {
       attrPath = "checks.crucible.phase4.assertionQuiescenceLeaves";
       taskIds = ["T-TRIG-7"];
     };
+    guestMarkerLeaf = import ./phase4-guest-marker-leaf.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestMarkerLeaf";
+      taskIds = ["T-TRIG-8"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
