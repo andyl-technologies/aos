@@ -479,7 +479,7 @@ in {
         start_sftp_server
         mkdir -p /tmp/sftp-cache/nar
 
-        set +e
+        # A valid multi-destination upload succeeds for every real backend.
         $APR cache generate --registry vm-cache \
           --output /tmp/generated-cache \
           --key /tmp/nix-cache.sec \
@@ -488,17 +488,29 @@ in {
           --upload-url file:///tmp/local-cache \
           --upload-url s3://aos-registry-test/cache \
           --upload-url sftp://root@127.0.0.1:2222/tmp/sftp-cache \
-          --upload-url not-a-url \
           --s3-region us-east-1 \
           --s3-endpoint http://127.0.0.1:19000 \
           --ssh-key /tmp/sftp-client-key \
           > /tmp/cache-generate.log 2>&1
-        CACHE_STATUS=$?
-        set -e
         cat /tmp/cache-generate.log
-        test "$CACHE_STATUS" -ne 0
-        grep -q "static cache upload failed for 1/4 destination" /tmp/cache-generate.log
-        grep -q "not-a-url" /tmp/cache-generate.log
+
+        # An invalid --upload-url is now rejected up front: the remote cache
+        # membership checker is created for every destination before any
+        # upload, so a single bad URL fails the whole generate fast (no
+        # partial-success accounting).
+        set +e
+        $APR cache generate --registry vm-cache \
+          --output /tmp/generated-cache-invalid-url \
+          --key /tmp/nix-cache.sec \
+          --no-commit \
+          --upload-url file:///tmp/local-cache-invalid \
+          --upload-url not-a-url \
+          > /tmp/cache-generate-invalid-url.log 2>&1
+        INVALID_STATUS=$?
+        set -e
+        cat /tmp/cache-generate-invalid-url.log
+        test "$INVALID_STATUS" -ne 0
+        grep -q "not-a-url" /tmp/cache-generate-invalid-url.log
 
         test -f /tmp/generated-cache/nix-cache-info
         test -f "/tmp/generated-cache/$STORE_HASH.narinfo"
