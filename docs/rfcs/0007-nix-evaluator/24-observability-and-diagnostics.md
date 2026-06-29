@@ -614,10 +614,15 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       visible (§7.2) — **P1**, builtins surface
       ([21](21-builtins-conformance.md)); gate today: trace/tree-walk/aos-core
       runner tests, including configured local oracle coverage.
-- [ ] Pinned exact stderr parity remains: run the pinned C++ Nix 2.24.12 oracle
-      check for byte-exact `builtins.trace` / `builtins.traceVerbose` stderr
-      formatting; configured/local oracle tests are coverage, not this
-      acceptance gate (§7.2) — **P1**, builtins surface
+- [x] Pinned exact stderr parity for `builtins.trace` /
+      `builtins.traceVerbose`: the ignored pinned-oracle gate
+      `cpp_nix_trace_and_warn_stderr_match_tree_walk` runs against C++ Nix
+      2.24.12 and byte-compares tree-walk stderr for `trace`, disabled and
+      enabled `traceVerbose`, representative traced value renderings, `warn`,
+      and `abort-on-warn` warning prefixes. Verified with
+      `AOS_NIX_ORACLE=/nix/store/1j53ddwqinns7gis6r96pixh7fl45v4l-nix-2.24.12/bin/nix-instantiate cargo test --manifest-path crates/Cargo.toml -p ratchet-oracle cpp_nix_trace_and_warn_stderr_match_tree_walk -- --ignored --nocapture`;
+      configured/local oracle tests remain coverage, not this acceptance gate
+      (§7.2) — **P1**, builtins surface
       ([21](21-builtins-conformance.md)).
 
 ### Open questions (research-grade, in scope)

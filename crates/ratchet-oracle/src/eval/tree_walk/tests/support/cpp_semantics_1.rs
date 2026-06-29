@@ -48,6 +48,7 @@ pub(crate) fn assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(oracle: &str)
     }
 
     for source in [r#"builtins.warn "fatal" 7"#, r#"builtins.warn "a\nb" 7"#] {
+        let warning_reference = cpp_nix_eval_stderr(oracle, source);
         let reference = cpp_nix_eval_failure_stderr_with_nix_options(
             oracle,
             source,
@@ -61,11 +62,15 @@ pub(crate) fn assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(oracle: &str)
             matches!(error.kind(), TreeWalkErrorKind::WarningAborted { .. }),
             "abort-on-warn did not produce WarningAborted for {source}: {error:?}"
         );
+        assert_eq!(
+            stderr, warning_reference,
+            "abort-on-warn warning stderr diverged for {source}"
+        );
         assert!(
-            reference.starts_with(&stderr),
-            "abort-on-warn warning stderr prefix diverged for {source}: reference={:?}, actual={:?}",
+            reference.starts_with(&warning_reference),
+            "abort-on-warn warning stderr prefix diverged for {source}: reference={:?}, warning={:?}",
             String::from_utf8_lossy(&reference),
-            String::from_utf8_lossy(&stderr)
+            String::from_utf8_lossy(&warning_reference)
         );
         assert!(
             String::from_utf8_lossy(&reference)
