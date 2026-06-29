@@ -1220,9 +1220,10 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   evaluation, and rejects `After` references to undeclared events plus `Timer`
   references without an armable `Action::ArmTimer` declaration. Assertion
   properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only. Event-log-backed
-  observable leaves, full timer action application, the broader reference/cycle
-  validator, and verdict composition remain T-TRIG-4 through T-TRIG-20.
+  edge-shaped `After` and `Timer` leaves as trigger-only. Memory predicates,
+  assertion/quiescence leaves, optional guest markers, compound combinators, full
+  timer action application, the broader reference/cycle validator, and verdict
+  composition remain T-TRIG-6 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1238,13 +1239,26 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
-  catalog integration, named-link topology validation, coverage/memory leaves,
+  catalog integration, named-link topology validation, memory leaves,
   assertion/quiescence leaves, and the broader validator remain T-OBS-* and
-  T-TRIG-5 through T-TRIG-20.
-- [ ] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
+  T-TRIG-6 through T-TRIG-20.
+- [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
   cross-ref 12, 22.
+
+  Completed by `checks.crucible.phase4.coverageConditionLeaf`: shared
+  `Predicate` includes `CoveragePoint { node, point }` with typed `CodePoint`
+  support for guest addresses and host-resolved symbols. The shared evaluator
+  consumes deterministic TCG-exec basic-block observable events that carry the
+  exact execution icount, resolves symbols through host-supplied code metadata,
+  and samples coverage only at the matching block-execution event's evaluation
+  point. Prior executions of the same resolved code point in the observable-log
+  prefix suppress later matches, and the path requires no named predicates or
+  guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
+  production symbol-table loading, coverage-guided search consumption, memory
+  predicates, assertion/quiescence leaves, and the broader validator remain
+  T-OBS-9, T-ADV-10, and T-TRIG-6 through T-TRIG-20.
 - [ ] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies

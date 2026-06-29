@@ -12,8 +12,8 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    FaultTag, FramePredicate, IoEventKind, LinkId, MarkerId, MembershipFault, NodeId,
-    NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
+    CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId, MarkerId, MembershipFault,
+    NodeId, NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
 };
 
 pub use crate::model::EventId;
@@ -24,6 +24,26 @@ pub use crate::model::EventId;
 /// assertion [`crate::model::Property`] layer is the same value accepted by an
 /// event trigger.
 pub type Condition = Predicate;
+
+/// Host-resolved executable guest code coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResolvedCodePoint {
+    address: u64,
+}
+
+impl ResolvedCodePoint {
+    /// Builds a resolved guest-address code point.
+    #[must_use]
+    pub const fn guest_address(address: u64) -> Self {
+        Self { address }
+    }
+
+    /// Returns the resolved guest instruction address.
+    #[must_use]
+    pub const fn address(self) -> u64 {
+        self.address
+    }
+}
 
 /// One black-box observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -57,6 +77,27 @@ impl ObservableEvent {
             payload: ObservableEventPayload::ConsoleOutput {
                 node,
                 bytes: bytes.into(),
+            },
+        }
+    }
+
+    /// Builds a TCG-exec basic-block coverage observation.
+    #[must_use]
+    pub fn coverage_block(
+        execution_icount: Icount,
+        node: NodeId,
+        guest_pc: u64,
+        block_len: u32,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: execution_icount.retired,
+            },
+            payload: ObservableEventPayload::CoverageBlock {
+                execution_icount,
+                node,
+                guest_pc,
+                block_len,
             },
         }
     }
@@ -117,6 +158,17 @@ pub enum ObservableEventPayload {
         node: NodeId,
         /// Captured console bytes.
         bytes: Vec<u8>,
+    },
+    /// A TCG-exec basic-block coverage observation became visible.
+    CoverageBlock {
+        /// Exact guest instruction count at which the block executed.
+        execution_icount: Icount,
+        /// Node that executed the block.
+        node: NodeId,
+        /// Guest program counter for the block.
+        guest_pc: u64,
+        /// Translated block length supplied by QEMU.
+        block_len: u32,
     },
     /// A deterministic device I/O completion became visible.
     IoCompletion {
@@ -197,6 +249,14 @@ pub trait ConditionEvaluator {
     fn observable_events(&self) -> &[ObservableEvent] {
         &[]
     }
+
+    /// Resolves an authored code point using host-side symbol metadata.
+    fn resolve_code_point(&self, _node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
+        match point {
+            CodePoint::GuestAddress { address } => Some(ResolvedCodePoint::guest_address(*address)),
+            CodePoint::Symbol { .. } => None,
+        }
+    }
 }
 
 /// Evaluates a condition through the shared assertion/trigger evaluator.
@@ -230,6 +290,7 @@ where
             node,
             regex,
         ),
+        Condition::CoveragePoint { node, point } => coverage_point_matches(evaluator, node, point),
         Condition::IoPattern { node, kind } => observable_event_matches(
             evaluator.evaluation_point().at(),
             evaluator.observable_events(),
@@ -327,6 +388,48 @@ fn console_stream_matches(
         .any(|matched| matched.end() > current_start)
 }
 
+fn coverage_point_matches<E>(evaluator: &E, expected_node: &NodeId, point: &CodePoint) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    let Some(resolved) = evaluator.resolve_code_point(expected_node, point) else {
+        return false;
+    };
+    let at = evaluator.evaluation_point().at();
+    let events = evaluator.observable_events();
+    let matches_current = events.iter().any(|event| {
+        event.at() == at && coverage_event_matches(event.payload(), expected_node, resolved)
+    });
+    let seen_before = events.iter().any(|event| {
+        event.at() < at && coverage_event_matches(event.payload(), expected_node, resolved)
+    });
+    matches_current && !seen_before
+}
+
+fn coverage_event_matches(
+    event: &ObservableEventPayload,
+    expected_node: &NodeId,
+    expected_point: ResolvedCodePoint,
+) -> bool {
+    let ObservableEventPayload::CoverageBlock {
+        execution_icount: _,
+        node,
+        guest_pc,
+        block_len,
+    } = event
+    else {
+        return false;
+    };
+    node == expected_node && block_contains_address(*guest_pc, *block_len, expected_point.address())
+}
+
+fn block_contains_address(guest_pc: u64, block_len: u32, address: u64) -> bool {
+    let Some(end) = guest_pc.checked_add(u64::from(block_len)) else {
+        return false;
+    };
+    guest_pc <= address && address < end
+}
+
 fn io_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
@@ -357,6 +460,7 @@ pub struct ConditionEvaluation<O> {
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
+    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
 }
 
 impl<O> ConditionEvaluation<O> {
@@ -369,6 +473,7 @@ impl<O> ConditionEvaluation<O> {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             observable_events: Vec::new(),
+            code_points: BTreeMap::new(),
         }
     }
 
@@ -396,6 +501,16 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn with_observable_events(mut self, observable_events: Vec<ObservableEvent>) -> Self {
         self.observable_events = observable_events;
+        self
+    }
+
+    /// Adds host-side code point resolutions visible to coverage leaves.
+    #[must_use]
+    pub fn with_resolved_code_points(
+        mut self,
+        code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
+    ) -> Self {
+        self.code_points = code_points.into_iter().collect();
         self
     }
 
@@ -430,6 +545,16 @@ where
 
     fn observable_events(&self) -> &[ObservableEvent] {
         &self.observable_events
+    }
+
+    fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
+        match point {
+            CodePoint::GuestAddress { address } => Some(ResolvedCodePoint::guest_address(*address)),
+            CodePoint::Symbol { .. } => self
+                .code_points
+                .get(&(node.clone(), point.clone()))
+                .copied(),
+        }
     }
 }
 
@@ -784,6 +909,10 @@ where
     fn observable_events(&self) -> &[ObservableEvent] {
         self.inner.observable_events()
     }
+
+    fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
+        self.inner.resolve_code_point(node, point)
+    }
 }
 
 /// Event graph construction errors.
@@ -938,6 +1067,7 @@ fn validate_condition_references(
         Condition::ConsoleMatch { regex, .. } => validate_condition_regex(event, regex),
         Condition::At { .. }
         | Condition::NetworkMatch { .. }
+        | Condition::CoveragePoint { .. }
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::Named { .. }

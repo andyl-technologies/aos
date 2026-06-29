@@ -3878,6 +3878,35 @@ impl RegexProgram {
     }
 }
 
+/// Host-side reference to executable guest code.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CodePoint {
+    /// Guest physical or virtual address resolved before evaluation.
+    GuestAddress {
+        /// Guest instruction address.
+        address: u64,
+    },
+    /// Symbol resolved host-side against node-owned debug or symbol data.
+    Symbol {
+        /// Stable symbol name.
+        name: String,
+    },
+}
+
+impl CodePoint {
+    /// Builds a raw guest-address code point.
+    #[must_use]
+    pub const fn guest_address(address: u64) -> Self {
+        Self::GuestAddress { address }
+    }
+
+    /// Builds a host-resolved symbol code point.
+    #[must_use]
+    pub fn symbol(name: impl Into<String>) -> Self {
+        Self::Symbol { name: name.into() }
+    }
+}
+
 /// Observable I/O operation class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IoEventKind {
@@ -3960,6 +3989,13 @@ pub enum Predicate {
         node: NodeId,
         /// Host-side regex program matched against console bytes.
         regex: RegexProgram,
+    },
+    /// True when a node executes a host-resolved guest code point.
+    CoveragePoint {
+        /// Node whose execution is observed.
+        node: NodeId,
+        /// Guest code point observed by the TCG-exec hook.
+        point: CodePoint,
     },
     /// True when a node performs an I/O completion of the requested kind.
     IoPattern {
@@ -4056,6 +4092,12 @@ impl Predicate {
     #[must_use]
     pub fn console_match(node: NodeId, regex: RegexProgram) -> Self {
         Self::ConsoleMatch { node, regex }
+    }
+
+    /// Builds a basic-block coverage predicate.
+    #[must_use]
+    pub fn coverage_point(node: NodeId, point: CodePoint) -> Self {
+        Self::CoveragePoint { node, point }
     }
 
     /// Builds an I/O completion predicate.
@@ -9097,9 +9139,9 @@ fn validate_property_predicate_for_world(
             validate_property_node(node, node_ids)?;
             validate_property_regex(regex)
         }
-        Predicate::IoPattern { node, .. } | Predicate::NodeState { node, .. } => {
-            validate_property_node(node, node_ids)
-        }
+        Predicate::CoveragePoint { node, .. }
+        | Predicate::IoPattern { node, .. }
+        | Predicate::NodeState { node, .. } => validate_property_node(node, node_ids),
         Predicate::Named { nodes, .. } => {
             for node in nodes {
                 validate_property_node(node, node_ids)?;
@@ -9306,6 +9348,10 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
         Predicate::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
             node: node.clone(),
             regex: regex.clone(),
+        },
+        Predicate::CoveragePoint { node, point } => Predicate::CoveragePoint {
+            node: node.clone(),
+            point: point.clone(),
         },
         Predicate::IoPattern { node, kind } => Predicate::IoPattern {
             node: node.clone(),
@@ -9594,6 +9640,10 @@ enum PredicateToml {
         node: String,
         regex: String,
     },
+    CoveragePoint {
+        node: String,
+        point: CodePointToml,
+    },
     IoPattern {
         node: String,
         io_kind: IoEventKindToml,
@@ -9632,6 +9682,14 @@ enum FramePredicateToml {
     Exact { bytes_hex: String },
     Contains { needle_hex: String },
     Prefix { prefix_hex: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CodePointToml {
+    GuestAddress { address: u64 },
+    Symbol { name: String },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -10109,6 +10167,10 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             node: node.name.clone(),
             regex: regex.pattern.clone(),
         },
+        Predicate::CoveragePoint { node, point } => PredicateToml::CoveragePoint {
+            node: node.name.clone(),
+            point: code_point_to_toml(point),
+        },
         Predicate::IoPattern { node, kind } => PredicateToml::IoPattern {
             node: node.name.clone(),
             io_kind: io_event_kind_to_toml(*kind),
@@ -10160,6 +10222,10 @@ fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
         PredicateToml::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
             node: NodeId { name: node },
             regex: RegexProgram { pattern: regex },
+        },
+        PredicateToml::CoveragePoint { node, point } => Predicate::CoveragePoint {
+            node: NodeId { name: node },
+            point: code_point_from_toml(point),
         },
         PredicateToml::IoPattern { node, io_kind } => Predicate::IoPattern {
             node: NodeId { name: node },
@@ -10225,6 +10291,20 @@ fn frame_predicate_from_toml(toml: FramePredicateToml) -> Result<FramePredicate,
             FramePredicate::Prefix(parse_hex_bytes("frame prefix bytes", &prefix_hex)?)
         }
     })
+}
+
+fn code_point_to_toml(point: &CodePoint) -> CodePointToml {
+    match point {
+        CodePoint::GuestAddress { address } => CodePointToml::GuestAddress { address: *address },
+        CodePoint::Symbol { name } => CodePointToml::Symbol { name: name.clone() },
+    }
+}
+
+fn code_point_from_toml(toml: CodePointToml) -> CodePoint {
+    match toml {
+        CodePointToml::GuestAddress { address } => CodePoint::GuestAddress { address },
+        CodePointToml::Symbol { name } => CodePoint::Symbol { name },
+    }
 }
 
 fn io_event_kind_to_toml(kind: IoEventKind) -> IoEventKindToml {
@@ -11219,6 +11299,11 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
             writer.write_string(&node.name);
             writer.write_string(&regex.pattern);
         }
+        Predicate::CoveragePoint { node, point } => {
+            writer.write_u8(13);
+            writer.write_string(&node.name);
+            write_code_point_binary(point, writer);
+        }
         Predicate::IoPattern { node, kind } => {
             writer.write_u8(11);
             writer.write_string(&node.name);
@@ -11349,6 +11434,12 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
                 pattern: reader.read_string()?,
             },
         }),
+        13 => Ok(Predicate::CoveragePoint {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            point: read_code_point_binary(reader)?,
+        }),
         11 => Ok(Predicate::IoPattern {
             node: NodeId {
                 name: reader.read_string()?,
@@ -11398,6 +11489,31 @@ fn read_frame_predicate_binary(
             reader.read_binary_blob("frame prefix bytes")?.to_vec(),
         )),
         _ => Err(scenario_serialization_error("invalid frame predicate tag")),
+    }
+}
+
+fn write_code_point_binary(point: &CodePoint, writer: &mut ScenarioBinaryWriter) {
+    match point {
+        CodePoint::GuestAddress { address } => {
+            writer.write_u8(0);
+            writer.write_u64(*address);
+        }
+        CodePoint::Symbol { name } => {
+            writer.write_u8(1);
+            writer.write_string(name);
+        }
+    }
+}
+
+fn read_code_point_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<CodePoint, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(CodePoint::GuestAddress {
+            address: reader.read_u64()?,
+        }),
+        1 => Ok(CodePoint::Symbol {
+            name: reader.read_string()?,
+        }),
+        _ => Err(scenario_serialization_error("invalid code point tag")),
     }
 }
 
@@ -12241,6 +12357,13 @@ fn predicate_material(predicate: &Predicate) -> String {
                 regex_program_material(regex)
             )
         }
+        Predicate::CoveragePoint { node, point } => {
+            format!(
+                "predicate=coverage-point\n{}\n{}",
+                node_ref_material("coverage_node", node),
+                code_point_material(point)
+            )
+        }
         Predicate::IoPattern { node, kind } => {
             format!(
                 "predicate=io-pattern\n{}\nio_kind={}",
@@ -12334,6 +12457,21 @@ fn frame_predicate_material(predicate: &FramePredicate) -> String {
 
 fn regex_program_material(regex: &RegexProgram) -> String {
     format!("regex_len={}\nregex={}", regex.pattern.len(), regex.pattern)
+}
+
+fn code_point_material(point: &CodePoint) -> String {
+    match point {
+        CodePoint::GuestAddress { address } => {
+            format!("code_point=guest-address\ncode_address={address}")
+        }
+        CodePoint::Symbol { name } => {
+            format!(
+                "code_point=symbol\nsymbol_len={}\nsymbol={}",
+                name.len(),
+                name
+            )
+        }
+    }
 }
 
 fn io_event_kind_label(kind: IoEventKind) -> &'static str {
