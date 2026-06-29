@@ -663,8 +663,8 @@ eval (network access is disabled unless explicitly allowed).
         is covered by focused `fetchTree` tests for local inputs, string refs,
         git metadata, forge archive lowering, configured GitHub/GitLab/SourceHut
         resolution, configured forge `dir` rerooting, lock gates, and
-        direct path/tarball/git/configured-GitHub-forge attrset lock-metadata
-        mismatch rejection, and invalid-shape rejection.
+        direct path/tarball/git/configured-forge attrset lock-metadata mismatch
+        rejection, and invalid-shape rejection.
 - [ ] Full `fetchTree` flake fetcher remains — registry/indirect refs, live
       provider ref-resolution parity beyond the configured-response forge
       canaries, remaining live-provider forge `dir`/metadata parity, full

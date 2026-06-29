@@ -842,7 +842,7 @@ fn fetch_tree_forge_refs_reroot_dir_with_test_url_responses() {
 }
 
 #[test]
-fn fetch_tree_github_direct_attrset_rejects_last_modified_mismatch() {
+fn fetch_tree_forge_direct_attrsets_reject_last_modified_mismatch() {
     fn current_unix_seconds() -> i64 {
         i64::try_from(
             SystemTime::now()
@@ -853,66 +853,119 @@ fn fetch_tree_github_direct_attrset_rejects_last_modified_mismatch() {
         .expect("current Unix time fits in Nix int")
     }
 
-    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-forge-metadata");
+    fn append_future_tar_bytes<W: std::io::Write>(
+        builder: &mut tar::Builder<W>,
+        path: &str,
+        mode: u32,
+        bytes: &[u8],
+        mtime: i64,
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).expect("tar path is valid");
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_mtime(u64::try_from(mtime).expect("test mtime is non-negative"));
+        header.set_cksum();
+        builder
+            .append(&header, bytes)
+            .expect("tar fixture entry appends");
+    }
+
+    let future_last_modified = current_unix_seconds()
+        .checked_add(31_536_000)
+        .expect("future test mtime fits in Nix int");
+    let archive_dir = unique_temp_dir("fetch-tree-forge-metadata");
+    let archive_path = archive_dir.join("root.tar.gz");
+    let file = fs::File::create(&archive_path).expect("tarball fixture creates");
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    append_future_tar_bytes(
+        &mut builder,
+        "root/file.txt",
+        0o644,
+        b"data",
+        future_last_modified,
+    );
+    append_future_tar_bytes(
+        &mut builder,
+        "root/sub/nested.txt",
+        0o644,
+        b"inner",
+        future_last_modified,
+    );
+    let encoder = builder.into_inner().expect("tar fixture finalizes");
+    encoder.finish().expect("gzip fixture finalizes");
     let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
     let store_dir = unique_temp_dir("fetch-tree-forge-metadata-store");
     let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
         .expect("temporary store root configures");
     let rev = "0123456789abcdef0123456789abcdef01234567";
-    let archive_url = format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz");
 
-    options.add_fetch_tree_url_response(archive_url, archive_bytes);
-
-    let json = eval_json_bytes_with_options(
-        &format!(
-            r#"
-                let x = builtins.fetchTree {{
-                  type = "github";
-                  owner = "NixOS";
-                  repo = "nixpkgs";
-                  rev = "{rev}";
-                }};
-                in {{ lastModified = x.lastModified; rev = x.rev; }}
-                "#
+    for archive_url in [
+        format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz"),
+        format!(
+            "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={rev}"
         ),
-        options.clone(),
-    );
-    let value: serde_json::Value =
-        serde_json::from_slice(&json).expect("forge metadata JSON parses");
-    assert_eq!(value["rev"], rev);
-    let observed_last_modified = value["lastModified"]
-        .as_i64()
-        .expect("lastModified is an integer");
-    let wrong_last_modified = observed_last_modified
-        .checked_add(31_536_000)
-        .unwrap_or(observed_last_modified - 31_536_000);
+        format!("https://git.sr.ht/~andyl/aos/archive/{rev}.tar.gz"),
+    ] {
+        options.add_fetch_tree_url_response(archive_url, archive_bytes.clone());
+    }
 
-    let eval_before = current_unix_seconds().saturating_sub(1);
-    let error = eval_whnf_owned_with_options(
-        &lower(&format!(
-            r#"builtins.fetchTree {{
-                  type = "github";
-                  owner = "NixOS";
-                  repo = "nixpkgs";
-                  rev = "{rev}";
-                  lastModified = {wrong_last_modified};
-                }}"#
-        )),
-        options,
-    )
-    .expect_err("direct forge fetchTree rejects mismatched lastModified");
-    let eval_after = current_unix_seconds().saturating_add(1);
-    assert!(matches!(
-        error.kind(),
-        TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
-            expected,
-            actual,
-            ..
-        } if expected == wrong_last_modified
-            && actual != wrong_last_modified
-            && actual >= eval_before
-            && actual <= eval_after
-    ));
+    for (input_type, owner, repo) in [
+        ("github", "NixOS", "nixpkgs"),
+        ("gitlab", "NixOS", "nixpkgs"),
+        ("sourcehut", "~andyl", "aos"),
+    ] {
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                    let x = builtins.fetchTree {{
+                      type = "{input_type}";
+                      owner = "{owner}";
+                      repo = "{repo}";
+                      rev = "{rev}";
+                    }};
+                    in {{ lastModified = x.lastModified; rev = x.rev; }}
+                    "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("forge metadata JSON parses");
+        assert_eq!(value["rev"], rev, "{input_type}");
+        let observed_last_modified = value["lastModified"]
+            .as_i64()
+            .expect("lastModified is an integer");
+        assert_eq!(observed_last_modified, future_last_modified, "{input_type}");
+        let wrong_last_modified = future_last_modified
+            .checked_add(31_536_000)
+            .expect("wrong test mtime fits in Nix int");
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{
+                      type = "{input_type}";
+                      owner = "{owner}";
+                      repo = "{repo}";
+                      rev = "{rev}";
+                      lastModified = {wrong_last_modified};
+                    }}"#
+            )),
+            options.clone(),
+        )
+        .expect_err("direct forge fetchTree rejects mismatched lastModified");
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+                    expected,
+                    actual,
+                    ..
+                } if expected == wrong_last_modified && actual == future_last_modified
+            ),
+            "{input_type}: {error:?}",
+        );
+    }
 
     fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
