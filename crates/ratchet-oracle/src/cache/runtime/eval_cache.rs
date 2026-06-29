@@ -307,17 +307,18 @@ impl EvalCache {
         };
         let graph_node = self.graph.node(node)?;
         let graph_value_hash = graph_node.value_hash();
+        let graph_freshness = graph_node.freshness();
         let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
         if graph_value_hash != Some(record.value_hash) {
             return Ok(None);
         }
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(None);
+        }
         if record.is_reusable_without_revalidation() {
-            if graph_node.freshness() != NodeFreshness::Clean {
-                return Ok(None);
-            }
-            if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            if graph_freshness != NodeFreshness::Clean {
                 return Ok(None);
             }
             return Ok(Some(CachedExpressionPayloadHit::new(node, record.value())));
@@ -342,9 +343,6 @@ impl EvalCache {
             )));
         }
         if graph_node.freshness() != NodeFreshness::Clean {
-            return Ok(None);
-        }
-        if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(None);
         }
         Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))
@@ -422,17 +420,12 @@ impl EvalCache {
         I: IntoIterator<Item = DemandNodeId>,
     {
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
-        let mut has_dirty_dependency = false;
-        for dependency in &dependencies {
-            if self.graph.node(*dependency)?.freshness() == NodeFreshness::Dirty {
-                has_dirty_dependency = true;
-            }
-        }
         self.graph.replace_dependency_group(
             dependent,
             DemandDependencyGroup::MemoRead,
             dependencies.iter().copied(),
         )?;
+        let has_dirty_dependency = self.has_dirty_memo_read_dependency(dependent)?;
         if has_dirty_dependency {
             self.invalidate_existing_inline_payload(Some(dependent))?;
         }
@@ -840,9 +833,10 @@ impl EvalCache {
         &mut self,
         node: DemandNodeId,
     ) -> Result<bool, DemandGraphError> {
-        // Side records are only reusable when their memo-read suppliers are
-        // clean. Observations that race with dirty supplier wiring keep the
-        // freshly computed value hash but leave the node dirty and uncacheable.
+        // Side records are only reusable when every memo-read supplier reachable
+        // from the node is clean. Observations that race with dirty supplier
+        // wiring keep the freshly computed value hash but leave the node dirty
+        // and uncacheable.
         if !self.has_dirty_memo_read_dependency(node)? {
             return Ok(false);
         }
@@ -851,16 +845,25 @@ impl EvalCache {
     }
 
     fn has_dirty_memo_read_dependency(&self, node: DemandNodeId) -> Result<bool, DemandGraphError> {
-        let Some(dependencies) = self
+        let mut stack = self
             .graph
             .node(node)?
             .dependencies_in_group(DemandDependencyGroup::MemoRead)
-        else {
-            return Ok(false);
-        };
-        for dependency in dependencies {
-            if self.graph.node(*dependency)?.freshness() == NodeFreshness::Dirty {
+            .map(|dependencies| dependencies.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut visited = BTreeSet::new();
+        while let Some(dependency) = stack.pop() {
+            if !visited.insert(dependency) {
+                continue;
+            }
+            let dependency_node = self.graph.node(dependency)?;
+            if dependency_node.freshness() == NodeFreshness::Dirty {
                 return Ok(true);
+            }
+            if let Some(dependencies) =
+                dependency_node.dependencies_in_group(DemandDependencyGroup::MemoRead)
+            {
+                stack.extend(dependencies.iter().copied());
             }
         }
         Ok(false)

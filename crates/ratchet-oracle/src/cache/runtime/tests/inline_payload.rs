@@ -155,6 +155,74 @@ fn clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
 }
 
 #[test]
+fn clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_record() {
+    let mut cache = EvalCache::new();
+    let root = cache
+        .get_or_insert_expression_node(
+            identity(b"dirty-root", 1),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"dirty-root")),
+        )
+        .expect("root inserts");
+    let supplier = cache
+        .get_or_insert_expression_node(
+            identity(b"clean-supplier", 2),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"clean-supplier")),
+        )
+        .expect("supplier inserts");
+    cache
+        .record_memo_read_dependency(supplier, root)
+        .expect("supplier memo-read edge records");
+    let expression_identity = identity(b"transitive-dependent", 3);
+    let observation = cache
+        .observe_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("dependent payload observes");
+    cache
+        .record_memo_read_dependency(observation.node(), supplier)
+        .expect("dependent memo-read edge records");
+    cache.test_mark_dirty_node(root).expect("root marks dirty");
+    assert_eq!(
+        cache
+            .graph()
+            .node(supplier)
+            .expect("supplier node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+    assert_eq!(
+        cache
+            .graph()
+            .node(observation.node())
+            .expect("dependent node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+
+    let value = cache
+        .lookup_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("lookup succeeds");
+
+    assert!(value.is_none());
+    assert_eq!(cache.inline_payload_record_count(), 0);
+    assert_eq!(
+        cache
+            .graph()
+            .node(observation.node())
+            .expect("dependent node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+}
+
+#[test]
 fn eval_cache_looks_up_context_free_string_payloads() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);

@@ -529,23 +529,29 @@ alone (`M-1`/`Q-A`).
       Successful parent force completion replaces the parent's `MemoRead`
       group with that per-evaluation child set without disturbing impure-input
       edges; failed parent evaluations leave the previous memo-read group
-      unchanged. Runtime lookup paths for clean inline payloads, trace-backed
-      inline payloads, derivation ATerm side records, and static-output side
-      records now also miss and purge the side payload when the target node has
-      an already-dirty `MemoRead` supplier, so a stale supplier cannot be
-      bypassed simply because the dependent node has not yet been dirtied.
+      unchanged. Runtime dependency replacement and lookup paths for clean
+      inline payloads, trace-backed inline payloads, derivation ATerm side
+      records, and static-output side records now also miss and purge the side
+      payload when the target node has an already-dirty direct or transitive
+      `MemoRead` supplier, so a stale supplier cannot be bypassed simply because
+      the dependent node has not yet been dirtied.
       Disabled runtimes, inactive parents, and self-edges remain no-ops. This
       covers force-cache child payload hits that already have or
       seed an in-memory runtime node, admitted thunk child misses with runtime
       nodes, and admitted first-class cacheable impure primop misses with runtime
-      nodes; general evaluator-owned dynamic dependency capture, separate
+      nodes; it also covers transitive dirty memo-read supplier side-record
+      purges. General evaluator-owned dynamic dependency capture, separate
       inner/outer observers, evaluator-integrated ready-dirty recomputation,
       persistent graph serialization, and cached/uncached `.drv` parity proof
       remain open (`S-14`/`C-20`). The gate covers
       `eval_cache_payload_hits_return_supplier_node_for_memo_read_edges` and
       `clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record`,
+      `clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_record`,
       `clean_trace_backed_inline_payload_with_dirty_memo_supplier_misses_and_purges_record`,
+      `clean_trace_payload_with_transitively_dirty_memo_supplier_misses_and_purges_record`,
       `clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge`,
+      `clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_purge`,
+      `replace_memo_read_dependencies_with_transitive_dirty_supplier_purges_side_records`,
       `source_backed_active_force_cache_hits_record_memo_read_edges`,
       `source_backed_active_force_cache_hits_replace_prior_memo_read_edges`,
       `source_backed_parent_force_without_hits_clears_prior_memo_read_edges`,
@@ -639,7 +645,8 @@ alone (`M-1`/`Q-A`).
       scalar/string/path/replayable-list/replayable-attrset payload records beside demand-graph value
       hashes, `EvalCacheRuntime::lookup_inline_expression_payload` returns a
       memoized payload only for clean nodes whose payload hash still matches the
-      graph, and tree-walk `force_value` consults this shared cache before
+      graph and whose memo-read supplier chain is clean, and tree-walk
+      `force_value` consults this shared cache before
       evaluating a policy-admitted newly claimed closed source-backed thunk whose
       entire body subtree is both speculable and in the conservative
       self-contained IR-kind whitelist. Hits publish immediate scalars directly and rehydrate
@@ -650,8 +657,8 @@ alone (`M-1`/`Q-A`).
       rehydrate as strict static replayable payload values, so thunk identity
       and laziness from the cold run are not preserved across the cached
       payload. Disabled runtimes, unknown nodes, dirty nodes, missing payloads,
-      stale payloads, unprovenanced positioned payloads, and incompatible,
-      multi-module, or non-own positioned
+      stale payloads, dirty memo-read supplier chains, unprovenanced positioned
+      payloads, and incompatible, multi-module, or non-own positioned
       payloads are misses. This is a scalar/string/path/replayable-list/replayable-attrset
       pure/local hit path only: source-less raw eval outside the
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
@@ -663,7 +670,7 @@ alone (`M-1`/`Q-A`).
       non-literal lazy-element lists and lazy-binding attrsets, broader
       multi-module/non-own
       binding-position module-source remapping, and other composite payloads,
-      transitive dirty scheduling, persistence, `derivationStrict` SHA-256
+      full transitive dirty scheduling, persistence, `derivationStrict` SHA-256
       short-circuiting, and cached/uncached harness proof remain open
       (`S-14`/`S-15`). The gate includes `cache::runtime` lookup tests,
       source-backed force-cache hit/skip tests, positioned attrset
@@ -1230,9 +1237,10 @@ alone (`M-1`/`Q-A`).
       hits clean the node through `DemandGraph::reconsider_node`, report the
       reconsideration on the payload hit, and tree-walk counts `CutOff` hits in
       `EvalStats::early_cutoffs`; changed, unavailable, or uncacheable inputs
-      still invalidate the payload and miss, and dirty memo-read suppliers still
-      block reuse. This is local dirty-node revalidation for trace-backed
-      forced-expression payloads only; evaluator-owned dirty-frontier
+      still invalidate the payload and miss, and dirty direct or transitive
+      memo-read suppliers still block reuse. This is local dirty-node
+      revalidation for trace-backed forced-expression payloads only;
+      evaluator-owned dirty-frontier
       scheduling, transitive red/green propagation, persistence-aware dirty
       revalidation, canonical hashes for all values, and cached/uncached `.drv`
       parity proof remain open (`S-14`/`M-11`). Gates:
