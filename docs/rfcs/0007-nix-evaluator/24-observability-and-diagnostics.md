@@ -488,8 +488,16 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       CLI/user-facing parse/eval surface through the wrapper, keep full
       summarized/full `--show-trace` parity open, and finish any
       C++-Nix-exact renderer, REPL, or debugger integration once those surfaces
-      are in real use (§2.1–§2.3, §5, §6, §9 open questions 2-3) — **P1**,
-      `C-26`/`D-OBS-1`/`D-OBS-2`/`D-OBS-3`.
+      are in real use. Current progress: native REPL `:scope` parser and
+      resolver failures now render through `ParseDiagnostic`/`ScopeDiagnostic`
+      against the typed `repl-input.nix` expression while preserving the
+      generated wrapper as a fallback source (§2.1–§2.3, §5, §6, §9 open
+      questions 2-3) — **P1**, `C-26`/`D-OBS-1`/`D-OBS-2`/`D-OBS-3`; gate:
+      `native_repl_scope_command_reports_parse_diagnostic`,
+      `native_repl_scope_command_maps_suffix_parse_diagnostic_to_input`,
+      `native_repl_scope_command_maps_trailing_comment_parse_diagnostic_to_input`,
+      `native_repl_scope_command_maps_unterminated_string_diagnostic_to_input`,
+      `native_repl_scope_command_reports_resolve_diagnostic`.
 
 ### The presentation-vs-parity separation (§3)
 

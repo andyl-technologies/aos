@@ -933,8 +933,10 @@ fn repl_scope_report(loaded_file: Option<&Path>, expr: &str) -> Result<String> {
     use aos_nix::syntax::ast::{NodeData, NodeKind, Symbol};
 
     let (source, user_range) = repl_context_expr_with_user_range(loaded_file, expr);
-    let parsed = aos_nix::syntax::parse_str(&source).context("parsing REPL scope expression")?;
-    let resolved = aos_nix::compile::resolve(parsed).context("resolving REPL scope expression")?;
+    let parsed = aos_nix::syntax::parse_str(&source)
+        .map_err(|error| repl_scope_parse_error(error, &source, expr, &user_range))?;
+    let resolved = aos_nix::compile::resolve(parsed)
+        .map_err(|error| repl_scope_resolve_error(error, &source, expr, &user_range))?;
 
     let mut report = String::new();
     writeln!(&mut report, "scope for: {expr}")?;
@@ -1073,6 +1075,121 @@ fn repl_scope_report(loaded_file: Option<&Path>, expr: &str) -> Result<String> {
     }
 
     Ok(report)
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_scope_parse_error(
+    error: aos_nix::syntax::ParseError,
+    source: &str,
+    expr: &str,
+    user_range: &Range<usize>,
+) -> anyhow::Error {
+    anyhow::anyhow!(repl_scope_parse_diagnostic(error, source, expr, user_range))
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_scope_parse_diagnostic(
+    error: aos_nix::syntax::ParseError,
+    source: &str,
+    expr: &str,
+    user_range: &Range<usize>,
+) -> String {
+    use aos_nix::diagnostic::{ParseDiagnostic, render_fancy_report};
+
+    let fallback = error.to_string();
+    let (name, source, error) = match repl_user_parse_error(&error, user_range) {
+        Some(error) => ("repl-input.nix", expr.to_string(), error),
+        None => ("repl-expanded.nix", source.to_string(), error),
+    };
+    let diagnostic = ParseDiagnostic::new(name, source, error);
+    render_fancy_report(&diagnostic).unwrap_or(fallback)
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_scope_resolve_error(
+    error: aos_nix::compile::ScopeError,
+    source: &str,
+    expr: &str,
+    user_range: &Range<usize>,
+) -> anyhow::Error {
+    anyhow::anyhow!(repl_scope_resolve_diagnostic(
+        error, source, expr, user_range
+    ))
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_scope_resolve_diagnostic(
+    error: aos_nix::compile::ScopeError,
+    source: &str,
+    expr: &str,
+    user_range: &Range<usize>,
+) -> String {
+    use aos_nix::diagnostic::{ScopeDiagnostic, render_fancy_report};
+
+    let fallback = error.to_string();
+    let (name, source, error) = match repl_user_scope_error(&error, user_range) {
+        Some(error) => ("repl-input.nix", expr.to_string(), error),
+        None => ("repl-expanded.nix", source.to_string(), error),
+    };
+    let diagnostic = ScopeDiagnostic::new(name, source, error);
+    render_fancy_report(&diagnostic).unwrap_or(fallback)
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_user_parse_error(
+    error: &aos_nix::syntax::ParseError,
+    user_range: &Range<usize>,
+) -> Option<aos_nix::syntax::ParseError> {
+    use aos_nix::syntax::ParseErrorKind;
+
+    let span = repl_user_span(error.span(), user_range)?;
+    let kind = match error.kind() {
+        ParseErrorKind::DuplicateAttribute { first, second } => {
+            ParseErrorKind::DuplicateAttribute {
+                first: repl_user_span(*first, user_range)?,
+                second: repl_user_span(*second, user_range)?,
+            }
+        }
+        kind => kind.clone(),
+    };
+    Some(aos_nix::syntax::ParseError::new(kind, span))
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_user_scope_error(
+    error: &aos_nix::compile::ScopeError,
+    user_range: &Range<usize>,
+) -> Option<aos_nix::compile::ScopeError> {
+    let span = repl_user_span(error.span(), user_range)?;
+    Some(aos_nix::compile::ScopeError::new(
+        error.kind().clone(),
+        span,
+    ))
+}
+
+#[cfg(feature = "native-eval")]
+fn repl_user_span(
+    span: aos_nix::syntax::Span,
+    user_range: &Range<usize>,
+) -> Option<aos_nix::syntax::Span> {
+    let start = usize::try_from(span.start).ok()?;
+    let end = usize::try_from(span.end).ok()?;
+    let suffix_end = user_range.end.saturating_add(1);
+    if start < user_range.start || start > suffix_end {
+        return None;
+    }
+    if end > suffix_end {
+        return None;
+    }
+    let expr_len = user_range.end.checked_sub(user_range.start)?;
+    if start >= user_range.end {
+        let start = u32::try_from(expr_len.checked_sub(1)?).ok()?;
+        let end = u32::try_from(expr_len).ok()?;
+        return Some(aos_nix::syntax::Span { start, end });
+    }
+    let start = u32::try_from(start - user_range.start).ok()?;
+    let end = u32::try_from(end.min(user_range.end) - user_range.start).ok()?;
+    Some(aos_nix::syntax::Span { start, end })
 }
 
 #[cfg(not(feature = "native-eval"))]
@@ -1626,6 +1743,146 @@ mod tests {
         assert!(!output.contains("__aos_repl_loaded"), "{output}");
         assert!(!output.contains("__aos_repl_scope"), "{output}");
         assert!(!output.contains("\"builtins\" -> global"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_reports_parse_diagnostic() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope let x = ; in x\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("aos_nix::parse::unexpected_token"),
+            "{output}"
+        );
+        assert!(output.contains("repl-input.nix"), "{output}");
+        assert!(output.contains("let x = ; in x"), "{output}");
+        assert!(
+            !output.contains("parsing REPL scope expression"),
+            "{output}"
+        );
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_maps_suffix_parse_diagnostic_to_input() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope let x =\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("aos_nix::parse::unexpected_token"),
+            "{output}"
+        );
+        assert!(output.contains("repl-input.nix"), "{output}");
+        assert!(output.contains("let x ="), "{output}");
+        assert!(
+            !output.contains("parsing REPL scope expression"),
+            "{output}"
+        );
+        assert!(!output.contains("repl-expanded.nix"), "{output}");
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_maps_trailing_comment_parse_diagnostic_to_input() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope 1 # comment\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("aos_nix::parse::unexpected_token"),
+            "{output}"
+        );
+        assert!(output.contains("repl-input.nix"), "{output}");
+        assert!(output.contains("1 # comment"), "{output}");
+        assert!(!output.contains("repl-expanded.nix"), "{output}");
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_maps_unterminated_string_diagnostic_to_input() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope let x = \"\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("aos_nix::lex::unterminated_string"),
+            "{output}"
+        );
+        assert!(output.contains("repl-input.nix"), "{output}");
+        assert!(output.contains("let x = \""), "{output}");
+        assert!(!output.contains("repl-expanded.nix"), "{output}");
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_repl_scope_command_reports_resolve_diagnostic() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner = runner_with_evaluator(Box::new(Arc::clone(&evaluator)));
+        let mut input = io::Cursor::new(
+            b":scope let ${name} = 1; in 1\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(
+            output.contains("aos_nix::resolve::dynamic_let_binding"),
+            "{output}"
+        );
+        assert!(output.contains("repl-input.nix"), "{output}");
+        assert!(output.contains("let ${name} = 1; in 1"), "{output}");
+        assert!(
+            !output.contains("resolving REPL scope expression"),
+            "{output}"
+        );
+        assert!(!output.contains("__aos_repl_loaded"), "{output}");
+        assert!(!output.contains("__aos_repl_scope"), "{output}");
         Ok(())
     }
 
