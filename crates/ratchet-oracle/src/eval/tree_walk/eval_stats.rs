@@ -21,6 +21,12 @@ impl TreeWalk {
             force_cache_misses: self.stats.force_cache_misses,
             force_cache_memoization_admits: self.stats.force_cache_memoization_admits,
             force_cache_memoization_bypasses: self.stats.force_cache_memoization_bypasses,
+            force_cache_materialization_materializes: self
+                .stats
+                .force_cache_materialization_materializes,
+            force_cache_materialization_keeps_in_memory: self
+                .stats
+                .force_cache_materialization_keeps_in_memory,
             cache_hits: self
                 .stats
                 .force_cache_hits
@@ -62,6 +68,12 @@ impl TreeWalk {
             force_cache_memoization_admits = stats.force_cache_memoization_admits(),
             force_cache_memoization_bypasses = stats.force_cache_memoization_bypasses(),
             force_cache_memoization_demands = stats.force_cache_memoization_demands(),
+            force_cache_materialization_materializes = stats
+                .force_cache_materialization_materializes(),
+            force_cache_materialization_keeps_in_memory = stats
+                .force_cache_materialization_keeps_in_memory(),
+            force_cache_materialization_decisions = stats
+                .force_cache_materialization_decisions(),
             cache_hits = stats.cache_hits(),
             cache_misses = stats.cache_misses(),
             early_cutoffs = stats.early_cutoffs(),
@@ -113,6 +125,26 @@ impl TreeWalk {
                 self.stats.force_cache_memoization_bypasses = self
                     .stats
                     .force_cache_memoization_bypasses
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    pub(super) fn increment_force_cache_materialization_decision(
+        &mut self,
+        decision: MaterializationDecision,
+    ) {
+        match decision {
+            MaterializationDecision::Materialize => {
+                self.stats.force_cache_materialization_materializes = self
+                    .stats
+                    .force_cache_materialization_materializes
+                    .saturating_add(1);
+            }
+            MaterializationDecision::KeepInMemory => {
+                self.stats.force_cache_materialization_keeps_in_memory = self
+                    .stats
+                    .force_cache_materialization_keeps_in_memory
                     .saturating_add(1);
             }
         }

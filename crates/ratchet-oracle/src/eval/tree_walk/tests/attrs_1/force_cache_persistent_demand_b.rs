@@ -149,6 +149,17 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
             complete: true,
         },
     );
+    assert_eq!(
+        evaluator.stats().force_cache_materialization_materializes(),
+        1
+    );
+    assert_eq!(
+        evaluator
+            .stats()
+            .force_cache_materialization_keeps_in_memory(),
+        0
+    );
+    assert_eq!(evaluator.stats().force_cache_materialization_decisions(), 1);
 
     let expected_payload =
         CachedExpressionValue::immediate(Value::bool(true)).expect("bool payload is cacheable");
@@ -220,6 +231,17 @@ fn large_force_payload_measurement_skips_unprofitable_persistent_value_link() {
             complete: true,
         },
     );
+    assert_eq!(
+        evaluator.stats().force_cache_materialization_materializes(),
+        0
+    );
+    assert_eq!(
+        evaluator
+            .stats()
+            .force_cache_materialization_keeps_in_memory(),
+        1
+    );
+    assert_eq!(evaluator.stats().force_cache_materialization_decisions(), 1);
 
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
@@ -283,6 +305,17 @@ fn force_work_measurement_materializes_large_persistent_value_link() {
         Some(16),
         false,
     );
+    assert_eq!(
+        evaluator.stats().force_cache_materialization_materializes(),
+        1
+    );
+    assert_eq!(
+        evaluator
+            .stats()
+            .force_cache_materialization_keeps_in_memory(),
+        0
+    );
+    assert_eq!(evaluator.stats().force_cache_materialization_decisions(), 1);
 
     let expected_payload = CachedExpressionValue::context_free_string(bytes);
     let expected_value_hash = expected_payload
@@ -368,6 +401,17 @@ fn unprofitable_force_observation_skips_persistent_value_link_with_prior_demand(
             .bytes(),
         b"x86_64-linux"
     );
+    assert_eq!(
+        evaluator.stats().force_cache_materialization_materializes(),
+        0
+    );
+    assert_eq!(
+        evaluator
+            .stats()
+            .force_cache_materialization_keeps_in_memory(),
+        1
+    );
+    assert_eq!(evaluator.stats().force_cache_materialization_decisions(), 1);
     drop(evaluator);
 
     let persist = PersistCache::open(&persist_root).expect("persistent cache reopens");

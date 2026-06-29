@@ -220,28 +220,35 @@ impl TreeWalk {
         }
         let identity = subject.metadata_identity?;
         self.open_persist_eval_cache();
-        let Some(persist_cache) = &self.persist_cache else {
-            return None;
-        };
         let key = PersistNodeMetadataKey::for_expression(
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
         let costs = cost_observation.costs(self.options.force_cache_materialization_costs());
-        let signals = match persist_cache.node_materialization_signals(key, costs) {
-            Ok(signals) => signals,
-            Err(error) => {
-                tracing::warn!(
-                    target: "aos_nix::cache",
-                    error = %error,
-                    "tree-walk evaluator persistent force materialization signals failed"
-                );
+        let signals = {
+            let Some(persist_cache) = &self.persist_cache else {
                 return None;
+            };
+            match persist_cache.node_materialization_signals(key, costs) {
+                Ok(signals) => signals,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator persistent force materialization signals failed"
+                    );
+                    return None;
+                }
             }
         };
-        if signals.decide() == MaterializationDecision::KeepInMemory {
+        let decision = signals.decide();
+        self.increment_force_cache_materialization_decision(decision);
+        if decision == MaterializationDecision::KeepInMemory {
             return None;
         }
+        let Some(persist_cache) = &self.persist_cache else {
+            return None;
+        };
         let value_hash = match payload.value_hash() {
             Ok(value_hash) => value_hash,
             Err(error) => {
@@ -253,8 +260,7 @@ impl TreeWalk {
                 return None;
             }
         };
-        match persist_cache
-            .materialize_cached_expression_node_value_indexed_with_signals(key, payload, signals)
+        match persist_cache.materialize_cached_expression_node_value_indexed(key, payload, decision)
         {
             Ok(PersistMaterialization::Materialized(_)) => Some(value_hash),
             Ok(PersistMaterialization::Skipped) => None,

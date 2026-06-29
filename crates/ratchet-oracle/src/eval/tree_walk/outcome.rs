@@ -154,6 +154,8 @@ pub struct EvalStats {
     pub(crate) force_cache_misses: u64,
     pub(crate) force_cache_memoization_admits: u64,
     pub(crate) force_cache_memoization_bypasses: u64,
+    pub(crate) force_cache_materialization_materializes: u64,
+    pub(crate) force_cache_materialization_keeps_in_memory: u64,
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
@@ -252,6 +254,22 @@ impl EvalStats {
     pub const fn force_cache_memoization_demands(&self) -> u64 {
         self.force_cache_memoization_admits
             .saturating_add(self.force_cache_memoization_bypasses)
+    }
+
+    /// Returns force-cache materialization decisions that selected durable storage.
+    pub const fn force_cache_materialization_materializes(&self) -> u64 {
+        self.force_cache_materialization_materializes
+    }
+
+    /// Returns force-cache materialization decisions that kept payloads in memory.
+    pub const fn force_cache_materialization_keeps_in_memory(&self) -> u64 {
+        self.force_cache_materialization_keeps_in_memory
+    }
+
+    /// Returns force-cache materialization threshold decisions.
+    pub const fn force_cache_materialization_decisions(&self) -> u64 {
+        self.force_cache_materialization_materializes
+            .saturating_add(self.force_cache_materialization_keeps_in_memory)
     }
 
     /// Returns the aggregate number of evaluator cache hits.

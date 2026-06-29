@@ -2383,7 +2383,7 @@ alone (`M-1`/`Q-A`).
 - [x] Current threshold-driven force-cache persistent value writeback:
       tree-walk `force_value` now materializes replayable forced-expression
       payloads through `PersistCache::node_materialization_signals` and
-      `materialize_cached_expression_node_value_indexed_with_signals` after the
+      `materialize_cached_expression_node_value_indexed` after the
       in-memory force-cache observation accepts a node payload. The evaluator
       supplies unit costs from
       `TreeWalkOptions::force_cache_materialization_costs`; persisted prior-run
@@ -2427,6 +2427,21 @@ alone (`M-1`/`Q-A`).
       deterministic in-evaluator cost collection only; wall-clock sampling, AOS
       trace calibration, RAM-tier promotion, mmap reads, GC/repack, and
       cached/uncached harness proof remain open (`C-14`).
+- [x] Current force-cache materialization decision telemetry:
+      tree-walk `EvalStats` mirrors force-cache materialization threshold
+      decisions as `force_cache_materialization_materializes`,
+      `force_cache_materialization_keeps_in_memory`, and derived
+      `force_cache_materialization_decisions` counters, and emits them in the
+      existing `aos_nix::eval::stats` trace event. The threshold-driven
+      force-cache writeback path increments these counters after
+      `PersistCache::node_materialization_signals` returns a policy decision
+      and before optional value hashing/writing, so profitable and unprofitable
+      persistent writeback observations are visible without conflating advisory
+      write failures with policy choices. This is evaluator telemetry only; AOS
+      trace calibration, RAM-tier promotion, mmap reads, GC/repack, and
+      cached/uncached harness proof remain open. Gates cover eval stats trace
+      tests plus force-cache persistent threshold skip/materialize tests
+      (`C-14`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input
