@@ -3347,15 +3347,23 @@ alone (`M-1`/`Q-A`).
       `hashFile`, `readDir`, `readFileType`, `pathExists`, and impure-mode
       `getEnv` plus a two-leaf `pathExists (readFile ./target)` trace, and
       `import_backed_inline_thunks_record_exact_force_cache_graph_edges` covers
-      canonical plain-file `import`. They require the evaluator trace to match
-      the expected typed fingerprint(s) and the enabled runtime graph to contain
-      exactly one impure-edge owner, which must be the node for that thunk's
-      force-cache impure-observation key, whose `ImpureInput` dependency group
-      points to the leaf or leaves keyed by those fingerprints, with reverse
-      dependent edges on the leaves. This is a focused force-cache edge harness
-      for the currently admitted ordinary filesystem/import subset; it does not
-      cover broader nested/multi-input traces, search-path/allowed-path/fetch
-      interactions, persistent graph replay, or `currentTime` taint propagation
+      canonical plain-file `import`;
+      `find_file_forced_inline_thunks_revalidate_candidate_edges_before_hits`
+      covers a direct explicit-list `findFile` miss-then-hit candidate trace;
+      and `find_file_first_class_nix_path_records_exact_force_cache_graph_edges`
+      covers the admitted first-class `findFile builtins.nixPath` child-call key
+      with the same miss-then-hit `FindFileCandidate` leaves. They require the
+      evaluator trace to match the expected typed fingerprint(s) and the enabled
+      runtime graph to contain exactly one impure-edge owner, which must be the
+      node for that thunk's or admitted child call's force-cache
+      impure-observation key, whose `ImpureInput` dependency group points to the
+      leaf or leaves keyed by those fingerprints, with reverse dependent edges
+      on the leaves. This is a focused force-cache edge harness for the
+      currently admitted ordinary filesystem/import/direct explicit-list
+      `findFile`/first-class `findFile builtins.nixPath` subset; it does not
+      cover broader nested/multi-input traces, first-class explicit-list
+      exact-key edge proof, search-path allowed-path/fetch interactions,
+      persistent graph replay, or `currentTime` taint propagation
       (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
