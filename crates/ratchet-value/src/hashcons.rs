@@ -11,8 +11,11 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
+
+static NEXT_HASH_CONS_TABLE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A hash-cons table operation failed.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -35,21 +38,96 @@ pub enum HashConsError {
 }
 
 /// Stores hash-cons candidates in buckets keyed by structural hash.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct HashConsTable<K, V> {
-    buckets: HashMap<K, Vec<V>>,
+    table_id: u64,
+    buckets: HashMap<K, HashConsBucket<V>>,
 }
 
 /// Reserves one candidate slot in a [`HashConsTable`].
 #[derive(Debug)]
 pub struct HashConsSlot<K> {
+    table_id: u64,
     key: K,
+}
+
+/// The result of probing a hash-cons table for a copyable runtime handle.
+#[derive(Debug)]
+pub enum HashConsReservation<K, V> {
+    /// An equality-confirmed candidate already exists in the table.
+    Existing(V),
+    /// No candidate matched, and the table reserved a slot for insertion.
+    Vacant(HashConsSlot<K>),
+}
+
+#[derive(Clone, Debug)]
+struct HashConsBucket<V> {
+    values: Vec<V>,
+    reserved: usize,
+}
+
+impl<V> HashConsBucket<V> {
+    fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            reserved: 0,
+        }
+    }
+
+    fn as_slice(&self) -> &[V] {
+        self.values.as_slice()
+    }
+
+    fn reserve_slot(&mut self) -> Result<(), HashConsError> {
+        let reserved = self
+            .reserved
+            .checked_add(1)
+            .ok_or(HashConsError::BucketLengthOverflow)?;
+        let entries = self
+            .values
+            .len()
+            .checked_add(reserved)
+            .ok_or(HashConsError::BucketLengthOverflow)?;
+        self.values
+            .try_reserve_exact(reserved)
+            .map_err(|_| HashConsError::BucketAllocationFailed { entries })?;
+        self.reserved = reserved;
+        Ok(())
+    }
+
+    fn push_reserved(&mut self, value: V) -> bool {
+        if self.reserved == 0 || self.values.len() == self.values.capacity() {
+            return false;
+        }
+        self.reserved -= 1;
+        self.values.push(value);
+        true
+    }
+
+    fn cancel_reserved(&mut self) -> bool {
+        if self.reserved == 0 {
+            return false;
+        }
+        self.reserved -= 1;
+        true
+    }
+
+    fn clone_committed(&self) -> Self
+    where
+        V: Clone,
+    {
+        Self {
+            values: self.values.clone(),
+            reserved: 0,
+        }
+    }
 }
 
 impl<K, V> HashConsTable<K, V> {
     /// Creates an empty hash-cons table.
     pub fn new() -> Self {
         Self {
+            table_id: next_hash_cons_table_id(),
             buckets: HashMap::new(),
         }
     }
@@ -65,6 +143,24 @@ impl<K, V> HashConsTable<K, V> {
     }
 }
 
+impl<K, V> Clone for HashConsTable<K, V>
+where
+    K: Clone,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut buckets = self.buckets.clone();
+        for bucket in buckets.values_mut() {
+            *bucket = bucket.clone_committed();
+        }
+        buckets.retain(|_key, bucket| !bucket.values.is_empty());
+        Self {
+            table_id: next_hash_cons_table_id(),
+            buckets,
+        }
+    }
+}
+
 impl<K, V> Default for HashConsTable<K, V> {
     fn default() -> Self {
         Self::new()
@@ -77,7 +173,7 @@ where
 {
     /// Returns the candidate bucket for `key`.
     pub fn bucket(&self, key: &K) -> Option<&[V]> {
-        self.buckets.get(key).map(Vec::as_slice)
+        self.buckets.get(key).map(HashConsBucket::as_slice)
     }
 
     /// Returns the first candidate whose predicate confirms equality.
@@ -97,7 +193,7 @@ where
         let Some(bucket) = self.buckets.get(key) else {
             return Ok(None);
         };
-        for candidate in bucket {
+        for candidate in bucket.as_slice() {
             if matches(candidate)? {
                 return Ok(Some(candidate));
             }
@@ -105,12 +201,45 @@ where
         Ok(None)
     }
 
+    /// Returns an existing candidate or reserves a slot for a missing value.
+    ///
+    /// The predicate confirms equality for every candidate in the matching hash
+    /// bucket. When it finds a match, the copyable runtime handle is returned
+    /// without mutating the table. When it finds no match, the table reserves one
+    /// candidate slot and returns a token that must be passed to
+    /// [`HashConsTable::push_reserved`] after allocation, or to
+    /// [`HashConsTable::cancel_reserved`] if allocation fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by `matches`. Returns [`HashConsError`] via
+    /// `E::from` if the table cannot reserve a bucket or candidate slot.
+    pub fn try_get_or_reserve<E>(
+        &mut self,
+        key: K,
+        matches: impl FnMut(&V) -> Result<bool, E>,
+    ) -> Result<HashConsReservation<K, V>, E>
+    where
+        K: Clone,
+        V: Copy,
+        E: From<HashConsError>,
+    {
+        if let Some(existing) = self.try_find(&key, matches)?.copied() {
+            return Ok(HashConsReservation::Existing(existing));
+        }
+        Ok(HashConsReservation::Vacant(self.reserve_slot(key)?))
+    }
+
     /// Reserves one additional candidate slot for `key`.
     ///
     /// Callers use this before allocating the value that will be pushed into
     /// the bucket. The returned slot token is consumed by
     /// [`HashConsTable::push_reserved`], so public callers cannot push without
-    /// first reserving.
+    /// first reserving. If allocation fails before the value is pushed, pass the
+    /// token to [`HashConsTable::cancel_reserved`] to release the outstanding
+    /// reservation. The table tracks outstanding slots, so multiple unfilled
+    /// reservations for the same key still reserve enough capacity for each
+    /// later push.
     ///
     /// # Errors
     ///
@@ -124,14 +253,11 @@ where
         K: Clone,
     {
         if let Some(bucket) = self.buckets.get_mut(&key) {
-            let entries = bucket
-                .len()
-                .checked_add(1)
-                .ok_or(HashConsError::BucketLengthOverflow)?;
-            bucket
-                .try_reserve_exact(1)
-                .map_err(|_| HashConsError::BucketAllocationFailed { entries })?;
-            return Ok(HashConsSlot { key });
+            bucket.reserve_slot()?;
+            return Ok(HashConsSlot {
+                table_id: self.table_id,
+                key,
+            });
         }
 
         self.buckets
@@ -139,26 +265,58 @@ where
             .map_err(|_| HashConsError::TableAllocationFailed {
                 entries: self.buckets.len().saturating_add(1),
             })?;
-        let mut bucket = Vec::new();
-        bucket
-            .try_reserve_exact(1)
-            .map_err(|_| HashConsError::BucketAllocationFailed { entries: 1 })?;
+        let mut bucket = HashConsBucket::new();
+        bucket.reserve_slot()?;
         self.buckets.insert(key.clone(), bucket);
-        Ok(HashConsSlot { key })
+        Ok(HashConsSlot {
+            table_id: self.table_id,
+            key,
+        })
     }
 
     /// Pushes a value into a reserved bucket.
     ///
-    /// Returns `false` when no bucket exists for the slot key, which indicates
-    /// the slot came from a different table or the table was otherwise changed
-    /// between reservation and push.
+    /// Returns `false` when the slot came from a different table, no bucket
+    /// exists for the slot key, or no outstanding reservation remains for that
+    /// key.
     pub fn push_reserved(&mut self, slot: HashConsSlot<K>, value: V) -> bool {
+        if slot.table_id != self.table_id {
+            return false;
+        }
         let Some(bucket) = self.buckets.get_mut(&slot.key) else {
             return false;
         };
-        bucket.push(value);
+        bucket.push_reserved(value)
+    }
+
+    /// Releases a reserved slot without inserting a value.
+    ///
+    /// Call this when allocation fails after [`HashConsTable::reserve_slot`] or
+    /// [`HashConsTable::try_get_or_reserve`] returned a vacant slot. Returns
+    /// `false` when the slot did not originate from this table, the key no
+    /// longer has a bucket, or no outstanding reservation remains for the key.
+    pub fn cancel_reserved(&mut self, slot: HashConsSlot<K>) -> bool {
+        if slot.table_id != self.table_id {
+            return false;
+        }
+        let remove_bucket = {
+            let Some(bucket) = self.buckets.get_mut(&slot.key) else {
+                return false;
+            };
+            if !bucket.cancel_reserved() {
+                return false;
+            }
+            bucket.values.is_empty() && bucket.reserved == 0
+        };
+        if remove_bucket {
+            self.buckets.remove(&slot.key);
+        }
         true
     }
+}
+
+fn next_hash_cons_table_id() -> u64 {
+    NEXT_HASH_CONS_TABLE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -213,6 +371,19 @@ mod tests {
     }
 
     #[test]
+    fn foreign_slot_with_same_key_does_not_consume_destination_reservation() {
+        let mut left = HashConsTable::<u8, &str>::new();
+        let mut right = HashConsTable::<u8, &str>::new();
+
+        let left_slot = left.reserve_slot(7).expect("left slot reserves");
+        let right_slot = right.reserve_slot(7).expect("right slot reserves");
+
+        assert!(!right.push_reserved(left_slot, "wrong"));
+        assert!(right.push_reserved(right_slot, "right"));
+        assert_eq!(right.bucket(&7), Some(["right"].as_slice()));
+    }
+
+    #[test]
     fn try_find_uses_predicate_to_confirm_candidates() {
         let mut table = HashConsTable::<u8, &str>::new();
 
@@ -243,5 +414,129 @@ mod tests {
             table.try_find(&7, |_| Err::<bool, &str>("predicate failed")),
             Err("predicate failed")
         );
+    }
+
+    #[test]
+    fn try_get_or_reserve_returns_existing_candidate() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let first_slot = table.reserve_slot(7).expect("first slot reserves");
+        assert!(table.push_reserved(first_slot, "left"));
+        let second_slot = table.reserve_slot(7).expect("second slot reserves");
+        assert!(table.push_reserved(second_slot, "right"));
+
+        let reservation = table
+            .try_get_or_reserve(7, |candidate| {
+                Ok::<bool, HashConsError>(*candidate == "right")
+            })
+            .expect("existing candidate is found");
+
+        match reservation {
+            HashConsReservation::Existing(value) => assert_eq!(value, "right"),
+            HashConsReservation::Vacant(_) => panic!("expected an existing candidate"),
+        }
+        assert_eq!(table.bucket(&7), Some(["left", "right"].as_slice()));
+    }
+
+    #[test]
+    fn try_get_or_reserve_returns_vacant_slot_for_missing_candidate() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let reservation = table
+            .try_get_or_reserve(7, |_| Ok::<bool, HashConsError>(false))
+            .expect("vacant slot reserves");
+
+        match reservation {
+            HashConsReservation::Existing(_) => panic!("expected a vacant slot"),
+            HashConsReservation::Vacant(slot) => {
+                assert!(table.push_reserved(slot, "value"));
+            }
+        }
+        assert_eq!(table.bucket(&7), Some(["value"].as_slice()));
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum AdmissionTestError {
+        HashCons(HashConsError),
+        Predicate(&'static str),
+    }
+
+    impl From<HashConsError> for AdmissionTestError {
+        fn from(error: HashConsError) -> Self {
+            Self::HashCons(error)
+        }
+    }
+
+    #[test]
+    fn try_get_or_reserve_propagates_predicate_errors_without_reserving() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let slot = table.reserve_slot(7).expect("slot reserves");
+        assert!(table.push_reserved(slot, "value"));
+
+        let result = table.try_get_or_reserve(7, |_| {
+            Err::<bool, AdmissionTestError>(AdmissionTestError::Predicate("boom"))
+        });
+
+        match result {
+            Err(AdmissionTestError::Predicate("boom")) => {}
+            other => panic!("expected predicate error, got {other:?}"),
+        }
+        assert_eq!(table.bucket_count(), 1);
+        assert_eq!(table.bucket(&7), Some(["value"].as_slice()));
+    }
+
+    #[test]
+    fn multiple_outstanding_slots_for_same_key_remain_reserved() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let first_slot = table.reserve_slot(7).expect("first slot reserves");
+        let second_slot = table.reserve_slot(7).expect("second slot reserves");
+
+        assert!(table.push_reserved(first_slot, "first"));
+        assert!(table.push_reserved(second_slot, "second"));
+        assert_eq!(table.bucket(&7), Some(["first", "second"].as_slice()));
+    }
+
+    #[test]
+    fn cancel_reserved_releases_empty_bucket() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let slot = table.reserve_slot(7).expect("slot reserves");
+
+        assert!(table.cancel_reserved(slot));
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn cancel_reserved_keeps_existing_values() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let existing_slot = table.reserve_slot(7).expect("existing slot reserves");
+        assert!(table.push_reserved(existing_slot, "existing"));
+        let canceled_slot = table.reserve_slot(7).expect("canceled slot reserves");
+
+        assert!(table.cancel_reserved(canceled_slot));
+        assert_eq!(table.bucket(&7), Some(["existing"].as_slice()));
+    }
+
+    #[test]
+    fn clone_drops_outstanding_reservations() {
+        let mut table = HashConsTable::<u8, &str>::new();
+
+        let existing_slot = table.reserve_slot(7).expect("existing slot reserves");
+        assert!(table.push_reserved(existing_slot, "existing"));
+        let outstanding_existing_key = table.reserve_slot(7).expect("existing key reserves");
+        let reservation_only_key = table.reserve_slot(9).expect("empty key reserves");
+
+        let mut cloned = table.clone();
+
+        assert_eq!(cloned.bucket(&7), Some(["existing"].as_slice()));
+        assert_eq!(cloned.bucket(&9), None);
+        assert!(!cloned.push_reserved(outstanding_existing_key, "wrong"));
+        assert!(!cloned.cancel_reserved(reservation_only_key));
+        let cloned_slot = cloned.reserve_slot(7).expect("clone reserves its own slot");
+        assert!(cloned.push_reserved(cloned_slot, "clone"));
+        assert_eq!(cloned.bucket(&7), Some(["existing", "clone"].as_slice()));
     }
 }

@@ -19,7 +19,7 @@ use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
 use crate::cache::{DurableBlake3Hash, HotXxh3Hash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
-use crate::hashcons::{HashConsError, HashConsSlot, HashConsTable};
+use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::runtime::builtins::Builtin;

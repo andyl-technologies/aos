@@ -64,16 +64,28 @@ impl EvalHeap {
     /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
         let hash = string.structural_hash_xxh3();
-        if let Some(value) = self.lookup_string_cons(hash, &string)? {
-            return Ok(value);
-        }
-        self.reserve_record_slot()?;
-        let cons_slot = self.reserve_string_cons_slot(hash)?;
-        let allocation = self
+        let cons_slot = match self.admit_string_cons(hash, &string)? {
+            HashConsReservation::Existing(value) => return Ok(value),
+            HashConsReservation::Vacant(slot) => slot,
+        };
+        let allocation = match self
             .arena
             .aos_alloc_string(string.len())
-            .map_err(EvalHeapError::Arena)?;
-        let value = Value::string(allocation.ptr).map_err(EvalHeapError::Value)?;
+            .map_err(EvalHeapError::Arena)
+        {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                self.cancel_string_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
+        let value = match Value::string(allocation.ptr).map_err(EvalHeapError::Value) {
+            Ok(value) => value,
+            Err(error) => {
+                self.cancel_string_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
@@ -96,16 +108,28 @@ impl EvalHeap {
     /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_path(&mut self, path: NixString) -> Result<Value, EvalHeapError> {
         let hash = path.structural_hash_xxh3();
-        if let Some(value) = self.lookup_path_cons(hash, &path)? {
-            return Ok(value);
-        }
-        self.reserve_record_slot()?;
-        let cons_slot = self.reserve_path_cons_slot(hash)?;
-        let allocation = self
+        let cons_slot = match self.admit_path_cons(hash, &path)? {
+            HashConsReservation::Existing(value) => return Ok(value),
+            HashConsReservation::Vacant(slot) => slot,
+        };
+        let allocation = match self
             .arena
             .aos_alloc_string(path.len())
-            .map_err(EvalHeapError::Arena)?;
-        let value = Value::path(allocation.ptr).map_err(EvalHeapError::Value)?;
+            .map_err(EvalHeapError::Arena)
+        {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                self.cancel_path_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
+        let value = match Value::path(allocation.ptr).map_err(EvalHeapError::Value) {
+            Ok(value) => value,
+            Err(error) => {
+                self.cancel_path_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
@@ -123,21 +147,33 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a list handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the bump arena cannot reserve a list handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_list(&mut self, list: NixList) -> Result<Value, EvalHeapError> {
         let hash = list_structural_hash(&list);
-        if let Some(value) = self.lookup_list_cons(hash, &list)? {
-            return Ok(value);
-        }
-        self.reserve_record_slot()?;
-        let cons_slot = self.reserve_list_cons_slot(hash)?;
-        let allocation = self
+        let cons_slot = match self.admit_list_cons(hash, &list)? {
+            HashConsReservation::Existing(value) => return Ok(value),
+            HashConsReservation::Vacant(slot) => slot,
+        };
+        let allocation = match self
             .arena
             .aos_alloc_list(list.len())
-            .map_err(EvalHeapError::Arena)?;
-        let value = Value::list(allocation.ptr).map_err(EvalHeapError::Value)?;
+            .map_err(EvalHeapError::Arena)
+        {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                self.cancel_list_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
+        let value = match Value::list(allocation.ptr).map_err(EvalHeapError::Value) {
+            Ok(value) => value,
+            Err(error) => {
+                self.cancel_list_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
@@ -161,18 +197,30 @@ impl EvalHeap {
     /// handle violates the runtime value alignment contract.
     pub fn alloc_attrs(&mut self, shape: u32, attrs: FlatAttrs) -> Result<Value, EvalHeapError> {
         let hash = attrs_structural_hash(shape, &attrs);
-        if let Some(value) = self.lookup_attrs_cons(hash, shape, &attrs)? {
-            return Ok(value);
-        }
-        self.reserve_record_slot()?;
-        let cons_slot = self.reserve_attrs_cons_slot(hash)?;
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
-        let allocation = self
+        let cons_slot = match self.admit_attrs_cons(hash, shape, &attrs)? {
+            HashConsReservation::Existing(value) => return Ok(value),
+            HashConsReservation::Vacant(slot) => slot,
+        };
+        let allocation = match self
             .arena
             .aos_alloc_attrs(shape, slots)
-            .map_err(EvalHeapError::Arena)?;
-        let value = Value::attrs(allocation.ptr).map_err(EvalHeapError::Value)?;
+            .map_err(EvalHeapError::Arena)
+        {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                self.cancel_attrs_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
+        let value = match Value::attrs(allocation.ptr).map_err(EvalHeapError::Value) {
+            Ok(value) => value,
+            Err(error) => {
+                self.cancel_attrs_cons_slot(cons_slot);
+                return Err(error);
+            }
+        };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
@@ -574,124 +622,136 @@ impl EvalHeap {
             .map_err(|_| EvalHeapError::RecordAllocationFailed { records })
     }
 
-    fn lookup_string_cons(
-        &self,
+    fn admit_string_cons(
+        &mut self,
         hash: HotXxh3Hash,
         string: &NixString,
-    ) -> Result<Option<Value>, EvalHeapError> {
-        self.string_cons
-            .try_find(&hash, |value| {
-                let value = *value;
-                let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
-                let record = self.record_or_unknown(ValueTag::String, ptr)?;
-                let same_hash = record.structural_hash == Some(hash);
-                let same_string = matches!(
-                    &record.object,
-                    HeapObjectValue::String(candidate) if candidate == string
-                );
-                Ok(same_hash && same_string)
-            })
-            .map(|value| value.copied())
+    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
+        let existing = {
+            let records = &self.records;
+            self.string_cons
+                .try_find(&hash, |value| {
+                    let value = *value;
+                    let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
+                    let record = Self::record_or_unknown_in(records, ValueTag::String, ptr)?;
+                    let same_hash = record.structural_hash == Some(hash);
+                    let same_string = matches!(
+                        &record.object,
+                        HeapObjectValue::String(candidate) if candidate == string
+                    );
+                    Ok::<bool, EvalHeapError>(same_hash && same_string)
+                })?
+                .copied()
+        };
+        if let Some(value) = existing {
+            return Ok(HashConsReservation::Existing(value));
+        }
+        self.reserve_record_slot()?;
+        Ok(HashConsReservation::Vacant(
+            self.string_cons
+                .reserve_slot(hash)
+                .map_err(EvalHeapError::from)?,
+        ))
     }
 
-    fn lookup_path_cons(
-        &self,
+    fn admit_path_cons(
+        &mut self,
         hash: HotXxh3Hash,
         path: &NixString,
-    ) -> Result<Option<Value>, EvalHeapError> {
-        self.path_cons
-            .try_find(&hash, |value| {
-                let value = *value;
-                let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
-                let record = self.record_or_unknown(ValueTag::Path, ptr)?;
-                let same_hash = record.structural_hash == Some(hash);
-                let same_path = matches!(
-                    &record.object,
-                    HeapObjectValue::Path(candidate) if candidate == path
-                );
-                Ok(same_hash && same_path)
-            })
-            .map(|value| value.copied())
+    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
+        let existing = {
+            let records = &self.records;
+            self.path_cons
+                .try_find(&hash, |value| {
+                    let value = *value;
+                    let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
+                    let record = Self::record_or_unknown_in(records, ValueTag::Path, ptr)?;
+                    let same_hash = record.structural_hash == Some(hash);
+                    let same_path = matches!(
+                        &record.object,
+                        HeapObjectValue::Path(candidate) if candidate == path
+                    );
+                    Ok::<bool, EvalHeapError>(same_hash && same_path)
+                })?
+                .copied()
+        };
+        if let Some(value) = existing {
+            return Ok(HashConsReservation::Existing(value));
+        }
+        self.reserve_record_slot()?;
+        Ok(HashConsReservation::Vacant(
+            self.path_cons
+                .reserve_slot(hash)
+                .map_err(EvalHeapError::from)?,
+        ))
     }
 
-    fn lookup_list_cons(
-        &self,
+    fn admit_list_cons(
+        &mut self,
         hash: HotXxh3Hash,
         list: &NixList,
-    ) -> Result<Option<Value>, EvalHeapError> {
-        self.list_cons
-            .try_find(&hash, |value| {
-                let value = *value;
-                let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
-                let record = self.record_or_unknown(ValueTag::List, ptr)?;
-                let same_hash = record.structural_hash == Some(hash);
-                let same_list = matches!(
-                    &record.object,
-                    HeapObjectValue::List(candidate) if candidate.raw_eq(list)
-                );
-                Ok(same_hash && same_list)
-            })
-            .map(|value| value.copied())
+    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
+        let existing = {
+            let records = &self.records;
+            self.list_cons
+                .try_find(&hash, |value| {
+                    let value = *value;
+                    let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
+                    let record = Self::record_or_unknown_in(records, ValueTag::List, ptr)?;
+                    let same_hash = record.structural_hash == Some(hash);
+                    let same_list = matches!(
+                        &record.object,
+                        HeapObjectValue::List(candidate) if candidate.raw_eq(list)
+                    );
+                    Ok::<bool, EvalHeapError>(same_hash && same_list)
+                })?
+                .copied()
+        };
+        if let Some(value) = existing {
+            return Ok(HashConsReservation::Existing(value));
+        }
+        self.reserve_record_slot()?;
+        Ok(HashConsReservation::Vacant(
+            self.list_cons
+                .reserve_slot(hash)
+                .map_err(EvalHeapError::from)?,
+        ))
     }
 
-    fn lookup_attrs_cons(
-        &self,
+    fn admit_attrs_cons(
+        &mut self,
         hash: HotXxh3Hash,
         shape: u32,
         attrs: &FlatAttrs,
-    ) -> Result<Option<Value>, EvalHeapError> {
-        self.attrs_cons
-            .try_find(&hash, |value| {
-                let value = *value;
-                let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
-                let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
-                let same_hash = record.structural_hash == Some(hash);
-                let same_attrs = matches!(
-                    &record.object,
-                    HeapObjectValue::Attrs {
-                        shape: candidate_shape,
-                        attrs: candidate_attrs,
-                    } if *candidate_shape == shape && candidate_attrs.raw_eq(attrs)
-                );
-                Ok(same_hash && same_attrs)
-            })
-            .map(|value| value.copied())
-    }
-
-    fn reserve_string_cons_slot(
-        &mut self,
-        hash: HotXxh3Hash,
-    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
-        self.string_cons
-            .reserve_slot(hash)
-            .map_err(EvalHeapError::from)
-    }
-
-    fn reserve_list_cons_slot(
-        &mut self,
-        hash: HotXxh3Hash,
-    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
-        self.list_cons
-            .reserve_slot(hash)
-            .map_err(EvalHeapError::from)
-    }
-
-    fn reserve_path_cons_slot(
-        &mut self,
-        hash: HotXxh3Hash,
-    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
-        self.path_cons
-            .reserve_slot(hash)
-            .map_err(EvalHeapError::from)
-    }
-
-    fn reserve_attrs_cons_slot(
-        &mut self,
-        hash: HotXxh3Hash,
-    ) -> Result<HashConsSlot<HotXxh3Hash>, EvalHeapError> {
-        self.attrs_cons
-            .reserve_slot(hash)
-            .map_err(EvalHeapError::from)
+    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
+        let existing = {
+            let records = &self.records;
+            self.attrs_cons
+                .try_find(&hash, |value| {
+                    let value = *value;
+                    let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
+                    let record = Self::record_or_unknown_in(records, ValueTag::Attrs, ptr)?;
+                    let same_hash = record.structural_hash == Some(hash);
+                    let same_attrs = matches!(
+                        &record.object,
+                        HeapObjectValue::Attrs {
+                            shape: candidate_shape,
+                            attrs: candidate_attrs,
+                        } if *candidate_shape == shape && candidate_attrs.raw_eq(attrs)
+                    );
+                    Ok::<bool, EvalHeapError>(same_hash && same_attrs)
+                })?
+                .copied()
+        };
+        if let Some(value) = existing {
+            return Ok(HashConsReservation::Existing(value));
+        }
+        self.reserve_record_slot()?;
+        Ok(HashConsReservation::Vacant(
+            self.attrs_cons
+                .reserve_slot(hash)
+                .map_err(EvalHeapError::from)?,
+        ))
     }
 
     fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
@@ -726,9 +786,41 @@ impl EvalHeap {
         );
     }
 
-    fn record(&self, ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {
+    fn cancel_string_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+        let canceled = self.string_cons.cancel_reserved(slot);
+        debug_assert!(
+            canceled,
+            "cons-table slot should be reserved before cancellation"
+        );
+    }
+
+    fn cancel_path_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+        let canceled = self.path_cons.cancel_reserved(slot);
+        debug_assert!(
+            canceled,
+            "cons-table slot should be reserved before cancellation"
+        );
+    }
+
+    fn cancel_attrs_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+        let canceled = self.attrs_cons.cancel_reserved(slot);
+        debug_assert!(
+            canceled,
+            "cons-table slot should be reserved before cancellation"
+        );
+    }
+
+    fn cancel_list_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+        let canceled = self.list_cons.cancel_reserved(slot);
+        debug_assert!(
+            canceled,
+            "cons-table slot should be reserved before cancellation"
+        );
+    }
+
+    fn record_in(records: &[HeapRecord], ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {
         let address = ptr.as_ptr() as usize;
-        self.records
+        records
             .iter()
             .find(|record| record.ptr.as_ptr() as usize == address)
     }
@@ -749,8 +841,15 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<&HeapRecord, EvalHeapError> {
-        self.record(ptr)
-            .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
+        Self::record_or_unknown_in(&self.records, tag, ptr)
+    }
+
+    fn record_or_unknown_in(
+        records: &[HeapRecord],
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<&HeapRecord, EvalHeapError> {
+        Self::record_in(records, ptr).ok_or_else(|| EvalHeapError::unknown(tag, ptr))
     }
 }
 

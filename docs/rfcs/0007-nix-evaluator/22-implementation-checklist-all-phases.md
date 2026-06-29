@@ -1326,6 +1326,26 @@ alone (`M-1`/`Q-A`).
       or full field-load value hashing for all values. Gates:
       `hash_consed_heap_records_share_cached_captured_value_hashes` and
       `materialized_capture_hashes_are_cached_on_heap_records`.
+- [x] Current `value/hashcons.rs` admission precursor: `HashConsTable`
+      exposes a collision-safe `try_get_or_reserve` operation for copyable
+      runtime handles, returning either an equality-confirmed existing handle or
+      a reserved insertion token; buckets track outstanding reservations so
+      multiple unfilled slots for the same key remain capacity-backed, slot
+      tokens are bound to their originating table, and callers can cancel vacant
+      reservations after allocation failure. The tree-walk evaluator heap now
+      routes string, path, list, and attrset consing through per-type
+      `Existing`/`Vacant` admission helpers that preserve the old failure-side
+      order of payload lookup, record-slot reservation, and then cons-table slot
+      reservation, and cancel the vacant slot on later arena/value-construction
+      failure while keeping xxh3 bucket lookup, payload equality confirmation,
+      context-sensitive string/path identity, raw child-value list equality, and
+      shape/position/order-aware attrset equality. Lambdas, primops, and thunks
+      remain uninterned. This removes the previous caller-open-coded
+      find/reserve result handling for current heap-local consing; it is not
+      generic post-force immutable-value hash-consing, O(1) equality for all
+      values, persisted value hashes, or demand-graph value-hash integration.
+      Gates: `ratchet-value` hashcons admission/reservation tests and evaluator
+      heap consing tests.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration
