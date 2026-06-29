@@ -14,13 +14,16 @@ use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
+use crate::node_fault::{
+    NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
+};
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
     EventFirings, EventGraph, EventGraphState, LogLevel, ObservableEvent, ObservableEventPayload,
 };
 use crate::{
-    AssertionId, BackendError, BackendInput, Configuration, ContentHash, Decision,
-    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
+    AssertionId, BackendError, BackendInput, CombinedNodeFaults, Configuration, ContentHash,
+    Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
     EventSequenceState, FaultId, FaultRateBasisPoints, Icount, MembershipFault, NodeCounter,
     NodeId, NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy,
     RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift,
@@ -627,6 +630,8 @@ pub struct SchedulerPreemptionApplication {
     pub node: SchedulerNodeId,
     /// Explorer-supplied preemption decision recorded in the schedule.
     pub decision: PreemptionDecision,
+    /// Scheduler-axis virtual time at the preemption's retired-instruction point.
+    pub virtual_time: SimInstant,
     /// Inclusive lower icount bound for this RUN's authorized window.
     pub deadline_icount: Icount,
     /// Inclusive upper icount bound for this RUN's authorized window.
@@ -3946,11 +3951,12 @@ fn scheduler_ordered_decisions(
     decisions: Vec<Decision>,
     fallback: SimInstant,
     shift: Shift,
+    preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<Vec<Decision>, SchedulerError> {
     let mut keyed = Vec::with_capacity(decisions.len());
     for (index, decision) in decisions.into_iter().enumerate() {
         keyed.push((
-            scheduler_decision_event_log_time(&decision, fallback, shift)?,
+            scheduler_decision_event_log_time(&decision, fallback, shift, preemption_times)?,
             index,
             decision,
         ));
@@ -3969,13 +3975,25 @@ fn scheduler_decision_event_log_time(
     decision: &Decision,
     fallback: SimInstant,
     shift: Shift,
+    preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<VirtualTime, SchedulerError> {
     match decision {
         Decision::DeliveryOrder(order) => Ok(order.at),
         Decision::FaultFires(fault) => Ok(fault.at),
-        Decision::Preemption(preemption) => Ok(VirtualTime {
-            ticks: preemption.at.to_virtual(shift)?.nanos,
-        }),
+        Decision::Preemption(preemption) => {
+            if let Some((_, virtual_time)) = preemption_times
+                .iter()
+                .find(|(decision, _)| decision == preemption)
+            {
+                Ok(VirtualTime {
+                    ticks: virtual_time.nanos,
+                })
+            } else {
+                Ok(VirtualTime {
+                    ticks: preemption.at.to_virtual(shift)?.nanos,
+                })
+            }
+        }
         Decision::RngDraw(_) | Decision::Override(_) | Decision::AppRandom(_) => Ok(VirtualTime {
             ticks: fallback.nanos,
         }),
@@ -4408,11 +4426,12 @@ impl SingleScheduler {
     ///
     /// The sub-node's in-flight head delivery icount is the **real** source of the
     /// owning node's exact I/O-completion horizon term, so an otherwise-idle
-    /// requester is fast-forwarded *exactly* to its next I/O completion ([IO-3],
-    /// [SCHED-10]), and [`SingleScheduler::resolve_device_completions`] delivers
-    /// the completion at that exact icount in the canonical `(delivery_icount,
-    /// src_node, seq)` order ([SCHED-29]). Several sub-nodes may target one VM
-    /// node; their horizon terms are folded with `min`.
+    /// requester is fast-forwarded to the scheduler-time projection of its next
+    /// exact I/O completion ([IO-3], [SCHED-10]), and
+    /// [`SingleScheduler::resolve_device_completions`] delivers the completion at
+    /// that exact delivery icount's scheduler-time projection in the canonical
+    /// `(delivery_icount, src_node, seq)` order ([SCHED-29]). Several sub-nodes
+    /// may target one VM node; their horizon terms are folded with `min`.
     ///
     /// Submit requests through the returned sub-node before driving the scheduler;
     /// fold the device's live in-flight head into the node's horizon with
@@ -4488,10 +4507,12 @@ impl SingleScheduler {
         let mut earliest: Option<SimInstant> = None;
         for sub_node in sub_nodes {
             if let Some(delivery_icount) = sub_node.next_exact_local_event() {
-                let due = Icount {
-                    retired: delivery_icount,
-                }
-                .to_virtual(self.timeline.shift())?;
+                let due = self.vm_delivery_time_for_icount(
+                    &node.node,
+                    Icount {
+                        retired: delivery_icount,
+                    },
+                )?;
                 if due > instant {
                     earliest = Some(match earliest {
                         Some(current) => current.min(due),
@@ -4540,10 +4561,12 @@ impl SingleScheduler {
             let mut earliest: Option<SimInstant> = None;
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
-                    let instant = Icount {
-                        retired: delivery_icount,
-                    }
-                    .to_virtual(self.timeline.shift())?;
+                    let instant = self.vm_delivery_time_for_icount(
+                        target,
+                        Icount {
+                            retired: delivery_icount,
+                        },
+                    )?;
                     earliest = Some(match earliest {
                         Some(current) => current.min(instant),
                         None => instant,
@@ -4580,8 +4603,9 @@ impl SingleScheduler {
     /// from the live [`EventSequenceState`] for its `(sub_node, target)` pair
     /// ([SCHED-18]), and returns the [`IoCompletion`] events plus the fault
     /// [`Decision`]s they drew, all in delivery order. The completion is made
-    /// visible at **exactly** its `delivery_icount` ([SCHED-29], [IO-2]), never
-    /// the consumer's `consumer_icount` frontier.
+    /// visible at the scheduler-time projection of **exactly** its
+    /// `delivery_icount` ([SCHED-29], [IO-2]), never the consumer's
+    /// `consumer_icount` frontier.
     ///
     /// # Errors
     ///
@@ -4614,6 +4638,7 @@ impl SingleScheduler {
         });
         for (completion, completion_decisions) in due {
             let producer = completion.sub_node.clone();
+            let completion_target = completion.target.clone();
             let consumer = SchedulerNodeId {
                 node: completion.target.clone(),
                 kind: SchedulingNodeKind::Vm,
@@ -4625,9 +4650,10 @@ impl SingleScheduler {
                 consumer.clone(),
                 sequence + 1,
             );
-            // The completion is made visible at EXACTLY its delivery icount
-            // ([SCHED-29], [IO-2]) — never the consumer's frontier. The test-only
-            // broken stamp models the freeze-time bug to prove the gates catch it.
+            // The completion is made visible at the scheduler-time projection of
+            // EXACTLY its delivery icount ([SCHED-29], [IO-2]) — never the
+            // consumer's frontier. The test-only broken stamp models the
+            // freeze-time bug to prove the gates catch it.
             let stamp_icount = completion.delivery_icount.retired;
             #[cfg(test)]
             let stamp_icount = if self.broken_device_delivery_stamp {
@@ -4635,14 +4661,22 @@ impl SingleScheduler {
             } else {
                 stamp_icount
             };
+            let instant = self.vm_delivery_time_for_icount(
+                &completion.target,
+                Icount {
+                    retired: stamp_icount,
+                },
+            )?;
             let virtual_time = VirtualTime {
-                ticks: stamp_icount,
+                ticks: instant.nanos,
             };
             let key = ScheduledEventKey::from_parts(virtual_time, consumer, producer, sequence);
             events.push(ScheduledEvent {
                 key,
                 payload: ScheduledEventPayload::IoCompletion(completion),
             });
+            let completion_decisions = self
+                .project_device_decisions_for_vm_time(&completion_target, completion_decisions)?;
             decisions.extend(completion_decisions);
         }
         // Reconcile the cached device horizon term with the in-flight queues now
@@ -4658,10 +4692,12 @@ impl SingleScheduler {
             .flatten()
             .filter_map(|sub_node| sub_node.next_exact_local_event())
             .map(|delivery_icount| {
-                Icount {
-                    retired: delivery_icount,
-                }
-                .to_virtual(self.timeline.shift())
+                self.vm_delivery_time_for_icount(
+                    &node.node,
+                    Icount {
+                        retired: delivery_icount,
+                    },
+                )
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
@@ -4999,6 +5035,62 @@ impl SingleScheduler {
             .collect()
     }
 
+    /// Applies combined node timing faults to a VM scheduler node.
+    ///
+    /// Slowdown is installed as an anchored counter-to-virtual-time projection
+    /// at the node's current counter, preserving continuity on the scheduler
+    /// axis. Clock skew is stored only in the node's guest-visible timing
+    /// projection. Crash and restart effects are intentionally outside this
+    /// timing-only entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
+    /// when the current timing projection cannot be computed.
+    pub fn apply_combined_node_timing_faults(
+        &mut self,
+        node: &NodeId,
+        faults: &CombinedNodeFaults,
+    ) -> Result<NodeTimingFaults, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let anchor_counter = self.nodes[index].counter;
+        let anchor_time = self.node_current_time(&self.nodes[index])?;
+        let timing_faults =
+            node_timing_faults_from_combined_node(faults, anchor_counter, anchor_time);
+        self.nodes[index].timing_faults = timing_faults;
+        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+        Ok(timing_faults)
+    }
+
+    /// Projects one VM node's current counter under active timing faults.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node in this scheduler, or [`SchedulerError::TimeConversion`]
+    /// when the projection cannot be computed.
+    pub fn node_timing_projection(
+        &self,
+        node: &NodeId,
+    ) -> Result<NodeTimingProjection, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        self.nodes[index]
+            .timing_faults
+            .project(self.nodes[index].counter, self.timeline.shift())
+            .map_err(SchedulerError::from)
+    }
+
+    /// Returns one VM node's guest-visible time under active clock skew.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node cannot be found or its timing
+    /// projection cannot be computed.
+    pub fn guest_visible_time_for_node(&self, node: &NodeId) -> Result<SimInstant, SchedulerError> {
+        Ok(self.node_timing_projection(node)?.guest_visible_time)
+    }
+
     /// Computes terminal quiescence from authoritative scheduler state only.
     ///
     /// The predicate is independent of host wall-clock time. A system is
@@ -5098,6 +5190,102 @@ impl SingleScheduler {
             });
         }
         Ok(())
+    }
+
+    fn vm_node_index(&self, node: &NodeId) -> Result<usize, SchedulerError> {
+        self.nodes
+            .iter()
+            .position(|candidate| {
+                candidate.id.node == *node && candidate.id.kind == SchedulingNodeKind::Vm
+            })
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!("node timing fault targets missing VM node: {}", node.name),
+            })
+    }
+
+    fn node_current_time(&self, node: &RuntimeSchedulerNode) -> Result<SimInstant, SchedulerError> {
+        self.node_time_for_counter(node, node.counter)
+    }
+
+    fn node_time_for_counter(
+        &self,
+        node: &RuntimeSchedulerNode,
+        counter: NodeCounter,
+    ) -> Result<SimInstant, SchedulerError> {
+        if node.id.kind == SchedulingNodeKind::Vm {
+            node.timing_faults
+                .faulted_virtual_time(counter, self.timeline.shift())
+                .map_err(SchedulerError::from)
+        } else {
+            counter
+                .to_virtual(self.timeline.shift())
+                .map_err(SchedulerError::from)
+        }
+    }
+
+    fn node_counter_for_time_ceil(
+        &self,
+        node: &RuntimeSchedulerNode,
+        target_time: SimInstant,
+    ) -> Result<NodeCounter, SchedulerError> {
+        if node.id.kind == SchedulingNodeKind::Vm {
+            node.timing_faults
+                .counter_for_faulted_virtual_time_ceil(target_time, self.timeline.shift())
+                .map_err(SchedulerError::from)
+        } else {
+            Ok(NodeCounter {
+                ticks: self
+                    .timeline
+                    .max_advance_icount_for_horizon(target_time)?
+                    .retired,
+            })
+        }
+    }
+
+    fn node_timeline_key(
+        &self,
+        node: &RuntimeSchedulerNode,
+        sequence: u64,
+    ) -> Result<SharedTimelineKey, SchedulerError> {
+        Ok(SharedTimelineKey {
+            virtual_time: self.node_current_time(node)?,
+            node: node.id.clone(),
+            sequence,
+        })
+    }
+
+    fn vm_delivery_time_for_icount(
+        &self,
+        node: &NodeId,
+        icount: Icount,
+    ) -> Result<SimInstant, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        self.node_time_for_counter(&self.nodes[index], NodeCounter::from_icount(icount))
+    }
+
+    fn project_device_decisions_for_vm_time(
+        &self,
+        node: &NodeId,
+        decisions: Vec<Decision>,
+    ) -> Result<Vec<Decision>, SchedulerError> {
+        decisions
+            .into_iter()
+            .map(|decision| match decision {
+                Decision::FaultFires(mut fault) => {
+                    let virtual_time = self.vm_delivery_time_for_icount(
+                        node,
+                        Icount {
+                            retired: fault.at.ticks,
+                        },
+                    )?;
+                    fault.at = VirtualTime {
+                        ticks: virtual_time.nanos,
+                    };
+                    Ok(Decision::FaultFires(fault))
+                }
+                decision => Ok(decision),
+            })
+            .collect()
     }
 
     fn effective_node_activity(&self, node: &RuntimeSchedulerNode) -> SchedulerNodeActivity {
@@ -5377,7 +5565,7 @@ impl SingleScheduler {
                 continue;
             }
 
-            let current_time = node.counter.to_virtual(self.timeline.shift())?;
+            let current_time = self.node_current_time(node)?;
             if current_time != virtual_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -5437,7 +5625,7 @@ impl SingleScheduler {
             };
             if has_finite_projection {
                 saw_time_limited_state = true;
-                let current_time = node.counter.to_virtual(self.timeline.shift())?;
+                let current_time = self.node_current_time(node)?;
                 if current_time < self.time_limit {
                     return Ok(false);
                 }
@@ -5499,7 +5687,8 @@ impl SingleScheduler {
                 break;
             }
             let draft = self.advance_plan_draft(candidate)?;
-            let current_time = draft.before.to_virtual(self.timeline.shift())?;
+            let current_time =
+                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
             if current_time != frontier {
                 continue;
             }
@@ -5524,14 +5713,16 @@ impl SingleScheduler {
         let selected_index = candidate.index;
         let selected_node = self.nodes[selected_index].id.clone();
         let before = self.nodes[selected_index].counter;
+        let selected_runtime_node = &self.nodes[selected_index];
         let target_counter = self
-            .timeline
-            .max_advance_icount_for_horizon(candidate.target_time)?
-            .retired;
-        let projected_target = NodeCounter {
-            ticks: target_counter,
-        }
-        .to_virtual(self.timeline.shift())?;
+            .node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)?
+            .ticks;
+        let projected_target = self.node_time_for_counter(
+            selected_runtime_node,
+            NodeCounter {
+                ticks: target_counter,
+            },
+        )?;
         if !candidate.allow_ceil_past_target && projected_target > candidate.target_time {
             return Err(scheduler_ceiling_overshoot_error(
                 &selected_node,
@@ -5541,8 +5732,7 @@ impl SingleScheduler {
             ));
         }
         if projected_target > candidate.target_time {
-            let current_time = before.to_virtual(self.timeline.shift())?;
-            let selected_runtime_node = &self.nodes[selected_index];
+            let current_time = self.node_time_for_counter(selected_runtime_node, before)?;
             if let NetworkLookahead::Finite(duration) = selected_runtime_node.network_lookahead {
                 let network_target = current_time + duration;
                 if network_target > candidate.target_time && projected_target > network_target {
@@ -5619,6 +5809,7 @@ impl SingleScheduler {
             node: selected_node,
             before,
             target_counter,
+            projected_target_time: projected_target,
             quiescent_horizon: candidate.quiescent_horizon,
         })
     }
@@ -5630,7 +5821,7 @@ impl SingleScheduler {
         rendezvous_cap: Option<SimInstant>,
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
-        let current_time = node.counter.to_virtual(self.timeline.shift())?;
+        let current_time = self.node_current_time(node)?;
         let EffectiveHorizonProjection::Finite {
             target_time,
             quiescent_horizon,
@@ -5647,9 +5838,7 @@ impl SingleScheduler {
 
         Ok(Some(AdvanceCandidate {
             index,
-            key: self
-                .timeline
-                .timeline_key(node.id.clone(), node.counter, index as u64)?,
+            key: self.node_timeline_key(node, index as u64)?,
             target_time,
             quiescent_horizon,
             conservative_dependency,
@@ -5738,7 +5927,7 @@ impl SingleScheduler {
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<SchedulerEffectiveClock, SchedulerError> {
-        let current_time = node.counter.to_virtual(self.timeline.shift())?;
+        let current_time = self.node_current_time(node)?;
         let (effective_time, source) = match self.effective_node_activity(node) {
             SchedulerNodeActivity::Idle => match self.idle_wake_time(node)? {
                 Some(wake_time) if wake_time > current_time => {
@@ -6014,6 +6203,14 @@ impl SingleScheduler {
         current_icount: NodeCounter,
         ceiling: &SchedulerRunCeilingPublication,
     ) -> Result<Vec<PlannedPreemptionApplication>, SchedulerError> {
+        let Some(runtime_node) = self.nodes.iter().find(|runtime| &runtime.id == node) else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "preemption targets missing scheduler node: {}:{:?}",
+                    node.node.name, node.kind
+                ),
+            });
+        };
         let deadline_icount = Icount {
             retired: current_icount.ticks,
         };
@@ -6051,9 +6248,12 @@ impl SingleScheduler {
                     ),
                 });
             }
+            let virtual_time =
+                self.node_time_for_counter(runtime_node, NodeCounter::from_icount(decision.at))?;
             planned.push(PlannedPreemptionApplication {
                 node: node.clone(),
                 decision,
+                virtual_time,
                 deadline_icount,
                 horizon_icount,
                 ceiling: ceiling.clone(),
@@ -6078,6 +6278,7 @@ impl SingleScheduler {
                     quantum: planned.ceiling.quantum,
                     node: planned.node,
                     decision: planned.decision,
+                    virtual_time: planned.virtual_time,
                     deadline_icount: planned.deadline_icount,
                     horizon_icount: planned.horizon_icount,
                     ceiling: planned.ceiling,
@@ -6097,7 +6298,7 @@ impl SingleScheduler {
                 continue;
             }
 
-            let current_time = node.counter.to_virtual(self.timeline.shift())?;
+            let current_time = self.node_current_time(node)?;
             if current_time > activation_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -6202,6 +6403,7 @@ impl SingleScheduler {
             let event_log = self.emit_quantum_event_log(
                 &boundary_resolved_events,
                 &decisions,
+                &[],
                 at,
                 emit_boundary,
             )?;
@@ -6307,8 +6509,13 @@ impl SingleScheduler {
                 &device_decisions,
                 after_time,
             )?;
-            let event_log =
-                self.emit_quantum_event_log(&resolved_events, &decisions, after_time, true)?;
+            let event_log = self.emit_quantum_event_log(
+                &resolved_events,
+                &decisions,
+                &preemptions,
+                after_time,
+                true,
+            )?;
             let configuration = self.step_quantum(&decisions);
             let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
 
@@ -6390,6 +6597,7 @@ impl SingleScheduler {
                 let event_log = self.emit_quantum_event_log(
                     &resolved_events,
                     &decisions,
+                    &[],
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
@@ -6457,8 +6665,13 @@ impl SingleScheduler {
             &device_decisions,
             after_time,
         )?;
-        let event_log =
-            self.emit_quantum_event_log(&resolved_events, &decisions, after_time, true)?;
+        let event_log = self.emit_quantum_event_log(
+            &resolved_events,
+            &decisions,
+            &preemptions,
+            after_time,
+            true,
+        )?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
         let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
@@ -6541,17 +6754,20 @@ impl SingleScheduler {
                 .iter()
                 .map(|application| Decision::Preemption(application.decision.clone())),
         );
-        scheduler_ordered_decisions(decisions, at, self.timeline.shift())
+        let preemption_times = preemption_event_times(preemptions);
+        scheduler_ordered_decisions(decisions, at, self.timeline.shift(), &preemption_times)
     }
 
     fn emit_quantum_event_log(
         &mut self,
         resolved_events: &[ScheduledEvent],
         decisions: &[Decision],
+        preemptions: &[PlannedPreemptionApplication],
         at: SimInstant,
         emit_boundary: bool,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let mut payloads = Vec::with_capacity(resolved_events.len() + decisions.len());
+        let preemption_times = preemption_event_times(preemptions);
 
         for event in ordered_scheduled_events(resolved_events) {
             payloads.push((
@@ -6561,7 +6777,12 @@ impl SingleScheduler {
         }
         for decision in decisions {
             payloads.push((
-                scheduler_decision_event_log_time(decision, at, self.timeline.shift())?,
+                scheduler_decision_event_log_time(
+                    decision,
+                    at,
+                    self.timeline.shift(),
+                    &preemption_times,
+                )?,
                 SchedulerEventLogPayload::Decision(decision.clone()),
             ));
         }
@@ -6814,7 +7035,7 @@ impl SingleScheduler {
             ticks: plan.target_counter,
         };
         self.nodes[plan.index].counter = after;
-        let after_time = after.to_virtual(self.timeline.shift())?;
+        let after_time = self.node_time_for_counter(&self.nodes[plan.index], after)?;
         if self.nodes[plan.index]
             .exact_local_event
             .virtual_time()
@@ -6855,6 +7076,24 @@ impl SingleScheduler {
             .iter()
             .find(|node| self.effective_node_activity(node) == SchedulerNodeActivity::Runnable)
     }
+}
+
+/// Applies combined node timing faults to a scheduler VM node.
+///
+/// This is the scheduler-facing bridge used by trigger/fault application code:
+/// slow faults stretch the VM's counter-to-virtual-time map from the current
+/// counter, and clock skew changes only the guest-visible time projection.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when the node is absent, is not a VM scheduler
+/// node, or its current timing projection cannot be computed.
+pub fn apply_combined_node_timing_faults_to_scheduler(
+    scheduler: &mut SingleScheduler,
+    node: &NodeId,
+    faults: &CombinedNodeFaults,
+) -> Result<NodeTimingFaults, SchedulerError> {
+    scheduler.apply_combined_node_timing_faults(node, faults)
 }
 
 impl SchedulerSendAuthorizer for SingleScheduler {
@@ -6991,6 +7230,7 @@ pub fn check_scheduler_liveness(
 struct RuntimeSchedulerNode {
     id: SchedulerNodeId,
     counter: NodeCounter,
+    timing_faults: NodeTimingFaults,
     activity: SchedulerNodeActivity,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
@@ -7002,6 +7242,7 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
         Self {
             id: node.id,
             counter: node.counter,
+            timing_faults: NodeTimingFaults::default(),
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
@@ -7119,6 +7360,7 @@ struct AdvancePlan {
     node: SchedulerNodeId,
     before: NodeCounter,
     target_counter: u64,
+    projected_target_time: SimInstant,
     ceiling: SchedulerRunCeilingPublication,
     subdivision: Option<PlannedRunSubdivision>,
     quiescent_horizon: Option<SimInstant>,
@@ -7130,6 +7372,7 @@ struct AdvancePlanDraft {
     node: SchedulerNodeId,
     before: NodeCounter,
     target_counter: u64,
+    projected_target_time: SimInstant,
     quiescent_horizon: Option<SimInstant>,
 }
 
@@ -7143,23 +7386,29 @@ struct PlannedRunSubdivision {
 struct PlannedPreemptionApplication {
     node: SchedulerNodeId,
     decision: PreemptionDecision,
+    virtual_time: SimInstant,
     deadline_icount: Icount,
     horizon_icount: Icount,
     ceiling: SchedulerRunCeilingPublication,
 }
 
+fn preemption_event_times(
+    preemptions: &[PlannedPreemptionApplication],
+) -> Vec<(PreemptionDecision, SimInstant)> {
+    preemptions
+        .iter()
+        .map(|application| (application.decision.clone(), application.virtual_time))
+        .collect()
+}
+
 fn concurrent_completion_order_key(
     plan: &AdvancePlan,
     preemptions: &[PlannedPreemptionApplication],
-    shift: Shift,
+    _shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
-    let mut key = NodeCounter {
-        ticks: plan.target_counter,
-    }
-    .to_virtual(shift)?;
+    let mut key = plan.projected_target_time;
     for preemption in preemptions {
-        let preemption_time = preemption.decision.at.to_virtual(shift)?;
-        key = min_instant(key, preemption_time);
+        key = min_instant(key, preemption.virtual_time);
     }
     Ok(VirtualTime { ticks: key.nanos })
 }
@@ -7201,6 +7450,7 @@ impl<'a> SchedulerCriticalSection<'a> {
             node: draft.node,
             before: draft.before,
             target_counter: draft.target_counter,
+            projected_target_time: draft.projected_target_time,
             ceiling,
             subdivision,
             quiescent_horizon: draft.quiescent_horizon,
@@ -7221,7 +7471,12 @@ fn frontier_for(
     let mut frontier = None;
 
     for node in nodes {
-        let virtual_time = node.counter.to_virtual(shift)?;
+        let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
+            node.timing_faults
+                .faulted_virtual_time(node.counter, shift)?
+        } else {
+            node.counter.to_virtual(shift)?
+        };
         frontier = Some(match frontier {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,

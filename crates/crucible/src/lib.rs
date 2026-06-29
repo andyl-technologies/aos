@@ -14,6 +14,7 @@
 //! `crucible-device` I/O sub-nodes into the determinism RNG and the device half
 //! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
+//! [`node_fault`] owns VM timing projection for slow and clock-skew faults,
 //! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
 //! boundary, [`trigger`] owns event-graph control flow, and `sim_backend`
 //! provides the gated in-process test double.
@@ -27,6 +28,7 @@ pub mod decision;
 pub mod device;
 pub mod device_subnode;
 pub mod model;
+pub mod node_fault;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
@@ -81,6 +83,10 @@ pub use model::{
     WhiteBoxPolicy, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate,
     reduce, step,
 };
+pub use node_fault::{
+    NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
+    project_node_timing,
+};
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
 pub use scheduler::{
@@ -108,14 +114,15 @@ pub use scheduler::{
     SchedulerTopologyChangeTrigger, SchedulerTopologyLookaheadUpdate, SchedulerVcpuIdleState,
     SharedTimeline, SharedTimelineKey, SingleScheduler, TriggerActionApplication,
     TriggerActionState, TriggerDiagnosticRecord, TriggerLabelRecord, TriggerVerdict,
-    UnresolvedCrossNodeDependency, authorize_conservative_advance, check_scheduler_liveness,
-    exact_local_event_from_io_completion, exact_local_event_from_scheduled_event,
-    exact_local_event_from_timer_deadline_ns, horizon_from_exact_local_event,
-    horizon_from_network_lookahead, lookahead_for_node, network_horizon_from_lookahead,
-    next_exact_local_event, next_scheduled_event_key, ordered_scheduled_events,
-    ordered_timeline_keys, rendezvous_cap_for, resolve_due_scheduled_events,
-    resolve_probabilistic_decisions, scheduled_event_delivery_time, scheduled_event_resolve_class,
-    scheduler_rr_run_subdivision, unresolved_cross_node_dependencies,
+    UnresolvedCrossNodeDependency, apply_combined_node_timing_faults_to_scheduler,
+    authorize_conservative_advance, check_scheduler_liveness, exact_local_event_from_io_completion,
+    exact_local_event_from_scheduled_event, exact_local_event_from_timer_deadline_ns,
+    horizon_from_exact_local_event, horizon_from_network_lookahead, lookahead_for_node,
+    network_horizon_from_lookahead, next_exact_local_event, next_scheduled_event_key,
+    ordered_scheduled_events, ordered_timeline_keys, rendezvous_cap_for,
+    resolve_due_scheduled_events, resolve_probabilistic_decisions, scheduled_event_delivery_time,
+    scheduled_event_resolve_class, scheduler_rr_run_subdivision,
+    unresolved_cross_node_dependencies,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{
