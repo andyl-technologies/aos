@@ -855,16 +855,19 @@ fn get_flake_resolves_follows_input_paths() {
               inputs.alias.follows = "child";
               inputs.nested.follows = "child/deeper";
               inputs.missing.follows = "missing-target";
+              inputs.root.follows = "";
               inputs.self.follows = "self";
-              outputs = {{ self, child, alias, ... }}: {{
+              outputs = {{ self, child, alias, root, ... }}: {{
                 answer = child.answer + alias.answer;
                 aliasOutPath = alias.outPath;
                 childOutPath = child.outPath;
                 nestedOutPath = self.inputs.nested.outPath;
+                rootOutPath = root.outPath;
                 inputNames = builtins.attrNames self.inputs;
                 missingAnswer = self.inputs.missing.answer;
                 nestedAnswer = self.inputs.nested.answer;
                 nestedSelfOutPath = self.inputs.nested.fromSelfOutPath;
+                selfOutPath = self.outPath;
                 selfAnswer = self.inputs.self.answer;
               }};
             }}
@@ -889,6 +892,8 @@ fn get_flake_resolves_follows_input_paths() {
               nestedAnswer = f.nestedAnswer;
               nestedOutPath = f.nestedOutPath;
               nestedSelfOutPath = f.nestedSelfOutPath;
+              rootOutPath = f.rootOutPath;
+              selfOutPath = f.selfOutPath;
               inputs = f.inputNames;
             }}
             "#
@@ -901,9 +906,10 @@ fn get_flake_resolves_follows_input_paths() {
     assert_eq!(value["aliasOutPath"], value["childOutPath"]);
     assert_eq!(value["nestedAnswer"], 23);
     assert_eq!(value["nestedOutPath"], value["nestedSelfOutPath"]);
+    assert_eq!(value["rootOutPath"], value["selfOutPath"]);
     assert_eq!(
         value["inputs"],
-        serde_json::json!(["alias", "child", "missing", "nested", "self"])
+        serde_json::json!(["alias", "child", "missing", "nested", "root", "self"])
     );
 
     let missing_error = eval_whnf_owned_with_options(
