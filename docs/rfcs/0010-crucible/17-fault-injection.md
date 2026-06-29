@@ -1075,7 +1075,7 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   re-encode `Rlerror` with the selected errno and original tag. Active bit-rate
   bandwidth and overlapping failure rates are folded into scheduler active-fault
   state so `MaterializedState` captures the live I/O fault set.
-- [ ] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
+- [x] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
   heal) as the body of the `Plan`, in virtual time, with build-time validation
   (declared refs, heal-tag injected somewhere, in-range params) and integer-bp
   content-addressing; activate/heal at exact virtual times in total order with the
@@ -1085,6 +1085,17 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   pure-`At` case sharing one canonicalization and content hash. — satisfies
   [FAULT-24], [FAULT-25], [FAULT-33], [FAULT-34]; spec §17.6.1; cross-ref 06 §9,
   08 §8.11, 17a §17a.4, §17a.7.
+  Completed by `checks.crucible.phase4.faultPlan`: `Plan` now carries a
+  full-taxonomy `FaultPlan` body with canonical `at`, `permanent_at`, and `heal`
+  entries, world-time validation for node/link refs and heal tags, integer-param
+  TOML parsing, compact-binary round trips, and pure-`At` event-graph lowering
+  into `InjectFault`/`HealFault` actions in deterministic same-time order. The
+  lowered trigger path projects active taxonomy faults into `CombinedFaults`,
+  applies scheduler-owned node/topology/device effects, and exposes a live
+  `NetLink` bridge for trigger-owned network faults. The `FaultPlan` content hash
+  matches the mechanically equivalent pure-`At` event graph; block/9p device refs
+  fail closed until the implemented `World` grows first-class I/O participant
+  declarations.
 - [ ] **T-FAULT-11** Implement imperative inject/heal over the control plane
   applied at quantum boundaries and recorded in the `Schedule`, so an
   imperatively-driven session reduces to the same self-contained repro artifact.
