@@ -602,6 +602,11 @@ in {
       attrPath = "checks.crucible.phase4.blackBoxFirstGuarantee";
       taskIds = ["T-TRIG-19"];
     };
+    faultTaxonomy = import ./phase4-fault-taxonomy.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.faultTaxonomy";
+      taskIds = ["T-FAULT-1"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
