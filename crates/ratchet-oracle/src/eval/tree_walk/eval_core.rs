@@ -681,8 +681,9 @@ impl TreeWalk {
         let identity = self.cache_first_class_primop_call_identity_for_current_node(id, builtin)?;
         let mut free_var_value_hashes = Vec::new();
         free_var_value_hashes.try_reserve_exact(args.len()).ok()?;
-        for arg in args {
-            free_var_value_hashes.push(self.force_cache_free_var_value_hash(arg.value())?);
+        for (index, arg) in args.iter().enumerate() {
+            free_var_value_hashes
+                .push(self.force_cache_free_var_value_hash_for_primop_arg(builtin, index, arg)?);
         }
         Some(ForceCacheSubject {
             lookup_identity: Some(identity),
@@ -694,6 +695,91 @@ impl TreeWalk {
             replay_position_module: None,
             memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
         })
+    }
+
+    fn force_cache_free_var_value_hash_for_primop_arg(
+        &self,
+        builtin: Builtin,
+        index: usize,
+        arg: &EvalPrimOpArg,
+    ) -> Option<DurableBlake3Hash> {
+        if builtin.execution() == BuiltinExecution::FindFile && index == 0 {
+            return self.force_cache_builtin_nix_path_arg_hash(arg.value());
+        }
+        self.force_cache_free_var_value_hash(arg.value())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_first_class_primop_arg_hashes_for_current_apply(
+        &mut self,
+        id: IrId,
+        builtin: Builtin,
+    ) -> Option<Vec<DurableBlake3Hash>> {
+        if builtin.execution() != BuiltinExecution::FindFile {
+            return None;
+        }
+        let node = *self.node(id).ok()?;
+        let IrData::Pair {
+            second: argument_id,
+            ..
+        } = node.data
+        else {
+            return None;
+        };
+        let argument_span = self.node(argument_id).ok()?.span;
+        let argument = self.eval_lazy_node(argument_id).ok()?;
+        let argument =
+            EvalPrimOpArg::new_in_module(self.current_module, argument_id, argument_span, argument);
+        let mut hashes = Vec::new();
+        hashes.try_reserve_exact(2).ok()?;
+        hashes.push(self.force_cache_visible_nix_path_arg_hash()?);
+        hashes.push(self.force_cache_free_var_value_hash_for_primop_arg(builtin, 1, &argument)?);
+        Some(hashes)
+    }
+
+    fn force_cache_builtin_nix_path_arg_hash(&self, value: Value) -> Option<DurableBlake3Hash> {
+        let thunk = self.heap.get_thunk(value).ok()?;
+        if !self.thunk_is_builtin_nix_path(thunk) {
+            return None;
+        }
+        self.force_cache_visible_nix_path_arg_hash()
+    }
+
+    fn force_cache_visible_nix_path_arg_hash(&self) -> Option<DurableBlake3Hash> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"synthetic-builtin-nix-path-v1");
+        let len = u64::try_from(self.visible_nix_path().len()).ok()?;
+        hasher.update(&len.to_le_bytes());
+        for entry in self.visible_nix_path() {
+            hasher.update(b"entry-prefix");
+            Self::update_cache_identity_chunk(&mut hasher, entry.prefix())?;
+            hasher.update(b"entry-path");
+            Self::update_cache_identity_chunk(&mut hasher, entry.path())?;
+        }
+        Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    fn thunk_is_builtin_nix_path(&self, thunk: &EvalThunk) -> bool {
+        match thunk.kind() {
+            EvalThunkKind::BuiltinAttr { builtin, .. } => {
+                builtin.execution() == BuiltinExecution::NixPathValue
+            }
+            EvalThunkKind::Node { body, .. } => self
+                .modules
+                .get(body.module().index())
+                .is_some_and(|module| {
+                    let Some(node) = module.ir.arena.node(body.id()) else {
+                        return false;
+                    };
+                    node.kind == IrKind::BuiltinAttr
+                        && Self::builtin_attr_execution(&module.ir, node)
+                            == Some(BuiltinExecution::NixPathValue)
+                }),
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => false,
+        }
     }
 
     const fn builtin_execution_is_cacheable_impure_call(
@@ -717,7 +803,7 @@ impl TreeWalk {
                 BuiltinExecution::StrictBinary {
                     primop: StrictBinaryPrimOp::HashFile,
                     ..
-                },
+                } | BuiltinExecution::FindFile,
                 2,
             )
         )

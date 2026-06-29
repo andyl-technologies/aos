@@ -574,7 +574,7 @@ impl TreeWalk {
         Self::node_kind_is_force_cache_safe(kind)
     }
 
-    fn builtin_attr_execution(ir: &Ir, node: &IrNode) -> Option<BuiltinExecution> {
+    pub(super) fn builtin_attr_execution(ir: &Ir, node: &IrNode) -> Option<BuiltinExecution> {
         let IrData::Symbol(symbol) = node.data else {
             return None;
         };

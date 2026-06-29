@@ -465,25 +465,33 @@ fn find_file_lexical_nix_path_thunks_hit_from_persistent_cache_after_revalidatio
 }
 
 #[test]
-fn find_file_first_class_nix_path_thunks_wait_for_direct_primop_admission() {
+fn find_file_first_class_nix_path_calls_hit_and_miss_on_option_change() {
     let root = unique_temp_dir("force-cache-find-file-first-class-nix-path");
-    let hit_root = root.join("hit");
-    let hit_candidate = hit_root.join("subdir");
-    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
+    fs::create_dir_all(&first_candidate).expect("first candidate exists");
+    fs::create_dir_all(&second_candidate).expect("second candidate exists");
     let root = fs::canonicalize(&root).expect("root canonicalizes");
-    let hit_root = root.join("hit");
-    let hit_candidate = hit_root.join("subdir");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
     let source = "{ a = (let f = builtins.findFile builtins.nixPath; in f \"pkg/subdir\"); }";
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
+    let apply_id = first_class_find_file_apply_id(&ir);
+    let builtin = lookup_builtin(b"findFile").expect("findFile builtin is registered");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
-    let mut options = TreeWalkOptions::new();
-    options
-        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
         .expect("search path entry configures");
     let expected_trace = vec![
         ImpureInputFingerprint::path_exists_with_mode(
-            &path_bytes(&hit_candidate),
+            &path_bytes(&first_candidate),
             ImpureInputMode::FindFileCandidate,
             true,
         )
@@ -492,7 +500,7 @@ fn find_file_first_class_nix_path_thunks_wait_for_direct_primop_admission() {
 
     let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        options.clone(),
+        first_options,
         "default.nix",
         source,
         cache.clone(),
@@ -501,30 +509,147 @@ fn find_file_first_class_nix_path_thunks_wait_for_direct_primop_admission() {
 
     assert_eq!(
         path_value_bytes(&evaluator, forced),
-        path_bytes(&hit_candidate)
+        path_bytes(&first_candidate)
     );
     assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
 
-    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+    let mut admit_options = TreeWalkOptions::new();
+    admit_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("matching search path entry configures");
+    let mut admit = TreeWalk::with_options_and_source_and_eval_cache(
         &ir,
-        options,
+        admit_options,
         "default.nix",
         source,
-        cache,
+        cache.clone(),
     );
-    let forced_again = force_attr_a(&mut second, &ir, a);
+    let forced_for_write = force_attr_a(&mut admit, &ir, a);
 
     assert_eq!(
-        path_value_bytes(&second, forced_again),
-        path_bytes(&hit_candidate)
+        path_value_bytes(&admit, forced_for_write),
+        path_bytes(&first_candidate)
     );
     assert!(
-        second.stats().thunks_forced() > 0,
-        "first-class findFile remains outside whole-thunk hit coverage"
+        admit.stats().thunks_forced() > 0,
+        "the second first-class findFile demand admits and computes the child call"
     );
-    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(admit.stats().cache_hits(), 0);
+    assert_eq!(admit.stats().force_cache_misses(), 2);
+    assert_eq!(admit.impure_input_trace(), expected_trace.as_slice());
+    let child_key = first_class_primop_subject_key_for_current_node(&mut admit, apply_id, builtin)
+        .expect("first-class findFile child subject builds");
+    assert!(
+        runtime_contains_node_key(&cache, child_key),
+        "the admitted first-class findFile child call should have a runtime node"
+    );
+
+    let mut hit_options = TreeWalkOptions::new();
+    hit_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("matching search path entry configures for hit");
+    let mut hit = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        hit_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced_again = force_attr_a(&mut hit, &ir, a);
+
+    assert_eq!(
+        path_value_bytes(&hit, forced_again),
+        path_bytes(&first_candidate)
+    );
+    assert!(
+        hit.stats().thunks_forced() > 0,
+        "first-class findFile child-call hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(hit.stats().force_cache_hits(), 1);
+    assert_eq!(hit.stats().force_cache_misses(), 0);
+    assert_eq!(hit.impure_input_trace(), expected_trace.as_slice());
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&second_root))
+        .expect("changed search path entry configures");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced_changed = force_attr_a(&mut changed, &ir, a);
+    let changed_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&second_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("changed first-class findFile candidate fingerprint builds"),
+    ];
+
+    assert_eq!(
+        path_value_bytes(&changed, forced_changed),
+        path_bytes(&second_candidate)
+    );
+    assert_eq!(
+        changed.stats().force_cache_hits(),
+        0,
+        "changed nixPath argument hash must not reuse the previous first-class findFile payload"
+    );
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
 
     fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+fn first_class_find_file_apply_id(ir: &Ir) -> IrId {
+    ir.arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .find_map(|(index, node)| {
+            if node.kind != IrKind::Apply {
+                return None;
+            }
+            let IrData::Pair { first, second } = node.data else {
+                return None;
+            };
+            let first = ir.arena.node(first)?;
+            let second = ir.arena.node(second)?;
+            let IrData::Symbol(symbol) = second.data else {
+                return None;
+            };
+            (first.kind == IrKind::LocalVar
+                && second.kind == IrKind::Str
+                && ir.symbols.resolve(symbol) == Some(b"pkg/subdir".as_slice()))
+            .then(|| IrId::new(index as u32))
+        })
+        .expect("first-class findFile final apply exists")
+}
+
+fn first_class_primop_subject_key_for_current_node(
+    evaluator: &mut TreeWalk,
+    id: IrId,
+    builtin: Builtin,
+) -> Option<DemandCacheKey> {
+    let identity =
+        evaluator.test_cache_first_class_primop_call_identity_for_current_node(id, builtin)?;
+    let value_hashes =
+        evaluator.test_first_class_primop_arg_hashes_for_current_apply(id, builtin)?;
+    DemandCacheKey::for_free_vars(identity, value_hashes.iter().copied()).ok()
+}
+
+fn runtime_contains_node_key(runtime: &Arc<Mutex<EvalCacheRuntime>>, key: DemandCacheKey) -> bool {
+    runtime
+        .lock()
+        .expect("cache lock is valid")
+        .cache()
+        .expect("cache is enabled")
+        .graph()
+        .node_id_for_key(key)
+        .is_some()
 }
 
 #[test]

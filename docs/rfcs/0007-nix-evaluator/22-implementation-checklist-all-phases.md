@@ -3431,6 +3431,17 @@ alone (`M-1`/`Q-A`).
       denied. This is scoped to force-cache identity and direct search-path
       policy replay, not first-class/curried `findFile`, fetch interactions, or
       the persistent demand graph (`R-10`/`S-14`).
+- [x] Current precursor: first-class `findFile builtins.nixPath` in-memory
+      child-call admission. Saturated first-class `findFile` calls whose first
+      argument is the suspended synthetic `builtins.nixPath` attr now hash that
+      argument from the configured visible `nix_path`, admit after the normal
+      first-class demand gate, replay candidate traces on in-memory child-call
+      hits, and miss when the configured `nix_path` changes. This is scoped to
+      in-memory child-call replay only; the enclosing thunk still evaluates
+      unless separately admitted, and persistent fresh-runtime replay,
+      explicit-list first-class `findFile`, first-class allowed-path policy
+      coverage, fetch interactions, and broad search-path edge-exactness remain
+      open (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
