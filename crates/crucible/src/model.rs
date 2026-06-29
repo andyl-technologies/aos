@@ -4043,6 +4043,15 @@ pub enum NodeLifecycle {
     Exited,
 }
 
+/// Terminal assertion state visible to trigger steering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AssertionPhase {
+    /// The assertion became satisfied.
+    Satisfied,
+    /// The assertion became violated.
+    Violated,
+}
+
 /// Disposition for an ordinary reachable marker that is never reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReachableDisposition {
@@ -4130,6 +4139,15 @@ pub enum Predicate {
         /// Lifecycle state to match.
         state: NodeLifecycle,
     },
+    /// True when a named assertion enters the requested terminal state.
+    AssertionState {
+        /// Assertion identity whose state transition is observed.
+        name: AssertionId,
+        /// Assertion state to match.
+        state: AssertionPhase,
+    },
+    /// True when scheduler-owned quiescence evidence has no blockers.
+    Quiescent,
     /// A named host-side predicate resolved by the harness and event log.
     Named {
         /// Stable predicate name.
@@ -4240,6 +4258,18 @@ impl Predicate {
     #[must_use]
     pub fn node_state(node: NodeId, state: NodeLifecycle) -> Self {
         Self::NodeState { node, state }
+    }
+
+    /// Builds an assertion-state predicate.
+    #[must_use]
+    pub fn assertion_state(name: AssertionId, state: AssertionPhase) -> Self {
+        Self::AssertionState { name, state }
+    }
+
+    /// Builds a scheduler-quiescence predicate.
+    #[must_use]
+    pub const fn quiescent() -> Self {
+        Self::Quiescent
     }
 
     /// Builds a guest-marker predicate.
@@ -4354,6 +4384,8 @@ impl Properties {
     /// Returns [`EngineError::PropertyDuplicateAssertionId`] when two
     /// assertions share an id, [`EngineError::PropertyPredicateUnknownNode`]
     /// when a predicate names a node that is not declared by `world`,
+    /// [`EngineError::PropertyPredicateUnknownAssertion`] when an
+    /// `AssertionState` predicate names no declared assertion,
     /// [`EngineError::PropertyPredicateEmptyCompound`] when an `AllOf` or
     /// `AnyOf` predicate has no children, or
     /// [`EngineError::PropertyPredicateTriggerOnly`] when a property uses an
@@ -4397,8 +4429,8 @@ impl Properties {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
-    /// mismatch, or a property validation error when the parsed assertions do not
-    /// layer over `world`.
+    /// mismatch, or a property validation error when the parsed assertions do
+    /// not layer over `world`.
     pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
         let toml = toml::from_str::<PropertiesToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse properties TOML: {source}"))
@@ -4439,7 +4471,8 @@ impl Properties {
     /// # Errors
     ///
     /// Returns [`EngineError::PropertyDuplicateAssertionId`],
-    /// [`EngineError::PropertyPredicateUnknownNode`], or
+    /// [`EngineError::PropertyPredicateUnknownNode`],
+    /// [`EngineError::PropertyPredicateUnknownAssertion`], or
     /// [`EngineError::PropertyPredicateEmptyCompound`], or
     /// [`EngineError::PropertyPredicateTriggerOnly`] when an assertion cannot be
     /// layered over the static world topology.
@@ -7871,6 +7904,11 @@ pub enum EngineError {
         /// The undeclared node.
         node: NodeId,
     },
+    /// A property predicate references an undeclared assertion.
+    PropertyPredicateUnknownAssertion {
+        /// The undeclared assertion.
+        assertion: AssertionId,
+    },
     /// A compound property predicate has no child predicates.
     PropertyPredicateEmptyCompound {
         /// Stable name of the empty compound predicate kind.
@@ -8078,6 +8116,9 @@ impl fmt::Display for EngineError {
             }
             Self::PropertyPredicateUnknownNode { .. } => {
                 f.write_str("property predicate references an undeclared node")
+            }
+            Self::PropertyPredicateUnknownAssertion { .. } => {
+                f.write_str("property predicate references an undeclared assertion")
             }
             Self::PropertyPredicateEmptyCompound { kind } => {
                 write!(f, "property predicate compound {kind} has no children")
@@ -9226,12 +9267,15 @@ fn validate_properties_for_world(
     let mut assertion_ids = BTreeSet::new();
 
     for assertion in assertions {
-        if !assertion_ids.insert(&assertion.id) {
+        if !assertion_ids.insert(assertion.id.clone()) {
             return Err(EngineError::PropertyDuplicateAssertionId {
                 id: assertion.id.clone(),
             });
         }
-        validate_property_for_world(&assertion.property, &node_ids)?;
+    }
+
+    for assertion in assertions {
+        validate_property_for_world(&assertion.property, &node_ids, &assertion_ids)?;
     }
 
     Ok(())
@@ -9240,19 +9284,20 @@ fn validate_properties_for_world(
 fn validate_property_for_world(
     property: &Property,
     node_ids: &BTreeSet<&NodeId>,
+    assertion_ids: &BTreeSet<AssertionId>,
 ) -> Result<(), EngineError> {
     match property {
         Property::Always { predicate }
         | Property::Sometimes { predicate }
         | Property::AfterQuiescence { predicate }
         | Property::Reachable { predicate, .. } => {
-            validate_property_predicate_for_world(predicate, node_ids)
+            validate_property_predicate_for_world(predicate, node_ids, assertion_ids)
         }
         Property::Eventually {
             trigger, property, ..
         } => {
-            validate_property_predicate_for_world(trigger, node_ids)?;
-            validate_property_predicate_for_world(property, node_ids)
+            validate_property_predicate_for_world(trigger, node_ids, assertion_ids)?;
+            validate_property_predicate_for_world(property, node_ids, assertion_ids)
         }
     }
 }
@@ -9260,9 +9305,10 @@ fn validate_property_for_world(
 fn validate_property_predicate_for_world(
     predicate: &Predicate,
     node_ids: &BTreeSet<&NodeId>,
+    assertion_ids: &BTreeSet<AssertionId>,
 ) -> Result<(), EngineError> {
     match predicate {
-        Predicate::At { .. } | Predicate::NetworkMatch { .. } => Ok(()),
+        Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(()),
         Predicate::After { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "after" }),
         Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "timer" }),
         Predicate::ConsoleMatch { node, regex } => {
@@ -9273,6 +9319,15 @@ fn validate_property_predicate_for_world(
         | Predicate::MemoryPredicate { node, .. }
         | Predicate::IoPattern { node, .. }
         | Predicate::NodeState { node, .. } => validate_property_node(node, node_ids),
+        Predicate::AssertionState { name, .. } => {
+            if assertion_ids.contains(name) {
+                Ok(())
+            } else {
+                Err(EngineError::PropertyPredicateUnknownAssertion {
+                    assertion: name.clone(),
+                })
+            }
+        }
         Predicate::Named { nodes, .. } => {
             for node in nodes {
                 validate_property_node(node, node_ids)?;
@@ -9281,13 +9336,13 @@ fn validate_property_predicate_for_world(
         }
         Predicate::GuestMarker { .. } => Ok(()),
         Predicate::AllOf { predicates } => {
-            validate_compound_predicate("all-of", predicates, node_ids)
+            validate_compound_predicate("all-of", predicates, node_ids, assertion_ids)
         }
         Predicate::AnyOf { predicates } => {
-            validate_compound_predicate("any-of", predicates, node_ids)
+            validate_compound_predicate("any-of", predicates, node_ids, assertion_ids)
         }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            validate_property_predicate_for_world(predicate, node_ids)
+            validate_property_predicate_for_world(predicate, node_ids, assertion_ids)
         }
     }
 }
@@ -9296,13 +9351,14 @@ fn validate_compound_predicate(
     kind: &'static str,
     predicates: &[Predicate],
     node_ids: &BTreeSet<&NodeId>,
+    assertion_ids: &BTreeSet<AssertionId>,
 ) -> Result<(), EngineError> {
     if predicates.is_empty() {
         return Err(EngineError::PropertyPredicateEmptyCompound { kind });
     }
 
     for predicate in predicates {
-        validate_property_predicate_for_world(predicate, node_ids)?;
+        validate_property_predicate_for_world(predicate, node_ids, assertion_ids)?;
     }
 
     Ok(())
@@ -9503,6 +9559,11 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
             node: node.clone(),
             state: *state,
         },
+        Predicate::AssertionState { name, state } => Predicate::AssertionState {
+            name: name.clone(),
+            state: *state,
+        },
+        Predicate::Quiescent => Predicate::Quiescent,
         Predicate::Named { name, nodes } => Predicate::Named {
             name: name.clone(),
             nodes: nodes.clone(),
@@ -9800,6 +9861,11 @@ enum PredicateToml {
         node: String,
         state: NodeLifecycleToml,
     },
+    AssertionState {
+        name: String,
+        state: AssertionPhaseToml,
+    },
+    Quiescent,
     Named {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -9903,6 +9969,14 @@ enum NodeLifecycleToml {
     Started,
     Crashed,
     Exited,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum AssertionPhaseToml {
+    Satisfied,
+    Violated,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -10382,6 +10456,11 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             node: node.name.clone(),
             state: node_lifecycle_to_toml(*state),
         },
+        Predicate::AssertionState { name, state } => PredicateToml::AssertionState {
+            name: name.name.clone(),
+            state: assertion_phase_to_toml(*state),
+        },
+        Predicate::Quiescent => PredicateToml::Quiescent,
         Predicate::Named { name, nodes } => PredicateToml::Named {
             name: name.clone(),
             nodes: nodes.iter().map(|node| node.name.clone()).collect(),
@@ -10449,6 +10528,11 @@ fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
             node: NodeId { name: node },
             state: node_lifecycle_from_toml(state),
         },
+        PredicateToml::AssertionState { name, state } => Predicate::AssertionState {
+            name: AssertionId { name },
+            state: assertion_phase_from_toml(state),
+        },
+        PredicateToml::Quiescent => Predicate::Quiescent,
         PredicateToml::Named { name, nodes } => Predicate::Named {
             name,
             nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
@@ -10638,6 +10722,20 @@ fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
         NodeLifecycleToml::Started => NodeLifecycle::Started,
         NodeLifecycleToml::Crashed => NodeLifecycle::Crashed,
         NodeLifecycleToml::Exited => NodeLifecycle::Exited,
+    }
+}
+
+fn assertion_phase_to_toml(state: AssertionPhase) -> AssertionPhaseToml {
+    match state {
+        AssertionPhase::Satisfied => AssertionPhaseToml::Satisfied,
+        AssertionPhase::Violated => AssertionPhaseToml::Violated,
+    }
+}
+
+fn assertion_phase_from_toml(toml: AssertionPhaseToml) -> AssertionPhase {
+    match toml {
+        AssertionPhaseToml::Satisfied => AssertionPhase::Satisfied,
+        AssertionPhaseToml::Violated => AssertionPhase::Violated,
     }
 }
 
@@ -11622,6 +11720,14 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
             writer.write_string(&node.name);
             write_node_lifecycle_binary(*state, writer);
         }
+        Predicate::AssertionState { name, state } => {
+            writer.write_u8(15);
+            writer.write_string(&name.name);
+            write_assertion_phase_binary(*state, writer);
+        }
+        Predicate::Quiescent => {
+            writer.write_u8(16);
+        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -11768,6 +11874,13 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
             },
             state: read_node_lifecycle_binary(reader)?,
         }),
+        15 => Ok(Predicate::AssertionState {
+            name: AssertionId {
+                name: reader.read_string()?,
+            },
+            state: read_assertion_phase_binary(reader)?,
+        }),
+        16 => Ok(Predicate::Quiescent),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
     }
 }
@@ -11967,6 +12080,23 @@ fn read_node_lifecycle_binary(
         1 => Ok(NodeLifecycle::Crashed),
         2 => Ok(NodeLifecycle::Exited),
         _ => Err(scenario_serialization_error("invalid node lifecycle tag")),
+    }
+}
+
+fn write_assertion_phase_binary(state: AssertionPhase, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match state {
+        AssertionPhase::Satisfied => 0,
+        AssertionPhase::Violated => 1,
+    });
+}
+
+fn read_assertion_phase_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<AssertionPhase, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(AssertionPhase::Satisfied),
+        1 => Ok(AssertionPhase::Violated),
+        _ => Err(scenario_serialization_error("invalid assertion phase tag")),
     }
 }
 
@@ -12800,6 +12930,14 @@ fn predicate_material(predicate: &Predicate) -> String {
                 node_lifecycle_label(*state)
             )
         }
+        Predicate::AssertionState { name, state } => {
+            format!(
+                "predicate=assertion-state\n{}\nassertion_phase={}",
+                assertion_id_material(name),
+                assertion_phase_label(*state)
+            )
+        }
+        Predicate::Quiescent => String::from("predicate=quiescent"),
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
@@ -12957,6 +13095,13 @@ fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
         NodeLifecycle::Started => "started",
         NodeLifecycle::Crashed => "crashed",
         NodeLifecycle::Exited => "exited",
+    }
+}
+
+fn assertion_phase_label(state: AssertionPhase) -> &'static str {
+    match state {
+        AssertionPhase::Satisfied => "satisfied",
+        AssertionPhase::Violated => "violated",
     }
 }
 
