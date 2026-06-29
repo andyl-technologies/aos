@@ -73,10 +73,10 @@
       }
       {
         label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-18**";
+        needle = "- [ ] **T-TRIG-19**";
       }
       {
-        label = "event graph serialization remains open";
+        label = "event graph serialization task text";
         needle = "serializable content-addressed form";
       }
     ]
@@ -271,11 +271,11 @@
     ++ forbiddenFor "engine-facing control-flow surfaces" engineFacingSources [
       {
         label = "direct scenario fault injection API";
-        needle = "fn inject_fault";
+        needle = "fn inject_fault(&mut";
       }
       {
         label = "direct scenario fault healing API";
-        needle = "fn heal_fault";
+        needle = "fn heal_fault(&mut";
       }
       {
         label = "direct scenario poke API";
@@ -367,7 +367,8 @@ in
             condition_semantics=implemented-T-TRIG-2-through-T-TRIG-11
             plan_lowering=implemented-T-TRIG-16
             verdicts=implemented-T-TRIG-17
-            event_graph_serialization=pending-T-TRIG-18
+            event_graph_serialization=implemented-T-TRIG-18
+            black_box_guarantee=pending-T-TRIG-19
             RESULT
           '';
         }

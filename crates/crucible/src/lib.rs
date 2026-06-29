@@ -119,8 +119,9 @@ pub use trigger::{
     Action, Condition, ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass,
     ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
     EventEvaluationKind, EventEvaluationPoint, EventFiring, EventFirings, EventGraph,
-    EventGraphError, EventGraphState, FirePolicy, LogLevel, LoweredPlanEventGraph, ObservableEvent,
-    ObservableEventPayload, ResolvedCodePoint, ResolvedMemPlace,
+    EventGraphBuilder, EventGraphError, EventGraphEventBuilder, EventGraphState, FirePolicy,
+    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ResolvedCodePoint,
+    ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]

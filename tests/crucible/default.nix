@@ -592,6 +592,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerVerdictComposition";
       taskIds = ["T-TRIG-17"];
     };
+    eventGraphSerialization = import ./phase4-event-graph-serialization.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventGraphSerialization";
+      taskIds = ["T-TRIG-18"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
