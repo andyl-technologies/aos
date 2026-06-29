@@ -936,10 +936,21 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   directed partition and restart-policy variants, block jitter and failure
   modes, 9p errno, integer-only material, and content-address drift when
   parameters change.
-- [ ] **T-FAULT-2** Enforce the one design rule: every fault perturbs modeled
+- [x] **T-FAULT-2** Enforce the one design rule: every fault perturbs modeled
   behavior only (no host wall-clock/scheduling/FS/entropy) and never mutates the
   static topology; add a harness-lint check on the fault apply path. — satisfies
   [FAULT-1]; spec §17.1.
+
+  Completed by `checks.crucible.phase4.faultModelRule`: the trigger fault
+  application path is now covered by `gate:harness-lint` through a dedicated
+  `fault_apply_path_failures` scan that rejects host time, host filesystem,
+  host thread scheduling, host entropy/RNG, and topology-mutation tokens inside
+  the `InjectFault`/`HealFault` effect arms and requires those arms to be direct
+  modeled `active_faults` mutations with no helper calls or assignments. The
+  focused `fault_model_rule` engine test applies and heals a partition fault,
+  proving the path changes only modeled `active_faults`/causal trigger-action
+  log state while the schedule, scheduler static topology, and source `World`
+  topology remain unchanged.
 - [ ] **T-FAULT-3** Route every probabilistic fault decision through the single
   seeded decision RNG in the scheduler's total order, fork per-link/per-device
   streams by name-hash, and record each decision as a `Decision`; prove
