@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21"],
+  taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -11,6 +11,7 @@
   qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
   qemuPluginFailLoud = import ./phase2-plugin-fail-loud.nix {inherit pkgs lib;};
   qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
+  qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
   qemuPackage = pkgs.qemu-crucible;
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
@@ -183,6 +184,13 @@
         patchName = "0027-crucible-sim-batch-tcg-exec.patch";
       };
     }
+    {
+      patch = "0028-crucible-det-ipi.patch";
+      check = import ./phase2-qemu-det-ipi.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0028-crucible-det-ipi.patch";
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -310,6 +318,7 @@ in
               qemu_plugin_register_tcg_exec_cb \
               qemu_plugin_register_vcpu_idle_resume_cb \
               qemu_plugin_register_sim_shmem_dispatch_cb \
+              qemu_plugin_crucible_register_ipi_delivery_cb \
               qemu_plugin_register_blk_cb \
               qemu_plugin_register_9p_cb
             do
@@ -348,6 +357,15 @@ in
             grep -q '^adaptive_rr_switch_trace_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^patched_non_sim_rr_switch_trace_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$' "$out/qemu-rr-quantum-icount.result"
+            cp "${qemuDetIpi}/result" "$out/qemu-det-ipi.result"
+            grep -q '^PASS$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_rr_handoff=queued-drain-before-next-vcpu$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_fixed_mode_trace=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_init_mode_trace=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_sipi_mode_trace=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_event_count_match=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_delivery_icount_trace_match=true$' "$out/qemu-det-ipi.result"
+            grep -q '^deterministic_ipi_source_target_distinct=true$' "$out/qemu-det-ipi.result"
             cp "${qemuDoorbellNoPatch}/result" "$out/qemu-doorbell-no-patch.result"
             grep -q '^PASS$' "$out/qemu-doorbell-no-patch.result"
             grep -q '^gate=gate:patch-microtests$' "$out/qemu-doorbell-no-patch.result"
@@ -390,6 +408,11 @@ in
             adaptive_rr_switch_trace_negative_control=red
             patched_non_sim_rr_switch_trace_negative_control=red
             non_sim_rr_switch_quantum_uses_stock_budget=true
+            qemu_det_ipi_gate_passed=true
+            deterministic_ipi_fixed_mode_trace=true
+            deterministic_ipi_init_mode_trace=true
+            deterministic_ipi_sipi_mode_trace=true
+            deterministic_ipi_delivery_icount_trace_match=true
             qemu_doorbell_no_patch_gate_passed=true
             qemu_diagnostic_patches_dev_only_gate_passed=true
             apply_clean_pinned_qemu=true
@@ -403,6 +426,7 @@ in
             qemu_plugin_time_drain_exports_present=true
             qemu_plugin_runtime_api_exports_present=true
             qemu_plugin_sim_correctness_exports_present=true
+            qemu_plugin_det_ipi_exports_present=true
             qemu_plugin_block_exports_present=true
             qemu_plugin_9p_exports_present=true
             qemu_inert_gate_attr=checks.crucible.phase2.gates.qemuInert

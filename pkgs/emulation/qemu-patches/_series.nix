@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "c427d5a6353d4f99455aaeebe2fb81a847372cac2a20fb0fdf84cf99f56ba94d";
+  patchBranchBundleSha256 = "aa865acf3d761252cf90811e2eaba4ec8e8cf15d8be2337489bce5e154c3a861";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "b5ca497e6ce46d85328bb1dfac989cd8fef8463c";
+  patchBranchHeadCommit = "fbf8e4ce171ad2bc47c49a13b269c5f2b712ec1e";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -258,6 +258,15 @@ let
       class = "F";
       enforces = "PATCH-35,DET-1,INV-10";
       capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
+    }
+    {
+      file = "0028-crucible-det-ipi.patch";
+      branchCommit = "fbf8e4ce171ad2bc47c49a13b269c5f2b712ec1e";
+      branchTree = "418e9d3d368372405e00aa077c277109e2b21e74";
+      catalogName = "crucible-det-ipi";
+      class = "D";
+      enforces = "PATCH-45,DET-1,INV-7";
+      capability = "sim-mode inter-vCPU IPI/SIPI/INIT delivery queued to deterministic RR handoff";
     }
   ];
 in {

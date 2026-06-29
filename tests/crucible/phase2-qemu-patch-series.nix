@@ -209,6 +209,13 @@
       enforces = "PATCH-35,DET-1,INV-10";
       capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
     }
+    {
+      file = "0028-crucible-det-ipi.patch";
+      catalogName = "crucible-det-ipi";
+      class = "D";
+      enforces = "PATCH-45,DET-1,INV-7";
+      capability = "sim-mode inter-vCPU IPI/SIPI/INIT delivery queued to deterministic RR handoff";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;
