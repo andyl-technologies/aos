@@ -1639,7 +1639,7 @@ in {
           '.error
             | contains("nix-store -qR failed")
             and contains("hostresume-1.0.0")
-            and contains("is not valid")' \
+            and contains("not in the Nix store")' \
           "$work/apr-release-host-resume-interrupted.json" >/dev/null
         git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
           > "$work/apr-release-host-resume-tag.out"
