@@ -3294,6 +3294,76 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn aos_nix_cache_zero_bypasses_populated_native_eval_expr_cache_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let cache_root = root.path().join("cache");
+        let source = "let attrs = { payload = \"eval expr cache payload\"; }; in attrs.payload";
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator.native.eval_expr(&source)?;
+        assert_eq!(baseline, "\"eval expr cache payload\"");
+
+        let mut seed_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        seed_config.set_eval_mode(NixEvalMode::Impure);
+        seed_config.set_native_cache_root(&cache_root)?;
+        let first_seed = NativeOnlyEval::new(0, seed_config.clone())?
+            .native
+            .eval_expr(&source)?;
+        let materialized_seed = NativeOnlyEval::new(0, seed_config)?
+            .native
+            .eval_expr(&source)?;
+        assert_eq!(first_seed, baseline);
+        assert_eq!(materialized_seed, baseline);
+
+        let persist_root = cache_root.join("persist");
+        assert_persistent_force_cache_payload_entries(&persist_root)?;
+        let cache_before = snapshot_regular_file_tree(&cache_root)?;
+        assert!(
+            !cache_before.is_empty(),
+            "cache-enabled eval_expr seed should populate the native cache root"
+        );
+
+        let mut disabled_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        disabled_config.set_eval_mode(NixEvalMode::Impure);
+        disabled_config.set_native_cache_root(&cache_root)?;
+        disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+        assert_eq!(disabled_config.native_cache_root(), None);
+        let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+        assert_eq!(disabled_options.parse_cache_root(), None);
+        assert_eq!(disabled_options.persist_cache_root(), None);
+        assert!(!disabled_options.eval_cache_enabled());
+        let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+        let disabled = disabled_evaluator.native.eval_expr(&source)?;
+
+        assert_eq!(disabled, baseline);
+        assert_eq!(
+            snapshot_regular_file_tree(&cache_root)?,
+            cache_before,
+            "AOS_NIX_CACHE=0 should not mutate populated eval_expr cache-root regular-file paths or bytes"
+        );
+        Ok(())
+    }
+
     #[cfg(all(feature = "native-eval", unix))]
     #[test]
     fn aos_nix_cache_zero_leaves_non_file_cache_roots_untouched() -> Result<()> {

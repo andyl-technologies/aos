@@ -3462,7 +3462,7 @@ alone (`M-1`/`Q-A`).
       no-read instrumentation, the full cache-off AOS closure harness, full
       internal-hash leak invariant, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
-- [x] Current `AOS_NIX_CACHE=0` native closure bypass canaries:
+- [x] Current `AOS_NIX_CACHE=0` native eval/closure bypass canaries:
       `aos_nix_cache_zero_bypasses_native_closure_cache_root` configures a
       stale cache-root path that is a plain file, applies the real
       `AOS_NIX_CACHE=0` config path, verifies the mapped native
@@ -3481,13 +3481,20 @@ alone (`M-1`/`Q-A`).
       contents, then apply the real `AOS_NIX_CACHE=0` config path and require
       no native cache roots, byte-identical `.drv` closures, and unchanged
       populated cache-root regular-file paths and bytes.
+      `aos_nix_cache_zero_bypasses_populated_native_eval_expr_cache_root`
+      performs the same public config-path check for strict-JSON `eval_expr`:
+      it seeds a populated cache root with an attr-selected string thunk until
+      loadable persistent force-cache payloads exist, then requires
+      `AOS_NIX_CACHE=0` to preserve the uncached JSON output and leave the
+      populated cache-root regular-file paths and bytes unchanged.
       `aos_nix_cache_zero_leaves_non_file_cache_roots_untouched` additionally
       drives the same public config path over directory-only cache roots,
       cache-root symlinks, and stale metadata-shaped cache directories, requiring
       byte-identical native closures and unchanged directory, symlink, target,
       and metadata-shaped tree snapshots.
-      This samples the public env/config kill switch at the raw-expression and
-      file-backed native `.drv` closure boundaries; it is not the full periodic
+      This samples the public env/config kill switch at the strict-JSON
+      `eval_expr`, raw-expression `.drv`, and file-backed native `.drv` closure
+      boundaries; it is not the full periodic
       cache-off/cold cached CI harness, syscall-level no-read proof, complete
       cache metadata/symlink/directory-only proof, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
