@@ -15,7 +15,8 @@
 //! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
 //! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
-//! boundary, and `sim_backend` provides the gated in-process test double.
+//! boundary, [`trigger`] owns event-graph control flow, and `sim_backend`
+//! provides the gated in-process test double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -29,6 +30,7 @@ pub mod model;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
+pub mod trigger;
 
 pub use backend::{
     AdvanceOutcome, Backend, BackendError, BackendInput, ExecutionFingerprint, ExecutionHorizon,
@@ -107,6 +109,10 @@ pub use sim_backend::{
     SimBackend, SimBackendState, SimDeliveredFrame, SimDouble, SimDoubleConfig,
     SimDoubleControlEvent, SimDoubleError, SimDoubleHostScheduleEvent, SimInstructionScript,
     SimInstructionStep, SimOutboundFrame,
+};
+pub use trigger::{
+    Action, Condition, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph,
+    EventGraphError, EventGraphState, EventId, FirePolicy, LogLevel,
 };
 
 #[cfg(test)]
