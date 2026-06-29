@@ -43,9 +43,9 @@ pub use device::{
 };
 pub use device_subnode::DeviceSchedulingSubNode;
 pub use model::{
-    AppRandomDecision, AssertionDef, AssertionId, Checkpoint, CheckpointKind, CheckpointMeta,
-    ChoiceTag, ClockDriftRate, CodePoint, Configuration, ContentAddressedBlobRef, ContentHash,
-    CowDeltaKind, CowDeltaRef, CowSharingStats, DagStore, DagStoreError,
+    AppRandomDecision, AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind,
+    CheckpointMeta, ChoiceTag, ClockDriftRate, CodePoint, Configuration, ContentAddressedBlobRef,
+    ContentHash, CowDeltaKind, CowDeltaRef, CowSharingStats, DagStore, DagStoreError,
     DagStoreReproductionArtifact, Decision, DecisionRngState, DeliveryOrderDecision, DeviceId,
     DeviceOverlayDelta, DeviceRngState, EngineError, EventId, EventKey, EventLogOffset,
     EventSequenceKey, EventSequenceState, FamilyParams, FamilySpace, FaultDecision, FaultDensity,

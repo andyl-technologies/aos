@@ -537,6 +537,11 @@ in {
       attrPath = "checks.crucible.phase4.memoryConditionLeaf";
       taskIds = ["T-TRIG-6"];
     };
+    assertionQuiescenceLeaves = import ./phase4-assertion-quiescence-leaves.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.assertionQuiescenceLeaves";
+      taskIds = ["T-TRIG-7"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.observableConditionLeaves`";
       }
       {
-        label = "assertion state remains open";
-        needle = "- [ ] **T-TRIG-7**";
+        label = "guest marker remains open";
+        needle = "- [ ] **T-TRIG-8**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

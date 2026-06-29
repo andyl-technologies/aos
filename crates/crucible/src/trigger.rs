@@ -12,10 +12,11 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId, MarkerId, MemPlace,
-    MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram, SimDuration,
-    TimerId, VirtualTime,
+    AssertionId, AssertionPhase, CodePoint, FaultTag, FramePredicate, Icount, IoEventKind, LinkId,
+    MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram,
+    SimDuration, TimerId, VirtualTime,
 };
+use crate::scheduler::SchedulerQuiescence;
 
 pub use crate::model::EventId;
 
@@ -199,6 +200,19 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds a causal assertion-state-change observation.
+    #[must_use]
+    pub fn assertion_state_changed(
+        at: VirtualTime,
+        name: AssertionId,
+        state: AssertionPhase,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionStateChanged { name, state },
+        }
+    }
+
     /// Returns the deterministic virtual-time coordinate of the observation.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
@@ -267,6 +281,13 @@ pub enum ObservableEventPayload {
         /// Lifecycle state entered by the node.
         state: NodeLifecycle,
     },
+    /// A named assertion entered a terminal state.
+    AssertionStateChanged {
+        /// Assertion whose state changed.
+        name: AssertionId,
+        /// Terminal assertion state entered at this log point.
+        state: AssertionPhase,
+    },
 }
 
 /// One leaf predicate request made by the shared condition evaluator.
@@ -329,6 +350,11 @@ pub trait ConditionEvaluator {
     /// Returns observable event-log entries visible at the evaluation point.
     fn observable_events(&self) -> &[ObservableEvent] {
         &[]
+    }
+
+    /// Returns scheduler-owned quiescence evidence for the evaluation point.
+    fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        None
     }
 
     /// Resolves an authored code point using host-side symbol metadata.
@@ -401,6 +427,14 @@ where
             evaluator.observable_events(),
             |event| node_state_event_matches(event, node, *state),
         ),
+        Condition::AssertionState { name, state } => observable_event_matches(
+            evaluator.evaluation_point().at(),
+            evaluator.observable_events(),
+            |event| assertion_state_event_matches(event, name, *state),
+        ),
+        Condition::Quiescent => evaluator
+            .scheduler_quiescence()
+            .is_some_and(SchedulerQuiescence::is_quiescent),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -604,6 +638,17 @@ fn node_state_event_matches(
     node == expected_node && *state == expected_state
 }
 
+fn assertion_state_event_matches(
+    event: &ObservableEventPayload,
+    expected_name: &AssertionId,
+    expected_state: AssertionPhase,
+) -> bool {
+    let ObservableEventPayload::AssertionStateChanged { name, state } = event else {
+        return false;
+    };
+    name == expected_name && *state == expected_state
+}
+
 /// Condition evaluator backed by a leaf oracle.
 #[derive(Clone, Debug)]
 pub struct ConditionEvaluation<O> {
@@ -612,6 +657,7 @@ pub struct ConditionEvaluation<O> {
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
+    scheduler_quiescence: Option<SchedulerQuiescence>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
@@ -626,6 +672,7 @@ impl<O> ConditionEvaluation<O> {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             observable_events: Vec::new(),
+            scheduler_quiescence: None,
             code_points: BTreeMap::new(),
             mem_places: BTreeMap::new(),
         }
@@ -655,6 +702,13 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn with_observable_events(mut self, observable_events: Vec<ObservableEvent>) -> Self {
         self.observable_events = observable_events;
+        self
+    }
+
+    /// Adds scheduler-owned quiescence evidence visible to `Quiescent` leaves.
+    #[must_use]
+    pub fn with_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
+        self.scheduler_quiescence = Some(quiescence);
         self
     }
 
@@ -709,6 +763,10 @@ where
 
     fn observable_events(&self) -> &[ObservableEvent] {
         &self.observable_events
+    }
+
+    fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        self.scheduler_quiescence.as_ref()
     }
 
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
@@ -868,7 +926,7 @@ pub struct EventGraph {
 }
 
 impl EventGraph {
-    /// Builds an event graph after checking event ids are unique.
+    /// Builds an event graph with no declared assertion namespace.
     ///
     /// # Errors
     ///
@@ -878,7 +936,31 @@ impl EventGraph {
     /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
     /// names no declared event, or [`EventGraphError::UnknownTimerReference`]
     /// when a `Timer` predicate names no armable timer.
+    /// [`EventGraphError::UnknownAssertionReference`] is returned for any
+    /// assertion-state trigger because this constructor has no assertion
+    /// declarations to validate against; use [`Self::new_with_assertions`] for
+    /// those graphs.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
+        Self::new_with_assertions(events, [])
+    }
+
+    /// Builds an event graph with declared assertion ids available to triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventGraphError::DuplicateEventId`] when two events carry the
+    /// same stable id, [`EventGraphError::RepeatableEntrypoint`] when an
+    /// entrypoint tries to use repeatable firing policy,
+    /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
+    /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
+    /// a `Timer` predicate names no armable timer, or
+    /// [`EventGraphError::UnknownAssertionReference`] when an
+    /// `AssertionState` predicate names no declared assertion.
+    pub fn new_with_assertions(
+        events: Vec<Event>,
+        assertions: impl IntoIterator<Item = AssertionId>,
+    ) -> Result<Self, EventGraphError> {
+        let assertion_ids = assertions.into_iter().collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
         for event in &events {
             if !seen.insert(event.id.clone()) {
@@ -895,7 +977,13 @@ impl EventGraph {
         let timer_names = armed_timer_names(&events);
         for event in &events {
             if let Some(condition) = &event.trigger {
-                validate_condition_references(event, condition, &seen, &timer_names)?;
+                validate_condition_references(
+                    event,
+                    condition,
+                    &seen,
+                    &timer_names,
+                    &assertion_ids,
+                )?;
             }
         }
         Ok(Self { events })
@@ -1088,6 +1176,10 @@ where
         self.inner.observable_events()
     }
 
+    fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        self.inner.scheduler_quiescence()
+    }
+
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
         self.inner.resolve_code_point(node, point)
     }
@@ -1123,6 +1215,13 @@ pub enum EventGraphError {
         event: EventId,
         /// Referenced timer id.
         timer: TimerId,
+    },
+    /// An `AssertionState` predicate references no declared assertion.
+    UnknownAssertionReference {
+        /// Event containing the invalid assertion reference.
+        event: EventId,
+        /// Referenced assertion id.
+        assertion: AssertionId,
     },
     /// A console-match predicate contains an invalid regex program.
     InvalidRegex {
@@ -1164,6 +1263,13 @@ impl fmt::Display for EventGraphError {
                     formatter,
                     "event `{}` references unknown timer `{}`",
                     event.name, timer.name
+                )
+            }
+            Self::UnknownAssertionReference { event, assertion } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown assertion `{}`",
+                    event.name, assertion.name
                 )
             }
             Self::InvalidRegex { event, reason, .. } => {
@@ -1215,6 +1321,7 @@ fn validate_condition_references(
     condition: &Condition,
     event_ids: &BTreeSet<EventId>,
     timer_names: &BTreeSet<TimerId>,
+    assertion_ids: &BTreeSet<AssertionId>,
 ) -> Result<(), EventGraphError> {
     match condition {
         Condition::After { of, .. } => {
@@ -1237,14 +1344,30 @@ fn validate_condition_references(
                 })
             }
         }
+        Condition::AssertionState { name, .. } => {
+            if assertion_ids.contains(name) {
+                Ok(())
+            } else {
+                Err(EventGraphError::UnknownAssertionReference {
+                    event: event.id.clone(),
+                    assertion: name.clone(),
+                })
+            }
+        }
         Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
             for predicate in predicates {
-                validate_condition_references(event, predicate, event_ids, timer_names)?;
+                validate_condition_references(
+                    event,
+                    predicate,
+                    event_ids,
+                    timer_names,
+                    assertion_ids,
+                )?;
             }
             Ok(())
         }
         Condition::Once { predicate } | Condition::Not { predicate } => {
-            validate_condition_references(event, predicate, event_ids, timer_names)
+            validate_condition_references(event, predicate, event_ids, timer_names, assertion_ids)
         }
         Condition::ConsoleMatch { regex, .. } => validate_condition_regex(event, regex),
         Condition::At { .. }
@@ -1253,6 +1376,7 @@ fn validate_condition_references(
         | Condition::MemoryPredicate { .. }
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
+        | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => Ok(()),
     }
