@@ -2261,6 +2261,226 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
 }
 
 #[test]
+fn first_class_path_exists_with_captured_path_hits_child_call() {
+    let root = unique_temp_dir("force-cache-first-class-path-exists-captured-path");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let marker_path = path_bytes(&root.join("marker"));
+    let source = "let marker = ./marker; f = builtins.pathExists; in f marker";
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let expected_trace =
+        vec![ImpureInputFingerprint::path_exists(&marker_path, true).expect("fingerprint builds")];
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let first_value = first.eval_root().expect("first pathExists call succeeds");
+    assert_eq!(first_value.as_bool(), Ok(true));
+    assert_eq!(first.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        first.stats().force_cache_hits(),
+        0,
+        "the first captured pathExists demand should be a cold child-call evaluation"
+    );
+    assert!(
+        first.stats().force_cache_misses() > 0,
+        "the first captured pathExists demand should record a cold cache miss"
+    );
+    drop(first);
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let second_value = second.eval_root().expect("second pathExists call succeeds");
+    assert_eq!(second_value.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().force_cache_hits(),
+        1,
+        "the second captured pathExists demand should reuse already-recorded surrounding cache entries"
+    );
+    assert!(
+        second.stats().force_cache_misses() > 0,
+        "the second captured pathExists demand should materialize the child-call payload"
+    );
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    drop(second);
+
+    let mut third_options = TreeWalkOptions::new();
+    third_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        third_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let third_value = third.eval_root().expect("third pathExists call succeeds");
+    assert_eq!(third_value.as_bool(), Ok(true));
+    assert!(
+        third.stats().force_cache_hits() > 0,
+        "matching captured path aliases should hit cached force-cache payloads"
+    );
+    assert_eq!(third.stats().force_cache_misses(), 0);
+    assert_eq!(third.impure_input_trace(), expected_trace.as_slice());
+    drop(third);
+
+    fs::remove_file(root.join("marker")).expect("marker removed");
+
+    let changed_trace =
+        vec![ImpureInputFingerprint::path_exists(&marker_path, false).expect("fingerprint builds")];
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache,
+    );
+    let changed_value = changed
+        .eval_root()
+        .expect("changed pathExists call succeeds");
+    assert_eq!(changed_value.as_bool(), Ok(false));
+    assert!(
+        changed.stats().force_cache_misses() > 0,
+        "stale captured pathExists traces should miss and recompute"
+    );
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn first_class_hash_file_with_captured_algorithm_and_path_hits_child_call() {
+    let root = unique_temp_dir("force-cache-first-class-hash-file-captured-args");
+    fs::write(root.join("target"), b"hash file payload").expect("target writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let target_path = path_bytes(&root.join("target"));
+    let source = r#"let
+        algorithm = "sha256";
+        target = ./target;
+        f = builtins.hashFile;
+      in f algorithm target"#;
+    let ir = lower(source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let expected_hash = b"4ae6266cc082134ea87e6fbf8b747c078f4e6d42f44179b8936f61a524133982";
+    let expected_trace = vec![
+        ImpureInputFingerprint::hash_file(&target_path, b"hash file payload")
+            .expect("fingerprint builds"),
+    ];
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let first_value = first.eval_root().expect("first hashFile call succeeds");
+    assert_eq!(
+        first
+            .heap()
+            .get_string(first_value)
+            .expect("hashFile result is a string")
+            .bytes(),
+        expected_hash
+    );
+    assert_eq!(first.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        first.stats().force_cache_hits(),
+        0,
+        "the first captured hashFile demand should be a cold child-call evaluation"
+    );
+    assert!(
+        first.stats().force_cache_misses() > 0,
+        "the first captured hashFile demand should record cold cache misses"
+    );
+    drop(first);
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let second_value = second.eval_root().expect("second hashFile call succeeds");
+    assert_eq!(
+        second
+            .heap()
+            .get_string(second_value)
+            .expect("hashFile result is a string")
+            .bytes(),
+        expected_hash
+    );
+    assert!(
+        second.stats().force_cache_hits() > 0,
+        "the second captured hashFile demand should reuse already-recorded surrounding cache entries"
+    );
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    drop(second);
+
+    let mut third_options = TreeWalkOptions::new();
+    third_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        third_options,
+        "default.nix",
+        source,
+        cache,
+    );
+    let third_value = third.eval_root().expect("third hashFile call succeeds");
+    assert_eq!(
+        third
+            .heap()
+            .get_string(third_value)
+            .expect("hashFile result is a string")
+            .bytes(),
+        expected_hash
+    );
+    assert!(
+        third.stats().force_cache_hits() > 0,
+        "matching captured hashFile args should hit cached force-cache payloads"
+    );
+    assert_eq!(third.stats().force_cache_misses(), 0);
+    assert_eq!(third.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn changed_effectful_forced_inline_thunks_miss_after_revalidation() {
     let root = unique_temp_dir("force-cache-effectful-changed");
     fs::write(root.join("marker"), b"present").expect("marker exists");

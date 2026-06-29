@@ -198,6 +198,36 @@ impl TreeWalk {
         thunk: &EvalThunk,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<DurableBlake3Hash> {
+        let value = self.force_cache_suspended_capture_alias_target(thunk)?;
+        self.force_cache_free_var_value_hash_with_seen(value, seen_thunks, true)
+    }
+
+    pub(super) fn force_cache_closed_hash_for_suspended_capture_alias_target(
+        &self,
+        value: Value,
+    ) -> Option<DurableBlake3Hash> {
+        if !value.is_thunk() {
+            return None;
+        }
+        let thunk_key = value.payload_bits();
+        let mut seen_thunks = BTreeSet::new();
+        seen_thunks.insert(thunk_key);
+        let thunk = self.heap.get_thunk(value).ok()?;
+        if thunk.cell().cached_value().ok()?.is_some() {
+            return None;
+        }
+        let target = self.force_cache_suspended_capture_alias_target(thunk)?;
+        if !target.is_thunk() {
+            return None;
+        }
+        let target_thunk = self.heap.get_thunk(target).ok()?;
+        if target_thunk.cell().cached_value().ok()?.is_some() {
+            return None;
+        }
+        self.force_cache_free_var_value_hash_with_seen(target, &mut seen_thunks, false)
+    }
+
+    fn force_cache_suspended_capture_alias_target(&self, thunk: &EvalThunk) -> Option<Value> {
         let EvalThunkKind::Node {
             body,
             env,
@@ -224,8 +254,7 @@ impl TreeWalk {
             }
             _ => return None,
         };
-        let value = frames.get(frame_index)?.get(slot).ok()?;
-        self.force_cache_free_var_value_hash_with_seen(value, seen_thunks, true)
+        frames.get(frame_index)?.get(slot).ok()
     }
 
     fn cache_force_capture_hash(

@@ -3482,10 +3482,25 @@ alone (`M-1`/`Q-A`).
       graph owns the revalidated candidate edge. This is scoped to replayable
       explicit-list child-call replay only; the enclosing thunk still evaluates
       unless separately admitted, computed or otherwise non-replayable captured
-      explicit-list entries remain outside child-call key admission, non-`findFile`
-      first-class impure primop arguments still use the prior closed/fulfilled-thunk
-      payload key path, and fetch interactions, broad persistent graph replay, and broad search-path
+      explicit-list entries remain outside child-call key admission, and fetch
+      interactions, broad persistent graph replay, and broad search-path
       edge-exactness remain open (`R-10`/`S-14`).
+- [x] Current precursor: first-class cacheable impure primop captured-argument
+      alias admission. Saturated first-class `import`, `getEnv`, `hashFile`,
+      `pathExists`, `readDir`, `readFile`, and `readFileType` child calls now
+      admit one suspended captured local/upvalue alias in a path/string argument
+      position when the aliased target is an unfulfilled suspended closed thunk
+      that hashes through the existing closed literal/replayable payload path.
+      This covers captured-path
+      `pathExists` and captured algorithm/path `hashFile` in-memory
+      demand/materialize/replay behavior, plus stale trace miss/recompute for
+      changed paths, while still skipping alias chains, dynamic `with` scopes,
+      scoped globals, fulfilled text-store outputs, computed/non-replayable
+      targets, and text-store replay shapes outside the cacheable trace
+      contract. The gate is
+      `first_class_path_exists_with_captured_path_hits_child_call`,
+      `first_class_hash_file_with_captured_algorithm_and_path_hits_child_call`,
+      and the existing persistent text-store `readFile`/`hashFile` canaries.
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to

@@ -711,6 +711,12 @@ impl TreeWalk {
         if builtin.execution() == BuiltinExecution::FindFile {
             self.force_cache_free_var_value_hash(arg.value())
         } else {
+            if Self::builtin_execution_allows_closed_alias_primop_arg(builtin.execution(), index)
+                && let Some(hash) =
+                    self.force_cache_closed_hash_for_suspended_capture_alias_target(arg.value())
+            {
+                return Some(hash);
+            }
             self.force_cache_free_var_value_hash_without_suspended_aliases(arg.value())
         }
     }
@@ -840,6 +846,33 @@ impl TreeWalk {
                     ..
                 } | BuiltinExecution::FindFile,
                 2,
+            )
+        )
+    }
+
+    const fn builtin_execution_allows_closed_alias_primop_arg(
+        execution: BuiltinExecution,
+        index: usize,
+    ) -> bool {
+        matches!(
+            (execution, index),
+            (
+                BuiltinExecution::Import
+                    | BuiltinExecution::PathExists
+                    | BuiltinExecution::ReadDir
+                    | BuiltinExecution::ReadFile
+                    | BuiltinExecution::ReadFileType
+                    | BuiltinExecution::StrictUnary {
+                        primop: StrictUnaryPrimOp::GetEnv,
+                        ..
+                    },
+                0,
+            ) | (
+                BuiltinExecution::StrictBinary {
+                    primop: StrictBinaryPrimOp::HashFile,
+                    ..
+                },
+                0 | 1,
             )
         )
     }
