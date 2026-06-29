@@ -712,7 +712,6 @@ in {
           and .previous == null
           and .images == []
           and .package_file == "packages/t/testpkg.toml"
-          and (.closure_file | startswith("closures/"))
           and .committed == true
           and .commit_message == "publish testpkg 1.0.0 (x86_64-linux)"
           and .current == "stable"
@@ -736,8 +735,8 @@ in {
         "references" "TOML has references"
 
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
-        "apr publish writes closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "apr publish writes store realisation record"
 
       # Verify git log shows the publish commit
       cd "$REG_DIR"
@@ -754,8 +753,8 @@ in {
         --registry test-reg
 
       CURL_HASH=$(basename ${pkgs.curl} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
-        "apr publish writes v2 closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$CURL_HASH")/$CURL_HASH" \
+        "apr publish writes v2 store realisation record"
 
       $APR packages --registry test-reg > /tmp/packages.out 2>&1 || {
         cat /tmp/packages.out
@@ -884,10 +883,10 @@ in {
         "nar_hash" "alternate-state publish records NAR hash"
 
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
-      assert_file_exists "$REG_DIR/closures/$STORE_HASH" \
-        "alternate-state publish writes closure metadata"
-      assert_file_contains "$REG_DIR/closures/$STORE_HASH" "$STORE_HASH" \
-        "alternate-state closure metadata contains root hash"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
+        "alternate-state publish writes store realisation record"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" "nar:sha256:" \
+        "alternate-state store record carries a realisation header"
       if git -C "$REG_DIR" ls-tree -r --name-only HEAD | grep -q "maintainer-notes.txt"; then
         fail "apr publish should not commit unrelated maintainer scratch files"
       else
@@ -1104,8 +1103,8 @@ in {
         "consumer package TOML exists before unpublish"
       assert_file_contains "$REG_DIR/packages/r/retire-tool.toml" "$RETIRE_DEP_HASH" \
         "consumer package metadata records dependency"
-      assert_file_contains "$REG_DIR/closures/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
-        "consumer package closure records dependency"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" "$RETIRE_DEP_HASH" \
+        "consumer package store record lists dependency edge"
       $APR show removepkg --registry test-reg --raw > /tmp/unpublish-before.toml 2>&1 || {
         cat /tmp/unpublish-before.toml
         fail "apr show --raw reports initial multi-version package"
@@ -1347,18 +1346,18 @@ in {
       cat /tmp/unpublish-retire-tool.out
       assert_file_not_exists "$REG_DIR/packages/r/retire-tool.toml" \
         "consumer package TOML removed by unpublish"
-      git -C "$REG_DIR" rm -f "closures/$RETIRE_HASH" \
+      git -C "$REG_DIR" rm -f "store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" \
         > /tmp/unpublish-retire-tool-closure-rm.out 2>&1 || {
         cat /tmp/unpublish-retire-tool-closure-rm.out
-        fail "maintainer prunes retired package closure metadata"
+        fail "maintainer prunes retired package store record"
       }
       git -C "$REG_DIR" commit -m "registry: prune retired consumer closure" \
         > /tmp/unpublish-retire-tool-closure-commit.out 2>&1 || {
         cat /tmp/unpublish-retire-tool-closure-commit.out
         fail "maintainer commits retired package closure pruning"
       }
-      assert_file_not_exists "$REG_DIR/closures/$RETIRE_HASH" \
-        "retired package closure metadata pruned"
+      assert_file_not_exists "$REG_DIR/store/$(printf %.2s "$RETIRE_HASH")/$RETIRE_HASH" \
+        "retired package store record pruned"
       $APR packages --registry test-reg > /tmp/unpublish-packages-final.out 2>&1 || {
         cat /tmp/unpublish-packages-final.out
         fail "apr packages succeeds after final unpublish"
@@ -2355,12 +2354,12 @@ in {
         "changeset includes runner package metadata"
       assert_file_contains /tmp/changeset.status "registry.toml" \
         "changeset includes cache pointer update"
-      assert_file_exists "$REG_DIR/closures/$GIT_HASH" \
-        "changeset includes git closure metadata"
-      assert_file_exists "$REG_DIR/closures/$CURL_HASH" \
-        "changeset includes curl closure metadata"
-      assert_file_exists "$REG_DIR/closures/$RUNNER_HASH" \
-        "changeset includes runner closure metadata"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$GIT_HASH")/$GIT_HASH" \
+        "changeset includes git store record"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$CURL_HASH")/$CURL_HASH" \
+        "changeset includes curl store record"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$RUNNER_HASH")/$RUNNER_HASH" \
+        "changeset includes runner store record"
 
       git -C "$REG_DIR" add -A
       git -C "$REG_DIR" commit -m "release: publish maintainer tools"
@@ -4085,10 +4084,10 @@ in {
         "published package exists on feature branch"
       assert_file_contains "$REG_DIR/packages/f/featurepkg.toml" "$FEATURE_HASH" \
         "feature branch package metadata records real store hash"
-      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "feature branch closure file exists"
-      assert_file_contains "$REG_DIR/closures/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
-        "feature branch closure records dependency"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "feature branch store record exists"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" "$FEATURE_DEP_HASH" \
+        "feature branch store record lists dependency edge"
 
       $APR packages --registry test-reg > /tmp/branch-packages-feature.out 2>&1 || {
         cat /tmp/branch-packages-feature.out
@@ -4139,8 +4138,8 @@ in {
 
       assert_file_not_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package not on default branch before merge"
-      assert_file_not_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "closure not on default branch before merge"
+      assert_file_not_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "store record not on default branch before merge"
       $APR packages --registry test-reg > /tmp/branch-packages-default.out 2>&1 || {
         cat /tmp/branch-packages-default.out
         fail "apr packages succeeds on default branch before merge"
@@ -4180,8 +4179,8 @@ in {
 
       assert_file_exists "$REG_DIR/packages/f/featurepkg.toml" \
         "package exists on default branch after merge"
-      assert_file_exists "$REG_DIR/closures/$FEATURE_HASH" \
-        "closure exists on default branch after merge"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$FEATURE_HASH")/$FEATURE_HASH" \
+        "store record exists on default branch after merge"
       $APR show featurepkg --registry test-reg > /tmp/branch-show-merged.out 2>&1 || {
         cat /tmp/branch-show-merged.out
         fail "apr show resolves merged package"
@@ -4785,10 +4784,10 @@ in {
 
       assert_file_contains "$REG_DIR/packages/t/tagpkg.toml" "$TAG_HASH" \
         "package metadata records real tagged store hash"
-      assert_file_exists "$REG_DIR/closures/$TAG_HASH" \
-        "tagged package closure file exists"
-      assert_file_contains "$REG_DIR/closures/$TAG_HASH" "$TAG_DEP_HASH" \
-        "tagged package closure records dependency"
+      assert_file_exists "$REG_DIR/store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" \
+        "tagged package store record exists"
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" "$TAG_DEP_HASH" \
+        "tagged package store record lists dependency edge"
       $APR verify --registry test-reg > /tmp/tag-verify-before.out 2>&1 || {
         cat /tmp/tag-verify-before.out
         fail "apr verify accepts real package before tag"
@@ -4815,7 +4814,7 @@ in {
       assert_file_contains /tmp/tag-object.out "tag 1.0.0" \
         "release tag object records release name"
       git show 1.0.0:packages/t/tagpkg.toml > /tmp/tagpkg-at-tag.toml
-      git show "1.0.0:closures/$TAG_HASH" > /tmp/tag-closure-at-tag.out
+      git show "1.0.0:store/$(printf %.2s "$TAG_HASH")/$TAG_HASH" > /tmp/tag-closure-at-tag.out
       cd /tmp
 
       assert_file_contains /tmp/tagpkg-at-tag.toml "$TAG_HASH" \
@@ -5719,50 +5718,54 @@ in {
         "published closure-leaf package metadata exists"
       assert_file_exists "$REG_DIR/packages/c/closure-root.toml" \
         "published closure-root package metadata exists"
-      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
-        "closure-leaf closure file exists"
-      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
-        "closure-root closure file exists"
+      LEAF_FILE="$REG_DIR/store/$(printf %.2s "$LEAF_HASH")/$LEAF_HASH"
+      ROOT_FILE="$REG_DIR/store/$(printf %.2s "$ROOT_HASH")/$ROOT_HASH"
+      assert_file_exists "$LEAF_FILE" \
+        "closure-leaf store record exists"
+      assert_file_exists "$ROOT_FILE" \
+        "closure-root store record exists"
 
-      LEAF_FIRST_TOKEN=$(head -1 "$REG_DIR/closures/$LEAF_HASH" | cut -d' ' -f1)
-      if [ "$LEAF_FIRST_TOKEN" = "$LEAF_HASH" ]; then
-        pass "closure-leaf closure starts with leaf hash"
-      else
-        fail "closure-leaf closure should start with $LEAF_HASH, got $LEAF_FIRST_TOKEN"
-        cat "$REG_DIR/closures/$LEAF_HASH"
-      fi
+      # Each store record opens with a realisation header — either a
+      # content-addressed line ("ca:sha256:<ca> nar:sha256:<nar>:<size>") or,
+      # for IA-only paths, a bare "nar:sha256:<nar>:<size>". The path's own
+      # ia-hash is the filename, never part of the record body.
+      LEAF_FIRST_TOKEN=$(head -1 "$LEAF_FILE" | cut -d' ' -f1)
+      case "$LEAF_FIRST_TOKEN" in
+        ca:sha256:* | nar:sha256:*)
+          pass "closure-leaf store record starts with a realisation header" ;;
+        *)
+          fail "closure-leaf store record should start with a realisation header, got $LEAF_FIRST_TOKEN"
+          cat "$LEAF_FILE" ;;
+      esac
 
-      FIRST_LINE=$(head -1 "$REG_DIR/closures/$ROOT_HASH")
-      FIRST_TOKEN=$(echo "$FIRST_LINE" | cut -d' ' -f1)
-      if [ "$FIRST_TOKEN" = "$ROOT_HASH" ]; then
-        pass "closure-root closure starts with root hash"
-      else
-        fail "closure-root closure should start with $ROOT_HASH, got $FIRST_TOKEN"
-        cat "$REG_DIR/closures/$ROOT_HASH"
-      fi
+      ROOT_FIRST_TOKEN=$(head -1 "$ROOT_FILE" | cut -d' ' -f1)
+      case "$ROOT_FIRST_TOKEN" in
+        ca:sha256:* | nar:sha256:*)
+          pass "closure-root store record starts with a realisation header" ;;
+        *)
+          fail "closure-root store record should start with a realisation header, got $ROOT_FIRST_TOKEN"
+          cat "$ROOT_FILE" ;;
+      esac
 
-      if echo "$FIRST_LINE" | grep -q "$LEAF_HASH"; then
-        pass "closure-root root line lists closure-leaf as a direct dep"
+      # The leaf appears as an "ia:" dependency edge in the root record. Edge
+      # lines are indented, so match the hash anywhere on the line (no anchor).
+      if grep -q "$LEAF_HASH" "$ROOT_FILE"; then
+        pass "closure-root store record lists closure-leaf as a dependency edge"
       else
-        fail "closure-root root line missing closure-leaf dep"
-        cat "$REG_DIR/closures/$ROOT_HASH"
-      fi
-
-      if grep -q "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH"; then
-        pass "closure-root closure has closure-leaf as a member"
-      else
-        fail "closure-root closure missing closure-leaf member line"
-        cat "$REG_DIR/closures/$ROOT_HASH"
+        fail "closure-root store record missing closure-leaf dependency edge"
+        cat "$ROOT_FILE"
       fi
 
       for ref_path in $(nix-store -q --references "$ROOT_STORE"); do
         ref_hash=$(basename "$ref_path" | cut -d- -f1)
-        assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$ref_hash" \
-          "closure-root closure includes direct reference $ref_hash"
+        # Self-references are excluded from the edge set (the path's own hash
+        # is the filename, not a record edge).
+        if [ "$ref_hash" = "$ROOT_HASH" ]; then
+          continue
+        fi
+        assert_file_contains "$ROOT_FILE" "$ref_hash" \
+          "closure-root store record includes direct reference $ref_hash"
       done
-
-      assert_file_contains "$REG_DIR/.gitattributes" \
-        "closures/" ".gitattributes has closures entry"
 
       $APR verify --registry test-reg > /tmp/closure-verify-ok.out 2>&1 || {
         cat /tmp/closure-verify-ok.out
@@ -5857,66 +5860,62 @@ in {
       publish_closure_package "$ROOT_STORE" closure-root 1.0.0
       commit_registry_changes "publish real closure verify packages"
 
-      cp "$REG_DIR/closures/$ROOT_HASH" /tmp/root-closure-good
+      ROOT_FILE="$REG_DIR/store/$(printf %.2s "$ROOT_HASH")/$ROOT_HASH"
+      LEAF_FILE="$REG_DIR/store/$(printf %.2s "$LEAF_HASH")/$LEAF_HASH"
+
+      cp "$ROOT_FILE" /tmp/root-store-good
       expect_verify_success valid-generated
 
-      grep -v "^$LEAF_HASH" "$REG_DIR/closures/$ROOT_HASH" \
-        > /tmp/root-closure-broken
-      mv /tmp/root-closure-broken "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry_changes "break root closure dependency"
-      expect_verify_failure broken-reference \
-        "reference $LEAF_HASH not found in closure $ROOT_HASH"
+      # Trimming a single dependency edge from a committed store record is now
+      # tolerated: apr verify revalidates each path against the live Nix store
+      # rather than trusting the recorded edge set, so a stale edge alone is
+      # not an error.
+      grep -v "$LEAF_HASH" "$ROOT_FILE" > /tmp/root-store-trimmed
+      mv /tmp/root-store-trimmed "$ROOT_FILE"
+      commit_registry_changes "trim root store dependency edge"
+      expect_verify_success trimmed-edge-tolerated
 
-      $APR verify --registry test-reg --package closure-root --fix \
-        > /tmp/verify-fix-broken-reference.out 2>&1 || {
-        cat /tmp/verify-fix-broken-reference.out
-        fail "apr verify --fix repairs stale root closure metadata"
-      }
-      cat /tmp/verify-fix-broken-reference.out
-      assert_file_contains /tmp/verify-fix-broken-reference.out \
-        "Regenerated 1 closure file" \
-        "apr verify --fix reports stale closure repair"
-      assert_file_contains /tmp/verify-fix-broken-reference.out "no errors" \
-        "apr verify --fix validates repaired stale closure metadata"
-      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
-        "apr verify --fix restores missing root closure dependency"
-      commit_registry_changes "repair root closure dependency with verify fix"
+      # Restore the good record before exercising the missing-record path.
+      cp /tmp/root-store-good "$ROOT_FILE"
+      commit_registry_changes "restore root store record"
       expect_verify_success restored-generated
 
-      rm -f "$REG_DIR/closures/$ROOT_HASH"
-      commit_registry_changes "remove root closure"
-      expect_verify_failure missing-closure \
-        "missing closure file for store hash $ROOT_HASH"
+      # Deleting the store record entirely is an error: a closure member then
+      # has no store/ record to validate against.
+      rm -f "$ROOT_FILE"
+      commit_registry_changes "remove root store record"
+      expect_verify_failure missing-store-record \
+        "has no store/ record"
 
       $APR verify --registry test-reg --package closure-leaf \
         > /tmp/verify-filtered-leaf.out 2>&1 || {
         cat /tmp/verify-filtered-leaf.out
-        fail "apr verify --package ignores unrelated broken closure metadata"
+        fail "apr verify --package ignores unrelated broken store metadata"
       }
       cat /tmp/verify-filtered-leaf.out
       assert_file_contains /tmp/verify-filtered-leaf.out "no errors" \
         "apr verify --package validates only the requested package"
 
       $APR verify --registry test-reg --package closure-root --fix \
-        > /tmp/verify-fix-missing-closure.out 2>&1 || {
-        cat /tmp/verify-fix-missing-closure.out
-        fail "apr verify --fix repairs missing root closure metadata"
+        > /tmp/verify-fix-missing-store.out 2>&1 || {
+        cat /tmp/verify-fix-missing-store.out
+        fail "apr verify --fix repairs missing root store metadata"
       }
-      cat /tmp/verify-fix-missing-closure.out
-      assert_file_contains /tmp/verify-fix-missing-closure.out \
-        "Regenerated 1 closure file" \
-        "apr verify --fix reports missing closure repair"
-      assert_file_contains /tmp/verify-fix-missing-closure.out "no errors" \
-        "apr verify --fix validates repaired missing closure metadata"
-      assert_file_exists "$REG_DIR/closures/$ROOT_HASH" \
-        "apr verify --fix recreates missing root closure file"
-      assert_file_contains "$REG_DIR/closures/$ROOT_HASH" "$LEAF_HASH" \
-        "apr verify --fix recreates root closure dependency"
-      commit_registry_changes "repair missing root closure with verify fix"
-      expect_verify_success fixed-missing-closure
+      cat /tmp/verify-fix-missing-store.out
+      assert_file_contains /tmp/verify-fix-missing-store.out \
+        "Regenerated store/ records for" \
+        "apr verify --fix reports missing store record repair"
+      assert_file_contains /tmp/verify-fix-missing-store.out "no errors" \
+        "apr verify --fix validates repaired missing store metadata"
+      assert_file_exists "$ROOT_FILE" \
+        "apr verify --fix recreates missing root store record"
+      assert_file_contains "$ROOT_FILE" "$LEAF_HASH" \
+        "apr verify --fix recreates root store dependency edge"
+      commit_registry_changes "repair missing root store record with verify fix"
+      expect_verify_success fixed-missing-store-record
 
-      assert_file_exists "$REG_DIR/closures/$LEAF_HASH" \
-        "removing root closure leaves dependency closure intact"
+      assert_file_exists "$LEAF_FILE" \
+        "removing root store record leaves dependency record intact"
 
       check_fail
     '';
