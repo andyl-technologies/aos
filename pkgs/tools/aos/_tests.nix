@@ -1125,7 +1125,7 @@ in {
             and (.base | length > 0)' \
           "$work/apr-diff-remote.json" >/dev/null
 
-        system_registry_config="$system_config/registries.d/host-reg-system.toml"
+        system_registry_config="$aos_root/var/lib/apm/config/registries.d/host-reg-system.toml"
         user_shadow_config="$config/apm/registries.d/host-reg-system.toml"
         system_registry_cache="$aos_root/var/lib/apm/remote/host-reg-system"
         system_registry_clone="$aos_root/var/lib/apm/registries/host-reg-system"

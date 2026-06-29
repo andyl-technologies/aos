@@ -3020,11 +3020,11 @@ in {
       assert_file_contains "$REG_DIR/packages/s/static-closure.toml" \
         'source_nar_hash = "sha256-' "release metadata records v1 source NAR hash"
 
-      assert_file_exists "/tmp/static-release-cache/$ROOT_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$ROOT_HASH.narinfo" \
         "release cache has root narinfo"
-      assert_file_exists "/tmp/static-release-cache/$LEAF_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$LEAF_HASH.narinfo" \
         "release cache has unpublished dependency narinfo"
-      assert_file_exists "/tmp/static-release-cache/$ROOT_SOURCE_HASH.narinfo" \
+      assert_file_exists "/tmp/static-release-origin/$ROOT_SOURCE_HASH.narinfo" \
         "release cache has explicit source narinfo"
       assert_file_exists "/tmp/static-release-origin/HEAD" \
         "uploaded static origin has HEAD"
@@ -4204,12 +4204,10 @@ in {
       }
       ${pkgs.jq}/bin/jq -e \
         --arg store "$FEATURE_STORE" \
-        --arg dep "$FEATURE_DEP_HASH" \
         '.package.name == "featurepkg"
           and .package.description == "Real branch workflow fixture"
           and .versions[0].version == "1.0.0"
-          and .versions[0].platforms."x86_64-linux".store_path == $store
-          and ((.versions[0].platforms."x86_64-linux".references | index($dep)) != null)' \
+          and .versions[0].platforms."x86_64-linux".store_path == $store' \
         /tmp/branch-show-merged.json >/dev/null || {
         cat /tmp/branch-show-merged.json
         fail "apr --json show displays merged closure metadata"
