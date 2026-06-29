@@ -852,8 +852,10 @@ in {
       expected_narinfos = {f"{store_hash}.narinfo", f"{leaf_hash}.narinfo"}
       if not expected_narinfos.issubset(narinfo_paths):
           raise AssertionError(f"missing root/leaf narinfo uploads {expected_narinfos}, got {narinfo_events}")
+      # Narinfos are served with the mutable cache policy (they can be
+      # re-signed in place); the NARs they reference stay immutable.
       for _, event in narinfo_events:
-          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          assert event["cache_control"] == "public, max-age=60, must-revalidate", event
           assert event["content_type"] == "text/x-nix-narinfo", event
 
       nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
