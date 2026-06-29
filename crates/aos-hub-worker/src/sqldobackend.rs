@@ -22,8 +22,9 @@
 //! `Blob`), the exact shape of a [`Value`]; result rows come back **positionally**
 //! from the cursor's `raw()` iterator (a `Vec<SqlStorageValue>` per row) and map
 //! column-by-column into a [`Row`]. `execute` reports `rows_written`; an insert's
-//! id is read back with `SELECT last_insert_rowid()`; a [`Backend::batch`] wraps
-//! the statement list in `BEGIN IMMEDIATE`/`COMMIT` (rolling back on error), the
+//! id is read back with `SELECT last_insert_rowid()`; a [`Backend::batch`] runs
+//! the statements directly and relies on the DO turn's implicit transaction
+//! (Durable Object SQLite forbids an explicit `BEGIN`/`SAVEPOINT`), the
 //! local-SQLite analog of D1's atomic `batch()`.
 
 use anyhow::{anyhow, Result};
@@ -146,21 +147,16 @@ impl Backend for SqlDoBackend {
     }
 
     async fn batch(&self, stmts: &[Statement]) -> Result<()> {
-        // Local-SQLite analog of D1's atomic batch: one transaction, rolled back
-        // on the first failing statement.
-        self.sql
-            .exec("BEGIN IMMEDIATE", None)
-            .map_err(|err| anyhow!("DO sql begin: {err}"))?;
+        // Durable Object SQLite forbids `BEGIN`/`SAVEPOINT` (`SQLITE_AUTH`): the
+        // DO runtime already wraps each turn's writes in one implicit
+        // transaction that commits when the turn ends and rolls back if the turn
+        // throws. Run the statements directly and let a failure propagate — the
+        // enclosing turn's automatic rollback discards the partial batch, the
+        // analog of D1's atomic `batch()` without an explicit (and illegal)
+        // `BEGIN IMMEDIATE`.
         for statement in stmts {
-            if let Err(err) = self.run(&statement.sql, &statement.params) {
-                // Best-effort rollback; surface the original error.
-                let _ = self.sql.exec("ROLLBACK", None);
-                return Err(err);
-            }
+            self.run(&statement.sql, &statement.params)?;
         }
-        self.sql
-            .exec("COMMIT", None)
-            .map_err(|err| anyhow!("DO sql commit: {err}"))?;
         Ok(())
     }
 }
