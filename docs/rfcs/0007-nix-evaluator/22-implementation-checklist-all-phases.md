@@ -3402,11 +3402,18 @@ alone (`M-1`/`Q-A`).
       hashes, load the keys for the changed metadata observations after
       recomputation, and keep all impure-input and persistent sidecar hashes out
       of `.drv` surfaces.
+      `native_file_cache_parity_harness_covers_current_system_option_salt` seeds
+      a persistent direct-file closure under `builtins.currentSystem =
+      x86_64-linux`, reruns the same attr path under `aarch64-linux`, and
+      requires cached output to match the changed uncached closure, miss rather
+      than replay the original payload, later hit the changed `currentSystem`
+      value-hash metadata entry, and keep persistent sidecar hashes plus both
+      `currentSystem` hot hashes out of `.drv` surfaces.
       This broadens the reusable direct-file cache-parity harness across
-      filesystem-sensitive forced inputs and stale content, metadata, and
-      existence recomputation; it is not currentSystem support, full impure-input
-      demand-graph integration, full AOS package-set coverage, syscall-level
-      cache-off no-read proof, or the full cached-vs-uncached CI safety net
+      filesystem-sensitive forced inputs, stale content/metadata/existence
+      recomputation, and ambient currentSystem option-sensitive reuse; it is not full
+      impure-input demand-graph integration, full AOS package-set coverage,
+      syscall-level cache-off no-read proof, or the full cached-vs-uncached CI safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

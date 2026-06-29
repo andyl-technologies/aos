@@ -2,10 +2,12 @@
 
 use super::*;
 use crate::cache::{
-    DirEntryInput, DurableBlake3Hash, FileTypeForInput, ImpureInputFingerprint, ParseCache,
-    ParseFileKey, PersistCache, PersistFileArtifactKey, PersistNodeMetadataKey, ValueHash,
+    CachedExpressionValue, DirEntryInput, DurableBlake3Hash, FileTypeForInput,
+    ImpureInputFingerprint, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
+    PersistNodeMetadataKey, ValueHash,
 };
 
+mod current_system;
 mod stale_metadata;
 
 #[test]
