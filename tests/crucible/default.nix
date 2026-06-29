@@ -642,6 +642,11 @@ in {
       attrPath = "checks.crucible.phase4.nodeCrashApplication";
       taskIds = ["T-FAULT-8"];
     };
+    ioFaultApplication = import ./phase4-io-fault-application.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.ioFaultApplication";
+      taskIds = ["T-FAULT-9"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

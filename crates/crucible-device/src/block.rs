@@ -689,9 +689,9 @@ mod tests {
             ..IoFaults::none()
         };
         let mut a = device(PAGE_SIZE);
-        a.set_faults(faults);
+        a.set_faults(faults.clone());
         let mut b = device(PAGE_SIZE);
-        b.set_faults(faults);
+        b.set_faults(faults.clone());
         let oa = resolve_read(&mut a, 5, vec![7; 8]);
         let ob = resolve_read(&mut b, 5, vec![7; 8]);
         assert_eq!(oa, ob, "same seed + same inputs => identical outcome");

@@ -125,6 +125,22 @@ pub fn serialization_delay_ns(len_bytes: u64, bandwidth_bytes_per_sec: u64) -> u
     u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
+/// Computes serialization delay for a bit-per-second bandwidth cap.
+///
+/// This is the exact RFC-level form used by fault plans: `len_bytes * 8 * 1e9 /
+/// bits_per_second`, widened and saturating so the result is host-independent.
+#[must_use]
+pub fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_second: u64) -> u64 {
+    if bits_per_second == 0 {
+        return 0;
+    }
+    let nanos = u128::from(len_bytes)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000_u128)
+        / u128::from(bits_per_second);
+    u64::try_from(nanos).unwrap_or(u64::MAX)
+}
+
 /// The deterministic jitter shift drawn from an injected value.
 ///
 /// Returns `draw % (window_ns + 1)`, a value in `0..=window_ns` ([IO-20]). A zero
@@ -268,7 +284,7 @@ impl DeviceRng {
 /// The fields are a flat data contract: the sub-node reads them and a snapshot
 /// stores the *active set* verbatim, so the active I/O fault set is part of the
 /// scheduler state captured in `MaterializedState` ([IO-26]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct IoFaults {
     /// Extra fixed latency added to the response delivery, in virtual nanoseconds.
     pub added_latency_ns: u64,
@@ -280,8 +296,25 @@ pub struct IoFaults {
     ///
     /// Adds a transfer delay proportional to `payload_len` ([IO-25]).
     pub bandwidth_bytes_per_sec: u64,
+    /// Additional RFC-level bandwidth caps in bits per virtual second.
+    ///
+    /// Each nonzero cap contributes its own exact integer serialization delay.
+    pub bandwidth_bits_per_sec: Vec<u64>,
     /// The probability a response is failed (turned into an error-status response).
     pub loss: Probability,
+    /// Additional failure probabilities evaluated after [`Self::loss`].
+    ///
+    /// Overlapping block/9p failures use the same any-fires rule as network loss.
+    /// The bridge stores rates highest-first so the draw order is deterministic.
+    pub additional_loss: Vec<Probability>,
+    /// Whether a fired failure drops the response instead of returning an error.
+    pub drop_on_loss: bool,
+    /// The 9p errno encoded when a fired failure returns an `Rlerror`.
+    ///
+    /// Block devices ignore this and synthesize their normal block error status.
+    pub failure_errno: Option<u32>,
+    /// Errnos paired with [`Self::additional_loss`] for overlapping 9p failures.
+    pub additional_failure_errno: Vec<u32>,
     /// The probability a response is duplicated (a second copy is emitted).
     pub duplicate: Probability,
     /// The fixed gap, in ns, between an original and its duplicate's delivery.
@@ -306,10 +339,20 @@ impl IoFaults {
     /// length cannot overflow ([IO-24]).
     #[must_use]
     pub fn deterministic_latency_shift_ns(&self, payload_len: u64) -> u64 {
-        self.added_latency_ns.saturating_add(serialization_delay_ns(
-            payload_len,
-            self.bandwidth_bytes_per_sec,
-        ))
+        let byte_rate_delay = serialization_delay_ns(payload_len, self.bandwidth_bytes_per_sec);
+        let bit_rate_delay =
+            self.bandwidth_bits_per_sec
+                .iter()
+                .copied()
+                .fold(0_u64, |total, bits_per_second| {
+                    total.saturating_add(serialization_delay_bits_per_sec(
+                        payload_len,
+                        bits_per_second,
+                    ))
+                });
+        self.added_latency_ns
+            .saturating_add(byte_rate_delay)
+            .saturating_add(bit_rate_delay)
     }
 
     /// Resolves a modeled response through the active fault table ([IO-25]).
@@ -321,7 +364,8 @@ impl IoFaults {
     /// 1. latency + bandwidth shift `delivery_icount` later (no draw),
     /// 2. jitter shifts it later by a seeded amount (1 draw),
     /// 3. reorder shifts it later by a seeded amount (1 draw),
-    /// 4. loss turns the response into an error status (1 draw),
+    /// 4. loss/failure turns the response into an error status or drop
+    ///    (1 draw plus one per additional rate),
     /// 5. duplicate emits a second response `duplicate_gap_ns` later (1 draw),
     /// 6. corrupt flips seeded bits in the payload (1 draw + one per flipped bit).
     ///
@@ -330,10 +374,9 @@ impl IoFaults {
     /// device need not expose its clock here. Every shift and gap is saturating;
     /// no floating point is used ([IO-24]).
     ///
-    /// Returns the perturbed primary response plus an optional duplicate. A loss
-    /// fault does **not** drop a block/9p response (a guest read must complete);
-    /// it returns an error status per §15.6, leaving the requester's protocol to
-    /// observe the failure.
+    /// Returns the perturbed primary response plus an optional duplicate. A
+    /// failure either returns an error-status response or, for block drop mode,
+    /// records the fired decision and suppresses completion emission.
     pub fn resolve(
         &self,
         primary_icount: u64,
@@ -357,8 +400,15 @@ impl IoFaults {
         let shift_icount = ns_to_icount(shift_ns);
         let delivery_icount = primary_icount.saturating_add(shift_icount);
 
-        // --- (4) loss: error-status response (never silently dropped) ---
-        let loss_fired = self.loss.fires(rng.next_u64());
+        // --- (4) loss/failure: error-status response, or block drop mode ---
+        let loss_draw = rng.next_u64();
+        let mut additional_loss_draws = Vec::with_capacity(self.additional_loss.len());
+        for _ in 0..self.additional_loss.len() {
+            additional_loss_draws.push(rng.next_u64());
+        }
+        let failure_errno = self.failure_errno_for(loss_draw, &additional_loss_draws);
+        let loss_fired = failure_errno.is_some();
+        let dropped = loss_fired && self.drop_on_loss;
         let resolved_status = if loss_fired {
             crate::request::ResponseStatus::Error
         } else {
@@ -366,11 +416,13 @@ impl IoFaults {
         };
 
         // --- (5) duplicate: a second response a fixed gap later ---
-        let duplicate_fired = self.duplicate.fires(rng.next_u64());
+        let duplicate_draw = rng.next_u64();
+        let duplicate_fired = !dropped && self.duplicate.fires(duplicate_draw);
 
         // --- (6) corrupt: flip seeded payload bits ---
         let mut resolved_payload = payload;
-        let corrupt_fired = self.corrupt.fires(rng.next_u64());
+        let corrupt_draw = rng.next_u64();
+        let corrupt_fired = !dropped && !loss_fired && self.corrupt.fires(corrupt_draw);
         if corrupt_fired {
             let mut bit_draws = Vec::with_capacity(self.corrupt_bit_flips as usize);
             for _ in 0..self.corrupt_bit_flips {
@@ -405,9 +457,33 @@ impl IoFaults {
             primary,
             duplicate,
             loss_fired,
+            dropped,
+            failure_errno,
             duplicate_fired,
             corrupt_fired,
         }
+    }
+
+    fn failure_errno_for(&self, loss_draw: u64, additional_loss_draws: &[u64]) -> Option<u32> {
+        if self.loss.fires(loss_draw) {
+            return Some(self.failure_errno.unwrap_or(5));
+        }
+        self.additional_loss
+            .iter()
+            .zip(additional_loss_draws.iter().copied())
+            .enumerate()
+            .find_map(|(index, (probability, draw))| {
+                if probability.fires(draw) {
+                    Some(
+                        self.additional_failure_errno
+                            .get(index)
+                            .copied()
+                            .unwrap_or(5),
+                    )
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -427,8 +503,9 @@ pub struct ResolvedResponse {
 /// Carries the perturbed primary response, an optional duplicate, and which
 /// probabilistic faults fired (the per-fault outcomes the engine records as
 /// `Decision`s). One modeled response resolves to one primary plus zero or one
-/// duplicate; unlike the network link, a block/9p response is never dropped — a
-/// loss fault turns it into an error status ([IO-25]).
+/// duplicate. A block failure in `Drop` mode records a fired loss decision but
+/// suppresses response emission; error-status block failures and 9p failures
+/// return a device-specific error payload ([IO-25]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoFaultOutcome {
     /// The perturbed primary response.
@@ -437,6 +514,10 @@ pub struct IoFaultOutcome {
     pub duplicate: Option<ResolvedResponse>,
     /// Whether the loss fault fired (the response was turned into an error).
     pub loss_fired: bool,
+    /// Whether the fired failure dropped the response entirely.
+    pub dropped: bool,
+    /// Selected errno for a fired 9p failure, when applicable.
+    pub failure_errno: Option<u32>,
     /// Whether the duplicate fault fired.
     pub duplicate_fired: bool,
     /// Whether the corrupt fault fired (payload bits were flipped).

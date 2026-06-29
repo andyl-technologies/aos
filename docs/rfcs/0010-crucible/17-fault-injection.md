@@ -1062,11 +1062,19 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   cover deterministic run-twice replay evidence, unrelated-work survival,
   peer progress, frozen all-crashed frontier behavior, and topology updates
   while a node is down.
-- [ ] **T-FAULT-9** Apply block/9p faults on their I/O sub-nodes at RESOLVE,
+- [x] **T-FAULT-9** Apply block/9p faults on their I/O sub-nodes at RESOLVE,
   uniform with network faults (latency/jitter shift; failure error/drop; reorder;
   duplicate; corruption), drawn from the per-device RNG, with active I/O faults in
   `MaterializedState`. — satisfies [FAULT-22], [FAULT-23]; spec §17.4.5, §17.5;
   cross-ref 15 §15.6.
+  Completed by `checks.crucible.phase4.ioFaultApplication`: combined block and
+  9p fault tables now lower to the concrete `IoFaults` applied on live
+  `DeviceSchedulingSubNode`s. Latency, jitter, reorder, duplicate, corruption,
+  and bit-rate bandwidth share the per-device RNG path; block failures re-encode
+  native block error payloads or record decision-only drop deliveries; 9p failures
+  re-encode `Rlerror` with the selected errno and original tag. Active bit-rate
+  bandwidth and overlapping failure rates are folded into scheduler active-fault
+  state so `MaterializedState` captures the live I/O fault set.
 - [ ] **T-FAULT-10** Implement the declarative `FaultPlan` (at / permanent_at /
   heal) as the body of the `Plan`, in virtual time, with build-time validation
   (declared refs, heal-tag injected somewhere, in-range params) and integer-bp

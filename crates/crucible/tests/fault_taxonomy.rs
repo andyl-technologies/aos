@@ -133,6 +133,20 @@ fn every_fault_kind() -> Vec<Fault> {
             device: device("disk2"),
             window: duration(19),
         }),
+        Fault::Block(BlockFault::Duplicate {
+            device: device("disk3"),
+            rate: rate(125),
+            gap: duration(29),
+        }),
+        Fault::Block(BlockFault::Corruption {
+            device: device("disk4"),
+            rate: rate(150),
+            bit_flips: 4,
+        }),
+        Fault::Block(BlockFault::Bandwidth {
+            device: device("disk5"),
+            limit: bandwidth(8192),
+        }),
         Fault::NineP(NinePFault::Latency {
             device: device("fs0"),
             extra: duration(23),
@@ -142,6 +156,24 @@ fn every_fault_kind() -> Vec<Fault> {
             device: device("fs1"),
             rate: rate(1000),
             errno: errno(5),
+        }),
+        Fault::NineP(NinePFault::Reorder {
+            device: device("fs2"),
+            window: duration(31),
+        }),
+        Fault::NineP(NinePFault::Duplicate {
+            device: device("fs3"),
+            rate: rate(175),
+            gap: duration(37),
+        }),
+        Fault::NineP(NinePFault::Corruption {
+            device: device("fs4"),
+            rate: rate(200),
+            bit_flips: 5,
+        }),
+        Fault::NineP(NinePFault::Bandwidth {
+            device: device("fs5"),
+            limit: bandwidth(16_384),
         }),
     ]
 }
@@ -176,8 +208,15 @@ fn fault_taxonomy_covers_all_rfc_fault_kinds() {
             "block.latency",
             "block.failure",
             "block.reorder",
+            "block.duplicate",
+            "block.corruption.bit-flip",
+            "block.bandwidth",
             "9p.latency",
             "9p.failure",
+            "9p.reorder",
+            "9p.duplicate",
+            "9p.corruption.bit-flip",
+            "9p.bandwidth",
         ]
     );
 

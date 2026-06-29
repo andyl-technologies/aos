@@ -4716,21 +4716,35 @@ impl SingleScheduler {
         // Collect every due completion across this node's sub-nodes first (the
         // borrow of `sub_nodes` ends here), then mint sequences against the
         // scheduler-owned counter on the live RESOLVE path.
-        let mut due: Vec<(IoCompletion, Vec<Decision>)> = Vec::new();
+        let mut due: Vec<crate::device_subnode::DeviceDelivery> = Vec::new();
         for sub_node in sub_nodes.iter_mut() {
             due.extend(sub_node.deliver_due(consumer_icount));
         }
         // Canonical (delivery_icount, then producer sub-node id) order so the
         // resolved order is a pure function of the keys, not host iteration.
         due.sort_by(|left, right| {
-            left.0
-                .delivery_icount
-                .cmp(&right.0.delivery_icount)
-                .then_with(|| left.0.sub_node.cmp(&right.0.sub_node))
+            (
+                left.delivery_icount,
+                &left.sub_node,
+                left.source_node,
+                left.sequence,
+            )
+                .cmp(&(
+                    right.delivery_icount,
+                    &right.sub_node,
+                    right.source_node,
+                    right.sequence,
+                ))
         });
-        for (completion, completion_decisions) in due {
+        for delivery in due {
+            let completion_decisions =
+                self.project_device_decisions_for_vm_time(&node.node, delivery.decisions)?;
+            decisions.extend(completion_decisions);
+
+            let Some(completion) = delivery.completion else {
+                continue;
+            };
             let producer = completion.sub_node.clone();
-            let completion_target = completion.target.clone();
             let consumer = SchedulerNodeId {
                 node: completion.target.clone(),
                 kind: SchedulingNodeKind::Vm,
@@ -4767,9 +4781,6 @@ impl SingleScheduler {
                 key,
                 payload: ScheduledEventPayload::IoCompletion(completion),
             });
-            let completion_decisions = self
-                .project_device_decisions_for_vm_time(&completion_target, completion_decisions)?;
-            decisions.extend(completion_decisions);
         }
         // Reconcile the cached device horizon term with the in-flight queues now
         // that this target's due completions have drained: a delivered head is no

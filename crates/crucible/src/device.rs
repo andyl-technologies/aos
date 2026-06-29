@@ -43,11 +43,12 @@ use crucible_device::{
 
 use crate::decision::DecisionRecorder;
 use crate::{
-    CombinedNetworkFaults, CombinedPartitionFault, Decision, DeviceId, DeviceOverlayDelta,
-    DeviceRngState, FaultDecision, FaultId, FaultRateBasisPoints, FaultState,
-    NetworkCorruptionFault, RngDecision, RngStreamId, RngStreamPosition, SchedulerError,
-    SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState,
-    SchedulerTopologyChange, Seed, SingleScheduler, VirtualTime,
+    CombinedBlockFaults, CombinedNetworkFaults, CombinedNinePFaults, CombinedPartitionFault,
+    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, FaultDecision, FaultId,
+    FaultRateBasisPoints, FaultState, IoFailureMode, NetworkCorruptionFault, RngDecision,
+    RngStreamId, RngStreamPosition, SchedulerError, SchedulerLookaheadEdge,
+    SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState, SchedulerTopologyChange, Seed,
+    SingleScheduler, VirtualTime,
 };
 
 /// Builds a device's seeded RNG, forked by name-hash from the scenario seed.
@@ -389,6 +390,166 @@ pub fn link_faults_from_combined_network(
     link
 }
 
+/// Applies combined block faults to a live block scheduling sub-node.
+///
+/// The model layer reduces active faults into [`CombinedBlockFaults`]; this
+/// helper lowers that table into concrete [`IoFaults`] and installs it on the
+/// sub-node so pending and future completions resolve through the active set.
+#[must_use]
+pub fn apply_combined_block_faults_to_subnode(
+    sub_node: &mut crate::DeviceSchedulingSubNode,
+    faults: &CombinedBlockFaults,
+) -> IoFaults {
+    let table = block_faults_from_combined_block(faults);
+    sub_node.set_io_faults(table.clone());
+    table
+}
+
+/// Applies combined block faults and materializes the active I/O fault set.
+///
+/// This is the one-call bridge for checkpointable activation: it installs the
+/// concrete table on the live block sub-node and folds the active I/O fault kinds
+/// into `scheduler.active_faults` for `MaterializedState` hashing.
+#[must_use]
+pub fn apply_combined_block_faults_to_subnode_and_state(
+    scheduler: SchedulerState,
+    sub_node: &mut crate::DeviceSchedulingSubNode,
+    faults: &CombinedBlockFaults,
+    active_since: VirtualTime,
+) -> (IoFaults, SchedulerState) {
+    let table = apply_combined_block_faults_to_subnode(sub_node, faults);
+    let scheduler = with_active_io_faults(scheduler, sub_node.device_id(), &table, active_since);
+    (table, scheduler)
+}
+
+/// Applies combined 9p faults to a live 9p scheduling sub-node.
+///
+/// The lowering is uniform with block and network faults: latency/jitter,
+/// reorder, failure, duplicate, corruption, and bandwidth all become one active
+/// completion-fault table driven by the device RNG.
+#[must_use]
+pub fn apply_combined_ninep_faults_to_subnode(
+    sub_node: &mut crate::DeviceSchedulingSubNode,
+    faults: &CombinedNinePFaults,
+) -> IoFaults {
+    let table = ninep_faults_from_combined_ninep(faults);
+    sub_node.set_io_faults(table.clone());
+    table
+}
+
+/// Applies combined 9p faults and materializes the active I/O fault set.
+///
+/// This is the filesystem twin of
+/// [`apply_combined_block_faults_to_subnode_and_state`]: activation mutates the
+/// live sub-node and returns a scheduler state that carries the active fault set.
+#[must_use]
+pub fn apply_combined_ninep_faults_to_subnode_and_state(
+    scheduler: SchedulerState,
+    sub_node: &mut crate::DeviceSchedulingSubNode,
+    faults: &CombinedNinePFaults,
+    active_since: VirtualTime,
+) -> (IoFaults, SchedulerState) {
+    let table = apply_combined_ninep_faults_to_subnode(sub_node, faults);
+    let scheduler = with_active_io_faults(scheduler, sub_node.device_id(), &table, active_since);
+    (table, scheduler)
+}
+
+/// Lowers combined RFC block faults into the concrete block/9p fault table.
+///
+/// Failure rates remain highest-first and use the any-fires rule. Drop-mode
+/// failures suppress completion emission; error-status failures re-encode the
+/// block payload as a normal block error response.
+#[must_use]
+pub fn block_faults_from_combined_block(faults: &CombinedBlockFaults) -> IoFaults {
+    let mut table = IoFaults::none();
+    table.added_latency_ns = faults.latency_extra.nanos();
+    table.jitter_window_ns = faults.latency_jitter.nanos();
+    if let Some(window) = faults.reorder_window {
+        table.reorder_window_ns = window.nanos();
+    }
+    lower_io_failure_rates(&mut table, faults.failure_rates.iter().copied());
+    table.drop_on_loss = matches!(faults.failure_mode, Some(IoFailureMode::Drop));
+    lower_io_duplicate(&mut table, faults.duplicate);
+    lower_io_corruption(
+        &mut table,
+        faults
+            .corruption
+            .map(|corruption| (corruption.rate, corruption.bit_flips)),
+    );
+    table.bandwidth_bits_per_sec = faults
+        .bandwidth_limits
+        .iter()
+        .map(|limit| limit.bits_per_second())
+        .collect();
+    table
+}
+
+/// Lowers combined RFC 9p faults into the concrete block/9p fault table.
+///
+/// 9p failure faults keep their selected errno payloads so the sub-node can
+/// synthesize an `Rlerror` reply with the original request tag when a failure
+/// fires.
+#[must_use]
+pub fn ninep_faults_from_combined_ninep(faults: &CombinedNinePFaults) -> IoFaults {
+    let mut table = IoFaults::none();
+    table.added_latency_ns = faults.latency_extra.nanos();
+    table.jitter_window_ns = faults.latency_jitter.nanos();
+    if let Some(window) = faults.reorder_window {
+        table.reorder_window_ns = window.nanos();
+    }
+    let mut failures = faults.failures.iter();
+    if let Some(failure) = failures.next() {
+        table.loss = probability_from_basis_points(failure.rate);
+        table.failure_errno = Some(failure.errno.code() as u32);
+        for failure in failures {
+            table
+                .additional_loss
+                .push(probability_from_basis_points(failure.rate));
+            table
+                .additional_failure_errno
+                .push(failure.errno.code() as u32);
+        }
+    }
+    lower_io_duplicate(&mut table, faults.duplicate);
+    lower_io_corruption(
+        &mut table,
+        faults
+            .corruption
+            .map(|corruption| (corruption.rate, corruption.bit_flips)),
+    );
+    table.bandwidth_bits_per_sec = faults
+        .bandwidth_limits
+        .iter()
+        .map(|limit| limit.bits_per_second())
+        .collect();
+    table
+}
+
+fn lower_io_failure_rates(
+    table: &mut IoFaults,
+    rates: impl IntoIterator<Item = FaultRateBasisPoints>,
+) {
+    let mut rates = rates.into_iter();
+    if let Some(rate) = rates.next() {
+        table.loss = probability_from_basis_points(rate);
+        table.additional_loss = rates.map(probability_from_basis_points).collect();
+    }
+}
+
+fn lower_io_duplicate(table: &mut IoFaults, duplicate: Option<crate::CombinedDuplicateFault>) {
+    if let Some(duplicate) = duplicate {
+        table.duplicate = probability_from_basis_points(duplicate.rate);
+        table.duplicate_gap_ns = duplicate.gap.nanos();
+    }
+}
+
+fn lower_io_corruption(table: &mut IoFaults, corruption: Option<(FaultRateBasisPoints, u32)>) {
+    if let Some((rate, bit_flips)) = corruption {
+        table.corrupt = probability_from_basis_points(rate);
+        table.corrupt_bit_flips = bit_flips;
+    }
+}
+
 /// Builds the scheduler partition change for combined network partition faults.
 ///
 /// Endpoint A/B are the declared logical link endpoints. A directed partition
@@ -534,10 +695,15 @@ fn active_io_fault_kinds(faults: &IoFaults) -> Vec<&'static str> {
     if faults.reorder_window_ns != 0 {
         kinds.push("reorder");
     }
-    if faults.bandwidth_bytes_per_sec != 0 {
+    if faults.bandwidth_bytes_per_sec != 0 || !faults.bandwidth_bits_per_sec.is_empty() {
         kinds.push("bandwidth");
     }
-    if faults.loss.numerator != 0 {
+    if faults.loss.numerator != 0
+        || faults
+            .additional_loss
+            .iter()
+            .any(|loss| loss.numerator != 0)
+    {
         kinds.push("loss");
     }
     if faults.duplicate.numerator != 0 {
@@ -763,11 +929,14 @@ mod tests {
             jitter_window_ns: 1,
             reorder_window_ns: 1,
             bandwidth_bytes_per_sec: 1,
+            bandwidth_bits_per_sec: vec![1],
             loss: Probability::ALWAYS,
+            additional_loss: vec![Probability::ALWAYS],
             duplicate: Probability::ALWAYS,
             duplicate_gap_ns: 1,
             corrupt: Probability::ALWAYS,
             corrupt_bit_flips: 1,
+            ..IoFaults::none()
         };
         assert_eq!(
             active_io_fault_kinds(&faults),
