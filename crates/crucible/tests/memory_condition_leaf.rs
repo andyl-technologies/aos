@@ -210,16 +210,19 @@ fn memory_sample_event_keeps_sample_icount_and_explicit_evaluation_time() {
 
 #[test]
 fn event_graph_fires_from_memory_predicate_without_guest_marker_support() {
-    let graph = EventGraph::new(vec![Event::once(
-        crucible::EventId::from_name("pass-on-state"),
-        Some(Predicate::memory_predicate(
-            node("server"),
-            MemPlace::register("rax", MemoryWidth::U64),
-            MemoryCmp::Eq,
-            3,
-        )),
-        Action::Pass,
-    )])
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            crucible::EventId::from_name("pass-on-state"),
+            Some(Predicate::memory_predicate(
+                node("server"),
+                MemPlace::register("rax", MemoryWidth::U64),
+                MemoryCmp::Eq,
+                3,
+            )),
+            Action::Pass,
+        )],
+        &memory_world(),
+    )
     .expect("memory event graph should build");
     let mut state = EventGraphState::new();
     let events = vec![ObservableEvent::memory_sample(

@@ -14,7 +14,7 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionId, AssertionPhase, CodePoint, ContentHash, EventLogOffset, FaultTag, FramePredicate,
-    Icount, IoEventKind, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
+    Icount, IoEventKind, LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
     NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy,
     World, WorldStaticTopology,
 };
@@ -1363,45 +1363,44 @@ impl EventGraph {
     /// entrypoint tries to use repeatable firing policy,
     /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
     /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
-    /// a `Timer` predicate names no armable timer, or
+    /// a `Timer` predicate names no armable timer,
     /// [`EventGraphError::EmptyCompound`] when an `AllOf` or `AnyOf` predicate
-    /// has no children.
-    /// [`EventGraphError::UnknownAssertionReference`] is returned for any
-    /// assertion-state trigger because this constructor has no assertion
-    /// declarations to validate against; use [`Self::new_with_assertions`] for
-    /// those graphs. [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] is
-    /// returned for any guest-marker trigger because this constructor has no
-    /// world to prove white-box opt-in; use [`Self::new_for_world`] for those
-    /// graphs. [`EventGraphError::NodeScheduleTargetRequiresWorld`] is returned
-    /// for any `StartNode` or `StopNode` action because this constructor has no
-    /// world topology to validate against.
+    /// has no children, or [`EventGraphError::InvalidRegex`] when a console
+    /// predicate has an invalid regex.
+    ///
+    /// This constructor has no world or assertion namespace, so it also returns
+    /// [`EventGraphError::UnknownAssertionReference`] for assertion-state
+    /// triggers, [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] for
+    /// guest-marker triggers, [`EventGraphError::NodeReferenceRequiresWorld`]
+    /// or [`EventGraphError::LinkReferenceRequiresWorld`] for topology-bearing
+    /// references, and [`EventGraphError::NodeScheduleTargetRequiresWorld`] for
+    /// `StartNode` or `StopNode`. It returns
+    /// [`EventGraphError::UnknownFaultTagReference`] when a `HealFault` action
+    /// names no injected tag in the graph, [`EventGraphError::NonRepeatableCycle`]
+    /// for a hard dependency cycle among non-repeatable events, or
+    /// [`EventGraphError::UnreachableEvent`] when an event cannot be reached
+    /// from an entrypoint.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_world(events, [], [], None)
+        Self::new_with_assertions_and_world(events, [], None)
     }
 
     /// Builds an event graph with declared assertion ids available to triggers.
     ///
     /// # Errors
     ///
-    /// Returns [`EventGraphError::DuplicateEventId`] when two events carry the
-    /// same stable id, [`EventGraphError::RepeatableEntrypoint`] when an
-    /// entrypoint tries to use repeatable firing policy,
-    /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
-    /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
-    /// a `Timer` predicate names no armable timer,
-    /// [`EventGraphError::EmptyCompound`] when an `AllOf` or `AnyOf` predicate
-    /// has no children,
-    /// [`EventGraphError::UnknownAssertionReference`] when an
-    /// `AssertionState` predicate names no declared assertion, or
-    /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
-    /// trigger is present but no white-box-enabled node namespace was supplied,
-    /// or [`EventGraphError::NodeScheduleTargetRequiresWorld`] when `StartNode`
-    /// or `StopNode` is present without a world topology.
+    /// Returns the common event-id, trigger-reference, assertion-reference,
+    /// compound, regex, fault-tag, cycle, and reachability errors described on
+    /// [`Self::new`]. Because this constructor has no world namespace, it also
+    /// returns [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] for
+    /// guest-marker triggers, [`EventGraphError::NodeReferenceRequiresWorld`] or
+    /// [`EventGraphError::LinkReferenceRequiresWorld`] for topology-bearing
+    /// references, and [`EventGraphError::NodeScheduleTargetRequiresWorld`] when
+    /// `StartNode` or `StopNode` is present.
     pub fn new_with_assertions(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<Self, EventGraphError> {
-        Self::new_with_assertions_and_world(events, assertions, [], None)
+        Self::new_with_assertions_and_world(events, assertions, None)
     }
 
     /// Builds an event graph using white-box opt-in data from `world`.
@@ -1409,21 +1408,18 @@ impl EventGraph {
     /// # Errors
     ///
     /// Returns the common event-id, trigger-reference, assertion-reference,
-    /// guest-marker, and regex construction errors plus
+    /// compound, regex, fault-tag, cycle, and reachability errors described on
+    /// [`Self::new`]. It also returns
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
     /// trigger is present but `world` has no white-box-enabled node,
-    /// [`EventGraphError::UndeclaredNodeScheduleTarget`] when `StartNode` or
-    /// `StopNode` references a node outside `world`, or
+    /// [`EventGraphError::UnknownNodeReference`] or
+    /// [`EventGraphError::UnknownLinkReference`] for topology-bearing
+    /// references outside `world`, [`EventGraphError::UndeclaredNodeScheduleTarget`]
+    /// when `StartNode` or `StopNode` references a node outside `world`, or
     /// [`EventGraphError::UnbakedNodeScheduleTarget`] when that action references
     /// a declared node outside the world's bake set.
     pub fn new_for_world(events: Vec<Event>, world: &World) -> Result<Self, EventGraphError> {
-        let static_topology = world.static_topology();
-        Self::new_with_assertions_and_world(
-            events,
-            [],
-            enabled_white_box_nodes(world),
-            Some(&static_topology),
-        )
+        Self::new_with_assertions_and_world(events, [], Some(world))
     }
 
     /// Builds an event graph using assertion and white-box data from `world`.
@@ -1431,11 +1427,14 @@ impl EventGraph {
     /// # Errors
     ///
     /// Returns the common event-id, trigger-reference, assertion-reference,
-    /// guest-marker, and regex construction errors plus
+    /// compound, regex, fault-tag, cycle, and reachability errors described on
+    /// [`Self::new`]. It also returns
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
     /// trigger is present but `world` has no white-box-enabled node,
-    /// [`EventGraphError::UndeclaredNodeScheduleTarget`] when `StartNode` or
-    /// `StopNode` references a node outside `world`, or
+    /// [`EventGraphError::UnknownNodeReference`] or
+    /// [`EventGraphError::UnknownLinkReference`] for topology-bearing
+    /// references outside `world`, [`EventGraphError::UndeclaredNodeScheduleTarget`]
+    /// when `StartNode` or `StopNode` references a node outside `world`, or
     /// [`EventGraphError::UnbakedNodeScheduleTarget`] when that action references
     /// a declared node outside the world's bake set.
     pub fn new_with_assertions_for_world(
@@ -1443,23 +1442,22 @@ impl EventGraph {
         assertions: impl IntoIterator<Item = AssertionId>,
         world: &World,
     ) -> Result<Self, EventGraphError> {
-        let static_topology = world.static_topology();
-        Self::new_with_assertions_and_world(
-            events,
-            assertions,
-            enabled_white_box_nodes(world),
-            Some(&static_topology),
-        )
+        Self::new_with_assertions_and_world(events, assertions, Some(world))
     }
 
     fn new_with_assertions_and_world(
         events: Vec<Event>,
         assertions: impl IntoIterator<Item = AssertionId>,
-        white_box_nodes: impl IntoIterator<Item = NodeId>,
-        static_topology: Option<&WorldStaticTopology>,
+        world: Option<&World>,
     ) -> Result<Self, EventGraphError> {
         let assertion_ids = assertions.into_iter().collect::<BTreeSet<_>>();
-        let white_box_nodes = white_box_nodes.into_iter().collect::<BTreeSet<_>>();
+        let white_box_nodes = world
+            .map(enabled_white_box_nodes)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let static_topology = world.map(World::static_topology);
+        let topology = world.map(EventGraphTopology::from_world);
         let mut seen = BTreeSet::new();
         for event in &events {
             if !seen.insert(event.id.clone()) {
@@ -1474,6 +1472,7 @@ impl EventGraph {
             }
         }
         let timer_names = armed_timer_names(&events);
+        let injected_tags = injected_fault_tags(&events);
         for event in &events {
             if let Some(condition) = &event.trigger {
                 validate_condition_references(
@@ -1483,10 +1482,18 @@ impl EventGraph {
                     &timer_names,
                     &assertion_ids,
                     &white_box_nodes,
+                    topology.as_ref(),
                 )?;
             }
-            validate_action_references(event, &event.action, static_topology)?;
+            validate_action_references(
+                event,
+                &event.action,
+                static_topology.as_ref(),
+                topology.as_ref(),
+                &injected_tags,
+            )?;
         }
+        validate_event_graph_dependencies(&events, &timer_names)?;
         Ok(Self { events })
     }
 
@@ -1886,6 +1893,34 @@ pub enum EventGraphError {
         /// Referenced guest marker.
         marker: MarkerId,
     },
+    /// A topology-bearing node reference was used without a world.
+    NodeReferenceRequiresWorld {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced node id.
+        node: NodeId,
+    },
+    /// A topology-bearing link reference was used without a world.
+    LinkReferenceRequiresWorld {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced link id.
+        link: LinkId,
+    },
+    /// A topology-bearing node reference names no world participant.
+    UnknownNodeReference {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced node id.
+        node: NodeId,
+    },
+    /// A topology-bearing link reference names no world link.
+    UnknownLinkReference {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced link id.
+        link: LinkId,
+    },
     /// A `StartNode` or `StopNode` action was used without a world.
     NodeScheduleTargetRequiresWorld {
         /// Event containing the invalid action.
@@ -1906,6 +1941,23 @@ pub enum EventGraphError {
         event: EventId,
         /// Referenced node id.
         node: NodeId,
+    },
+    /// A `HealFault` action references no tag injected by this graph.
+    UnknownFaultTagReference {
+        /// Event containing the invalid heal action.
+        event: EventId,
+        /// Referenced fault tag.
+        tag: FaultTag,
+    },
+    /// Non-repeatable events contain a dependency cycle.
+    NonRepeatableCycle {
+        /// Participating event ids in deterministic DFS order.
+        events: Vec<EventId>,
+    },
+    /// An event cannot be reached from any graph entrypoint.
+    UnreachableEvent {
+        /// Unreachable event id.
+        event: EventId,
     },
     /// A console-match predicate contains an invalid regex program.
     InvalidRegex {
@@ -1970,6 +2022,34 @@ impl fmt::Display for EventGraphError {
                     event.name, marker.name
                 )
             }
+            Self::NodeReferenceRequiresWorld { event, node } => {
+                write!(
+                    formatter,
+                    "event `{}` references node `{}` without a world",
+                    event.name, node.name
+                )
+            }
+            Self::LinkReferenceRequiresWorld { event, link } => {
+                write!(
+                    formatter,
+                    "event `{}` references link `{}` without a world",
+                    event.name, link.name
+                )
+            }
+            Self::UnknownNodeReference { event, node } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown node `{}`",
+                    event.name, node.name
+                )
+            }
+            Self::UnknownLinkReference { event, link } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown link `{}`",
+                    event.name, link.name
+                )
+            }
             Self::NodeScheduleTargetRequiresWorld { event, node } => {
                 write!(
                     formatter,
@@ -1991,6 +2071,27 @@ impl fmt::Display for EventGraphError {
                     event.name, node.name
                 )
             }
+            Self::UnknownFaultTagReference { event, tag } => {
+                write!(
+                    formatter,
+                    "event `{}` heals unknown fault tag `{}`",
+                    event.name, tag.name
+                )
+            }
+            Self::NonRepeatableCycle { events } => {
+                let names = events
+                    .iter()
+                    .map(|event| event.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                write!(
+                    formatter,
+                    "event graph contains non-repeatable dependency cycle `{names}`"
+                )
+            }
+            Self::UnreachableEvent { event } => {
+                write!(formatter, "event `{}` is unreachable", event.name)
+            }
             Self::InvalidRegex { event, reason, .. } => {
                 write!(
                     formatter,
@@ -2003,6 +2104,43 @@ impl fmt::Display for EventGraphError {
 }
 
 impl Error for EventGraphError {}
+
+#[derive(Clone, Debug)]
+struct EventGraphTopology {
+    nodes: BTreeSet<NodeId>,
+    links: BTreeSet<LinkId>,
+}
+
+impl EventGraphTopology {
+    fn from_world(world: &World) -> Self {
+        Self {
+            nodes: world
+                .static_topology()
+                .participants
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            links: world
+                .links()
+                .iter()
+                .map(link_id_for_world_link)
+                .collect::<BTreeSet<_>>(),
+        }
+    }
+}
+
+fn link_id_for_world_link(link: &LinkDef) -> LinkId {
+    let (left, right) = link.endpoints();
+    link_id_for_endpoint_pair(left, right)
+}
+
+fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
+}
 
 fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
     let mut timers = BTreeSet::new();
@@ -2035,12 +2173,58 @@ fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
     }
 }
 
+fn injected_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
+    let mut tags = BTreeSet::new();
+    for event in events {
+        collect_injected_fault_tags(&event.action, &mut tags);
+    }
+    tags
+}
+
+fn collect_injected_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
+    match action {
+        Action::InjectFault { tag, .. } => {
+            tags.insert(tag.clone());
+        }
+        Action::Group(actions) => {
+            for action in actions {
+                collect_injected_fault_tags(action, tags);
+            }
+        }
+        Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => {}
+    }
+}
+
 fn validate_action_references(
     event: &Event,
     action: &Action,
     static_topology: Option<&WorldStaticTopology>,
+    topology: Option<&EventGraphTopology>,
+    injected_tags: &BTreeSet<FaultTag>,
 ) -> Result<(), EventGraphError> {
     match action {
+        Action::InjectFault { fault, .. } => {
+            validate_membership_fault_reference(event, fault, topology)
+        }
+        Action::HealFault { tag } => {
+            if injected_tags.contains(tag) {
+                Ok(())
+            } else {
+                Err(EventGraphError::UnknownFaultTagReference {
+                    event: event.id.clone(),
+                    tag: tag.clone(),
+                })
+            }
+        }
         Action::StartNode { node } | Action::StopNode { node } => {
             let Some(static_topology) = static_topology else {
                 return Err(EventGraphError::NodeScheduleTargetRequiresWorld {
@@ -2064,19 +2248,48 @@ fn validate_action_references(
         }
         Action::Group(actions) => {
             for action in actions {
-                validate_action_references(event, action, static_topology)?;
+                validate_action_references(
+                    event,
+                    action,
+                    static_topology,
+                    topology,
+                    injected_tags,
+                )?;
             }
             Ok(())
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::CreateSavepoint { .. }
         | Action::Fork { .. }
         | Action::Pass
         | Action::Fail { .. }
         | Action::Log { .. } => Ok(()),
+    }
+}
+
+fn validate_membership_fault_reference(
+    event: &Event,
+    fault: &MembershipFault,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    match fault {
+        MembershipFault::Crash { node, .. }
+        | MembershipFault::Isolate { node }
+        | MembershipFault::NotYetJoined { node } => validate_node_reference(event, node, topology),
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            ..
+        } => {
+            validate_node_reference(event, endpoint_a, topology)?;
+            validate_node_reference(event, endpoint_b, topology)?;
+            validate_link_reference(
+                event,
+                &link_id_for_endpoint_pair(endpoint_a, endpoint_b),
+                topology,
+            )
+        }
     }
 }
 
@@ -2096,6 +2309,7 @@ fn validate_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
+    topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     match condition {
         Condition::After { of, .. } => {
@@ -2117,6 +2331,24 @@ fn validate_condition_references(
                     timer: name.clone(),
                 })
             }
+        }
+        Condition::NetworkMatch { link, .. } => match link {
+            Some(link) => validate_link_reference(event, link, topology),
+            None => Ok(()),
+        },
+        Condition::ConsoleMatch { node, regex } => {
+            validate_node_reference(event, node, topology)?;
+            validate_condition_regex(event, regex)
+        }
+        Condition::CoveragePoint { node, .. }
+        | Condition::MemoryPredicate { node, .. }
+        | Condition::IoPattern { node, .. }
+        | Condition::NodeState { node, .. } => validate_node_reference(event, node, topology),
+        Condition::Named { nodes, .. } => {
+            for node in nodes {
+                validate_node_reference(event, node, topology)?;
+            }
+            Ok(())
         }
         Condition::AssertionState { name, .. } => {
             if assertion_ids.contains(name) {
@@ -2146,6 +2378,7 @@ fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            topology,
         ),
         Condition::AnyOf { predicates } => validate_compound_condition_references(
             event,
@@ -2155,6 +2388,7 @@ fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            topology,
         ),
         Condition::Once { predicate } | Condition::Not { predicate } => {
             validate_condition_references(
@@ -2164,17 +2398,10 @@ fn validate_condition_references(
                 timer_names,
                 assertion_ids,
                 white_box_nodes,
+                topology,
             )
         }
-        Condition::ConsoleMatch { regex, .. } => validate_condition_regex(event, regex),
-        Condition::At { .. }
-        | Condition::NetworkMatch { .. }
-        | Condition::CoveragePoint { .. }
-        | Condition::MemoryPredicate { .. }
-        | Condition::IoPattern { .. }
-        | Condition::NodeState { .. }
-        | Condition::Quiescent
-        | Condition::Named { .. } => Ok(()),
+        Condition::At { .. } | Condition::Quiescent => Ok(()),
     }
 }
 
@@ -2186,6 +2413,7 @@ fn validate_compound_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
+    topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     if predicates.is_empty() {
         return Err(EventGraphError::EmptyCompound {
@@ -2202,10 +2430,53 @@ fn validate_compound_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            topology,
         )?;
     }
 
     Ok(())
+}
+
+fn validate_node_reference(
+    event: &Event,
+    node: &NodeId,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    let Some(topology) = topology else {
+        return Err(EventGraphError::NodeReferenceRequiresWorld {
+            event: event.id.clone(),
+            node: node.clone(),
+        });
+    };
+    if topology.nodes.contains(node) {
+        Ok(())
+    } else {
+        Err(EventGraphError::UnknownNodeReference {
+            event: event.id.clone(),
+            node: node.clone(),
+        })
+    }
+}
+
+fn validate_link_reference(
+    event: &Event,
+    link: &LinkId,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    let Some(topology) = topology else {
+        return Err(EventGraphError::LinkReferenceRequiresWorld {
+            event: event.id.clone(),
+            link: link.clone(),
+        });
+    };
+    if topology.links.contains(link) {
+        Ok(())
+    } else {
+        Err(EventGraphError::UnknownLinkReference {
+            event: event.id.clone(),
+            link: link.clone(),
+        })
+    }
 }
 
 fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), EventGraphError> {
@@ -2216,4 +2487,279 @@ fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), E
             pattern: regex.pattern.clone(),
             reason: source.to_string(),
         })
+}
+
+fn validate_event_graph_dependencies(
+    events: &[Event],
+    timer_names: &BTreeSet<TimerId>,
+) -> Result<(), EventGraphError> {
+    let armers = timer_armers(events);
+    validate_non_repeatable_cycles(events, &armers)?;
+    validate_event_reachability(events, timer_names, &armers)
+}
+
+fn timer_armers(events: &[Event]) -> BTreeMap<TimerId, BTreeSet<EventId>> {
+    let mut armers = BTreeMap::new();
+    for event in events {
+        collect_timer_armers(&event.action, &event.id, &mut armers);
+    }
+    armers
+}
+
+fn collect_timer_armers(
+    action: &Action,
+    event: &EventId,
+    armers: &mut BTreeMap<TimerId, BTreeSet<EventId>>,
+) {
+    match action {
+        Action::ArmTimer { name, .. } => {
+            armers
+                .entry(name.clone())
+                .or_default()
+                .insert(event.clone());
+        }
+        Action::Group(actions) => {
+            for action in actions {
+                collect_timer_armers(action, event, armers);
+            }
+        }
+        Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => {}
+    }
+}
+
+fn validate_non_repeatable_cycles(
+    events: &[Event],
+    armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
+) -> Result<(), EventGraphError> {
+    let policies = events
+        .iter()
+        .map(|event| (event.id.clone(), event.policy))
+        .collect::<BTreeMap<_, _>>();
+    let mut graph = BTreeMap::<EventId, BTreeSet<EventId>>::new();
+    for event in events {
+        if event.policy == FirePolicy::Repeatable {
+            continue;
+        }
+        let dependencies = event
+            .trigger
+            .as_ref()
+            .map(|condition| hard_event_dependencies(condition, armers))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|dependency| policies.get(dependency) != Some(&FirePolicy::Repeatable))
+            .collect::<BTreeSet<_>>();
+        graph.insert(event.id.clone(), dependencies);
+    }
+
+    let mut marks = BTreeMap::<EventId, DfsMark>::new();
+    let mut stack = Vec::new();
+    for event in events {
+        if event.policy != FirePolicy::Repeatable {
+            visit_non_repeatable_event(&event.id, &graph, &mut marks, &mut stack)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DfsMark {
+    Gray,
+    Black,
+}
+
+fn visit_non_repeatable_event(
+    event: &EventId,
+    graph: &BTreeMap<EventId, BTreeSet<EventId>>,
+    marks: &mut BTreeMap<EventId, DfsMark>,
+    stack: &mut Vec<EventId>,
+) -> Result<(), EventGraphError> {
+    match marks.get(event) {
+        Some(DfsMark::Black) => return Ok(()),
+        Some(DfsMark::Gray) => {
+            let start = stack
+                .iter()
+                .position(|stacked| stacked == event)
+                .unwrap_or(0);
+            let mut cycle = stack[start..].to_vec();
+            cycle.push(event.clone());
+            return Err(EventGraphError::NonRepeatableCycle { events: cycle });
+        }
+        None => {}
+    }
+
+    marks.insert(event.clone(), DfsMark::Gray);
+    stack.push(event.clone());
+    if let Some(dependencies) = graph.get(event) {
+        for dependency in dependencies {
+            if graph.contains_key(dependency) {
+                visit_non_repeatable_event(dependency, graph, marks, stack)?;
+            }
+        }
+    }
+    stack.pop();
+    marks.insert(event.clone(), DfsMark::Black);
+    Ok(())
+}
+
+fn hard_event_dependencies(
+    condition: &Condition,
+    armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
+) -> BTreeSet<EventId> {
+    match condition {
+        Condition::After { of, .. } => BTreeSet::from([of.clone()]),
+        Condition::Timer { name } => armers
+            .get(name)
+            .filter(|timer_armers| timer_armers.len() == 1)
+            .cloned()
+            .unwrap_or_default(),
+        Condition::AllOf { predicates } => predicates
+            .iter()
+            .flat_map(|predicate| hard_event_dependencies(predicate, armers))
+            .collect(),
+        Condition::AnyOf { predicates } => {
+            let mut iter = predicates
+                .iter()
+                .map(|predicate| hard_event_dependencies(predicate, armers));
+            let Some(first) = iter.next() else {
+                return BTreeSet::new();
+            };
+            iter.fold(first, |common, dependencies| {
+                common.intersection(&dependencies).cloned().collect()
+            })
+        }
+        Condition::Once { predicate } => hard_event_dependencies(predicate, armers),
+        Condition::Not { .. }
+        | Condition::At { .. }
+        | Condition::NetworkMatch { .. }
+        | Condition::ConsoleMatch { .. }
+        | Condition::CoveragePoint { .. }
+        | Condition::MemoryPredicate { .. }
+        | Condition::IoPattern { .. }
+        | Condition::NodeState { .. }
+        | Condition::AssertionState { .. }
+        | Condition::Quiescent
+        | Condition::Named { .. }
+        | Condition::GuestMarker { .. } => BTreeSet::new(),
+    }
+}
+
+fn validate_event_reachability(
+    events: &[Event],
+    timer_names: &BTreeSet<TimerId>,
+    armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
+) -> Result<(), EventGraphError> {
+    let mut alternatives = BTreeMap::<EventId, Vec<BTreeSet<EventId>>>::new();
+    for event in events {
+        let event_alternatives = event
+            .trigger
+            .as_ref()
+            .map(|condition| possible_dependency_alternatives(condition, timer_names, armers))
+            .unwrap_or_else(|| vec![BTreeSet::new()]);
+        alternatives.insert(event.id.clone(), event_alternatives);
+    }
+
+    let mut reachable = BTreeSet::<EventId>::new();
+    loop {
+        let mut changed = false;
+        for event in events {
+            if reachable.contains(&event.id) {
+                continue;
+            }
+            let Some(event_alternatives) = alternatives.get(&event.id) else {
+                continue;
+            };
+            if event_alternatives
+                .iter()
+                .any(|alternative| alternative.is_subset(&reachable))
+            {
+                reachable.insert(event.id.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for event in events {
+        if !reachable.contains(&event.id) {
+            return Err(EventGraphError::UnreachableEvent {
+                event: event.id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn possible_dependency_alternatives(
+    condition: &Condition,
+    timer_names: &BTreeSet<TimerId>,
+    armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
+) -> Vec<BTreeSet<EventId>> {
+    match condition {
+        Condition::After { of, .. } => vec![BTreeSet::from([of.clone()])],
+        Condition::Timer { name } => timer_names
+            .contains(name)
+            .then(|| {
+                armers
+                    .get(name)
+                    .into_iter()
+                    .flat_map(|timer_armers| timer_armers.iter().cloned())
+                    .map(|event| BTreeSet::from([event]))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        Condition::AllOf { predicates } => {
+            let mut alternatives = vec![BTreeSet::new()];
+            for predicate in predicates {
+                let child_alternatives =
+                    possible_dependency_alternatives(predicate, timer_names, armers);
+                alternatives = combine_dependency_alternatives(&alternatives, &child_alternatives);
+            }
+            alternatives
+        }
+        Condition::AnyOf { predicates } => predicates
+            .iter()
+            .flat_map(|predicate| possible_dependency_alternatives(predicate, timer_names, armers))
+            .collect(),
+        Condition::Once { predicate } => {
+            possible_dependency_alternatives(predicate, timer_names, armers)
+        }
+        Condition::Not { .. }
+        | Condition::At { .. }
+        | Condition::NetworkMatch { .. }
+        | Condition::ConsoleMatch { .. }
+        | Condition::CoveragePoint { .. }
+        | Condition::MemoryPredicate { .. }
+        | Condition::IoPattern { .. }
+        | Condition::NodeState { .. }
+        | Condition::AssertionState { .. }
+        | Condition::Quiescent
+        | Condition::Named { .. }
+        | Condition::GuestMarker { .. } => vec![BTreeSet::new()],
+    }
+}
+
+fn combine_dependency_alternatives(
+    left: &[BTreeSet<EventId>],
+    right: &[BTreeSet<EventId>],
+) -> Vec<BTreeSet<EventId>> {
+    let mut combined = Vec::new();
+    for left_alternative in left {
+        for right_alternative in right {
+            let mut dependency_set = left_alternative.clone();
+            dependency_set.extend(right_alternative.iter().cloned());
+            combined.push(dependency_set);
+        }
+    }
+    combined
 }

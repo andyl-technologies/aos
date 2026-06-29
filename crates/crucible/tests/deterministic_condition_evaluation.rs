@@ -5,13 +5,31 @@
 use crucible::{
     Action, ConditionEvaluationError, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
     ContentHash, Event, EventEvaluationKind, EventEvaluationPoint, EventGraph, EventGraphState,
-    EventId, NodeId, NodeLifecycle, ObservableEvent, Predicate, SchedulerEvaluationBoundaryKind,
-    VirtualTime,
+    EventId, Icount, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, Predicate, ReadyPoint,
+    SchedulerEvaluationBoundaryKind, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
     NodeId {
         name: String::from(name),
+    }
+}
+
+fn ready_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
     }
 }
 
@@ -130,11 +148,16 @@ fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
     .expect("observable scheduler entry should form a checked prefix");
     let point = prefix.point();
     let condition = Predicate::node_state(node("db-0"), NodeLifecycle::Started);
-    let graph = EventGraph::new(vec![Event::once(
-        EventId::from_name("pass-when-started"),
-        Some(condition.clone()),
-        Action::Pass,
-    )])
+    let world =
+        World::from_nodes(vec![ready_node("db-0")]).expect("node-state test world should build");
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            EventId::from_name("pass-when-started"),
+            Some(condition.clone()),
+            Action::Pass,
+        )],
+        &world,
+    )
     .expect("node-state trigger graph should build");
     let mut graph_state = EventGraphState::new();
     let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);

@@ -4,11 +4,12 @@
 
 use crucible::{
     Action, CodePoint, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
-    EventFirings, EventGraph, EventGraphState, EventId, FaultTag, Icount, LogLevel,
-    MembershipFault, NodeId, ObservableEvent, PartitionDirection, Predicate, RegexProgram,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, Shift, SimDuration, SimInstant, SingleScheduler, TimerId,
-    TriggerActionState, VirtualTime,
+    EventFirings, EventGraph, EventGraphState, EventId, FaultTag, Icount, LinkDef, LogLevel,
+    MembershipFault, NodeId, NodeTemplate, ObservableEvent, PartitionDirection, Predicate,
+    ReadyPoint, RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, Shift, SimDuration, SimInstant,
+    SingleScheduler, TimerId, TriggerActionState, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -58,6 +59,32 @@ fn scenario(name: &str) -> SchedulerLivenessScenario {
     )
 }
 
+fn ready_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
+
+fn recovery_world() -> World {
+    World::from_nodes_and_links(
+        vec![ready_node("db-0"), ready_node("db-1")],
+        vec![LinkDef::new(node("db-0"), node("db-1")).expect("test link should build")],
+    )
+    .expect("relative timer test world should build")
+}
+
 fn split_fault() -> MembershipFault {
     MembershipFault::Partition {
         endpoint_a: node("db-0"),
@@ -101,46 +128,52 @@ fn recovery_observations() -> Vec<ObservableEvent> {
 
 fn timer_recovery_graph() -> EventGraph {
     let heal_timer = timer("heal-after");
-    EventGraph::new(vec![
-        Event::once(
-            event_id("wait-ready"),
-            Some(ready_condition()),
-            Action::Group(vec![
-                Action::InjectFault {
-                    tag: tag("split"),
-                    fault: split_fault(),
-                },
-                Action::ArmTimer {
-                    name: heal_timer.clone(),
-                    after: duration(30),
-                },
-            ]),
-        ),
-        Event::once(
-            event_id("heal"),
-            Some(Predicate::timer(heal_timer)),
-            Action::HealFault { tag: tag("split") },
-        ),
-    ])
+    EventGraph::new_for_world(
+        vec![
+            Event::once(
+                event_id("wait-ready"),
+                Some(ready_condition()),
+                Action::Group(vec![
+                    Action::InjectFault {
+                        tag: tag("split"),
+                        fault: split_fault(),
+                    },
+                    Action::ArmTimer {
+                        name: heal_timer.clone(),
+                        after: duration(30),
+                    },
+                ]),
+            ),
+            Event::once(
+                event_id("heal"),
+                Some(Predicate::timer(heal_timer)),
+                Action::HealFault { tag: tag("split") },
+            ),
+        ],
+        &recovery_world(),
+    )
     .expect("timer recovery graph should build")
 }
 
 fn after_recovery_graph() -> EventGraph {
-    EventGraph::new(vec![
-        Event::once(
-            event_id("wait-ready"),
-            Some(ready_condition()),
-            Action::InjectFault {
-                tag: tag("split"),
-                fault: split_fault(),
-            },
-        ),
-        Event::once(
-            event_id("heal"),
-            Some(Predicate::after(duration(30), event_id("wait-ready"))),
-            Action::HealFault { tag: tag("split") },
-        ),
-    ])
+    EventGraph::new_for_world(
+        vec![
+            Event::once(
+                event_id("wait-ready"),
+                Some(ready_condition()),
+                Action::InjectFault {
+                    tag: tag("split"),
+                    fault: split_fault(),
+                },
+            ),
+            Event::once(
+                event_id("heal"),
+                Some(Predicate::after(duration(30), event_id("wait-ready"))),
+                Action::HealFault { tag: tag("split") },
+            ),
+        ],
+        &recovery_world(),
+    )
     .expect("after recovery graph should build")
 }
 

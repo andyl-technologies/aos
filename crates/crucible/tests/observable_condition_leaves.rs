@@ -185,11 +185,14 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
 fn invalid_console_regex_is_rejected_by_graph_and_properties() {
     let invalid = RegexProgram::from_pattern("[");
     let event_id = crucible::EventId::from_name("bad-console-regex");
-    let graph = EventGraph::new(vec![Event::once(
-        event_id.clone(),
-        Some(Predicate::console_match(node("server"), invalid.clone())),
-        Action::Pass,
-    )]);
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            event_id.clone(),
+            Some(Predicate::console_match(node("server"), invalid.clone())),
+            Action::Pass,
+        )],
+        &observable_world(),
+    );
     let properties = Properties::from_assertions_for_world(
         &observable_world(),
         vec![assertion(
@@ -252,20 +255,23 @@ fn node_state_observes_lifecycle_transition() {
 
 #[test]
 fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
-    let graph = EventGraph::new(vec![Event::once(
-        crucible::EventId::from_name("pass-on-console-ready"),
-        Some(Predicate::console_match(
-            node("server"),
-            RegexProgram::from_pattern("listening on 0\\.0\\.0\\.0:8080"),
-        )),
-        Action::Group(vec![
-            Action::Log {
-                level: LogLevel::Info,
-                message: String::from("server ready"),
-            },
-            Action::Pass,
-        ]),
-    )])
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            crucible::EventId::from_name("pass-on-console-ready"),
+            Some(Predicate::console_match(
+                node("server"),
+                RegexProgram::from_pattern("listening on 0\\.0\\.0\\.0:8080"),
+            )),
+            Action::Group(vec![
+                Action::Log {
+                    level: LogLevel::Info,
+                    message: String::from("server ready"),
+                },
+                Action::Pass,
+            ]),
+        )],
+        &observable_world(),
+    )
     .expect("observable console event graph should build");
     let mut state = EventGraphState::new();
     let events = vec![ObservableEvent::console_output(
