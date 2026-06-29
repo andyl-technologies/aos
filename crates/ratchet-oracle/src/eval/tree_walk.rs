@@ -499,6 +499,8 @@ struct ForceCacheOptionsIdentity {
     search_path_base: Vec<u8>,
     nix_path: Vec<NixSearchPathEntry>,
     corepkgs_path: Option<Vec<u8>>,
+    allowed_paths: Vec<Vec<u8>>,
+    allowed_uris: Vec<Vec<u8>>,
     home_dir: Option<Vec<u8>>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,

@@ -3418,6 +3418,19 @@ alone (`M-1`/`Q-A`).
       boundaries, not full currentTime taint propagation through
       already-memoized dependents or the persistent demand graph
       (`R-10`/`S-14`).
+- [x] Current precursor: force-cache option identity includes access policy.
+      Forced-expression identities now salt normalized allowed filesystem roots
+      and allowed URI prefixes alongside search-path base, visible `nix_path`,
+      corepkgs, store/home/system/time/eval-mode, and ambient-search-path
+      rejection, intentionally making existing module-hash-derived derivation
+      side records cold under the new v3 salt. Focused option-identity tests
+      prove allowed path and URI changes allocate distinct demand nodes, and
+      `search_path_literal_thunks_do_not_replay_across_allowed_path_policy`
+      proves a restricted-mode direct `<...>` payload rehydrates in a
+      same-policy fresh runtime but is not replayed when the same search path is
+      denied. This is scoped to force-cache identity and direct search-path
+      policy replay, not first-class/curried `findFile`, fetch interactions, or
+      the persistent demand graph (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to

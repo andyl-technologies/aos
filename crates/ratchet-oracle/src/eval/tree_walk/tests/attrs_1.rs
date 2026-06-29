@@ -25,6 +25,7 @@ mod force_cache_persistent_file_inputs;
 mod force_cache_persistent_imports;
 mod force_cache_persistent_metadata_inputs;
 mod force_cache_persistent_uncacheable_inputs;
+mod force_cache_search_path_policy;
 mod force_cache_synthetic_builtins;
 mod materialized_captures;
 mod payload_rehydration;

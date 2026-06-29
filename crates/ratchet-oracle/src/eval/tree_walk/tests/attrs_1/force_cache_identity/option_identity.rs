@@ -390,6 +390,52 @@ fn source_backed_forced_inline_thunks_include_corepkgs_path_in_cache_identity() 
 }
 
 #[test]
+fn source_backed_forced_inline_thunks_include_allowed_paths_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-allowed-paths-salt");
+    let first_allowed = root.join("allowed-a");
+    let second_allowed = root.join("allowed-b");
+    fs::create_dir_all(&first_allowed).expect("first allowed path exists");
+    fs::create_dir_all(&second_allowed).expect("second allowed path exists");
+    let first_allowed = fs::canonicalize(&first_allowed).expect("first path canonicalizes");
+    let second_allowed = fs::canonicalize(&second_allowed).expect("second path canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_allowed_path(path_bytes(&first_allowed))
+        .expect("first allowed path configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_allowed_path(path_bytes(&second_allowed))
+        .expect("second allowed path configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different allowed path roots must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_allowed_uris_in_cache_identity() {
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_allowed_uri(b"https://cache-a.example/".to_vec())
+        .expect("first allowed URI configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_allowed_uri(b"https://cache-b.example/".to_vec())
+        .expect("second allowed URI configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different allowed URI prefixes must not reuse one demand node",
+    );
+}
+
+#[test]
 fn source_backed_forced_inline_thunks_include_ambient_search_path_rejection_in_cache_identity() {
     let first_options = TreeWalkOptions::new();
     let mut second_options = TreeWalkOptions::new();

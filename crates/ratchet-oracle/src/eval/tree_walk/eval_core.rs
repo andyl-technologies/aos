@@ -24,6 +24,8 @@ impl ForceCacheOptionsIdentity {
             search_path_base: options.search_path_base().to_vec(),
             nix_path: options.nix_path().to_vec(),
             corepkgs_path: options.corepkgs_path().map(<[u8]>::to_vec),
+            allowed_paths: options.allowed_paths().to_vec(),
+            allowed_uris: options.allowed_uris().to_vec(),
             home_dir: options.home_dir().map(<[u8]>::to_vec),
             current_system: options.current_system().map(<[u8]>::to_vec),
             current_time: options.current_time(),
@@ -33,7 +35,7 @@ impl ForceCacheOptionsIdentity {
     }
 
     fn update_cache_identity(&self, hasher: &mut blake3::Hasher) -> Option<()> {
-        hasher.update(b"force-cache-options-v2");
+        hasher.update(b"force-cache-options-v3");
         hasher.update(b"store-dir");
         TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
         hasher.update(b"search-path-base");
@@ -55,6 +57,20 @@ impl ForceCacheOptionsIdentity {
             None => {
                 hasher.update(b"no-corepkgs-path");
             }
+        }
+        hasher.update(b"allowed-paths");
+        let allowed_paths_len = u64::try_from(self.allowed_paths.len()).ok()?;
+        hasher.update(&allowed_paths_len.to_le_bytes());
+        for path in &self.allowed_paths {
+            hasher.update(b"allowed-path");
+            TreeWalk::update_cache_identity_chunk(hasher, path)?;
+        }
+        hasher.update(b"allowed-uris");
+        let allowed_uris_len = u64::try_from(self.allowed_uris.len()).ok()?;
+        hasher.update(&allowed_uris_len.to_le_bytes());
+        for uri in &self.allowed_uris {
+            hasher.update(b"allowed-uri");
+            TreeWalk::update_cache_identity_chunk(hasher, uri)?;
         }
         match &self.home_dir {
             Some(home_dir) => {
