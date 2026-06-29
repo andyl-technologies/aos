@@ -12,7 +12,8 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    FaultTag, MarkerId, MembershipFault, NodeId, Predicate, SimDuration, TimerId, VirtualTime,
+    FaultTag, FramePredicate, IoEventKind, LinkId, MarkerId, MembershipFault, NodeId,
+    NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
 };
 
 pub use crate::model::EventId;
@@ -23,6 +24,117 @@ pub use crate::model::EventId;
 /// assertion [`crate::model::Property`] layer is the same value accepted by an
 /// event trigger.
 pub type Condition = Predicate;
+
+/// One black-box observable event visible to condition evaluation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ObservableEvent {
+    at: VirtualTime,
+    payload: ObservableEventPayload,
+}
+
+impl ObservableEvent {
+    /// Builds a delivered-network-frame observation.
+    #[must_use]
+    pub fn network_delivered(
+        at: VirtualTime,
+        link: Option<LinkId>,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::NetworkDelivered {
+                link,
+                payload: payload.into(),
+            },
+        }
+    }
+
+    /// Builds a console-output observation.
+    #[must_use]
+    pub fn console_output(at: VirtualTime, node: NodeId, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::ConsoleOutput {
+                node,
+                bytes: bytes.into(),
+            },
+        }
+    }
+
+    /// Builds a deterministic I/O completion observation.
+    #[must_use]
+    pub fn io_completion(
+        at: VirtualTime,
+        node: NodeId,
+        kind: IoEventKind,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::IoCompletion {
+                node,
+                kind,
+                payload: payload.into(),
+            },
+        }
+    }
+
+    /// Builds a node-lifecycle observation.
+    #[must_use]
+    pub fn node_state(at: VirtualTime, node: NodeId, state: NodeLifecycle) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::NodeState { node, state },
+        }
+    }
+
+    /// Returns the deterministic virtual-time coordinate of the observation.
+    #[must_use]
+    pub fn at(&self) -> VirtualTime {
+        self.at
+    }
+
+    /// Returns the typed observable payload.
+    #[must_use]
+    pub fn payload(&self) -> &ObservableEventPayload {
+        &self.payload
+    }
+}
+
+/// Typed black-box observable event payloads used by condition leaves.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ObservableEventPayload {
+    /// A network frame was delivered at RESOLVE.
+    NetworkDelivered {
+        /// Link where the frame was delivered, when known.
+        link: Option<LinkId>,
+        /// Delivered frame payload bytes.
+        payload: Vec<u8>,
+    },
+    /// Console or serial bytes were captured for a node.
+    ConsoleOutput {
+        /// Node whose console stream produced the bytes.
+        node: NodeId,
+        /// Captured console bytes.
+        bytes: Vec<u8>,
+    },
+    /// A deterministic device I/O completion became visible.
+    IoCompletion {
+        /// Node that observes the completion.
+        node: NodeId,
+        /// Completion class.
+        kind: IoEventKind,
+        /// Completion payload bytes.
+        payload: Vec<u8>,
+    },
+    /// A node entered a lifecycle state.
+    NodeState {
+        /// Node whose lifecycle changed.
+        node: NodeId,
+        /// Lifecycle state entered by the node.
+        state: NodeLifecycle,
+    },
+}
 
 /// One leaf predicate request made by the shared condition evaluator.
 ///
@@ -80,6 +192,11 @@ pub trait ConditionEvaluator {
         let _ = timer;
         None
     }
+
+    /// Returns observable event-log entries visible at the evaluation point.
+    fn observable_events(&self) -> &[ObservableEvent] {
+        &[]
+    }
 }
 
 /// Evaluates a condition through the shared assertion/trigger evaluator.
@@ -102,6 +219,27 @@ where
         Condition::Timer { name } => evaluator
             .timer_fire_time(name)
             .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at()),
+        Condition::NetworkMatch { link, predicate } => observable_event_matches(
+            evaluator.evaluation_point().at(),
+            evaluator.observable_events(),
+            |event| network_event_matches(event, link.as_ref(), predicate),
+        ),
+        Condition::ConsoleMatch { node, regex } => console_stream_matches(
+            evaluator.evaluation_point().at(),
+            evaluator.observable_events(),
+            node,
+            regex,
+        ),
+        Condition::IoPattern { node, kind } => observable_event_matches(
+            evaluator.evaluation_point().at(),
+            evaluator.observable_events(),
+            |event| io_event_matches(event, node, *kind),
+        ),
+        Condition::NodeState { node, state } => observable_event_matches(
+            evaluator.evaluation_point().at(),
+            evaluator.observable_events(),
+            |event| node_state_event_matches(event, node, *state),
+        ),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -120,6 +258,97 @@ where
     }
 }
 
+fn observable_event_matches(
+    at: VirtualTime,
+    events: &[ObservableEvent],
+    matches_payload: impl Fn(&ObservableEventPayload) -> bool,
+) -> bool {
+    events
+        .iter()
+        .any(|event| event.at() == at && matches_payload(event.payload()))
+}
+
+fn network_event_matches(
+    event: &ObservableEventPayload,
+    expected_link: Option<&LinkId>,
+    predicate: &FramePredicate,
+) -> bool {
+    let ObservableEventPayload::NetworkDelivered { link, payload } = event else {
+        return false;
+    };
+    let link_matches = expected_link.is_none_or(|expected| link.as_ref() == Some(expected));
+    link_matches && frame_predicate_matches(predicate, payload)
+}
+
+fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]) -> bool {
+    match predicate {
+        FramePredicate::Any => true,
+        FramePredicate::Exact(expected) => payload == expected,
+        FramePredicate::Contains(needle) => {
+            needle.is_empty()
+                || payload
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_slice())
+        }
+        FramePredicate::Prefix(prefix) => payload.starts_with(prefix),
+    }
+}
+
+fn console_stream_matches(
+    at: VirtualTime,
+    events: &[ObservableEvent],
+    expected_node: &NodeId,
+    regex: &RegexProgram,
+) -> bool {
+    let Ok(program) = regex::bytes::Regex::new(&regex.pattern) else {
+        return false;
+    };
+    let mut stream = Vec::new();
+    let mut current_start = None;
+    for event in events {
+        let ObservableEventPayload::ConsoleOutput { node, bytes } = event.payload() else {
+            continue;
+        };
+        if node != expected_node {
+            continue;
+        }
+        if event.at() < at {
+            stream.extend_from_slice(bytes);
+        } else if event.at() == at {
+            current_start.get_or_insert(stream.len());
+            stream.extend_from_slice(bytes);
+        }
+    }
+    let Some(current_start) = current_start else {
+        return false;
+    };
+    program
+        .find_iter(&stream)
+        .any(|matched| matched.end() > current_start)
+}
+
+fn io_event_matches(
+    event: &ObservableEventPayload,
+    expected_node: &NodeId,
+    expected_kind: IoEventKind,
+) -> bool {
+    let ObservableEventPayload::IoCompletion { node, kind, .. } = event else {
+        return false;
+    };
+    node == expected_node && (expected_kind == IoEventKind::Any || expected_kind == *kind)
+}
+
+fn node_state_event_matches(
+    event: &ObservableEventPayload,
+    expected_node: &NodeId,
+    expected_state: NodeLifecycle,
+) -> bool {
+    let ObservableEventPayload::NodeState { node, state } = event else {
+        return false;
+    };
+    node == expected_node && *state == expected_state
+}
+
 /// Condition evaluator backed by a leaf oracle.
 #[derive(Clone, Debug)]
 pub struct ConditionEvaluation<O> {
@@ -127,6 +356,7 @@ pub struct ConditionEvaluation<O> {
     oracle: O,
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
+    observable_events: Vec<ObservableEvent>,
 }
 
 impl<O> ConditionEvaluation<O> {
@@ -138,6 +368,7 @@ impl<O> ConditionEvaluation<O> {
             oracle,
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
+            observable_events: Vec::new(),
         }
     }
 
@@ -158,6 +389,13 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn with_timer_fires(mut self, timer_fires: BTreeMap<TimerId, VirtualTime>) -> Self {
         self.timer_fires = timer_fires;
+        self
+    }
+
+    /// Adds black-box observable event-log entries visible to observable leaves.
+    #[must_use]
+    pub fn with_observable_events(mut self, observable_events: Vec<ObservableEvent>) -> Self {
+        self.observable_events = observable_events;
         self
     }
 
@@ -188,6 +426,10 @@ where
 
     fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
         self.timer_fires.get(timer).copied()
+    }
+
+    fn observable_events(&self) -> &[ObservableEvent] {
+        &self.observable_events
     }
 }
 
@@ -538,6 +780,10 @@ where
     fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
         self.inner.timer_fire_time(timer)
     }
+
+    fn observable_events(&self) -> &[ObservableEvent] {
+        self.inner.observable_events()
+    }
 }
 
 /// Event graph construction errors.
@@ -566,6 +812,15 @@ pub enum EventGraphError {
         event: EventId,
         /// Referenced timer id.
         timer: TimerId,
+    },
+    /// A console-match predicate contains an invalid regex program.
+    InvalidRegex {
+        /// Event containing the invalid regex.
+        event: EventId,
+        /// Regex pattern that failed validation.
+        pattern: String,
+        /// Stable validation failure text from the regex compiler.
+        reason: String,
     },
 }
 
@@ -598,6 +853,13 @@ impl fmt::Display for EventGraphError {
                     formatter,
                     "event `{}` references unknown timer `{}`",
                     event.name, timer.name
+                )
+            }
+            Self::InvalidRegex { event, reason, .. } => {
+                write!(
+                    formatter,
+                    "event `{}` has invalid regex: {reason}",
+                    event.name
                 )
             }
         }
@@ -673,6 +935,22 @@ fn validate_condition_references(
         Condition::Once { predicate } | Condition::Not { predicate } => {
             validate_condition_references(event, predicate, event_ids, timer_names)
         }
-        Condition::At { .. } | Condition::Named { .. } | Condition::GuestMarker { .. } => Ok(()),
+        Condition::ConsoleMatch { regex, .. } => validate_condition_regex(event, regex),
+        Condition::At { .. }
+        | Condition::NetworkMatch { .. }
+        | Condition::IoPattern { .. }
+        | Condition::NodeState { .. }
+        | Condition::Named { .. }
+        | Condition::GuestMarker { .. } => Ok(()),
     }
+}
+
+fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), EventGraphError> {
+    regex::bytes::Regex::new(&regex.pattern)
+        .map(|_| ())
+        .map_err(|source| EventGraphError::InvalidRegex {
+            event: event.id.clone(),
+            pattern: regex.pattern.clone(),
+            reason: source.to_string(),
+        })
 }

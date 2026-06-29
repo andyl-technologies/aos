@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "later event log leaves remain open";
-        needle = "- [ ] **T-TRIG-4**";
+        label = "later coverage leaf remains open";
+        needle = "- [ ] **T-TRIG-5**";
       }
       {
         label = "full timer action semantics remain open";
