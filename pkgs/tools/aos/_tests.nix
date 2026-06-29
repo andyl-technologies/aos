@@ -370,7 +370,7 @@ in {
           cat "$work/apm-invalid-registry-config.out"
           exit 1
         fi
-        grep -q "invalid registry name" \
+        grep -q "the name must match the file stem" \
           "$work/apm-invalid-registry-config.out"
 
         if run_clean ${self}/bin/apr create ../escaped-create \
