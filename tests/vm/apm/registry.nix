@@ -2537,8 +2537,8 @@ in {
           and .cache_pointer_updated == true
           and (.full_pack | startswith("pack-") and endswith(".pack"))
           and .deltas == []
-          and .cache == null
-          and .uploaded_files == null' \
+          and (.cache.paths >= 3)
+          and (.uploaded_files > 0)' \
         /tmp/release.json >/dev/null || {
         cat /tmp/release.json
         fail "apr --json release reports signed maintainer release"
@@ -2582,7 +2582,7 @@ in {
           and .clean == true
           and (.changed_files | length == 0)
           and (.base | length > 0)
-          and .output == ""' \
+          and (.output | contains("0 files changed"))' \
         /tmp/maint-remote-diff.json >/dev/null || {
         cat /tmp/maint-remote-diff.json
         fail "apr --json diff --remote is clean after pushing branch"
