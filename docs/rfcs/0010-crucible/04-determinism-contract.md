@@ -730,7 +730,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   determinism evidence holds on an unmodified generic AOS Linux fixture with
   white-box disabled, no in-guest Crucible content is required, and optional
   white-box behavior is consumed only through a separate host/plugin contract,
-  not live any-guest boot fingerprint evidence. — exercises [DET-15], [DET-17];
+  not live any-guest boot fingerprint evidence. — satisfies [DET-15], [DET-17];
   spec §4.5.
   Completed by `checks.crucible.phase2.gates.anyGuest`: the gate boots a generic
   AOS Linux kernel/initramfs fixture under diskless and guest-visible CoW-block

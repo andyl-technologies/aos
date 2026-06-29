@@ -377,21 +377,24 @@ partition/loss may drop the frame, latency/jitter/reorder/bandwidth shift
 The fault perturbs the frame's modeled delivery icount and/or payload; it never
 touches the host transport ([FAULT-1], [IO-20]).
 
-Because a link's *effective latency* feeds the scheduler's conservative lookahead
-([SCHED-6]), a latency/jitter fault that **raises** a link's latency only widens
-lookahead (safe — more parallelism), while a fault that would **lower** it below
-the minimum floor MUST be clamped to the floor ([IO-33]), and any effective
-latency change MUST trigger the scheduler's lookahead/horizon recompute at the
-quantum boundary ([SCHED-37]), never mid-RUN.
+Because a link's scalar conservative minimum latency feeds the scheduler's
+lookahead ([SCHED-6]), a fixed latency fault that **raises** that bound only
+widens lookahead (safe — more parallelism), while a fault that would **lower** it
+below the minimum floor MUST be clamped to the floor ([IO-33]), and any change to
+that bound MUST trigger the scheduler's lookahead/horizon recompute at the
+quantum boundary ([SCHED-37]), never mid-RUN. Jitter, reorder, and bandwidth
+still shift individual frame deliveries, but their minimum added delay is zero
+and therefore does not change the scheduler's lookahead edge.
 
 - **[FAULT-16]** Network faults (partition, loss, reorder, duplicate, corruption,
   bandwidth limit, latency bump) MUST be applied on the network-link sub-node at
   RESOLVE, perturbing the frame's modeled `delivery_icount` and/or payload per the
   effective fault table for the affected directed edge ([SCHED-29], [IO-20]). A
-  network fault MUST NOT touch the host transport. A latency-raising fault MUST be
-  honored as-is (it widens lookahead); a latency-lowering fault MUST be clamped to
-  the minimum link-latency floor ([IO-33]); and any effective-latency change MUST
-  trigger the scheduler's lookahead recompute at the quantum boundary ([SCHED-37]).
+  network fault MUST NOT touch the host transport. A fault that raises the
+  conservative minimum latency bound MUST be honored as-is (it widens lookahead);
+  a fault that lowers that bound MUST be clamped to the minimum link-latency
+  floor ([IO-33]); and any change to that bound MUST trigger the scheduler's
+  lookahead recompute at the quantum boundary ([SCHED-37]).
   *Gate:* `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §17.4.1;
   cross-ref 08 §8.7, §8.11, 15 §15.4.
 
@@ -938,9 +941,9 @@ Seed, Schedule)` exactly like a fault-free run — which is what
 - [ ] **T-FAULT-6** Apply network faults on the link sub-node at RESOLVE
   (partition/loss drop; latency/jitter/reorder/bandwidth shift delivery_icount;
   duplicate emits a second frame; corruption mutates payload), honor
-  latency-raising as-is, clamp latency-lowering to the floor, and trigger the
-  lookahead recompute on effective-latency change. — satisfies [FAULT-16],
-  [FAULT-17]; spec §17.4.1; cross-ref 08 §8.11, 15 §15.4.
+  conservative-latency-bound raising as-is, clamp bound-lowering to the floor,
+  and trigger the lookahead recompute on conservative latency-bound change. —
+  satisfies [FAULT-16], [FAULT-17]; spec §17.4.1; cross-ref 08 §8.11, 15 §15.4.
 - [ ] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
   without altering the retired instruction stream; clock-skew offsets only the
   perceived time-of-day source, never virtual time/icount. — satisfies
