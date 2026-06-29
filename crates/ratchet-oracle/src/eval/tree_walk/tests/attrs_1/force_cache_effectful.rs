@@ -171,7 +171,7 @@ fn find_file_forced_inline_thunks_revalidate_candidate_edges_before_hits() {
         0,
         "stable findFile payloads should hit after candidate revalidation"
     );
-    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_hits(), 1);
     assert_eq!(
         second.impure_input_trace(),
         expected_trace.as_slice(),
@@ -872,7 +872,7 @@ fn find_file_first_class_nix_path_hits_from_persistent_cache_after_revalidation(
         second.stats().thunks_forced() > 0,
         "fresh-runtime first-class child hits should not imply enclosing whole-thunk hits"
     );
-    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().cache_hits(), 1);
     assert_eq!(second.stats().force_cache_misses(), 0);
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
     assert_eq!(
@@ -1444,7 +1444,7 @@ fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_
         0,
         "stable builtins.nixPath-backed findFile payloads should hit after candidate revalidation"
     );
-    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_hits(), 1);
     assert_eq!(second.stats().cache_misses(), 0);
     assert_eq!(
         second.impure_input_trace(),
@@ -1687,6 +1687,156 @@ fn search_path_literal_thunks_revalidate_candidate_edges_before_hits_and_miss_on
 }
 
 #[test]
+fn composed_search_path_literal_thunks_hit_and_miss_on_option_change() {
+    let root = unique_temp_dir("force-cache-composed-search-path-literal");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
+    fs::create_dir_all(&first_candidate).expect("first candidate exists");
+    fs::create_dir_all(&second_candidate).expect("second candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
+    let source = "{ a = <pkg/subdir> == <pkg/subdir>; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("search path entry configures");
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut evaluator, &ir, a);
+    let first_fingerprint = ImpureInputFingerprint::path_exists_with_mode(
+        &path_bytes(&first_candidate),
+        ImpureInputMode::FindFileCandidate,
+        true,
+    )
+    .expect("first search path candidate fingerprint builds");
+    let expected_trace = vec![first_fingerprint.clone(), first_fingerprint];
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("matching search path entry configures");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable composed search-path payloads should hit after candidate revalidation"
+    );
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "cache-hit revalidation must replay each composed search-path candidate edge"
+    );
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&second_root))
+        .expect("changed search path entry configures");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced_changed = force_attr_a(&mut changed, &ir, a);
+    let changed_fingerprint = ImpureInputFingerprint::path_exists_with_mode(
+        &path_bytes(&second_candidate),
+        ImpureInputMode::FindFileCandidate,
+        true,
+    )
+    .expect("changed search path candidate fingerprint builds");
+    let changed_trace = vec![changed_fingerprint.clone(), changed_fingerprint];
+
+    assert_eq!(forced_changed.as_bool(), Ok(true));
+    assert_eq!(
+        changed.stats().force_cache_hits(),
+        0,
+        "changed nixPath option salt must not reuse the previous composed search-path payload"
+    );
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn composed_search_path_literal_equality_records_exact_force_cache_graph_edges() {
+    let root = unique_temp_dir("force-cache-composed-search-path-exact-edges");
+    let hit_root = root.join("hit");
+    let left_candidate = hit_root.join("left");
+    let right_candidate = hit_root.join("right");
+    fs::create_dir_all(&left_candidate).expect("left candidate exists");
+    fs::create_dir_all(&right_candidate).expect("right candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_root = root.join("hit");
+    let left_candidate = hit_root.join("left");
+    let right_candidate = hit_root.join("right");
+    let source = "{ a = <pkg/left> == <pkg/right>; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("search path entry configures");
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&left_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("left search path candidate fingerprint builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&right_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("right search path candidate fingerprint builds"),
+    ];
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+
+    let (forced, owner_key) = force_attr_a_with_impure_observation_key(&mut evaluator, &ir, a);
+
+    assert_eq!(forced.as_bool(), Ok(false));
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
+    assert_force_cache_impure_edges_match_trace(&cache, owner_key, &expected_trace);
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn search_path_literal_thunks_hit_from_persistent_cache_after_revalidation() {
     let persist_root = unique_temp_dir("force-cache-search-path-literal-persist");
     let root = unique_temp_dir("force-cache-search-path-literal-persistent-hit");
@@ -1751,6 +1901,75 @@ fn search_path_literal_thunks_hit_from_persistent_cache_after_revalidation() {
         "fresh runtimes should rehydrate stable search-path literal payloads from disk"
     );
     assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn composed_search_path_literal_thunks_hit_from_persistent_cache() {
+    let persist_root = unique_temp_dir("force-cache-composed-search-path-literal-persist");
+    let root = unique_temp_dir("force-cache-composed-search-path-literal-persistent-hit");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    let source = "{ a = <pkg/subdir> == <pkg/subdir>; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let hit_fingerprint = ImpureInputFingerprint::path_exists_with_mode(
+        &path_bytes(&hit_candidate),
+        ImpureInputMode::FindFileCandidate,
+        true,
+    )
+    .expect("search path candidate fingerprint builds");
+    let expected_trace = vec![hit_fingerprint.clone(), hit_fingerprint];
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("search path entry configures");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("composed search-path literal force succeeds");
+    assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(first.impure_input_trace(), expected_trace.as_slice());
+    drop(first);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options.set_persist_cache_root(&persist_root);
+    second_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("matching search path entry configures");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "fresh runtimes should rehydrate stable composed search-path payloads from disk"
+    );
+    assert_eq!(second.stats().force_cache_hits(), 1);
     assert_eq!(second.stats().cache_misses(), 0);
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
 
@@ -1953,12 +2172,12 @@ fn search_path_literal_with_captured_lexical_nix_path_uses_free_variable_hashes(
         path_bytes(&second_candidate)
     );
     assert_eq!(
-        evaluator.stats().cache_hits(),
+        evaluator.stats().force_cache_hits(),
         0,
         "different captured lexical search-path values must not false-hit"
     );
 
-    let hits_before = evaluator.stats().cache_hits();
+    let hits_before = evaluator.stats().force_cache_hits();
     let third = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), elements[2])
         .expect("third captured lexical search-path force succeeds");
@@ -1969,6 +2188,106 @@ fn search_path_literal_with_captured_lexical_nix_path_uses_free_variable_hashes(
     assert!(
         evaluator.stats().cache_hits() > hits_before,
         "matching captured lexical search-path values should reuse the prior payload"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn composed_search_path_literal_with_captured_lexical_nix_path_uses_free_variable_hashes() {
+    let root = unique_temp_dir("force-cache-composed-search-path-lexical-captured");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
+    fs::create_dir_all(&first_candidate).expect("first candidate exists");
+    fs::create_dir_all(&second_candidate).expect("second candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let first_root = root.join("first");
+    let first_candidate = first_root.join("subdir");
+    let second_root = root.join("second");
+    let second_candidate = second_root.join("subdir");
+    let source = format!(
+        "let f = root:
+           let __nixPath = [ {{ prefix = \"pkg\"; path = root; }} ];
+           in {{ a = <pkg/subdir> == <pkg/subdir>; }};
+         in [ (f {}).a (f {}).a (f {}).a ]",
+        nix_string_literal(&path_source(&first_root)),
+        nix_string_literal(&path_source(&second_root)),
+        nix_string_literal(&path_source(&first_root)),
+    );
+    let ir = lower(&source);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source.as_str(),
+        cache,
+    );
+    let root_value = evaluator.eval_root().expect("list evaluates");
+    let elements = {
+        let list = evaluator
+            .heap()
+            .get_list(root_value)
+            .expect("root list is heap-owned");
+        [
+            list.get(0).expect("first result exists"),
+            list.get(1).expect("second result exists"),
+            list.get(2).expect("third result exists"),
+        ]
+    };
+
+    let first = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[0])
+        .expect("first captured lexical search-path equality force succeeds");
+    assert_eq!(first.as_bool(), Ok(true));
+    assert_eq!(
+        evaluator.impure_input_trace(),
+        vec![
+            ImpureInputFingerprint::path_exists_with_mode(
+                &path_bytes(&first_candidate),
+                ImpureInputMode::FindFileCandidate,
+                true,
+            )
+            .expect("first candidate fingerprint builds"),
+            ImpureInputFingerprint::path_exists_with_mode(
+                &path_bytes(&first_candidate),
+                ImpureInputMode::FindFileCandidate,
+                true,
+            )
+            .expect("first repeated candidate fingerprint builds"),
+        ]
+        .as_slice()
+    );
+    let second = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[1])
+        .expect("second captured lexical search-path equality force succeeds");
+    assert_eq!(second.as_bool(), Ok(true));
+    assert_eq!(
+        evaluator.stats().force_cache_hits(),
+        0,
+        "different captured lexical search-path values must not false-hit"
+    );
+
+    let hits_before = evaluator.stats().force_cache_hits();
+    let third = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), elements[2])
+        .expect("third captured lexical search-path equality force succeeds");
+    assert_eq!(third.as_bool(), Ok(true));
+    assert!(
+        evaluator.stats().force_cache_hits() > hits_before,
+        "matching captured lexical search-path values should reuse the prior composed payload"
+    );
+    let second_fingerprint = ImpureInputFingerprint::path_exists_with_mode(
+        &path_bytes(&second_candidate),
+        ImpureInputMode::FindFileCandidate,
+        true,
+    )
+    .expect("second candidate fingerprint builds");
+    assert!(
+        evaluator.impure_input_trace().contains(&second_fingerprint),
+        "changed captured lexical search-path value should evaluate against the second root"
     );
 
     fs::remove_dir_all(root).expect("temp tree removed");
@@ -2059,6 +2378,97 @@ fn search_path_literal_with_unhashable_lexical_nix_path_waits_for_free_variable_
     assert!(
         second.stats().thunks_forced() > 0,
         "lexical search-path values with computed payloads remain outside whole-thunk hit coverage"
+    );
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn composed_search_path_literal_with_unhashable_lexical_nix_path_waits_for_free_variable_payload() {
+    let root = unique_temp_dir("force-cache-composed-search-path-lexical-unhashable");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    let path_file = root.join("path.txt");
+    fs::write(&path_file, path_bytes(&hit_root)).expect("path source exists");
+    let source = r#"let __nixPath = [
+        { prefix = "pkg"; path = builtins.readFile ./path.txt; }
+    ]; in { a = <pkg/subdir> == <pkg/subdir>; }"#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let expected_trace = vec![
+        ImpureInputFingerprint::read_file(&path_bytes(&path_file), &path_bytes(&hit_root))
+            .expect("readFile fingerprint builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&hit_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("lexical search path candidate fingerprint builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&hit_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("lexical repeated search path candidate fingerprint builds"),
+    ];
+
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options.clone(),
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let root_value = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root_value)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "computed lexical search-path payloads must not build a composed force-cache subject"
+    );
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
+
+    assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        options,
+        "default.nix",
+        source,
+        cache,
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert!(
+        second.stats().thunks_forced() > 0,
+        "composed lexical search-path values with computed payloads remain outside whole-thunk hit coverage"
     );
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
 

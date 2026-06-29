@@ -3367,7 +3367,10 @@ alone (`M-1`/`Q-A`).
       with the same miss-then-hit `FindFileCandidate` leaves; and
       `find_file_first_class_explicit_list_records_exact_force_cache_graph_edges`
       covers the admitted first-class explicit-list child-call key with the same
-      miss-then-hit leaves. They require the
+      miss-then-hit leaves; and
+      `composed_search_path_literal_equality_records_exact_force_cache_graph_edges`
+      covers a composed `<...> == <...>` thunk with distinct
+      `FindFileCandidate` leaves. They require the
       evaluator trace to match the expected typed fingerprint(s) and the enabled
       runtime graph to contain exactly one impure-edge owner, which must be the
       node for that thunk's or admitted child call's force-cache
@@ -3376,9 +3379,9 @@ alone (`M-1`/`Q-A`).
       on the leaves. This is a focused force-cache edge harness for the
       currently admitted ordinary filesystem/import/direct explicit-list
       `findFile`/first-class `findFile builtins.nixPath`/first-class
-      explicit-list `findFile` subset; it does not cover broader
-      composed multi-input traces, search-path allowed-path/fetch interactions,
-      broad persistent graph replay, or `currentTime` taint propagation
+      explicit-list `findFile`/cacheable search-path literal subset; it does
+      not cover broader search-path fetch interactions, broad persistent graph
+      replay, or `currentTime` taint propagation
       (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
@@ -3449,15 +3452,33 @@ alone (`M-1`/`Q-A`).
       side records cold under the new v3 salt. Focused option-identity tests
       prove allowed path and URI changes allocate distinct demand nodes, and
       `search_path_literal_thunks_do_not_replay_across_allowed_path_policy`
-      proves a restricted-mode direct `<...>` payload rehydrates in a
-      same-policy fresh runtime but is not replayed when the same search path is
-      denied. First-class `findFile builtins.nixPath` and closed/replayable
+      and
+      `composed_search_path_literal_thunks_do_not_replay_across_allowed_path_policy`
+      prove restricted-mode direct and composed `<...>` payloads rehydrate in a
+      same-policy fresh runtime but are not replayed when the same search path
+      is denied. First-class `findFile builtins.nixPath` and closed/replayable
       explicit-list `findFile` child-call policy canaries now prove same-policy
       fresh-runtime replay and denied-policy miss/error behavior for those
-      admitted child-call slices. This is scoped to force-cache identity, direct
-      search-path policy replay, and the admitted first-class `findFile`
+      admitted child-call slices. This is scoped to force-cache identity,
+      direct/composed search-path policy replay, and the admitted first-class `findFile`
       child-call slices, not fetch interactions or the persistent demand graph
       (`R-10`/`S-14`).
+- [x] Current precursor: composed search-path literal force-cache admission.
+      Source-backed forced thunks whose body contains ambient `<...>` literals
+      or lexical `__nixPath` literals reached through hashable local/upvalue
+      captures now admit those `SearchPath` nodes under otherwise force-cache
+      safe composed expressions. The focused equality canaries prove
+      `<pkg/subdir> == <pkg/subdir>` hits in memory and from persistent cache
+      after replaying both `FindFileCandidate` probes, misses when configured
+      `nix_path` changes, records exact graph impure-input edges for distinct
+      composed candidates, does not replay across restricted allowed-path
+      policy changes, reuses matching captured lexical search-path values, and
+      leaves computed/unhashable lexical search-path payloads unadmitted. This
+      is scoped to direct/composed cacheable-origin search-path literals, not
+      arbitrary `SearchPath` payload materialization, first-class/curried
+      `findFile` outside the admitted child-call slices, fetch interactions,
+      broad persistent graph replay, or the full search-path edge-exactness
+      harness (`R-10`/`S-14`).
 - [x] Current precursor: first-class `findFile builtins.nixPath` child-call
       admission. Saturated first-class `findFile` calls whose first argument is
       the suspended synthetic `builtins.nixPath` attr now hash that argument

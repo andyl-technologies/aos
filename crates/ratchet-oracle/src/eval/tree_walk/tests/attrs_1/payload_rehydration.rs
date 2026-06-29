@@ -5,7 +5,7 @@ use super::*;
 mod context_paths;
 
 #[test]
-fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
+fn search_path_forced_inline_thunks_rehydrate_after_impure_input_edges() {
     let root = unique_temp_dir("force-cache-search-path");
     let target = root.join("target");
     fs::create_dir_all(&target).expect("target dir exists");
@@ -53,11 +53,41 @@ fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
 
     assert_eq!(forced.as_bool(), Ok(true));
     assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
-    let runtime = cache.lock().expect("cache lock is valid");
-    assert!(
-        runtime.cache().expect("cache is enabled").is_empty(),
-        "search-path literals need search-path/input keys before memoization"
+    {
+        let runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache().expect("cache is enabled");
+        assert!(
+            cache.len() >= 2,
+            "search-path literal equality should allocate an expression node and candidate leaf"
+        );
+        assert_eq!(
+            cache_nodes_with_dependencies(cache),
+            1,
+            "the expression node must own the observed search-path candidate leaf"
+        );
+    }
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&target))
+        .expect("matching search-path entry is valid");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "expr.nix",
+        source,
+        cache,
     );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "search-path literal equality should rehydrate after candidate revalidation"
+    );
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }

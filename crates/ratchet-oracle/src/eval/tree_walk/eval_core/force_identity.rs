@@ -652,6 +652,9 @@ impl TreeWalk {
         if node.kind == IrKind::BuiltinAttr {
             return Self::builtin_attr_is_force_cache_lookup_safe(ir, node);
         }
+        if node.kind == IrKind::SearchPath {
+            return Self::search_path_has_cacheable_origin(ir, node);
+        }
         if node.effect.is_speculable() {
             return Self::node_kind_is_force_cache_safe(node.kind);
         }
@@ -681,6 +684,9 @@ impl TreeWalk {
     fn node_is_force_observation_safe(ir: &Ir, node: &IrNode) -> bool {
         if node.kind == IrKind::BuiltinAttr {
             return Self::builtin_attr_is_force_cache_observation_safe(ir, node);
+        }
+        if node.kind == IrKind::SearchPath {
+            return Self::search_path_has_cacheable_origin(ir, node);
         }
         if node.effect.is_speculable() {
             return Self::node_kind_is_force_observation_safe(node.kind);
