@@ -14,6 +14,11 @@ use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
+use crate::device::{
+    NetworkFaultApplication, NetworkLinkDirection, apply_combined_network_faults_to_scheduler,
+    block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
+    ninep_faults_from_combined_ninep,
+};
 use crate::node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
 };
@@ -22,13 +27,14 @@ use crate::trigger::{
     EventFirings, EventGraph, EventGraphState, LogLevel, ObservableEvent, ObservableEventPayload,
 };
 use crate::{
-    AssertionId, BackendError, BackendInput, CombinedNodeFaults, Configuration, ContentHash,
-    Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
-    EventSequenceState, FaultId, FaultRateBasisPoints, Icount, MembershipFault, NodeCounter,
-    NodeId, NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy,
-    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldLookaheadEdge, WorldStaticTopology, step,
+    AssertionId, BackendError, BackendInput, CombinedFaults, CombinedNetworkFaults,
+    CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, Decision,
+    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
+    EventSequenceState, Fault, FaultId, FaultRateBasisPoints, Icount, LinkId, MembershipFault,
+    NodeCounter, NodeId, NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind,
+    RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
+    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -273,6 +279,8 @@ pub struct TriggerActionState {
     pub applications: Vec<TriggerActionApplication>,
     /// Active membership faults keyed by their stable trigger tag.
     pub active_faults: BTreeMap<crate::FaultTag, MembershipFault>,
+    /// Active full-taxonomy faults keyed by their stable trigger tag.
+    pub active_taxonomy_faults: BTreeMap<crate::FaultTag, Fault>,
     /// Trigger timers armed by name with their absolute virtual-time fire point.
     pub armed_timers: BTreeMap<TimerId, VirtualTime>,
     /// Trigger-scheduled node lifecycle overrides keyed by declared node.
@@ -290,6 +298,17 @@ pub struct TriggerActionState {
 }
 
 impl TriggerActionState {
+    /// Combines every active full-taxonomy fault currently owned by triggers.
+    #[must_use]
+    pub fn combined_faults(&self) -> CombinedFaults {
+        let faults = self
+            .active_taxonomy_faults
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        CombinedFaults::from_faults(&faults)
+    }
+
     /// Composes trigger pass/fail state with the final assertion-layer verdict.
     ///
     /// Assertion failures and explicit trigger failures both fail the run. An
@@ -3753,6 +3772,10 @@ fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> S
             lines.push(format!("{prefix}.kind=not-yet-joined"));
             lines.push(trigger_node_material(&format!("{prefix}.node"), node));
         }
+        MembershipFault::Taxonomy { fault } => {
+            lines.push(format!("{prefix}.kind=taxonomy"));
+            lines.push(fault.canonical_material());
+        }
     }
     lines.join("\n")
 }
@@ -3802,6 +3825,49 @@ fn trigger_log_level_label(level: LogLevel) -> &'static str {
         LogLevel::Warn => "warn",
         LogLevel::Error => "error",
     }
+}
+
+fn network_partitions(
+    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
+) -> BTreeMap<LinkId, CombinedPartitionFault> {
+    network
+        .iter()
+        .filter_map(|(link, faults)| faults.partition.map(|partition| (link.clone(), partition)))
+        .collect()
+}
+
+fn world_edge_removed_by_network_faults(
+    edge: &WorldLookaheadEdge,
+    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
+) -> bool {
+    let link = scheduler_link_id_for_nodes(&edge.from, &edge.to);
+    let Some(partition) = network.get(&link).and_then(|faults| faults.partition) else {
+        return false;
+    };
+    if edge.from <= edge.to {
+        partition.endpoint_a_to_endpoint_b
+    } else {
+        partition.endpoint_b_to_endpoint_a
+    }
+}
+
+fn network_direction_is_partitioned(
+    direction: NetworkLinkDirection,
+    partition: &CombinedPartitionFault,
+) -> bool {
+    match direction {
+        NetworkLinkDirection::EndpointAToEndpointB => partition.endpoint_a_to_endpoint_b,
+        NetworkLinkDirection::EndpointBToEndpointA => partition.endpoint_b_to_endpoint_a,
+    }
+}
+
+fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> LinkId {
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
 fn apply_trigger_action(
@@ -3863,9 +3929,16 @@ fn apply_trigger_effect(
 ) -> Result<(), SchedulerError> {
     match &application.action {
         Action::InjectFault { tag, fault } => {
+            state.active_taxonomy_faults.remove(tag);
+            if let Some(fault) = fault.as_taxonomy_fault() {
+                state
+                    .active_taxonomy_faults
+                    .insert(tag.clone(), fault.clone());
+            }
             state.active_faults.insert(tag.clone(), fault.clone());
         }
         Action::HealFault { tag } => {
+            state.active_taxonomy_faults.remove(tag);
             state.active_faults.remove(tag);
         }
         Action::ArmTimer { name, after } => {
@@ -4952,6 +5025,7 @@ impl SingleScheduler {
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.validate_trigger_firings(firings)?;
         let mut entries = self.trigger_firing_entries(firings)?;
+        let previous_faults = self.trigger_actions.combined_faults();
         let mut trigger_actions = self.trigger_actions.clone();
         let mut action_entries = Vec::new();
         for firing in firings.iter() {
@@ -4965,6 +5039,13 @@ impl SingleScheduler {
                 &mut action_entries,
             )?;
         }
+        let next_faults = trigger_actions.combined_faults();
+        let fault_sequence = u64::try_from(trigger_actions.applications.len()).map_err(|_| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("trigger fault application sequence exceeds u64"),
+            }
+        })?;
+        self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
         for application in action_entries {
             let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
             entries.push(scheduler_event_log_entry(
@@ -4976,6 +5057,171 @@ impl SingleScheduler {
         let append = self.append_event_log_entries(entries)?;
         self.trigger_actions = trigger_actions;
         Ok(append)
+    }
+
+    /// Applies active trigger-owned network faults to one live directed link.
+    ///
+    /// Trigger action application owns the deterministic fault set and the
+    /// scheduler-owned topology effects, while the concrete [`crucible_device::NetLink`]
+    /// fault table is owned by the caller's network device. This bridge reads the
+    /// current trigger taxonomy projection for `link_id`, installs the resulting
+    /// [`crucible_device::LinkFaults`] on `link`, queues any partition topology
+    /// change through the scheduler, and consumes any link latency recompute signal
+    /// when the directed edge is still live.
+    ///
+    /// Pass `restored_edges` when this call follows a heal that may restore edges
+    /// previously removed by a partition. For ordinary activation or non-partition
+    /// updates, pass an empty vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the scheduler rejects a topology or latency
+    /// recompute queued by the applied network fault set.
+    pub fn apply_trigger_network_faults_to_link(
+        &mut self,
+        sequence: u64,
+        link_id: &LinkId,
+        endpoint_a: SchedulerNodeId,
+        endpoint_b: SchedulerNodeId,
+        link: &mut crucible_device::NetLink,
+        direction: NetworkLinkDirection,
+        restored_edges: Vec<SchedulerLookaheadEdge>,
+    ) -> Result<NetworkFaultApplication, SchedulerError> {
+        let combined = self.trigger_actions.combined_faults();
+        let faults = combined.network.get(link_id).cloned().unwrap_or_default();
+        let has_restored_edges = !restored_edges.is_empty();
+        let application = if has_restored_edges {
+            heal_combined_network_faults_to_scheduler(
+                sequence,
+                endpoint_a.clone(),
+                endpoint_b.clone(),
+                link,
+                &faults,
+                direction,
+                restored_edges,
+                self,
+            )?
+        } else {
+            apply_combined_network_faults_to_scheduler(
+                sequence,
+                endpoint_a.clone(),
+                endpoint_b.clone(),
+                link,
+                &faults,
+                direction,
+                self,
+            )?
+        };
+
+        let partitioned = faults
+            .partition
+            .as_ref()
+            .is_some_and(|partition| network_direction_is_partitioned(direction, partition));
+        if !partitioned && !has_restored_edges {
+            let _ = self.schedule_link_latency_recompute(sequence, endpoint_a, endpoint_b, link)?;
+        }
+
+        Ok(application)
+    }
+
+    fn apply_trigger_taxonomy_faults(
+        &mut self,
+        sequence: u64,
+        previous: &CombinedFaults,
+        next: &CombinedFaults,
+    ) -> Result<(), SchedulerError> {
+        if previous == next {
+            return Ok(());
+        }
+
+        self.apply_trigger_node_faults(sequence, previous, next)?;
+        self.apply_trigger_network_partitions(sequence, previous, next)?;
+        self.apply_trigger_device_faults(next)?;
+        Ok(())
+    }
+
+    fn apply_trigger_node_faults(
+        &mut self,
+        sequence: u64,
+        previous: &CombinedFaults,
+        next: &CombinedFaults,
+    ) -> Result<(), SchedulerError> {
+        let mut nodes = previous.node.keys().cloned().collect::<BTreeSet<_>>();
+        nodes.extend(next.node.keys().cloned());
+        for node in nodes {
+            let previous_faults = previous.node.get(&node).cloned().unwrap_or_default();
+            let next_faults = next.node.get(&node).cloned().unwrap_or_default();
+            let previous_crashed = previous_faults.is_crashed();
+            let next_crashed = next_faults.is_crashed();
+            if !previous_crashed && next_crashed {
+                if let Some(restart) = next_faults.crash_restart {
+                    self.apply_node_crash(sequence, &node, restart)?;
+                }
+            } else if previous_crashed && !next_crashed {
+                let _ = self.heal_node_crash(sequence, &node)?;
+            }
+            self.apply_combined_node_timing_faults(&node, &next_faults)?;
+        }
+        Ok(())
+    }
+
+    fn apply_trigger_network_partitions(
+        &mut self,
+        sequence: u64,
+        previous: &CombinedFaults,
+        next: &CombinedFaults,
+    ) -> Result<(), SchedulerError> {
+        if network_partitions(&previous.network) == network_partitions(&next.network) {
+            return Ok(());
+        }
+        let Some(static_topology) = &self.trigger_static_topology else {
+            return Ok(());
+        };
+        let trigger = if network_partitions(&next.network).is_empty() {
+            SchedulerTopologyChangeTrigger::Heal
+        } else {
+            SchedulerTopologyChangeTrigger::FaultActivation
+        };
+        let effective_edges = static_topology
+            .lookahead_graph
+            .iter()
+            .filter(|edge| !world_edge_removed_by_network_faults(edge, &next.network))
+            .map(SchedulerLookaheadEdge::from_world_edge)
+            .collect::<Vec<_>>();
+        self.schedule_topology_change(SchedulerTopologyChange::new(
+            sequence,
+            trigger,
+            effective_edges,
+        ))
+    }
+
+    fn apply_trigger_device_faults(&mut self, next: &CombinedFaults) -> Result<(), SchedulerError> {
+        for sub_nodes in self.device_sub_nodes.values_mut() {
+            for sub_node in sub_nodes {
+                match sub_node.sub_node().kind {
+                    SchedulingNodeKind::Disk => {
+                        let faults = next.block.get(sub_node.device_id());
+                        let table = faults.map_or_else(
+                            crucible_device::IoFaults::none,
+                            block_faults_from_combined_block,
+                        );
+                        sub_node.set_io_faults(table);
+                    }
+                    SchedulingNodeKind::NineP => {
+                        let faults = next.ninep.get(sub_node.device_id());
+                        let table = faults.map_or_else(
+                            crucible_device::IoFaults::none,
+                            ninep_faults_from_combined_ninep,
+                        );
+                        sub_node.set_io_faults(table);
+                    }
+                    SchedulingNodeKind::Vm
+                    | SchedulingNodeKind::Network
+                    | SchedulingNodeKind::ControlPlane => {}
+                }
+            }
+        }
+        self.refresh_device_horizons()
     }
 
     fn validate_trigger_firings(&self, firings: &EventFirings) -> Result<(), SchedulerError> {

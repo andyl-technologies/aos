@@ -14,8 +14,9 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::model::{
-    AssertionId, AssertionPhase, CodePoint, ContentHash, EventLogOffset, FaultTag, FramePredicate,
-    Icount, IoEventKind, LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
+    AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash, DeviceId, EventLogOffset,
+    Fault, FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
+    MarkerId, MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
     NodeLifecycle, Plan, PlanEntry, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
     WhiteBoxPolicy, World, WorldStaticTopology,
 };
@@ -106,6 +107,22 @@ impl Plan {
                 world,
             )?;
             let evaluation_times = graph_static_evaluation_times(graph.events());
+            return Ok(LoweredPlanEventGraph {
+                graph,
+                content_hash: self.content_hash(),
+                canonical_bytes: self.canonical_bytes(),
+                evaluation_times,
+            });
+        }
+        if let Some(plan) = self.fault_plan() {
+            let actions = lower_fault_plan_actions(plan.entries());
+            let events = actions
+                .iter()
+                .enumerate()
+                .map(lower_fault_plan_action_to_event)
+                .collect::<Vec<_>>();
+            let evaluation_times = fault_plan_action_evaluation_times(&actions);
+            let graph = EventGraph::new_for_world(events, world)?;
             return Ok(LoweredPlanEventGraph {
                 graph,
                 content_hash: self.content_hash(),
@@ -1722,6 +1739,101 @@ fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FaultPlanLoweredAction {
+    at: VirtualTime,
+    kind: &'static str,
+    kind_order: u8,
+    tag: FaultTag,
+    material: String,
+    action: Action,
+}
+
+fn lower_fault_plan_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanLoweredAction> {
+    let mut actions = Vec::new();
+    for entry in entries {
+        match entry {
+            FaultPlanEntry::At {
+                at,
+                duration,
+                tag,
+                fault,
+            } => {
+                actions.push(inject_fault_plan_action(*at, tag, fault));
+                if let Some(heal_at) = at.ticks.checked_add(duration.nanos()) {
+                    actions.push(heal_fault_plan_action(
+                        VirtualTime { ticks: heal_at },
+                        "heal",
+                        tag,
+                    ));
+                }
+            }
+            FaultPlanEntry::PermanentAt { at, tag, fault } => {
+                actions.push(inject_fault_plan_action(*at, tag, fault));
+            }
+            FaultPlanEntry::Heal { at, tag } => {
+                actions.push(heal_fault_plan_action(*at, "heal", tag));
+            }
+        }
+    }
+    actions.sort_by(|left, right| {
+        left.at
+            .cmp(&right.at)
+            .then_with(|| left.kind_order.cmp(&right.kind_order))
+            .then_with(|| left.material.cmp(&right.material))
+    });
+    actions
+}
+
+fn inject_fault_plan_action(
+    at: VirtualTime,
+    tag: &FaultTag,
+    fault: &Fault,
+) -> FaultPlanLoweredAction {
+    FaultPlanLoweredAction {
+        at,
+        kind: "inject",
+        kind_order: 0,
+        tag: tag.clone(),
+        material: format!(
+            "inject\n{}\n{}",
+            fault_tag_sort_material(tag),
+            fault.canonical_material()
+        ),
+        action: Action::InjectFault {
+            tag: tag.clone(),
+            fault: MembershipFault::taxonomy(fault.clone()),
+        },
+    }
+}
+
+fn heal_fault_plan_action(
+    at: VirtualTime,
+    kind: &'static str,
+    tag: &FaultTag,
+) -> FaultPlanLoweredAction {
+    FaultPlanLoweredAction {
+        at,
+        kind,
+        kind_order: 1,
+        tag: tag.clone(),
+        material: format!("heal\n{}", fault_tag_sort_material(tag)),
+        action: Action::HealFault { tag: tag.clone() },
+    }
+}
+
+fn fault_tag_sort_material(tag: &FaultTag) -> String {
+    format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
+}
+
+fn lower_fault_plan_action_to_event((index, action): (usize, &FaultPlanLoweredAction)) -> Event {
+    Event::once(
+        lowered_plan_event_id(index, action.kind, &action.tag),
+        Some(Condition::At { at: action.at }),
+        action.action.clone(),
+    )
+}
+
 fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
     EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
 }
@@ -1732,6 +1844,15 @@ fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
         .map(|entry| match entry {
             PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
         })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn fault_plan_action_evaluation_times(actions: &[FaultPlanLoweredAction]) -> Vec<VirtualTime> {
+    actions
+        .iter()
+        .map(|action| action.at)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -2317,6 +2438,13 @@ pub enum EventGraphError {
         /// Referenced link id.
         link: LinkId,
     },
+    /// A topology-bearing device reference names no declared world device.
+    UnknownDeviceReference {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced device id.
+        device: DeviceId,
+    },
     /// A `StartNode` or `StopNode` action was used without a world.
     NodeScheduleTargetRequiresWorld {
         /// Event containing the invalid action.
@@ -2444,6 +2572,13 @@ impl fmt::Display for EventGraphError {
                     formatter,
                     "event `{}` references unknown link `{}`",
                     event.name, link.name
+                )
+            }
+            Self::UnknownDeviceReference { event, device } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown device `{}`",
+                    event.name, device.name
                 )
             }
             Self::NodeScheduleTargetRequiresWorld { event, node } => {
@@ -2686,6 +2821,86 @@ fn validate_membership_fault_reference(
                 topology,
             )
         }
+        MembershipFault::Taxonomy { fault } => {
+            validate_taxonomy_fault_reference(event, fault, topology)
+        }
+    }
+}
+
+fn validate_taxonomy_fault_reference(
+    event: &Event,
+    fault: &Fault,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    match fault {
+        Fault::Network(fault) => validate_network_fault_reference(event, fault, topology),
+        Fault::Node(fault) => validate_node_fault_reference(event, fault, topology),
+        Fault::Block(fault) => Err(EventGraphError::UnknownDeviceReference {
+            event: event.id.clone(),
+            device: block_fault_device(fault).clone(),
+        }),
+        Fault::NineP(fault) => Err(EventGraphError::UnknownDeviceReference {
+            event: event.id.clone(),
+            device: ninep_fault_device(fault).clone(),
+        }),
+    }
+}
+
+fn validate_network_fault_reference(
+    event: &Event,
+    fault: &NetworkFault,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    validate_link_reference(event, network_fault_link(fault), topology)
+}
+
+fn validate_node_fault_reference(
+    event: &Event,
+    fault: &NodeFault,
+    topology: Option<&EventGraphTopology>,
+) -> Result<(), EventGraphError> {
+    validate_node_reference(event, node_fault_node(fault), topology)
+}
+
+fn network_fault_link(fault: &NetworkFault) -> &LinkId {
+    match fault {
+        NetworkFault::Partition { link, .. }
+        | NetworkFault::Loss { link, .. }
+        | NetworkFault::Reorder { link, .. }
+        | NetworkFault::Duplicate { link, .. }
+        | NetworkFault::Corruption { link, .. }
+        | NetworkFault::Bandwidth { link, .. }
+        | NetworkFault::LatencyBump { link, .. } => link,
+    }
+}
+
+fn node_fault_node(fault: &NodeFault) -> &NodeId {
+    match fault {
+        NodeFault::Crash { node, .. }
+        | NodeFault::Slow { node, .. }
+        | NodeFault::ClockSkew { node, .. } => node,
+    }
+}
+
+fn block_fault_device(fault: &BlockFault) -> &DeviceId {
+    match fault {
+        BlockFault::Latency { device, .. }
+        | BlockFault::Failure { device, .. }
+        | BlockFault::Reorder { device, .. }
+        | BlockFault::Duplicate { device, .. }
+        | BlockFault::Corruption { device, .. }
+        | BlockFault::Bandwidth { device, .. } => device,
+    }
+}
+
+fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
+    match fault {
+        NinePFault::Latency { device, .. }
+        | NinePFault::Failure { device, .. }
+        | NinePFault::Reorder { device, .. }
+        | NinePFault::Duplicate { device, .. }
+        | NinePFault::Corruption { device, .. }
+        | NinePFault::Bandwidth { device, .. } => device,
     }
 }
 

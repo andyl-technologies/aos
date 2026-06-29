@@ -51,6 +51,7 @@ const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.sea
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 const EVENT_GRAPH_PLAN_BINARY_SENTINEL: u64 = u64::MAX;
+const FAULT_PLAN_BINARY_SENTINEL: u64 = u64::MAX - 1;
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -4882,6 +4883,31 @@ pub enum MembershipFault {
         /// The declared participant that starts inactive.
         node: NodeId,
     },
+    /// Carry a complete RFC-0010 fault-taxonomy value through the trigger path.
+    Taxonomy {
+        /// The full network, node, block, or 9p fault to activate.
+        fault: Fault,
+    },
+}
+
+impl MembershipFault {
+    /// Wraps a complete RFC-0010 fault-taxonomy value for trigger injection.
+    #[must_use]
+    pub fn taxonomy(fault: Fault) -> Self {
+        Self::Taxonomy { fault }
+    }
+
+    /// Returns the wrapped taxonomy fault, when this is not a legacy membership fault.
+    #[must_use]
+    pub fn as_taxonomy_fault(&self) -> Option<&Fault> {
+        match self {
+            Self::Taxonomy { fault } => Some(fault),
+            Self::Crash { .. }
+            | Self::Partition { .. }
+            | Self::Isolate { .. }
+            | Self::NotYetJoined { .. } => None,
+        }
+    }
 }
 
 /// One entry in the declarative membership-fault plan.
@@ -4905,6 +4931,87 @@ pub enum PlanEntry {
     },
 }
 
+/// One entry in the full-taxonomy declarative [`FaultPlan`] body.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FaultPlanEntry {
+    /// Activate a fault at `at` and automatically heal it after `duration`.
+    At {
+        /// Virtual time when the fault activates.
+        at: VirtualTime,
+        /// Finite virtual-time duration before the automatic heal event.
+        duration: FaultDuration,
+        /// Stable tag shared by the injected fault and automatic heal.
+        tag: FaultTag,
+        /// Full taxonomy fault to activate.
+        fault: Fault,
+    },
+    /// Activate a fault at `at` until an explicit [`Self::Heal`] entry fires.
+    PermanentAt {
+        /// Virtual time when the fault activates.
+        at: VirtualTime,
+        /// Stable tag used by a later explicit heal.
+        tag: FaultTag,
+        /// Full taxonomy fault to activate.
+        fault: Fault,
+    },
+    /// Heal a previously injected tag at an exact virtual time.
+    Heal {
+        /// Virtual time when the fault heals.
+        at: VirtualTime,
+        /// Stable tag naming the fault to heal.
+        tag: FaultTag,
+    },
+}
+
+/// A declarative full-taxonomy fault plan layered over a static [`World`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FaultPlan {
+    entries: Vec<FaultPlanEntry>,
+}
+
+impl FaultPlan {
+    /// Builds an empty full-taxonomy fault plan.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Builds a fault plan in canonical entry order without world validation.
+    #[must_use]
+    pub fn from_entries(entries: Vec<FaultPlanEntry>) -> Self {
+        Self {
+            entries: canonical_fault_plan_entries(&entries),
+        }
+    }
+
+    /// Builds a fault plan after validating every entry against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanFaultUnknownNode`],
+    /// [`EngineError::PlanFaultUnknownLinkId`],
+    /// [`EngineError::PlanFaultUnknownDevice`],
+    /// [`EngineError::PlanHealUnknownTag`],
+    /// [`EngineError::PlanHealBeforeActivate`], or
+    /// [`EngineError::PlanFaultDurationOverflow`] when an entry cannot be
+    /// reduced to exact virtual-time fault actions for the supplied world.
+    pub fn from_entries_for_world(
+        world: &World,
+        entries: Vec<FaultPlanEntry>,
+    ) -> Result<Self, EngineError> {
+        validate_fault_plan_entries_for_world(world, &entries)?;
+        Ok(Self::from_entries(entries))
+    }
+
+    /// Returns fault-plan entries in canonical order.
+    #[must_use]
+    pub fn entries(&self) -> &[FaultPlanEntry] {
+        &self.entries
+    }
+}
+
 /// A declarative fault plan layered over a static [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
@@ -4916,6 +5023,7 @@ pub struct Plan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum PlanKind {
     ScheduledEntries { entries: Vec<PlanEntry> },
+    FaultPlan { plan: FaultPlan },
     EventGraph { graph: EventGraph },
 }
 
@@ -4963,7 +5071,17 @@ impl Plan {
     pub fn entries(&self) -> &[PlanEntry] {
         match &self.kind {
             PlanKind::ScheduledEntries { entries } => entries,
+            PlanKind::FaultPlan { .. } => &[],
             PlanKind::EventGraph { .. } => &[],
+        }
+    }
+
+    /// Returns the full-taxonomy fault plan carried by this plan, when present.
+    #[must_use]
+    pub fn fault_plan(&self) -> Option<&FaultPlan> {
+        match &self.kind {
+            PlanKind::FaultPlan { plan } => Some(plan),
+            PlanKind::ScheduledEntries { .. } | PlanKind::EventGraph { .. } => None,
         }
     }
 
@@ -4972,8 +5090,25 @@ impl Plan {
     pub fn event_graph(&self) -> Option<&EventGraph> {
         match &self.kind {
             PlanKind::ScheduledEntries { .. } => None,
+            PlanKind::FaultPlan { .. } => None,
             PlanKind::EventGraph { graph } => Some(graph),
         }
+    }
+
+    /// Builds a full-taxonomy fault-plan body after validating it against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanFaultUnknownNode`],
+    /// [`EngineError::PlanFaultUnknownLinkId`],
+    /// [`EngineError::PlanFaultUnknownDevice`],
+    /// [`EngineError::PlanHealUnknownTag`],
+    /// [`EngineError::PlanHealBeforeActivate`], or
+    /// [`EngineError::PlanFaultDurationOverflow`] when the fault plan cannot be
+    /// layered over `world`.
+    pub fn from_fault_plan_for_world(world: &World, plan: FaultPlan) -> Result<Self, EngineError> {
+        let plan = FaultPlan::from_entries_for_world(world, plan.entries)?;
+        Ok(Self::from_canonical_fault_plan(plan))
     }
 
     /// Builds a graph-native plan after validating it against `world`.
@@ -5111,8 +5246,11 @@ impl Plan {
     ///
     /// Returns [`EngineError::PlanFaultUnknownNode`],
     /// [`EngineError::PlanFaultUnknownLink`],
+    /// [`EngineError::PlanFaultUnknownLinkId`],
+    /// [`EngineError::PlanFaultUnknownDevice`],
     /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
+    /// [`EngineError::PlanHealBeforeActivate`],
+    /// [`EngineError::PlanFaultDurationOverflow`], or
     /// [`EngineError::PlanNotYetJoinedAfterStart`] when an entry cannot be
     /// layered over the static world topology.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
@@ -5142,6 +5280,9 @@ impl Plan {
             PlanKind::ScheduledEntries { entries } => {
                 validate_plan_entries_for_world(world, entries)
             }
+            PlanKind::FaultPlan { plan } => {
+                validate_fault_plan_entries_for_world(world, plan.entries())
+            }
             PlanKind::EventGraph { graph } => {
                 validate_event_graph_plan(world, assertions, graph.clone())
                     .map(|_| ())
@@ -5153,6 +5294,10 @@ impl Plan {
     fn from_canonical_entries(entries: Vec<PlanEntry>) -> Self {
         let kind = PlanKind::ScheduledEntries { entries };
         Self::from_canonical_kind(kind)
+    }
+
+    fn from_canonical_fault_plan(plan: FaultPlan) -> Self {
+        Self::from_canonical_kind(PlanKind::FaultPlan { plan })
     }
 
     fn from_canonical_event_graph(graph: EventGraph) -> Self {
@@ -9287,6 +9432,16 @@ pub enum EngineError {
         /// The other endpoint requested by the plan fault.
         endpoint_b: NodeId,
     },
+    /// A plan network fault references no declared world link id.
+    PlanFaultUnknownLinkId {
+        /// The undeclared link id.
+        link: LinkId,
+    },
+    /// A plan block or 9p fault references no declared device.
+    PlanFaultUnknownDevice {
+        /// The undeclared device id.
+        device: DeviceId,
+    },
     /// A plan heal references no activated fault tag.
     PlanHealUnknownTag {
         /// The unknown heal tag.
@@ -9300,6 +9455,15 @@ pub enum EngineError {
         activate_at: VirtualTime,
         /// Virtual time when the tag was healed.
         heal_at: VirtualTime,
+    },
+    /// A finite fault-plan entry's automatic heal time overflowed virtual time.
+    PlanFaultDurationOverflow {
+        /// The tag whose automatic heal overflowed.
+        tag: FaultTag,
+        /// Virtual time when the fault activates.
+        at: VirtualTime,
+        /// Finite duration that could not be added to `at`.
+        duration: FaultDuration,
     },
     /// A not-yet-joined membership hold was scheduled after the run starts.
     PlanNotYetJoinedAfterStart {
@@ -9545,11 +9709,20 @@ impl fmt::Display for EngineError {
             Self::PlanFaultUnknownLink { .. } => {
                 f.write_str("plan partition references no declared world link")
             }
+            Self::PlanFaultUnknownLinkId { .. } => {
+                f.write_str("plan network fault references no declared world link id")
+            }
+            Self::PlanFaultUnknownDevice { .. } => {
+                f.write_str("plan device fault references no declared device")
+            }
             Self::PlanHealUnknownTag { .. } => {
                 f.write_str("plan heal references no activated fault tag")
             }
             Self::PlanHealBeforeActivate { .. } => {
                 f.write_str("plan heal is not after its fault activation")
+            }
+            Self::PlanFaultDurationOverflow { .. } => {
+                f.write_str("plan fault duration overflows virtual time")
             }
             Self::PlanNotYetJoinedAfterStart { .. } => {
                 f.write_str("not-yet-joined fault must be active at run start")
@@ -10617,6 +10790,7 @@ fn validate_plan_entries_for_world(
             (left.clone(), right.clone())
         })
         .collect::<BTreeSet<_>>();
+    let taxonomy_link_ids = world_link_id_set(world);
     let mut activated_tags = BTreeMap::<FaultTag, Vec<VirtualTime>>::new();
     for entry in entries {
         if let PlanEntry::Activate { at, tag, .. } = entry {
@@ -10627,10 +10801,58 @@ fn validate_plan_entries_for_world(
     for entry in entries {
         match entry {
             PlanEntry::Activate { at, fault, .. } => {
-                validate_membership_fault_for_world(*at, fault, &node_ids, &link_ids)?;
+                validate_membership_fault_for_world(
+                    *at,
+                    fault,
+                    &node_ids,
+                    &link_ids,
+                    &taxonomy_link_ids,
+                )?;
             }
             PlanEntry::Heal { tag, .. } => {
                 validate_plan_heal(tag, entry, &activated_tags)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_fault_plan_entries_for_world(
+    world: &World,
+    entries: &[FaultPlanEntry],
+) -> Result<(), EngineError> {
+    let node_ids = world_node_id_set(world);
+    let link_ids = world_link_id_set(world);
+    let mut activated_tags = BTreeMap::<FaultTag, Vec<VirtualTime>>::new();
+    for entry in entries {
+        match entry {
+            FaultPlanEntry::At {
+                at, duration, tag, ..
+            } => {
+                let Some(_) = at.ticks.checked_add(duration.nanos()) else {
+                    return Err(EngineError::PlanFaultDurationOverflow {
+                        tag: tag.clone(),
+                        at: *at,
+                        duration: *duration,
+                    });
+                };
+                activated_tags.entry(tag.clone()).or_default().push(*at);
+            }
+            FaultPlanEntry::PermanentAt { at, tag, .. } => {
+                activated_tags.entry(tag.clone()).or_default().push(*at);
+            }
+            FaultPlanEntry::Heal { .. } => {}
+        }
+    }
+
+    for entry in entries {
+        match entry {
+            FaultPlanEntry::At { fault, .. } | FaultPlanEntry::PermanentAt { fault, .. } => {
+                validate_fault_for_world(fault, &node_ids, &link_ids)?;
+            }
+            FaultPlanEntry::Heal { at, tag } => {
+                validate_fault_plan_heal(tag, *at, &activated_tags)?;
             }
         }
     }
@@ -10655,6 +10877,7 @@ fn validate_membership_fault_for_world(
     fault: &MembershipFault,
     node_ids: &BTreeSet<&NodeId>,
     link_ids: &BTreeSet<(NodeId, NodeId)>,
+    taxonomy_link_ids: &BTreeSet<LinkId>,
 ) -> Result<(), EngineError> {
     match fault {
         MembershipFault::Crash { node, .. } | MembershipFault::Isolate { node } => {
@@ -10686,7 +10909,138 @@ fn validate_membership_fault_for_world(
             }
             Ok(())
         }
+        MembershipFault::Taxonomy { fault } => {
+            validate_fault_for_world(fault, node_ids, taxonomy_link_ids)
+        }
     }
+}
+
+fn validate_fault_plan_heal(
+    tag: &FaultTag,
+    heal_at: VirtualTime,
+    activated_tags: &BTreeMap<FaultTag, Vec<VirtualTime>>,
+) -> Result<(), EngineError> {
+    let Some(activation_times) = activated_tags.get(tag) else {
+        return Err(EngineError::PlanHealUnknownTag { tag: tag.clone() });
+    };
+    if activation_times
+        .iter()
+        .copied()
+        .any(|activate_at| activate_at <= heal_at)
+    {
+        return Ok(());
+    }
+
+    if let Some(activate_at) = activation_times.iter().copied().min() {
+        return Err(EngineError::PlanHealBeforeActivate {
+            tag: tag.clone(),
+            activate_at,
+            heal_at,
+        });
+    }
+    Err(EngineError::PlanHealUnknownTag { tag: tag.clone() })
+}
+
+fn validate_fault_for_world(
+    fault: &Fault,
+    node_ids: &BTreeSet<&NodeId>,
+    link_ids: &BTreeSet<LinkId>,
+) -> Result<(), EngineError> {
+    match fault {
+        Fault::Network(fault) => validate_network_fault_for_world(fault, link_ids),
+        Fault::Node(fault) => validate_node_fault_for_world(fault, node_ids),
+        Fault::Block(fault) => Err(EngineError::PlanFaultUnknownDevice {
+            device: block_fault_device(fault).clone(),
+        }),
+        Fault::NineP(fault) => Err(EngineError::PlanFaultUnknownDevice {
+            device: ninep_fault_device(fault).clone(),
+        }),
+    }
+}
+
+fn validate_network_fault_for_world(
+    fault: &NetworkFault,
+    link_ids: &BTreeSet<LinkId>,
+) -> Result<(), EngineError> {
+    let link = network_fault_link(fault);
+    if link_ids.contains(link) {
+        Ok(())
+    } else {
+        Err(EngineError::PlanFaultUnknownLinkId { link: link.clone() })
+    }
+}
+
+fn validate_node_fault_for_world(
+    fault: &NodeFault,
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
+    validate_plan_node(node_fault_node(fault), node_ids)
+}
+
+fn network_fault_link(fault: &NetworkFault) -> &LinkId {
+    match fault {
+        NetworkFault::Partition { link, .. }
+        | NetworkFault::Loss { link, .. }
+        | NetworkFault::Reorder { link, .. }
+        | NetworkFault::Duplicate { link, .. }
+        | NetworkFault::Corruption { link, .. }
+        | NetworkFault::Bandwidth { link, .. }
+        | NetworkFault::LatencyBump { link, .. } => link,
+    }
+}
+
+fn node_fault_node(fault: &NodeFault) -> &NodeId {
+    match fault {
+        NodeFault::Crash { node, .. }
+        | NodeFault::Slow { node, .. }
+        | NodeFault::ClockSkew { node, .. } => node,
+    }
+}
+
+fn block_fault_device(fault: &BlockFault) -> &DeviceId {
+    match fault {
+        BlockFault::Latency { device, .. }
+        | BlockFault::Failure { device, .. }
+        | BlockFault::Reorder { device, .. }
+        | BlockFault::Duplicate { device, .. }
+        | BlockFault::Corruption { device, .. }
+        | BlockFault::Bandwidth { device, .. } => device,
+    }
+}
+
+fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
+    match fault {
+        NinePFault::Latency { device, .. }
+        | NinePFault::Failure { device, .. }
+        | NinePFault::Reorder { device, .. }
+        | NinePFault::Duplicate { device, .. }
+        | NinePFault::Corruption { device, .. }
+        | NinePFault::Bandwidth { device, .. } => device,
+    }
+}
+
+fn world_node_id_set(world: &World) -> BTreeSet<&NodeId> {
+    world.nodes.iter().map(|node| &node.id).collect()
+}
+
+fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
+    world
+        .links
+        .iter()
+        .map(|link| {
+            let (left, right) = link.endpoints();
+            link_id_for_endpoint_pair(left, right)
+        })
+        .collect()
+}
+
+fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
 fn validate_plan_heal(
@@ -10917,6 +11271,15 @@ fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry> {
     entries
 }
 
+fn canonical_fault_plan_entries(entries: &[FaultPlanEntry]) -> Vec<FaultPlanEntry> {
+    let mut entries = entries
+        .iter()
+        .map(canonical_fault_plan_entry)
+        .collect::<Vec<_>>();
+    entries.sort_by(fault_plan_entry_cmp);
+    entries
+}
+
 fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
     match entry {
         PlanEntry::Activate { at, tag, fault } => PlanEntry::Activate {
@@ -10925,6 +11288,31 @@ fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
             fault: canonical_membership_fault(fault),
         },
         PlanEntry::Heal { at, tag } => PlanEntry::Heal {
+            at: *at,
+            tag: tag.clone(),
+        },
+    }
+}
+
+fn canonical_fault_plan_entry(entry: &FaultPlanEntry) -> FaultPlanEntry {
+    match entry {
+        FaultPlanEntry::At {
+            at,
+            duration,
+            tag,
+            fault,
+        } => FaultPlanEntry::At {
+            at: *at,
+            duration: *duration,
+            tag: tag.clone(),
+            fault: fault.clone(),
+        },
+        FaultPlanEntry::PermanentAt { at, tag, fault } => FaultPlanEntry::PermanentAt {
+            at: *at,
+            tag: tag.clone(),
+            fault: fault.clone(),
+        },
+        FaultPlanEntry::Heal { at, tag } => FaultPlanEntry::Heal {
             at: *at,
             tag: tag.clone(),
         },
@@ -10960,6 +11348,9 @@ fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
         MembershipFault::NotYetJoined { node } => {
             MembershipFault::NotYetJoined { node: node.clone() }
         }
+        MembershipFault::Taxonomy { fault } => MembershipFault::Taxonomy {
+            fault: fault.clone(),
+        },
     }
 }
 
@@ -10978,9 +11369,24 @@ fn plan_entry_cmp(left: &PlanEntry, right: &PlanEntry) -> std::cmp::Ordering {
         .then_with(|| plan_entry_material(left).cmp(&plan_entry_material(right)))
 }
 
+fn fault_plan_entry_cmp(left: &FaultPlanEntry, right: &FaultPlanEntry) -> std::cmp::Ordering {
+    fault_plan_entry_time(left)
+        .cmp(&fault_plan_entry_time(right))
+        .then_with(|| fault_plan_entry_kind_order(left).cmp(&fault_plan_entry_kind_order(right)))
+        .then_with(|| fault_plan_entry_material(left).cmp(&fault_plan_entry_material(right)))
+}
+
 fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {
     match entry {
         PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
+    }
+}
+
+fn fault_plan_entry_time(entry: &FaultPlanEntry) -> VirtualTime {
+    match entry {
+        FaultPlanEntry::At { at, .. }
+        | FaultPlanEntry::PermanentAt { at, .. }
+        | FaultPlanEntry::Heal { at, .. } => *at,
     }
 }
 
@@ -10988,6 +11394,14 @@ fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
     match entry {
         PlanEntry::Activate { .. } => 0,
         PlanEntry::Heal { .. } => 1,
+    }
+}
+
+fn fault_plan_entry_kind_order(entry: &FaultPlanEntry) -> u8 {
+    match entry {
+        FaultPlanEntry::At { .. } => 0,
+        FaultPlanEntry::PermanentAt { .. } => 1,
+        FaultPlanEntry::Heal { .. } => 2,
     }
 }
 
@@ -11249,6 +11663,8 @@ struct PlanToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     entry: Vec<PlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fault_entry: Vec<FaultPlanEntryToml>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     event: Vec<EventToml>,
 }
 
@@ -11257,6 +11673,7 @@ struct PlanToml {
 #[serde(rename_all = "snake_case")]
 enum PlanKindToml {
     Entries,
+    FaultPlan,
     EventGraph,
 }
 
@@ -11268,6 +11685,27 @@ enum PlanEntryToml {
         at_ticks: u64,
         tag: String,
         fault: MembershipFaultToml,
+    },
+    Heal {
+        at_ticks: u64,
+        tag: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum FaultPlanEntryToml {
+    At {
+        at_ticks: u64,
+        duration_nanos: u64,
+        tag: String,
+        fault: FaultToml,
+    },
+    PermanentAt {
+        at_ticks: u64,
+        tag: String,
+        fault: FaultToml,
     },
     Heal {
         at_ticks: u64,
@@ -11368,6 +11806,130 @@ enum MembershipFaultToml {
     NotYetJoined {
         node: String,
     },
+    Taxonomy {
+        fault: FaultToml,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum FaultToml {
+    NetworkPartition {
+        link: String,
+        direction: PartitionDirectionToml,
+    },
+    NetworkLoss {
+        link: String,
+        rate_basis_points: u32,
+    },
+    NetworkReorder {
+        link: String,
+        window_nanos: u64,
+    },
+    NetworkDuplicate {
+        link: String,
+        rate_basis_points: u32,
+        gap_nanos: u64,
+    },
+    NetworkCorruptionBitFlip {
+        link: String,
+        rate_basis_points: u32,
+        max_bits: u32,
+    },
+    NetworkCorruptionFieldMutation {
+        link: String,
+        rate_basis_points: u32,
+    },
+    NetworkCorruptionTruncation {
+        link: String,
+        rate_basis_points: u32,
+        max_bytes: u64,
+    },
+    NetworkBandwidth {
+        link: String,
+        bits_per_second: u64,
+    },
+    NetworkLatencyBump {
+        link: String,
+        extra_nanos: u64,
+    },
+    NodeCrash {
+        node: String,
+        restart: RestartToml,
+    },
+    NodeSlow {
+        node: String,
+        factor_basis_points: u32,
+    },
+    NodeClockSkew {
+        node: String,
+        offset_nanos: i64,
+    },
+    BlockLatency {
+        device: String,
+        extra_nanos: u64,
+        jitter_nanos: u64,
+    },
+    BlockFailure {
+        device: String,
+        rate_basis_points: u32,
+        mode: IoFailureModeToml,
+    },
+    BlockReorder {
+        device: String,
+        window_nanos: u64,
+    },
+    BlockDuplicate {
+        device: String,
+        rate_basis_points: u32,
+        gap_nanos: u64,
+    },
+    BlockCorruption {
+        device: String,
+        rate_basis_points: u32,
+        bit_flips: u32,
+    },
+    BlockBandwidth {
+        device: String,
+        bits_per_second: u64,
+    },
+    NinePLatency {
+        device: String,
+        extra_nanos: u64,
+        jitter_nanos: u64,
+    },
+    NinePFailure {
+        device: String,
+        rate_basis_points: u32,
+        errno_code: i32,
+    },
+    NinePReorder {
+        device: String,
+        window_nanos: u64,
+    },
+    NinePDuplicate {
+        device: String,
+        rate_basis_points: u32,
+        gap_nanos: u64,
+    },
+    NinePCorruption {
+        device: String,
+        rate_basis_points: u32,
+        bit_flips: u32,
+    },
+    NinePBandwidth {
+        device: String,
+        bits_per_second: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum IoFailureModeToml {
+    Drop,
+    ErrorStatus,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -11804,12 +12366,25 @@ fn plan_to_toml(plan: &Plan) -> PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
             kind: None,
             entry: entries.iter().map(plan_entry_to_toml).collect(),
+            fault_entry: Vec::new(),
+            event: Vec::new(),
+        },
+        PlanKind::FaultPlan { plan: fault_plan } => PlanToml {
+            id: format_content_hash_ref(plan.content_hash()),
+            kind: Some(PlanKindToml::FaultPlan),
+            entry: Vec::new(),
+            fault_entry: fault_plan
+                .entries()
+                .iter()
+                .map(fault_plan_entry_to_toml)
+                .collect(),
             event: Vec::new(),
         },
         PlanKind::EventGraph { graph } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
             kind: Some(PlanKindToml::EventGraph),
             entry: Vec::new(),
+            fault_entry: Vec::new(),
             event: graph.events().iter().map(event_to_toml).collect(),
         },
     }
@@ -11831,8 +12406,16 @@ fn plan_from_toml_with_assertions(
                 .entry
                 .into_iter()
                 .map(plan_entry_from_toml)
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             Plan::from_entries_for_world(world, entries)?
+        }
+        SerializedPlanKind::FaultPlan => {
+            let entries = toml
+                .fault_entry
+                .into_iter()
+                .map(fault_plan_entry_from_toml)
+                .collect::<Result<Vec<_>, _>>()?;
+            Plan::from_fault_plan_for_world(world, FaultPlan::from_entries(entries))?
         }
         SerializedPlanKind::EventGraph => {
             let events = toml
@@ -11852,35 +12435,50 @@ fn plan_from_toml_with_assertions(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SerializedPlanKind {
     ScheduledEntries,
+    FaultPlan,
     EventGraph,
 }
 
 fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
     match toml.kind {
         Some(PlanKindToml::Entries) => {
-            if !toml.event.is_empty() {
+            if !toml.event.is_empty() || !toml.fault_entry.is_empty() {
                 return Err(scenario_serialization_error(
-                    "entries plan must not carry event graph rows",
+                    "entries plan must not carry fault-plan or event graph rows",
                 ));
             }
             Ok(SerializedPlanKind::ScheduledEntries)
         }
-        Some(PlanKindToml::EventGraph) => {
-            if !toml.entry.is_empty() {
+        Some(PlanKindToml::FaultPlan) => {
+            if !toml.entry.is_empty() || !toml.event.is_empty() {
                 return Err(scenario_serialization_error(
-                    "event graph plan must not carry scheduled entries",
+                    "fault plan must not carry legacy entries or event graph rows",
+                ));
+            }
+            Ok(SerializedPlanKind::FaultPlan)
+        }
+        Some(PlanKindToml::EventGraph) => {
+            if !toml.entry.is_empty() || !toml.fault_entry.is_empty() {
+                return Err(scenario_serialization_error(
+                    "event graph plan must not carry scheduled entries or fault-plan rows",
                 ));
             }
             Ok(SerializedPlanKind::EventGraph)
         }
-        None if toml.event.is_empty() => Ok(SerializedPlanKind::ScheduledEntries),
+        None if toml.event.is_empty() && toml.fault_entry.is_empty() => {
+            Ok(SerializedPlanKind::ScheduledEntries)
+        }
         None => {
-            if !toml.entry.is_empty() {
+            if !toml.entry.is_empty() || (!toml.event.is_empty() && !toml.fault_entry.is_empty()) {
                 return Err(scenario_serialization_error(
-                    "plan must not mix scheduled entries and event graph rows",
+                    "plan must not mix scheduled entries, fault-plan rows, and event graph rows",
                 ));
             }
-            Ok(SerializedPlanKind::EventGraph)
+            if toml.fault_entry.is_empty() {
+                Ok(SerializedPlanKind::EventGraph)
+            } else {
+                Ok(SerializedPlanKind::FaultPlan)
+            }
         }
     }
 }
@@ -11899,8 +12497,8 @@ fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
     }
 }
 
-fn plan_entry_from_toml(toml: PlanEntryToml) -> PlanEntry {
-    match toml {
+fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, EngineError> {
+    Ok(match toml {
         PlanEntryToml::Activate {
             at_ticks,
             tag,
@@ -11908,13 +12506,67 @@ fn plan_entry_from_toml(toml: PlanEntryToml) -> PlanEntry {
         } => PlanEntry::Activate {
             at: VirtualTime { ticks: at_ticks },
             tag: FaultTag { name: tag },
-            fault: membership_fault_from_toml(fault),
+            fault: membership_fault_from_toml(fault)?,
         },
         PlanEntryToml::Heal { at_ticks, tag } => PlanEntry::Heal {
             at: VirtualTime { ticks: at_ticks },
             tag: FaultTag { name: tag },
         },
+    })
+}
+
+fn fault_plan_entry_to_toml(entry: &FaultPlanEntry) -> FaultPlanEntryToml {
+    match entry {
+        FaultPlanEntry::At {
+            at,
+            duration,
+            tag,
+            fault,
+        } => FaultPlanEntryToml::At {
+            at_ticks: at.ticks,
+            duration_nanos: duration.nanos(),
+            tag: tag.name.clone(),
+            fault: fault_to_toml(fault),
+        },
+        FaultPlanEntry::PermanentAt { at, tag, fault } => FaultPlanEntryToml::PermanentAt {
+            at_ticks: at.ticks,
+            tag: tag.name.clone(),
+            fault: fault_to_toml(fault),
+        },
+        FaultPlanEntry::Heal { at, tag } => FaultPlanEntryToml::Heal {
+            at_ticks: at.ticks,
+            tag: tag.name.clone(),
+        },
     }
+}
+
+fn fault_plan_entry_from_toml(toml: FaultPlanEntryToml) -> Result<FaultPlanEntry, EngineError> {
+    Ok(match toml {
+        FaultPlanEntryToml::At {
+            at_ticks,
+            duration_nanos,
+            tag,
+            fault,
+        } => FaultPlanEntry::At {
+            at: VirtualTime { ticks: at_ticks },
+            duration: FaultDuration::from_nanos(duration_nanos),
+            tag: FaultTag { name: tag },
+            fault: fault_from_toml(fault)?,
+        },
+        FaultPlanEntryToml::PermanentAt {
+            at_ticks,
+            tag,
+            fault,
+        } => FaultPlanEntry::PermanentAt {
+            at: VirtualTime { ticks: at_ticks },
+            tag: FaultTag { name: tag },
+            fault: fault_from_toml(fault)?,
+        },
+        FaultPlanEntryToml::Heal { at_ticks, tag } => FaultPlanEntry::Heal {
+            at: VirtualTime { ticks: at_ticks },
+            tag: FaultTag { name: tag },
+        },
+    })
 }
 
 fn event_to_toml(event: &Event) -> EventToml {
@@ -11930,7 +12582,7 @@ fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
     Ok(Event {
         id: EventId { name: toml.id },
         trigger: toml.trigger.map(predicate_from_toml).transpose()?,
-        action: action_from_toml(toml.action),
+        action: action_from_toml(toml.action)?,
         policy: fire_policy_from_toml(toml.policy),
     })
 }
@@ -11995,11 +12647,11 @@ fn action_to_toml(action: &Action) -> ActionToml {
     }
 }
 
-fn action_from_toml(toml: ActionToml) -> Action {
-    match toml {
+fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
+    Ok(match toml {
         ActionToml::InjectFault { tag, fault } => Action::InjectFault {
             tag: FaultTag { name: tag },
-            fault: membership_fault_from_toml(fault),
+            fault: membership_fault_from_toml(fault)?,
         },
         ActionToml::HealFault { tag } => Action::HealFault {
             tag: FaultTag { name: tag },
@@ -12025,10 +12677,13 @@ fn action_from_toml(toml: ActionToml) -> Action {
             level: log_level_from_toml(level),
             message,
         },
-        ActionToml::Group { actions } => {
-            Action::Group(actions.into_iter().map(action_from_toml).collect())
-        }
-    }
+        ActionToml::Group { actions } => Action::Group(
+            actions
+                .into_iter()
+                .map(action_from_toml)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    })
 }
 
 fn log_level_to_toml(level: LogLevel) -> LogLevelToml {
@@ -12070,11 +12725,14 @@ fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
         MembershipFault::NotYetJoined { node } => MembershipFaultToml::NotYetJoined {
             node: node.name.clone(),
         },
+        MembershipFault::Taxonomy { fault } => MembershipFaultToml::Taxonomy {
+            fault: fault_to_toml(fault),
+        },
     }
 }
 
-fn membership_fault_from_toml(toml: MembershipFaultToml) -> MembershipFault {
-    match toml {
+fn membership_fault_from_toml(toml: MembershipFaultToml) -> Result<MembershipFault, EngineError> {
+    Ok(match toml {
         MembershipFaultToml::Crash { node, restart } => MembershipFault::Crash {
             node: NodeId { name: node },
             restart: restart_from_toml(restart),
@@ -12094,6 +12752,381 @@ fn membership_fault_from_toml(toml: MembershipFaultToml) -> MembershipFault {
         MembershipFaultToml::NotYetJoined { node } => MembershipFault::NotYetJoined {
             node: NodeId { name: node },
         },
+        MembershipFaultToml::Taxonomy { fault } => MembershipFault::Taxonomy {
+            fault: fault_from_toml(fault)?,
+        },
+    })
+}
+
+fn fault_to_toml(fault: &Fault) -> FaultToml {
+    match fault {
+        Fault::Network(fault) => network_fault_to_toml(fault),
+        Fault::Node(fault) => node_fault_to_toml(fault),
+        Fault::Block(fault) => block_fault_to_toml(fault),
+        Fault::NineP(fault) => ninep_fault_to_toml(fault),
+    }
+}
+
+fn fault_from_toml(toml: FaultToml) -> Result<Fault, EngineError> {
+    Ok(match toml {
+        FaultToml::NetworkPartition { link, direction } => {
+            Fault::Network(NetworkFault::Partition {
+                link: LinkId { name: link },
+                direction: partition_direction_from_toml(direction),
+            })
+        }
+        FaultToml::NetworkLoss {
+            link,
+            rate_basis_points,
+        } => Fault::Network(NetworkFault::Loss {
+            link: LinkId { name: link },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+        }),
+        FaultToml::NetworkReorder { link, window_nanos } => Fault::Network(NetworkFault::Reorder {
+            link: LinkId { name: link },
+            window: FaultDuration::from_nanos(window_nanos),
+        }),
+        FaultToml::NetworkDuplicate {
+            link,
+            rate_basis_points,
+            gap_nanos,
+        } => Fault::Network(NetworkFault::Duplicate {
+            link: LinkId { name: link },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            gap: FaultDuration::from_nanos(gap_nanos),
+        }),
+        FaultToml::NetworkCorruptionBitFlip {
+            link,
+            rate_basis_points,
+            max_bits,
+        } => Fault::Network(NetworkFault::Corruption {
+            link: LinkId { name: link },
+            kind: NetworkCorruptionFault::BitFlip {
+                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+                max_bits,
+            },
+        }),
+        FaultToml::NetworkCorruptionFieldMutation {
+            link,
+            rate_basis_points,
+        } => Fault::Network(NetworkFault::Corruption {
+            link: LinkId { name: link },
+            kind: NetworkCorruptionFault::FieldMutation {
+                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            },
+        }),
+        FaultToml::NetworkCorruptionTruncation {
+            link,
+            rate_basis_points,
+            max_bytes,
+        } => Fault::Network(NetworkFault::Corruption {
+            link: LinkId { name: link },
+            kind: NetworkCorruptionFault::Truncation {
+                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+                max_bytes,
+            },
+        }),
+        FaultToml::NetworkBandwidth {
+            link,
+            bits_per_second,
+        } => Fault::Network(NetworkFault::Bandwidth {
+            link: LinkId { name: link },
+            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
+        }),
+        FaultToml::NetworkLatencyBump { link, extra_nanos } => {
+            Fault::Network(NetworkFault::LatencyBump {
+                link: LinkId { name: link },
+                extra: FaultDuration::from_nanos(extra_nanos),
+            })
+        }
+        FaultToml::NodeCrash { node, restart } => Fault::Node(NodeFault::Crash {
+            node: NodeId { name: node },
+            restart: restart_from_toml(restart),
+        }),
+        FaultToml::NodeSlow {
+            node,
+            factor_basis_points,
+        } => Fault::Node(NodeFault::Slow {
+            node: NodeId { name: node },
+            factor: FaultSlowdownFactorBasisPoints::from_basis_points(factor_basis_points)?,
+        }),
+        FaultToml::NodeClockSkew { node, offset_nanos } => Fault::Node(NodeFault::ClockSkew {
+            node: NodeId { name: node },
+            offset: SimOffset {
+                nanos: offset_nanos,
+            },
+        }),
+        FaultToml::BlockLatency {
+            device,
+            extra_nanos,
+            jitter_nanos,
+        } => Fault::Block(BlockFault::Latency {
+            device: DeviceId { name: device },
+            extra: FaultDuration::from_nanos(extra_nanos),
+            jitter: FaultDuration::from_nanos(jitter_nanos),
+        }),
+        FaultToml::BlockFailure {
+            device,
+            rate_basis_points,
+            mode,
+        } => Fault::Block(BlockFault::Failure {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            mode: io_failure_mode_from_toml(mode),
+        }),
+        FaultToml::BlockReorder {
+            device,
+            window_nanos,
+        } => Fault::Block(BlockFault::Reorder {
+            device: DeviceId { name: device },
+            window: FaultDuration::from_nanos(window_nanos),
+        }),
+        FaultToml::BlockDuplicate {
+            device,
+            rate_basis_points,
+            gap_nanos,
+        } => Fault::Block(BlockFault::Duplicate {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            gap: FaultDuration::from_nanos(gap_nanos),
+        }),
+        FaultToml::BlockCorruption {
+            device,
+            rate_basis_points,
+            bit_flips,
+        } => Fault::Block(BlockFault::Corruption {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            bit_flips,
+        }),
+        FaultToml::BlockBandwidth {
+            device,
+            bits_per_second,
+        } => Fault::Block(BlockFault::Bandwidth {
+            device: DeviceId { name: device },
+            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
+        }),
+        FaultToml::NinePLatency {
+            device,
+            extra_nanos,
+            jitter_nanos,
+        } => Fault::NineP(NinePFault::Latency {
+            device: DeviceId { name: device },
+            extra: FaultDuration::from_nanos(extra_nanos),
+            jitter: FaultDuration::from_nanos(jitter_nanos),
+        }),
+        FaultToml::NinePFailure {
+            device,
+            rate_basis_points,
+            errno_code,
+        } => Fault::NineP(NinePFault::Failure {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            errno: NinePErrno::from_code(errno_code)?,
+        }),
+        FaultToml::NinePReorder {
+            device,
+            window_nanos,
+        } => Fault::NineP(NinePFault::Reorder {
+            device: DeviceId { name: device },
+            window: FaultDuration::from_nanos(window_nanos),
+        }),
+        FaultToml::NinePDuplicate {
+            device,
+            rate_basis_points,
+            gap_nanos,
+        } => Fault::NineP(NinePFault::Duplicate {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            gap: FaultDuration::from_nanos(gap_nanos),
+        }),
+        FaultToml::NinePCorruption {
+            device,
+            rate_basis_points,
+            bit_flips,
+        } => Fault::NineP(NinePFault::Corruption {
+            device: DeviceId { name: device },
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
+            bit_flips,
+        }),
+        FaultToml::NinePBandwidth {
+            device,
+            bits_per_second,
+        } => Fault::NineP(NinePFault::Bandwidth {
+            device: DeviceId { name: device },
+            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
+        }),
+    })
+}
+
+fn network_fault_to_toml(fault: &NetworkFault) -> FaultToml {
+    match fault {
+        NetworkFault::Partition { link, direction } => FaultToml::NetworkPartition {
+            link: link.name.clone(),
+            direction: partition_direction_to_toml(*direction),
+        },
+        NetworkFault::Loss { link, rate } => FaultToml::NetworkLoss {
+            link: link.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+        },
+        NetworkFault::Reorder { link, window } => FaultToml::NetworkReorder {
+            link: link.name.clone(),
+            window_nanos: window.nanos(),
+        },
+        NetworkFault::Duplicate { link, rate, gap } => FaultToml::NetworkDuplicate {
+            link: link.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            gap_nanos: gap.nanos(),
+        },
+        NetworkFault::Corruption { link, kind } => network_corruption_fault_to_toml(link, kind),
+        NetworkFault::Bandwidth { link, limit } => FaultToml::NetworkBandwidth {
+            link: link.name.clone(),
+            bits_per_second: limit.bits_per_second(),
+        },
+        NetworkFault::LatencyBump { link, extra } => FaultToml::NetworkLatencyBump {
+            link: link.name.clone(),
+            extra_nanos: extra.nanos(),
+        },
+    }
+}
+
+fn network_corruption_fault_to_toml(link: &LinkId, fault: &NetworkCorruptionFault) -> FaultToml {
+    match fault {
+        NetworkCorruptionFault::BitFlip { rate, max_bits } => FaultToml::NetworkCorruptionBitFlip {
+            link: link.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            max_bits: *max_bits,
+        },
+        NetworkCorruptionFault::FieldMutation { rate } => {
+            FaultToml::NetworkCorruptionFieldMutation {
+                link: link.name.clone(),
+                rate_basis_points: u32::from(rate.basis_points()),
+            }
+        }
+        NetworkCorruptionFault::Truncation { rate, max_bytes } => {
+            FaultToml::NetworkCorruptionTruncation {
+                link: link.name.clone(),
+                rate_basis_points: u32::from(rate.basis_points()),
+                max_bytes: *max_bytes,
+            }
+        }
+    }
+}
+
+fn node_fault_to_toml(fault: &NodeFault) -> FaultToml {
+    match fault {
+        NodeFault::Crash { node, restart } => FaultToml::NodeCrash {
+            node: node.name.clone(),
+            restart: restart_to_toml(*restart),
+        },
+        NodeFault::Slow { node, factor } => FaultToml::NodeSlow {
+            node: node.name.clone(),
+            factor_basis_points: factor.basis_points(),
+        },
+        NodeFault::ClockSkew { node, offset } => FaultToml::NodeClockSkew {
+            node: node.name.clone(),
+            offset_nanos: offset.nanos,
+        },
+    }
+}
+
+fn block_fault_to_toml(fault: &BlockFault) -> FaultToml {
+    match fault {
+        BlockFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => FaultToml::BlockLatency {
+            device: device.name.clone(),
+            extra_nanos: extra.nanos(),
+            jitter_nanos: jitter.nanos(),
+        },
+        BlockFault::Failure { device, rate, mode } => FaultToml::BlockFailure {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            mode: io_failure_mode_to_toml(*mode),
+        },
+        BlockFault::Reorder { device, window } => FaultToml::BlockReorder {
+            device: device.name.clone(),
+            window_nanos: window.nanos(),
+        },
+        BlockFault::Duplicate { device, rate, gap } => FaultToml::BlockDuplicate {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            gap_nanos: gap.nanos(),
+        },
+        BlockFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => FaultToml::BlockCorruption {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            bit_flips: *bit_flips,
+        },
+        BlockFault::Bandwidth { device, limit } => FaultToml::BlockBandwidth {
+            device: device.name.clone(),
+            bits_per_second: limit.bits_per_second(),
+        },
+    }
+}
+
+fn ninep_fault_to_toml(fault: &NinePFault) -> FaultToml {
+    match fault {
+        NinePFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => FaultToml::NinePLatency {
+            device: device.name.clone(),
+            extra_nanos: extra.nanos(),
+            jitter_nanos: jitter.nanos(),
+        },
+        NinePFault::Failure {
+            device,
+            rate,
+            errno,
+        } => FaultToml::NinePFailure {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            errno_code: errno.code(),
+        },
+        NinePFault::Reorder { device, window } => FaultToml::NinePReorder {
+            device: device.name.clone(),
+            window_nanos: window.nanos(),
+        },
+        NinePFault::Duplicate { device, rate, gap } => FaultToml::NinePDuplicate {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            gap_nanos: gap.nanos(),
+        },
+        NinePFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => FaultToml::NinePCorruption {
+            device: device.name.clone(),
+            rate_basis_points: u32::from(rate.basis_points()),
+            bit_flips: *bit_flips,
+        },
+        NinePFault::Bandwidth { device, limit } => FaultToml::NinePBandwidth {
+            device: device.name.clone(),
+            bits_per_second: limit.bits_per_second(),
+        },
+    }
+}
+
+fn io_failure_mode_to_toml(mode: IoFailureMode) -> IoFailureModeToml {
+    match mode {
+        IoFailureMode::Drop => IoFailureModeToml::Drop,
+        IoFailureMode::ErrorStatus => IoFailureModeToml::ErrorStatus,
+    }
+}
+
+fn io_failure_mode_from_toml(toml: IoFailureModeToml) -> IoFailureMode {
+    match toml {
+        IoFailureModeToml::Drop => IoFailureMode::Drop,
+        IoFailureModeToml::ErrorStatus => IoFailureMode::ErrorStatus,
     }
 }
 
@@ -12627,6 +13660,10 @@ impl ScenarioBinaryWriter {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
+    fn write_i64(&mut self, value: i64) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
     fn write_count(&mut self, count: usize) {
         self.write_u64(count as u64);
     }
@@ -12718,6 +13755,13 @@ impl<'a> ScenarioBinaryReader<'a> {
         let mut fixed = [0; 8];
         fixed.copy_from_slice(bytes);
         Ok(u64::from_le_bytes(fixed))
+    }
+
+    fn read_i64(&mut self) -> Result<i64, EngineError> {
+        let bytes = self.read_exact(8)?;
+        let mut fixed = [0; 8];
+        fixed.copy_from_slice(bytes);
+        Ok(i64::from_le_bytes(fixed))
     }
 
     fn read_count(&mut self) -> Result<usize, EngineError> {
@@ -13233,6 +14277,13 @@ fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
                 write_plan_entry_binary(entry, writer);
             }
         }
+        PlanKind::FaultPlan { plan } => {
+            writer.write_u64(FAULT_PLAN_BINARY_SENTINEL);
+            writer.write_count(plan.entries().len());
+            for entry in plan.entries() {
+                write_fault_plan_entry_binary(entry, writer);
+            }
+        }
         PlanKind::EventGraph { graph } => {
             writer.write_u64(EVENT_GRAPH_PLAN_BINARY_SENTINEL);
             writer.write_count(graph.events().len());
@@ -13279,6 +14330,13 @@ fn read_plan_binary_inner(
         let graph = EventGraph::new_with_assertions_for_world(events, assertions, world)
             .map_err(event_graph_plan_error)?;
         Plan::from_canonical_event_graph(graph)
+    } else if count_or_sentinel == FAULT_PLAN_BINARY_SENTINEL {
+        let count = reader.read_collection_count("plan.fault_entry")?;
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(read_fault_plan_entry_binary(reader)?);
+        }
+        Plan::from_fault_plan_for_world(world, FaultPlan::from_entries(entries))?
     } else {
         let count = collection_count_from_raw("plan.entry", count_or_sentinel)?;
         let mut entries = Vec::with_capacity(count);
@@ -13380,6 +14438,69 @@ fn read_plan_entry_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<PlanE
             },
         }),
         _ => Err(scenario_serialization_error("invalid plan-entry tag")),
+    }
+}
+
+fn write_fault_plan_entry_binary(entry: &FaultPlanEntry, writer: &mut ScenarioBinaryWriter) {
+    match entry {
+        FaultPlanEntry::At {
+            at,
+            duration,
+            tag,
+            fault,
+        } => {
+            writer.write_u8(0);
+            writer.write_u64(at.ticks);
+            writer.write_u64(duration.nanos());
+            writer.write_string(&tag.name);
+            write_fault_binary(fault, writer);
+        }
+        FaultPlanEntry::PermanentAt { at, tag, fault } => {
+            writer.write_u8(1);
+            writer.write_u64(at.ticks);
+            writer.write_string(&tag.name);
+            write_fault_binary(fault, writer);
+        }
+        FaultPlanEntry::Heal { at, tag } => {
+            writer.write_u8(2);
+            writer.write_u64(at.ticks);
+            writer.write_string(&tag.name);
+        }
+    }
+}
+
+fn read_fault_plan_entry_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<FaultPlanEntry, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(FaultPlanEntry::At {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            duration: FaultDuration::from_nanos(reader.read_u64()?),
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_fault_binary(reader)?,
+        }),
+        1 => Ok(FaultPlanEntry::PermanentAt {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_fault_binary(reader)?,
+        }),
+        2 => Ok(FaultPlanEntry::Heal {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error("invalid fault-plan-entry tag")),
     }
 }
 
@@ -13614,6 +14735,10 @@ fn write_membership_fault_binary(fault: &MembershipFault, writer: &mut ScenarioB
             writer.write_u8(3);
             writer.write_string(&node.name);
         }
+        MembershipFault::Taxonomy { fault } => {
+            writer.write_u8(4);
+            write_fault_binary(fault, writer);
+        }
     }
 }
 
@@ -13666,8 +14791,457 @@ fn read_membership_fault_binary(
                 name: reader.read_string()?,
             },
         }),
+        4 => Ok(MembershipFault::Taxonomy {
+            fault: read_fault_binary(reader)?,
+        }),
         _ => Err(scenario_serialization_error("invalid membership-fault tag")),
     }
+}
+
+fn write_fault_binary(fault: &Fault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        Fault::Network(fault) => {
+            writer.write_u8(0);
+            write_network_fault_binary(fault, writer);
+        }
+        Fault::Node(fault) => {
+            writer.write_u8(1);
+            write_node_fault_binary(fault, writer);
+        }
+        Fault::Block(fault) => {
+            writer.write_u8(2);
+            write_block_fault_binary(fault, writer);
+        }
+        Fault::NineP(fault) => {
+            writer.write_u8(3);
+            write_ninep_fault_binary(fault, writer);
+        }
+    }
+}
+
+fn read_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Fault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(Fault::Network(read_network_fault_binary(reader)?)),
+        1 => Ok(Fault::Node(read_node_fault_binary(reader)?)),
+        2 => Ok(Fault::Block(read_block_fault_binary(reader)?)),
+        3 => Ok(Fault::NineP(read_ninep_fault_binary(reader)?)),
+        _ => Err(scenario_serialization_error("invalid fault tag")),
+    }
+}
+
+fn write_network_fault_binary(fault: &NetworkFault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        NetworkFault::Partition { link, direction } => {
+            writer.write_u8(0);
+            writer.write_string(&link.name);
+            write_partition_direction_binary(*direction, writer);
+        }
+        NetworkFault::Loss { link, rate } => {
+            writer.write_u8(1);
+            writer.write_string(&link.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+        }
+        NetworkFault::Reorder { link, window } => {
+            writer.write_u8(2);
+            writer.write_string(&link.name);
+            writer.write_u64(window.nanos());
+        }
+        NetworkFault::Duplicate { link, rate, gap } => {
+            writer.write_u8(3);
+            writer.write_string(&link.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u64(gap.nanos());
+        }
+        NetworkFault::Corruption { link, kind } => {
+            writer.write_u8(4);
+            writer.write_string(&link.name);
+            write_network_corruption_fault_binary(kind, writer);
+        }
+        NetworkFault::Bandwidth { link, limit } => {
+            writer.write_u8(5);
+            writer.write_string(&link.name);
+            writer.write_u64(limit.bits_per_second());
+        }
+        NetworkFault::LatencyBump { link, extra } => {
+            writer.write_u8(6);
+            writer.write_string(&link.name);
+            writer.write_u64(extra.nanos());
+        }
+    }
+}
+
+fn read_network_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NetworkFault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NetworkFault::Partition {
+            link: read_link_id_binary(reader)?,
+            direction: read_partition_direction_binary(reader)?,
+        }),
+        1 => Ok(NetworkFault::Loss {
+            link: read_link_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+        }),
+        2 => Ok(NetworkFault::Reorder {
+            link: read_link_id_binary(reader)?,
+            window: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        3 => Ok(NetworkFault::Duplicate {
+            link: read_link_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            gap: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        4 => Ok(NetworkFault::Corruption {
+            link: read_link_id_binary(reader)?,
+            kind: read_network_corruption_fault_binary(reader)?,
+        }),
+        5 => Ok(NetworkFault::Bandwidth {
+            link: read_link_id_binary(reader)?,
+            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
+        }),
+        6 => Ok(NetworkFault::LatencyBump {
+            link: read_link_id_binary(reader)?,
+            extra: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        _ => Err(scenario_serialization_error("invalid network-fault tag")),
+    }
+}
+
+fn write_network_corruption_fault_binary(
+    fault: &NetworkCorruptionFault,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match fault {
+        NetworkCorruptionFault::BitFlip { rate, max_bits } => {
+            writer.write_u8(0);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u32(*max_bits);
+        }
+        NetworkCorruptionFault::FieldMutation { rate } => {
+            writer.write_u8(1);
+            writer.write_u32(u32::from(rate.basis_points()));
+        }
+        NetworkCorruptionFault::Truncation { rate, max_bytes } => {
+            writer.write_u8(2);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u64(*max_bytes);
+        }
+    }
+}
+
+fn read_network_corruption_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NetworkCorruptionFault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NetworkCorruptionFault::BitFlip {
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            max_bits: reader.read_u32()?,
+        }),
+        1 => Ok(NetworkCorruptionFault::FieldMutation {
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+        }),
+        2 => Ok(NetworkCorruptionFault::Truncation {
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            max_bytes: reader.read_u64()?,
+        }),
+        _ => Err(scenario_serialization_error(
+            "invalid network-corruption-fault tag",
+        )),
+    }
+}
+
+fn write_node_fault_binary(fault: &NodeFault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        NodeFault::Crash { node, restart } => {
+            writer.write_u8(0);
+            writer.write_string(&node.name);
+            write_restart_policy_binary(*restart, writer);
+        }
+        NodeFault::Slow { node, factor } => {
+            writer.write_u8(1);
+            writer.write_string(&node.name);
+            writer.write_u32(factor.basis_points());
+        }
+        NodeFault::ClockSkew { node, offset } => {
+            writer.write_u8(2);
+            writer.write_string(&node.name);
+            writer.write_i64(offset.nanos);
+        }
+    }
+}
+
+fn read_node_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<NodeFault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NodeFault::Crash {
+            node: read_node_id_binary(reader)?,
+            restart: read_restart_policy_binary(reader)?,
+        }),
+        1 => Ok(NodeFault::Slow {
+            node: read_node_id_binary(reader)?,
+            factor: FaultSlowdownFactorBasisPoints::from_basis_points(reader.read_u32()?)?,
+        }),
+        2 => Ok(NodeFault::ClockSkew {
+            node: read_node_id_binary(reader)?,
+            offset: SimOffset {
+                nanos: reader.read_i64()?,
+            },
+        }),
+        _ => Err(scenario_serialization_error("invalid node-fault tag")),
+    }
+}
+
+fn write_block_fault_binary(fault: &BlockFault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        BlockFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => {
+            writer.write_u8(0);
+            writer.write_string(&device.name);
+            writer.write_u64(extra.nanos());
+            writer.write_u64(jitter.nanos());
+        }
+        BlockFault::Failure { device, rate, mode } => {
+            writer.write_u8(1);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            write_io_failure_mode_binary(*mode, writer);
+        }
+        BlockFault::Reorder { device, window } => {
+            writer.write_u8(2);
+            writer.write_string(&device.name);
+            writer.write_u64(window.nanos());
+        }
+        BlockFault::Duplicate { device, rate, gap } => {
+            writer.write_u8(3);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u64(gap.nanos());
+        }
+        BlockFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => {
+            writer.write_u8(4);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u32(*bit_flips);
+        }
+        BlockFault::Bandwidth { device, limit } => {
+            writer.write_u8(5);
+            writer.write_string(&device.name);
+            writer.write_u64(limit.bits_per_second());
+        }
+    }
+}
+
+fn read_block_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<BlockFault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(BlockFault::Latency {
+            device: read_device_id_binary(reader)?,
+            extra: FaultDuration::from_nanos(reader.read_u64()?),
+            jitter: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        1 => Ok(BlockFault::Failure {
+            device: read_device_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            mode: read_io_failure_mode_binary(reader)?,
+        }),
+        2 => Ok(BlockFault::Reorder {
+            device: read_device_id_binary(reader)?,
+            window: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        3 => Ok(BlockFault::Duplicate {
+            device: read_device_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            gap: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        4 => Ok(BlockFault::Corruption {
+            device: read_device_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            bit_flips: reader.read_u32()?,
+        }),
+        5 => Ok(BlockFault::Bandwidth {
+            device: read_device_id_binary(reader)?,
+            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
+        }),
+        _ => Err(scenario_serialization_error("invalid block-fault tag")),
+    }
+}
+
+fn write_ninep_fault_binary(fault: &NinePFault, writer: &mut ScenarioBinaryWriter) {
+    match fault {
+        NinePFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => {
+            writer.write_u8(0);
+            writer.write_string(&device.name);
+            writer.write_u64(extra.nanos());
+            writer.write_u64(jitter.nanos());
+        }
+        NinePFault::Failure {
+            device,
+            rate,
+            errno,
+        } => {
+            writer.write_u8(1);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_i64(i64::from(errno.code()));
+        }
+        NinePFault::Reorder { device, window } => {
+            writer.write_u8(2);
+            writer.write_string(&device.name);
+            writer.write_u64(window.nanos());
+        }
+        NinePFault::Duplicate { device, rate, gap } => {
+            writer.write_u8(3);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u64(gap.nanos());
+        }
+        NinePFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => {
+            writer.write_u8(4);
+            writer.write_string(&device.name);
+            writer.write_u32(u32::from(rate.basis_points()));
+            writer.write_u32(*bit_flips);
+        }
+        NinePFault::Bandwidth { device, limit } => {
+            writer.write_u8(5);
+            writer.write_string(&device.name);
+            writer.write_u64(limit.bits_per_second());
+        }
+    }
+}
+
+fn read_ninep_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NinePFault, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NinePFault::Latency {
+            device: read_device_id_binary(reader)?,
+            extra: FaultDuration::from_nanos(reader.read_u64()?),
+            jitter: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        1 => {
+            let device = read_device_id_binary(reader)?;
+            let rate = FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?;
+            let errno_code = i32::try_from(reader.read_i64()?)
+                .map_err(|_error| scenario_serialization_error("9p errno code does not fit i32"))?;
+            Ok(NinePFault::Failure {
+                device,
+                rate,
+                errno: NinePErrno::from_code(errno_code)?,
+            })
+        }
+        2 => Ok(NinePFault::Reorder {
+            device: read_device_id_binary(reader)?,
+            window: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        3 => Ok(NinePFault::Duplicate {
+            device: read_device_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            gap: FaultDuration::from_nanos(reader.read_u64()?),
+        }),
+        4 => Ok(NinePFault::Corruption {
+            device: read_device_id_binary(reader)?,
+            rate: FaultRateBasisPoints::from_basis_points(reader.read_u32()?)?,
+            bit_flips: reader.read_u32()?,
+        }),
+        5 => Ok(NinePFault::Bandwidth {
+            device: read_device_id_binary(reader)?,
+            limit: FaultBandwidthBitsPerSecond::new(reader.read_u64()?)?,
+        }),
+        _ => Err(scenario_serialization_error("invalid 9p-fault tag")),
+    }
+}
+
+fn write_restart_policy_binary(policy: RestartPolicy, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match policy {
+        RestartPolicy::FromReadyPoint => 0,
+        RestartPolicy::FromLastCheckpoint => 1,
+        RestartPolicy::StayDown => 2,
+    });
+}
+
+fn read_restart_policy_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<RestartPolicy, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(RestartPolicy::FromReadyPoint),
+        1 => Ok(RestartPolicy::FromLastCheckpoint),
+        2 => Ok(RestartPolicy::StayDown),
+        _ => Err(scenario_serialization_error("invalid restart-policy tag")),
+    }
+}
+
+fn write_partition_direction_binary(
+    direction: PartitionDirection,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    writer.write_u8(match direction {
+        PartitionDirection::Bidirectional => 0,
+        PartitionDirection::EndpointAToEndpointB => 1,
+        PartitionDirection::EndpointBToEndpointA => 2,
+    });
+}
+
+fn read_partition_direction_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<PartitionDirection, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(PartitionDirection::Bidirectional),
+        1 => Ok(PartitionDirection::EndpointAToEndpointB),
+        2 => Ok(PartitionDirection::EndpointBToEndpointA),
+        _ => Err(scenario_serialization_error(
+            "invalid partition-direction tag",
+        )),
+    }
+}
+
+fn write_io_failure_mode_binary(mode: IoFailureMode, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match mode {
+        IoFailureMode::Drop => 0,
+        IoFailureMode::ErrorStatus => 1,
+    });
+}
+
+fn read_io_failure_mode_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<IoFailureMode, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(IoFailureMode::Drop),
+        1 => Ok(IoFailureMode::ErrorStatus),
+        _ => Err(scenario_serialization_error("invalid I/O failure-mode tag")),
+    }
+}
+
+fn read_node_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<NodeId, EngineError> {
+    Ok(NodeId {
+        name: reader.read_string()?,
+    })
+}
+
+fn read_link_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkId, EngineError> {
+    Ok(LinkId {
+        name: reader.read_string()?,
+    })
+}
+
+fn read_device_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<DeviceId, EngineError> {
+    Ok(DeviceId {
+        name: reader.read_string()?,
+    })
 }
 
 fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryWriter) {
@@ -14283,17 +15857,19 @@ fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
     let Some(plan) = toml_plan_table(&value) else {
         return Ok(());
     };
-    let Some(entries) = plan.get("entry") else {
-        return Ok(());
-    };
-    let Some(entries) = entries.as_array() else {
-        return Err(scenario_serialization_error(
-            "serialized plan entry list must be an array",
-        ));
-    };
+    for key in ["entry", "fault_entry"] {
+        let Some(entries) = plan.get(key) else {
+            continue;
+        };
+        let Some(entries) = entries.as_array() else {
+            return Err(scenario_serialization_error(format!(
+                "serialized plan {key} list must be an array"
+            )));
+        };
 
-    for (index, entry) in entries.iter().enumerate() {
-        validate_plan_entry_toml_value(index, entry)?;
+        for (index, entry) in entries.iter().enumerate() {
+            validate_plan_entry_toml_value(index, entry)?;
+        }
     }
 
     Ok(())
@@ -14850,6 +16426,7 @@ fn plan_material(plan: &Plan) -> String {
 fn plan_kind_material(kind: &PlanKind) -> String {
     match kind {
         PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
+        PlanKind::FaultPlan { plan } => fault_plan_material(plan.entries()),
         PlanKind::EventGraph { graph } => event_graph_plan_material(graph),
     }
 }
@@ -14863,14 +16440,118 @@ fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
     lines.join("\n")
 }
 
+fn fault_plan_material(entries: &[FaultPlanEntry]) -> String {
+    event_graph_plan_material_from_events(&fault_plan_material_events(entries))
+}
+
 fn event_graph_plan_material(graph: &EventGraph) -> String {
-    let mut lines = Vec::with_capacity(graph.events().len().saturating_mul(16) + 2);
+    event_graph_plan_material_from_events(graph.events())
+}
+
+fn event_graph_plan_material_from_events(events: &[Event]) -> String {
+    let mut lines = Vec::with_capacity(events.len().saturating_mul(16) + 2);
     lines.push(String::from("plan=event-graph"));
-    lines.push(format!("events={}", graph.events().len()));
-    for event in graph.events() {
+    lines.push(format!("events={}", events.len()));
+    for event in events {
         lines.push(event_material(event));
     }
     lines.join("\n")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FaultPlanMaterialAction {
+    at: VirtualTime,
+    kind: &'static str,
+    kind_order: u8,
+    tag: FaultTag,
+    material: String,
+    action: Action,
+}
+
+fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
+    fault_plan_material_actions(entries)
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            Event::once(
+                fault_plan_material_event_id(index, action.kind, &action.tag),
+                Some(Predicate::At { at: action.at }),
+                action.action.clone(),
+            )
+        })
+        .collect()
+}
+
+fn fault_plan_material_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanMaterialAction> {
+    let mut actions = Vec::new();
+    for entry in entries {
+        match entry {
+            FaultPlanEntry::At {
+                at,
+                duration,
+                tag,
+                fault,
+            } => {
+                actions.push(fault_plan_material_inject_action(*at, tag, fault));
+                if let Some(heal_at) = at.ticks.checked_add(duration.nanos()) {
+                    actions.push(fault_plan_material_heal_action(
+                        VirtualTime { ticks: heal_at },
+                        tag,
+                    ));
+                }
+            }
+            FaultPlanEntry::PermanentAt { at, tag, fault } => {
+                actions.push(fault_plan_material_inject_action(*at, tag, fault));
+            }
+            FaultPlanEntry::Heal { at, tag } => {
+                actions.push(fault_plan_material_heal_action(*at, tag));
+            }
+        }
+    }
+    actions.sort_by(|left, right| {
+        left.at
+            .cmp(&right.at)
+            .then_with(|| left.kind_order.cmp(&right.kind_order))
+            .then_with(|| left.material.cmp(&right.material))
+    });
+    actions
+}
+
+fn fault_plan_material_inject_action(
+    at: VirtualTime,
+    tag: &FaultTag,
+    fault: &Fault,
+) -> FaultPlanMaterialAction {
+    FaultPlanMaterialAction {
+        at,
+        kind: "inject",
+        kind_order: 0,
+        tag: tag.clone(),
+        material: format!(
+            "inject\n{}\n{}",
+            fault_tag_material(tag),
+            fault.canonical_material()
+        ),
+        action: Action::InjectFault {
+            tag: tag.clone(),
+            fault: MembershipFault::taxonomy(fault.clone()),
+        },
+    }
+}
+
+fn fault_plan_material_heal_action(at: VirtualTime, tag: &FaultTag) -> FaultPlanMaterialAction {
+    FaultPlanMaterialAction {
+        at,
+        kind: "heal",
+        kind_order: 1,
+        tag: tag.clone(),
+        material: format!("heal\n{}", fault_tag_material(tag)),
+        action: Action::HealFault { tag: tag.clone() },
+    }
+}
+
+fn fault_plan_material_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
+    EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
 }
 
 fn event_material(event: &Event) -> String {
@@ -14885,6 +16566,40 @@ fn event_material(event: &Event) -> String {
         trigger,
         action_material(&event.action)
     )
+}
+
+fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
+    match entry {
+        FaultPlanEntry::At {
+            at,
+            duration,
+            tag,
+            fault,
+        } => {
+            format!(
+                "fault_plan_entry=at\nplan_at_ticks={}\nduration_nanos={}\n{}\n{}",
+                at.ticks,
+                duration.nanos(),
+                fault_tag_material(tag),
+                fault.canonical_material()
+            )
+        }
+        FaultPlanEntry::PermanentAt { at, tag, fault } => {
+            format!(
+                "fault_plan_entry=permanent-at\nplan_at_ticks={}\n{}\n{}",
+                at.ticks,
+                fault_tag_material(tag),
+                fault.canonical_material()
+            )
+        }
+        FaultPlanEntry::Heal { at, tag } => {
+            format!(
+                "fault_plan_entry=heal\nplan_at_ticks={}\n{}",
+                at.ticks,
+                fault_tag_material(tag)
+            )
+        }
+    }
 }
 
 fn plan_entry_material(entry: &PlanEntry) -> String {
@@ -14997,6 +16712,9 @@ fn membership_fault_material(fault: &MembershipFault) -> String {
         }
         MembershipFault::NotYetJoined { node } => {
             format!("fault=not-yet-joined\n{}", node_ref_material("node", node))
+        }
+        MembershipFault::Taxonomy { fault } => {
+            format!("fault=taxonomy\n{}", fault.canonical_material())
         }
     }
 }
