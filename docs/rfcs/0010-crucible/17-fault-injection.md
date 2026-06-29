@@ -1030,10 +1030,23 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   bridge-produced partition, partial-heal, and full-heal changes through
   `SingleScheduler` so removed directed edges stop authorizing sends or
   contributing lookahead until restored.
-- [ ] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
+- [x] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
   without altering the retired instruction stream; clock-skew offsets only the
   perceived time-of-day source, never virtual time/icount. — satisfies
   [FAULT-18], [FAULT-21]; spec §17.4.2, §17.4.4.
+
+  Completed by `checks.crucible.phase4.nodeFaultApplication`: VM timing faults
+  now lower combined node-fault effects into an anchored per-node timing
+  projection in `SingleScheduler`. Slowdown preserves the VM's current
+  faulted virtual time at activation, stretches future counter-to-virtual-time
+  mapping by the integer basis-point factor, and computes RUN ceilings by the
+  inverse slowed projection, so the VM retires the same counter stream while
+  advancing more slowly against peers. Clock skew is stored only in the
+  guest-visible projection; effective clocks, frontier computation, RUN
+  ceilings, completion event keys, preemption timestamps, and ordering keys
+  remain on the scheduler axis. The focused regression covers anchored slow
+  projection, slowed scheduler RUN ceilings, slowed preemption and I/O
+  completion timestamps, and guest-visible-only clock skew.
 - [ ] **T-FAULT-8** Implement crash semantics (stop runtime, discard in-flight
   I/O, break connections, deterministic recorded discard set) and restart
   policies (FromReadyPoint / FromLastCheckpoint / StayDown), proving the crashed
