@@ -111,6 +111,128 @@ fn native_file_cache_parity_harness_covers_empty_foldl_update_regression() -> Re
 }
 
 #[test]
+fn native_file_cache_parity_harness_covers_derivation_side_record_reuse() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-cache-parity-derivation-side-records");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          base = derivationStrict {
+            name = "native-side-record-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+          };
+          sibling = derivationStrict {
+            name = "native-side-record-sibling";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+          };
+        in {
+          pkgs.sideRecord = derivationStrict {
+            name = "native-side-record-downstream";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            input = base.out;
+            other = sibling.drvPath;
+          };
+        }"#,
+    )?;
+
+    let report = native_file_closure_cache_parity(
+        &root,
+        &store,
+        &persist_root,
+        &file,
+        "pkgs.sideRecord",
+        |_| Ok(()),
+    )?;
+    assert_eq!(report.uncached.drvs().len(), 3);
+    assert!(
+        report.uncached.root().starts_with(&store),
+        "{}",
+        report.uncached.root().display()
+    );
+    assert_drv_aterm_contains_all(
+        "native derivation side-record closure",
+        &report.uncached,
+        &[
+            ("base derivation name", b"native-side-record-base"),
+            ("sibling derivation name", b"native-side-record-sibling"),
+            (
+                "downstream derivation name",
+                b"native-side-record-downstream",
+            ),
+        ],
+    );
+    assert_eq!(report.uncached_stats.derivation_aterm_path_reuses(), 0);
+    assert_eq!(
+        report.uncached_stats.static_derivation_output_path_reuses(),
+        0
+    );
+    assert_eq!(report.cache_miss_stats.derivation_aterm_path_reuses(), 0);
+    assert_eq!(
+        report
+            .cache_miss_stats
+            .static_derivation_output_path_reuses(),
+        0
+    );
+    assert!(report.cache_miss_stats.derivation_hash_calculations() > 0);
+    assert!(report.cache_miss_stats.derivation_text_path_calculations() > 0);
+    assert_eq!(report.cache_second_stats.derivation_aterm_path_reuses(), 3);
+    assert_eq!(
+        report
+            .cache_second_stats
+            .static_derivation_output_path_reuses(),
+        3
+    );
+    assert_eq!(report.cache_second_stats.derivation_hash_calculations(), 0);
+    assert_eq!(
+        report
+            .cache_second_stats
+            .derivation_text_path_calculations(),
+        0
+    );
+    assert_eq!(
+        report.persistent_hit_stats.derivation_aterm_path_reuses(),
+        3
+    );
+    assert_eq!(
+        report
+            .persistent_hit_stats
+            .static_derivation_output_path_reuses(),
+        3
+    );
+    assert_eq!(
+        report.persistent_hit_stats.derivation_hash_calculations(),
+        0
+    );
+    assert_eq!(
+        report
+            .persistent_hit_stats
+            .derivation_text_path_calculations(),
+        0
+    );
+    assert_eq!(
+        report.disabled_stats.static_derivation_output_path_reuses(),
+        0
+    );
+    assert_eq!(report.disabled_stats.derivation_aterm_path_reuses(), 0);
+    assert!(report.disabled_stats.derivation_hash_calculations() > 0);
+    assert!(report.disabled_stats.derivation_text_path_calculations() > 0);
+
+    Ok(())
+}
+
+#[test]
 fn native_file_cache_parity_harness_covers_filesystem_impure_inputs() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-fs-inputs");
     fs::create_dir_all(&root)?;
