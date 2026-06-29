@@ -981,19 +981,25 @@ requires them:
 
 - [x] `getFlake` (args) — **conditional subset only**. Native evaluation covers
       local flakes through the native `fetchTree` subset: it imports
-      `flake.nix`, resolves direct string and exact `{ url = ...; }` declared
-      inputs recursively through `builtins.getFlake`, resolves exact root
-      `{ follows = "" }`, top-level `{ follows = "name" }`, and slash-path
-      `{ follows = "name/child" }` aliases through the resolved input graph,
+      `flake.nix`, canonicalizes recursive string refs through
+      `parseFlakeRef`/`flakeRefToString`, resolves direct string, exact
+      `{ url = string; }`, and exact
+      `{ url = string; inputs = { ...; }; }` declared inputs recursively
+      through the generated loader so direct per-input overrides can replace
+      child inputs, resolves exact root `{ follows = "" }`, top-level
+      `{ follows = "name" }`, and slash-path `{ follows = "name/child" }`
+      aliases through the resolved input graph,
       evaluates `outputs` with `self` and the resolved input set, and returns
       `_type = "flake"`, `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock
       metadata. Argument preflight, string-context rejection,
-      pure-mode locking, direct-input resolution, follows resolution, and
-      unsupported declared-input rejection are covered by focused `getFlake`
-      tests.
+      pure-mode locking, direct-input resolution, bare absolute string input
+      canonicalization, follows resolution, and unsupported declared-input
+      rejection are covered by focused `getFlake` tests.
 - [ ] Full `getFlake` flake protocol remains scoped/open: declared-input
-      forms beyond direct strings/exact `url` attrsets/exact `follows` attrsets,
-      input overrides, ambient registry lookup and non-exact indirect/ref merge
+      forms beyond direct strings/exact string-`url` attrsets/exact
+      string-URL+`inputs` attrsets/exact `follows` attrsets, non-string `url`
+      values, override/follows combinations beyond direct replacement of child
+      inputs, ambient registry lookup and non-exact indirect/ref merge
       semantics, lock-file graph semantics, and general flake protocol parity.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path

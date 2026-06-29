@@ -2,48 +2,60 @@ use super::*;
 
 const GET_FLAKE_SOURCE_PREFIX: &[u8] = br#"
 let
-  sourceInfo = builtins.fetchTree "#;
-const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#";
-  flake = import (sourceInfo.outPath + "/flake.nix");
-  declaredInputs = flake.inputs or {};
-  unsupportedInput = builtins.throw "aos-nix builtins.getFlake currently supports only direct string, exact url, or exact follows inputs";
-  followsSegments = follows: builtins.filter builtins.isString (builtins.split "/" follows);
-  resolveFollowsRoot = segment:
-    if segment == "" then unsupportedInput
-    else if builtins.hasAttr segment inputs then builtins.getAttr segment inputs
-    else unsupportedInput;
-  resolveFollowsChild = current: segment:
-    if segment == "" then unsupportedInput
-    else if builtins.isAttrs current
-      && builtins.hasAttr "inputs" current
-      && builtins.isAttrs current.inputs
-      && builtins.hasAttr segment current.inputs
-    then builtins.getAttr segment current.inputs
-    else unsupportedInput;
-  resolveFollows = follows:
-    if follows == "" then self
-    else
-      let segments = followsSegments follows;
-      in if segments == []
-        then unsupportedInput
-        else builtins.foldl' resolveFollowsChild (resolveFollowsRoot (builtins.head segments)) (builtins.tail segments);
-  resolveInput = name: input:
-    if builtins.isString input then builtins.getFlake input
-    else if builtins.isAttrs input && builtins.attrNames input == [ "url" ] then builtins.getFlake input.url
-    else if builtins.isAttrs input
-      && builtins.attrNames input == [ "follows" ]
-      && builtins.isString input.follows
-    then resolveFollows input.follows
-    else unsupportedInput;
-  inputs = builtins.mapAttrs resolveInput declaredInputs;
-  outputs = flake.outputs (inputs // { inherit self; });
-  metadata = sourceInfo // {
-    _type = "flake";
-    inherit inputs outputs sourceInfo;
-    outPath = sourceInfo.outPath;
-  };
-  self = outputs // metadata;
-in self
+  loadFlake = flakeRef: overrides:
+    let
+      canonicalFlakeRef = builtins.flakeRefToString (builtins.parseFlakeRef flakeRef);
+      sourceInfo = builtins.fetchTree canonicalFlakeRef;
+      flake = import (sourceInfo.outPath + "/flake.nix");
+      declaredInputs = (flake.inputs or {}) // overrides;
+      unsupportedInput = builtins.throw "aos-nix builtins.getFlake currently supports only direct string, exact url, exact url+inputs override, or exact follows inputs";
+      followsSegments = follows: builtins.filter builtins.isString (builtins.split "/" follows);
+      resolveFollowsRoot = segment:
+        if segment == "" then unsupportedInput
+        else if builtins.hasAttr segment inputs then builtins.getAttr segment inputs
+        else unsupportedInput;
+      resolveFollowsChild = current: segment:
+        if segment == "" then unsupportedInput
+        else if builtins.isAttrs current
+          && builtins.hasAttr "inputs" current
+          && builtins.isAttrs current.inputs
+          && builtins.hasAttr segment current.inputs
+        then builtins.getAttr segment current.inputs
+        else unsupportedInput;
+      resolveFollows = follows:
+        if follows == "" then self
+        else
+          let segments = followsSegments follows;
+          in if segments == []
+            then unsupportedInput
+            else builtins.foldl' resolveFollowsChild (resolveFollowsRoot (builtins.head segments)) (builtins.tail segments);
+      resolveInput = name: input:
+        if builtins.isString input then loadFlake input {}
+        else if builtins.isAttrs input
+          && builtins.attrNames input == [ "url" ]
+          && builtins.isString input.url
+        then loadFlake input.url {}
+        else if builtins.isAttrs input
+          && builtins.attrNames input == [ "inputs" "url" ]
+          && builtins.isString input.url
+          && builtins.isAttrs input.inputs
+        then loadFlake input.url input.inputs
+        else if builtins.isAttrs input
+          && builtins.attrNames input == [ "follows" ]
+          && builtins.isString input.follows
+        then resolveFollows input.follows
+        else unsupportedInput;
+      inputs = builtins.mapAttrs resolveInput declaredInputs;
+      outputs = flake.outputs (inputs // { inherit self; });
+      metadata = sourceInfo // {
+        _type = "flake";
+        inherit inputs outputs sourceInfo;
+        outPath = sourceInfo.outPath;
+      };
+      self = outputs // metadata;
+    in self;
+in loadFlake "#;
+const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#" {}
 "#;
 
 impl BuiltinExecutor for TreeWalk {

@@ -813,6 +813,198 @@ fn get_flake_resolves_direct_declared_inputs() {
 }
 
 #[test]
+fn get_flake_resolves_bare_absolute_declared_inputs() {
+    let child = unique_temp_dir("get-flake-bare-input-child");
+    fs::write(
+        child.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 19;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("child flake.nix writes");
+    let alias = unique_temp_dir("get-flake-bare-input-alias");
+    fs::write(
+        alias.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 23;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("alias flake.nix writes");
+    let root = unique_temp_dir("get-flake-bare-input-parent");
+    fs::write(
+        root.join("flake.nix"),
+        format!(
+            r#"
+            {{
+              inputs.child = "{}";
+              inputs.alias.url = "{}";
+              outputs = {{ self, child, alias }}: {{
+                answer = child.answer + alias.answer;
+                childOutPath = child.outPath;
+                childSelfOutPath = child.fromSelfOutPath;
+                aliasOutPath = alias.outPath;
+                aliasSelfOutPath = alias.fromSelfOutPath;
+                inputNames = builtins.attrNames self.inputs;
+              }};
+            }}
+            "#,
+            path_source(&child),
+            path_source(&alias)
+        ),
+    )
+    .expect("parent flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-bare-input-store");
+    let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let flake_ref = nix_string_literal(&format!("path:{}", path_source(&root)));
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+            let f = builtins.getFlake {flake_ref};
+            in {{
+              answer = f.answer;
+              childOutPath = f.childOutPath;
+              childSelfOutPath = f.childSelfOutPath;
+              aliasOutPath = f.aliasOutPath;
+              aliasSelfOutPath = f.aliasSelfOutPath;
+              inputs = f.inputNames;
+            }}
+            "#
+        ),
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("bare declared input getFlake JSON parses");
+    assert_eq!(value["answer"], 42);
+    assert_eq!(value["inputs"], serde_json::json!(["alias", "child"]));
+    assert_eq!(value["childOutPath"], value["childSelfOutPath"]);
+    assert_eq!(value["aliasOutPath"], value["aliasSelfOutPath"]);
+
+    fs::remove_dir_all(child).expect("child flake temp directory removes");
+    fs::remove_dir_all(alias).expect("alias flake temp directory removes");
+    fs::remove_dir_all(root).expect("parent flake temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn get_flake_resolves_declared_input_overrides() {
+    let default_deeper = unique_temp_dir("get-flake-override-default-deeper");
+    fs::write(
+        default_deeper.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 5;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("default deeper flake.nix writes");
+    let replacement_deeper = unique_temp_dir("get-flake-override-replacement-deeper");
+    fs::write(
+        replacement_deeper.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 41;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("replacement deeper flake.nix writes");
+    let child = unique_temp_dir("get-flake-override-child");
+    fs::write(
+        child.join("flake.nix"),
+        format!(
+            r#"
+            {{
+              inputs.deeper.url = "path:{}";
+              outputs = {{ self, deeper }}: {{
+                answer = deeper.answer + 1;
+                deeperOutPath = deeper.outPath;
+                deeperSelfOutPath = deeper.fromSelfOutPath;
+                inputNames = builtins.attrNames self.inputs;
+              }};
+            }}
+            "#,
+            path_source(&default_deeper)
+        ),
+    )
+    .expect("child flake.nix writes");
+    let root = unique_temp_dir("get-flake-override-parent");
+    fs::write(
+        root.join("flake.nix"),
+        format!(
+            r#"
+            {{
+              inputs.child = {{
+                url = "path:{}";
+                inputs.deeper.url = "path:{}";
+              }};
+              outputs = {{ self, child }}: {{
+                answer = child.answer;
+                childInputNames = child.inputNames;
+                childOutPath = child.outPath;
+                deeperOutPath = child.deeperOutPath;
+                deeperSelfOutPath = child.deeperSelfOutPath;
+                inputNames = builtins.attrNames self.inputs;
+              }};
+            }}
+            "#,
+            path_source(&child),
+            path_source(&replacement_deeper)
+        ),
+    )
+    .expect("parent flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-override-parent-store");
+    let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let flake_ref = nix_string_literal(&format!("path:{}", path_source(&root)));
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+            let f = builtins.getFlake {flake_ref};
+            in {{
+              answer = f.answer;
+              childInputs = f.childInputNames;
+              inputs = f.inputNames;
+              deeperOutPath = f.deeperOutPath;
+              deeperSelfOutPath = f.deeperSelfOutPath;
+            }}
+            "#
+        ),
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("input override getFlake JSON parses");
+    assert_eq!(value["answer"], 42);
+    assert_eq!(value["childInputs"], serde_json::json!(["deeper"]));
+    assert_eq!(value["inputs"], serde_json::json!(["child"]));
+    assert_eq!(value["deeperOutPath"], value["deeperSelfOutPath"]);
+
+    fs::remove_dir_all(default_deeper).expect("default deeper flake temp directory removes");
+    fs::remove_dir_all(replacement_deeper)
+        .expect("replacement deeper flake temp directory removes");
+    fs::remove_dir_all(child).expect("child flake temp directory removes");
+    fs::remove_dir_all(root).expect("parent flake temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn get_flake_resolves_follows_input_paths() {
     let deeper = unique_temp_dir("get-flake-follows-deeper");
     fs::write(
@@ -965,14 +1157,23 @@ fn get_flake_obeys_fetch_tree_locking_and_rejects_unsupported_declared_inputs() 
             {{
               inputs.bad = {{}};
               inputs.extra = {{ url = "path:{}"; follows = "bad"; }};
-              outputs = {{ self, bad, extra }}: {{
+              inputs.structured.url = {{ type = "path"; path = "{}"; }};
+              inputs.structuredOverride = {{
+                url = {{ type = "path"; path = "{}"; }};
+                inputs = {{}};
+              }};
+              outputs = {{ self, bad, extra, structured, structuredOverride }}: {{
                 answer = bad.answer;
                 extraAnswer = extra.answer;
+                structuredAnswer = structured.answer;
+                structuredOverrideAnswer = structuredOverride.answer;
                 unusedBadNames = builtins.attrNames self.inputs;
                 unusedBadValue = 42;
               }};
             }}
             "#,
+            path_source(&child),
+            path_source(&child),
             path_source(&child)
         ),
     )
@@ -1014,6 +1215,30 @@ fn get_flake_obeys_fetch_tree_locking_and_rejects_unsupported_declared_inputs() 
         TreeWalkErrorKind::Thrown { .. }
     ));
 
+    let structured_error = eval_whnf_owned_with_options(
+        &lower(&format!("(builtins.getFlake {flake_ref}).structuredAnswer")),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("declared inputs with non-string url values are rejected");
+    assert!(matches!(
+        structured_error.kind(),
+        TreeWalkErrorKind::Thrown { .. }
+    ));
+
+    let structured_override_error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            "(builtins.getFlake {flake_ref}).structuredOverrideAnswer"
+        )),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("declared input overrides with non-string url values are rejected");
+    assert!(matches!(
+        structured_override_error.kind(),
+        TreeWalkErrorKind::Thrown { .. }
+    ));
+
     let json = eval_json_bytes_with_options(
         &format!(
             r#"
@@ -1029,7 +1254,10 @@ fn get_flake_obeys_fetch_tree_locking_and_rejects_unsupported_declared_inputs() 
     );
     let value: serde_json::Value =
         serde_json::from_slice(&json).expect("lazy unsupported input JSON parses");
-    assert_eq!(value["names"], serde_json::json!(["bad", "extra"]));
+    assert_eq!(
+        value["names"],
+        serde_json::json!(["bad", "extra", "structured", "structuredOverride"])
+    );
     assert_eq!(value["value"], 42);
 
     fs::remove_dir_all(child).expect("child flake temp directory removes");
