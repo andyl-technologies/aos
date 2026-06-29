@@ -864,9 +864,10 @@ alone (`M-1`/`Q-A`).
       thunks, full strictness/escape free-variable analysis, remaining
       heap/composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
-      hit/miss tests, lowered lambda-argument coverage, cross-type string/path
-      hash separation, materialized context-bearing string/path capture hash
-      tests, preforced computed string thunk-cell capture tests, fulfilled
+      hit/miss tests, repeated captured-slot deduplication, lowered
+      lambda-argument coverage, cross-type string/path hash separation,
+      materialized context-bearing string/path capture hash tests, preforced
+      computed string thunk-cell capture tests, fulfilled
       replayable-attrset thunk-cell hash tests, direct suspended computed and
       recursive alias thunk-cell skip tests, caller-level
       suspended computed capture subject-skip canary, dynamic `with`/scoped-import

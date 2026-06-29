@@ -37,6 +37,44 @@ fn captured_context_free_let_string_thunks_use_free_variable_hashes() {
 }
 
 #[test]
+fn repeated_captured_slot_contributes_one_free_variable_hash() {
+    let source = r#"let f = x: { a = (x == "s") && (x == "s"); }; in f "s""#;
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "repeated-capture-slot.nix",
+        source,
+        cache,
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a suspended thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("captured subject builds")
+    };
+
+    assert_eq!(
+        subject.free_var_value_hashes.len(),
+        1,
+        "repeated reads of one captured slot must not duplicate key material"
+    );
+}
+
+#[test]
 fn captured_context_free_string_thunks_use_free_variable_hashes() {
     let source = r#"let f = x: { a = x == "s"; }; in [ (f "s").a (f "t").a ]"#;
     let ir = lower(source);
