@@ -128,6 +128,9 @@ pub mod edgeratelimit;
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
+// Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
+// is unit-tested on the native target too — see [`placeholder`].
+pub mod placeholder;
 #[cfg(target_arch = "wasm32")]
 pub mod sqldobackend;
 #[cfg(target_arch = "wasm32")]
@@ -773,6 +776,25 @@ mod entry {
             if let Err(err) = crate::tenantdb::ensure_migrated(&backend).await {
                 return Response::error(format!("hubdb migrate: {err:#}"), 500);
             }
+            // DO-SQLite e2e probe (`do-e2e` feature only — never in production):
+            // run the managed-registry bootstrap directly over `SqlDoBackend` so
+            // the workerd-driven `aos-hub-worker-do-e2e` check exercises the
+            // create + read path against the *real* DO SQLite engine, with no
+            // router/rate-limit/R2/KV bindings. This is the regression guard for
+            // the bound-`NULL` corruption that 500'd `ListRegistries`/`GetRegistry`
+            // after a binding-less managed registry was created
+            // (see `crate::placeholder`).
+            #[cfg(feature = "do-e2e")]
+            {
+                let path = req
+                    .url()
+                    .ok()
+                    .map(|u| u.path().to_string())
+                    .unwrap_or_default();
+                if req.method() == Method::Post && path == "/_e2e/managed-registry-bootstrap" {
+                    return self.e2e_managed_registry_bootstrap().await;
+                }
+            }
             // Seal-gated control-plane (RFC-0004 ch.14 Phase E): the worker's
             // `scheduled`/`queue` handlers forward the Cron tick and each job to
             // `/_internal/{cron,job}` so maintenance runs over the colocated
@@ -915,6 +937,92 @@ mod entry {
             let (router, service, console_deps) =
                 router_from(&self.env, &request_origin, db).await?;
             crate::bridge::dispatch(router, &service, console_deps, req).await
+        }
+    }
+
+    #[cfg(feature = "do-e2e")]
+    impl HubDb {
+        /// Runs the managed-registry bootstrap over this DO's local SQLite and
+        /// returns a plain-text transcript (one `OK`/`ERR` line per step).
+        ///
+        /// The `aos-hub-worker-do-e2e` check drives this under the real DO SQLite
+        /// engine: create an org, create a binding-less (default-storage) managed
+        /// registry, then read it back via `list_registries`, `registry_by_slug`,
+        /// and the per-registry reads `registry_message` issues. It is the
+        /// regression guard for the bound-`NULL` corruption (a binding-less
+        /// registry's `storage_binding_id`) that 500'd those reads; the body ends
+        /// with `ALL OK` only when every step succeeds and the registry reads back
+        /// with a genuine `NULL` `storage_binding_id`.
+        ///
+        /// # Errors
+        ///
+        /// Returns a `worker` error only if the HTTP response cannot be built; a
+        /// failing database step is reported in the `200` body (so the e2e driver
+        /// sees the exact SQL error rather than a swallowed 500).
+        async fn e2e_managed_registry_bootstrap(&self) -> Result<Response> {
+            use aos_hub_core::db::Database;
+            let db = Database::attach(Box::new(crate::sqldobackend::SqlDoBackend::new(
+                self.state.storage().sql(),
+            )));
+            let mut out = String::new();
+            macro_rules! step {
+                ($label:expr, $e:expr) => {
+                    match $e.await {
+                        Ok(v) => out.push_str(&format!("OK  {}: {:?}\n", $label, v)),
+                        Err(e) => {
+                            out.push_str(&format!("ERR {}: {:#}\n", $label, e));
+                            return Response::ok(out);
+                        }
+                    }
+                };
+            }
+            step!("create_org", db.create_org("andyl", "Andyl"));
+            let org_id = match db.org_by_slug("andyl").await {
+                Ok(Some(org)) => org.id,
+                _ => return Response::ok(format!("{out}ERR org_by_slug: no row\n")),
+            };
+            step!(
+                "create_managed_registry",
+                db.create_managed_registry(
+                    org_id,
+                    "",
+                    "main",
+                    "public",
+                    None,
+                    "andyl/main",
+                    &[] as &[String],
+                    false,
+                )
+            );
+            step!("list_registries", db.list_registries());
+            step!("registry_by_slug", db.registry_by_slug("andyl/main"));
+            let record = match db.registry_by_slug("andyl/main").await {
+                Ok(Some(record)) => record,
+                _ => return Response::ok(format!("{out}ERR registry_by_slug: no row\n")),
+            };
+            // The reads `registry_message` issues per registry (the list/get path).
+            step!("index_status", db.index_status(record.id));
+            step!("list_roster", db.list_roster(record.id));
+            step!(
+                "list_advertised_caches",
+                db.list_advertised_caches(record.id)
+            );
+            step!(
+                "registry_by_scope",
+                db.registry_by_scope("andyl", "", "main")
+            );
+            // The fix's invariant: the binding-less registry's storage_binding_id
+            // round-trips as a genuine SQL NULL (not the `"[object Object]"` text
+            // a bound NULL was corrupted into).
+            if record.storage_binding_id.is_some() {
+                out.push_str(&format!(
+                    "ERR storage_binding_id not NULL: {:?}\n",
+                    record.storage_binding_id
+                ));
+                return Response::ok(out);
+            }
+            out.push_str("ALL OK\n");
+            Response::ok(out)
         }
     }
 }

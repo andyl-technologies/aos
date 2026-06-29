@@ -82,6 +82,14 @@ test-fleet suite="":
 test-worker-e2e:
     bin=`nix-build -A pkgs.aos-hub-worker-e2e --no-out-link`; exec "$bin/bin/aos-hub-worker-e2e"
 
+# Run the deployed-Worker DO-SQLite e2e: boots the wasm under the from-source
+# workerd with a real SQLite-backed HubDb Durable Object (enableSql) and asserts
+# the managed-registry bootstrap (create org -> binding-less managed registry ->
+# ListRegistries/GetRegistry reads). Regression guard for the bound-NULL
+# corruption (#138-adjacent). Exec'd outside the sandbox (workerd needs /sys).
+test-worker-do-e2e:
+    bin=`nix-build -A pkgs.aos-hub-worker-do-e2e --no-out-link`; exec "$bin/bin/aos-hub-worker-do-e2e"
+
 # ===========================================================================
 # Worker (serverless) deployment
 # ===========================================================================
