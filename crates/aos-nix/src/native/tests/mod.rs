@@ -144,9 +144,37 @@ impl NativeFileClosureCacheParity {
         assert_eq!(self.disabled_with_persist_root, self.uncached);
     }
 
-    fn assert_disabled_cache_observed_no_force_cache_activity(&self) {
-        assert_eq!(self.disabled_stats.force_cache_hits(), 0);
-        assert_eq!(self.disabled_stats.force_cache_misses(), 0);
+    fn assert_cache_off_observed_no_force_cache_activity(&self) {
+        for (label, stats) in [
+            ("uncached", &self.uncached_stats),
+            ("disabled eval-cache", &self.disabled_stats),
+        ] {
+            assert_eq!(
+                stats.force_cache_hits(),
+                0,
+                "{label} native file-closure run reported force-cache hits"
+            );
+            assert_eq!(
+                stats.force_cache_misses(),
+                0,
+                "{label} native file-closure run reported force-cache misses"
+            );
+            assert_eq!(
+                stats.force_cache_materialization_materializes(),
+                0,
+                "{label} native file-closure run reported durable materialization decisions"
+            );
+            assert_eq!(
+                stats.force_cache_materialization_keeps_in_memory(),
+                0,
+                "{label} native file-closure run reported keep-in-memory decisions"
+            );
+            assert_eq!(
+                stats.force_cache_materialization_decisions(),
+                0,
+                "{label} native file-closure run reported materialization decisions"
+            );
+        }
     }
 }
 
@@ -295,7 +323,7 @@ where
         persistent_hit_keys,
     };
     report.assert_byte_identical();
-    report.assert_disabled_cache_observed_no_force_cache_activity();
+    report.assert_cache_off_observed_no_force_cache_activity();
 
     let canaries = persistent_force_cache_surface_canaries(persist_root)?;
     if !canaries.is_empty() {
