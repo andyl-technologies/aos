@@ -1193,8 +1193,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   named trigger handles, once/repeatable policy, deterministic declared-order
   firings, duplicate-id and repeatable-entrypoint rejection, and a focused
   static guardrail against current direct scenario poke/inject/heal APIs in the
-  engine-facing control surfaces. Black-box guarantee wiring and replay gates
-  remain T-TRIG-19 through T-TRIG-20.
+  engine-facing control surfaces. Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
@@ -1208,8 +1207,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   identical predicate evaluation over a shared condition value and evaluation
   point, `Eventually` trigger/property reuse, compound predicate reuse in
   `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
-  enum. Black-box guarantee wiring and replay gates remain T-TRIG-19 through
-  T-TRIG-20.
+  enum. Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
@@ -1223,8 +1221,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   evaluation, and rejects `After` references to undeclared events plus `Timer`
   references without an armable `Action::ArmTimer` declaration. Assertion
   properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only. Black-box guarantee
-  wiring and replay gates remain T-TRIG-19 through T-TRIG-20.
+  edge-shaped `After` and `Timer` leaves as trigger-only. Replay gates remain
+  T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1240,8 +1238,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
-  catalog integration remains T-OBS-*; black-box guarantee wiring and replay
-  gates remain T-TRIG-19 through T-TRIG-20.
+  catalog integration remains T-OBS-*; replay gates remain T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1257,8 +1254,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
   production symbol-table loading, and coverage-guided search consumption remain
-  T-OBS-9 and T-ADV-10; black-box guarantee wiring and replay gates remain
-  T-TRIG-19 through T-TRIG-20.
+  T-OBS-9 and T-ADV-10; replay gates remain T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies
@@ -1274,7 +1270,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
   cadence, and RFC 19 memory-sample catalog integration remain T-OBS-*;
-  Black-box guarantee wiring and replay gates remain T-TRIG-19 through T-TRIG-20.
+  Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1291,7 +1287,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
   cooperation. Production RFC 19 catalog integration remains T-OBS-*;
-  Black-box guarantee wiring and replay gates remain T-TRIG-19 through T-TRIG-20.
+  Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
   with zero `GuestMarker` conditions. — satisfies [TRIG-3], [TRIG-14]; spec
@@ -1311,7 +1307,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   require named-predicate fallback; zero-`GuestMarker` graphs run without any
   guest-marker support; and unrelated guest-marker events are additive to
   non-marker conditions. Production RFC 19 catalog integration remains T-OBS-*;
-  Black-box guarantee wiring and replay gates remain T-TRIG-19 through T-TRIG-20.
+  Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
@@ -1325,8 +1321,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   condition even when another branch decides the current truth value. Event-graph
   construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
   deterministic `EmptyCompound` error; property validation already rejects the
-  same empty compounds. Black-box guarantee wiring and replay gates remain
-  T-TRIG-19 through T-TRIG-20.
+  same empty compounds. Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
   on icount), in the same deterministic pass as assertion evaluation, never
@@ -1347,8 +1342,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   old raw observable-event injection path, public raw point constructors, public
   raw prefix construction, public graph-evaluation bypasses, direct
   assertion-evaluation bypasses, and host wall-clock APIs in the trigger
-  evaluation surface. Black-box guarantee wiring and replay gates remain
-  T-TRIG-19 through T-TRIG-20.
+  evaluation surface. Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
   recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
   outcomes are Decisions; prove triggers re-derive identically on a forked schedule
@@ -1366,8 +1360,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   EMIT. Focused tests prove a firing is not recorded as a `Decision`, same-prefix
   forked schedulers rederive byte-identical trigger-firing entries, and a trigger
   whose action activates a fault still keeps the deterministic firing separate
-  from later probabilistic fault outcome `Decision`s. Black-box guarantee wiring
-  and replay gates remain T-TRIG-19 through T-TRIG-20.
+  from later probabilistic fault outcome `Decision`s. Replay gates remain
+  T-TRIG-20.
 - [x] **T-TRIG-12** Implement the `Action` set (InjectFault/HealFault,
   ArmTimer/CancelTimer, StartNode/StopNode, CreateSavepoint/Fork, Pass/Fail, Log,
   Group), each applied deterministically at the firing virtual time at a quantum
@@ -1387,8 +1381,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   variant through a nested group, prove log actions are observational rather than
   causal, prove trigger actions do not append `Decision`s, and prove same-prefix
   forked schedulers rederive identical action state and event-log bytes.
-  Black-box guarantee wiring and replay gates remain T-TRIG-19 through
-  T-TRIG-20.
+  Replay gates remain T-TRIG-20.
 - [x] **T-TRIG-13** Implement `StartNode`/`StopNode` as scheduling of a declared,
   baked node (not topology mutation): verify the participant set, RNG-stream set,
   lookahead graph, and bake set stay functions of the `World` alone. — satisfies
@@ -1490,11 +1483,22 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   serialization, scenario component orthogonality across World/Properties/Seed,
   and rejection of assertion-state triggers whose assertion namespace is absent
   from the composed `Properties`.
-- [ ] **T-TRIG-19** Wire the black-box-first guarantee gate: a complete scenario
+- [x] **T-TRIG-19** Wire the black-box-first guarantee gate: a complete scenario
   (readiness + faults + properties + pass/fail) authored with zero guest-side
   components runs deterministically; removing all `GuestMarker` conditions leaves a
   functional graph. — satisfies [TRIG-2], [TRIG-31]; spec §17a.9; cross-ref
   `gate:any-guest`.
+
+  Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`:
+  a complete graph-native scenario with fixed readiness observations,
+  membership-fault injection, relative-timer healing, black-box property state,
+  network convergence, and terminal `Pass`/`Fail` actions runs byte-identically
+  without any `GuestMarker`, named-predicate, or white-box world dependency. It
+  separately drives the assertion-violation branch and proves trigger `Fail`
+  verdict replay from the causal log. The focused gate also builds an enriched
+  graph with an optional `GuestMarker` readiness branch and proves the graph with
+  that branch removed still validates and reaches the same trigger action state
+  and composed verdict from black-box observations alone.
 - [ ] **T-TRIG-20** Wire `gate:e2e-determinism` and `gate:replay-oracle` for the
   event graph: identical trigger firings and actions across runs of a fixed
   `(ScenarioDef, Seed, Schedule)`, identical online vs offline, and divergence

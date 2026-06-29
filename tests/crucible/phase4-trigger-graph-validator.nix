@@ -65,8 +65,8 @@
         needle = "Completed by `checks.crucible.phase4.triggerGraphValidator`";
       }
       {
-        label = "black-box guarantee remains open";
-        needle = "- [ ] **T-TRIG-19**";
+        label = "replay gates remain open";
+        needle = "- [ ] **T-TRIG-20**";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [

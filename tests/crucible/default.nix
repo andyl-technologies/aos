@@ -597,6 +597,11 @@ in {
       attrPath = "checks.crucible.phase4.eventGraphSerialization";
       taskIds = ["T-TRIG-18"];
     };
+    blackBoxFirstGuarantee = import ./phase4-black-box-first-guarantee.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.blackBoxFirstGuarantee";
+      taskIds = ["T-TRIG-19"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
