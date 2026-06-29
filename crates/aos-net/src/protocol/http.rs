@@ -79,6 +79,34 @@ impl HttpProtocol {
         }
         builder
     }
+
+    /// Apply a request's explicit headers and the engine credential, emitting
+    /// **exactly one** `Authorization` header.
+    ///
+    /// An explicit `Authorization` in `request.headers` takes precedence and
+    /// suppresses the credential's: a caller that carries the auth in the
+    /// headers (e.g. the token-exchange `POST`, which sends the provisioning
+    /// secret) must not *also* get the engine credential appended. Two
+    /// `Authorization` headers (like two `Content-Length`s) are rejected by
+    /// strict edges such as Cloudflare with `400 Bad Request`.
+    fn apply_headers_and_auth(
+        &self,
+        mut builder: reqwest::RequestBuilder,
+        request: &TransferRequest,
+        auth: Option<&Credential>,
+    ) -> reqwest::RequestBuilder {
+        let mut has_explicit_auth = false;
+        for (name, value) in &request.headers {
+            if name.eq_ignore_ascii_case("authorization") {
+                has_explicit_auth = true;
+            }
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if !has_explicit_auth {
+            builder = self.apply_auth(builder, auth);
+        }
+        builder
+    }
 }
 
 impl Default for HttpProtocol {
@@ -338,18 +366,17 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
         let mut builder = self.client.put(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         // Set the request body.
         match &request.body {
             Some(TransferBody::Bytes(data)) => {
-                builder = builder
-                    .header("Content-Length", data.len().to_string())
-                    .body(data.clone());
+                // reqwest derives Content-Length from a sized in-memory body.
+                // Setting it manually too emits a *duplicate* Content-Length
+                // header, which strict edges (Cloudflare) reject with 400. Let
+                // reqwest set it. (The File arm below keeps an explicit length
+                // because its wrapped stream has no inherent size.)
+                builder = builder.body(data.clone());
             }
             Some(TransferBody::File(path)) => {
                 let file = tokio::fs::File::open(path)
@@ -407,17 +434,16 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
         let mut builder = self.client.post(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         match &request.body {
             Some(TransferBody::Bytes(data)) => {
-                builder = builder
-                    .header("Content-Length", data.len().to_string())
-                    .body(data.clone());
+                // reqwest derives Content-Length from a sized in-memory body.
+                // Setting it manually too emits a *duplicate* Content-Length
+                // header, which strict edges (Cloudflare) reject with 400. Let
+                // reqwest set it. (The File arm below keeps an explicit length
+                // because its wrapped stream has no inherent size.)
+                builder = builder.body(data.clone());
             }
             Some(TransferBody::File(path)) => {
                 let file = tokio::fs::File::open(path)

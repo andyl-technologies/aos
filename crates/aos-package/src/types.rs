@@ -88,9 +88,6 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_CONFIG_MODULE_V1,
 ];
 
-const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
-    "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
-];
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
 const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
     "/usr/lib/credstore.encrypted",
@@ -233,52 +230,12 @@ fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Resu
     Ok(())
 }
 
-/// Validate a package name before using it in registry package paths.
-///
-/// Package names are used as filenames under
-/// `packages/<first-letter>/<name>.toml` and are commonly derived from Nix
-/// store path names. Accept the ASCII path-safe characters Nix permits in
-/// store path names, require an alphanumeric leading character so bucketing
-/// stays stable, and reject anything that could be interpreted as a path,
-/// shell word, or TOML delimiter.
-///
-/// # Errors
-///
-/// Returns an error when `name` is empty, starts with a non-alphanumeric
-/// character, or contains any byte outside ASCII letters, digits, `+`, `.`,
-/// `_`, `=`, and `-`.
-pub fn validate_package_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("package name must not be empty");
-    }
-
-    if !name
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric())
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '_' | '=' | '-'))
-    {
-        bail!(
-            "invalid package name '{name}': use only ASCII letters, digits, '+', '.', '_', '=' and '-', starting with a letter or digit"
-        );
-    }
-
-    Ok(())
-}
-
-/// Return the registry package bucket for a validated package name.
-///
-/// Package metadata files live under `packages/<bucket>/<name>.toml`, where
-/// the bucket is the lowercase first ASCII character of the package name.
-/// Call [`validate_package_name`] before using this for path construction.
-pub fn package_name_bucket(name: &str) -> String {
-    name.chars()
-        .next()
-        .map(|ch| ch.to_ascii_lowercase().to_string())
-        .unwrap_or_else(|| "_".to_string())
-}
+// Package-name validation and bucketing moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker share the exact rules without pulling `aos-package`.
+// Re-exported here so `aos_package::types::{validate_package_name,
+// package_name_bucket}` paths are unchanged.
+pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_name};
 
 /// Validate a platform/system name before using it as a package TOML key.
 ///
@@ -588,300 +545,27 @@ pub struct PackageMeta {
     pub attestation: AttestationMeta,
 }
 
-/// RFC-0001 service exposure metadata carried by registry package metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeMeta {
-    /// Systemd target that is the package activation handle.
-    pub target: String,
-    /// Unit files rendered for this package and pulled in by the target.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Container/root artifacts attached to the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<SysrootImageEntry>,
-    /// Package names that must be installed atomically with this package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
-    /// Package-scoped config declarations and hot-reload policy.
-    #[serde(default, skip_serializing_if = "ExposeConfigMeta::is_empty")]
-    pub config: ExposeConfigMeta,
-    /// Typed capabilities this package offers to other packages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provides: Vec<ProvidedCapabilityMeta>,
-    /// Typed capabilities this package consumes from other packages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uses: Vec<RequiredCapabilityMeta>,
-}
+// The RFC-0001 package metadata schema types moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker share them with the apr/apm client. Re-exported here
+// so `aos_package::types::{ExposeMeta, …}` paths are unchanged. The pure
+// validation free functions below stay native to this crate; only the data
+// contracts and their inherent helpers moved.
+pub use aos_registry_surface::manifest::{
+    AttestationMeta, BpfLsmPolicyArtifactMeta, BpfLsmPolicyMeta, CapabilityKind,
+    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, ConfinementClass,
+    ConfinementMeta, CredentialMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    HostPathMode, HostPathPermission, NetworkPermission, PermissionsMeta, ProvidedCapabilityMeta,
+    RequiredCapabilityMeta, SyscallProfile,
+};
 
-/// RFC-0001 package config metadata signed with exposure metadata.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeConfigMeta {
-    /// Structured config artifacts `apm` validates and materializes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ConfigArtifactMeta>,
-    /// TPM2/systemd credential declarations consumed by package units.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<CredentialMeta>,
-}
-
-impl ExposeConfigMeta {
-    /// Returns whether the package declares no config inputs.
-    pub fn is_empty(&self) -> bool {
-        self.artifacts.is_empty() && self.credentials.is_empty()
-    }
-
-    /// Returns whether config metadata asks runtime reconciliation to touch units.
-    pub fn has_unit_reconciliation(&self) -> bool {
-        self.artifacts
-            .iter()
-            .any(|artifact| !artifact.units.is_empty())
-    }
-}
-
-/// Structured config artifact materialized from host desired-package config.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigArtifactMeta {
-    /// Stable artifact name inside the package config namespace.
-    pub name: String,
-    /// Absolute `/etc` path where `apm` materializes the artifact.
-    pub path: String,
-    /// Serialization format for the materialized artifact.
-    pub format: ConfigArtifactFormat,
-    /// Field names that must be present in desired config.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required: Vec<String>,
-    /// Field names that may be present in desired config.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub optional: Vec<String>,
-    /// Service units whose config changes should reconcile.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Whether changed content reloads, restarts, or leaves units untouched.
-    #[serde(default, skip_serializing_if = "ConfigReloadPolicy::is_default")]
-    pub reload: ConfigReloadPolicy,
-}
-
-/// Materialized config artifact serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfigArtifactFormat {
-    /// systemd-compatible `KEY=VALUE` environment file.
-    Env,
-    /// JSON object.
-    Json,
-    /// TOML table.
-    Toml,
-}
-
-/// Config-change reconciliation policy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfigReloadPolicy {
-    /// Restart affected units on content change.
-    #[default]
-    Restart,
-    /// Reload affected units on content change, falling back to restart if unsupported.
-    Reload,
-    /// Materialize the artifact without service reconciliation.
-    None,
-}
-
-impl ConfigReloadPolicy {
-    fn is_default(policy: &Self) -> bool {
-        *policy == Self::Restart
-    }
-}
-
-/// TPM2/systemd credential declaration for an exposed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialMeta {
-    /// systemd credential name.
-    pub name: String,
-    /// Optional host-side credstore source path for fail-closed loading.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// Optional inline systemd encrypted credential payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ciphertext: Option<String>,
-    /// Service units expected to consume this credential.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Whether the credential is expected to be TPM2/systemd encrypted.
-    #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
-    pub encrypted: bool,
-}
-
-/// Typed package capability kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CapabilityKind {
-    /// A provider-owned directory exposed read-only to consumers.
-    Directory,
-    /// A provider service namespace joined by consumer units.
-    Namespace,
-    /// Socket/fd-passing capability routed through generated systemd drop-ins.
-    Socket,
-}
-
-/// Capability a package exposes to other packages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProvidedCapabilityMeta {
-    /// Capability name unique within the provider package.
-    pub name: String,
-    /// Capability materialization kind.
-    pub kind: CapabilityKind,
-    /// Provider path for [`CapabilityKind::Directory`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// Provider unit for [`CapabilityKind::Namespace`] or future socket routes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
-}
-
-/// Capability a package consumes from another installed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredCapabilityMeta {
-    /// Provider package name.
-    pub provider: String,
-    /// Capability name on the provider package.
-    pub name: String,
-    /// Expected capability kind.
-    pub kind: CapabilityKind,
-    /// Consumer unit that receives the generated route drop-in.
-    pub unit: String,
-}
-
-/// Store metadata for rendered RFC-0001 exposure artifacts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeArtifactMeta {
-    /// Store path containing `units/` and `manifest.json`.
-    pub store_path: String,
-    /// NAR hash of the rendered expose artifact.
-    pub nar_hash: String,
-    /// Uncompressed NAR size of the rendered expose artifact in bytes.
-    pub nar_size: u64,
-}
-
-// ---------------------------------------------------------------------------
-// RFC-0011 config-module metadata (second `config` package output)
-// ---------------------------------------------------------------------------
-
-/// Store metadata for a package's second `config` output (RFC-0011).
-///
-/// The `config` output is a store-path NAR carrying the package's config-only
-/// Nix module (`module.nix` at its root) plus any relative-imported private
-/// `.nix`. Its identity is content-addressed exactly like
-/// [`ExposeArtifactMeta`]: a store path, the uncompressed NAR hash, and the NAR
-/// size, plus the module's *direct* store references.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigOutputMeta {
-    /// Store path of the `config` output (contains `module.nix` at its root).
-    pub store_path: String,
-    /// Hash of the uncompressed `config`-output NAR: `"sha256:…"`.
-    pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
-    pub nar_size: u64,
-    /// Store-path hashes of the `config` output's *direct* references.
-    ///
-    /// The enforced invariant is **no `.drv`** (see `validate_config_output_meta`):
-    /// the config module is config-only and must not pull a derivation into the
-    /// eval. Note that Nix's reference scanner *will* record any binary store path
-    /// the module text names as a reference, so this list is generally non-empty
-    /// and may include `out`-closure paths; those binaries are additionally pinned
-    /// by the manifest's `store_paths`. The no-`.drv` rule is the load-bearing
-    /// part, not the absence of binary references.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-}
-
-/// RFC-0011 config-module interface declared by a package.
-///
-/// Carries the second [`ConfigOutputMeta`] output, the declared option surface
-/// (the package's `provides`, computed by an options-only eval at publish), the
-/// shared roots it owns or contributes to, and its base-lib ABI compatibility
-/// range. The presence of this block on a [`PackageMeta`] is gated behind
-/// [`FEATURE_CONFIG_MODULE_V1`] and requires DSSE provenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigModuleMeta {
-    /// The `config` output store metadata.
-    pub config_output: ConfigOutputMeta,
-    /// Base-lib ABI range this module is compatible with (inclusive).
-    pub module_abi_compat: ModuleAbiCompat,
-    /// Option paths this module *declares* (its `provides`), computed by an
-    /// options-only eval in isolation. Sorted, deduplicated. These become the
-    /// registry inverted-index keys for this `package@version`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declares: Vec<String>,
-    /// Shared roots this module declares exclusive ownership of (e.g.
-    /// `firewall`, `nginx`). Each carries its own interface ABI.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub owns_roots: Vec<OwnedRoot>,
-    /// Foreign shared roots this module contributes into, restricted to the
-    /// owner-declared contributable sub-paths (F3-B).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributes: Vec<RootContribution>,
-    /// Capability tokens this module *sets* (write-provider index entries),
-    /// e.g. `system.capabilities.dns-resolver`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provides_capabilities: Vec<String>,
-}
-
-/// Inclusive base-lib ABI compatibility range for a config module.
-///
-/// The resolver refuses the module unless `min <= running_image_abi <= max`.
-/// This is the RFC-0011 analogue of the SBAT revocation floor: a monotonic
-/// integer band, gated pre-eval and fail-closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleAbiCompat {
-    /// Lowest `module_abi` this module supports.
-    pub min: u32,
-    /// Highest `module_abi` this module supports.
-    pub max: u32,
-}
-
-impl ModuleAbiCompat {
-    /// Returns whether `abi` lies within the inclusive `[min, max]` band.
-    pub fn admits(&self, abi: u32) -> bool {
-        self.min <= abi && abi <= self.max
-    }
-}
-
-/// A shared root a package owns, plus its own interface ABI and the sub-paths
-/// non-owners may contribute into (F3-B capability-scoped surface).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnedRoot {
-    /// Root segment, e.g. `firewall`, `nginx`.
-    pub root: String,
-    /// Independent interface ABI for this shared root.
-    pub interface_abi: u32,
-    /// Owner-declared contributable sub-paths (relative to the root), e.g.
-    /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
-    /// excluded. A non-owner write outside these is rejected at publish.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributable: Vec<String>,
-}
-
-/// A foreign-root contribution declared by a non-owner package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RootContribution {
-    /// The shared root being contributed into, e.g. `nginx`.
-    pub root: String,
-    /// Sub-paths (relative to `root`) this package writes; each MUST be within
-    /// the owner's `contributable` set, checked at resolve.
-    pub paths: Vec<String>,
-}
+// RFC-0011 config schema types are pure manifest data; they live in the
+// wasm-clean `aos-registry-surface` crate alongside the rest of the package
+// schema (so the hub indexer and the Worker share them) and are re-exported
+// here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
+pub use aos_registry_surface::manifest::{
+    ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
+};
 
 // ---------------------------------------------------------------------------
 // RFC-0011 registry inverted index (`index/provides.json`)
@@ -1172,59 +856,6 @@ fn insert_sorted_capability_provider(
     bucket.insert(pos, provider);
 }
 
-/// Signed metadata for fleet-managed BPF-LSM policy artifacts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyMeta {
-    /// BPF-LSM policies carried by this package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub policies: Vec<BpfLsmPolicyArtifactMeta>,
-}
-
-impl BpfLsmPolicyMeta {
-    /// Returns whether the package declares no BPF-LSM policies.
-    pub fn is_empty(&self) -> bool {
-        self.policies.is_empty()
-    }
-}
-
-/// Registry-published runtime integrity, attestation, and provenance facts.
-///
-/// These are catalog facts, not runtime authority. The registry distributes
-/// signed root hashes and provenance references, while dm-verity is enforced by
-/// the kernel against the platform keyring and TPM measurements are verified by
-/// a fleet verifier against the golden tuple.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttestationMeta {
-    /// Digest used as the package-root input to the TPM measurement tuple.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_digest: Option<String>,
-    /// dm-verity Merkle root hash for the package root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash: Option<String>,
-    /// Registry-served PKCS#7 signature over [`AttestationMeta::root_hash`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash_sig: Option<String>,
-    /// Registry-served in-toto/SLSA provenance attestation reference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<String>,
-    /// Golden package measurement tuple extended into the package-set PCR.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub measurement: Option<String>,
-}
-
-impl AttestationMeta {
-    /// Returns whether no attestation facts are declared.
-    pub fn is_empty(&self) -> bool {
-        self.root_digest.is_none()
-            && self.root_hash.is_none()
-            && self.root_hash_sig.is_none()
-            && self.provenance.is_none()
-            && self.measurement.is_none()
-    }
-}
-
 /// Returns whether package metadata must be backed by DSSE provenance.
 ///
 /// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
@@ -1253,295 +884,6 @@ pub(crate) fn rfc0001_metadata_requires_provenance(
         || bpf_lsm.is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
 }
 
-/// One BPF-LSM policy artifact carried by a signed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyArtifactMeta {
-    /// Stable policy name used for host policy selection and bpffs pins.
-    pub name: String,
-    /// Relative JSON policy path inside the package root.
-    pub policy: String,
-    /// Relative BPF object path inside the package root.
-    pub object: String,
-    /// BPF program names expected in the object and policy JSON.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub programs: Vec<String>,
-}
-
-/// Signed RFC-0001 package permission manifest.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionsMeta {
-    /// Linux capabilities requested by the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-    /// Package network mode; absent means the default private mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<NetworkPermission>,
-    /// TCP ports the package may bind under Landlock/eBPF network policy.
-    #[serde(default, rename = "tcp-bind", skip_serializing_if = "Vec::is_empty")]
-    pub tcp_bind: Vec<u16>,
-    /// TCP ports the package may connect to under Landlock/eBPF network policy.
-    #[serde(default, rename = "tcp-connect", skip_serializing_if = "Vec::is_empty")]
-    pub tcp_connect: Vec<u16>,
-    /// Device nodes requested by the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub devices: Vec<String>,
-    /// Host paths requested by the package.
-    #[serde(default, rename = "host-paths", skip_serializing_if = "Vec::is_empty")]
-    pub host_paths: Vec<HostPathPermission>,
-    /// Whether the package requests cgroup controller delegation.
-    #[serde(default, rename = "cgroup-delegate", skip_serializing_if = "is_false")]
-    pub cgroup_delegate: bool,
-    /// Whether the package requests host-root-equivalent users.
-    #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
-    pub privileged_users: bool,
-    /// Host-fulfilled kernel modules requested by the package.
-    #[serde(
-        default,
-        rename = "kernel-modules",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub kernel_modules: Vec<String>,
-    /// Named syscall profile requested by the package.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub syscalls: Option<SyscallProfile>,
-    /// Generated SELinux/AppArmor label requested by the package.
-    #[serde(
-        default,
-        rename = "security-label",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub security_label: Option<String>,
-    /// Computed package confinement summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confinement: Option<ConfinementMeta>,
-}
-
-impl PermissionsMeta {
-    /// Returns whether the manifest carries no explicit permission requests.
-    pub fn is_empty(&self) -> bool {
-        self.capabilities.is_empty()
-            && self.network.is_none()
-            && self.tcp_bind.is_empty()
-            && self.tcp_connect.is_empty()
-            && self.devices.is_empty()
-            && self.host_paths.is_empty()
-            && !self.cgroup_delegate
-            && !self.privileged_users
-            && self.kernel_modules.is_empty()
-            && self.syscalls.is_none()
-            && self.security_label.is_none()
-            && self.confinement.is_none()
-    }
-
-    /// Returns whether the manifest requests host-policy-admitted grants.
-    pub fn requires_policy_admission(&self) -> bool {
-        self.network
-            .is_some_and(|network| network != NetworkPermission::Private)
-            || !self.tcp_bind.is_empty()
-            || !self.tcp_connect.is_empty()
-            || !self.capabilities.is_empty()
-            || !self.devices.is_empty()
-            || !self.host_paths.is_empty()
-            || self.cgroup_delegate
-            || self.privileged_users
-            || !self.kernel_modules.is_empty()
-            || self
-                .syscalls
-                .is_some_and(|syscalls| syscalls != SyscallProfile::Restricted)
-    }
-
-    /// Returns whether this manifest needs host policy for a package name.
-    pub fn requires_policy_admission_for_package(&self, package_name: &str) -> bool {
-        self.requires_policy_admission()
-            || self
-                .security_label
-                .as_ref()
-                .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
-    }
-
-    /// Returns whether this manifest carries explicit Landlock/eBPF policy.
-    pub fn has_network_policy(&self) -> bool {
-        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty() || !self.host_paths.is_empty()
-    }
-
-    /// Computes the RFC-0001 confinement summary from permission grants.
-    pub fn computed_confinement(&self) -> ConfinementMeta {
-        let network = self.network.unwrap_or(NetworkPermission::Private);
-        let syscall_profile = self.syscalls.unwrap_or(SyscallProfile::Restricted);
-        let mut holes = Vec::new();
-
-        if network != NetworkPermission::Private {
-            holes.push(format!("network:{}", network.as_manifest_str()));
-        }
-        holes.extend(self.tcp_bind.iter().map(|port| format!("tcp-bind:{port}")));
-        holes.extend(
-            self.tcp_connect
-                .iter()
-                .map(|port| format!("tcp-connect:{port}")),
-        );
-        holes.extend(
-            self.capabilities
-                .iter()
-                .map(|capability| format!("capability:{capability}")),
-        );
-        holes.extend(self.devices.iter().map(|device| format!("device:{device}")));
-        holes.extend(self.host_paths.iter().map(|host_path| {
-            format!(
-                "host-path:{}:{}",
-                host_path.mode.as_manifest_str(),
-                host_path.path
-            )
-        }));
-        if self.cgroup_delegate {
-            holes.push("cgroup-delegate".into());
-        }
-        if self.privileged_users {
-            holes.push("privileged-users".into());
-        }
-        if syscall_profile != SyscallProfile::Restricted {
-            holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
-        }
-
-        let root_equivalent = self
-            .capabilities
-            .iter()
-            .any(|capability| capability == "CAP_SYS_ADMIN")
-            || self.privileged_users
-            || self.host_paths.iter().any(|host_path| {
-                host_path.mode == HostPathMode::Rw && has_system_location_prefix(&host_path.path)
-            });
-
-        let class = if root_equivalent {
-            ConfinementClass::Unconfined
-        } else if holes.is_empty() {
-            ConfinementClass::Sandboxed
-        } else {
-            ConfinementClass::SandboxedWithHoles
-        };
-        let label = if class == ConfinementClass::SandboxedWithHoles {
-            format!("sandboxed-with-holes ({})", holes.join(", "))
-        } else {
-            class.as_manifest_str().to_string()
-        };
-
-        ConfinementMeta {
-            class,
-            label,
-            holes,
-        }
-    }
-}
-
-/// Computed RFC-0001 package confinement summary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfinementMeta {
-    /// Coarse confinement class computed from generated unit permissions.
-    pub class: ConfinementClass,
-    /// Human-readable confinement label shown by package tools.
-    pub label: String,
-    /// Permission holes that prevent the package from being fully sandboxed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub holes: Vec<String>,
-}
-
-/// Coarse RFC-0001 package confinement class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfinementClass {
-    /// Generated units have the default sandbox and no explicit holes.
-    Sandboxed,
-    /// Generated units keep the default sandbox but include explicit holes.
-    SandboxedWithHoles,
-    /// Generated units request root-equivalent or host-level privileges.
-    Unconfined,
-}
-
-impl ConfinementClass {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            ConfinementClass::Sandboxed => "sandboxed",
-            ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
-            ConfinementClass::Unconfined => "unconfined",
-        }
-    }
-}
-
-/// RFC-0001 package network mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NetworkPermission {
-    /// Inbound-only private namespace with host-owned socket activation.
-    Private,
-    /// Private namespace with an outbound veth path.
-    PrivateOutbound,
-    /// Host network namespace.
-    Host,
-}
-
-impl NetworkPermission {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            NetworkPermission::Private => "private",
-            NetworkPermission::PrivateOutbound => "private-outbound",
-            NetworkPermission::Host => "host",
-        }
-    }
-}
-
-/// Host path permission requested by a package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostPathPermission {
-    /// Absolute host path to bind into the package.
-    pub path: String,
-    /// Whether the bind is read-only or read-write.
-    pub mode: HostPathMode,
-}
-
-/// Host path access mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HostPathMode {
-    /// Read-only host path bind.
-    ReadOnly,
-    /// Read-write host path bind.
-    Rw,
-}
-
-impl HostPathMode {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            HostPathMode::ReadOnly => "read-only",
-            HostPathMode::Rw => "rw",
-        }
-    }
-}
-
-/// Named syscall profile pinned to systemd syscall groups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SyscallProfile {
-    /// Minimal syscall profile for tightly sandboxed services.
-    Restricted,
-    /// Systemd's `@system-service` syscall group profile.
-    SystemService,
-    /// Privileged syscall profile for infrastructure packages.
-    Privileged,
-}
-
-impl SyscallProfile {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            SyscallProfile::Restricted => "restricted",
-            SyscallProfile::SystemService => "system-service",
-            SyscallProfile::Privileged => "privileged",
-        }
-    }
-}
-
 /// Named host policy tier for RFC-0001 permission admission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1553,10 +895,6 @@ pub enum PolicyTier {
     Baseline,
     /// Privileged policy tier.
     Privileged,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Validate that a package metadata entry can be safely consumed.
@@ -2713,12 +2051,6 @@ fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn has_system_location_prefix(path: &str) -> bool {
-    SYSTEM_LOCATION_PREFIXES
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
-}
-
 // ---------------------------------------------------------------------------
 // Installed metadata — per-path JSON in profile `meta/{hash}.json`
 // ---------------------------------------------------------------------------
@@ -3562,126 +2894,34 @@ pub struct ApmConfFile {
 // Registry root config — from `registry.toml` inside a registry repo
 // ---------------------------------------------------------------------------
 
-/// Top-level structure of a registry's `registry.toml` file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootConfig {
-    /// The `[registry]` metadata table.
-    pub registry: RegistryRootMeta,
-    /// Committed `[[caches]]` entries: binary caches every consumer of this
-    /// registry should use.
-    #[serde(default)]
-    pub caches: Vec<CacheEntry>,
-}
-
-/// Registry metadata in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootMeta {
-    /// Canonical registry name.
-    pub name: String,
-    /// Optional human-readable description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Whether the producer records content addresses in the `store/`
-    /// realisation graph (RFC-0005), so the registry serves both
-    /// input-addressed and content-addressed consumers. Default `true`;
-    /// set `false` for a pure input-addressed registry.
-    #[serde(default = "default_content_addressed")]
-    pub content_addressed: bool,
-}
-
-/// Serde default for [`RegistryRootMeta::content_addressed`].
-fn default_content_addressed() -> bool {
-    true
-}
-
-/// A binary cache entry in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    /// Base URL of the binary cache.
-    pub url: String,
-    /// Cache selection priority — higher is tried first (default 100).
-    #[serde(default = "default_cache_priority")]
-    pub priority: u32,
-}
-
-/// Serde default for [`CacheEntry::priority`].
-fn default_cache_priority() -> u32 {
-    100
-}
+// The committed `registry.toml` root-config schema (`RegistryRootConfig`, its
+// `[registry]` metadata, and the unified `[caches]` cache stack) moved to the
+// wasm-clean `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry
+// hub's indexer and the Cloudflare Worker can deserialize a committed root
+// config without pulling `aos-package` (which is native-only). Re-exported here
+// so `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry,
+// CachesConfig}` paths are unchanged. The `content_addressed` flag
+// (RFC-0005/0009) lives on the canonical `RegistryRootMeta` in that crate.
+pub use aos_registry_surface::manifest::{
+    CacheEntry, CachesConfig, RegistryRootConfig, RegistryRootMeta,
+};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
-/// A single SBAT (Secure Boot Advanced Targeting) component record.
-///
-/// SBAT entries are read from a UKI's PE `.sbat` section: each line of that
-/// CSV section names a boot component and the *generation* number that an
-/// `sbat` revocation can compare against. The registry records these so the
-/// fleet can enforce a per-component minimum generation (the *revocation
-/// floor*) at download time, mirroring what firmware/loader SBAT enforces at
-/// boot time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SbatEntry {
-    /// SBAT component identifier (the first CSV column, e.g. `aos`,
-    /// `systemd`, `grub`).
-    pub component: String,
-    /// SBAT generation number for the component (the second CSV column).
-    /// A higher number supersedes a lower one; the revocation floor is the
-    /// minimum acceptable value.
-    pub generation: u32,
-}
-
-/// A pre-compiled image format entry within a sysroot package version.
-///
-/// The trailing Secure Boot fields are populated only for signed UKIs/images
-/// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
-/// publishes continue to parse: an entry with none of them set is treated as
-/// "no Secure Boot claims recorded" and skips download-time SB validation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SysrootImageEntry {
-    /// Image format identifier (e.g. `qcow2`, `raw`), matched against
-    /// `apm install --image <FMT>`.
-    pub format: String,
-    /// Store path containing the image file.
-    pub store_path: String,
-    /// Hash of the image's uncompressed NAR: `"sha256:..."`.
-    pub nar_hash: String,
-    /// Size of the image's uncompressed NAR in bytes.
-    pub nar_size: u64,
-    /// Lowercase hex SHA-256 of the signer leaf certificate found in the
-    /// PE's Authenticode certificate table; the db cert this image must
-    /// chain to. `None` for unsigned/legacy images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sb_signer_cert_sha256: Option<String>,
-    /// SBAT component/generation pairs read from the PE `.sbat` section.
-    /// Empty when the image carries no `.sbat` section.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sbat: Vec<SbatEntry>,
-    /// ukify/`systemd-measure`-predicted TPM PCR-11 value for this UKI
-    /// (hex). See [`SysrootImageEntry`] callers and RFC-0006
-    /// `registry-catalog.md` for the prediction-scope caveat: this records
-    /// the UKI's own contribution, not the full sd-boot phase sequence.
-    /// `None` when `systemd-measure` was unavailable at publish time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the root
-    /// filesystem image consumed by `RootImage=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_image: Option<String>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the separate
-    /// dm-verity hash tree consumed by `RootVerity=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_verity: Option<String>,
-    /// dm-verity root hash for [`SysrootImageEntry::root_image`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash: Option<String>,
-    /// Relative path inside [`SysrootImageEntry::store_path`] to the PKCS#7
-    /// signature consumed by `RootHashSignature=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash_sig: Option<String>,
-}
+// `SbatEntry` (the UKI `.sbat` component/generation record) moved to the
+// wasm-clean `aos-registry-surface` crate alongside the manifest `ImageEntry`
+// that carries it (RFC-0004 Phase 5 / RFC-0006), so the parse path and the
+// runtime `SysrootImageEntry` share one type. Re-exported here so
+// `aos_package::types::SbatEntry` is unchanged.
+// `SysrootImageEntry` (the pre-compiled image format entry within a sysroot
+// package version) also moved to the wasm-clean `aos-registry-surface` crate
+// (RFC-0004 Phase 5) so the parse path, the `ExposeMeta.images` schema, and the
+// runtime image entry share one type. Re-exported here so
+// `aos_package::types::SysrootImageEntry` is unchanged.
+pub use aos_registry_surface::manifest::SbatEntry;
+pub use aos_registry_surface::manifest::SysrootImageEntry;
 
 // ---------------------------------------------------------------------------
 // System generation state — persisted in /var/lib/profiles/system/state.json
@@ -4737,8 +3977,10 @@ public_key = "aos-core:Ed25519:base64keyhere"
         let cfg: RegistryRootConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.registry.name, "aos-core");
         assert_eq!(cfg.registry.description.as_deref(), Some("core registry"));
-        assert_eq!(cfg.caches.len(), 1);
-        assert_eq!(cfg.caches[0].url, "https://cache.aos.dev");
+        // Legacy `[[caches]]` array still parses via the backward-compat enum.
+        let caches = cfg.cache_entries();
+        assert_eq!(caches.len(), 1);
+        assert_eq!(caches[0].url, "https://cache.aos.dev");
     }
 
     #[test]

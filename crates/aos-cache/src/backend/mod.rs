@@ -99,6 +99,76 @@ pub trait CacheBackend: Send + Sync {
     /// Returns an error if the upload fails.
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()>;
 
+    /// Mints a short-lived presigned upload URL for a cache-relative object
+    /// `path` (e.g. `nar/<file>.nar.zst`), when the cache is backed by a
+    /// presignable public origin (S3/R2 with credentials sealed in the hub).
+    ///
+    /// `Ok(Some(url))` means the caller should upload the bytes **directly** to
+    /// `url` via [`put_to_url`](CacheBackend::put_to_url) — bypassing the hub so
+    /// the bytes never traverse the Worker. `Ok(None)` means no presign is
+    /// available and the caller must fall back to [`put_nar`](CacheBackend::put_nar)
+    /// (or multipart) through the facade. The narinfo is uploaded through the
+    /// facade regardless, so the hub index stays authoritative.
+    ///
+    /// The default returns `Ok(None)` — only AOS HTTP backends presign.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on a hard transport failure; an unsupported or
+    /// not-presignable cache is `Ok(None)`, not an error.
+    async fn mint_upload_url(&self, _path: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Uploads bytes directly to a presigned `url` minted by
+    /// [`mint_upload_url`](CacheBackend::mint_upload_url), bypassing the hub.
+    ///
+    /// The URL carries its own query-string authorization, so no credential
+    /// headers are attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the direct upload fails, or if the backend does not
+    /// support presigned upload (the default).
+    async fn put_to_url(&self, _url: &str, _data: &[u8]) -> Result<()> {
+        anyhow::bail!("backend does not support presigned direct upload")
+    }
+
+    /// Mints presigned upload URLs for many object paths in one round-trip.
+    ///
+    /// Returns a map from each input path to its presigned PUT URL; paths that
+    /// are not presignable are simply absent from the map (the caller falls back
+    /// to the facade for those). The default returns an empty map — only AOS
+    /// HTTP backends batch-mint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on a hard transport failure; a not-presignable
+    /// cache yields an empty map, not an error.
+    async fn mint_upload_urls(
+        &self,
+        _paths: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        Ok(std::collections::HashMap::new())
+    }
+
+    /// Registers (writes + indexes) a batch of narinfos in one round-trip.
+    ///
+    /// Each tuple is `(store_hash, narinfo_text)`. Used after the NAR bytes have
+    /// been uploaded directly to the origin, so the hub index stays authoritative
+    /// without a per-narinfo round-trip. The default falls back to a per-narinfo
+    /// [`put_narinfo`](CacheBackend::put_narinfo) so every backend works.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any narinfo write/registration fails.
+    async fn register_narinfos(&self, narinfos: &[(String, String)]) -> Result<()> {
+        for (store_hash, content) in narinfos {
+            self.put_narinfo(store_hash, content).await?;
+        }
+        Ok(())
+    }
+
     /// Batch check: returns the subset of `store_hashes` that are
     /// missing from the cache.
     ///
@@ -168,6 +238,62 @@ pub trait CacheBackend: Send + Sync {
     /// [`supports_pack`]: CacheBackend::supports_pack
     async fn upload_pack(&self, _data: &[u8]) -> Result<Vec<String>> {
         anyhow::bail!("pack upload not supported by this backend")
+    }
+
+    /// Whether this backend supports the multipart upload protocol
+    /// (initiate → upload-part → complete) for large NARs.
+    ///
+    /// The default is `false`; only a backend that can assemble a single object
+    /// from several sub-cap parts (an AOS hub, whose backend passes through to
+    /// R2/S3/local-disk native multipart) returns `true`. A NAR larger than a
+    /// single request can carry is uploadable only when this is `true`.
+    fn supports_multipart(&self) -> bool {
+        false
+    }
+
+    /// Begin a multipart upload of the NAR at `nar_path` (e.g.
+    /// `nar/<file>.nar.zst`), returning the backend's opaque `upload_id` and the
+    /// suggested part size in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// request fails. The default always errors.
+    async fn initiate_multipart(&self, _nar_path: &str) -> Result<(String, u64)> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Upload one part (`part_number`, 1-based) of the in-progress upload
+    /// `upload_id`, returning the part's `(part_number, etag)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// part upload fails.
+    async fn upload_part(
+        &self,
+        _nar_path: &str,
+        _upload_id: &str,
+        _part_number: u32,
+        _data: &[u8],
+    ) -> Result<(u32, String)> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Complete the multipart upload `upload_id`, assembling the ordered
+    /// `(part_number, etag)` parts into the final NAR.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or the
+    /// completion fails.
+    async fn complete_multipart(
+        &self,
+        _nar_path: &str,
+        _upload_id: &str,
+        _parts: &[(u32, String)],
+    ) -> Result<()> {
+        anyhow::bail!("multipart upload not supported by this backend")
     }
 }
 

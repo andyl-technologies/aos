@@ -76,6 +76,35 @@ test-vm suite="":
 test-fleet suite="":
     {{AOS}} test fleet {{suite}}
 
+# Run the deployed-Worker e2e: boots the wasm artifact under workerd+miniflare
+# and asserts the live request surface. Built in-sandbox, exec'd outside it
+# (workerd's tcmalloc needs /sys, like fleet VM tests need /dev/kvm).
+test-worker-e2e:
+    bin=`nix-build -A pkgs.aos-hub-worker-e2e --no-out-link`; exec "$bin/bin/aos-hub-worker-e2e"
+
+# Run the deployed-Worker DO-SQLite e2e: boots the wasm under the from-source
+# workerd with a real SQLite-backed HubDb Durable Object (enableSql) and asserts
+# the managed-registry bootstrap (create org -> binding-less managed registry ->
+# ListRegistries/GetRegistry reads). Regression guard for the bound-NULL
+# corruption (#138-adjacent). Exec'd outside the sandbox (workerd needs /sys).
+test-worker-do-e2e:
+    bin=`nix-build -A pkgs.aos-hub-worker-do-e2e --no-out-link`; exec "$bin/bin/aos-hub-worker-do-e2e"
+
+# ===========================================================================
+# Worker (serverless) deployment
+# ===========================================================================
+
+# Run the bundled hub installer (wrangler + node + the Worker wasm). Forwards
+# args to `aos-hub`, e.g.:
+#   just hub worker install --external-url https://reg.example.com --root-email a@b.c --root-password-stdin
+#   just hub worker deploy  --external-url https://reg.example.com
+#   just hub init --target d1:aos-hub --root-email a@b.c --root-password-stdin
+#   just hub reset-root --target d1:aos-hub --email a@b.c --password-stdin
+# Requires CLOUDFLARE_API_TOKEN (or `wrangler login`). See
+# crates/aos-hub-worker/deploy/DEPLOY.md.
+hub *args:
+    `nix-build -A pkgs.aos-hub-cloudflare --no-out-link`/bin/aos-hub {{args}}
+
 # ===========================================================================
 # Development
 # ===========================================================================

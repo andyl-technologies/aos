@@ -1,0 +1,124 @@
+[package]
+name = "aos-hub-core"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5): the async database backend abstraction, SQL dialect translation, and value/row marshalling shared by the native hub and the Cloudflare Worker — compiles to wasm32"
+
+[dependencies]
+aes-gcm = { workspace = true }
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+# WebAuthn COSE signature verification (RFC-0004 passkeys): ES256 via p256,
+# RS256 via rsa, and the CBOR decoder for COSE keys / attestationObject. All
+# pure-Rust RustCrypto crates, wasm-clean for the Workers target.
+ciborium = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
+# RS256 id_token verification for the per-org OIDC SSO flow (RFC-0004 Phase 5,
+# console-dedup stage F). `jwt-rustcrypto` builds the RSA verifying key from a
+# JWK's `(n, e)` components and decodes/validates the id_token, all over the
+# pure-Rust RustCrypto `rsa` crate (the same `rsa` this crate already uses for
+# WebAuthn) — no `ring`, no C. So the OIDC verifier is the identical code path on
+# the native hub and the Cloudflare Worker, and compiles to
+# `wasm32-unknown-unknown` with no C toolchain.
+jwt-rustcrypto = "0.2"
+# argon2 re-exports `password_hash::rand_core::OsRng` only when password-hash's
+# `getrandom` feature is on (the native build picks it up via workspace feature
+# unification; the standalone wasm build of this crate does not, so enable it
+# explicitly here). RFC-0004 Phase 5.
+password-hash = { version = "0.5", features = ["getrandom"] }
+async-trait = { workspace = true }
+ed25519-dalek = { workspace = true }
+# Concurrent read fan-out in the browse render paths (`web::browse`): a registry
+# page's independent per-`registry.id` D1 reads are dispatched together with
+# `future::join*` instead of serially, so the Worker pays one D1 round-trip wave
+# rather than one per query. Pure and wasm-clean (the Worker already links it).
+futures-util = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Hand-parse a nested-canonical console POST body into a handler's form type,
+# using the same decoder axum's `Form` uses (see `web::console::nested`).
+serde_urlencoded = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+# The package-manifest schema (PackageToml etc., shared by the indexer/Database)
+# and the trusted-key fingerprint line; aos-registry-surface is the wasm-clean
+# surface reader already shared with the Worker.
+aos-registry-surface = { workspace = true }
+# The wasm-clean Connect-JSON message structs (prost-build + serde) for the
+# aos.registry.v1 API. The shared `service` layer speaks these on both the
+# native hub and the Cloudflare Worker (RFC-0004 Phase 5, single transport).
+aos-proto-types = { workspace = true }
+# axum *types only* (default-features = false drops the hyper server) — the
+# shared Connect-JSON router (`connect` module) is plain axum handlers served
+# natively via axum::serve and on the Worker via axum-cloudflare-adapter. This
+# is the one wasm-clean axum config the RFC's spike verified (RFC-0004 Phase 5).
+axum = { version = "0.8", default-features = false, features = [
+  "json",
+  "form",
+  "query",
+] }
+
+[features]
+default = []
+# Enable the postgres / mysql sqlx Database backends (RFC-0004 Phase 5). sqlite
+# is always compiled in (native); these add the matching sqlx driver and the
+# SqlxBackend enum arm. The native hub re-delegates its own postgres/mysql
+# features to these.
+postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+
+# Per-statement query timing (RFC-0004 ch.14 Phase A). Compiles the
+# `TimingBackend` decorator + `QueryTimings`/`Server-Timing` rendering so a
+# deployment (the preview Worker) can surface the per-request D1 session cost.
+# Off by default: production pays nothing.
+query-timing = []
+
+# The concrete native database driver. `sqlx` does not build for
+# wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend
+# Backend impl is compiled out of the Cloudflare Worker target, which supplies a
+# D1 Backend instead (RFC-0004 Phase 5). `runtime-tokio` reuses the existing
+# tokio runtime; the bundled pure-Rust sqlite driver needs no system library.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sqlx = { workspace = true, features = ["sqlite"] }
+
+[dev-dependencies]
+# The native SqlxBackend batch tests are async; drive them on a tokio runtime.
+tokio = { workspace = true }
+# The Database migration tests stage old-schema sqlite files with raw rusqlite,
+# then reopen them through the sqlx Database to assert the upgrade path; other
+# tests use a temp dir for a file-backed hub.db (RFC-0004 Phase 5).
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
+
+# The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
+# the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on
+# wasm32. getrandom 0.2 (via password-hash/rand_core 0.6) uses the `js` feature;
+# getrandom 0.3 (via rand 0.9) additionally needs the
+# `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml. These
+# deps are compiled only for wasm32; on native getrandom uses the OS directly.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+# Reads the host JS `Date.now()` wall clock on the Worker (SystemTime::now()
+# panics on wasm32). Native targets use std::time instead. RFC-0004 Phase 5.
+js-sys = "0.3"
+# rand 0.9 pulls getrandom 0.3; its wasm backend also needs the
+# `--cfg getrandom_backend="wasm_js"` rustflag set in .cargo/config.toml.
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# uuid::Uuid::new_v4 draws from getrandom; the `js` feature routes it to
+# crypto.getRandomValues on the Workers target.
+uuid = { workspace = true, features = ["js"] }
+# The `Send` bridge for the shared Connect-JSON axum router on the
+# single-threaded Worker: SendWrapper makes the `?Send` D1-backed RpcService
+# state + handler futures satisfy axum's `Send + Sync` bounds (sound with one
+# thread). Native uses the identity bridge and needs no such dep. RFC-0004 Ph5.
+send_wrapper = { version = "0.6", features = ["futures"] }

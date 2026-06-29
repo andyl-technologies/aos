@@ -113,6 +113,18 @@ in
 
     doCheck = true;
     cargoTestFlags = "--workspace";
+    # Run the workspace test suite in the debug profile while the binary itself
+    # ships release (installed from target/release). The registry-hub's
+    # integration tests stand up loopback HTTP servers and register
+    # `http://127.0.0.1` mirror/frontend/webhook URLs, which only resolve past
+    # the SSRF guard when the `AOS_HUB_ALLOW_LOCAL_REMOTES` escape hatch is
+    # honored — and that hatch is compiled out of release entirely by design
+    # (`aos-hub-core::url_guard::allow_local_remotes` is gated on
+    # `debug_assertions`, so a production binary never relaxes the guard). The
+    # tests are therefore inherently debug-only; running the check phase in debug
+    # exercises them exactly as the dev `cargo test` / `aos test` path does,
+    # preserving full coverage without weakening the release security posture.
+    checkType = "debug";
 
     # Each of aos/apm/apr is the same binary, dispatched by argv[0]. We install
     # a thin wrapper per name that sets the hermetic runtime PATH and execs the

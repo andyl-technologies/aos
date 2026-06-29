@@ -18,12 +18,14 @@ mod build;
 mod cache;
 mod doc;
 mod gc;
+mod hub;
 mod package;
 mod prefetch;
 mod server;
 mod test;
 
 pub use cache::*;
+pub use hub::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
@@ -200,6 +202,11 @@ pub enum Commands {
     Cache {
         #[command(subcommand)]
         command: CacheCmd,
+    },
+    /// Registry hub client (interacts with an aos-hub via its API)
+    Hub {
+        #[command(subcommand)]
+        command: HubCmd,
     },
     /// Profile a closure for leaked build/dev artifacts
     Profile {

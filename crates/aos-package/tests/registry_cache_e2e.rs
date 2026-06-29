@@ -77,6 +77,7 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         &[DownloadRequest {
             store_path: store_path.clone(),
             mirror_url: mirror_url.clone(),
+            fallback_mirrors: Vec::new(),
         }],
         1,
         &printer,
