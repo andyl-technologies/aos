@@ -3423,11 +3423,13 @@ alone (`M-1`/`Q-A`).
       metadata key with a changed value hash, later hit the changed key, and
       keep the original/changed getEnv trace hashes plus persistent sidecar
       hashes out of `.drv` surfaces.
-      `native_file_cache_parity_harness_covers_absent_and_pure_get_env` seeds an
-      absent getEnv read, mutates it to a present value, requires stale cached
-      output to recompute to the present closure, and then runs pure mode with
-      that value configured to prove pure cached output still matches the
-      empty-string closure rather than replaying the impure value.
+      `native_file_cache_parity_harness_covers_absent_empty_and_pure_get_env`
+      seeds an absent getEnv read, requires configured empty getEnv to preserve
+      the same empty-string closure while missing stale absent input and
+      recording the explicit-empty trace, mutates it to a present value, requires
+      stale cached output to recompute to the present closure, and then runs pure
+      mode with that value configured to prove pure cached output still matches
+      the empty-string closure rather than replaying the impure value.
       `native_file_cache_parity_harness_covers_current_time_configured_input`
       drives configured `builtins.currentTime` through the same file-closure
       boundary and requires a changed timestamp cached run to match the changed

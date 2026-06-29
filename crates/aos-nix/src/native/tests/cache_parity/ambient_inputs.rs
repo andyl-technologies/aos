@@ -215,7 +215,7 @@ fn native_file_cache_parity_harness_covers_get_env_impure_input() -> Result<()> 
 }
 
 #[test]
-fn native_file_cache_parity_harness_covers_absent_and_pure_get_env() -> Result<()> {
+fn native_file_cache_parity_harness_covers_absent_empty_and_pure_get_env() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-get-env-absent-pure");
     fs::create_dir_all(&root)?;
     let root = fs::canonicalize(root)?;
@@ -226,12 +226,30 @@ fn native_file_cache_parity_harness_covers_absent_and_pure_get_env() -> Result<(
     fs::create_dir_all(&dir)?;
 
     let env_name = b"AOS_NATIVE_FILE_CACHE_OPTIONAL_ENV";
+    let empty_env = b"".as_slice();
     let present_env = b"now-present".as_slice();
     let absent_trace = vec![ImpureInputFingerprint::get_env(env_name, None)?];
+    let empty_trace = vec![ImpureInputFingerprint::get_env(env_name, Some(empty_env))?];
     let present_trace = vec![ImpureInputFingerprint::get_env(
         env_name,
         Some(present_env),
     )?];
+    let absent_input = absent_trace[0]
+        .as_cacheable()
+        .expect("absent getEnv trace is cacheable");
+    let empty_input = empty_trace[0]
+        .as_cacheable()
+        .expect("configured empty getEnv trace is cacheable");
+    assert_eq!(
+        absent_input.identity(),
+        empty_input.identity(),
+        "absent and configured empty getEnv should probe the same environment variable"
+    );
+    assert_ne!(
+        absent_input.observation_hash(),
+        empty_input.observation_hash(),
+        "absent and configured empty getEnv must stay distinct cache observations"
+    );
     let file = dir.join("default.nix");
     fs::write(
         &file,
@@ -301,6 +319,57 @@ fn native_file_cache_parity_harness_covers_absent_and_pure_get_env() -> Result<(
             options.set_eval_cache_enabled(persist);
             Ok(options)
         };
+
+    let (empty_uncached, empty_uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(
+            0,
+            options_for(EvalMode::Impure, Some(empty_env), None, false)?,
+        )?,
+        &file,
+        "pkgs.optionalEnvInput",
+    )?;
+    assert_eq!(empty_uncached_stats.force_cache_hits(), 0);
+    assert_eq!(empty_uncached_stats.force_cache_misses(), 0);
+    assert_eq!(
+        empty_uncached, original.uncached,
+        "configured empty getEnv should match the absent empty-string closure"
+    );
+
+    let (empty_cached, empty_cached_stats, empty_cached_hit_keys) =
+        instantiate_file_closure_with_stats_and_hits(
+            &NixNative::with_options(
+                0,
+                options_for(
+                    EvalMode::Impure,
+                    Some(empty_env),
+                    Some(&root.join("empty-get-env-parse")),
+                    true,
+                )?,
+            )?,
+            &file,
+            "pkgs.optionalEnvInput",
+        )?;
+    assert_eq!(
+        empty_cached, empty_uncached,
+        "configured empty getEnv cached run should preserve the empty-string closure"
+    );
+    assert!(
+        empty_cached_stats.force_cache_misses() > 0,
+        "configured empty getEnv should miss stale absent input before recomputing"
+    );
+    assert!(
+        !empty_cached_hit_keys.contains(&absent_trace_entry.0),
+        "configured empty getEnv must not accept the stale absent force-cache metadata key as a hit"
+    );
+    let empty_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &empty_trace,
+        "configured empty getEnv native closure",
+    )?;
+    assert_eq!(
+        empty_trace_entry.0, absent_trace_entry.0,
+        "configured empty getEnv recomputation should replace the same force-cache metadata key"
+    );
 
     let (present_uncached, present_uncached_stats) = instantiate_file_closure_with_stats(
         &NixNative::with_options(
@@ -425,12 +494,26 @@ fn native_file_cache_parity_harness_covers_absent_and_pure_get_env() -> Result<(
         &absent_trace,
     ));
     canaries.extend(impure_trace_surface_canaries(
+        "configured empty getEnv trace",
+        &empty_trace,
+    ));
+    canaries.extend(impure_trace_surface_canaries(
         "present getEnv trace",
         &present_trace,
     ));
     assert_native_closure_surfaces_do_not_contain_canaries(
         "absent getEnv closure",
         &original.uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "configured empty uncached getEnv closure",
+        &empty_uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "configured empty cached getEnv closure",
+        &empty_cached,
         &canaries,
     );
     assert_native_closure_surfaces_do_not_contain_canaries(
