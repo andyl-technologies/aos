@@ -180,7 +180,7 @@ impl TreeWalk {
             url,
             b"output:out",
             name,
-            &fixed_digest,
+            fixed_digest,
         )
     }
 

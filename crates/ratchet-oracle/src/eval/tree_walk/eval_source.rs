@@ -232,7 +232,14 @@ impl TreeWalk {
             ));
         }
         let store_path = if recursive {
-            self.store_path_bytes_from_fingerprint_parts(id, span, bytes, b"source", name, &digest)?
+            self.store_path_bytes_from_fingerprint_parts(
+                id,
+                span,
+                bytes,
+                b"source",
+                name,
+                NixSha256Digest::from_bytes(digest),
+            )?
         } else {
             let fixed_digest = Self::flat_source_fixed_output_digest(id, span, &digest)?;
             self.store_path_bytes_from_fingerprint_parts(
@@ -241,7 +248,7 @@ impl TreeWalk {
                 bytes,
                 b"output:out",
                 name,
-                &fixed_digest,
+                fixed_digest,
             )?
         };
         let context =
@@ -455,7 +462,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         digest: &[u8; 32],
-    ) -> Result<[u8; 32], TreeWalkError> {
+    ) -> Result<NixSha256Digest, TreeWalkError> {
         let digest = Self::lower_hex_bytes(id, span, digest)?;
         let len = b"fixed:out:sha256:"
             .len()
@@ -477,7 +484,7 @@ impl TreeWalk {
         fingerprint.extend_from_slice(b"fixed:out:sha256:");
         fingerprint.extend_from_slice(&digest);
         fingerprint.push(b':');
-        Ok(Self::sha256_array(&fingerprint))
+        Ok(Self::nix_sha256_digest(&fingerprint))
     }
 
     pub(super) fn store_path_bytes_from_fingerprint_parts(
@@ -487,9 +494,9 @@ impl TreeWalk {
         source_path: &[u8],
         fingerprint_type: &[u8],
         name: &str,
-        inner_digest: &[u8; 32],
+        inner_digest: NixSha256Digest,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        let digest = Self::lower_hex_bytes(id, span, inner_digest)?;
+        let digest = Self::lower_hex_bytes(id, span, inner_digest.as_bytes())?;
         let store_dir = self.options.store_dir();
         let len = fingerprint_type
             .len()

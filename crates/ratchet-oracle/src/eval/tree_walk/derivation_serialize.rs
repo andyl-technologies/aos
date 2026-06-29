@@ -278,6 +278,10 @@ impl TreeWalk {
         out
     }
 
+    pub(super) fn nix_sha256_digest(bytes: &[u8]) -> NixSha256Digest {
+        NixSha256Digest::from_bytes(Self::sha256_array(bytes))
+    }
+
     pub(super) fn validate_derivation_strict_before_paths(
         &self,
         id: IrId,

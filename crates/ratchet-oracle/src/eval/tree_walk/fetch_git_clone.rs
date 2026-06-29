@@ -324,7 +324,14 @@ impl TreeWalk {
         name: &str,
         digest: &[u8; 32],
     ) -> Result<Vec<u8>, TreeWalkError> {
-        self.store_path_bytes_from_fingerprint_parts(id, span, url, b"source", name, digest)
+        self.store_path_bytes_from_fingerprint_parts(
+            id,
+            span,
+            url,
+            b"source",
+            name,
+            NixSha256Digest::from_bytes(*digest),
+        )
     }
 
     pub(super) fn fetch_git_canonical_uri(args: &FetchGitArguments) -> Vec<u8> {

@@ -803,16 +803,13 @@ impl DerivationHashModulo {
         Self(digest)
     }
 
+    #[cfg(test)]
     fn from_sha256_bytes(bytes: [u8; 32]) -> Self {
         Self::from_nix_sha256_digest(NixSha256Digest::from_bytes(bytes))
     }
 
     const fn nix_sha256_digest(self) -> NixSha256Digest {
         self.0
-    }
-
-    const fn as_bytes(&self) -> &[u8; 32] {
-        self.0.as_bytes()
     }
 }
 

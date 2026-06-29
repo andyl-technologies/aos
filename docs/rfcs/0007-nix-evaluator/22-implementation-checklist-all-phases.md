@@ -1426,6 +1426,20 @@ alone (`M-1`/`Q-A`).
       accessors. This type-enforces the current derivation side-record modulo
       path only; other store-path/hash builtin SHA-256 preimages and the full
       differential `.drv` harness remain open (`S-15`).
+- [x] Current store-path SHA-256 preimage type boundary: derivation, text,
+      fixed-output, and source store-path constructors now carry
+      `NixSha256Digest` through `build_store_path_from_fingerprint_parts`,
+      `store_path_bytes_from_fingerprint_parts`, `fixed_output_path_digest`,
+      `flat_source_fixed_output_digest`, `build_ca_path`, and the helper that
+      hashes Nix-observed SHA-256 preimages. Raw `[u8; 32]` values still enter
+      at existing Nix API edges such as decoded expected hashes, computed
+      NAR/file payload hashes, and `nix_compat` `CAHash` variants, but those
+      call sites convert explicitly to `NixSha256Digest` before store-path
+      fingerprint construction; mismatch/error surfaces still report the same
+      raw digest bytes. This type-enforces selected current store-path
+      construction helpers only; hash builtin outputs, every source/fetch
+      variant, and the full differential leak-invariant harness remain open
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

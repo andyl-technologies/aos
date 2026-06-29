@@ -329,7 +329,7 @@ impl TreeWalk {
                     id,
                     span,
                     format!("output:{output_name}").as_bytes(),
-                    hash_derivation_modulo.as_bytes(),
+                    hash_derivation_modulo.nix_sha256_digest(),
                     &path_name,
                 )?
             };
@@ -354,9 +354,9 @@ impl TreeWalk {
             return Ok(digest);
         }
         let aterm = self.derivation_aterm_bytes_with_input_hashes(derivation, input_hashes);
-        Ok(DerivationHashModulo::from_sha256_bytes(Self::sha256_array(
-            &aterm,
-        )))
+        Ok(DerivationHashModulo::from_nix_sha256_digest(
+            Self::nix_sha256_digest(&aterm),
+        ))
     }
 
     pub(super) fn fixed_output_derivation_digest(
@@ -385,8 +385,8 @@ impl TreeWalk {
         bytes.extend_from_slice(ca_hash.hash().to_nix_lowerhex_string().as_bytes());
         bytes.push(b':');
         bytes.extend_from_slice(&output_path);
-        Ok(Some(DerivationHashModulo::from_sha256_bytes(
-            Self::sha256_array(&bytes),
+        Ok(Some(DerivationHashModulo::from_nix_sha256_digest(
+            Self::nix_sha256_digest(&bytes),
         )))
     }
 
@@ -398,12 +398,12 @@ impl TreeWalk {
         content: &[u8],
         references: impl IntoIterator<Item = Vec<u8>>,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let content_digest = Self::sha256_array(content);
+        let content_digest = Self::nix_sha256_digest(content);
         self.build_ca_path(
             id,
             span,
             name,
-            &nix_compat::derivation::CAHash::Text(content_digest),
+            &nix_compat::derivation::CAHash::Text(content_digest.into_bytes()),
             references,
             false,
         )
@@ -422,13 +422,13 @@ impl TreeWalk {
         let (fingerprint_type, inner_digest) = match ca_hash {
             nix_compat::derivation::CAHash::Text(digest) => (
                 Self::make_references_fingerprint_type(b"text", references, false),
-                *digest,
+                NixSha256Digest::from_bytes(*digest),
             ),
             nix_compat::derivation::CAHash::Nar(nix_compat::derivation::NixHash::Sha256(
                 digest,
             )) => (
                 Self::make_references_fingerprint_type(b"source", references, self_reference),
-                *digest,
+                NixSha256Digest::from_bytes(*digest),
             ),
             nix_compat::derivation::CAHash::Nar(hash) => {
                 if references.peek().is_some() {
@@ -466,7 +466,7 @@ impl TreeWalk {
             id,
             span,
             &fingerprint_type,
-            &inner_digest,
+            inner_digest,
             name,
         )
     }
@@ -476,10 +476,10 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         fingerprint_type: &[u8],
-        inner_digest: &[u8; 32],
+        inner_digest: NixSha256Digest,
         name: &str,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let digest = Self::lower_hex_bytes(id, span, inner_digest)?;
+        let digest = Self::lower_hex_bytes(id, span, inner_digest.as_bytes())?;
         let mut fingerprint = Vec::new();
         fingerprint.extend_from_slice(fingerprint_type);
         fingerprint.extend_from_slice(b":sha256:");
@@ -524,13 +524,13 @@ impl TreeWalk {
     pub(super) fn fixed_output_path_digest(
         prefix: &[u8],
         hash: &nix_compat::derivation::NixHash,
-    ) -> [u8; 32] {
+    ) -> NixSha256Digest {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(prefix);
         bytes.push(b':');
         bytes.extend_from_slice(hash.to_nix_lowerhex_string().as_bytes());
         bytes.push(b':');
-        Self::sha256_array(&bytes)
+        Self::nix_sha256_digest(&bytes)
     }
 
     pub(super) fn output_path_name(derivation_name: &str, output_name: &str) -> String {
@@ -571,11 +571,11 @@ impl TreeWalk {
             floating_ca_output,
             Some(input_hashes),
         );
-        DerivationHashModulo::from_sha256_bytes(Self::sha256_array(&aterm))
+        DerivationHashModulo::from_nix_sha256_digest(Self::nix_sha256_digest(&aterm))
     }
 
     pub(super) fn impure_derivation_hash_modulo() -> DerivationHashModulo {
-        DerivationHashModulo::from_sha256_bytes(Self::sha256_array(b"impure"))
+        DerivationHashModulo::from_nix_sha256_digest(Self::nix_sha256_digest(b"impure"))
     }
 
     pub(super) fn floating_ca_derivation_aterm_bytes(

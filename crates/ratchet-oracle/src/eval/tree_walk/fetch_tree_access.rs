@@ -332,7 +332,14 @@ impl TreeWalk {
         input: &[u8],
         digest: &[u8; 32],
     ) -> Result<Vec<u8>, TreeWalkError> {
-        self.store_path_bytes_from_fingerprint_parts(id, span, input, b"source", "source", digest)
+        self.store_path_bytes_from_fingerprint_parts(
+            id,
+            span,
+            input,
+            b"source",
+            "source",
+            NixSha256Digest::from_bytes(*digest),
+        )
     }
 
     pub(super) fn materialize_fetch_tree_store_path(
