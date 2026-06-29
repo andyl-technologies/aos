@@ -1720,7 +1720,7 @@ in {
       }
       pass "apm --json registry --system list reports redirected system registry"
 
-      $APM --json update --registry override-reg > /tmp/override-update.json 2>&1 || {
+      $APM --json update --system --registry override-reg > /tmp/override-update.json 2>&1 || {
         cat /tmp/override-update.json
         fail "apm update syncs registry from redirected system config"
       }
@@ -1740,7 +1740,7 @@ in {
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm update does not create a shadow user registry config"
 
-      $APM --json search override-root --registry override-reg \
+      $APM --json search override-root --system --registry override-reg \
         > /tmp/override-search.json 2>&1 || {
         cat /tmp/override-search.json
         fail "apm search resolves package from redirected system registry"
@@ -1778,7 +1778,7 @@ in {
         pass "override dependency missing before install"
       fi
 
-      $APM install override-root --registry override-reg --yes \
+      $APM install override-root --system --registry override-reg --yes \
         > /tmp/override-install.out 2>&1 || {
         cat /tmp/override-install.out
         fail "apm install downloads redirected system registry package"
@@ -1817,7 +1817,7 @@ in {
         "apm registry --system disable persists to redirected system config"
       assert_file_not_exists "$USER_REG_CONFIG" \
         "apm registry --system disable does not create a shadow user registry config"
-      if $APM update --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
+      if $APM update --system --registry override-reg > /tmp/override-update-disabled.out 2>&1; then
         cat /tmp/override-update-disabled.out
         fail "apm update should reject disabled redirected system registry"
       else
