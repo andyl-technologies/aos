@@ -144,7 +144,7 @@ impl NativeFileClosureCacheParity {
         assert_eq!(self.disabled_with_persist_root, self.uncached);
     }
 
-    fn assert_cache_off_observed_no_force_cache_activity(&self) {
+    fn assert_cache_off_observed_no_incremental_cache_activity(&self) {
         for (label, stats) in [
             ("uncached", &self.uncached_stats),
             ("disabled eval-cache", &self.disabled_stats),
@@ -173,6 +173,21 @@ impl NativeFileClosureCacheParity {
                 stats.force_cache_materialization_decisions(),
                 0,
                 "{label} native file-closure run reported materialization decisions"
+            );
+            assert_eq!(
+                stats.early_cutoffs(),
+                0,
+                "{label} native file-closure run reported early cutoffs"
+            );
+            assert_eq!(
+                stats.derivation_aterm_path_reuses(),
+                0,
+                "{label} native file-closure run reported derivation ATerm path reuse"
+            );
+            assert_eq!(
+                stats.static_derivation_output_path_reuses(),
+                0,
+                "{label} native file-closure run reported static-output path reuse"
             );
         }
     }
@@ -323,7 +338,7 @@ where
         persistent_hit_keys,
     };
     report.assert_byte_identical();
-    report.assert_cache_off_observed_no_force_cache_activity();
+    report.assert_cache_off_observed_no_incremental_cache_activity();
 
     let canaries = persistent_force_cache_surface_canaries(persist_root)?;
     if !canaries.is_empty() {
