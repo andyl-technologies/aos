@@ -3439,9 +3439,21 @@ alone (`M-1`/`Q-A`).
       fresh-runtime persistent child-call hits, and miss when the configured
       `nix_path` changes. This is scoped to the `builtins.nixPath` child-call
       replay slice only; the enclosing thunk still evaluates unless separately
-      admitted, and explicit-list first-class `findFile`, first-class
-      allowed-path policy coverage, fetch interactions, and broad search-path
-      edge-exactness remain open (`R-10`/`S-14`).
+      admitted, and first-class allowed-path policy coverage, fetch
+      interactions, and broad search-path edge-exactness remain open
+      (`R-10`/`S-14`).
+- [x] Current precursor: first-class explicit-list `findFile` child-call
+      admission. Saturated first-class `findFile` calls whose first argument is
+      a closed/replayable explicit search-path list now fall back from the
+      synthetic `builtins.nixPath` hash path to the normal replayable argument
+      payload hash, replay candidate traces on in-memory and fresh-runtime
+      persistent child-call hits, and miss when the path-literal
+      base/search-path payload identity changes. This is scoped to
+      closed/replayable explicit-list child-call replay only; the enclosing
+      thunk still evaluates unless separately admitted, captured/non-replayable
+      explicit-list entries are still rejected by the child-call key, and
+      first-class allowed-path policy coverage, fetch interactions, and broad
+      search-path edge-exactness remain open (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to

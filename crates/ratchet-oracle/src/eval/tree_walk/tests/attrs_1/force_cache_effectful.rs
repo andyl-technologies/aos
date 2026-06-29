@@ -734,6 +734,322 @@ fn find_file_first_class_nix_path_hits_from_persistent_cache_after_revalidation(
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
+#[test]
+fn find_file_first_class_explicit_list_calls_hit_and_miss_on_path_change() {
+    let first_root = unique_temp_dir("force-cache-first-class-find-file-explicit-list-first");
+    let second_root = unique_temp_dir("force-cache-first-class-find-file-explicit-list-second");
+    let first_candidate = first_root.join("hit").join("subdir");
+    let second_candidate = second_root.join("hit").join("subdir");
+    fs::create_dir_all(&first_candidate).expect("first candidate exists");
+    fs::create_dir_all(&second_candidate).expect("second candidate exists");
+    let first_root = fs::canonicalize(&first_root).expect("first root canonicalizes");
+    let second_root = fs::canonicalize(&second_root).expect("second root canonicalizes");
+    let first_candidate = first_root.join("hit").join("subdir");
+    let second_candidate = second_root.join("hit").join("subdir");
+    let source = "{ a = (let f = builtins.findFile; in f [ { prefix = \"pkg\"; path = ./hit; } ] \"pkg/subdir\"); }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let first_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&first_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("first explicit-list findFile candidate fingerprint builds"),
+    ];
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_path_literal_base(path_bytes(&first_root))
+        .expect("first path base configures");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let first_forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        path_value_bytes(&first, first_forced),
+        path_bytes(&first_candidate)
+    );
+    assert_eq!(first.impure_input_trace(), first_trace.as_slice());
+    drop(first);
+
+    let mut admit_options = TreeWalkOptions::new();
+    admit_options
+        .set_path_literal_base(path_bytes(&first_root))
+        .expect("matching path base configures");
+    let mut admit = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        admit_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let admitted = force_attr_a(&mut admit, &ir, a);
+    assert_eq!(
+        path_value_bytes(&admit, admitted),
+        path_bytes(&first_candidate)
+    );
+    assert!(
+        admit.stats().thunks_forced() > 0,
+        "the second first-class explicit-list findFile demand admits and computes the child call"
+    );
+    assert!(
+        admit.stats().force_cache_misses() > 0,
+        "the second first-class explicit-list findFile demand should materialize a child payload"
+    );
+    assert_eq!(admit.impure_input_trace(), first_trace.as_slice());
+    drop(admit);
+
+    let mut hit_options = TreeWalkOptions::new();
+    hit_options
+        .set_path_literal_base(path_bytes(&first_root))
+        .expect("hit path base configures");
+    let mut hit = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        hit_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let hit_forced = force_attr_a(&mut hit, &ir, a);
+    assert_eq!(
+        path_value_bytes(&hit, hit_forced),
+        path_bytes(&first_candidate)
+    );
+    assert!(
+        hit.stats().thunks_forced() > 0,
+        "first-class explicit-list child-call hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(hit.stats().force_cache_hits(), 1);
+    assert_eq!(hit.stats().force_cache_misses(), 0);
+    assert_eq!(hit.impure_input_trace(), first_trace.as_slice());
+    drop(hit);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_path_literal_base(path_bytes(&second_root))
+        .expect("changed path base configures");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let changed_forced = force_attr_a(&mut changed, &ir, a);
+    let changed_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&second_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("changed explicit-list findFile candidate fingerprint builds"),
+    ];
+    assert_eq!(
+        path_value_bytes(&changed, changed_forced),
+        path_bytes(&second_candidate)
+    );
+    assert_eq!(
+        changed.stats().force_cache_hits(),
+        0,
+        "changed explicit-list path identity must not reuse the previous first-class findFile payload"
+    );
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+
+    fs::remove_dir_all(first_root).expect("first temp tree removed");
+    fs::remove_dir_all(second_root).expect("second temp tree removed");
+}
+
+#[test]
+fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalidation() {
+    let persist_root = unique_temp_dir("force-cache-first-class-find-file-explicit-list-persist");
+    let root = unique_temp_dir("force-cache-first-class-find-file-explicit-list-persistent-hit");
+    let hit_candidate = root.join("hit").join("subdir");
+    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_candidate = root.join("hit").join("subdir");
+    let source = "{ a = (let f = builtins.findFile; in f [ { prefix = \"pkg\"; path = ./hit; } ] \"pkg/subdir\"); }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&hit_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("explicit-list first-class findFile candidate fingerprint builds"),
+    ];
+
+    let mut demand_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    demand_options.set_persist_cache_root(&persist_root);
+    demand_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("demand path base configures");
+    let mut demand = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        demand_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let demand_forced = force_attr_a(&mut demand, &ir, a);
+    assert_eq!(
+        path_value_bytes(&demand, demand_forced),
+        path_bytes(&hit_candidate)
+    );
+    assert_eq!(demand.impure_input_trace(), expected_trace.as_slice());
+    demand.advance_persist_eval_cache_run_boundary();
+    drop(demand);
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("materialization path base configures");
+    let mut materialize = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        materialize_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let materialized = force_attr_a(&mut materialize, &ir, a);
+    assert_eq!(
+        path_value_bytes(&materialize, materialized),
+        path_bytes(&hit_candidate)
+    );
+    assert_eq!(materialize.impure_input_trace(), expected_trace.as_slice());
+    assert!(
+        materialize.stats().force_cache_misses() > 0,
+        "the second first-class explicit-list findFile demand should materialize a trace-backed child payload"
+    );
+    let trace_entry = assert_persistent_find_file_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "first-class explicit-list findFile materialization run",
+    );
+    materialize.advance_persist_eval_cache_run_boundary();
+    drop(materialize);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options.set_persist_cache_root(&persist_root);
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("hit path base configures");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        path_value_bytes(&second, forced_again),
+        path_bytes(&hit_candidate)
+    );
+    assert!(
+        second.stats().thunks_forced() > 0,
+        "fresh-runtime first-class explicit-list child hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        second.persist_force_cache_hit_keys.as_slice(),
+        &[trace_entry.0],
+        "fresh-runtime first-class explicit-list findFile hit should load only the trace-backed metadata key"
+    );
+    assert_eq!(
+        assert_persistent_find_file_trace_log_contains(
+            &persist_root,
+            &expected_trace,
+            "fresh-runtime first-class explicit-list findFile hit",
+        ),
+        trace_entry,
+        "fresh-runtime first-class explicit-list findFile hit should keep the original verifying trace live"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn find_file_first_class_explicit_list_with_captured_entries_waits_for_uncached_child_call() {
+    let root = unique_temp_dir("force-cache-first-class-find-file-captured-list");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    let source = format!(
+        "let searchRoot = {}; in
+         {{ a = (let f = builtins.findFile; in f [ {{ prefix = \"pkg\"; path = searchRoot; }} ] \"pkg/subdir\"); }}",
+        nix_string_literal(&path_source(&hit_root)),
+    );
+    let ir = lower(&source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&hit_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("captured first-class findFile candidate fingerprint builds"),
+    ];
+
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source.as_str(),
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut evaluator, &ir, a);
+    assert_eq!(
+        path_value_bytes(&evaluator, forced),
+        path_bytes(&hit_candidate)
+    );
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
+    drop(evaluator);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source.as_str(),
+        cache.clone(),
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+    assert_eq!(
+        path_value_bytes(&second, forced_again),
+        path_bytes(&hit_candidate)
+    );
+    assert!(
+        second.stats().thunks_forced() > 0,
+        "captured first-class explicit-list entries should not produce an enclosing whole-thunk hit"
+    );
+    assert_eq!(
+        second.stats().force_cache_hits(),
+        0,
+        "captured first-class explicit-list entries should not hit a child-call payload"
+    );
+    assert!(
+        second.stats().cache_misses() > 0,
+        "captured first-class explicit-list entries should continue through uncached evaluation"
+    );
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
 fn first_class_find_file_apply_id(ir: &Ir) -> IrId {
     ir.arena
         .nodes()
@@ -751,7 +1067,7 @@ fn first_class_find_file_apply_id(ir: &Ir) -> IrId {
             let IrData::Symbol(symbol) = second.data else {
                 return None;
             };
-            (first.kind == IrKind::LocalVar
+            (matches!(first.kind, IrKind::Apply | IrKind::LocalVar)
                 && second.kind == IrKind::Str
                 && ir.symbols.resolve(symbol) == Some(b"pkg/subdir".as_slice()))
             .then(|| IrId::new(index as u32))
@@ -802,15 +1118,7 @@ fn assert_persistent_find_file_trace_log_contains(
     expected_trace: &[ImpureInputFingerprint],
     context: &str,
 ) -> (PersistNodeMetadataKey, ValueHash) {
-    let expected = expected_trace
-        .iter()
-        .map(|input| {
-            input
-                .as_cacheable()
-                .unwrap_or_else(|| panic!("{context} expected trace should be cacheable"))
-                .clone()
-        })
-        .collect::<Vec<_>>();
+    let expected = expected_cacheable_find_file_trace(expected_trace, context);
     let persist = PersistCache::open(persist_root).expect("persistent cache opens");
     let metadata_entries = persist
         .node_metadata_index()
@@ -841,6 +1149,21 @@ fn assert_persistent_find_file_trace_log_contains(
     live_matches[0]
 }
 
+fn expected_cacheable_find_file_trace(
+    expected_trace: &[ImpureInputFingerprint],
+    context: &str,
+) -> Vec<crate::cache::CacheableInputFingerprint> {
+    expected_trace
+        .iter()
+        .map(|input| {
+            input
+                .as_cacheable()
+                .unwrap_or_else(|| panic!("{context} expected trace should be cacheable"))
+                .clone()
+        })
+        .collect()
+}
+
 #[test]
 fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_option_change() {
     let root = unique_temp_dir("force-cache-find-file-nix-path");
@@ -864,14 +1187,6 @@ fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_
     first_options
         .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
         .expect("search path entry configures");
-    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
-        &ir,
-        first_options,
-        "default.nix",
-        source,
-        cache.clone(),
-    );
-    let forced = force_attr_a(&mut evaluator, &ir, a);
     let expected_trace = vec![
         ImpureInputFingerprint::path_exists_with_mode(
             &path_bytes(&first_candidate),
@@ -881,6 +1196,15 @@ fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_
         .expect("findFile nixPath candidate fingerprint builds"),
     ];
 
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut evaluator, &ir, a);
+
     assert_eq!(
         path_value_bytes(&evaluator, forced),
         path_bytes(&first_candidate)
@@ -888,9 +1212,15 @@ fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_
     assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
     {
         let runtime = cache.lock().expect("cache lock is valid");
+        let cache = runtime.cache().expect("cache is enabled");
         assert!(
-            runtime.cache().expect("cache is enabled").len() >= 2,
+            cache.len() >= 2,
             "builtins.nixPath-backed findFile should allocate an expression node and candidate leaf"
+        );
+        assert_eq!(
+            cache_nodes_with_dependencies(cache),
+            1,
+            "the expression node must depend on the observed builtins.nixPath findFile candidate"
         );
     }
 
@@ -917,6 +1247,7 @@ fn find_file_nix_path_thunks_revalidate_candidate_edges_before_hits_and_miss_on_
         "stable builtins.nixPath-backed findFile payloads should hit after candidate revalidation"
     );
     assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
     assert_eq!(
         second.impure_input_trace(),
         expected_trace.as_slice(),
@@ -996,7 +1327,13 @@ fn find_file_nix_path_thunks_hit_from_persistent_cache_after_revalidation() {
     let forced = first
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("findFile nixPath force succeeds");
+
     assert_eq!(path_value_bytes(&first, forced), path_bytes(&hit_candidate));
+    assert_eq!(first.impure_input_trace(), expected_trace.as_slice());
+    assert!(
+        first.stats().force_cache_misses() > 0,
+        "the first persistent run should materialize the findFile nixPath payload"
+    );
     drop(first);
 
     let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
@@ -1022,9 +1359,13 @@ fn find_file_nix_path_thunks_hit_from_persistent_cache_after_revalidation() {
         0,
         "fresh runtimes should rehydrate stable builtins.nixPath-backed findFile payloads from disk"
     );
-    assert_eq!(second.stats().cache_hits(), 1);
-    assert_eq!(second.stats().cache_misses(), 0);
-    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(
+        second.impure_input_trace(),
+        expected_trace.as_slice(),
+        "persistent hit revalidation must replay the builtins.nixPath findFile candidate edges"
+    );
 
     fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
     fs::remove_dir_all(root).expect("temp tree removed");

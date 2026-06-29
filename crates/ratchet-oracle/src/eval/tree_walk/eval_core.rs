@@ -704,7 +704,9 @@ impl TreeWalk {
         arg: &EvalPrimOpArg,
     ) -> Option<DurableBlake3Hash> {
         if builtin.execution() == BuiltinExecution::FindFile && index == 0 {
-            return self.force_cache_builtin_nix_path_arg_hash(arg.value());
+            if let Some(hash) = self.force_cache_builtin_nix_path_arg_hash(arg.value()) {
+                return Some(hash);
+            }
         }
         self.force_cache_free_var_value_hash(arg.value())
     }
