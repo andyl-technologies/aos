@@ -45,13 +45,13 @@
 //! Rlerror  size[4] Rlerror  tag[2] ecode[4]   -- Linux errno, the only error reply
 //! ```
 //!
-//! TODO(shmem-slot-binding): the encoded bytes are carried as the opaque
+//! The encoded bytes are carried as the opaque
 //! [`crate::request::Request::payload`] / [`crate::request::Response::payload`]
 //! and ride the `FrameEntry.data` field of a [`crucible_shmem::SLOT_9P_IO`] ring
-//! frame ([`crucible_shmem::MAX_FRAME_DATA`] = 4608 bytes). The transport wiring
-//! that copies these bytes into a mapped ring frame lands with the executor slot
-//! in a later changeset; the codec here is self-contained and endianness-explicit
-//! so that binding is byte-for-byte unambiguous.
+//! frame ([`crucible_shmem::MAX_FRAME_DATA`] = 4608 bytes).
+//! [`crate::subnode::IoCore`] supplies the shmem lifecycle bridge that drains
+//! VM-to-9p frames, computes replies, publishes 9p-to-VM frames, and issues the
+//! corresponding wake.
 
 /// The fixed 9p frame header length: `size[4] type[1] tag[2]`.
 pub const HEADER_LEN: usize = 7;

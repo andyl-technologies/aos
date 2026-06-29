@@ -22,12 +22,14 @@
 //! delivery_icount  = ceil(vt(request_icount) + NinepLatency::latency_ns)
 //! ```
 
+use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
+
 use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
 use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::inflight::PendingResponse;
 use crate::request::{LatencyModel, Request, Response, ResponseStatus};
-use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode};
+use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{self, Message, TMessage};
 use super::server::{NinepServer, NinepServerSnapshot};
@@ -259,6 +261,32 @@ impl NinepDevice {
         Self::process_pending(&mut self.core, &mut self.server, &self.latency)
     }
 
+    /// Drains raw 9p request frames from a shared-memory inbox ring.
+    ///
+    /// Each dequeued frame is converted to the uniform [`Request`] payload,
+    /// COMPUTEd through the read-only 9p server, and inserted into the in-flight
+    /// queue. The VM producer slot is woken as each request-ring entry is freed,
+    /// so a producer blocked on a full `(vm slot -> SLOT_9P_IO)` ring can retry
+    /// without dropping or reordering the request ([IO-32]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for corrupt ring state, invalid frame payload
+    /// length, wake failure, or any 9p COMPUTE/delivery-time error.
+    pub fn process_shmem_inbox(
+        &mut self,
+        inbox: &RingHeader,
+        inbox_entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemInboxProcess, DeviceError> {
+        let mut node = NinepServerNode {
+            server: &mut self.server,
+            latency: &self.latency,
+        };
+        self.core
+            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+    }
+
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
     ///
     /// # Errors
@@ -267,6 +295,28 @@ impl NinepDevice {
     /// icount.
     pub fn advance_to(&mut self, limit: u64) -> Result<usize, DeviceError> {
         self.core.advance_to(limit)
+    }
+
+    /// Advances the clock and publishes due 9p replies to a shmem ring.
+    ///
+    /// Replies are emitted as raw 9p payload frames on the `(SLOT_9P_IO -> vm
+    /// slot)` ring. If the ring fills, undelivered replies remain in flight at
+    /// their original `delivery_icount`; when at least one reply is published,
+    /// the VM consumer slot is woken.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for clock regression, oversized reply frames,
+    /// corrupt ring state, or wake failure.
+    pub fn advance_to_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.core
+            .advance_to_shmem(limit, outbox, outbox_entries, consumer_slot)
     }
 
     /// Pops the next delivered response, returning its raw 9p reply frame.

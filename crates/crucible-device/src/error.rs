@@ -6,7 +6,7 @@
 //! violations, full-ring backpressure that cannot make progress) so that no I/O
 //! path ever panics or depends on host state to decide an outcome.
 
-use crucible_shmem::NodeSlotError;
+use crucible_shmem::{FrameEntryError, FutexError, NodeSlotError, SpscRingError};
 
 use crate::block::codec::BlockCodecError;
 use crate::ninep::codec::NinepCodecError;
@@ -134,6 +134,40 @@ pub enum DeviceError {
     #[error("9p wire codec error: {0}")]
     NinepCodec(#[from] NinepCodecError),
 
+    /// A shared-memory frame entry could not carry or expose its payload.
+    ///
+    /// This is a deterministic transport-boundary failure: either a device
+    /// response is larger than the fixed [`crucible_shmem::FrameEntry`] payload
+    /// capacity, or a frame read from a ring advertises an invalid payload length.
+    #[error("shared-memory frame entry error: {source}")]
+    FrameEntry {
+        /// The underlying frame-entry validation failure.
+        source: FrameEntryError,
+    },
+
+    /// A shared-memory SPSC ring operation failed.
+    ///
+    /// Non-full failures indicate corrupt indices or an invalid backing slice.
+    /// Full-ring backpressure is handled by the lifecycle bridge when it can
+    /// preserve the pending frame in flight; direct conversions surface the
+    /// same deterministic ring error here.
+    #[error("shared-memory SPSC ring error: {source}")]
+    ShmemRing {
+        /// The underlying ring operation failure.
+        source: SpscRingError,
+    },
+
+    /// A wake tied to a shared-memory ring transition failed.
+    ///
+    /// The ring transition is deterministic and already happened; this variant
+    /// fails loudly when the cross-process futex wake syscall itself reports an
+    /// unexpected error.
+    #[error("shared-memory wake failed: {source}")]
+    ShmemWake {
+        /// The underlying non-private futex wake failure.
+        source: FutexError,
+    },
+
     /// A network link's base latency is not strictly positive.
     ///
     /// RFC §15.4.2 / [IO-33]: a link's base latency MUST be strictly positive and
@@ -204,5 +238,23 @@ pub enum DeviceError {
 impl From<NodeSlotError> for DeviceError {
     fn from(source: NodeSlotError) -> Self {
         DeviceError::Clock { source }
+    }
+}
+
+impl From<FrameEntryError> for DeviceError {
+    fn from(source: FrameEntryError) -> Self {
+        DeviceError::FrameEntry { source }
+    }
+}
+
+impl From<SpscRingError> for DeviceError {
+    fn from(source: SpscRingError) -> Self {
+        DeviceError::ShmemRing { source }
+    }
+}
+
+impl From<FutexError> for DeviceError {
+    fn from(source: FutexError) -> Self {
+        DeviceError::ShmemWake { source }
     }
 }

@@ -25,11 +25,12 @@
 //! ([`PushError`]) rather than dropping it, so a block-and-wake retry can
 //! re-push the exact same frame without cloning ([IO-32], [SHM-26]).
 //!
-//! TODO(CS-IO-2+): bind this directly to a real `crucible_shmem::DirectedRing`
-//! backed by a mapped region, replacing the in-crate `VecDeque` storage while
-//! preserving exactly these block-and-wake semantics. The capacity check,
-//! ordering, and [`BackpressureState`] transitions are the load-bearing logic
-//! and are final here; only the backing store changes.
+//! The in-process queue remains the test-double backing store. The production
+//! shmem path in [`crate::subnode::IoCore::process_shmem_inbox`] and
+//! [`crate::subnode::IoCore::advance_to_shmem`] uses real
+//! [`crucible_shmem::RingHeader`] / [`crucible_shmem::FrameEntry`] storage plus
+//! [`crucible_shmem::NodeSlot`] wake calls while preserving these same
+//! block-and-wake semantics.
 
 use std::collections::VecDeque;
 

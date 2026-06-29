@@ -1,8 +1,8 @@
 //! The uniform I/O sub-node trait and its deterministic core.
 //!
-//! This module owns the shared abstraction behind every I/O sub-node — disk,
-//! 9p, and network link (the concrete devices land in later changesets). It
-//! defines:
+//! This module owns the shared abstraction behind every request/response I/O
+//! sub-node — disk and 9p, with network links reusing the in-flight ordering
+//! pieces for frame delivery. It defines:
 //!
 //! - [`IoSubNode`]: the trait a concrete device implements. It supplies a
 //!   per-request `compute` (the COMPUTE step: status + payload, may touch the
@@ -10,10 +10,11 @@
 //!   uniform request inbox, response outbox, virtual clock, in-flight queue,
 //!   `advance_to`, and snapshot/restore wiring from [`IoCore`].
 //! - [`IoCore`]: the reusable lifecycle engine. It owns the
-//!   [`VirtualClock`](crate::clock::VirtualClock), the inbound request ring, the
-//!   outbound response ring (both deterministic
-//!   [`BoundedQueue`](crate::backpressure::BoundedQueue)s), and the
-//!   delivery-ordered [`InflightQueue`](crate::inflight::InflightQueue).
+//!   [`VirtualClock`](crate::clock::VirtualClock), the in-process harness inbox
+//!   and outbox (deterministic
+//!   [`BoundedQueue`](crate::backpressure::BoundedQueue)s), the shmem bridge for
+//!   real [`crucible_shmem::RingHeader`] / [`crucible_shmem::FrameEntry`] rings,
+//!   and the delivery-ordered [`InflightQueue`](crate::inflight::InflightQueue).
 //!
 //! The COMPUTE-then-DELIVER split is the crux ([IO-2], [IO-31]): on
 //! [`IoCore::process_inbox`], each arrived request is COMPUTEd *now* and its
@@ -34,8 +35,16 @@
 //!   clock.advance_to(limit)
 //!   outbox <- inflight.drain_due(limit)                (visible at exact icount)
 //! ```
+//!
+//! The shmem-backed methods [`IoCore::process_shmem_inbox`] and
+//! [`IoCore::advance_to_shmem`] perform the same lifecycle against real SPSC ring
+//! storage: freeing VM-to-device slots wakes the producer, publishing
+//! device-to-VM responses wakes the consumer, and a full response ring leaves
+//! not-yet-published responses in flight at their original `delivery_icount`.
 
-use crucible_shmem::FrameDeliveryKey;
+use crucible_shmem::{
+    FrameDeliveryKey, FrameEntry, NodeSlot, RingHeader, SpscRingError, WakeAction,
+};
 
 use crate::backpressure::{BackpressureState, BoundedQueue, PushError};
 use crate::clock::VirtualClock;
@@ -129,6 +138,33 @@ pub struct IoCoreSnapshot {
     pub outbox: Vec<PendingResponse>,
 }
 
+/// Result of draining a shared-memory request ring into an [`IoCore`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShmemInboxProcess {
+    /// Number of request frames consumed and COMPUTEd.
+    pub processed: usize,
+    /// Wake actions issued to the request producer as ring slots were freed.
+    pub producer_wakes: Vec<WakeAction>,
+}
+
+/// Result of publishing due responses into a shared-memory response ring.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShmemDeliveryResult {
+    /// Number of due responses published to the shared-memory ring.
+    pub delivered: usize,
+    /// Wake issued to the response consumer after at least one frame was published.
+    pub consumer_wake: Option<WakeAction>,
+}
+
+/// Result of consuming one frame from a shared-memory ring and waking its producer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShmemDequeueResult {
+    /// The frame dequeued from the ring, if one was present.
+    pub frame: Option<FrameEntry>,
+    /// Wake issued to the producer after a live slot was freed.
+    pub producer_wake: Option<WakeAction>,
+}
+
 impl IoCore {
     /// Creates an I/O core with the given clock shift, node id, and ring sizes.
     ///
@@ -218,29 +254,48 @@ impl IoCore {
         D: IoSubNode,
     {
         while let Some(request) = self.inbox.pop() {
-            let delivery_icount = self.compute_delivery_icount(&request, device.latency_model())?;
-            // Fail-loud guard ([IO-31], [IO-34]): a response whose delivery is
-            // already in the consumer's past can never be made visible at its
-            // exact icount, and enqueueing it would corrupt the global
-            // delivery_icount order. Reject rather than silently mis-order.
-            let current_icount = self.clock.current_icount();
-            if delivery_icount < current_icount {
-                return Err(DeviceError::DeliveryInPast {
-                    delivery_icount,
-                    current_icount,
-                });
-            }
-            let response = device.compute(&request)?;
-            let seq = self.next_seq;
-            self.next_seq = self.next_seq.wrapping_add(1);
-            let key = FrameDeliveryKey {
-                delivery_icount,
-                src_node: self.src_node,
-                seq,
-            };
-            self.inflight.insert(PendingResponse::new(key, response));
+            self.compute_request(device, request)?;
         }
         Ok(())
+    }
+
+    /// Drains a real shared-memory request ring and COMPUTEs each request.
+    ///
+    /// This is the shmem-backed form of [`IoCore::process_inbox`]. It consumes
+    /// `FrameEntry` values from a VM-to-device [`RingHeader`], maps each frame to
+    /// the uniform [`Request`] shape, wakes the producer slot after freeing each
+    /// ring entry, and inserts the COMPUTEd response into the ordered in-flight
+    /// queue. No request is dropped or reordered: frames are consumed in SPSC FIFO
+    /// order, then completions are ordered by `(delivery_icount, src_node, seq)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the ring is corrupt, a frame advertises an
+    /// invalid payload length, the producer wake fails, or COMPUTE/delivery-time
+    /// validation fails.
+    pub fn process_shmem_inbox<D>(
+        &mut self,
+        device: &mut D,
+        inbox: &RingHeader,
+        inbox_entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemInboxProcess, DeviceError>
+    where
+        D: IoSubNode,
+    {
+        let mut processed = 0;
+        let mut producer_wakes = Vec::new();
+        while let Some(frame) = inbox.dequeue(inbox_entries)? {
+            let wake = producer_slot.wake_for_device_io_release()?;
+            producer_wakes.push(wake);
+            let request = request_from_frame(&frame)?;
+            self.compute_request(device, request)?;
+            processed += 1;
+        }
+        Ok(ShmemInboxProcess {
+            processed,
+            producer_wakes,
+        })
     }
 
     /// Computes the exact delivery icount for a request under a latency model.
@@ -330,6 +385,66 @@ impl IoCore {
         Ok(delivered)
     }
 
+    /// Advances the clock and publishes due responses to a real shmem ring.
+    ///
+    /// This is the shmem-backed form of [`IoCore::advance_to`]. It drains due
+    /// in-flight responses in deterministic order and release-publishes each as a
+    /// [`FrameEntry`] into the device-to-VM [`RingHeader`]. If the response ring
+    /// is full, the not-yet-published response and all later due responses are
+    /// reinserted into the in-flight queue at their original delivery icounts, so
+    /// backpressure never drops, reorders, or re-times a response. When at least
+    /// one response is published, the consumer slot is woken with
+    /// [`NodeSlot::wake_for_frame_delivery`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::ClockRegression`] when `limit` is below the current
+    /// icount, [`DeviceError`] for oversized response frames or corrupt ring
+    /// state, and [`DeviceError::ShmemWake`] when the consumer wake fails after a
+    /// successful publication.
+    pub fn advance_to_shmem(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.clock.advance_to(limit)?;
+        let due = self.inflight.drain_due(limit);
+        let mut delivered = 0;
+        let mut remaining = due.into_iter();
+        while let Some(pending) = remaining.next() {
+            let frame = match frame_from_pending_response(&pending) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.requeue_pending(pending, remaining);
+                    return Err(error);
+                }
+            };
+            match outbox.enqueue(outbox_entries, &frame) {
+                Ok(()) => delivered += 1,
+                Err(SpscRingError::QueueFull { .. }) => {
+                    self.requeue_pending(pending, remaining);
+                    break;
+                }
+                Err(error) => {
+                    self.requeue_pending(pending, remaining);
+                    return Err(DeviceError::from(error));
+                }
+            }
+        }
+
+        let consumer_wake = if delivered == 0 {
+            None
+        } else {
+            Some(consumer_slot.wake_for_frame_delivery()?)
+        };
+        Ok(ShmemDeliveryResult {
+            delivered,
+            consumer_wake,
+        })
+    }
+
     /// Pops the next delivered response from the outbound ring, if any.
     ///
     /// Returns responses in the deterministic delivery order they were made
@@ -337,6 +452,34 @@ impl IoCore {
     /// ([IO-32]).
     pub fn pop_response(&mut self) -> Option<PendingResponse> {
         self.outbox.pop()
+    }
+
+    /// Dequeues one shared-memory frame and wakes the producer if a slot was freed.
+    ///
+    /// This helper is the consumer-side half of deterministic full-ring
+    /// backpressure. A successful dequeue release-frees a ring slot via
+    /// [`RingHeader::dequeue`], then wakes the producer with
+    /// [`NodeSlot::wake_for_device_io_release`] so a producer blocked on a full
+    /// ring can retry the exact same frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the ring is corrupt or the wake fails.
+    pub fn dequeue_shmem_frame_and_wake_producer(
+        ring: &RingHeader,
+        entries: &[FrameEntry],
+        producer_slot: &NodeSlot,
+    ) -> Result<ShmemDequeueResult, DeviceError> {
+        let frame = ring.dequeue(entries)?;
+        let producer_wake = if frame.is_some() {
+            Some(producer_slot.wake_for_device_io_release()?)
+        } else {
+            None
+        };
+        Ok(ShmemDequeueResult {
+            frame,
+            producer_wake,
+        })
     }
 
     /// Captures the core's deterministic state for snapshot/restore.
@@ -405,4 +548,63 @@ impl IoCore {
             next_seq: snapshot.next_seq,
         })
     }
+
+    /// COMPUTEs one request and inserts its response in delivery order.
+    fn compute_request<D>(&mut self, device: &mut D, request: Request) -> Result<(), DeviceError>
+    where
+        D: IoSubNode,
+    {
+        let delivery_icount = self.compute_delivery_icount(&request, device.latency_model())?;
+        // Fail-loud guard ([IO-31], [IO-34]): a response whose delivery is
+        // already in the consumer's past can never be made visible at its exact
+        // icount, and enqueueing it would corrupt the global delivery order.
+        let current_icount = self.clock.current_icount();
+        if delivery_icount < current_icount {
+            return Err(DeviceError::DeliveryInPast {
+                delivery_icount,
+                current_icount,
+            });
+        }
+        let response = device.compute(&request)?;
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let key = FrameDeliveryKey {
+            delivery_icount,
+            src_node: self.src_node,
+            seq,
+        };
+        self.inflight.insert(PendingResponse::new(key, response));
+        Ok(())
+    }
+
+    /// Re-inserts a pending response and the remaining due responses in order.
+    fn requeue_pending(
+        &mut self,
+        pending: PendingResponse,
+        remaining: impl IntoIterator<Item = PendingResponse>,
+    ) {
+        self.inflight.insert(pending);
+        for pending in remaining {
+            self.inflight.insert(pending);
+        }
+    }
+}
+
+/// Converts an inbound shmem frame into the uniform request shape.
+fn request_from_frame(frame: &FrameEntry) -> Result<Request, DeviceError> {
+    Ok(Request::new(
+        frame.delivery_icount,
+        frame.seq,
+        frame.payload()?.to_vec(),
+    ))
+}
+
+/// Converts a pending response into an outbound shmem frame.
+fn frame_from_pending_response(pending: &PendingResponse) -> Result<FrameEntry, DeviceError> {
+    Ok(FrameEntry::new(
+        pending.delivery_icount(),
+        pending.key.src_node,
+        pending.key.seq,
+        &pending.response.payload,
+    )?)
 }
