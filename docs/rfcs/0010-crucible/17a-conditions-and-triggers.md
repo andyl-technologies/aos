@@ -1193,9 +1193,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   named trigger handles, once/repeatable policy, deterministic declared-order
   firings, duplicate-id and repeatable-entrypoint rejection, and a focused
   static guardrail against current direct scenario poke/inject/heal APIs in the
-  engine-facing control surfaces. Verdict composition, serializable event-graph
-  authoring, black-box guarantee wiring, and replay gates remain T-TRIG-17
-  through T-TRIG-20.
+  engine-facing control surfaces. Serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-18 through
+  T-TRIG-20.
 - [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
@@ -1209,8 +1209,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   identical predicate evaluation over a shared condition value and evaluation
   point, `Eventually` trigger/property reuse, compound predicate reuse in
   `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
-  enum. Verdict composition, serializable event-graph authoring, black-box
-  guarantee wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
+  enum. Serializable event-graph authoring, black-box
+  guarantee wiring, and replay gates remain T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
@@ -1224,9 +1224,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   evaluation, and rejects `After` references to undeclared events plus `Timer`
   references without an armable `Action::ArmTimer` declaration. Assertion
   properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only. Verdict composition,
-  serializable event-graph authoring, black-box guarantee wiring, and replay
-  gates remain T-TRIG-17 through T-TRIG-20.
+  edge-shaped `After` and `Timer` leaves as trigger-only. Serializable
+  event-graph authoring, black-box guarantee wiring, and replay gates remain
+  T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1242,9 +1242,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
-  catalog integration remains T-OBS-*; verdict composition, serializable
+  catalog integration remains T-OBS-*; serializable
   event-graph authoring, black-box guarantee wiring, and replay gates remain
-  T-TRIG-17 through T-TRIG-20.
+  T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1260,8 +1260,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
   production symbol-table loading, and coverage-guided search consumption remain
-  T-OBS-9 and T-ADV-10; verdict composition, serializable event-graph authoring,
-  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  T-OBS-9 and T-ADV-10; serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-18 through
   T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
@@ -1277,9 +1277,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   conservative default; virtual-address and symbol places require host-supplied
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
-  cadence, and RFC 19 memory-sample catalog integration remain T-OBS-*; verdict
-  composition, serializable event-graph authoring, black-box guarantee wiring,
-  and replay gates remain T-TRIG-17 through T-TRIG-20.
+  cadence, and RFC 19 memory-sample catalog integration remain T-OBS-*;
+  serializable event-graph authoring, black-box guarantee wiring, and replay
+  gates remain T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1295,9 +1295,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   references within the same properties bundle, and event-graph construction
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
-  cooperation. Production RFC 19 catalog integration remains T-OBS-*; verdict
-  composition, serializable event-graph authoring, black-box guarantee wiring,
-  and replay gates remain T-TRIG-17 through T-TRIG-20.
+  cooperation. Production RFC 19 catalog integration remains T-OBS-*;
+  serializable event-graph authoring, black-box guarantee wiring, and replay
+  gates remain T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
   with zero `GuestMarker` conditions. — satisfies [TRIG-3], [TRIG-14]; spec
@@ -1317,8 +1317,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   require named-predicate fallback; zero-`GuestMarker` graphs run without any
   guest-marker support; and unrelated guest-marker events are additive to
   non-marker conditions. Production RFC 19 catalog integration remains T-OBS-*;
-  verdict composition, serializable event-graph authoring, black-box guarantee
-  wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
+  serializable event-graph authoring, black-box guarantee
+  wiring, and replay gates remain T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
@@ -1332,8 +1332,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   condition even when another branch decides the current truth value. Event-graph
   construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
   deterministic `EmptyCompound` error; property validation already rejects the
-  same empty compounds. Verdict composition, serializable event-graph authoring,
-  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  same empty compounds. Serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-18 through
   T-TRIG-20.
 - [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
@@ -1355,8 +1355,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   old raw observable-event injection path, public raw point constructors, public
   raw prefix construction, public graph-evaluation bypasses, direct
   assertion-evaluation bypasses, and host wall-clock APIs in the trigger
-  evaluation surface. Verdict composition, serializable event-graph authoring,
-  black-box guarantee wiring, and replay gates remain T-TRIG-17 through
+  evaluation surface. Serializable event-graph authoring,
+  black-box guarantee wiring, and replay gates remain T-TRIG-18 through
   T-TRIG-20.
 - [x] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
   recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
@@ -1375,9 +1375,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   EMIT. Focused tests prove a firing is not recorded as a `Decision`, same-prefix
   forked schedulers rederive byte-identical trigger-firing entries, and a trigger
   whose action activates a fault still keeps the deterministic firing separate
-  from later probabilistic fault outcome `Decision`s. Verdict composition,
-  serializable event-graph authoring, black-box guarantee wiring, and replay
-  gates remain T-TRIG-17 through T-TRIG-20.
+  from later probabilistic fault outcome `Decision`s. Serializable event-graph
+  authoring, black-box guarantee wiring, and replay gates remain T-TRIG-18
+  through T-TRIG-20.
 - [x] **T-TRIG-12** Implement the `Action` set (InjectFault/HealFault,
   ArmTimer/CancelTimer, StartNode/StopNode, CreateSavepoint/Fork, Pass/Fail, Log,
   Group), each applied deterministically at the firing virtual time at a quantum
@@ -1397,8 +1397,8 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   variant through a nested group, prove log actions are observational rather than
   causal, prove trigger actions do not append `Decision`s, and prove same-prefix
   forked schedulers rederive identical action state and event-log bytes.
-  Verdict/assertion composition, serializable event-graph authoring, black-box
-  guarantee wiring, and replay gates remain T-TRIG-17 through T-TRIG-20.
+  Serializable event-graph authoring, black-box guarantee wiring, and replay
+  gates remain T-TRIG-18 through T-TRIG-20.
 - [x] **T-TRIG-13** Implement `StartNode`/`StopNode` as scheduling of a declared,
   baked node (not topology mutation): verify the participant set, RNG-stream set,
   lookahead graph, and bake set stay functions of the `World` alone. — satisfies
@@ -1468,10 +1468,23 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   and same-time action order as replaying the plan entries directly. Focused
   tests also compose an observation-anchored event onto the lowered graph and
   prove the existing `At` event prefix and plan identity are unchanged.
-- [ ] **T-TRIG-17** Implement `Pass`/`Fail` verdict actions composing with the
+- [x] **T-TRIG-17** Implement `Pass`/`Fail` verdict actions composing with the
   assertion verdict (a violated `Always` fails regardless), as a deterministic
   function of the log identical online and offline. — satisfies [TRIG-30]; spec
   §17a.8; cross-ref 18 §18.8.
+
+  Completed by `checks.crucible.phase4.triggerVerdictComposition`:
+  `TriggerActionState::compose_run_verdict` now combines explicit trigger
+  `Pass`/`Fail` requests with the final assertion-layer verdict, and
+  `TriggerActionState::compose_run_verdict_from_event_log` replays the same
+  verdict from validated `TriggerActionApplied` event-log entries for offline
+  callers. Trigger `Fail` actions are sticky over later `Pass` actions, `Pass` and
+  `Fail` record deterministic termination requests, assertion failures are
+  normalized as deterministic composed failure causes and override explicit
+  trigger passes, and the same trigger/action log composes byte-identically
+  online and offline. Focused tests cover trigger-only failure, pass updates
+  before failure, assertion failure overriding pass, mixed trigger/assertion
+  failure ordering from the event log, and the passing case.
 - [ ] **T-TRIG-18** Implement the code-first event-graph builder and the
   serializable content-addressed form (canonical TOML + compact binary, same
   canonical bytes, round-trip), carried as the `Plan` component of the

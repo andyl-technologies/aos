@@ -62,8 +62,8 @@
         needle = "Completed by `checks.crucible.phase4.compoundConditionCombinators`";
       }
       {
-        label = "verdict actions remain open";
-        needle = "- [ ] **T-TRIG-17**";
+        label = "event graph serialization remains open";
+        needle = "- [ ] **T-TRIG-18**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

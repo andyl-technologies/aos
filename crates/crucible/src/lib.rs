@@ -76,6 +76,7 @@ pub use model::{
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
 pub use scheduler::{
+    AssertionRunVerdict, AssertionVerdictFailure, ComposedRunVerdict, ComposedRunVerdictFailure,
     ConcurrentQuantumLoop, ConservativeAdvanceAuthorization, ControlOperation,
     ControlOperationKind, ExactLocalEvent, IoCompletion, NetworkLookahead, NodeTimelineProjection,
     QuantumLoop, QuantumOutcome, QuantumRequest, SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA,

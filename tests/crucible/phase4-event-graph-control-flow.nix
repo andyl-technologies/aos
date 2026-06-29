@@ -73,11 +73,11 @@
       }
       {
         label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-17**";
+        needle = "- [ ] **T-TRIG-18**";
       }
       {
-        label = "verdict actions remain open";
-        needle = "Pass`/`Fail` verdict actions";
+        label = "event graph serialization remains open";
+        needle = "serializable content-addressed form";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -366,7 +366,8 @@ in
             model=event-graph-control-flow-spine
             condition_semantics=implemented-T-TRIG-2-through-T-TRIG-11
             plan_lowering=implemented-T-TRIG-16
-            verdicts=pending-T-TRIG-17
+            verdicts=implemented-T-TRIG-17
+            event_graph_serialization=pending-T-TRIG-18
             RESULT
           '';
         }
