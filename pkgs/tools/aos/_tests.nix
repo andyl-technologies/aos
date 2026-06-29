@@ -1523,12 +1523,10 @@ in {
           --registry host-reg \
           --key "$work/release-key" \
           --dry-run \
-          --cache-output "$work/dry-cache" \
           --cache-url "http://127.0.0.1:$cache_port/cache" \
           --upload-url "file://$work/dry-upload" \
           > "$work/apr-release-dry-run.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/dry-cache" \
           --arg cache_url "http://127.0.0.1:$cache_port/cache" \
           --arg upload_url "file://$work/dry-upload" \
           '.action == "release"
@@ -1537,7 +1535,7 @@ in {
             and .version == "1.0.0"
             and .dry_run == true
             and .resume == false
-            and .cache_output == $cache
+            and (.cache_dir | endswith("/apm/registry-static/host-reg"))
             and .cache_url == $cache_url
             and .upload_urls == [$upload_url]
             and .cache == null
@@ -1546,7 +1544,6 @@ in {
             and (.planned_steps | index("generate_static_cache") != null)
             and (.planned_steps | index("upload_static_origin") != null)' \
           "$work/apr-release-dry-run.json" >/dev/null
-        test ! -e "$work/dry-cache"
         test ! -e "$work/dry-upload"
         if git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-dry-run-tag.out" 2>&1; then
           cat "$work/release-dry-run-tag.out"
@@ -1632,8 +1629,8 @@ in {
         if run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
           --key "$work/resume-release-key" \
-          --cache-output "$work/resume-cache" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          --upload-url "file://$work/resume-upload" \
           > "$work/apr-release-host-resume-interrupted.json" 2>&1; then
           cat "$work/apr-release-host-resume-interrupted.json"
           exit 1
@@ -1642,7 +1639,7 @@ in {
           '.error
             | contains("nix-store -qR failed")
             and contains("hostresume-1.0.0")
-            and contains("not in the Nix store")' \
+            and contains("is not valid")' \
           "$work/apr-release-host-resume-interrupted.json" >/dev/null
         git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
           > "$work/apr-release-host-resume-tag.out"
@@ -2414,14 +2411,12 @@ in {
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --channel stable \
           --init-channel > "$work/apr-release-host-install-v1.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -2430,7 +2425,6 @@ in {
             and .registry == "host-install-channel"
             and .version == "1.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
@@ -2441,7 +2435,6 @@ in {
             and (.cache.paths >= 3)
             and (.cache.narinfos >= 3)
             and (.cache.nars >= 3)
-            and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
             and (.uploaded_files > 0)
@@ -2453,15 +2446,15 @@ in {
           > "$work/apr-release-host-install-v1-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-install-v1-tag-object.out"
-        test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
-        test -f "$work/install-release-cache/cache/$install_hash.narinfo"
-        test -f "$work/install-release-cache/cache/$bulk_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$install_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$bulk_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/HEAD"
         test -f "$work/install-static-cache-upload/cache/info/refs"
         test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
@@ -2484,12 +2477,12 @@ in {
           -name 'pack-*.pack' | grep -q .
         run_clean ${self}/bin/apr --json origin upload \
           --registry host-install-channel \
-          --cache-dir "$work/install-release-cache/cache" \
+          --cache-dir "$cache/apm/registry-static/host-install-channel" \
           > "$work/apr-origin-upload-host-install-defaults.json"
         ${pkgs.jq}/bin/jq -e \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
-          --arg cache_dir "$work/install-release-cache/cache" \
+          --arg cache_dir "$cache/apm/registry-static/host-install-channel" \
           '.action == "origin_upload"
             and .registry == "host-install-channel"
             and .upload_urls == [$upload_url, $upload_url_mirror]
@@ -3116,14 +3109,12 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/direct-release-cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$direct_release_url" \
           --cache-priority 66 \
           --upload-url "file://$work/install-static-cache-upload/direct-release" \
           > "$work/apr-release-host-direct.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/direct-release-cache" \
           --arg cache_url "$direct_release_url" \
           --arg upload_url "file://$work/install-static-cache-upload/direct-release" \
           '.action == "release"
@@ -3131,7 +3122,6 @@ in {
             and .registry == "host-direct-release"
             and .version == "1.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 66
             and .cache_pointer_updated == true
@@ -3139,7 +3129,6 @@ in {
             and (.cache.paths >= 2)
             and (.cache.narinfos >= 2)
             and (.cache.nars >= 2)
-            and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
             and (.uploaded_files > 0)
@@ -3153,12 +3142,12 @@ in {
           > "$work/apr-release-host-direct-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-direct-tag-object.out"
-        test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
-        test -f "$work/direct-release-cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/direct-release-cache/$install_leaf_hash.narinfo"
+          "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/direct-release-cache/$install_hash.narinfo"
+          "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/direct-release/HEAD"
         test -f "$work/install-static-cache-upload/direct-release/info/refs"
         test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
@@ -3664,7 +3653,6 @@ in {
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-image-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/image-release-cache/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$image_cache_url" \
           --cache-priority 71 \
@@ -3672,14 +3660,12 @@ in {
           --channel stable \
           --init-channel > "$work/apr-release-host-image-channel.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/image-release-cache/cache" \
           --arg cache_url "$image_cache_url" \
           --arg upload_url "$image_upload_url" \
           '.action == "release"
             and .status == "released"
             and .registry == "host-image-channel"
             and .version == "1.0.0"
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 71
             and .upload_urls == [$upload_url]
@@ -4919,14 +4905,12 @@ in {
         run_clean ${self}/bin/apr --json release 2.0.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache-v2/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --channel stable \
           --count 256 > "$work/apr-release-host-install-v2.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache-v2/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -4935,7 +4919,6 @@ in {
             and .registry == "host-install-channel"
             and .version == "2.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
@@ -4947,7 +4930,6 @@ in {
             and (.cache.paths >= 4)
             and (.cache.narinfos >= 4)
             and (.cache.nars >= 4)
-            and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.deltas | index("delta-1.0.0.pack.zst") != null)
             and (.uploaded_files > 0)
@@ -4955,12 +4937,12 @@ in {
           "$work/apr-release-host-install-v2.json" >/dev/null
         git -C "$install_reg" rev-parse --verify '2.0.0^{tag}' \
           > "$work/apr-release-host-install-v2-tag.out"
-        test -f "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
-        test -f "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
+          "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+          "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         grep -q "BEGIN SSH SIGNATURE" \
@@ -5416,12 +5398,10 @@ in {
         run_clean ${self}/bin/apr --json release 1.1.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache-v11/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 > "$work/apr-release-host-install-v11.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache-v11/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -5430,7 +5410,6 @@ in {
             and .registry == "host-install-channel"
             and .version == "1.1.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
@@ -5439,15 +5418,14 @@ in {
             and (.cache.paths >= 6)
             and (.cache.narinfos >= 6)
             and (.cache.nars >= 6)
-            and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.uploaded_files > 0)
             and (.uploaded_bytes > 0)' \
           "$work/apr-release-host-install-v11.json" >/dev/null
         git -C "$install_reg" rev-parse --verify '1.1.0^{tag}' \
           > "$work/apr-release-host-install-v11-tag.out"
-        test -f "$work/install-release-cache-v11/cache/$install_leaf_hash_v11.narinfo"
-        test -f "$work/install-release-cache-v11/cache/$install_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash_v11.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/1/1/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache-mirror/releases/1/1/0/objects/info/packs"
         git -C "$install_reg" push origin 1.1.0 \
