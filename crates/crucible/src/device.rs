@@ -36,12 +36,15 @@
 
 use std::collections::BTreeMap;
 
-use crucible_device::{DeviceRng, IoFaults};
+use crucible_device::{
+    DeviceError, DeviceRng, Frame, FrameDraws, IoFaults, NetLink, PastDeliveryPolicy,
+    ResolveOutcome,
+};
 
 use crate::decision::DecisionRecorder;
 use crate::{
-    DeviceId, DeviceOverlayDelta, DeviceRngState, FaultDecision, FaultId, FaultState, RngStreamId,
-    RngStreamPosition, SchedulerState, VirtualTime,
+    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, FaultDecision, FaultId, FaultState,
+    RngDecision, RngStreamId, RngStreamPosition, SchedulerState, Seed, VirtualTime,
 };
 
 /// Builds a device's seeded RNG, forked by name-hash from the scenario seed.
@@ -97,6 +100,89 @@ pub fn record_device_fault(
     let fired = denominator != 0 && (value % denominator) < numerator;
     recorder.record_fault_outcome(FaultDecision { at, fault, fired });
     fired
+}
+
+/// The recorded result of emitting one network-link frame from the device RNG.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkEmitDecisionRecord {
+    /// The deliveries produced by the link after applying its effective fault table.
+    pub outcome: ResolveOutcome,
+    /// The raw RNG draws and derived fault outcomes recorded for the schedule.
+    pub decisions: Vec<Decision>,
+}
+
+/// Emits one network-link frame and records the link's RNG choices ([IO-21]).
+///
+/// The link's [`NetLink::rng_position`] selects the starting cursor of the
+/// canonical device stream for `link_id`. This helper draws the frame's
+/// [`FrameDraws`] through [`NetLink::emit_with_rng_draws`], so the deliveries are
+/// produced by the real link implementation and the returned schedule decisions
+/// record the exact same raw draw values in fixed model order: jitter, reorder,
+/// loss, duplicate, corrupt, and corruption-bit positions. The derived
+/// loss/duplicate/corrupt outcomes are appended as [`Decision::FaultFires`] using
+/// the same device-scoped [`FaultId`] namespace as block and 9p faults.
+///
+/// # Errors
+///
+/// Returns [`DeviceError`] when the link cannot emit the frame, including clock
+/// overflow or fail-loud past-delivery guards.
+pub fn emit_link_frame_with_recorded_faults(
+    seed: Seed,
+    link_id: &DeviceId,
+    link: &mut NetLink,
+    frame: &Frame,
+    policy: PastDeliveryPolicy,
+) -> Result<LinkEmitDecisionRecord, DeviceError> {
+    let mut rng = device_rng(seed, link_id, link.rng_position());
+    let (outcome, draws) = link.emit_with_rng_draws(frame, &mut rng, policy)?;
+    let stream = device_stream_id(link_id);
+    let at = VirtualTime {
+        ticks: frame.emit_icount,
+    };
+    let mut decisions = link_rng_draw_decisions(&stream, &draws);
+    let loss_fired = outcome.deliveries.is_empty();
+    let duplicate_fired = !loss_fired && outcome.deliveries.len() > 1;
+    let corrupt_fired = !loss_fired && link.faults().corrupt.fires(draws.corrupt);
+    push_link_fault_outcome(&mut decisions, at, link_id, "loss", loss_fired);
+    push_link_fault_outcome(&mut decisions, at, link_id, "duplicate", duplicate_fired);
+    push_link_fault_outcome(&mut decisions, at, link_id, "corrupt", corrupt_fired);
+    Ok(LinkEmitDecisionRecord { outcome, decisions })
+}
+
+/// Converts link fault draws into schedule decisions in consumption order.
+fn link_rng_draw_decisions(stream: &RngStreamId, draws: &FrameDraws) -> Vec<Decision> {
+    let values = [
+        draws.jitter,
+        draws.reorder,
+        draws.loss,
+        draws.duplicate,
+        draws.corrupt,
+    ];
+    values
+        .into_iter()
+        .chain(draws.corrupt_bits.iter().copied())
+        .map(|value| {
+            Decision::RngDraw(RngDecision {
+                stream: stream.clone(),
+                value,
+            })
+        })
+        .collect()
+}
+
+/// Pushes a link fault outcome into a decision list.
+fn push_link_fault_outcome(
+    decisions: &mut Vec<Decision>,
+    at: VirtualTime,
+    link: &DeviceId,
+    kind: &str,
+    fired: bool,
+) {
+    decisions.push(Decision::FaultFires(FaultDecision {
+        at,
+        fault: io_fault_id(link, kind),
+        fired,
+    }));
 }
 
 /// Builds a device overlay delta that captures the device's RNG cursor ([IO-23]).
@@ -205,7 +291,7 @@ mod tests {
         Checkpoint, CheckpointKind, Configuration, ContentHash, EngineError, EventLogOffset,
         GenesisCheckpoint, MaterializedState, ScenarioDef, Seed, TemporalGraph,
     };
-    use crucible_device::Probability;
+    use crucible_device::{Frame, LinkFaults, NetLink, PastDeliveryPolicy, Probability};
 
     fn scenario(seed: u64) -> ScenarioDef {
         ScenarioDef::from_canonical_material_with_seed(
@@ -304,6 +390,105 @@ mod tests {
             crate::Decision::FaultFires(outcome)
                 if outcome.fault == io_fault_id(&disk, "loss") && outcome.fired
         ));
+    }
+
+    #[test]
+    fn link_emit_records_seeded_rng_draws_fault_outcomes_and_cursor() {
+        let seed = Seed::from_u64(0x10_21_22_23);
+        let link_id = device("link-a-b");
+        let mut faults = LinkFaults::none();
+        faults.jitter_window_ns = 7;
+        faults.reorder_window_ns = 3;
+        faults.duplicate = Probability::ALWAYS;
+        faults.duplicate_gap_ns = 1;
+        faults.corrupt = Probability::ALWAYS;
+        faults.corrupt_bit_flips = 1;
+        let mut link = match NetLink::new(0, 99, 10, 1, faults) {
+            Ok(link) => link,
+            Err(error) => panic!("valid link should construct: {error}"),
+        };
+
+        let first = Frame::new(7, 11, vec![0]);
+        let record = match emit_link_frame_with_recorded_faults(
+            seed,
+            &link_id,
+            &mut link,
+            &first,
+            PastDeliveryPolicy::FailLoud,
+        ) {
+            Ok(record) => record,
+            Err(error) => panic!("valid frame should emit: {error}"),
+        };
+
+        assert_eq!(
+            record.outcome.deliveries.len(),
+            2,
+            "duplicate fault should emit a second delivery"
+        );
+        assert!(
+            record
+                .outcome
+                .deliveries
+                .iter()
+                .all(|delivery| delivery.payload != first.payload),
+            "corrupt fault should flip the delivered payload"
+        );
+        assert_eq!(
+            link.rng_position(),
+            6,
+            "jitter, reorder, loss, duplicate, corrupt, and one bit draw"
+        );
+        assert_eq!(
+            record.decisions,
+            expected_link_decisions(seed, &link_id, 0, first.emit_icount)
+        );
+
+        let second = Frame::new(8, 12, vec![0]);
+        let resumed = match emit_link_frame_with_recorded_faults(
+            seed,
+            &link_id,
+            &mut link,
+            &second,
+            PastDeliveryPolicy::FailLoud,
+        ) {
+            Ok(record) => record,
+            Err(error) => panic!("second frame should resume the device RNG: {error}"),
+        };
+
+        assert_eq!(
+            link.rng_position(),
+            12,
+            "the second frame should advance from the restored cursor"
+        );
+        assert_eq!(
+            resumed.decisions,
+            expected_link_decisions(seed, &link_id, 6, second.emit_icount)
+        );
+    }
+
+    fn expected_link_decisions(
+        seed: Seed,
+        link_id: &DeviceId,
+        start_position: u64,
+        emit_icount: u64,
+    ) -> Vec<Decision> {
+        let stream = device_stream_id(link_id);
+        let mut rng = device_rng(seed, link_id, start_position);
+        let mut decisions = Vec::new();
+        for _ in 0..6 {
+            decisions.push(Decision::RngDraw(RngDecision {
+                stream: stream.clone(),
+                value: rng.next_u64(),
+            }));
+        }
+        for (kind, fired) in [("loss", false), ("duplicate", true), ("corrupt", true)] {
+            decisions.push(Decision::FaultFires(FaultDecision {
+                at: VirtualTime { ticks: emit_icount },
+                fault: io_fault_id(link_id, kind),
+                fired,
+            }));
+        }
+        decisions
     }
 
     #[test]

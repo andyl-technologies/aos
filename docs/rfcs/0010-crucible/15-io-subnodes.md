@@ -843,11 +843,29 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: latency, jitter, reorder, bandwidth, loss, duplicate, and corruption
   are pure modeled perturbations of delivery icount and payload, with no host
   timing, filesystem, or scheduling input.
-- [ ] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
+- [x] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
   probabilistic device choice drawn from it in deterministic order and recorded
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
   default hasher on response paths). — satisfies [IO-21], [IO-24]; spec §15.5;
   cross-ref 04, 08.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  device`, `cargo test --manifest-path crates/Cargo.toml -p crucible-device`,
+  `cargo test --manifest-path crates/Cargo.toml -p crucible`, and
+  the focused `crucible-harness` `harness_lint`
+  `reduction_path_sources_have_no_banned_nondeterminism` subtest.
+  `device_rng` forks the per-device stream through the same name-hashed
+  `RngStreamId::for_device` and SplitMix64 cursor convention as the engine
+  decision RNG, `DeviceSchedulingSubNode` records block/9p raw draws followed by
+  loss/duplicate/corrupt `FaultFires` decisions, and
+  `emit_link_frame_with_recorded_faults` records the network-link jitter,
+  reorder, loss, duplicate, corrupt, and corrupt-bit draws consumed by the real
+  `NetLink` emission path. The link regression proves first emit and resumed
+  cursor behavior against independently restored device-stream values. Future
+  live link integration must use the recording helper, not the draw-discarding
+  convenience API.
+  Summary: all modeled probabilistic device choices are drawn from deterministic
+  device streams and have an engine-side decision-recording path; the relevant
+  reduction-path lint bans unordered/default-hasher response nondeterminism.
 - [x] **T-IO-11** Wire device RNG state and active I/O faults into the device half
   of `MaterializedState`, proving a snapshot that omits RNG position or active
   faults fails the replay oracle. — satisfies [IO-23], [IO-26]; spec §15.5,

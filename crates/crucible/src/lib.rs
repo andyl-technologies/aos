@@ -35,7 +35,8 @@ pub use backend::{
 };
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{
-    device_overlay, device_rng, device_stream_id, io_fault_id, io_fault_state, record_device_fault,
+    LinkEmitDecisionRecord, device_overlay, device_rng, device_stream_id,
+    emit_link_frame_with_recorded_faults, io_fault_id, io_fault_state, record_device_fault,
     with_active_io_faults,
 };
 pub use device_subnode::DeviceSchedulingSubNode;
