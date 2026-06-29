@@ -2524,21 +2524,26 @@ alone (`M-1`/`Q-A`).
 - [x] Current node verifying-trace payload codec:
       `PersistNodeTracePayload` frames complete cacheable impure-input traces
       as versioned little-endian bytes with a magic header, typed input
-      kind/mode tags including binary-safe `hashFile`, raw identity subjects,
-      and observed-result hashes, plus a schema-version-5 tombstone marker for
+      kind/mode tags including binary-safe `hashFile` and version-3 `findFile`
+      candidate path-existence mode, raw identity subjects, observed-result
+      hashes, and version-4 sorted/deduplicated memo-read dependency
+      `PersistNodeMetadataKey` records, plus a header-only tombstone marker for
       explicitly invalidating older trace records.
       `CacheableInputFingerprint::from_observation_hash` reconstructs the
       persisted fingerprints without re-reading the host. The standalone
-      payload decoder preserves trace order, accepts version-1 trace
-      payload bytes for direct decoding, rejects version-1 tombstone sentinels,
+      payload decoder preserves trace order, decodes older version-1 through
+      version-3 payloads with an empty dependency list, keeps tombstones
+      dependency-free, rejects version-1 tombstone sentinels,
       rejects uncacheable `currentTime`, impossible kind/mode pairs, malformed
-      tags, truncated payloads, and trailing bytes, and exposes stable payload
+      tags, future mode tags in older payload versions, malformed dependency
+      keys, truncated payloads, and trailing bytes, and exposes stable payload
       constants for node-trace sidecars. This is payload-format compatibility
-      only, not a non-destructive schema-4 cache-root migration. This is
-      payload-format substrate only; cache-level sidecar storage is covered
-      below, while evaluator durable hit selection, revalidation, currentTime
-      taint propagation through persisted dependents, mmap reads, GC/repack,
-      and cached/uncached harness proof remain open
+      only, not a non-destructive schema-6 cache-root migration. This is a
+      durable `dep-keys[]` carrier substrate only; cache-level sidecar storage
+      is covered below, while evaluator memo-read dependency recording,
+      persistent graph rehydration/revalidation, durable hit selection,
+      currentTime taint propagation through persisted dependents, mmap reads,
+      GC/repack, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).
 - [x] Current value-associated node verifying-trace sidecar substrate:
       `PersistLayout::node_trace_log_path` adds `nodes/traces.log`;
@@ -2551,10 +2556,12 @@ alone (`M-1`/`Q-A`).
       Cache-level trace appends and tombstones acquire exclusive
       `.locks/node-traces.lock` before the same-root trace write lock, and
       cache-level trace lookups acquire shared `.locks/node-traces.lock` before
-      the same-root trace read lock. This schema-version-5 log is a simple
+      the same-root trace read lock. Record/lookup paths preserve version-4
+      memo-read dependency keys. This schema-version-7 log is a simple
       append-only substrate only; LMDB/redb node tables, transactionality with
       node metadata or value blobs, automatic evaluator writeback beyond the
-      force-cache bridge below, durable hit selection, revalidation, raw
+      force-cache bridge below, runtime memo-read dependency recording,
+      persistent graph rehydration/revalidation, durable hit selection, raw
       lower-level sidecar coordination, full two-machine/CAS-grade coordination,
       currentTime taint propagation through persisted dependents, automatic
       compaction/GC policy, mmap reads, and cached/uncached harness proof remain
@@ -2563,12 +2570,14 @@ alone (`M-1`/`Q-A`).
       `PersistNodeTraceLog::latest_entries` scans the append-only
       `nodes/traces.log` into the newest trace entry per node key, preserving
       tombstones when they are newest; `compact_latest_entries` rewrites those
-      newest entries in stable key order through a temporary log and rename;
-      and `PersistCache::compact_node_traces` exposes the operation at cache
-      level. This is an explicit caller-driven maintenance primitive with
-      cache-level writers serialized by `.locks/node-traces.lock` plus the
-      same-root trace write lock; automatic compaction/GC policy, LMDB/redb
-      node table, transactionality with metadata/value blobs, raw lower-level
+      newest entries in stable key order through a temporary log and rename
+      while preserving any version-4 memo-read dependency keys; and
+      `PersistCache::compact_node_traces` exposes the operation at cache level.
+      This is an explicit caller-driven maintenance primitive with cache-level
+      writers serialized by `.locks/node-traces.lock` plus the same-root trace
+      write lock; automatic compaction/GC policy, LMDB/redb node table,
+      transactionality with metadata/value blobs, runtime memo-read dependency
+      recording, persistent graph rehydration/revalidation, raw lower-level
       sidecar coordination, full two-machine/CAS-grade coordination, mmap
       reads, and cached/uncached harness proof remain open
       (`C-13`/`R-10`/`S-14`).

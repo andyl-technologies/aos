@@ -14,13 +14,17 @@ use ratchet_cache::node_trace_log::{
 ///
 /// Ordinary payloads preserve evaluator trace order and store only cacheable
 /// impure-input fingerprints: each record carries the typed input identity
-/// parts plus the observed-result hash. Tombstone payloads carry no inputs and
-/// explicitly invalidate older trace records for the same node. The eventual
-/// persistent demand-graph sidecar can attach ordinary payload bytes to an
-/// expression node and replay the fingerprints during durable-hit revalidation.
+/// parts plus the observed-result hash. Version 4 payloads additionally carry
+/// sorted memo-read dependency keys so the durable trace has a place for
+/// `dep-keys[]` before runtime graph rehydration is wired. Tombstone payloads
+/// carry no inputs or dependencies and explicitly invalidate older trace
+/// records for the same node. The eventual persistent demand-graph sidecar can
+/// attach ordinary payload bytes to an expression node and replay the
+/// fingerprints during durable-hit revalidation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistNodeTracePayload {
     inputs: Vec<CacheableInputFingerprint>,
+    memo_read_dependencies: Vec<PersistNodeMetadataKey>,
     tombstone: bool,
 }
 
@@ -29,6 +33,7 @@ impl PersistNodeTracePayload {
     pub fn tombstone() -> Self {
         Self {
             inputs: Vec::new(),
+            memo_read_dependencies: Vec::new(),
             tombstone: true,
         }
     }
@@ -42,6 +47,30 @@ impl PersistNodeTracePayload {
     pub fn from_cacheable_inputs<I>(inputs: I) -> Result<Self, PersistNodeTracePayloadError>
     where
         I: IntoIterator<Item = CacheableInputFingerprint>,
+    {
+        Self::from_cacheable_inputs_and_memo_reads(
+            inputs,
+            std::iter::empty::<PersistNodeMetadataKey>(),
+        )
+    }
+
+    /// Creates a node trace payload from input fingerprints and memo-read keys.
+    ///
+    /// Memo-read dependency keys are sorted and deduplicated before encoding so
+    /// semantically identical dependency sets have stable bytes regardless of
+    /// caller iteration order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if storage for either list
+    /// cannot be reserved.
+    pub fn from_cacheable_inputs_and_memo_reads<I, D>(
+        inputs: I,
+        dependencies: D,
+    ) -> Result<Self, PersistNodeTracePayloadError>
+    where
+        I: IntoIterator<Item = CacheableInputFingerprint>,
+        D: IntoIterator<Item = PersistNodeMetadataKey>,
     {
         let inputs = inputs.into_iter();
         let (minimum, _) = inputs.size_hint();
@@ -58,8 +87,10 @@ impl PersistNodeTracePayload {
             }
             stored.push(input);
         }
+        let memo_read_dependencies = collect_memo_read_dependencies(dependencies)?;
         Ok(Self {
             inputs: stored,
+            memo_read_dependencies,
             tombstone: false,
         })
     }
@@ -100,8 +131,32 @@ impl PersistNodeTracePayload {
         }
         Ok(Self {
             inputs,
+            memo_read_dependencies: Vec::new(),
             tombstone: false,
         })
+    }
+
+    /// Returns this payload with the supplied memo-read dependency keys.
+    ///
+    /// Keys are sorted and deduplicated before being stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTracePayloadError`] if storage for the dependency
+    /// list cannot be reserved.
+    pub fn with_memo_read_dependencies<D>(
+        mut self,
+        dependencies: D,
+    ) -> Result<Self, PersistNodeTracePayloadError>
+    where
+        D: IntoIterator<Item = PersistNodeMetadataKey>,
+    {
+        if self.tombstone {
+            self.memo_read_dependencies.clear();
+        } else {
+            self.memo_read_dependencies = collect_memo_read_dependencies(dependencies)?;
+        }
+        Ok(self)
     }
 
     /// Returns whether this payload tombstones older traces for the same node.
@@ -114,12 +169,17 @@ impl PersistNodeTracePayload {
         &self.inputs
     }
 
+    /// Returns the sorted memo-read dependency metadata keys.
+    pub fn memo_read_dependencies(&self) -> &[PersistNodeMetadataKey] {
+        &self.memo_read_dependencies
+    }
+
     /// Encodes this node trace payload as stable little-endian bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistNodeTracePayloadError`] if the input count or any
-    /// subject length cannot be represented in the on-disk format, or if
+    /// Returns [`PersistNodeTracePayloadError`] if an input or dependency count
+    /// or any subject length cannot be represented in the on-disk format, or if
     /// encoded output storage cannot be reserved.
     pub fn encode(&self) -> Result<Vec<u8>, PersistNodeTracePayloadError> {
         let count = if self.tombstone {
@@ -164,6 +224,25 @@ impl PersistNodeTracePayload {
             bytes.extend_from_slice(subject);
         }
 
+        let dependency_count = u64::try_from(self.memo_read_dependencies.len()).map_err(|_| {
+            PersistNodeTracePayloadError::EncodedDependencyCountOverflow {
+                dependencies: self.memo_read_dependencies.len(),
+            }
+        })?;
+        let dependency_bytes_len = PERSIST_NODE_METADATA_INDEX_KEY_LEN
+            .checked_mul(self.memo_read_dependencies.len())
+            .and_then(|len| len.checked_add(8))
+            .ok_or(PersistNodeTracePayloadError::PayloadAllocationFailed { len: usize::MAX })?;
+        bytes.try_reserve_exact(dependency_bytes_len).map_err(|_| {
+            PersistNodeTracePayloadError::PayloadAllocationFailed {
+                len: dependency_bytes_len,
+            }
+        })?;
+        bytes.extend_from_slice(&dependency_count.to_le_bytes());
+        for dependency in &self.memo_read_dependencies {
+            bytes.extend_from_slice(&dependency.index_bytes());
+        }
+
         Ok(bytes)
     }
 
@@ -172,8 +251,9 @@ impl PersistNodeTracePayload {
     /// # Errors
     ///
     /// Returns [`PersistNodeTracePayloadError`] if `bytes` has the wrong magic
-    /// or version, contains malformed input records, contains trailing bytes,
-    /// or cannot reconstruct an input fingerprint.
+    /// or version, contains malformed input or dependency records, contains
+    /// trailing bytes, or cannot reconstruct an input fingerprint or dependency
+    /// key.
     pub fn decode(bytes: &[u8]) -> Result<Self, PersistNodeTracePayloadError> {
         if bytes.len() < PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN {
             return Err(PersistNodeTracePayloadError::ShortPayload {
@@ -284,6 +364,74 @@ impl PersistNodeTracePayload {
         }
 
         if cursor != bytes.len() {
+            if version < 4 {
+                return Err(PersistNodeTracePayloadError::TrailingBytes {
+                    remaining: bytes.len() - cursor,
+                });
+            }
+        }
+
+        let memo_read_dependencies = if version >= 4 {
+            let count_end =
+                cursor
+                    .checked_add(8)
+                    .ok_or(PersistNodeTracePayloadError::ShortPayload {
+                        expected: usize::MAX,
+                        actual: bytes.len(),
+                    })?;
+            if count_end > bytes.len() {
+                return Err(PersistNodeTracePayloadError::ShortPayload {
+                    expected: count_end,
+                    actual: bytes.len(),
+                });
+            }
+            let dependency_count = read_u64(&bytes[cursor..count_end]);
+            cursor = count_end;
+            let dependency_count_usize = usize::try_from(dependency_count).map_err(|_| {
+                PersistNodeTracePayloadError::DependencyCountOverflow {
+                    count: dependency_count,
+                }
+            })?;
+            let dependencies_len = dependency_count_usize
+                .checked_mul(PERSIST_NODE_METADATA_INDEX_KEY_LEN)
+                .ok_or(PersistNodeTracePayloadError::ShortPayload {
+                    expected: usize::MAX,
+                    actual: bytes.len(),
+                })?;
+            let dependencies_end = cursor.checked_add(dependencies_len).ok_or(
+                PersistNodeTracePayloadError::ShortPayload {
+                    expected: usize::MAX,
+                    actual: bytes.len(),
+                },
+            )?;
+            if dependencies_end > bytes.len() {
+                return Err(PersistNodeTracePayloadError::ShortPayload {
+                    expected: dependencies_end,
+                    actual: bytes.len(),
+                });
+            }
+            let mut dependencies = Vec::new();
+            dependencies
+                .try_reserve_exact(dependency_count_usize)
+                .map_err(
+                    |_| PersistNodeTracePayloadError::DependencyAllocationFailed {
+                        dependencies: dependency_count_usize,
+                    },
+                )?;
+            while cursor < dependencies_end {
+                let key_end = cursor + PERSIST_NODE_METADATA_INDEX_KEY_LEN;
+                dependencies.push(
+                    PersistNodeMetadataKey::decode_index_bytes(&bytes[cursor..key_end])
+                        .map_err(|source| PersistNodeTracePayloadError::Dependency { source })?,
+                );
+                cursor = key_end;
+            }
+            collect_memo_read_dependencies(dependencies)?
+        } else {
+            Vec::new()
+        };
+
+        if cursor != bytes.len() {
             return Err(PersistNodeTracePayloadError::TrailingBytes {
                 remaining: bytes.len() - cursor,
             });
@@ -291,9 +439,40 @@ impl PersistNodeTracePayload {
 
         Ok(Self {
             inputs,
+            memo_read_dependencies,
             tombstone: false,
         })
     }
+}
+
+fn collect_memo_read_dependencies<D>(
+    dependencies: D,
+) -> Result<Vec<PersistNodeMetadataKey>, PersistNodeTracePayloadError>
+where
+    D: IntoIterator<Item = PersistNodeMetadataKey>,
+{
+    let dependencies = dependencies.into_iter();
+    let (minimum, _) = dependencies.size_hint();
+    let mut stored = Vec::new();
+    stored.try_reserve_exact(minimum).map_err(|_| {
+        PersistNodeTracePayloadError::DependencyAllocationFailed {
+            dependencies: minimum,
+        }
+    })?;
+    for dependency in dependencies {
+        if stored.len() == stored.capacity() {
+            let requested = stored.len().saturating_add(1);
+            stored.try_reserve_exact(1).map_err(|_| {
+                PersistNodeTracePayloadError::DependencyAllocationFailed {
+                    dependencies: requested,
+                }
+            })?;
+        }
+        stored.push(dependency);
+    }
+    stored.sort_unstable();
+    stored.dedup();
+    Ok(stored)
 }
 
 fn node_trace_input_kind_tag(kind: ImpureInputKind) -> u8 {

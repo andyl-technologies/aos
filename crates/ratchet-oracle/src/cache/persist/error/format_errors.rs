@@ -239,6 +239,18 @@ pub enum PersistNodeTracePayloadError {
         /// The requested input count.
         inputs: usize,
     },
+    /// A trace payload declared too many memo-read dependency keys for this platform.
+    #[error("persistent node trace payload dependency count {count} does not fit in usize")]
+    DependencyCountOverflow {
+        /// The decoded dependency count.
+        count: u64,
+    },
+    /// A trace payload dependency count is too large to encode.
+    #[error("persistent node trace payload cannot encode {dependencies} dependency keys")]
+    EncodedDependencyCountOverflow {
+        /// The requested dependency count.
+        dependencies: usize,
+    },
     /// A trace payload declared an input subject that is too large for this platform.
     #[error("persistent node trace payload subject length {len} does not fit in usize")]
     SubjectLengthOverflow {
@@ -275,6 +287,12 @@ pub enum PersistNodeTracePayloadError {
         /// The requested input count.
         inputs: usize,
     },
+    /// A trace payload could not reserve storage for memo-read dependency keys.
+    #[error("failed to reserve persistent node trace payload for {dependencies} dependency keys")]
+    DependencyAllocationFailed {
+        /// The requested dependency count.
+        dependencies: usize,
+    },
     /// A trace payload could not reserve encoded output storage.
     #[error("failed to reserve persistent node trace payload with {len} bytes")]
     PayloadAllocationFailed {
@@ -292,6 +310,12 @@ pub enum PersistNodeTracePayloadError {
     Input {
         /// The underlying input fingerprint error.
         source: InputFingerprintError,
+    },
+    /// A decoded memo-read dependency key could not be reconstructed.
+    #[error("failed to reconstruct persistent node trace dependency key")]
+    Dependency {
+        /// The underlying persistent index-key error.
+        source: PersistPackFormatError,
     },
 }
 

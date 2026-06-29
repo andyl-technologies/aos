@@ -102,7 +102,10 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
 
     let trace_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"trace value"));
-    let trace_payload = test_node_trace_payload(b"node trace", 1);
+    let trace_dependency = test_node_trace_dependency(b"trace dependency");
+    let trace_payload = test_node_trace_payload(b"node trace", 1)
+        .with_memo_read_dependencies([trace_dependency])
+        .expect("trace payload dependency records");
     cache
         .record_node_trace(
             node_key,
@@ -168,6 +171,7 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
         PERSIST_NODE_TRACE_LOG_RECORD_HEADER_LEN as u64
             + trace_payload.encode().expect("trace payload encodes").len() as u64
     );
+    assert_eq!(trace_payload.memo_read_dependencies(), &[trace_dependency]);
 
     assert_eq!(
         cache
@@ -303,7 +307,10 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
     let latest_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"latest value"));
     let first = test_node_trace_payload(b"/src/first", 1);
-    let latest = test_node_trace_payload(b"/src/latest", 2);
+    let dependency = test_node_trace_dependency(b"latest trace dependency");
+    let latest = test_node_trace_payload(b"/src/latest", 2)
+        .with_memo_read_dependencies([dependency])
+        .expect("latest trace dependency records");
 
     assert_eq!(
         cache.node_trace_log().path(),
@@ -333,6 +340,7 @@ fn cache_node_trace_log_records_and_looks_up_payloads() {
             latest.clone()
         ))
     );
+    assert_eq!(latest.memo_read_dependencies(), &[dependency]);
     assert_eq!(
         cache
             .lookup_node_trace(other_key)
@@ -511,6 +519,7 @@ fn cache_record_node_trace_tombstone_uses_advisory_trace_lock() {
         .expect("node trace lookup succeeds")
         .expect("node trace exists");
     assert!(latest.payload().is_tombstone());
+    assert_eq!(latest.payload().memo_read_dependencies(), &[]);
 
     let _ = fs::remove_dir_all(root);
 }

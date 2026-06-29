@@ -11,7 +11,10 @@ fn cache_compact_node_traces_uses_advisory_trace_lock() {
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let stale_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
-    let payload = test_node_trace_payload(b"input", 1);
+    let dependency = test_node_trace_dependency(b"latest dependency");
+    let payload = test_node_trace_payload(b"input", 1)
+        .with_memo_read_dependencies([dependency])
+        .expect("latest trace dependency records");
     let stale_payload = test_node_trace_payload(b"stale", 2);
 
     cache
@@ -68,7 +71,10 @@ fn cache_node_traces_compacts_to_latest_entries() {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
     let stale_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
-    let payload = test_node_trace_payload(b"input", 1);
+    let dependency = test_node_trace_dependency(b"compact dependency");
+    let payload = test_node_trace_payload(b"input", 1)
+        .with_memo_read_dependencies([dependency])
+        .expect("compact trace dependency records");
     let stale_payload = test_node_trace_payload(b"stale", 2);
     let other_payload = PersistNodeTracePayload::tombstone();
 

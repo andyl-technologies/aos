@@ -129,6 +129,10 @@ fn test_node_trace_payload(subject: &[u8], hash_byte: u8) -> PersistNodeTracePay
     PersistNodeTracePayload::from_cacheable_inputs([input]).expect("trace payload builds")
 }
 
+fn test_node_trace_dependency(label: &[u8]) -> PersistNodeMetadataKey {
+    PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(label))
+}
+
 fn noncanonical_context_string_payload() -> Vec<u8> {
     let mut encoded = Vec::new();
     encoded.extend_from_slice(CONTEXT_STRING_VALUE_HASH_DOMAIN_VERSION);
