@@ -863,7 +863,7 @@ in {
           raise AssertionError(f"expected one NAR per narinfo, got narinfos={narinfo_events}, nars={nar_events}")
       for _, event in nar_events:
           assert event["cache_control"] == "public, max-age=31536000, immutable", event
-          assert event["content_type"] == "application/zstd", event
+          assert event["content_type"] == "application/x-nix-nar", event
 
       alternates = os.path.join(root, "objects/info/alternates")
       if os.path.exists(alternates):
