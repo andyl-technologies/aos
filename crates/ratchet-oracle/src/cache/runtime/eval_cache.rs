@@ -172,13 +172,16 @@ impl EvalCache {
     /// payload only when the expression key already exists, its demand node is
     /// clean, the side payload record is reusable without input revalidation,
     /// and that payload still matches the node's value hash. Unknown, dirty,
-    /// missing-payload, trace-backed, and stale-payload nodes are cache misses.
+    /// missing-payload, trace-backed, stale-payload, and dirty memo-read
+    /// supplier nodes are cache misses. Dirty memo-read suppliers also purge
+    /// the node's side payload records.
     ///
     /// # Errors
     ///
-    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    /// Returns a [`DemandGraphError`] if cache-key construction or dirty-node
+    /// invalidation fails.
     pub fn lookup_inline_expression_payload<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
@@ -191,7 +194,7 @@ impl EvalCache {
     }
 
     pub(crate) fn lookup_inline_expression_payload_hit<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
@@ -204,6 +207,7 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_value_hash = graph_node.value_hash();
         if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
@@ -213,7 +217,10 @@ impl EvalCache {
         if !record.is_reusable_without_revalidation() {
             return Ok(None);
         }
-        if graph_node.value_hash() != Some(record.value_hash) {
+        if graph_value_hash != Some(record.value_hash) {
+            return Ok(None);
+        }
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(None);
         }
         Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))
@@ -227,9 +234,10 @@ impl EvalCache {
     ///
     /// # Errors
     ///
-    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    /// Returns a [`DemandGraphError`] if cache-key construction or dirty-node
+    /// invalidation fails.
     pub fn lookup_inline_expression_result<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
     ) -> Result<Option<Value>, DemandGraphError>
@@ -255,8 +263,8 @@ impl EvalCache {
     /// reconsidered and can cut off locally.
     ///
     /// Inputs that cannot be revalidated, revalidate to an uncacheable
-    /// fingerprint, or revalidate to a different identity invalidate the
-    /// expression payload and return a miss.
+    /// fingerprint, revalidate to a different identity, or depend on a dirty
+    /// memo-read supplier invalidate the expression payload and return a miss.
     ///
     /// # Errors
     ///
@@ -298,14 +306,18 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_value_hash = graph_node.value_hash();
         let Some(record) = self.inline_values.get(&node).cloned() else {
             return Ok(None);
         };
-        if graph_node.value_hash() != Some(record.value_hash) {
+        if graph_value_hash != Some(record.value_hash) {
             return Ok(None);
         }
         if record.is_reusable_without_revalidation() {
             if graph_node.freshness() != NodeFreshness::Clean {
+                return Ok(None);
+            }
+            if self.invalidate_if_dirty_memo_read_dependency(node)? {
                 return Ok(None);
             }
             return Ok(Some(CachedExpressionPayloadHit::new(node, record.value())));
@@ -330,6 +342,9 @@ impl EvalCache {
             )));
         }
         if graph_node.freshness() != NodeFreshness::Clean {
+            return Ok(None);
+        }
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(None);
         }
         Ok(Some(CachedExpressionPayloadHit::new(node, record.value())))

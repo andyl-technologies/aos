@@ -529,8 +529,13 @@ alone (`M-1`/`Q-A`).
       Successful parent force completion replaces the parent's `MemoRead`
       group with that per-evaluation child set without disturbing impure-input
       edges; failed parent evaluations leave the previous memo-read group
-      unchanged. Disabled runtimes, inactive parents, and self-edges remain
-      no-ops. This covers force-cache child payload hits that already have or
+      unchanged. Runtime lookup paths for clean inline payloads, trace-backed
+      inline payloads, derivation ATerm side records, and static-output side
+      records now also miss and purge the side payload when the target node has
+      an already-dirty `MemoRead` supplier, so a stale supplier cannot be
+      bypassed simply because the dependent node has not yet been dirtied.
+      Disabled runtimes, inactive parents, and self-edges remain no-ops. This
+      covers force-cache child payload hits that already have or
       seed an in-memory runtime node, admitted thunk child misses with runtime
       nodes, and admitted first-class cacheable impure primop misses with runtime
       nodes; general evaluator-owned dynamic dependency capture, separate
@@ -538,6 +543,9 @@ alone (`M-1`/`Q-A`).
       persistent graph serialization, and cached/uncached `.drv` parity proof
       remain open (`S-14`/`C-20`). The gate covers
       `eval_cache_payload_hits_return_supplier_node_for_memo_read_edges` and
+      `clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record`,
+      `clean_trace_backed_inline_payload_with_dirty_memo_supplier_misses_and_purges_record`,
+      `clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge`,
       `source_backed_active_force_cache_hits_record_memo_read_edges`,
       `source_backed_active_force_cache_hits_replace_prior_memo_read_edges`,
       `source_backed_parent_force_without_hits_clears_prior_memo_read_edges`,

@@ -785,7 +785,7 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
         0,
         "synthetic currentTime must not reuse stale payloads"
     );
-    let runtime = cache.lock().expect("cache lock is valid");
+    let mut runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime
             .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())

@@ -67,7 +67,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
     );
 
     {
-        let runtime = cache.lock().expect("cache lock is valid");
+        let mut runtime = cache.lock().expect("cache lock is valid");
         assert!(
             runtime
                 .lookup_inline_expression_payload(
@@ -448,7 +448,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
     );
 
     {
-        let runtime = cache.lock().expect("cache lock is valid");
+        let mut runtime = cache.lock().expect("cache lock is valid");
         assert!(
             runtime
                 .lookup_inline_expression_payload(

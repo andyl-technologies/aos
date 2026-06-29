@@ -265,16 +265,17 @@ impl EvalCacheRuntime {
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
-    /// fails to build the expression cache key.
+    /// fails to build the expression cache key or invalidate a blocked side
+    /// payload.
     pub fn lookup_inline_expression_result<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
     ) -> Result<Option<Value>, DemandGraphError>
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache.lookup_inline_expression_result(identity, free_var_value_hashes)
@@ -289,16 +290,17 @@ impl EvalCacheRuntime {
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
-    /// fails to build the expression cache key.
+    /// fails to build the expression cache key or invalidate a blocked side
+    /// payload.
     pub fn lookup_inline_expression_payload<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache.lookup_inline_expression_payload(identity, free_var_value_hashes)
@@ -344,9 +346,10 @@ impl EvalCacheRuntime {
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
-    /// fails to build the expression cache key.
+    /// fails to build the expression cache key or invalidate a blocked side
+    /// payload.
     pub(crate) fn lookup_derivation_aterm_path<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         aterm: &[u8],
@@ -354,7 +357,7 @@ impl EvalCacheRuntime {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache.lookup_derivation_aterm_path(identity, free_var_value_hashes, aterm)
@@ -384,9 +387,10 @@ impl EvalCacheRuntime {
     /// # Errors
     ///
     /// Returns a [`DemandGraphError`] only when the enabled underlying cache
-    /// fails to build the expression cache key.
+    /// fails to build the expression cache key or invalidate a blocked side
+    /// payload.
     pub(crate) fn lookup_static_derivation_output_paths<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         pre_output_aterm: &[u8],
@@ -394,7 +398,7 @@ impl EvalCacheRuntime {
     where
         I: IntoIterator<Item = DurableBlake3Hash>,
     {
-        let Some(cache) = self.cache() else {
+        let Some(cache) = self.cache_mut() else {
             return Ok(None);
         };
         cache.lookup_static_derivation_output_paths(

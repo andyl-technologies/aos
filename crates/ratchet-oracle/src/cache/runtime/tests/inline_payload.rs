@@ -102,6 +102,59 @@ fn eval_cache_payload_hits_return_supplier_node_for_memo_read_edges() {
 }
 
 #[test]
+fn clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
+    let mut cache = EvalCache::new();
+    let supplier = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(identity(b"supplier", 1), [durable_hash(b"supplier")])
+                .expect("supplier key builds"),
+            Some(value_hash(b"supplier")),
+        )
+        .expect("supplier inserts");
+    let expression_identity = identity(b"dependent", 2);
+    let observation = cache
+        .observe_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+        )
+        .expect("dependent payload observes");
+    cache
+        .record_memo_read_dependency(observation.node(), supplier)
+        .expect("memo-read edge records");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier marks dirty");
+    assert_eq!(
+        cache
+            .graph()
+            .node(observation.node())
+            .expect("dependent node exists")
+            .freshness(),
+        NodeFreshness::Clean
+    );
+
+    let value = cache
+        .lookup_inline_expression_result(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+        )
+        .expect("lookup succeeds");
+
+    assert!(value.is_none());
+    assert_eq!(cache.inline_payload_record_count(), 0);
+    assert_eq!(
+        cache
+            .graph()
+            .node(observation.node())
+            .expect("dependent node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+}
+
+#[test]
 fn eval_cache_looks_up_context_free_string_payloads() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);
@@ -762,7 +815,7 @@ fn disabled_eval_cache_runtime_expression_result_observation_is_noop() {
 
 #[test]
 fn disabled_eval_cache_runtime_expression_result_lookup_is_noop() {
-    let runtime = EvalCacheRuntime::disabled();
+    let mut runtime = EvalCacheRuntime::disabled();
 
     let value = runtime
         .lookup_inline_expression_result(

@@ -599,6 +599,64 @@ fn dirty_trace_backed_inline_payload_with_dirty_memo_supplier_stays_miss() {
 }
 
 #[test]
+fn clean_trace_backed_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
+    let fingerprint = read_file_trace(b"/tmp/version", b"same");
+    let source = TraceSource {
+        trace: vec![fingerprint.clone()],
+        complete: true,
+    };
+    let mut revalidator = StaticRevalidator::new(vec![fingerprint]);
+    let mut cache = EvalCache::new();
+    let expression_identity = identity(b"trace-dependent", 7);
+    let observation = cache
+        .observe_inline_expression_result_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            Value::int(3),
+            &source,
+        )
+        .expect("inline result and trace observe");
+    let node = observation.node().expect("cacheable trace creates node");
+    let supplier = cache
+        .graph
+        .get_or_insert_node(
+            DemandCacheKey::for_free_vars(
+                identity(b"trace-supplier", 1),
+                [durable_hash(b"trace-supplier")],
+            )
+            .expect("supplier key builds"),
+            Some(value_hash(b"trace-supplier")),
+        )
+        .expect("supplier inserts");
+    cache
+        .record_memo_read_dependency(node, supplier)
+        .expect("memo-read edge records");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier marks dirty");
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Clean
+    );
+
+    let hit = cache
+        .lookup_inline_expression_payload_hit_with_impure_inputs(
+            expression_identity,
+            std::iter::empty::<DurableBlake3Hash>(),
+            &mut revalidator,
+        )
+        .expect("lookup revalidates");
+
+    assert!(hit.is_none());
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.graph().node(node).expect("node exists").freshness(),
+        NodeFreshness::Dirty
+    );
+    assert_eq!(cache.inline_payload_record_count(), 0);
+}
+
+#[test]
 fn eval_cache_expression_trace_adapter_invalidates_existing_trace_backed_payload() {
     let first_fingerprint = read_file_trace(b"/tmp/first", b"same");
     let first_source = TraceSource {

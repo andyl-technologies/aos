@@ -10,13 +10,16 @@ impl EvalCache {
     /// caller-supplied expression key exists, the demand node is clean, a
     /// derivation path side record exists, the side record's ATerm hash matches
     /// `aterm`, and the graph node's value hash still matches the full side
-    /// payload hash. Unknown, dirty, missing, and stale records are misses.
+    /// payload hash. Unknown, dirty, missing, stale, and dirty memo-read
+    /// supplier records are misses. Dirty memo-read suppliers also purge the
+    /// node's side payload records.
     ///
     /// # Errors
     ///
-    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    /// Returns a [`DemandGraphError`] if cache-key construction or dirty-node
+    /// invalidation fails.
     pub(crate) fn lookup_derivation_aterm_path<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         aterm: &[u8],
@@ -30,7 +33,7 @@ impl EvalCache {
     }
 
     pub(crate) fn lookup_derivation_aterm_path_hit<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         aterm: &[u8],
@@ -44,16 +47,20 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_value_hash = graph_node.value_hash();
         if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
-        let Some(record) = self.derivation_aterm_paths.get(&node) else {
+        let Some(record) = self.derivation_aterm_paths.get(&node).cloned() else {
             return Ok(None);
         };
         let aterm_value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
         if record.aterm_value_hash != aterm_value_hash
-            || graph_node.value_hash() != Some(record.payload_value_hash)
+            || graph_value_hash != Some(record.payload_value_hash)
         {
+            return Ok(None);
+        }
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(None);
         }
         Ok(Some(CachedDerivationAtermPathHit::new(
@@ -78,16 +85,21 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_freshness = graph_node.freshness();
+        let graph_value_hash = graph_node.value_hash();
         let Some(record) = self.derivation_aterm_paths.get(&node).cloned() else {
             return Ok(None);
         };
         let aterm_value_hash = ValueHash::from_derivation_aterm_bytes(aterm);
         if record.aterm_value_hash != aterm_value_hash
-            || graph_node.value_hash() != Some(record.payload_value_hash)
+            || graph_value_hash != Some(record.payload_value_hash)
         {
             return Ok(None);
         }
-        if graph_node.freshness() == NodeFreshness::Clean {
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(None);
+        }
+        if graph_freshness == NodeFreshness::Clean {
             return Ok(Some(CachedDerivationAtermPathHit::new(
                 node,
                 record.path_bytes(),
@@ -113,13 +125,16 @@ impl EvalCache {
     /// exists, the demand node is clean, a static-output side record exists,
     /// the side record's pre-output hash matches `pre_output_aterm`, and the
     /// graph node's value hash still matches the full side payload hash.
-    /// Unknown, dirty, missing, and stale records are misses.
+    /// Unknown, dirty, missing, stale, and dirty memo-read supplier records are
+    /// misses. Dirty memo-read suppliers also purge the node's side payload
+    /// records.
     ///
     /// # Errors
     ///
-    /// Returns a [`DemandGraphError`] if cache-key construction fails.
+    /// Returns a [`DemandGraphError`] if cache-key construction or dirty-node
+    /// invalidation fails.
     pub(crate) fn lookup_static_derivation_output_paths<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         pre_output_aterm: &[u8],
@@ -137,7 +152,7 @@ impl EvalCache {
     }
 
     pub(crate) fn lookup_static_derivation_output_paths_hit<I>(
-        &self,
+        &mut self,
         identity: CacheExprIdentity,
         free_var_value_hashes: I,
         pre_output_aterm: &[u8],
@@ -151,16 +166,20 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_value_hash = graph_node.value_hash();
         if graph_node.freshness() != NodeFreshness::Clean {
             return Ok(None);
         }
-        let Some(record) = self.static_derivation_output_paths.get(&node) else {
+        let Some(record) = self.static_derivation_output_paths.get(&node).cloned() else {
             return Ok(None);
         };
         let pre_output_value_hash = ValueHash::from_derivation_aterm_bytes(pre_output_aterm);
         if record.pre_output_value_hash != pre_output_value_hash
-            || graph_node.value_hash() != Some(record.payload_value_hash)
+            || graph_value_hash != Some(record.payload_value_hash)
         {
+            return Ok(None);
+        }
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
             return Ok(None);
         }
         Ok(Some(CachedStaticDerivationOutputPathsHit::new(
@@ -184,16 +203,21 @@ impl EvalCache {
             return Ok(None);
         };
         let graph_node = self.graph.node(node)?;
+        let graph_freshness = graph_node.freshness();
+        let graph_value_hash = graph_node.value_hash();
         let Some(record) = self.static_derivation_output_paths.get(&node).cloned() else {
             return Ok(None);
         };
         let pre_output_value_hash = ValueHash::from_derivation_aterm_bytes(pre_output_aterm);
         if record.pre_output_value_hash != pre_output_value_hash
-            || graph_node.value_hash() != Some(record.payload_value_hash)
+            || graph_value_hash != Some(record.payload_value_hash)
         {
             return Ok(None);
         }
-        if graph_node.freshness() == NodeFreshness::Clean {
+        if self.invalidate_if_dirty_memo_read_dependency(node)? {
+            return Ok(None);
+        }
+        if graph_freshness == NodeFreshness::Clean {
             return Ok(Some(CachedStaticDerivationOutputPathsHit::new(
                 node,
                 record.output_paths(),

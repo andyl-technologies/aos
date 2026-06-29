@@ -539,6 +539,93 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
 }
 
 #[test]
+fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
+    let mut cache = EvalCache::new();
+    let supplier = cache
+        .get_or_insert_expression_node(
+            identity(b"dirty-lookup-supplier", 6),
+            std::iter::empty::<DurableBlake3Hash>(),
+            Some(value_hash(b"dirty-lookup-supplier")),
+        )
+        .expect("supplier inserts");
+    let derivation_identity = identity(b"dirty-lookup-derivation", 7);
+    let aterm = b"Derive([],[],[],\":\",\":\",[],[(\"env\",\"same\")])";
+    let derivation = cache
+        .observe_derivation_aterm_expression_path(
+            derivation_identity,
+            [durable_hash(b"free-var")],
+            aterm,
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+        )
+        .expect("derivation ATerm path observes");
+    cache
+        .record_memo_read_dependency(derivation.node(), supplier)
+        .expect("derivation memo-read edge records");
+
+    let static_identity = identity(b"dirty-lookup-static", 8);
+    let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
+    let output_paths = CachedDerivationOutputPaths::new(
+        [7; 32],
+        vec![CachedDerivationOutputPath::new(
+            b"out".to_vec(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x".to_vec(),
+        )],
+    );
+    let static_outputs = cache
+        .observe_static_derivation_output_paths(
+            static_identity,
+            [durable_hash(b"free-var")],
+            pre_output_aterm,
+            output_paths,
+        )
+        .expect("static derivation output paths observe");
+    cache
+        .record_memo_read_dependency(static_outputs.node(), supplier)
+        .expect("static output memo-read edge records");
+    cache
+        .test_mark_dirty_node(supplier)
+        .expect("supplier dirties");
+    assert_eq!(cache.derivation_aterm_path_record_count(), 1);
+    assert_eq!(cache.static_derivation_output_path_record_count(), 1);
+
+    assert!(
+        cache
+            .lookup_derivation_aterm_path(derivation_identity, [durable_hash(b"free-var")], aterm)
+            .expect("derivation lookup succeeds")
+            .is_none()
+    );
+    assert_eq!(cache.derivation_aterm_path_record_count(), 0);
+    assert_eq!(
+        cache
+            .graph()
+            .node(derivation.node())
+            .expect("derivation node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+
+    assert!(
+        cache
+            .lookup_static_derivation_output_paths(
+                static_identity,
+                [durable_hash(b"free-var")],
+                pre_output_aterm,
+            )
+            .expect("static output lookup succeeds")
+            .is_none()
+    );
+    assert_eq!(cache.static_derivation_output_path_record_count(), 0);
+    assert_eq!(
+        cache
+            .graph()
+            .node(static_outputs.node())
+            .expect("static output node exists")
+            .freshness(),
+        NodeFreshness::Dirty
+    );
+}
+
+#[test]
 fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges() {
     let mut cache = EvalCache::new();
     let pre_output_aterm = b"Derive([(\"out\",\"\",\"\",\"\")],[],[],\":\",\":\",[],[])";
