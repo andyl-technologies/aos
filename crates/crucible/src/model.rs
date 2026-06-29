@@ -21,6 +21,8 @@ use crucible_sim::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::trigger::{Action, Event, EventGraph, EventGraphError, FirePolicy, LogLevel};
+
 mod canonical;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -46,6 +48,7 @@ const FAMILY_FAULT_HEAL_DELAY_TICKS: u64 = 5;
 const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
+const EVENT_GRAPH_PLAN_BINARY_SENTINEL: u64 = u64::MAX;
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -918,8 +921,16 @@ impl World {
         plan: &Plan,
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
-        plan.validate_for_world(self)?;
-        properties.validate_for_world(self)?;
+        match plan.event_graph() {
+            Some(_) => {
+                properties.validate_for_world(self)?;
+                plan.validate_for_world_with_properties(self, properties)?;
+            }
+            None => {
+                plan.validate_for_world(self)?;
+                properties.validate_for_world(self)?;
+            }
+        }
         Ok(self.scenario_def_from_components(plan, properties, Seed::default()))
     }
 
@@ -945,8 +956,16 @@ impl World {
         properties: &Properties,
         seed: Seed,
     ) -> Result<ScenarioDef, EngineError> {
-        plan.validate_for_world(self)?;
-        properties.validate_for_world(self)?;
+        match plan.event_graph() {
+            Some(_) => {
+                properties.validate_for_world(self)?;
+                plan.validate_for_world_with_properties(self, properties)?;
+            }
+            None => {
+                plan.validate_for_world(self)?;
+                properties.validate_for_world(self)?;
+            }
+        }
         Ok(self.scenario_def_from_components(plan, properties, seed))
     }
 
@@ -1459,7 +1478,6 @@ impl ScenarioBuilder {
 
     fn build_plan(&self, world: &World) -> Result<Plan, EngineError> {
         if let Some(plan) = &self.plan {
-            plan.validate_for_world(world)?;
             return Ok(plan.clone());
         }
 
@@ -2358,8 +2376,16 @@ impl ScenarioDefForm {
         seed: Seed,
     ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
-        plan.validate_for_world(world)?;
-        properties.validate_for_world(world)?;
+        match plan.event_graph() {
+            Some(_) => {
+                properties.validate_for_world(world)?;
+                plan.validate_for_world_with_properties(world, properties)?;
+            }
+            None => {
+                plan.validate_for_world(world)?;
+                properties.validate_for_world(world)?;
+            }
+        }
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
@@ -3629,7 +3655,13 @@ pub enum PlanEntry {
 pub struct Plan {
     /// The independently content-addressed plan identity.
     id: ContentHash,
-    entries: Vec<PlanEntry>,
+    kind: PlanKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PlanKind {
+    ScheduledEntries { entries: Vec<PlanEntry> },
+    EventGraph { graph: EventGraph },
 }
 
 impl Default for Plan {
@@ -3669,9 +3701,54 @@ impl Plan {
     }
 
     /// Returns plan entries in their canonical order.
+    ///
+    /// Event-graph plans return an empty slice; use [`Self::event_graph`] to
+    /// inspect graph-native plans.
     #[must_use]
     pub fn entries(&self) -> &[PlanEntry] {
-        &self.entries
+        match &self.kind {
+            PlanKind::ScheduledEntries { entries } => entries,
+            PlanKind::EventGraph { .. } => &[],
+        }
+    }
+
+    /// Returns the graph carried by this plan when it is graph-native.
+    #[must_use]
+    pub fn event_graph(&self) -> Option<&EventGraph> {
+        match &self.kind {
+            PlanKind::ScheduledEntries { .. } => None,
+            PlanKind::EventGraph { graph } => Some(graph),
+        }
+    }
+
+    /// Builds a graph-native plan after validating it against `world`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when event-graph
+    /// validation rejects the graph for the supplied world namespace.
+    pub fn from_event_graph_for_world(
+        world: &World,
+        graph: EventGraph,
+    ) -> Result<Self, EngineError> {
+        Self::from_event_graph_with_assertions_for_world(world, [], graph)
+    }
+
+    /// Builds a graph-native plan with assertion ids available to triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when event-graph
+    /// validation rejects the graph for the supplied world and assertion
+    /// namespaces.
+    pub fn from_event_graph_with_assertions_for_world(
+        world: &World,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        graph: EventGraph,
+    ) -> Result<Self, EngineError> {
+        let graph =
+            validate_event_graph_plan(world, assertions, graph).map_err(event_graph_plan_error)?;
+        Ok(Self::from_canonical_event_graph(graph))
     }
 
     /// Computes the canonical identity of this plan.
@@ -3709,6 +3786,24 @@ impl Plan {
         plan_from_toml(world, toml)
     }
 
+    /// Parses and validates a deterministic TOML plan component with assertion ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::from_canonical_toml_for_world`], and
+    /// also rejects assertion-state triggers that reference ids outside
+    /// `assertions`.
+    pub fn from_canonical_toml_with_assertions_for_world(
+        world: &World,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        input: &str,
+    ) -> Result<Self, EngineError> {
+        validate_plan_entries_in_toml(input)?;
+        let toml = toml::from_str::<PlanToml>(input)
+            .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
+        plan_from_toml_with_assertions(world, assertions, toml)
+    }
+
     /// Serializes this plan component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
@@ -3726,7 +3821,25 @@ impl Plan {
     /// not layer over `world`.
     pub fn from_compact_binary_for_world(world: &World, bytes: &[u8]) -> Result<Self, EngineError> {
         let mut reader = ScenarioBinaryReader::new(bytes, PLAN_BINARY_MAGIC)?;
-        let plan = read_plan_binary(world, &mut reader)?;
+        let plan = read_plan_binary(world, [], &mut reader)?;
+        reader.finish()?;
+        Ok(plan)
+    }
+
+    /// Parses and validates a compact binary plan component with assertion ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::from_compact_binary_for_world`], and
+    /// also rejects assertion-state triggers that reference ids outside
+    /// `assertions`.
+    pub fn from_compact_binary_with_assertions_for_world(
+        world: &World,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        bytes: &[u8],
+    ) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, PLAN_BINARY_MAGIC)?;
+        let plan = read_plan_binary(world, assertions, &mut reader)?;
         reader.finish()?;
         Ok(plan)
     }
@@ -3734,7 +3847,7 @@ impl Plan {
     /// Returns the canonical bytes used to compute this plan's content address.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        plan_material(&self.entries).into_bytes()
+        plan_material(self).into_bytes()
     }
 
     /// Validates this plan against `world`.
@@ -3748,16 +3861,56 @@ impl Plan {
     /// [`EngineError::PlanNotYetJoinedAfterStart`] when an entry cannot be
     /// layered over the static world topology.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
-        validate_plan_entries_for_world(world, &self.entries)
+        self.validate_for_world_with_assertions(world, [])
+    }
+
+    fn validate_for_world_with_properties(
+        &self,
+        world: &World,
+        properties: &Properties,
+    ) -> Result<(), EngineError> {
+        self.validate_for_world_with_assertions(
+            world,
+            properties
+                .assertions()
+                .iter()
+                .map(|assertion| assertion.id.clone()),
+        )
+    }
+
+    fn validate_for_world_with_assertions(
+        &self,
+        world: &World,
+        assertions: impl IntoIterator<Item = AssertionId>,
+    ) -> Result<(), EngineError> {
+        match &self.kind {
+            PlanKind::ScheduledEntries { entries } => {
+                validate_plan_entries_for_world(world, entries)
+            }
+            PlanKind::EventGraph { graph } => {
+                validate_event_graph_plan(world, assertions, graph.clone())
+                    .map(|_| ())
+                    .map_err(event_graph_plan_error)
+            }
+        }
     }
 
     fn from_canonical_entries(entries: Vec<PlanEntry>) -> Self {
+        let kind = PlanKind::ScheduledEntries { entries };
+        Self::from_canonical_kind(kind)
+    }
+
+    fn from_canonical_event_graph(graph: EventGraph) -> Self {
+        Self::from_canonical_kind(PlanKind::EventGraph { graph })
+    }
+
+    fn from_canonical_kind(kind: PlanKind) -> Self {
         Self {
             id: ContentHash::from_canonical_material(
                 "crucible.model.plan.v1",
-                &plan_material(&entries),
+                &plan_kind_material(&kind),
             ),
-            entries,
+            kind,
         }
     }
 }
@@ -9194,6 +9347,18 @@ fn validate_plan_entries_for_world(
     Ok(())
 }
 
+fn validate_event_graph_plan(
+    world: &World,
+    assertions: impl IntoIterator<Item = AssertionId>,
+    graph: EventGraph,
+) -> Result<EventGraph, EventGraphError> {
+    EventGraph::new_with_assertions_for_world(graph.events().to_vec(), assertions, world)
+}
+
+fn event_graph_plan_error(error: EventGraphError) -> EngineError {
+    scenario_serialization_error(format!("event graph plan validation failed: {error}"))
+}
+
 fn validate_membership_fault_for_world(
     at: VirtualTime,
     fault: &MembershipFault,
@@ -9788,8 +9953,20 @@ struct LinkToml {
 #[serde(deny_unknown_fields)]
 struct PlanToml {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<PlanKindToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     entry: Vec<PlanEntryToml>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    event: Vec<EventToml>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum PlanKindToml {
+    Entries,
+    EventGraph,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -9805,6 +9982,80 @@ enum PlanEntryToml {
         at_ticks: u64,
         tag: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventToml {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<PredicateToml>,
+    action: ActionToml,
+    #[serde(default = "default_fire_policy_toml")]
+    policy: FirePolicyToml,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum FirePolicyToml {
+    Once,
+    Repeatable,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ActionToml {
+    InjectFault {
+        tag: String,
+        fault: MembershipFaultToml,
+    },
+    HealFault {
+        tag: String,
+    },
+    ArmTimer {
+        name: String,
+        after_nanos: u64,
+    },
+    CancelTimer {
+        name: String,
+    },
+    StartNode {
+        node: String,
+    },
+    StopNode {
+        node: String,
+    },
+    CreateSavepoint {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    Fork {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    Pass,
+    Fail {
+        reason: String,
+    },
+    Log {
+        level: LogLevelToml,
+        message: String,
+    },
+    Group {
+        actions: Vec<ActionToml>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum LogLevelToml {
+    Debug,
+    Info,
+    Warn,
+    Error,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -10083,8 +10334,15 @@ fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
 
 fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, EngineError> {
     let world = world_from_toml(toml.world)?;
-    let plan = plan_from_toml(&world, toml.plan)?;
     let properties = properties_from_toml(&world, toml.properties)?;
+    let plan = plan_from_toml_with_assertions(
+        &world,
+        properties
+            .assertions()
+            .iter()
+            .map(|assertion| assertion.id.clone()),
+        toml.plan,
+    )?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
     let expected = parse_content_hash_ref(&toml.scenario.id)?;
@@ -10250,22 +10508,90 @@ fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
 }
 
 fn plan_to_toml(plan: &Plan) -> PlanToml {
-    PlanToml {
-        id: format_content_hash_ref(plan.content_hash()),
-        entry: plan.entries().iter().map(plan_entry_to_toml).collect(),
+    match &plan.kind {
+        PlanKind::ScheduledEntries { entries } => PlanToml {
+            id: format_content_hash_ref(plan.content_hash()),
+            kind: None,
+            entry: entries.iter().map(plan_entry_to_toml).collect(),
+            event: Vec::new(),
+        },
+        PlanKind::EventGraph { graph } => PlanToml {
+            id: format_content_hash_ref(plan.content_hash()),
+            kind: Some(PlanKindToml::EventGraph),
+            entry: Vec::new(),
+            event: graph.events().iter().map(event_to_toml).collect(),
+        },
     }
 }
 
 fn plan_from_toml(world: &World, toml: PlanToml) -> Result<Plan, EngineError> {
+    plan_from_toml_with_assertions(world, [], toml)
+}
+
+fn plan_from_toml_with_assertions(
+    world: &World,
+    assertions: impl IntoIterator<Item = AssertionId>,
+    toml: PlanToml,
+) -> Result<Plan, EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
-    let entries = toml
-        .entry
-        .into_iter()
-        .map(plan_entry_from_toml)
-        .collect::<Vec<_>>();
-    let plan = Plan::from_entries_for_world(world, entries)?;
+    let plan = match serialized_plan_kind(&toml)? {
+        SerializedPlanKind::ScheduledEntries => {
+            let entries = toml
+                .entry
+                .into_iter()
+                .map(plan_entry_from_toml)
+                .collect::<Vec<_>>();
+            Plan::from_entries_for_world(world, entries)?
+        }
+        SerializedPlanKind::EventGraph => {
+            let events = toml
+                .event
+                .into_iter()
+                .map(event_from_toml)
+                .collect::<Result<Vec<_>, _>>()?;
+            let graph = EventGraph::new_with_assertions_for_world(events, assertions, world)
+                .map_err(event_graph_plan_error)?;
+            Plan::from_canonical_event_graph(graph)
+        }
+    };
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SerializedPlanKind {
+    ScheduledEntries,
+    EventGraph,
+}
+
+fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
+    match toml.kind {
+        Some(PlanKindToml::Entries) => {
+            if !toml.event.is_empty() {
+                return Err(scenario_serialization_error(
+                    "entries plan must not carry event graph rows",
+                ));
+            }
+            Ok(SerializedPlanKind::ScheduledEntries)
+        }
+        Some(PlanKindToml::EventGraph) => {
+            if !toml.entry.is_empty() {
+                return Err(scenario_serialization_error(
+                    "event graph plan must not carry scheduled entries",
+                ));
+            }
+            Ok(SerializedPlanKind::EventGraph)
+        }
+        None if toml.event.is_empty() => Ok(SerializedPlanKind::ScheduledEntries),
+        None => {
+            if !toml.entry.is_empty() {
+                return Err(scenario_serialization_error(
+                    "plan must not mix scheduled entries and event graph rows",
+                ));
+            }
+            Ok(SerializedPlanKind::EventGraph)
+        }
+    }
 }
 
 fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
@@ -10297,6 +10623,138 @@ fn plan_entry_from_toml(toml: PlanEntryToml) -> PlanEntry {
             at: VirtualTime { ticks: at_ticks },
             tag: FaultTag { name: tag },
         },
+    }
+}
+
+fn event_to_toml(event: &Event) -> EventToml {
+    EventToml {
+        id: event.id.name.clone(),
+        trigger: event.trigger.as_ref().map(predicate_to_toml),
+        action: action_to_toml(&event.action),
+        policy: fire_policy_to_toml(event.policy),
+    }
+}
+
+fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
+    Ok(Event {
+        id: EventId { name: toml.id },
+        trigger: toml.trigger.map(predicate_from_toml).transpose()?,
+        action: action_from_toml(toml.action),
+        policy: fire_policy_from_toml(toml.policy),
+    })
+}
+
+fn default_fire_policy_toml() -> FirePolicyToml {
+    FirePolicyToml::Once
+}
+
+fn fire_policy_to_toml(policy: FirePolicy) -> FirePolicyToml {
+    match policy {
+        FirePolicy::Once => FirePolicyToml::Once,
+        FirePolicy::Repeatable => FirePolicyToml::Repeatable,
+    }
+}
+
+fn fire_policy_from_toml(toml: FirePolicyToml) -> FirePolicy {
+    match toml {
+        FirePolicyToml::Once => FirePolicy::Once,
+        FirePolicyToml::Repeatable => FirePolicy::Repeatable,
+    }
+}
+
+fn action_to_toml(action: &Action) -> ActionToml {
+    match action {
+        Action::InjectFault { tag, fault } => ActionToml::InjectFault {
+            tag: tag.name.clone(),
+            fault: membership_fault_to_toml(fault),
+        },
+        Action::HealFault { tag } => ActionToml::HealFault {
+            tag: tag.name.clone(),
+        },
+        Action::ArmTimer { name, after } => ActionToml::ArmTimer {
+            name: name.name.clone(),
+            after_nanos: after.nanos,
+        },
+        Action::CancelTimer { name } => ActionToml::CancelTimer {
+            name: name.name.clone(),
+        },
+        Action::StartNode { node } => ActionToml::StartNode {
+            node: node.name.clone(),
+        },
+        Action::StopNode { node } => ActionToml::StopNode {
+            node: node.name.clone(),
+        },
+        Action::CreateSavepoint { label } => ActionToml::CreateSavepoint {
+            label: label.clone(),
+        },
+        Action::Fork { label } => ActionToml::Fork {
+            label: label.clone(),
+        },
+        Action::Pass => ActionToml::Pass,
+        Action::Fail { reason } => ActionToml::Fail {
+            reason: reason.clone(),
+        },
+        Action::Log { level, message } => ActionToml::Log {
+            level: log_level_to_toml(*level),
+            message: message.clone(),
+        },
+        Action::Group(actions) => ActionToml::Group {
+            actions: actions.iter().map(action_to_toml).collect(),
+        },
+    }
+}
+
+fn action_from_toml(toml: ActionToml) -> Action {
+    match toml {
+        ActionToml::InjectFault { tag, fault } => Action::InjectFault {
+            tag: FaultTag { name: tag },
+            fault: membership_fault_from_toml(fault),
+        },
+        ActionToml::HealFault { tag } => Action::HealFault {
+            tag: FaultTag { name: tag },
+        },
+        ActionToml::ArmTimer { name, after_nanos } => Action::ArmTimer {
+            name: TimerId { name },
+            after: SimDuration { nanos: after_nanos },
+        },
+        ActionToml::CancelTimer { name } => Action::CancelTimer {
+            name: TimerId { name },
+        },
+        ActionToml::StartNode { node } => Action::StartNode {
+            node: NodeId { name: node },
+        },
+        ActionToml::StopNode { node } => Action::StopNode {
+            node: NodeId { name: node },
+        },
+        ActionToml::CreateSavepoint { label } => Action::CreateSavepoint { label },
+        ActionToml::Fork { label } => Action::Fork { label },
+        ActionToml::Pass => Action::Pass,
+        ActionToml::Fail { reason } => Action::Fail { reason },
+        ActionToml::Log { level, message } => Action::Log {
+            level: log_level_from_toml(level),
+            message,
+        },
+        ActionToml::Group { actions } => {
+            Action::Group(actions.into_iter().map(action_from_toml).collect())
+        }
+    }
+}
+
+fn log_level_to_toml(level: LogLevel) -> LogLevelToml {
+    match level {
+        LogLevel::Debug => LogLevelToml::Debug,
+        LogLevel::Info => LogLevelToml::Info,
+        LogLevel::Warn => LogLevelToml::Warn,
+        LogLevel::Error => LogLevelToml::Error,
+    }
+}
+
+fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
+    match toml {
+        LogLevelToml::Debug => LogLevel::Debug,
+        LogLevelToml::Info => LogLevel::Info,
+        LogLevelToml::Warn => LogLevel::Warn,
+        LogLevelToml::Error => LogLevel::Error,
     }
 }
 
@@ -11047,7 +11505,7 @@ fn read_scenario_form_binary(
 ) -> Result<ScenarioDefForm, EngineError> {
     let expected = reader.read_hash()?;
     let world = read_world_binary(reader)?;
-    let plan = read_plan_binary(&world, reader)?;
+    let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
     let seed = reader.read_seed()?;
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
@@ -11477,25 +11935,122 @@ fn read_link_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkDef, En
 
 fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(plan.content_hash());
-    writer.write_count(plan.entries().len());
-    for entry in plan.entries() {
-        write_plan_entry_binary(entry, writer);
+    match &plan.kind {
+        PlanKind::ScheduledEntries { entries } => {
+            writer.write_count(entries.len());
+            for entry in entries {
+                write_plan_entry_binary(entry, writer);
+            }
+        }
+        PlanKind::EventGraph { graph } => {
+            writer.write_u64(EVENT_GRAPH_PLAN_BINARY_SENTINEL);
+            writer.write_count(graph.events().len());
+            for event in graph.events() {
+                write_event_binary(event, writer);
+            }
+        }
     }
 }
 
 fn read_plan_binary(
     world: &World,
+    assertions: impl IntoIterator<Item = AssertionId>,
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Plan, EngineError> {
+    read_plan_binary_inner(
+        world,
+        Some(assertions.into_iter().collect::<Vec<_>>()),
+        reader,
+    )
+}
+
+fn read_plan_binary_for_scenario(
+    world: &World,
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Plan, EngineError> {
+    read_plan_binary_inner(world, None, reader)
+}
+
+fn read_plan_binary_inner(
+    world: &World,
+    assertions: Option<Vec<AssertionId>>,
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Plan, EngineError> {
     let id = reader.read_hash()?;
-    let count = reader.read_collection_count("plan.entry")?;
-    let mut entries = Vec::with_capacity(count);
-    for _ in 0..count {
-        entries.push(read_plan_entry_binary(reader)?);
-    }
-    let plan = Plan::from_entries_for_world(world, entries)?;
+    let count_or_sentinel = reader.read_u64()?;
+    let plan = if count_or_sentinel == EVENT_GRAPH_PLAN_BINARY_SENTINEL {
+        let count = reader.read_collection_count("plan.event")?;
+        let mut events = Vec::with_capacity(count);
+        for _ in 0..count {
+            events.push(read_event_binary(reader)?);
+        }
+        let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
+        let graph = EventGraph::new_with_assertions_for_world(events, assertions, world)
+            .map_err(event_graph_plan_error)?;
+        Plan::from_canonical_event_graph(graph)
+    } else {
+        let count = collection_count_from_raw("plan.entry", count_or_sentinel)?;
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(read_plan_entry_binary(reader)?);
+        }
+        Plan::from_entries_for_world(world, entries)?
+    };
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
+}
+
+fn collection_count_from_raw(label: &'static str, count: u64) -> Result<usize, EngineError> {
+    let count = usize::try_from(count)
+        .map_err(|_| scenario_serialization_error("binary count does not fit usize"))?;
+    if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
+        Err(scenario_serialization_error(format!(
+            "{label} count exceeds serialized collection limit"
+        )))
+    } else {
+        Ok(count)
+    }
+}
+
+fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
+    let mut assertions = BTreeSet::new();
+    for event in events {
+        if let Some(trigger) = &event.trigger {
+            collect_predicate_assertion_references(trigger, &mut assertions);
+        }
+    }
+    assertions.into_iter().collect()
+}
+
+fn collect_predicate_assertion_references(
+    predicate: &Predicate,
+    assertions: &mut BTreeSet<AssertionId>,
+) {
+    match predicate {
+        Predicate::AssertionState { name, .. } => {
+            assertions.insert(name.clone());
+        }
+        Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => {
+            for predicate in predicates {
+                collect_predicate_assertion_references(predicate, assertions);
+            }
+        }
+        Predicate::Once { predicate } | Predicate::Not { predicate } => {
+            collect_predicate_assertion_references(predicate, assertions);
+        }
+        Predicate::At { .. }
+        | Predicate::After { .. }
+        | Predicate::Timer { .. }
+        | Predicate::NetworkMatch { .. }
+        | Predicate::ConsoleMatch { .. }
+        | Predicate::CoveragePoint { .. }
+        | Predicate::MemoryPredicate { .. }
+        | Predicate::IoPattern { .. }
+        | Predicate::NodeState { .. }
+        | Predicate::Quiescent
+        | Predicate::Named { .. }
+        | Predicate::GuestMarker { .. } => {}
+    }
 }
 
 fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
@@ -11534,6 +12089,204 @@ fn read_plan_entry_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<PlanE
             },
         }),
         _ => Err(scenario_serialization_error("invalid plan-entry tag")),
+    }
+}
+
+fn write_event_binary(event: &Event, writer: &mut ScenarioBinaryWriter) {
+    writer.write_string(&event.id.name);
+    match &event.trigger {
+        Some(trigger) => {
+            writer.write_u8(1);
+            write_predicate_binary(trigger, writer);
+        }
+        None => writer.write_u8(0),
+    }
+    write_action_binary(&event.action, writer);
+    writer.write_u8(match event.policy {
+        FirePolicy::Once => 0,
+        FirePolicy::Repeatable => 1,
+    });
+}
+
+fn read_event_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Event, EngineError> {
+    let id = EventId {
+        name: reader.read_string()?,
+    };
+    let trigger = match reader.read_u8()? {
+        0 => None,
+        1 => Some(read_predicate_binary(reader)?),
+        _ => return Err(scenario_serialization_error("invalid event trigger tag")),
+    };
+    let action = read_action_binary(reader)?;
+    let policy = match reader.read_u8()? {
+        0 => FirePolicy::Once,
+        1 => FirePolicy::Repeatable,
+        _ => return Err(scenario_serialization_error("invalid fire-policy tag")),
+    };
+    Ok(Event {
+        id,
+        trigger,
+        action,
+        policy,
+    })
+}
+
+fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
+    match action {
+        Action::InjectFault { tag, fault } => {
+            writer.write_u8(0);
+            writer.write_string(&tag.name);
+            write_membership_fault_binary(fault, writer);
+        }
+        Action::HealFault { tag } => {
+            writer.write_u8(1);
+            writer.write_string(&tag.name);
+        }
+        Action::ArmTimer { name, after } => {
+            writer.write_u8(2);
+            writer.write_string(&name.name);
+            writer.write_u64(after.nanos);
+        }
+        Action::CancelTimer { name } => {
+            writer.write_u8(3);
+            writer.write_string(&name.name);
+        }
+        Action::StartNode { node } => {
+            writer.write_u8(4);
+            writer.write_string(&node.name);
+        }
+        Action::StopNode { node } => {
+            writer.write_u8(5);
+            writer.write_string(&node.name);
+        }
+        Action::CreateSavepoint { label } => {
+            writer.write_u8(6);
+            write_optional_string_binary(label.as_deref(), writer);
+        }
+        Action::Fork { label } => {
+            writer.write_u8(7);
+            write_optional_string_binary(label.as_deref(), writer);
+        }
+        Action::Pass => writer.write_u8(8),
+        Action::Fail { reason } => {
+            writer.write_u8(9);
+            writer.write_string(reason);
+        }
+        Action::Log { level, message } => {
+            writer.write_u8(10);
+            write_log_level_binary(*level, writer);
+            writer.write_string(message);
+        }
+        Action::Group(actions) => {
+            writer.write_u8(11);
+            writer.write_count(actions.len());
+            for action in actions {
+                write_action_binary(action, writer);
+            }
+        }
+    }
+}
+
+fn read_action_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Action, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(Action::InjectFault {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+            fault: read_membership_fault_binary(reader)?,
+        }),
+        1 => Ok(Action::HealFault {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
+        2 => Ok(Action::ArmTimer {
+            name: TimerId {
+                name: reader.read_string()?,
+            },
+            after: SimDuration {
+                nanos: reader.read_u64()?,
+            },
+        }),
+        3 => Ok(Action::CancelTimer {
+            name: TimerId {
+                name: reader.read_string()?,
+            },
+        }),
+        4 => Ok(Action::StartNode {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+        }),
+        5 => Ok(Action::StopNode {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+        }),
+        6 => Ok(Action::CreateSavepoint {
+            label: read_optional_string_binary(reader)?,
+        }),
+        7 => Ok(Action::Fork {
+            label: read_optional_string_binary(reader)?,
+        }),
+        8 => Ok(Action::Pass),
+        9 => Ok(Action::Fail {
+            reason: reader.read_string()?,
+        }),
+        10 => Ok(Action::Log {
+            level: read_log_level_binary(reader)?,
+            message: reader.read_string()?,
+        }),
+        11 => {
+            let count = reader.read_collection_count("action.group")?;
+            let mut actions = Vec::with_capacity(count);
+            for _ in 0..count {
+                actions.push(read_action_binary(reader)?);
+            }
+            Ok(Action::Group(actions))
+        }
+        _ => Err(scenario_serialization_error("invalid action tag")),
+    }
+}
+
+fn write_optional_string_binary(value: Option<&str>, writer: &mut ScenarioBinaryWriter) {
+    match value {
+        Some(value) => {
+            writer.write_u8(1);
+            writer.write_string(value);
+        }
+        None => writer.write_u8(0),
+    }
+}
+
+fn read_optional_string_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Option<String>, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(reader.read_string()?)),
+        _ => Err(scenario_serialization_error(
+            "invalid optional string presence tag",
+        )),
+    }
+}
+
+fn write_log_level_binary(level: LogLevel, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match level {
+        LogLevel::Debug => 0,
+        LogLevel::Info => 1,
+        LogLevel::Warn => 2,
+        LogLevel::Error => 3,
+    });
+}
+
+fn read_log_level_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LogLevel, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(LogLevel::Debug),
+        1 => Ok(LogLevel::Info),
+        2 => Ok(LogLevel::Warn),
+        3 => Ok(LogLevel::Error),
+        _ => Err(scenario_serialization_error("invalid log-level tag")),
     }
 }
 
@@ -12799,13 +13552,48 @@ fn world_link_material(link: &LinkDef) -> String {
     )
 }
 
-fn plan_material(entries: &[PlanEntry]) -> String {
+fn plan_material(plan: &Plan) -> String {
+    plan_kind_material(&plan.kind)
+}
+
+fn plan_kind_material(kind: &PlanKind) -> String {
+    match kind {
+        PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
+        PlanKind::EventGraph { graph } => event_graph_plan_material(graph),
+    }
+}
+
+fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
     let mut lines = Vec::with_capacity(entries.len().saturating_mul(12) + 1);
     lines.push(format!("entries={}", entries.len()));
     for entry in entries {
         lines.push(plan_entry_material(entry));
     }
     lines.join("\n")
+}
+
+fn event_graph_plan_material(graph: &EventGraph) -> String {
+    let mut lines = Vec::with_capacity(graph.events().len().saturating_mul(16) + 2);
+    lines.push(String::from("plan=event-graph"));
+    lines.push(format!("events={}", graph.events().len()));
+    for event in graph.events() {
+        lines.push(event_material(event));
+    }
+    lines.join("\n")
+}
+
+fn event_material(event: &Event) -> String {
+    let trigger = match &event.trigger {
+        Some(trigger) => format!("trigger=some\n{}", predicate_material(trigger)),
+        None => String::from("trigger=entrypoint"),
+    };
+    format!(
+        "{}\npolicy={}\n{}\naction:\n{}",
+        event_id_material(&event.id),
+        fire_policy_label(event.policy),
+        trigger,
+        action_material(&event.action)
+    )
 }
 
 fn plan_entry_material(entry: &PlanEntry) -> String {
@@ -12824,6 +13612,70 @@ fn plan_entry_material(entry: &PlanEntry) -> String {
                 at.ticks,
                 fault_tag_material(tag)
             )
+        }
+    }
+}
+
+fn action_material(action: &Action) -> String {
+    match action {
+        Action::InjectFault { tag, fault } => {
+            format!(
+                "action=inject-fault\n{}\n{}",
+                fault_tag_material(tag),
+                membership_fault_material(fault)
+            )
+        }
+        Action::HealFault { tag } => {
+            format!("action=heal-fault\n{}", fault_tag_material(tag))
+        }
+        Action::ArmTimer { name, after } => {
+            format!(
+                "action=arm-timer\n{}\nafter_nanos={}",
+                timer_id_material(name),
+                after.nanos
+            )
+        }
+        Action::CancelTimer { name } => {
+            format!("action=cancel-timer\n{}", timer_id_material(name))
+        }
+        Action::StartNode { node } => {
+            format!("action=start-node\n{}", node_ref_material("node", node))
+        }
+        Action::StopNode { node } => {
+            format!("action=stop-node\n{}", node_ref_material("node", node))
+        }
+        Action::CreateSavepoint { label } => {
+            format!(
+                "action=create-savepoint\n{}",
+                optional_label_material("label", label.as_deref())
+            )
+        }
+        Action::Fork { label } => {
+            format!(
+                "action=fork\n{}",
+                optional_label_material("label", label.as_deref())
+            )
+        }
+        Action::Pass => String::from("action=pass"),
+        Action::Fail { reason } => {
+            format!("action=fail\nreason_len={}\nreason={reason}", reason.len())
+        }
+        Action::Log { level, message } => {
+            format!(
+                "action=log\nlevel={}\nmessage_len={}\nmessage={}",
+                log_level_label(*level),
+                message.len(),
+                message
+            )
+        }
+        Action::Group(actions) => {
+            let mut lines = Vec::with_capacity(actions.len().saturating_mul(8) + 2);
+            lines.push(String::from("action=group"));
+            lines.push(format!("actions={}", actions.len()));
+            for action in actions {
+                lines.push(action_material(action));
+            }
+            lines.join("\n")
         }
     }
 }
@@ -13187,6 +14039,16 @@ fn seed_material(seed: Seed) -> String {
     format!("seed_bytes={}", seed.to_hex())
 }
 
+fn optional_label_material(prefix: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!(
+            "{prefix}=some\n{prefix}_len={}\n{prefix}={label}",
+            label.len()
+        ),
+        None => format!("{prefix}=none"),
+    }
+}
+
 fn optional_blob_ref_material(reference: Option<ContentAddressedBlobRef>) -> String {
     reference.map_or_else(|| String::from("none"), ContentAddressedBlobRef::to_uri)
 }
@@ -13215,6 +14077,22 @@ fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static st
     match disposition {
         ReachableDisposition::Warn => "warn",
         ReachableDisposition::Fail => "fail",
+    }
+}
+
+fn fire_policy_label(policy: FirePolicy) -> &'static str {
+    match policy {
+        FirePolicy::Once => "once",
+        FirePolicy::Repeatable => "repeatable",
+    }
+}
+
+fn log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
     }
 }
 

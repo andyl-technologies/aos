@@ -3,9 +3,10 @@
 //! RFC-0010 file 17a defines scenario control flow as a graph of events. This
 //! module owns the first, condition-agnostic layer of that model: an [`Event`]
 //! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
-//! [`EventGraphState`] is the only local producer of fired actions. Later trigger
-//! tasks extend verdict composition and graph-native serialization without adding
-//! a separate scenario poke path.
+//! [`EventGraphState`] is the only local producer of fired actions. The
+//! code-first builder and graph-native plan serialization keep that control flow
+//! as a content-addressed scenario component instead of a separate scenario poke
+//! path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -39,7 +40,8 @@ pub type Condition = Predicate;
 /// and an [`Action::InjectFault`] or [`Action::HealFault`] action. The lowering
 /// deliberately carries the source plan's canonical bytes and content hash so a
 /// pure-`At` plan and the equivalent event graph remain one content-addressed
-/// value until the full event-graph serialization surface lands.
+/// value. Graph-native plans return their already-authored event graph with the
+/// same identity-preserving wrapper.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoweredPlanEventGraph {
     graph: EventGraph,
@@ -81,7 +83,7 @@ impl LoweredPlanEventGraph {
 }
 
 impl Plan {
-    /// Lowers this time-scheduled fault plan into its degenerate event graph.
+    /// Lowers this plan into the event graph executed by the trigger layer.
     ///
     /// Each [`PlanEntry::Activate`] becomes one once-only event with an
     /// [`Condition::At`] trigger and [`Action::InjectFault`] action. Each
@@ -97,6 +99,20 @@ impl Plan {
         &self,
         world: &World,
     ) -> Result<LoweredPlanEventGraph, EventGraphError> {
+        if let Some(graph) = self.event_graph() {
+            let graph = EventGraph::new_with_assertions_for_world(
+                graph.events().to_vec(),
+                event_graph_assertion_references(graph.events()),
+                world,
+            )?;
+            let evaluation_times = graph_static_evaluation_times(graph.events());
+            return Ok(LoweredPlanEventGraph {
+                graph,
+                content_hash: self.content_hash(),
+                canonical_bytes: self.canonical_bytes(),
+                evaluation_times,
+            });
+        }
         let events = self
             .entries()
             .iter()
@@ -111,6 +127,60 @@ impl Plan {
             canonical_bytes: self.canonical_bytes(),
             evaluation_times,
         })
+    }
+}
+
+fn graph_static_evaluation_times(events: &[Event]) -> Vec<VirtualTime> {
+    events
+        .iter()
+        .filter_map(|event| match &event.trigger {
+            None => Some(VirtualTime { ticks: 0 }),
+            Some(Condition::At { at }) => Some(*at),
+            Some(_) => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
+    let mut assertions = BTreeSet::new();
+    for event in events {
+        if let Some(trigger) = &event.trigger {
+            collect_condition_assertion_references(trigger, &mut assertions);
+        }
+    }
+    assertions.into_iter().collect()
+}
+
+fn collect_condition_assertion_references(
+    condition: &Condition,
+    assertions: &mut BTreeSet<AssertionId>,
+) {
+    match condition {
+        Condition::AssertionState { name, .. } => {
+            assertions.insert(name.clone());
+        }
+        Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
+            for condition in predicates {
+                collect_condition_assertion_references(condition, assertions);
+            }
+        }
+        Condition::Once { predicate } | Condition::Not { predicate } => {
+            collect_condition_assertion_references(predicate, assertions);
+        }
+        Condition::At { .. }
+        | Condition::After { .. }
+        | Condition::Timer { .. }
+        | Condition::NetworkMatch { .. }
+        | Condition::ConsoleMatch { .. }
+        | Condition::CoveragePoint { .. }
+        | Condition::MemoryPredicate { .. }
+        | Condition::IoPattern { .. }
+        | Condition::NodeState { .. }
+        | Condition::Quiescent
+        | Condition::Named { .. }
+        | Condition::GuestMarker { .. } => {}
     }
 }
 
@@ -1379,6 +1449,85 @@ pub enum Action {
     Group(Vec<Action>),
 }
 
+impl Action {
+    /// Builds an [`Action::InjectFault`] action.
+    #[must_use]
+    pub fn inject_fault(tag: FaultTag, fault: MembershipFault) -> Self {
+        Self::InjectFault { tag, fault }
+    }
+
+    /// Builds an [`Action::HealFault`] action.
+    #[must_use]
+    pub fn heal_fault(tag: FaultTag) -> Self {
+        Self::HealFault { tag }
+    }
+
+    /// Builds an [`Action::ArmTimer`] action.
+    #[must_use]
+    pub fn arm_timer(name: TimerId, after: SimDuration) -> Self {
+        Self::ArmTimer { name, after }
+    }
+
+    /// Builds an [`Action::CancelTimer`] action.
+    #[must_use]
+    pub fn cancel_timer(name: TimerId) -> Self {
+        Self::CancelTimer { name }
+    }
+
+    /// Builds an [`Action::StartNode`] action.
+    #[must_use]
+    pub fn start_node(node: NodeId) -> Self {
+        Self::StartNode { node }
+    }
+
+    /// Builds an [`Action::StopNode`] action.
+    #[must_use]
+    pub fn stop_node(node: NodeId) -> Self {
+        Self::StopNode { node }
+    }
+
+    /// Builds an [`Action::CreateSavepoint`] action.
+    #[must_use]
+    pub fn create_savepoint(label: Option<String>) -> Self {
+        Self::CreateSavepoint { label }
+    }
+
+    /// Builds an [`Action::Fork`] action.
+    #[must_use]
+    pub fn fork(label: Option<String>) -> Self {
+        Self::Fork { label }
+    }
+
+    /// Builds an [`Action::Pass`] action.
+    #[must_use]
+    pub const fn pass() -> Self {
+        Self::Pass
+    }
+
+    /// Builds an [`Action::Fail`] action.
+    #[must_use]
+    pub fn fail(reason: impl Into<String>) -> Self {
+        Self::Fail {
+            reason: reason.into(),
+        }
+    }
+
+    /// Builds an [`Action::Log`] action.
+    #[must_use]
+    pub fn log(level: LogLevel, message: impl Into<String>) -> Self {
+        Self::Log {
+            level,
+            message: message.into(),
+        }
+    }
+
+    /// Builds an [`Action::Group`] action.
+    #[must_use]
+    pub fn group(actions: Vec<Action>) -> Self {
+        Self::Group(actions)
+    }
+}
+
 /// Diagnostic level for an [`Action::Log`] payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LogLevel {
@@ -1429,6 +1578,132 @@ impl Event {
     }
 }
 
+/// Code-first event-graph authoring surface.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventGraphBuilder {
+    events: Vec<Event>,
+}
+
+impl EventGraphBuilder {
+    /// Starts declaring a new event.
+    #[must_use]
+    pub fn event(self, id: impl Into<String>) -> EventGraphEventBuilder {
+        EventGraphEventBuilder {
+            builder: self,
+            id: EventId::from_name(id),
+            trigger: None,
+            policy: FirePolicy::Once,
+        }
+    }
+
+    /// Adds an already-built event to the builder.
+    #[must_use]
+    pub fn push_event(mut self, event: Event) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    /// Builds and validates the event graph with no world or assertion namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation errors described by [`EventGraph::new`].
+    pub fn build(self) -> Result<EventGraph, EventGraphError> {
+        EventGraph::new(self.events)
+    }
+
+    /// Builds and validates the event graph with declared assertion ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation errors described by [`EventGraph::new_with_assertions`].
+    pub fn build_with_assertions(
+        self,
+        assertions: impl IntoIterator<Item = AssertionId>,
+    ) -> Result<EventGraph, EventGraphError> {
+        EventGraph::new_with_assertions(self.events, assertions)
+    }
+
+    /// Builds and validates the event graph against a world namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation errors described by [`EventGraph::new_for_world`].
+    pub fn build_for_world(self, world: &World) -> Result<EventGraph, EventGraphError> {
+        EventGraph::new_for_world(self.events, world)
+    }
+
+    /// Builds and validates the event graph against assertion and world namespaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation errors described by
+    /// [`EventGraph::new_with_assertions_for_world`].
+    pub fn build_with_assertions_for_world(
+        self,
+        assertions: impl IntoIterator<Item = AssertionId>,
+        world: &World,
+    ) -> Result<EventGraph, EventGraphError> {
+        EventGraph::new_with_assertions_for_world(self.events, assertions, world)
+    }
+}
+
+/// In-progress event declaration produced by [`EventGraphBuilder::event`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventGraphEventBuilder {
+    builder: EventGraphBuilder,
+    id: EventId,
+    trigger: Option<Condition>,
+    policy: FirePolicy,
+}
+
+impl EventGraphEventBuilder {
+    /// Sets the trigger condition for this event.
+    #[must_use]
+    pub fn when(mut self, condition: Condition) -> Self {
+        self.trigger = Some(condition);
+        self
+    }
+
+    /// Marks this event as an entrypoint fired at genesis.
+    #[must_use]
+    pub fn entrypoint(mut self) -> Self {
+        self.trigger = None;
+        self
+    }
+
+    /// Sets this event's fire policy.
+    #[must_use]
+    pub fn policy(mut self, policy: FirePolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Marks this event as repeatable.
+    #[must_use]
+    pub fn repeatable(self) -> Self {
+        self.policy(FirePolicy::Repeatable)
+    }
+
+    /// Marks this event as fire-once.
+    #[must_use]
+    pub fn once(self) -> Self {
+        self.policy(FirePolicy::Once)
+    }
+
+    /// Finishes this event with its action and returns to the graph builder.
+    #[must_use]
+    pub fn action(mut self, action: Action) -> EventGraphBuilder {
+        self.builder.events.push(Event {
+            id: self.id,
+            trigger: self.trigger,
+            action,
+            policy: self.policy,
+        });
+        self.builder
+    }
+}
+
 fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
     match entry {
         PlanEntry::Activate { at, tag, fault } => Event::once(
@@ -1469,6 +1744,12 @@ pub struct EventGraph {
 }
 
 impl EventGraph {
+    /// Starts code-first event-graph authoring.
+    #[must_use]
+    pub fn builder() -> EventGraphBuilder {
+        EventGraphBuilder::default()
+    }
+
     /// Builds an event graph with no declared assertion or white-box namespace.
     ///
     /// # Errors

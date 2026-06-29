@@ -69,8 +69,8 @@
         needle = "Completed by `checks.crucible.phase4.triggerFiringCausalLog`";
       }
       {
-        label = "event graph serialization remains open";
-        needle = "- [ ] **T-TRIG-18**";
+        label = "black-box guarantee remains open";
+        needle = "- [ ] **T-TRIG-19**";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
