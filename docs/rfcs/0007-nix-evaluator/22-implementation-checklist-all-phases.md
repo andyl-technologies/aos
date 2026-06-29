@@ -3422,9 +3422,11 @@ alone (`M-1`/`Q-A`).
       pass over the populated persistent root, requiring byte-identical `.drv`
       closures while checking disabled-cache force sidecars and persistent files
       remain unchanged. The shared harness also requires both cache-off and
-      disabled-eval-cache legs to report zero force-cache hit/miss counters,
-      zero force-cache materialization threshold-decision counters, zero early
-      cutoffs, and zero derivation final-path/static-output side-record reuse,
+      disabled-eval-cache legs to report zero aggregate evaluator cache hit/miss
+      counters, zero force-cache hit/miss counters, zero force-cache
+      memoization-decision counters, zero force-cache materialization
+      threshold-decision counters, zero early cutoffs, and zero derivation
+      final-path/static-output side-record reuse,
       so telemetry cannot quietly imply incremental-cache activity on cache-off
       paths.
       `native_file_cache_parity_harness_covers_empty_foldl_update_regression`
