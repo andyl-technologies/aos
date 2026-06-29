@@ -21,11 +21,11 @@ use crate::trigger::{
 use crate::{
     AssertionId, BackendError, BackendInput, Configuration, ContentHash, Decision,
     DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
-    EventSequenceState, FaultId, Icount, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
-    PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
-    WorldStaticTopology, step,
+    EventSequenceState, FaultId, FaultRateBasisPoints, Icount, MembershipFault, NodeCounter,
+    NodeId, NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy,
+    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -1869,8 +1869,8 @@ pub struct SchedulerResolveFaultChoice {
     pub fault: FaultId,
     /// The seeded decision-RNG stream used for this choice.
     pub stream: RngStreamId,
-    /// The raw draw threshold below which the fault fires.
-    pub fire_below: u64,
+    /// The basis-point rate whose exact integer Bernoulli decision is resolved.
+    pub rate: FaultRateBasisPoints,
 }
 
 /// The decisions recorded while resolving probabilistic RESOLVE choices.
@@ -2223,11 +2223,11 @@ pub fn resolve_probabilistic_decisions(
         };
 
         let before = recorder.schedule().len();
-        recorder.decide_fault(
+        recorder.decide_fault_basis_points(
             event.key.virtual_time(),
             choice.fault.clone(),
             choice.stream.clone(),
-            choice.fire_below,
+            choice.rate,
         );
         decisions.extend_from_slice(&recorder.schedule().decisions()[before..]);
     }
@@ -3374,14 +3374,14 @@ fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
             fault.name,
         ),
         ScheduledEventPayload::ProbabilisticFault(choice) => format!(
-            "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_fire_below={}",
+            "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_rate_basis_points={}",
             choice.fault.name.len(),
             choice.fault.name,
             choice.stream.domain.len(),
             choice.stream.domain,
             choice.stream.name.len(),
             choice.stream.name,
-            choice.fire_below,
+            choice.rate.basis_points(),
         ),
         ScheduledEventPayload::Control(operation) => format!(
             "payload=control\ncontrol_sequence={}\ncontrol_kind={}",

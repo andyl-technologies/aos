@@ -4,11 +4,11 @@
 
 use crucible::{
     Decision, DecisionRecorder, EventKey, ExactLocalEvent, FaultDecision, FaultId,
-    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerResolveFaultChoice,
-    SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, reduce, resolve_probabilistic_decisions,
+    FaultRateBasisPoints, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
+    RngDecision, RngStreamId, ScenarioDef, Schedule, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SimDuration, SimInstant, SingleScheduler, VirtualTime, reduce, resolve_probabilistic_decisions,
 };
 
 #[test]
@@ -25,7 +25,7 @@ fn probabilistic_resolve_records_rng_draw_and_fault_outcome_in_total_order() {
         name: String::from("beta-loss"),
     };
     let first =
-        probabilistic_fault_event(4, &consumer, &producer_a, 7, &fault_a, &stream_a, u64::MAX);
+        probabilistic_fault_event(4, &consumer, &producer_a, 7, &fault_a, &stream_a, 10_000);
     let second = probabilistic_fault_event(4, &consumer, &producer_b, 3, &fault_b, &stream_b, 0);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "probabilistic-resolve-order",
@@ -133,6 +133,62 @@ fn resolve_probabilistic_decisions_ignores_deterministic_events() {
     assert!(record.decisions.is_empty());
     assert_eq!(record.configuration, configuration);
     assert_eq!(consumer.node.name, "consumer");
+}
+
+#[test]
+fn probabilistic_resolve_uses_exact_basis_point_rate_comparison() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let producer_a = scheduler_node("alpha-link", SchedulingNodeKind::Network);
+    let producer_b = scheduler_node("beta-link", SchedulingNodeKind::Network);
+    let stream_a = RngStreamId::for_link("alpha-link/loss");
+    let stream_b = RngStreamId::for_link("beta-link/loss");
+    let fault_a = FaultId {
+        name: String::from("alpha-loss"),
+    };
+    let fault_b = FaultId {
+        name: String::from("beta-loss"),
+    };
+    let configuration = SchedulerLivenessScenario::from_canonical_material(
+        "probabilistic-resolve-basis-point-rate",
+        shift(0),
+        8,
+        SimInstant { nanos: 30 },
+        vec![scenario_node("consumer", 0, finite_lookahead(12))],
+        Vec::new(),
+    )
+    .canonical_configuration();
+    let mut preview = DecisionRecorder::new(configuration.clone());
+    let bucket_a = FaultRateBasisPoints::draw_bucket(preview.draw_u64(stream_a.clone()));
+    let bucket_b = FaultRateBasisPoints::draw_bucket(preview.draw_u64(stream_b.clone()));
+    let first = probabilistic_fault_event(
+        4,
+        &consumer,
+        &producer_a,
+        7,
+        &fault_a,
+        &stream_a,
+        u32::from(bucket_a),
+    );
+    let second = probabilistic_fault_event(
+        4,
+        &consumer,
+        &producer_b,
+        3,
+        &fault_b,
+        &stream_b,
+        u32::from(bucket_b) + 1,
+    );
+
+    let record = resolve_probabilistic_decisions(configuration, &[second.clone(), first.clone()]);
+
+    assert_eq!(
+        delivery_order_keys(&record.decisions),
+        Vec::<EventKey>::new()
+    );
+    assert_rng_draw(&record.decisions[0], &stream_a);
+    assert_fault_decision(&record.decisions[1], &fault_a, false);
+    assert_rng_draw(&record.decisions[2], &stream_b);
+    assert_fault_decision(&record.decisions[3], &fault_b, true);
 }
 
 #[test]
@@ -278,7 +334,7 @@ fn probabilistic_fault_event(
     sequence: u64,
     fault: &FaultId,
     stream: &RngStreamId,
-    fire_below: u64,
+    rate_basis_points: u32,
 ) -> ScheduledEvent {
     ScheduledEvent {
         key: ScheduledEventKey::from_parts(
@@ -292,7 +348,8 @@ fn probabilistic_fault_event(
         payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
             fault: fault.clone(),
             stream: stream.clone(),
-            fire_below,
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)
+                .expect("test rate should be valid"),
         }),
     }
 }

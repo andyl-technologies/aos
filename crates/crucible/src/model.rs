@@ -3647,6 +3647,9 @@ pub struct FaultRateBasisPoints {
 }
 
 impl FaultRateBasisPoints {
+    /// The denominator for every basis-point rate.
+    pub const DENOMINATOR: u32 = MAX_FAULT_RATE_BASIS_POINTS;
+
     /// The zero-rate value.
     pub const ZERO: Self = Self { basis_points: 0 };
 
@@ -3666,16 +3669,36 @@ impl FaultRateBasisPoints {
     /// Returns [`EngineError::FaultRateBasisPointsOutOfRange`] when
     /// `basis_points` is greater than `10_000`.
     pub fn from_basis_points(basis_points: u32) -> Result<Self, EngineError> {
-        if basis_points > MAX_FAULT_RATE_BASIS_POINTS {
+        if basis_points > Self::DENOMINATOR {
             return Err(EngineError::FaultRateBasisPointsOutOfRange {
                 basis_points,
-                maximum: MAX_FAULT_RATE_BASIS_POINTS,
+                maximum: Self::DENOMINATOR,
             });
         }
 
         Ok(Self {
             basis_points: basis_points as u16,
         })
+    }
+
+    /// Reduces a recorded raw RNG draw into the basis-point bucket space.
+    ///
+    /// The result is always in `[0, 10_000)`. Bernoulli decisions compare this
+    /// integer bucket directly against [`Self::basis_points`], keeping
+    /// determinism-relevant fault choices out of floating-point arithmetic.
+    #[must_use]
+    pub const fn draw_bucket(raw_draw: u64) -> u16 {
+        (raw_draw % Self::DENOMINATOR as u64) as u16
+    }
+
+    /// Returns whether `raw_draw` fires this basis-point rate.
+    ///
+    /// This is the exact integer Bernoulli rule for deterministic fault rates:
+    /// `draw_bucket(raw_draw) < basis_points`. The raw draw remains schedule
+    /// material; the bucket and comparison are derived deterministically.
+    #[must_use]
+    pub const fn fires_on_draw(self, raw_draw: u64) -> bool {
+        Self::draw_bucket(raw_draw) < self.basis_points
     }
 
     /// Returns this value as integer basis points.

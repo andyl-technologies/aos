@@ -4,8 +4,8 @@
 
 use crucible::{
     BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, FaultId,
-    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, RngStreamId,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass,
+    FaultRateBasisPoints, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
+    RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass,
     SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration,
     SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
@@ -276,7 +276,7 @@ fn probabilistic_fault_event(
     sequence: u64,
     fault: &FaultId,
     stream: &RngStreamId,
-    fire_below: u64,
+    rate_basis_points: u32,
 ) -> ScheduledEvent {
     ScheduledEvent {
         key: ScheduledEventKey::from_parts(
@@ -290,7 +290,8 @@ fn probabilistic_fault_event(
         payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
             fault: fault.clone(),
             stream: stream.clone(),
-            fire_below,
+            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)
+                .expect("test rate should be valid"),
         }),
     }
 }

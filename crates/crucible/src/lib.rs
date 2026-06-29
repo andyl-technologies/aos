@@ -6540,13 +6540,14 @@ tag = "negative-time"
                 let _ = recorder.draw_u64(RngStreamId::for_node(format!("node-a/faults/{index}")));
             }
             1 => {
-                let _ = recorder.decide_fault(
+                let _ = recorder.decide_fault_basis_points(
                     VirtualTime { ticks: index + 1 },
                     FaultId {
                         name: format!("link-a-b/drop-{index}"),
                     },
                     RngStreamId::for_node("node-b/faults"),
-                    u64::MAX / 2,
+                    FaultRateBasisPoints::from_basis_points(5_000)
+                        .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
                 );
             }
             _ => {
