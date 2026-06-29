@@ -12,6 +12,7 @@
   };
 
   trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  model = builtins.readFile ../../crates/crucible/src/model.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   eventGraphTest = builtins.readFile ../../crates/crucible/tests/event_graph_control_flow.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
@@ -79,14 +80,20 @@
         needle = "Plan lowering";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/src/model.rs" model [
       {
         label = "event id";
         needle = "pub struct EventId";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
       {
         label = "shared condition alias";
         needle = "pub type Condition = Predicate";
+      }
+      {
+        label = "trigger re-exports event id";
+        needle = "pub use crate::model::EventId";
       }
       {
         label = "event shape";

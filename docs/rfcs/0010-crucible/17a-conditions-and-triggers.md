@@ -1184,7 +1184,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   [TRIG-1], [TRIG-21]; spec §17a.1, §17a.4.
 
   Completed by `checks.crucible.phase4.eventGraphControlFlow`: `crucible::trigger`
-  defines the event-graph spine (`EventId`, `Event`, `Condition` handles,
+  exposes the event-graph spine (`EventId`, `Event`, `Condition` handles,
   `Action`, `LogLevel`, `FirePolicy`, `EventGraph`, `EventGraphState`) and the
   only local producer of opaque action firings, `EventGraphState::evaluate`. The
   gate covers entrypoints, named trigger handles, once/repeatable policy,
@@ -1207,10 +1207,22 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   compound predicate reuse in `Properties` and `EventGraph`, and rejects a
   separate trigger-only `Condition` enum. Full leaf semantics and event-log-backed
   leaf resolution remain T-TRIG-3 through T-TRIG-11.
-- [ ] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
+- [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
   [TRIG-5], [TRIG-25]; spec §17a.2.1, §17a.5.
+
+  Completed by `checks.crucible.phase4.timeConditionLeaves`: shared `Predicate`
+  includes `At`, `After { duration, of }`, and `Timer { name }` leaves, and the
+  shared evaluator resolves them from the deterministic evaluation virtual time,
+  event-graph firing history, and evaluator-supplied timer fire times. The event
+  graph records last firing times, supplies them to `After` conditions during
+  evaluation, and rejects `After` references to undeclared events plus `Timer`
+  references without an armable `Action::ArmTimer` declaration. Assertion
+  properties accept `At` as pure virtual-time vocabulary while rejecting
+  edge-shaped `After` and `Timer` leaves as trigger-only. Event-log-backed
+  observable leaves, full timer action application, the broader reference/cycle
+  validator, and verdict composition remain T-TRIG-4 through T-TRIG-20.
 - [ ] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic

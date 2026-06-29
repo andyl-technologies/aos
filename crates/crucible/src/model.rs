@@ -893,8 +893,9 @@ impl World {
     ///
     /// Returns [`EngineError::PropertyDuplicateAssertionId`],
     /// [`EngineError::PropertyPredicateUnknownNode`], or
-    /// [`EngineError::PropertyPredicateEmptyCompound`] when `properties` cannot
-    /// be layered over this world's static topology.
+    /// [`EngineError::PropertyPredicateEmptyCompound`], or
+    /// [`EngineError::PropertyPredicateTriggerOnly`] when `properties` cannot be
+    /// layered over this world's static topology.
     pub fn scenario_def_with_properties(
         &self,
         properties: &Properties,
@@ -3791,6 +3792,21 @@ impl MarkerId {
     }
 }
 
+/// Stable identity of an event inside an event graph.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventId {
+    /// Canonical event name, unique within the graph.
+    pub name: String,
+}
+
+impl EventId {
+    /// Builds an event id from a canonical name.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
 /// Disposition for an ordinary reachable marker that is never reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReachableDisposition {
@@ -3815,6 +3831,23 @@ pub enum ReachabilityExpectation {
 /// The shared declarative predicate vocabulary used by properties and triggers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Predicate {
+    /// True at one exact virtual time.
+    At {
+        /// Virtual time where the predicate becomes true.
+        at: VirtualTime,
+    },
+    /// True after a duration from a referenced event's last firing.
+    After {
+        /// Virtual duration after the referenced event fires.
+        duration: SimDuration,
+        /// Event whose firing anchors the relative duration.
+        of: EventId,
+    },
+    /// True when a named timer fires.
+    Timer {
+        /// Timer identity armed by an event action.
+        name: TimerId,
+    },
     /// A named host-side predicate resolved by the harness and event log.
     Named {
         /// Stable predicate name.
@@ -3866,6 +3899,24 @@ impl Predicate {
             name: name.into(),
             nodes,
         }
+    }
+
+    /// Builds an exact virtual-time predicate.
+    #[must_use]
+    pub fn at(at: VirtualTime) -> Self {
+        Self::At { at }
+    }
+
+    /// Builds a relative event-firing predicate.
+    #[must_use]
+    pub fn after(duration: SimDuration, of: EventId) -> Self {
+        Self::After { duration, of }
+    }
+
+    /// Builds a named timer predicate.
+    #[must_use]
+    pub fn timer(name: TimerId) -> Self {
+        Self::Timer { name }
     }
 
     /// Builds a guest-marker predicate.
@@ -3979,9 +4030,11 @@ impl Properties {
     ///
     /// Returns [`EngineError::PropertyDuplicateAssertionId`] when two
     /// assertions share an id, [`EngineError::PropertyPredicateUnknownNode`]
-    /// when a predicate names a node that is not declared by `world`, or
+    /// when a predicate names a node that is not declared by `world`,
     /// [`EngineError::PropertyPredicateEmptyCompound`] when an `AllOf` or
-    /// `AnyOf` predicate has no children.
+    /// `AnyOf` predicate has no children, or
+    /// [`EngineError::PropertyPredicateTriggerOnly`] when a property uses an
+    /// edge-shaped trigger-only predicate.
     pub fn from_assertions_for_world(
         world: &World,
         assertions: Vec<AssertionDef>,
@@ -4064,8 +4117,9 @@ impl Properties {
     ///
     /// Returns [`EngineError::PropertyDuplicateAssertionId`],
     /// [`EngineError::PropertyPredicateUnknownNode`], or
-    /// [`EngineError::PropertyPredicateEmptyCompound`] when an assertion cannot
-    /// be layered over the static world topology.
+    /// [`EngineError::PropertyPredicateEmptyCompound`], or
+    /// [`EngineError::PropertyPredicateTriggerOnly`] when an assertion cannot be
+    /// layered over the static world topology.
     pub fn validate_for_world(&self, world: &World) -> Result<(), EngineError> {
         validate_properties_for_world(world, &self.assertions)
     }
@@ -7499,6 +7553,11 @@ pub enum EngineError {
         /// Stable name of the empty compound predicate kind.
         kind: &'static str,
     },
+    /// A property predicate uses a trigger-only edge-shaped predicate.
+    PropertyPredicateTriggerOnly {
+        /// Stable name of the trigger-only predicate kind.
+        kind: &'static str,
+    },
     /// A scenario-builder node template reference names no concrete node.
     ScenarioBuilderUnknownNodeTemplate {
         /// The node that requested a copied template.
@@ -7692,6 +7751,9 @@ impl fmt::Display for EngineError {
             }
             Self::PropertyPredicateEmptyCompound { kind } => {
                 write!(f, "property predicate compound {kind} has no children")
+            }
+            Self::PropertyPredicateTriggerOnly { kind } => {
+                write!(f, "property predicate {kind} is trigger-only")
             }
             Self::ScenarioBuilderUnknownNodeTemplate { .. } => {
                 f.write_str("scenario builder node template is unknown")
@@ -8851,22 +8913,25 @@ fn validate_property_for_world(
         | Property::Sometimes { predicate }
         | Property::AfterQuiescence { predicate }
         | Property::Reachable { predicate, .. } => {
-            validate_predicate_for_world(predicate, node_ids)
+            validate_property_predicate_for_world(predicate, node_ids)
         }
         Property::Eventually {
             trigger, property, ..
         } => {
-            validate_predicate_for_world(trigger, node_ids)?;
-            validate_predicate_for_world(property, node_ids)
+            validate_property_predicate_for_world(trigger, node_ids)?;
+            validate_property_predicate_for_world(property, node_ids)
         }
     }
 }
 
-fn validate_predicate_for_world(
+fn validate_property_predicate_for_world(
     predicate: &Predicate,
     node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match predicate {
+        Predicate::At { .. } => Ok(()),
+        Predicate::After { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "after" }),
+        Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "timer" }),
         Predicate::Named { nodes, .. } => {
             for node in nodes {
                 validate_property_node(node, node_ids)?;
@@ -8881,7 +8946,7 @@ fn validate_predicate_for_world(
             validate_compound_predicate("any-of", predicates, node_ids)
         }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            validate_predicate_for_world(predicate, node_ids)
+            validate_property_predicate_for_world(predicate, node_ids)
         }
     }
 }
@@ -8896,7 +8961,7 @@ fn validate_compound_predicate(
     }
 
     for predicate in predicates {
-        validate_predicate_for_world(predicate, node_ids)?;
+        validate_property_predicate_for_world(predicate, node_ids)?;
     }
 
     Ok(())
@@ -9051,6 +9116,12 @@ fn canonical_property(property: &Property) -> Property {
 
 fn canonical_predicate(predicate: &Predicate) -> Predicate {
     match predicate {
+        Predicate::At { at } => Predicate::At { at: *at },
+        Predicate::After { duration, of } => Predicate::After {
+            duration: *duration,
+            of: of.clone(),
+        },
+        Predicate::Timer { name } => Predicate::Timer { name: name.clone() },
         Predicate::Named { name, nodes } => Predicate::Named {
             name: name.clone(),
             nodes: nodes.clone(),
@@ -9311,6 +9382,16 @@ enum PropertyToml {
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum PredicateToml {
+    At {
+        at_ticks: u64,
+    },
+    After {
+        duration_nanos: u64,
+        of: String,
+    },
+    Timer {
+        name: String,
+    },
     Named {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -9771,6 +9852,14 @@ fn property_from_toml(toml: PropertyToml) -> Property {
 
 fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
     match predicate {
+        Predicate::At { at } => PredicateToml::At { at_ticks: at.ticks },
+        Predicate::After { duration, of } => PredicateToml::After {
+            duration_nanos: duration.nanos,
+            of: of.name.clone(),
+        },
+        Predicate::Timer { name } => PredicateToml::Timer {
+            name: name.name.clone(),
+        },
         Predicate::Named { name, nodes } => PredicateToml::Named {
             name: name.clone(),
             nodes: nodes.iter().map(|node| node.name.clone()).collect(),
@@ -9795,6 +9884,18 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
 
 fn predicate_from_toml(toml: PredicateToml) -> Predicate {
     match toml {
+        PredicateToml::At { at_ticks } => Predicate::At {
+            at: VirtualTime { ticks: at_ticks },
+        },
+        PredicateToml::After { duration_nanos, of } => Predicate::After {
+            duration: SimDuration {
+                nanos: duration_nanos,
+            },
+            of: EventId { name: of },
+        },
+        PredicateToml::Timer { name } => Predicate::Timer {
+            name: TimerId { name },
+        },
         PredicateToml::Named { name, nodes } => Predicate::Named {
             name,
             nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
@@ -10742,6 +10843,19 @@ fn read_property_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Propert
 
 fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWriter) {
     match predicate {
+        Predicate::At { at } => {
+            writer.write_u8(6);
+            writer.write_u64(at.ticks);
+        }
+        Predicate::After { duration, of } => {
+            writer.write_u8(7);
+            writer.write_u64(duration.nanos);
+            writer.write_string(&of.name);
+        }
+        Predicate::Timer { name } => {
+            writer.write_u8(8);
+            writer.write_string(&name.name);
+        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -10818,6 +10932,24 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
         }),
         5 => Ok(Predicate::Not {
             predicate: Box::new(read_predicate_binary(reader)?),
+        }),
+        6 => Ok(Predicate::At {
+            at: VirtualTime {
+                ticks: reader.read_u64()?,
+            },
+        }),
+        7 => Ok(Predicate::After {
+            duration: SimDuration {
+                nanos: reader.read_u64()?,
+            },
+            of: EventId {
+                name: reader.read_string()?,
+            },
+        }),
+        8 => Ok(Predicate::Timer {
+            name: TimerId {
+                name: reader.read_string()?,
+            },
         }),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
     }
@@ -11568,6 +11700,19 @@ fn property_material(property: &Property) -> String {
 
 fn predicate_material(predicate: &Predicate) -> String {
     match predicate {
+        Predicate::At { at } => {
+            format!("predicate=at\nat_ticks={}", at.ticks)
+        }
+        Predicate::After { duration, of } => {
+            format!(
+                "predicate=after\nduration_nanos={}\n{}",
+                duration.nanos,
+                event_id_material(of)
+            )
+        }
+        Predicate::Timer { name } => {
+            format!("predicate=timer\n{}", timer_id_material(name))
+        }
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
@@ -11610,6 +11755,14 @@ fn predicate_list_material(predicates: &[Predicate]) -> String {
         lines.push(predicate_material(predicate));
     }
     lines.join("\n")
+}
+
+fn event_id_material(id: &EventId) -> String {
+    format!("event_id_len={}\nevent_id={}", id.name.len(), id.name)
+}
+
+fn timer_id_material(id: &TimerId) -> String {
+    format!("timer_id_len={}\ntimer_id={}", id.name.len(), id.name)
 }
 
 fn assertion_id_material(id: &AssertionId) -> String {
