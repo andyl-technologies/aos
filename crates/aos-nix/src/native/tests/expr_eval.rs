@@ -590,6 +590,75 @@ fn native_expression_eval_reports_semantic_errors() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_reports_caller_diagnostic_source() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let user_expr = "1 + true";
+    let prefix = "let __aos_repl_scope = {}; in with __aos_repl_scope; (";
+    let expr = format!("{prefix}{user_expr})");
+    let err = native
+        .eval_expr_with_diagnostic_source(
+            &expr,
+            "repl-input.nix",
+            user_expr,
+            prefix.len()..prefix.len() + user_expr.len(),
+        )
+        .expect_err("type errors are native evaluation errors");
+
+    let Some(NativeEvalError::EvalError { message }) = err.downcast_ref::<NativeEvalError>() else {
+        panic!("type error should surface as a native eval error: {err:?}");
+    };
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(message.contains("repl-input.nix"), "{message}");
+    assert!(message.contains(user_expr), "{message}");
+    assert!(!message.contains("builtins.toJSON"), "{message}");
+    assert!(!message.contains("__aos_repl_scope"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn native_expression_instantiation_reports_caller_diagnostic_source() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let user_expr = "1 + true";
+    let prefix = "let __aos_repl_scope = {}; in with __aos_repl_scope; (";
+    let expr = format!("{prefix}{user_expr})");
+    let err = native
+        .instantiate_expr_with_diagnostic_source(
+            &expr,
+            "repl-input.nix",
+            user_expr,
+            prefix.len()..prefix.len() + user_expr.len(),
+        )
+        .expect_err("type errors are native evaluation errors");
+
+    let Some(NativeEvalError::EvalError { message }) = err.downcast_ref::<NativeEvalError>() else {
+        panic!("type error should surface as a native eval error: {err:?}");
+    };
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(message.contains("repl-input.nix"), "{message}");
+    assert!(message.contains(user_expr), "{message}");
+    assert!(!message.contains("__aos_repl_scope"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn native_expression_diagnostic_source_must_match_selected_range() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let err = native
+        .eval_expr_with_diagnostic_source("let x = 1; in x", "repl-input.nix", "x + 1", 14..15)
+        .expect_err("mismatched diagnostic source should be rejected");
+
+    assert!(
+        matches!(
+            err.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Internal { message })
+                if message.contains("diagnostic source does not match")
+        ),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn native_expression_type_error_reports_operand_labels() -> Result<()> {
     let native = NixNative::new(0)?;
     for source in ["1 + \"x\"", "1 > \"x\"", "1 <= \"x\""] {

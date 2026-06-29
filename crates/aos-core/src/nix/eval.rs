@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::ops::Range;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
@@ -432,6 +433,28 @@ pub trait NixEval: Send + Sync {
     /// fails.
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf>;
 
+    /// Evaluates a raw expression to a derivation path with caller-selected diagnostics.
+    ///
+    /// Evaluators that can remap source spans should render errors that land
+    /// inside `diagnostic_range` against `diagnostic_name` and
+    /// `diagnostic_source`. Evaluators without source-remapping support may
+    /// ignore the diagnostic arguments and call [`Self::instantiate_expr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parsing, evaluation, or `.drv` materialization
+    /// fails.
+    fn instantiate_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<PathBuf> {
+        let _ = (diagnostic_name, diagnostic_source, diagnostic_range);
+        self.instantiate_expr(expr)
+    }
+
     /// Evaluates `attr` from `file` to an in-memory `.drv` closure when
     /// supported by this evaluator.
     ///
@@ -455,6 +478,27 @@ pub trait NixEval: Send + Sync {
     ///
     /// Returns an error when parsing, evaluation, or JSON rendering fails.
     fn eval_expr(&self, expr: &str) -> Result<String>;
+
+    /// Evaluates a raw expression with caller-selected diagnostic source text.
+    ///
+    /// Evaluators that can remap source spans should render errors that land
+    /// inside `diagnostic_range` against `diagnostic_name` and
+    /// `diagnostic_source`. Evaluators without source-remapping support may
+    /// ignore the diagnostic arguments and call [`Self::eval_expr`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parsing, evaluation, or JSON rendering fails.
+    fn eval_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<String> {
+        let _ = (diagnostic_name, diagnostic_source, diagnostic_range);
+        self.eval_expr(expr)
+    }
 
     /// Returns a stable implementation name for diagnostics and tracing.
     fn name(&self) -> &'static str;
@@ -1425,8 +1469,70 @@ impl NixEval for NativeFallbackEval {
         }
     }
 
+    fn instantiate_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<PathBuf> {
+        match self
+            .native
+            .instantiate_expr_closure_with_diagnostic_source(
+                expr,
+                diagnostic_name,
+                diagnostic_source,
+                diagnostic_range,
+            )
+            .and_then(|closure| {
+                verify_native_expr_drv_closure(&self.fallback, expr, &closure)?;
+                self.native.materialize_closure(&closure)?;
+                Ok(closure.root().to_path_buf())
+            }) {
+            Ok(path) => {
+                observe_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
+                Ok(path)
+            }
+            Err(error) => {
+                let Some(reason) = native_cli_fallback_reason(&error) else {
+                    return Err(error);
+                };
+                warn_native_cli_fallback(&error, reason);
+                self.fallback.instantiate_expr(expr)
+            }
+        }
+    }
+
     fn eval_expr(&self, expr: &str) -> Result<String> {
         match self.native.eval_expr(expr) {
+            Ok(value) => {
+                verify_native_eval_expr(&self.fallback, expr, &value)?;
+                observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+                Ok(value)
+            }
+            Err(error) => {
+                let Some(reason) = native_cli_fallback_reason(&error) else {
+                    return Err(error);
+                };
+                warn_native_cli_fallback(&error, reason);
+                self.fallback.eval_expr(expr)
+            }
+        }
+    }
+
+    fn eval_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<String> {
+        match self.native.eval_expr_with_diagnostic_source(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            diagnostic_range,
+        ) {
             Ok(value) => {
                 verify_native_eval_expr(&self.fallback, expr, &value)?;
                 observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
@@ -1481,6 +1587,23 @@ impl NixEval for NativeOnlyEval {
         Ok(path)
     }
 
+    fn instantiate_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<PathBuf> {
+        let path = self.native.instantiate_expr_with_diagnostic_source(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            diagnostic_range,
+        )?;
+        observe_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
+        Ok(path)
+    }
+
     fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
         let file = self.config.resolve_eval_file_path(file);
         let closure = self.native.instantiate_closure(&file, attr)?;
@@ -1491,6 +1614,23 @@ impl NixEval for NativeOnlyEval {
 
     fn eval_expr(&self, expr: &str) -> Result<String> {
         let value = self.native.eval_expr(expr)?;
+        observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+        Ok(value)
+    }
+
+    fn eval_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<String> {
+        let value = self.native.eval_expr_with_diagnostic_source(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            diagnostic_range,
+        )?;
         observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
         Ok(value)
     }

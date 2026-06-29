@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::ops::Range;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -252,6 +253,37 @@ impl NixNative {
         self.eval_derivation_materialized_source(&source, Some(source_map), Some(diagnostic_source))
     }
 
+    /// Evaluates a raw expression to a derivation path with caller-selected diagnostics.
+    ///
+    /// `diagnostic_range` identifies the byte slice of `expr` that must match
+    /// `diagnostic_source` and should be shown when parser, lowering, or
+    /// evaluator spans land inside that slice. This lets integration layers
+    /// evaluate an expanded expression while still reporting user-authored
+    /// subexpressions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Internal`] if `diagnostic_range` is not a valid
+    /// byte range within `expr` or its bytes do not match `diagnostic_source`.
+    /// Otherwise errors match [`Self::instantiate_expr`].
+    pub fn instantiate_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<PathBuf> {
+        let source = derivation_path_wrapper_source(expr);
+        let (source_map, diagnostic_source) = diagnostic_source_for_range(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            DRV_PATH_WRAPPER_PREFIX.len(),
+            diagnostic_range,
+        )?;
+        self.eval_derivation_materialized_source(&source, Some(source_map), Some(diagnostic_source))
+    }
+
     /// Evaluates a raw expression to an in-memory derivation closure.
     ///
     /// # Errors
@@ -270,6 +302,32 @@ impl NixNative {
         self.eval_derivation_closure_source(&source, Some(source_map), Some(diagnostic_source))
     }
 
+    /// Evaluates a raw expression to an in-memory derivation closure with caller-selected diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Internal`] if `diagnostic_range` is not a valid
+    /// byte range within `expr` or its bytes do not match `diagnostic_source`.
+    /// Otherwise errors match
+    /// [`Self::instantiate_expr_closure`].
+    pub fn instantiate_expr_closure_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<NativeDrvClosure> {
+        let source = derivation_path_wrapper_source(expr);
+        let (source_map, diagnostic_source) = diagnostic_source_for_range(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            DRV_PATH_WRAPPER_PREFIX.len(),
+            diagnostic_range,
+        )?;
+        self.eval_derivation_closure_source(&source, Some(source_map), Some(diagnostic_source))
+    }
+
     /// Evaluates a raw expression and renders it as strict JSON text.
     ///
     /// # Errors
@@ -285,6 +343,54 @@ impl NixNative {
             expr_len: expr.len(),
         };
         let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
+        let ir = self.lower_native_source(&source, Some(source_map), Some(diagnostic_source))?;
+        ensure_native_json_subset(&ir, expr.len(), &self.options)?;
+        let outcome = self.eval_ir(&ir).map_err(|error| {
+            native_eval_error_with_source_trace(error, diagnostic_source, self.eval_trace_style())
+        })?;
+        let string = outcome
+            .heap()
+            .get_string(outcome.value())
+            .map_err(|source| NativeEvalError::Internal {
+                message: format!("JSON renderer returned a non-string value: {source}"),
+            })?;
+        String::from_utf8(string.bytes().to_vec()).map_err(|source| {
+            NativeEvalError::Internal {
+                message: format!("JSON renderer returned non-UTF-8 bytes: {source}"),
+            }
+            .into()
+        })
+    }
+
+    /// Evaluates a raw expression with caller-selected diagnostic source text.
+    ///
+    /// `diagnostic_range` identifies the byte slice of `expr` that must match
+    /// `diagnostic_source` and should be shown when parser, lowering, or
+    /// evaluator spans land inside that slice. This is intended for user-facing
+    /// wrappers such as the native REPL, where the evaluator must see an
+    /// expanded expression but diagnostics should point into the input the user
+    /// typed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Internal`] if `diagnostic_range` is not a valid
+    /// byte range within `expr` or its bytes do not match `diagnostic_source`.
+    /// Otherwise errors match [`Self::eval_expr`].
+    pub fn eval_expr_with_diagnostic_source(
+        &self,
+        expr: &str,
+        diagnostic_name: &str,
+        diagnostic_source: &str,
+        diagnostic_range: Range<usize>,
+    ) -> Result<String> {
+        let source = json_wrapper_source(expr);
+        let (source_map, diagnostic_source) = diagnostic_source_for_range(
+            expr,
+            diagnostic_name,
+            diagnostic_source,
+            JSON_WRAPPER_PREFIX.len(),
+            diagnostic_range,
+        )?;
         let ir = self.lower_native_source(&source, Some(source_map), Some(diagnostic_source))?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
         let outcome = self.eval_ir(&ir).map_err(|error| {
@@ -708,6 +814,46 @@ const JSON_WRAPPER_PREFIX: &str = "builtins.toJSON (\n";
 const JSON_WRAPPER_SUFFIX: &str = "\n)";
 const DRV_PATH_WRAPPER_PREFIX: &str = "(\n";
 const DRV_PATH_WRAPPER_SUFFIX: &str = "\n).drvPath";
+
+fn diagnostic_source_for_range<'a>(
+    expr: &str,
+    diagnostic_name: &'a str,
+    diagnostic_source: &'a str,
+    wrapper_prefix_len: usize,
+    diagnostic_range: Range<usize>,
+) -> Result<(WrappedSourceMap, NativeDiagnosticSource<'a>)> {
+    if diagnostic_range.start > diagnostic_range.end || diagnostic_range.end > expr.len() {
+        return Err(NativeEvalError::Internal {
+            message: format!(
+                "invalid diagnostic range {}..{} for expression length {}",
+                diagnostic_range.start,
+                diagnostic_range.end,
+                expr.len()
+            ),
+        }
+        .into());
+    }
+    if &expr.as_bytes()[diagnostic_range.clone()] != diagnostic_source.as_bytes() {
+        return Err(NativeEvalError::Internal {
+            message: "diagnostic source does not match selected expression range".to_string(),
+        }
+        .into());
+    }
+    let prefix_len = wrapper_prefix_len
+        .checked_add(diagnostic_range.start)
+        .ok_or_else(|| NativeEvalError::Internal {
+            message: "diagnostic range offset overflowed".to_string(),
+        })?;
+    let expr_len = diagnostic_range.end - diagnostic_range.start;
+    let source_map = WrappedSourceMap {
+        prefix_len,
+        expr_len,
+    };
+    Ok((
+        source_map,
+        NativeDiagnosticSource::new(diagnostic_name, diagnostic_source, Some(source_map)),
+    ))
+}
 
 #[derive(Clone, Copy)]
 struct WrappedSourceMap {

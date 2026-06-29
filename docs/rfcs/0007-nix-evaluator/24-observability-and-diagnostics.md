@@ -491,13 +491,20 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       are in real use. Current progress: native REPL `:scope` parser and
       resolver failures now render through `ParseDiagnostic`/`ScopeDiagnostic`
       against the typed `repl-input.nix` expression while preserving the
-      generated wrapper as a fallback source (§2.1–§2.3, §5, §6, §9 open
-      questions 2-3) — **P1**, `C-26`/`D-OBS-1`/`D-OBS-2`/`D-OBS-3`; gate:
+      generated wrapper as a fallback source; native REPL `:p`, `:t`, and `:b`
+      now pass caller-selected diagnostic slices through the evaluator seam, so
+      native eval/instantiation errors that land in the user expression render
+      against `repl-input.nix` rather than the generated `__aos_repl_scope`
+      wrapper (§2.1–§2.3, §5, §6, §9 open questions 2-3) — **P1**,
+      `C-26`/`D-OBS-1`/`D-OBS-2`/`D-OBS-3`; gate:
       `native_repl_scope_command_reports_parse_diagnostic`,
       `native_repl_scope_command_maps_suffix_parse_diagnostic_to_input`,
       `native_repl_scope_command_maps_trailing_comment_parse_diagnostic_to_input`,
       `native_repl_scope_command_maps_unterminated_string_diagnostic_to_input`,
-      `native_repl_scope_command_reports_resolve_diagnostic`.
+      `native_repl_scope_command_reports_resolve_diagnostic`,
+      `native_repl_eval_type_and_build_pass_user_diagnostic_source`,
+      `native_expression_eval_reports_caller_diagnostic_source`,
+      `native_expression_instantiation_reports_caller_diagnostic_source`.
 
 ### The presentation-vs-parity separation (§3)
 

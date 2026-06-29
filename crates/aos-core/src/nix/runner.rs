@@ -546,10 +546,14 @@ impl NixRunner {
         expr: &str,
         output: &mut W,
     ) -> Result<()> {
-        match self
-            .evaluator
-            .eval_expr(&repl_context_expr(state.loaded_file.as_deref(), expr))
-        {
+        let (source, user_range) =
+            repl_context_expr_with_user_range(state.loaded_file.as_deref(), expr);
+        match self.evaluator.eval_expr_with_diagnostic_source(
+            &source,
+            "repl-input.nix",
+            expr,
+            user_range,
+        ) {
             Ok(value) => writeln!(output, "{value}")?,
             Err(error) => writeln!(output, "error: {error:#}")?,
         }
@@ -562,11 +566,18 @@ impl NixRunner {
         expr: &str,
         output: &mut W,
     ) -> Result<()> {
-        let type_expr = format!("builtins.typeOf ({expr})");
-        match self
-            .evaluator
-            .eval_expr(&repl_context_expr(state.loaded_file.as_deref(), &type_expr))
-        {
+        let type_prefix = "builtins.typeOf (";
+        let type_expr = format!("{type_prefix}{expr})");
+        let (source, type_range) =
+            repl_context_expr_with_user_range(state.loaded_file.as_deref(), &type_expr);
+        let user_start = type_range.start + type_prefix.len();
+        let user_range = user_start..user_start + expr.len();
+        match self.evaluator.eval_expr_with_diagnostic_source(
+            &source,
+            "repl-input.nix",
+            expr,
+            user_range,
+        ) {
             Ok(value) => match serde_json::from_str::<String>(&value) {
                 Ok(kind) => writeln!(output, "{kind}")?,
                 Err(_) => writeln!(output, "{value}")?,
@@ -595,10 +606,14 @@ impl NixRunner {
         expr: &str,
         output: &mut W,
     ) -> Result<()> {
-        match self
-            .evaluator
-            .instantiate_expr(&repl_context_expr(state.loaded_file.as_deref(), expr))
-        {
+        let (source, user_range) =
+            repl_context_expr_with_user_range(state.loaded_file.as_deref(), expr);
+        match self.evaluator.instantiate_expr_with_diagnostic_source(
+            &source,
+            "repl-input.nix",
+            expr,
+            user_range,
+        ) {
             Ok(path) => match self.realise_repl_drv(&path) {
                 Ok(output_path) => writeln!(output, "{output_path}")?,
                 Err(error) => writeln!(output, "error: {error:#}")?,
@@ -1346,6 +1361,8 @@ mod tests {
     struct ReplRecordingEval {
         eval_exprs: Mutex<Vec<String>>,
         instantiate_exprs: Mutex<Vec<String>>,
+        diagnostic_eval_exprs: Mutex<Vec<DiagnosticExpression>>,
+        diagnostic_instantiate_exprs: Mutex<Vec<DiagnosticExpression>>,
     }
 
     impl ReplRecordingEval {
@@ -1359,6 +1376,28 @@ mod tests {
                 .expect("instantiate exprs lock")
                 .clone()
         }
+
+        fn diagnostic_eval_exprs(&self) -> Vec<DiagnosticExpression> {
+            self.diagnostic_eval_exprs
+                .lock()
+                .expect("diagnostic eval exprs lock")
+                .clone()
+        }
+
+        fn diagnostic_instantiate_exprs(&self) -> Vec<DiagnosticExpression> {
+            self.diagnostic_instantiate_exprs
+                .lock()
+                .expect("diagnostic instantiate exprs lock")
+                .clone()
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct DiagnosticExpression {
+        expr: String,
+        diagnostic_name: String,
+        diagnostic_source: String,
+        diagnostic_range: Range<usize>,
     }
 
     impl NixEval for Arc<ReplRecordingEval> {
@@ -1372,6 +1411,25 @@ mod tests {
                 .expect("instantiate exprs lock")
                 .push(expr.to_string());
             Ok(PathBuf::from("/nix/store/fake-expr.drv"))
+        }
+
+        fn instantiate_expr_with_diagnostic_source(
+            &self,
+            expr: &str,
+            diagnostic_name: &str,
+            diagnostic_source: &str,
+            diagnostic_range: Range<usize>,
+        ) -> Result<PathBuf> {
+            self.diagnostic_instantiate_exprs
+                .lock()
+                .expect("diagnostic instantiate exprs lock")
+                .push(DiagnosticExpression {
+                    expr: expr.to_string(),
+                    diagnostic_name: diagnostic_name.to_string(),
+                    diagnostic_source: diagnostic_source.to_string(),
+                    diagnostic_range,
+                });
+            self.instantiate_expr(expr)
         }
 
         fn eval_expr(&self, expr: &str) -> Result<String> {
@@ -1389,6 +1447,25 @@ mod tests {
             } else {
                 Ok(r#"{"ok":true}"#.to_string())
             }
+        }
+
+        fn eval_expr_with_diagnostic_source(
+            &self,
+            expr: &str,
+            diagnostic_name: &str,
+            diagnostic_source: &str,
+            diagnostic_range: Range<usize>,
+        ) -> Result<String> {
+            self.diagnostic_eval_exprs
+                .lock()
+                .expect("diagnostic eval exprs lock")
+                .push(DiagnosticExpression {
+                    expr: expr.to_string(),
+                    diagnostic_name: diagnostic_name.to_string(),
+                    diagnostic_source: diagnostic_source.to_string(),
+                    diagnostic_range,
+                });
+            self.eval_expr(expr)
         }
 
         fn name(&self) -> &'static str {
@@ -1964,6 +2041,47 @@ mod tests {
             realised_drvs.as_slice(),
             [PathBuf::from("/nix/store/fake-expr.drv")]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_repl_eval_type_and_build_pass_user_diagnostic_source() -> Result<()> {
+        let evaluator = Arc::new(ReplRecordingEval::default());
+        let runner =
+            runner_with_evaluator_and_repl_realizer(Box::new(Arc::clone(&evaluator)), |_| {
+                Ok("/nix/store/fake-output".to_string())
+            });
+        let mut input = io::Cursor::new(
+            b":p 1 + true\n\
+              :t pkgs\n\
+              :b pkgs.hello\n\
+              :q\n",
+        );
+        let mut output = Vec::new();
+
+        runner.run_native_repl_session(Path::new("/aos/default.nix"), &mut input, &mut output)?;
+
+        let diagnostic_eval_exprs = evaluator.diagnostic_eval_exprs();
+        assert_eq!(diagnostic_eval_exprs.len(), 2);
+        assert_diagnostic_slice(&diagnostic_eval_exprs[0], "1 + true");
+        assert_diagnostic_slice(&diagnostic_eval_exprs[1], "pkgs");
+
+        let diagnostic_instantiate_exprs = evaluator.diagnostic_instantiate_exprs();
+        assert_eq!(diagnostic_instantiate_exprs.len(), 1);
+        assert_diagnostic_slice(&diagnostic_instantiate_exprs[0], "pkgs.hello");
+
+        fn assert_diagnostic_slice(expression: &DiagnosticExpression, expected: &str) {
+            assert_eq!(expression.diagnostic_name, "repl-input.nix");
+            assert_eq!(expression.diagnostic_source, expected);
+            assert_eq!(
+                &expression.expr[expression.diagnostic_range.clone()],
+                expected,
+                "{}",
+                expression.expr
+            );
+            assert!(!expression.diagnostic_source.contains("__aos_repl_scope"));
+        }
+
         Ok(())
     }
 
