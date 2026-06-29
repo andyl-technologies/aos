@@ -13,7 +13,7 @@ impl TreeWalk {
         name: &str,
         source: &Path,
         store_path: &[u8],
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let target = Path::new(OsStr::from_bytes(store_path));
         if target.exists() {
@@ -94,7 +94,7 @@ impl TreeWalk {
         name: &str,
         source: &Path,
         store_path: &[u8],
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let staging = Self::fetch_git_add_staging_dir(id, span, url)?;
         let staged = staging.join(name);
@@ -203,18 +203,18 @@ impl TreeWalk {
         span: Span,
         url: &[u8],
         store_path: &[u8],
-        expected: &[u8; 32],
+        expected: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let actual =
             self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
-        if actual.as_slice() == expected {
+        if actual.as_slice() == expected.as_bytes() {
             return Ok(());
         }
         Err(TreeWalkError::new(
             TreeWalkErrorKind::FetchGitHashMismatch {
                 id,
                 url: url.to_vec(),
-                expected: expected.to_vec(),
+                expected: expected.as_bytes().to_vec(),
                 actual: actual.to_vec(),
             },
             span,

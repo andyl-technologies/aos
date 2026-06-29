@@ -42,20 +42,25 @@ impl TreeWalk {
             true,
         )?;
 
-        let digest = self.source_path_nar_sha256(argument, argument_span, exported_dir, None)?;
+        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
+            argument,
+            argument_span,
+            exported_dir,
+            None,
+        )?);
         let nar_hash = Self::encode_convert_hash_digest(
             argument,
             argument_span,
             HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            &digest,
+            digest.as_bytes(),
         )?;
         let out_path = self.fetch_git_store_path_from_digest(
             argument,
             argument_span,
             &args.url,
             &args.name,
-            &digest,
+            digest,
         )?;
         self.materialize_fetch_git_store_path(
             argument,
@@ -64,7 +69,7 @@ impl TreeWalk {
             &args.name,
             exported_dir,
             &out_path,
-            &digest,
+            digest,
         )?;
 
         Ok(FetchGitResult {
@@ -128,16 +133,21 @@ impl TreeWalk {
             true,
         )?;
 
-        let digest = self.source_path_nar_sha256(id, span, exported_dir, None)?;
+        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
+            id,
+            span,
+            exported_dir,
+            None,
+        )?);
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
             HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            &digest,
+            digest.as_bytes(),
         )?;
         let out_path =
-            self.fetch_git_store_path_from_digest(id, span, &args.url, &args.name, &digest)?;
+            self.fetch_git_store_path_from_digest(id, span, &args.url, &args.name, digest)?;
         self.materialize_fetch_git_store_path(
             id,
             span,
@@ -145,7 +155,7 @@ impl TreeWalk {
             &args.name,
             exported_dir,
             &out_path,
-            &digest,
+            digest,
         )?;
 
         Ok(Some(FetchGitResult {
@@ -322,16 +332,9 @@ impl TreeWalk {
         span: Span,
         url: &[u8],
         name: &str,
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        self.store_path_bytes_from_fingerprint_parts(
-            id,
-            span,
-            url,
-            b"source",
-            name,
-            NixSha256Digest::from_bytes(*digest),
-        )
+        self.store_path_bytes_from_fingerprint_parts(id, span, url, b"source", name, digest)
     }
 
     pub(super) fn fetch_git_canonical_uri(args: &FetchGitArguments) -> Vec<u8> {

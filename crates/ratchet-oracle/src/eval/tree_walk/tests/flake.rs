@@ -110,6 +110,18 @@ fn parse_flake_ref_preserves_git_url_dir_query() {
 }
 
 #[test]
+fn git_flake_ref_roundtrip_preserves_nar_hash_lock() {
+    assert_eq!(
+        eval_string_bytes(
+            r#"builtins.flakeRefToString
+                (builtins.parseFlakeRef
+                  "git+https://example.com/repo.git?rev=0000000000000000000000000000000000000000&dir=lib&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")"#
+        ),
+        b"git+https://example.com/repo.git?dir=lib&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D&rev=0000000000000000000000000000000000000000",
+    );
+}
+
+#[test]
 fn parse_flake_ref_decodes_query_values_but_not_names() {
     assert_eq!(
         eval_string_bytes(

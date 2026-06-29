@@ -215,18 +215,18 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         input: &[u8],
-        expected: Option<[u8; 32]>,
-        actual: &[u8; 32],
+        expected: Option<NixSha256Digest>,
+        actual: &NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         if let Some(expected) = expected
-            && &expected != actual
+            && expected != *actual
         {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::FetchTreeHashMismatch {
                     id,
                     input: input.to_vec(),
-                    expected: expected.to_vec(),
-                    actual: actual.to_vec(),
+                    expected: expected.as_bytes().to_vec(),
+                    actual: actual.as_bytes().to_vec(),
                 },
                 span,
             ));
@@ -330,16 +330,9 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         input: &[u8],
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        self.store_path_bytes_from_fingerprint_parts(
-            id,
-            span,
-            input,
-            b"source",
-            "source",
-            NixSha256Digest::from_bytes(*digest),
-        )
+        self.store_path_bytes_from_fingerprint_parts(id, span, input, b"source", "source", digest)
     }
 
     pub(super) fn materialize_fetch_tree_store_path(
@@ -349,7 +342,7 @@ impl TreeWalk {
         input: &[u8],
         source: &Path,
         store_path: &[u8],
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let target = Path::new(OsStr::from_bytes(store_path));
         if target.exists() {
@@ -394,18 +387,18 @@ impl TreeWalk {
         span: Span,
         input: &[u8],
         store_path: &[u8],
-        expected: &[u8; 32],
+        expected: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let actual =
             self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
-        if actual.as_slice() == expected {
+        if actual.as_slice() == expected.as_bytes() {
             return Ok(());
         }
         Err(TreeWalkError::new(
             TreeWalkErrorKind::FetchTreeHashMismatch {
                 id,
                 input: input.to_vec(),
-                expected: expected.to_vec(),
+                expected: expected.as_bytes().to_vec(),
                 actual: actual.to_vec(),
             },
             span,
@@ -842,7 +835,8 @@ impl TreeWalk {
         let mut url_query = BTreeMap::new();
         for (name, value) in query {
             match name.as_slice() {
-                REV_ATTR | REF_ATTR | KEYTYPE_ATTR | PUBLIC_KEY_ATTR | PUBLIC_KEYS_ATTR => {
+                REV_ATTR | REF_ATTR | NAR_HASH_ATTR | KEYTYPE_ATTR | PUBLIC_KEY_ATTR
+                | PUBLIC_KEYS_ATTR => {
                     attrs.insert(name.clone(), FlakeRefAttrValue::String(value.clone()));
                 }
                 SHALLOW_ATTR | SUBMODULES_ATTR | EXPORT_IGNORE_ATTR | ALL_REFS_ATTR

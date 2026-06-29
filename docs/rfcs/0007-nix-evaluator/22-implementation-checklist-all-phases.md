@@ -1462,6 +1462,18 @@ alone (`M-1`/`Q-A`).
       differential leak-invariant harness remain open (`S-15`). Gate:
       `path_primop_supports_flat_hashing_and_sha256_checks` and path store-path
       surface canary.
+- [x] Current `fetchTree`/`fetchGit` NAR SHA-256 type boundary: decoded
+      `builtins.fetchTree` `narHash` locks from attrsets and flake refs now
+      become `NixSha256Digest` at argument parsing, and computed recursive NAR
+      SHA-256 bytes for `fetchTree` and `fetchGit` are wrapped before
+      store-path construction or existing-store validation. SRI `narHash`
+      rendering and mismatch diagnostics still unwrap through named SHA-256
+      accessors at the Nix-observed output/error boundary. This type-enforces
+      the current fetchTree/fetchGit NAR-store corridor only; hash builtin
+      outputs/conversions, other source/fetch variants, and the full
+      differential leak-invariant harness remain open (`S-15`). Gate:
+      fetchTree/fetchGit store-path surface canaries and fetchTree hash
+      mismatch tests.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

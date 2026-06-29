@@ -278,7 +278,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         value: Value,
-    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+    ) -> Result<Option<NixSha256Digest>, TreeWalkError> {
         let Some(hash) = self.optional_fetch_tree_string_attr(id, span, value, NAR_HASH_ATTR)?
         else {
             return Ok(None);
@@ -291,7 +291,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         hash: &[u8],
-    ) -> Result<[u8; 32], TreeWalkError> {
+    ) -> Result<NixSha256Digest, TreeWalkError> {
         let (algorithm, digest) =
             self.decode_convert_hash(id, span, hash, Some(HashStringAlgorithm::Sha256))?;
         if algorithm != HashStringAlgorithm::Sha256 || digest.len() != 32 {
@@ -306,7 +306,7 @@ impl TreeWalk {
         }
         let mut fixed = [0_u8; 32];
         fixed.copy_from_slice(&digest);
-        Ok(fixed)
+        Ok(NixSha256Digest::from_bytes(fixed))
     }
 
     pub(super) fn check_fetch_tree_locked(
@@ -410,14 +410,15 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         path: Vec<u8>,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         expected_last_modified: Option<i64>,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     ) -> Result<FetchTreeResult, TreeWalkError> {
         self.check_fetch_tree_path_access(id, span, &path)?;
         let source = Path::new(OsStr::from_bytes(&path));
-        let digest = self.source_path_nar_sha256(id, span, source, None)?;
+        let digest =
+            NixSha256Digest::from_bytes(self.source_path_nar_sha256(id, span, source, None)?);
         Self::check_fetch_tree_hash(id, span, &path, expected_nar_hash, &digest)?;
         let last_modified = Self::fetch_tree_last_modified(id, span, &path, source)?;
         Self::check_fetch_tree_last_modified(
@@ -433,10 +434,10 @@ impl TreeWalk {
             span,
             HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            &digest,
+            digest.as_bytes(),
         )?;
-        let out_path = self.fetch_tree_store_path_from_digest(id, span, &path, &digest)?;
-        self.materialize_fetch_tree_store_path(id, span, &path, source, &out_path, &digest)?;
+        let out_path = self.fetch_tree_store_path_from_digest(id, span, &path, digest)?;
+        self.materialize_fetch_tree_store_path(id, span, &path, source, &out_path, digest)?;
         Ok(FetchTreeResult {
             out_path,
             nar_hash,
@@ -455,7 +456,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         url: Vec<u8>,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         expected_last_modified: Option<i64>,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
@@ -500,21 +501,22 @@ impl TreeWalk {
         span: Span,
         url: Vec<u8>,
         source: &Path,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     ) -> Result<FetchTreeResult, TreeWalkError> {
-        let digest = self.source_path_nar_sha256(id, span, source, None)?;
+        let digest =
+            NixSha256Digest::from_bytes(self.source_path_nar_sha256(id, span, source, None)?);
         Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
             HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            &digest,
+            digest.as_bytes(),
         )?;
-        let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, &digest)?;
-        self.materialize_fetch_tree_store_path(id, span, &url, source, &out_path, &digest)?;
+        let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, digest)?;
+        self.materialize_fetch_tree_store_path(id, span, &url, source, &out_path, digest)?;
         Ok(FetchTreeResult {
             out_path,
             nar_hash,
@@ -535,7 +537,7 @@ impl TreeWalk {
         url: Vec<u8>,
         transport_url: Vec<u8>,
         dir: Option<Vec<u8>>,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         expected_last_modified: Option<i64>,
         last_modified_from_lock: bool,
         rev: Option<Vec<u8>>,
@@ -573,7 +575,12 @@ impl TreeWalk {
         let result = (|| {
             let source_root =
                 Self::fetch_tree_subdir_root(id, span, &url, &unpacked_root, dir.as_deref())?;
-            let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
+            let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
+                id,
+                span,
+                &source_root,
+                None,
+            )?);
             Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
             let observed_last_modified =
                 Self::fetch_tree_last_modified(id, span, &url, &source_root)?;
@@ -595,16 +602,16 @@ impl TreeWalk {
                 span,
                 HashStringAlgorithm::Sha256,
                 ConvertHashFormat::Sri,
-                &digest,
+                digest.as_bytes(),
             )?;
-            let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, &digest)?;
+            let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, digest)?;
             self.materialize_fetch_tree_store_path(
                 id,
                 span,
                 &url,
                 &source_root,
                 &out_path,
-                &digest,
+                digest,
             )?;
             Ok(FetchTreeResult {
                 out_path,
@@ -630,7 +637,7 @@ impl TreeWalk {
         archive_url: Vec<u8>,
         dir: Option<Vec<u8>>,
         check_archive_url_access: bool,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         expected_last_modified: Option<i64>,
         rev: Vec<u8>,
     ) -> Result<FetchTreeResult, TreeWalkError> {
@@ -660,7 +667,7 @@ impl TreeWalk {
         span: Span,
         args: FetchGitArguments,
         dir: Option<Vec<u8>>,
-        expected_nar_hash: Option<[u8; 32]>,
+        expected_nar_hash: Option<NixSha256Digest>,
         expected_last_modified: Option<i64>,
         expected_rev_count: Option<usize>,
         dirty_rev: Option<Vec<u8>>,
@@ -738,22 +745,27 @@ impl TreeWalk {
         };
         let store_root = Path::new(OsStr::from_bytes(&result.out_path));
         let source_root = Self::fetch_tree_subdir_root(id, span, input, store_root, Some(dir))?;
-        let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
+        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
+            id,
+            span,
+            &source_root,
+            None,
+        )?);
         result.nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
             HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            &digest,
+            digest.as_bytes(),
         )?;
-        result.out_path = self.fetch_tree_store_path_from_digest(id, span, input, &digest)?;
+        result.out_path = self.fetch_tree_store_path_from_digest(id, span, input, digest)?;
         self.materialize_fetch_tree_store_path(
             id,
             span,
             input,
             &source_root,
             &result.out_path,
-            &digest,
+            digest,
         )?;
         Ok(result)
     }

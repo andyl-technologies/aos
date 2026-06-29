@@ -328,6 +328,14 @@ impl TreeWalk {
             }
             updates.insert(REF_ATTR.to_vec(), reference.to_vec());
         }
+        if let Some(nar_hash) =
+            Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
+        {
+            updates.insert(
+                NAR_HASH_ATTR.to_vec(),
+                self.canonical_flake_ref_nar_hash(id, span, nar_hash)?,
+            );
+        }
         self.insert_git_verified_fetch_query_updates(id, span, attrs, &mut updates)?;
         for attr in [
             SHALLOW_ATTR,
@@ -814,7 +822,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         attrs: &FlakeRefAttrs,
-    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+    ) -> Result<Option<NixSha256Digest>, TreeWalkError> {
         let Some(hash) = Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
         else {
             return Ok(None);

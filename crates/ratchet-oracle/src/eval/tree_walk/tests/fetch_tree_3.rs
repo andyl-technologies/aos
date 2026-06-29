@@ -500,24 +500,15 @@ fn fetch_tree_git_string_ref_returns_flake_lock_metadata() {
         "git+file://{}?rev={rev}&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D&lastModified=1700000001&revCount=2&shallow=0",
         path_source(&repo_dir)
     ));
-    let mismatched_json = eval_json_bytes_with_options(
-        &format!(
-            r#"
-                let x = builtins.fetchTree {mismatched_metadata_ref};
-                in {{
-                  revCount = x.revCount;
-                  lastModified = x.lastModified;
-                  narHash = x.narHash;
-                }}
-                "#
-        ),
+    let mismatched_error = eval_whnf_owned_with_options(
+        &lower(&format!(r#"builtins.fetchTree {mismatched_metadata_ref}"#)),
         options.clone(),
-    );
-    let mismatched_value: serde_json::Value = serde_json::from_slice(&mismatched_json)
-        .expect("mismatched metadata fetchTree git string JSON parses");
-    assert_eq!(mismatched_value["revCount"], 1);
-    assert_eq!(mismatched_value["lastModified"], 1_700_000_000);
-    assert_eq!(mismatched_value["narHash"], nar_hash);
+    )
+    .expect_err("mismatched fetchTree git narHash rejects");
+    assert!(matches!(
+        mismatched_error.kind(),
+        TreeWalkErrorKind::FetchTreeHashMismatch { .. }
+    ));
 
     let mut pure_options = options.clone();
     pure_options.set_eval_mode(EvalMode::Pure);
