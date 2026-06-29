@@ -25,6 +25,11 @@ query-timing = ["aos-hub-core/query-timing"]
 # NOT in the production build — enable only to run a migration, then redeploy the
 # default build. RFC-0004 ch.14 Phase E cutover.
 cutover-admin = []
+# DO-SQLite end-to-end probe endpoint (`POST /_e2e/managed-registry-bootstrap`),
+# used only by the `aos-hub-worker-do-e2e` check to exercise the managed-registry
+# create + read path against the real DO SQLite engine under workerd. NOT in the
+# production build.
+do-e2e = []
 
 [dependencies]
 # The pure, wasm-clean registry reader — the exact verifier the native hub
