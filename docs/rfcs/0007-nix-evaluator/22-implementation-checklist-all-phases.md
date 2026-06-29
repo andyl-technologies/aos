@@ -3464,6 +3464,14 @@ alone (`M-1`/`Q-A`).
       differ from the original closure, keep the root `.drv` path changed by the
       source store path, and scan root parse/file-content/source-payload
       canaries out of all closure surfaces.
+      `native_file_cache_parity_harness_covers_filtered_source_path_inputs`
+      drives a recursive `builtins.filterSource` tree into derivation arguments,
+      mutates an excluded file and requires cache-off/cache-on closures to stay
+      byte-identical to the original, then mutates the included file and requires
+      cache-on persistent runs with durable file-root parse hits to match the
+      changed uncached closure, differ from the original closure, and scan root
+      parse/file-content plus included/excluded payload canaries out of all
+      closure surfaces.
       `native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs`
       seeds the same native file-closure persistent root with `readFile` and
       `hashFile` payloads, mutates the payload file, then requires stale cached
@@ -3491,8 +3499,9 @@ alone (`M-1`/`Q-A`).
       `currentSystem` hot hashes out of `.drv` surfaces.
       This broadens the reusable direct-file cache-parity harness across
       filesystem-sensitive forced inputs, source-path stale-content
-      recomputation, filesystem stale content/metadata/existence recomputation,
-      and ambient currentSystem option-sensitive reuse; it is not full
+      recomputation, filtered recursive source output parity, filesystem stale
+      content/metadata/existence recomputation, and ambient currentSystem
+      option-sensitive reuse; it is not full
       impure-input demand-graph integration, full AOS package-set coverage,
       syscall-level cache-off no-read proof, or the full cached-vs-uncached CI
       safety net

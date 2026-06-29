@@ -675,32 +675,13 @@ fn native_file_cache_parity_harness_covers_stale_source_path_input() -> Result<(
     );
 
     let stale_cached_parse_root = root.join("stale-source-path-parse");
-    let stale_cached_hits = Arc::new(Mutex::new(Vec::new()));
-    let stale_cached_hits_for_hook = Arc::clone(&stale_cached_hits);
-    let mut stale_cached_native =
-        NixNative::with_options(0, options_for(Some(&stale_cached_parse_root), true, true)?)?;
-    stale_cached_native.set_persistent_parse_hit_hook(move |hit| {
-        stale_cached_hits_for_hook
-            .lock()
-            .expect("persistent parse hit observations lock")
-            .push(hit);
-    });
-    let (stale_cached, _stale_cached_stats) =
-        instantiate_file_closure_with_stats(&stale_cached_native, &file, "pkgs.staleSourcePath")?;
-    assert_eq!(
-        stale_cached_hits
-            .lock()
-            .expect("persistent parse hit observations lock")
-            .clone(),
-        vec![NativePersistentParseHit::Source],
-        "stale source-path run should hydrate the unchanged file root from the durable source artifact"
-    );
-    assert!(
-        ParseCache::new(&stale_cached_parse_root)
-            .entry_for_source(&fs::read(&file)?)
-            .is_complete(),
-        "stale source-path run should hydrate the fresh parse-cache entry"
-    );
+    let (stale_cached, _stale_cached_stats) = instantiate_file_closure_with_source_parse_hit(
+        &stale_cached_parse_root,
+        options_for(Some(&stale_cached_parse_root), true, true)?,
+        &file,
+        "pkgs.staleSourcePath",
+        "stale source-path run",
+    )?;
     assert_eq!(
         stale_cached, uncached_changed,
         "stale persistent source-path payloads must recompute to the changed closure"
@@ -711,32 +692,13 @@ fn native_file_cache_parity_harness_covers_stale_source_path_input() -> Result<(
     );
 
     let changed_hit_parse_root = root.join("changed-source-path-hit-parse");
-    let changed_hit_hits = Arc::new(Mutex::new(Vec::new()));
-    let changed_hit_hits_for_hook = Arc::clone(&changed_hit_hits);
-    let mut changed_hit_native =
-        NixNative::with_options(0, options_for(Some(&changed_hit_parse_root), true, true)?)?;
-    changed_hit_native.set_persistent_parse_hit_hook(move |hit| {
-        changed_hit_hits_for_hook
-            .lock()
-            .expect("persistent parse hit observations lock")
-            .push(hit);
-    });
-    let (changed_hit, _changed_hit_stats) =
-        instantiate_file_closure_with_stats(&changed_hit_native, &file, "pkgs.staleSourcePath")?;
-    assert_eq!(
-        changed_hit_hits
-            .lock()
-            .expect("persistent parse hit observations lock")
-            .clone(),
-        vec![NativePersistentParseHit::Source],
-        "post-recompute source-path run should hydrate the unchanged file root from the durable source artifact"
-    );
-    assert!(
-        ParseCache::new(&changed_hit_parse_root)
-            .entry_for_source(&fs::read(&file)?)
-            .is_complete(),
-        "post-recompute source-path run should hydrate the fresh parse-cache entry"
-    );
+    let (changed_hit, _changed_hit_stats) = instantiate_file_closure_with_source_parse_hit(
+        &changed_hit_parse_root,
+        options_for(Some(&changed_hit_parse_root), true, true)?,
+        &file,
+        "pkgs.staleSourcePath",
+        "post-recompute source-path run",
+    )?;
     assert_eq!(
         changed_hit, uncached_changed,
         "post-recompute persistent source-path run should preserve the changed closure"
@@ -792,6 +754,243 @@ fn native_file_cache_parity_harness_covers_stale_source_path_input() -> Result<(
         &changed_hit,
         &canaries,
     );
+
+    Ok(())
+}
+
+#[test]
+fn native_file_cache_parity_harness_covers_filtered_source_path_inputs() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-cache-parity-filtered-source-path");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let tree = dir.join("filtered-source-tree");
+    fs::create_dir_all(&tree)?;
+    let kept_file = tree.join("kept.txt");
+    let ignored_file = tree.join("ignored.txt");
+    let original_kept = b"filtered source original kept payload";
+    let changed_kept = b"filtered source changed kept payload";
+    let original_ignored = b"filtered source original ignored payload";
+    let changed_ignored = b"filtered source changed ignored payload";
+    fs::write(&kept_file, original_kept)?;
+    fs::write(&ignored_file, original_ignored)?;
+    let kept_realpath = fs::canonicalize(&kept_file)?;
+    let ignored_realpath = fs::canonicalize(&ignored_file)?;
+    let kept_path = path_bytes(&kept_realpath)?;
+    let ignored_path = path_bytes(&ignored_realpath)?;
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+          keep = path: type:
+            type != "directory" && b.baseNameOf path == "kept.txt";
+          source = b.filterSource keep ./filtered-source-tree;
+        in {
+          pkgs.filteredSourcePath = derivationStrict {
+            name = "filtered-source-derivation";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [ source ];
+          };
+        }"#,
+    )?;
+
+    let original = native_file_closure_cache_parity(
+        &root,
+        &store,
+        &persist_root,
+        &file,
+        "pkgs.filteredSourcePath",
+        |_| Ok(()),
+    )?;
+    assert_eq!(original.uncached.drvs().len(), 1);
+    assert_drv_aterm_contains_all(
+        "original filtered source-path closure",
+        &original.uncached,
+        &[("filtered source path store name", b"filtered-source-tree")],
+    );
+    assert_drv_aterm_lacks_all(
+        "original filtered source-path closure",
+        &original.uncached,
+        &[
+            ("original kept payload", original_kept),
+            ("changed kept payload", changed_kept),
+            ("original ignored payload", original_ignored),
+            ("changed ignored payload", changed_ignored),
+        ],
+    );
+
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let options_for =
+        |parse_root: Option<&Path>, persist: bool, eval_cache_enabled: bool| -> Result<_> {
+            let mut options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+            if let Some(parse_root) = parse_root {
+                options.set_parse_cache_root(parse_root);
+            } else {
+                options.clear_parse_cache_root();
+            }
+            if persist {
+                options.set_persist_cache_root(&persist_root);
+            } else {
+                options.clear_persist_cache_root();
+            }
+            options.set_eval_cache_enabled(eval_cache_enabled);
+            Ok(options)
+        };
+
+    fs::write(&ignored_file, changed_ignored)?;
+
+    let (uncached_ignored_changed, uncached_ignored_changed_stats) =
+        instantiate_file_closure_with_stats(
+            &NixNative::with_options(0, options_for(None, false, false)?)?,
+            &file,
+            "pkgs.filteredSourcePath",
+        )?;
+    assert_eq!(uncached_ignored_changed_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_ignored_changed_stats.force_cache_misses(), 0);
+    assert_eq!(
+        uncached_ignored_changed, original.uncached,
+        "changing an excluded filtered-source payload must not change the uncached .drv closure"
+    );
+
+    let ignored_cached_parse_root = root.join("ignored-filtered-source-parse");
+    let (ignored_cached, _ignored_cached_stats) = instantiate_file_closure_with_source_parse_hit(
+        &ignored_cached_parse_root,
+        options_for(Some(&ignored_cached_parse_root), true, true)?,
+        &file,
+        "pkgs.filteredSourcePath",
+        "excluded filtered-source change run",
+    )?;
+    assert_eq!(
+        ignored_cached, original.uncached,
+        "changing an excluded filtered-source payload must preserve the cached closure surface"
+    );
+
+    fs::write(&kept_file, changed_kept)?;
+
+    let (uncached_kept_changed, uncached_kept_changed_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(None, false, false)?)?,
+        &file,
+        "pkgs.filteredSourcePath",
+    )?;
+    assert_eq!(uncached_kept_changed_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_kept_changed_stats.force_cache_misses(), 0);
+    assert_ne!(
+        uncached_kept_changed, original.uncached,
+        "changing an included filtered-source payload must change the uncached .drv closure"
+    );
+    assert_ne!(
+        uncached_kept_changed.root(),
+        original.uncached.root(),
+        "changing an included filtered-source payload must change the root .drv path"
+    );
+    assert_drv_aterm_contains_all(
+        "changed kept filtered source-path closure",
+        &uncached_kept_changed,
+        &[("filtered source path store name", b"filtered-source-tree")],
+    );
+    assert_drv_aterm_lacks_all(
+        "changed kept filtered source-path closure",
+        &uncached_kept_changed,
+        &[
+            ("original kept payload", original_kept),
+            ("changed kept payload", changed_kept),
+            ("original ignored payload", original_ignored),
+            ("changed ignored payload", changed_ignored),
+        ],
+    );
+
+    let kept_cached_parse_root = root.join("kept-filtered-source-parse");
+    let (kept_cached, _kept_cached_stats) = instantiate_file_closure_with_source_parse_hit(
+        &kept_cached_parse_root,
+        options_for(Some(&kept_cached_parse_root), true, true)?,
+        &file,
+        "pkgs.filteredSourcePath",
+        "included filtered-source changed run",
+    )?;
+    assert_eq!(
+        kept_cached, uncached_kept_changed,
+        "cached filtered-source evaluation must produce the changed included closure"
+    );
+    assert_ne!(
+        kept_cached, original.uncached,
+        "cached filtered-source evaluation must not preserve the original included closure"
+    );
+
+    let kept_hit_parse_root = root.join("kept-filtered-source-hit-parse");
+    let (kept_hit, _kept_hit_stats) = instantiate_file_closure_with_source_parse_hit(
+        &kept_hit_parse_root,
+        options_for(Some(&kept_hit_parse_root), true, true)?,
+        &file,
+        "pkgs.filteredSourcePath",
+        "post-recompute filtered-source run",
+    )?;
+    assert_eq!(
+        kept_hit, uncached_kept_changed,
+        "post-recompute persistent filtered-source run should preserve the changed included closure"
+    );
+
+    let mut canaries = persistent_force_cache_surface_canaries(&persist_root)?;
+    canaries.extend(file_parse_artifact_surface_canaries(
+        &root,
+        "filtered source-path root file",
+        &file,
+    )?);
+    let payload_canaries: [(&str, &[u8]); 4] = [
+        ("original filtered-source kept payload", original_kept),
+        ("changed filtered-source kept payload", changed_kept),
+        ("original filtered-source ignored payload", original_ignored),
+        ("changed filtered-source ignored payload", changed_ignored),
+    ];
+    for (label, payload) in payload_canaries {
+        canaries.extend(durable_hash_surface_canaries(
+            &format!("{label} BLAKE3 sentinel"),
+            DurableBlake3Hash::for_bytes(payload),
+        ));
+        canaries.extend(hot_xxh3_surface_canaries(
+            label,
+            context_free_nix_string_xxh3(payload),
+        ));
+    }
+    canaries.extend(hot_xxh3_surface_canaries(
+        "filtered source-path store name",
+        context_free_nix_string_xxh3(b"filtered-source-tree"),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "filtered source-path kept realpath",
+        context_free_nix_string_xxh3(kept_path.as_slice()),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "filtered source-path ignored realpath",
+        context_free_nix_string_xxh3(ignored_path.as_slice()),
+    ));
+    for (surface_name, closure) in [
+        ("original filtered source-path closure", &original.uncached),
+        (
+            "ignored-change uncached filtered source-path closure",
+            &uncached_ignored_changed,
+        ),
+        (
+            "ignored-change cached filtered source-path closure",
+            &ignored_cached,
+        ),
+        (
+            "kept-change uncached filtered source-path closure",
+            &uncached_kept_changed,
+        ),
+        (
+            "kept-change cached filtered source-path closure",
+            &kept_cached,
+        ),
+        ("kept-change hit filtered source-path closure", &kept_hit),
+    ] {
+        assert_native_closure_surfaces_do_not_contain_canaries(surface_name, closure, &canaries);
+    }
 
     Ok(())
 }
@@ -1123,6 +1322,40 @@ fn assert_file_artifact_written(root: &Path, persist_root: &Path, file: &Path) -
         file.display()
     );
     Ok(())
+}
+
+fn instantiate_file_closure_with_source_parse_hit(
+    parse_root: &Path,
+    options: TreeWalkOptions,
+    file: &Path,
+    attr: &str,
+    context: &str,
+) -> Result<(NativeDrvClosure, crate::eval::EvalStats)> {
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut native = NixNative::with_options(0, options)?;
+    native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let result = instantiate_file_closure_with_stats(&native, file, attr)?;
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source],
+        "{context} should hydrate the unchanged file root from the durable source artifact"
+    );
+    assert!(
+        ParseCache::new(parse_root)
+            .entry_for_source(&fs::read(file)?)
+            .is_complete(),
+        "{context} should hydrate the fresh parse-cache entry"
+    );
+    Ok(result)
 }
 
 fn file_parse_artifact_surface_canaries(
