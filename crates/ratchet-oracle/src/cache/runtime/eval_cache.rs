@@ -826,6 +826,13 @@ impl EvalCache {
             Err(source) => {
                 let existing_node = self.graph.node_id_for_key(key);
                 self.invalidate_existing_inline_payload(existing_node)?;
+                if let Some(node) = existing_node {
+                    self.graph.replace_dependency_group(
+                        node,
+                        DemandDependencyGroup::ImpureInput,
+                        std::iter::empty::<DemandNodeId>(),
+                    )?;
+                }
                 return Err(DemandGraphError::ValueHash { source });
             }
         };

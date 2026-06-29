@@ -247,12 +247,24 @@ fn unsupported_trace_backed_value_invalidates_existing_reusable_inline_payload()
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);
     let previous = cache
-        .observe_inline_expression_result(
+        .observe_inline_expression_result_with_impure_inputs(
             identity,
             std::iter::empty::<DurableBlake3Hash>(),
             Value::int(3),
+            &source,
         )
-        .expect("previous pure result observes");
+        .expect("previous trace-backed result observes");
+    let previous_node = previous.node().expect("cacheable trace creates node");
+    let input_dependency = previous.trace().leaves()[0].node();
+    assert!(
+        cache
+            .graph()
+            .node(previous_node)
+            .expect("previous node exists")
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .expect("previous node has an impure-input edge")
+            .contains(&input_dependency)
+    );
     let heap_value = Value::string(std::ptr::NonNull::<crate::value::HeapObject>::dangling())
         .expect("dangling heap pointer is aligned");
 
@@ -276,10 +288,28 @@ fn unsupported_trace_backed_value_invalidates_existing_reusable_inline_payload()
     assert_eq!(
         cache
             .graph()
-            .node(previous.node())
+            .node(previous_node)
             .expect("previous node still exists")
             .freshness(),
         NodeFreshness::Dirty
+    );
+    assert!(
+        cache
+            .graph()
+            .node(previous_node)
+            .expect("previous node still exists")
+            .dependencies_in_group(DemandDependencyGroup::ImpureInput)
+            .is_none(),
+        "failed trace-backed replacement should clear stale impure-input ownership"
+    );
+    assert!(
+        !cache
+            .graph()
+            .node(input_dependency)
+            .expect("input dependency still exists")
+            .dependents()
+            .contains(&previous_node),
+        "failed trace-backed replacement should remove the stale reverse edge"
     );
     let value = cache
         .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())

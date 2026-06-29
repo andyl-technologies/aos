@@ -719,7 +719,9 @@ alone (`M-1`/`Q-A`).
       Trace-backed payload records are tagged as requiring revalidation and are
       misses through the existing public lookup API; incomplete or uncacheable
       trace observations invalidate any existing payload for the same
-      key. Lookup remains restricted to the pure/speculable subset until the
+      key, while cacheable trace observations whose payload cannot be recorded
+      also dirty the existing node and clear stale impure-input ownership.
+      Lookup remains restricted to the pure/speculable subset until the
       cache retains typed input identities and revalidates them before a hit.
       This is edge wiring and payload storage only; source-less raw eval
       outside the lowered-IR-backed node-thunk subset, captured
