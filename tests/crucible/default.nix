@@ -562,6 +562,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerFiringCausalLog";
       taskIds = ["T-TRIG-11"];
     };
+    triggerActionApplication = import ./phase4-trigger-action-application.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerActionApplication";
+      taskIds = ["T-TRIG-12"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

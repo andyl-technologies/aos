@@ -69,8 +69,8 @@
         needle = "Completed by `checks.crucible.phase4.triggerFiringCausalLog`";
       }
       {
-        label = "action implementation remains open";
-        needle = "- [ ] **T-TRIG-12**";
+        label = "start stop validation remains open";
+        needle = "- [ ] **T-TRIG-13**";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [

@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "action implementation remains open";
-        needle = "- [ ] **T-TRIG-12**";
+        label = "start stop validation remains open";
+        needle = "- [ ] **T-TRIG-13**";
       }
       {
         label = "full timer action semantics remain open";

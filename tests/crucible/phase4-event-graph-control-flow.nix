@@ -73,7 +73,7 @@
       }
       {
         label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-12**";
+        needle = "- [ ] **T-TRIG-13**";
       }
       {
         label = "legacy Plan lowering remains open";
@@ -365,7 +365,7 @@ in
             gates=gate:layer1-injection,gate:e2e-determinism
             model=event-graph-control-flow-spine
             condition_semantics=implemented-T-TRIG-2-through-T-TRIG-11
-            action_application=pending-T-TRIG-12-through-T-TRIG-17
+            action_application=pending-T-TRIG-13-through-T-TRIG-17
             RESULT
           '';
         }

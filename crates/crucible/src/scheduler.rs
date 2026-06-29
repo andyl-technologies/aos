@@ -20,10 +20,10 @@ use crate::trigger::{
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, MembershipFault, NodeCounter, NodeId, PartitionDirection, PreemptionDecision,
-    PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
-    VirtualTime, WorldLookaheadEdge, step,
+    Icount, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
+    PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
+    TimerId, VcpuId, VirtualTime, WorldLookaheadEdge, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -257,6 +257,93 @@ pub enum SchedulerEventLogPayload {
     EvaluationBoundary(SchedulerEvaluationBoundaryKind),
     /// A deterministic trigger firing computed from a checked condition prefix.
     TriggerFired(EventFiring),
+    /// A deterministic trigger action effect applied at the firing boundary.
+    TriggerActionApplied(TriggerActionApplication),
+}
+
+/// Scheduler-owned state produced by deterministic trigger action application.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TriggerActionState {
+    /// Every non-group action applied by triggers in deterministic application order.
+    pub applications: Vec<TriggerActionApplication>,
+    /// Active membership faults keyed by their stable trigger tag.
+    pub active_faults: BTreeMap<crate::FaultTag, MembershipFault>,
+    /// Trigger timers armed by name with their absolute virtual-time fire point.
+    pub armed_timers: BTreeMap<TimerId, VirtualTime>,
+    /// Trigger-scheduled node lifecycle overrides keyed by declared node.
+    pub node_states: BTreeMap<NodeId, NodeLifecycle>,
+    /// Savepoint requests raised by trigger actions.
+    pub savepoints: Vec<TriggerLabelRecord>,
+    /// Fork requests raised by trigger actions.
+    pub forks: Vec<TriggerLabelRecord>,
+    /// Most recent pass/fail verdict raised by a trigger action.
+    pub verdict: Option<TriggerVerdict>,
+    /// Observational diagnostics raised by trigger log actions.
+    pub diagnostics: Vec<TriggerDiagnosticRecord>,
+}
+
+/// One deterministic non-group trigger action application.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TriggerActionApplication {
+    /// Monotone scheduler-local trigger action sequence.
+    pub sequence: u64,
+    /// Event whose firing produced this action.
+    pub event: crate::EventId,
+    /// Virtual time at which the action was applied.
+    pub at: VirtualTime,
+    /// Path through nested `Group` actions, in declared zero-based indexes.
+    pub path: Vec<u64>,
+    /// Non-group action applied at this path.
+    pub action: Action,
+}
+
+impl TriggerActionApplication {
+    /// Returns whether this action application is observational rather than causal.
+    #[must_use]
+    pub fn is_observational(&self) -> bool {
+        matches!(self.action, Action::Log { .. })
+    }
+}
+
+/// One trigger request to label a temporal graph boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TriggerLabelRecord {
+    /// Trigger action sequence that raised the request.
+    pub sequence: u64,
+    /// Event whose firing produced the request.
+    pub event: crate::EventId,
+    /// Virtual time at which the request was raised.
+    pub at: VirtualTime,
+    /// Optional stable author label.
+    pub label: Option<String>,
+}
+
+/// A trigger-sourced pass/fail verdict request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TriggerVerdict {
+    /// Trigger action sequence that raised the verdict.
+    pub sequence: u64,
+    /// Event whose firing produced the verdict.
+    pub event: crate::EventId,
+    /// Virtual time at which the verdict was raised.
+    pub at: VirtualTime,
+    /// Failure reason when this is a fail verdict; absent for pass.
+    pub failed_reason: Option<String>,
+}
+
+/// One observational diagnostic emitted by a trigger log action.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TriggerDiagnosticRecord {
+    /// Trigger action sequence that emitted the diagnostic.
+    pub sequence: u64,
+    /// Event whose firing produced the diagnostic.
+    pub event: crate::EventId,
+    /// Virtual time at which the diagnostic was emitted.
+    pub at: VirtualTime,
+    /// Diagnostic severity level.
+    pub level: LogLevel,
+    /// Stable diagnostic message.
+    pub message: String,
 }
 
 /// Result of appending one scheduler quantum to the event log.
@@ -3103,7 +3190,12 @@ fn scheduler_event_log_entry(
     at: VirtualTime,
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
-    scheduler_event_log_entry_with_class(sequence, at, SchedulerEventLogClass::Causal, payload)
+    scheduler_event_log_entry_with_class(
+        sequence,
+        at,
+        scheduler_event_log_payload_class(&payload),
+        payload,
+    )
 }
 
 fn scheduler_event_log_entry_with_class(
@@ -3160,6 +3252,18 @@ fn scheduler_event_log_entry_material(
             lines.push(String::from("payload=trigger_fired"));
             lines.push(trigger_firing_material(firing));
         }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            lines.push(format!(
+                "class={}",
+                if application.is_observational() {
+                    "observational"
+                } else {
+                    "causal"
+                }
+            ));
+            lines.push(String::from("payload=trigger_action_applied"));
+            lines.push(trigger_action_application_material(application));
+        }
     }
     lines.join("\n")
 }
@@ -3170,8 +3274,29 @@ fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> Sche
         | SchedulerEventLogPayload::Decision(_)
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_) => SchedulerEventLogClass::Causal,
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            if application.is_observational() {
+                SchedulerEventLogClass::Observational
+            } else {
+                SchedulerEventLogClass::Causal
+            }
+        }
         SchedulerEventLogPayload::Observable(_) => SchedulerEventLogClass::Observational,
     }
+}
+
+fn trigger_action_application_material(application: &TriggerActionApplication) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("trigger_action_sequence={}", application.sequence));
+    lines.push(format!("event_len={}", application.event.name.len()));
+    lines.push(format!("event={}", application.event.name));
+    lines.push(format!("applied_at_ticks={}", application.at.ticks));
+    lines.push(format!("path_len={}", application.path.len()));
+    for (depth, index) in application.path.iter().enumerate() {
+        lines.push(format!("path.{depth}={index}"));
+    }
+    lines.push(trigger_action_material("action", &application.action));
+    lines.join("\n")
 }
 
 fn trigger_firing_material(firing: &EventFiring) -> String {
@@ -3347,6 +3472,146 @@ fn trigger_log_level_label(level: LogLevel) -> &'static str {
         LogLevel::Warn => "warn",
         LogLevel::Error => "error",
     }
+}
+
+fn apply_trigger_action(
+    state: &mut TriggerActionState,
+    firing: &EventFiring,
+    action: &Action,
+    path: &mut Vec<u64>,
+    entries: &mut Vec<TriggerActionApplication>,
+) -> Result<(), SchedulerError> {
+    match action {
+        Action::Group(actions) => {
+            for (index, action) in actions.iter().enumerate() {
+                let index =
+                    u64::try_from(index).map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("trigger action group index exceeds u64"),
+                    })?;
+                path.push(index);
+                apply_trigger_action(state, firing, action, path, entries)?;
+                path.pop();
+            }
+            Ok(())
+        }
+        Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => {
+            let sequence = u64::try_from(state.applications.len()).map_err(|_| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("trigger action sequence exceeds u64"),
+                }
+            })?;
+            let application = TriggerActionApplication {
+                sequence,
+                event: firing.event().clone(),
+                at: firing.at(),
+                path: path.clone(),
+                action: action.clone(),
+            };
+            apply_trigger_effect(state, &application)?;
+            state.applications.push(application.clone());
+            entries.push(application);
+            Ok(())
+        }
+    }
+}
+
+fn apply_trigger_effect(
+    state: &mut TriggerActionState,
+    application: &TriggerActionApplication,
+) -> Result<(), SchedulerError> {
+    match &application.action {
+        Action::InjectFault { tag, fault } => {
+            state.active_faults.insert(tag.clone(), fault.clone());
+        }
+        Action::HealFault { tag } => {
+            state.active_faults.remove(tag);
+        }
+        Action::ArmTimer { name, after } => {
+            let ticks = application
+                .at
+                .ticks
+                .checked_add(after.nanos)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "trigger timer `{}` overflows virtual time at {} + {}",
+                        name.name, application.at.ticks, after.nanos
+                    ),
+                })?;
+            state
+                .armed_timers
+                .insert(name.clone(), VirtualTime { ticks });
+        }
+        Action::CancelTimer { name } => {
+            state.armed_timers.remove(name);
+        }
+        Action::StartNode { node } => {
+            state
+                .node_states
+                .insert(node.clone(), NodeLifecycle::Started);
+        }
+        Action::StopNode { node } => {
+            state
+                .node_states
+                .insert(node.clone(), NodeLifecycle::Exited);
+        }
+        Action::CreateSavepoint { label } => {
+            state.savepoints.push(TriggerLabelRecord {
+                sequence: application.sequence,
+                event: application.event.clone(),
+                at: application.at,
+                label: label.clone(),
+            });
+        }
+        Action::Fork { label } => {
+            state.forks.push(TriggerLabelRecord {
+                sequence: application.sequence,
+                event: application.event.clone(),
+                at: application.at,
+                label: label.clone(),
+            });
+        }
+        Action::Pass => {
+            state.verdict = Some(TriggerVerdict {
+                sequence: application.sequence,
+                event: application.event.clone(),
+                at: application.at,
+                failed_reason: None,
+            });
+        }
+        Action::Fail { reason } => {
+            state.verdict = Some(TriggerVerdict {
+                sequence: application.sequence,
+                event: application.event.clone(),
+                at: application.at,
+                failed_reason: Some(reason.clone()),
+            });
+        }
+        Action::Log { level, message } => {
+            state.diagnostics.push(TriggerDiagnosticRecord {
+                sequence: application.sequence,
+                event: application.event.clone(),
+                at: application.at,
+                level: *level,
+                message: message.clone(),
+            });
+        }
+        Action::Group(_) => {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("trigger group action must be flattened before application"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn scheduler_event_log_segment_bytes(
@@ -3739,6 +4004,7 @@ pub struct SingleScheduler {
     event_log_events: u64,
     condition_event_log_entries: Vec<SchedulerEventLogEntry>,
     condition_event_log_prefix: ConditionEventLogPrefix,
+    trigger_actions: TriggerActionState,
     frontier: VirtualTime,
     quanta: u64,
     topology_epoch: u64,
@@ -3811,6 +4077,7 @@ impl SingleScheduler {
             condition_event_log_entries: Vec::new(),
             condition_event_log_prefix: ConditionEventLogPrefix::genesis()
                 .with_event_log_offset(EventLogOffset::new(event_log_prefix, 0, 0)),
+            trigger_actions: TriggerActionState::default(),
             frontier,
             quanta: 0,
             topology_epoch: 0,
@@ -4132,6 +4399,12 @@ impl SingleScheduler {
         &self.condition_event_log_prefix
     }
 
+    /// Returns the scheduler-owned trigger action state.
+    #[must_use]
+    pub fn trigger_actions(&self) -> &TriggerActionState {
+        &self.trigger_actions
+    }
+
     /// Appends deterministic trigger firings as causal event-log entries.
     ///
     /// # Errors
@@ -4143,6 +4416,51 @@ impl SingleScheduler {
         &mut self,
         firings: &EventFirings,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.validate_trigger_firings(firings)?;
+        let entries = self.trigger_firing_entries(firings)?;
+        self.append_event_log_entries(entries)
+    }
+
+    /// Applies deterministic trigger firings and their action effects atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the firings were computed at a different
+    /// condition prefix than the scheduler's current prefix, when a timer action
+    /// would overflow virtual time, or when appending the event-log segment would
+    /// overflow the event-log offsets.
+    pub fn apply_trigger_firings(
+        &mut self,
+        firings: &EventFirings,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.validate_trigger_firings(firings)?;
+        let mut entries = self.trigger_firing_entries(firings)?;
+        let mut trigger_actions = self.trigger_actions.clone();
+        let mut action_entries = Vec::new();
+        for firing in firings.iter() {
+            let mut path = Vec::new();
+            apply_trigger_action(
+                &mut trigger_actions,
+                firing,
+                firing.action(),
+                &mut path,
+                &mut action_entries,
+            )?;
+        }
+        for application in action_entries {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                application.at,
+                SchedulerEventLogPayload::TriggerActionApplied(application),
+            ));
+        }
+        let append = self.append_event_log_entries(entries)?;
+        self.trigger_actions = trigger_actions;
+        Ok(append)
+    }
+
+    fn validate_trigger_firings(&self, firings: &EventFirings) -> Result<(), SchedulerError> {
         let current_point = self.condition_event_log_prefix.point();
         let current_offset = self.event_log_offset();
         if firings.point() != current_point {
@@ -4163,7 +4481,13 @@ impl SingleScheduler {
                 ),
             });
         }
+        Ok(())
+    }
 
+    fn trigger_firing_entries(
+        &self,
+        firings: &EventFirings,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let mut entries = Vec::with_capacity(firings.len());
         for firing in firings.iter() {
             let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
@@ -4173,7 +4497,7 @@ impl SingleScheduler {
                 SchedulerEventLogPayload::TriggerFired(firing.clone()),
             ));
         }
-        self.append_event_log_entries(entries)
+        Ok(entries)
     }
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
@@ -5923,13 +6247,11 @@ impl SingleScheduler {
             self.event_log_prefix.to_hex(),
             segment_hash.to_hex(),
         );
-        self.event_log_prefix = ContentHash::from_canonical_material(
+        let event_log_prefix = ContentHash::from_canonical_material(
             "crucible.scheduler.event-log.prefix.v1",
             &prefix_material,
         );
-        self.event_log_bytes = bytes;
-        self.event_log_events = events;
-        let current_offset = self.event_log_offset();
+        let current_offset = EventLogOffset::new(event_log_prefix, bytes, events);
         let mut condition_event_log_entries = self.condition_event_log_entries.clone();
         condition_event_log_entries.extend(entries.iter().cloned());
         let condition_event_log_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(
@@ -5939,6 +6261,9 @@ impl SingleScheduler {
             message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
         })?
         .with_event_log_offset(current_offset);
+        self.event_log_prefix = event_log_prefix;
+        self.event_log_bytes = bytes;
+        self.event_log_events = events;
         self.condition_event_log_entries = condition_event_log_entries;
         self.condition_event_log_prefix = condition_event_log_prefix;
 
