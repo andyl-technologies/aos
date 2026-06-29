@@ -118,8 +118,12 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     let store_bytes = store.as_os_str().as_bytes().to_vec();
 
     let uncached_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
-    let uncached =
-        NixNative::with_options(0, uncached_options)?.instantiate_closure(&file, "pkgs.hello")?;
+    let (uncached, uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, uncached_options)?,
+        &file,
+        "pkgs.hello",
+    )?;
+    assert_no_incremental_cache_activity(&uncached_stats, "cache-off native file closure");
     assert_eq!(uncached.drvs().len(), 2);
     assert!(
         uncached.root().starts_with(&store),
@@ -240,8 +244,10 @@ fn native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_clo
         &file,
         "pkgs.hello",
     )?;
-    assert_eq!(uncached_stats.force_cache_hits(), 0);
-    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_no_incremental_cache_activity(
+        &uncached_stats,
+        "cache-off native file force-cache sidecar leak closure",
+    );
     assert_eq!(uncached.drvs().len(), 1);
     assert!(
         uncached.root().starts_with(&store),
@@ -362,8 +368,10 @@ fn native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_ef
         &file,
         "pkgs.hello",
     )?;
-    assert_eq!(uncached_stats.force_cache_hits(), 0);
-    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_no_incremental_cache_activity(
+        &uncached_stats,
+        "cache-off native file force-cache sidecar bypass closure",
+    );
 
     let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
     first_options.set_store_dir(store_bytes.clone())?;
@@ -415,15 +423,9 @@ fn native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_ef
     )?;
 
     assert_eq!(disabled, uncached);
-    assert_eq!(
-        disabled_stats.force_cache_hits(),
-        0,
-        "disabled eval-cache must not load existing persistent file force payloads"
-    );
-    assert_eq!(
-        disabled_stats.force_cache_misses(),
-        0,
-        "disabled eval-cache must not record file force-cache lookup misses"
+    assert_no_incremental_cache_activity(
+        &disabled_stats,
+        "disabled native file force-cache sidecar bypass closure",
     );
     assert_eq!(
         persist.node_metadata_index().latest_entries()?,

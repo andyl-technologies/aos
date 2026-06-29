@@ -130,7 +130,9 @@ fn native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closur
     let source = derivation_path_wrapper_source(expr);
 
     let uncached_options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
-    let uncached = NixNative::with_options(0, uncached_options)?.instantiate_expr_closure(expr)?;
+    let (uncached, uncached_stats) =
+        instantiate_expr_closure_with_stats(&NixNative::with_options(0, uncached_options)?, expr)?;
+    assert_no_incremental_cache_activity(&uncached_stats, "cache-off native raw closure");
     assert_eq!(uncached.drvs().len(), 2);
     assert!(
         uncached.root().starts_with(&store),
@@ -244,8 +246,10 @@ fn native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_clo
     uncached_options.set_store_dir(store_bytes.clone())?;
     let (uncached, uncached_stats) =
         instantiate_expr_closure_with_stats(&NixNative::with_options(0, uncached_options)?, expr)?;
-    assert_eq!(uncached_stats.force_cache_hits(), 0);
-    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_no_incremental_cache_activity(
+        &uncached_stats,
+        "cache-off native force-cache sidecar leak closure",
+    );
     assert_eq!(uncached.drvs().len(), 1);
     assert!(
         uncached.root().starts_with(&store),
@@ -351,8 +355,10 @@ fn native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_ef
     uncached_options.set_store_dir(store_bytes.clone())?;
     let (uncached, uncached_stats) =
         instantiate_expr_closure_with_stats(&NixNative::with_options(0, uncached_options)?, expr)?;
-    assert_eq!(uncached_stats.force_cache_hits(), 0);
-    assert_eq!(uncached_stats.force_cache_misses(), 0);
+    assert_no_incremental_cache_activity(
+        &uncached_stats,
+        "cache-off native force-cache sidecar bypass closure",
+    );
 
     let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?;
     first_options.set_store_dir(store_bytes.clone())?;
@@ -395,15 +401,9 @@ fn native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_ef
         instantiate_expr_closure_with_stats(&NixNative::with_options(0, disabled_options)?, expr)?;
 
     assert_eq!(disabled, uncached);
-    assert_eq!(
-        disabled_stats.force_cache_hits(),
-        0,
-        "disabled eval-cache must not load existing persistent force payloads"
-    );
-    assert_eq!(
-        disabled_stats.force_cache_misses(),
-        0,
-        "disabled eval-cache must not record force-cache lookup misses"
+    assert_no_incremental_cache_activity(
+        &disabled_stats,
+        "disabled native force-cache sidecar bypass closure",
     );
     assert_eq!(
         persist.node_metadata_index().latest_entries()?,

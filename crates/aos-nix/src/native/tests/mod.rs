@@ -121,6 +121,70 @@ fn instantiate_file_closure_with_stats_and_hits(
     Ok((closure, stats, persistent_hit_keys))
 }
 
+fn assert_no_incremental_cache_activity(stats: &crate::eval::EvalStats, label: &str) {
+    assert_eq!(
+        stats.force_cache_hits(),
+        0,
+        "{label} reported force-cache hits"
+    );
+    assert_eq!(
+        stats.force_cache_misses(),
+        0,
+        "{label} reported force-cache misses"
+    );
+    assert_eq!(
+        stats.cache_hits(),
+        0,
+        "{label} reported aggregate evaluator cache hits"
+    );
+    assert_eq!(
+        stats.cache_misses(),
+        0,
+        "{label} reported aggregate evaluator cache misses"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_admits(),
+        0,
+        "{label} reported force-cache memoization admit decisions"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_bypasses(),
+        0,
+        "{label} reported force-cache memoization bypass decisions"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_demands(),
+        0,
+        "{label} reported force-cache memoization demand decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_materializes(),
+        0,
+        "{label} reported durable materialization decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_keeps_in_memory(),
+        0,
+        "{label} reported keep-in-memory decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_decisions(),
+        0,
+        "{label} reported materialization decisions"
+    );
+    assert_eq!(stats.early_cutoffs(), 0, "{label} reported early cutoffs");
+    assert_eq!(
+        stats.derivation_aterm_path_reuses(),
+        0,
+        "{label} reported derivation ATerm path reuse"
+    );
+    assert_eq!(
+        stats.static_derivation_output_path_reuses(),
+        0,
+        "{label} reported static-output path reuse"
+    );
+}
+
 #[derive(Debug)]
 struct NativeFileClosureCacheParity {
     uncached: NativeDrvClosure,
@@ -149,70 +213,9 @@ impl NativeFileClosureCacheParity {
             ("uncached", &self.uncached_stats),
             ("disabled eval-cache", &self.disabled_stats),
         ] {
-            assert_eq!(
-                stats.force_cache_hits(),
-                0,
-                "{label} native file-closure run reported force-cache hits"
-            );
-            assert_eq!(
-                stats.force_cache_misses(),
-                0,
-                "{label} native file-closure run reported force-cache misses"
-            );
-            assert_eq!(
-                stats.cache_hits(),
-                0,
-                "{label} native file-closure run reported aggregate evaluator cache hits"
-            );
-            assert_eq!(
-                stats.cache_misses(),
-                0,
-                "{label} native file-closure run reported aggregate evaluator cache misses"
-            );
-            assert_eq!(
-                stats.force_cache_memoization_admits(),
-                0,
-                "{label} native file-closure run reported force-cache memoization admit decisions"
-            );
-            assert_eq!(
-                stats.force_cache_memoization_bypasses(),
-                0,
-                "{label} native file-closure run reported force-cache memoization bypass decisions"
-            );
-            assert_eq!(
-                stats.force_cache_memoization_demands(),
-                0,
-                "{label} native file-closure run reported force-cache memoization demand decisions"
-            );
-            assert_eq!(
-                stats.force_cache_materialization_materializes(),
-                0,
-                "{label} native file-closure run reported durable materialization decisions"
-            );
-            assert_eq!(
-                stats.force_cache_materialization_keeps_in_memory(),
-                0,
-                "{label} native file-closure run reported keep-in-memory decisions"
-            );
-            assert_eq!(
-                stats.force_cache_materialization_decisions(),
-                0,
-                "{label} native file-closure run reported materialization decisions"
-            );
-            assert_eq!(
-                stats.early_cutoffs(),
-                0,
-                "{label} native file-closure run reported early cutoffs"
-            );
-            assert_eq!(
-                stats.derivation_aterm_path_reuses(),
-                0,
-                "{label} native file-closure run reported derivation ATerm path reuse"
-            );
-            assert_eq!(
-                stats.static_derivation_output_path_reuses(),
-                0,
-                "{label} native file-closure run reported static-output path reuse"
+            assert_no_incremental_cache_activity(
+                stats,
+                &format!("{label} native file-closure run"),
             );
         }
     }

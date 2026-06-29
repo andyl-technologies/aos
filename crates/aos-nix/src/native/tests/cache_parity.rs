@@ -56,10 +56,6 @@ fn native_file_cache_parity_harness_covers_empty_foldl_update_regression() -> Re
     assert_eq!(report.cache_second, report.uncached);
     assert_eq!(report.persistent_hit, report.uncached);
     assert_eq!(report.disabled_with_persist_root, report.uncached);
-    assert_eq!(report.uncached_stats.force_cache_hits(), 0);
-    assert_eq!(report.uncached_stats.force_cache_misses(), 0);
-    assert_eq!(report.disabled_stats.force_cache_hits(), 0);
-    assert_eq!(report.disabled_stats.force_cache_misses(), 0);
     let _observed_cache_activity = (
         report.cache_miss_stats.force_cache_hits(),
         report.cache_miss_stats.force_cache_misses(),
@@ -307,10 +303,6 @@ fn native_file_cache_parity_harness_covers_filesystem_impure_inputs() -> Result<
             ("readDir directory entry", b"subdir"),
         ],
     );
-    assert_eq!(report.uncached_stats.force_cache_hits(), 0);
-    assert_eq!(report.uncached_stats.force_cache_misses(), 0);
-    assert_eq!(report.disabled_stats.force_cache_hits(), 0);
-    assert_eq!(report.disabled_stats.force_cache_misses(), 0);
     assert!(
         report.cache_miss_stats.cache_misses() > 0,
         "cache-on miss should report import parse-cache miss activity"
@@ -450,10 +442,6 @@ fn native_file_cache_parity_harness_covers_source_path_inputs() -> Result<()> {
             ("pathExists result branch", b"present"),
         ],
     );
-    assert_eq!(report.uncached_stats.force_cache_hits(), 0);
-    assert_eq!(report.uncached_stats.force_cache_misses(), 0);
-    assert_eq!(report.disabled_stats.force_cache_hits(), 0);
-    assert_eq!(report.disabled_stats.force_cache_misses(), 0);
     assert!(
         report.cache_miss_stats.force_cache_misses() > 0,
         "cache-on miss should report force-cache miss activity alongside the source-path input"

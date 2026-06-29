@@ -3392,10 +3392,15 @@ alone (`M-1`/`Q-A`).
       disabled, with configured parse/persist/eval cache on the miss/write
       path, and with a fresh parse root hydrated from a persistent raw
       parse-artifact hit. It requires the root `.drv` path and every recorded
-      input/root ATerm byte payload to be identical, records the persistent
-      parse-index hit, and scans cache-off, cache-on miss, and persistent-hit
-      closure paths/ATerm bytes for the exercised raw-wrapper parse-cache
-      BLAKE3 renderings (hex, raw bytes, and Nix base32). This samples the
+      input/root ATerm byte payload to be identical, requires the cache-off leg
+      to report zero aggregate evaluator cache hit/miss counters, zero
+      force-cache hit/miss counters, zero force-cache memoization-decision
+      counters, zero force-cache materialization threshold-decision counters,
+      zero early cutoffs, and zero derivation final-path/static-output
+      side-record reuse, records the persistent parse-index hit, and scans
+      cache-off, cache-on miss, and persistent-hit closure paths/ATerm bytes
+      for the exercised raw-wrapper parse-cache BLAKE3 renderings (hex, raw
+      bytes, and Nix base32). This samples the
       current native raw-instantiation closure surface, not the full
       cached-vs-uncached AOS closure harness, full leak-invariant harness, or
       future value-memoization safety net
@@ -3406,10 +3411,15 @@ alone (`M-1`/`Q-A`).
       disabled, with configured parse/persist/eval cache on the miss/write
       path, and with a fresh parse root hydrated from a persistent file-artifact
       hit. It requires the selected root `.drv` path and every recorded
-      input/root ATerm byte payload to be identical, records the persistent
-      file-index hit, and scans cache-off, cache-on miss, and persistent-hit
-      closure paths/ATerm bytes for the exercised file-root parse-cache and
-      file-content BLAKE3 renderings (hex, raw bytes, and Nix base32). This
+      input/root ATerm byte payload to be identical, requires the cache-off leg
+      to report zero aggregate evaluator cache hit/miss counters, zero
+      force-cache hit/miss counters, zero force-cache memoization-decision
+      counters, zero force-cache materialization threshold-decision counters,
+      zero early cutoffs, and zero derivation final-path/static-output
+      side-record reuse, records the persistent file-index hit, and scans
+      cache-off, cache-on miss, and persistent-hit closure paths/ATerm bytes
+      for the exercised file-root parse-cache and file-content BLAKE3 renderings
+      (hex, raw bytes, and Nix base32). This
       samples the current native file-instantiation closure surface, not the
       full cached-vs-uncached AOS closure harness, full leak-invariant harness,
       or future value-memoization safety net
@@ -3576,23 +3586,27 @@ alone (`M-1`/`Q-A`).
       drive raw-expression and file-root attr-path `NixNative` instantiation
       through cache-off, persistent demand observation, durable forced-value
       materialization, and a fresh-runtime persistent pass for a configured
-      `currentSystem` thunk. The final fresh-runtime passes must report
-      force-cache hits, and the canary scanner only admits persistent node
-      metadata entries whose linked value loads through the cached-expression
-      payload decoder. The canaries then scan the resulting `.drv` path and
-      ATerm closure surfaces for forced-expression node metadata BLAKE3
-      addresses, materialized value BLAKE3 addresses, trace-side BLAKE3
-      addresses when present, and a representative context-free `NixString`
-      xxh3 hot-hash sentinel.
+      `currentSystem` thunk. The cache-off leak legs require zero aggregate
+      evaluator cache hit/miss counters, zero force-cache hit/miss counters,
+      zero force-cache memoization-decision counters, zero force-cache
+      materialization threshold-decision counters, zero early cutoffs, and zero
+      derivation final-path/static-output side-record reuse. The final
+      fresh-runtime passes must report force-cache hits, and the canary scanner
+      only admits persistent node metadata entries whose linked value loads
+      through the cached-expression payload decoder. The canaries then scan the
+      resulting `.drv` path and ATerm closure surfaces for forced-expression node
+      metadata BLAKE3 addresses, materialized value BLAKE3 addresses, trace-side
+      BLAKE3 addresses when present, and a representative context-free
+      `NixString` xxh3 hot-hash sentinel.
       `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects`
       and
       `native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects`
       seed real persistent forced-expression payloads, then rerun the same
       raw-expression and file-root closures with eval-cache disabled and the
       same persistent root configured, requiring byte-identical closure output,
-      zero force-cache hit/miss accounting, unchanged latest logical node
-      metadata and trace entries, and no sidecar hash leak into the disabled
-      closures. The raw-expression canary additionally requires byte-identical
+      the same zero incremental-cache stats contract, unchanged latest logical
+      node metadata and trace entries, and no sidecar hash leak into the
+      disabled closures. The raw-expression canary additionally requires byte-identical
       persistent cache file contents; the file-root canary requires
       byte-identical force-cache node/value sidecar contents while leaving
       file-root parse artifact persistence to the separate frontend cache
