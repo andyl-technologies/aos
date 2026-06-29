@@ -62,8 +62,8 @@
         needle = "Completed by `checks.crucible.phase4.guestMarkerLeaf`";
       }
       {
-        label = "compound combinators remain open";
-        needle = "- [ ] **T-TRIG-9**";
+        label = "deterministic evaluation remains open";
+        needle = "- [ ] **T-TRIG-10**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

@@ -1220,9 +1220,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   evaluation, and rejects `After` references to undeclared events plus `Timer`
   references without an armable `Action::ArmTimer` declaration. Assertion
   properties accept `At` as pure virtual-time vocabulary while rejecting
-  edge-shaped `After` and `Timer` leaves as trigger-only. Compound combinators,
-  full timer action application, the broader reference/cycle validator, and
-  verdict composition remain T-TRIG-9 through T-TRIG-20.
+  edge-shaped `After` and `Timer` leaves as trigger-only. Full timer action
+  application, the broader reference/cycle validator, and verdict composition
+  remain T-TRIG-10 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1239,7 +1239,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
   catalog integration, named-link topology validation, and the broader validator
-  remain T-OBS-* and T-TRIG-9 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-10 through T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1255,7 +1255,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
   production symbol-table loading, coverage-guided search consumption, and the
-  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-9 through T-TRIG-20.
+  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-10 through T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies
@@ -1271,7 +1271,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
   cadence, RFC 19 memory-sample catalog integration, and the broader validator
-  remain T-OBS-* and T-TRIG-9 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-10 through T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1287,9 +1287,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   references within the same properties bundle, and event-graph construction
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
-  cooperation. Compound combinators/latching, full action application, full
-  validator reachability/cycle checks, and production RFC 19 catalog integration
-  remain T-TRIG-9 through T-TRIG-20 and T-OBS-*.
+  cooperation. Full action application, full validator reachability/cycle checks,
+  and production RFC 19 catalog integration remain T-TRIG-10 through T-TRIG-20
+  and T-OBS-*.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
   with zero `GuestMarker` conditions. — satisfies [TRIG-3], [TRIG-14]; spec
@@ -1308,12 +1308,25 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   conditions when no world node enables white-box; event-graph firing does not
   require named-predicate fallback; zero-`GuestMarker` graphs run without any
   guest-marker support; and unrelated guest-marker events are additive to
-  non-marker conditions. Compound combinators/latching, full action application,
-  full validator reachability/cycle checks, and production RFC 19 catalog
-  integration remain T-TRIG-9 through T-TRIG-20 and T-OBS-*.
-- [ ] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
+  non-marker conditions. Full action application, full validator
+  reachability/cycle checks, and production RFC 19 catalog integration remain
+  T-TRIG-10 through T-TRIG-20 and T-OBS-*.
+- [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
+
+  Completed by `checks.crucible.phase4.compoundConditionCombinators`: shared
+  `Predicate` already carries `AllOf`, `AnyOf`, `Once`, and `Not`, and the shared
+  evaluator now gives `Once` persistent latch state through the evaluator/event
+  graph state instead of treating it as a point-local alias for the inner
+  predicate. `AllOf` and `AnyOf` intentionally evaluate every child before
+  returning their boolean result so nested `Once` predicates observe their inner
+  condition even when another branch decides the current truth value. Event-graph
+  construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
+  deterministic `EmptyCompound` error; property validation already rejects the
+  same empty compounds. Deterministic-pass integration, causal trigger firing
+  records, full action application, and the broader validator remain T-TRIG-10
+  through T-TRIG-20.
 - [ ] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
   on icount), in the same deterministic pass as assertion evaluation, never
