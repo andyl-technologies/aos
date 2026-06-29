@@ -229,7 +229,7 @@
       }
       {
         label = "fabricated white-box namespace constructor";
-        needle = "new_with_assertions_and_white_box_nodes";
+        needle = "new_with_assertions_and_world";
       }
     ];
 in

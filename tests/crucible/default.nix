@@ -567,6 +567,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerActionApplication";
       taskIds = ["T-TRIG-12"];
     };
+    triggerNodeScheduling = import ./phase4-trigger-node-scheduling.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerNodeScheduling";
+      taskIds = ["T-TRIG-13"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

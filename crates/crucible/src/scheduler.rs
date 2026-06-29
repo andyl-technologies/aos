@@ -23,7 +23,7 @@ use crate::{
     Icount, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
     PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
     SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    TimerId, VcpuId, VirtualTime, WorldLookaheadEdge, step,
+    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -2647,6 +2647,8 @@ pub struct SchedulerLivenessScenario {
     pub pending_events: Vec<ScheduledEvent>,
     /// Saved per-producer/consumer sequence counters for newly emitted events.
     pub event_sequences: EventSequenceState,
+    /// Static world products used to validate trigger node scheduling actions.
+    pub trigger_static_topology: Option<WorldStaticTopology>,
 }
 
 impl SchedulerLivenessScenario {
@@ -2679,6 +2681,7 @@ impl SchedulerLivenessScenario {
             vcpu_idle_snapshots: Vec::new(),
             pending_events,
             event_sequences: EventSequenceState::empty(),
+            trigger_static_topology: None,
         };
         scenario.refresh_configuration();
         scenario
@@ -2695,6 +2698,14 @@ impl SchedulerLivenessScenario {
             ),
             schedule: self.configuration.schedule.clone(),
         }
+    }
+
+    /// Sets the world-derived static topology used to validate trigger actions.
+    #[must_use]
+    pub fn with_trigger_world(mut self, world: &World) -> Self {
+        self.trigger_static_topology = Some(world.static_topology());
+        self.refresh_configuration();
+        self
     }
 
     /// Enables fixed-interval rendezvous caps for this scenario.
@@ -2794,6 +2805,13 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
             .iter()
             .map(scheduler_lookahead_edge_material),
     );
+    match &scenario.trigger_static_topology {
+        Some(topology) => {
+            lines.push(String::from("trigger_static_topology=present"));
+            lines.push(world_static_topology_material(topology));
+        }
+        None => lines.push(String::from("trigger_static_topology=absent")),
+    }
     let mut nodes = scenario.nodes.clone();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lines.push(format!("nodes={}", nodes.len()));
@@ -2937,6 +2955,50 @@ fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
         "edge:\nedge_from:\n{}\nedge_to:\n{}\nedge_minimum_latency_ns={}",
         scheduler_node_material(&edge.from),
         scheduler_node_material(&edge.to),
+        edge.minimum_latency.nanos,
+    )
+}
+
+fn world_static_topology_material(topology: &WorldStaticTopology) -> String {
+    let mut participants = topology.participants.clone();
+    participants.sort();
+    let mut rng_streams = topology.rng_streams.clone();
+    rng_streams.sort();
+    let mut lookahead_graph = topology.lookahead_graph.clone();
+    lookahead_graph.sort();
+    let mut bake_nodes = topology.bake_nodes.clone();
+    bake_nodes.sort();
+
+    let mut lines = Vec::new();
+    lines.push(format!("participants={}", participants.len()));
+    for node in participants {
+        lines.push(trigger_node_material("participant", &node));
+    }
+    lines.push(format!("rng_streams={}", rng_streams.len()));
+    for stream in rng_streams {
+        lines.push(format!("rng_stream_domain_len={}", stream.domain.len()));
+        lines.push(format!("rng_stream_domain={}", stream.domain));
+        lines.push(format!("rng_stream_name_len={}", stream.name.len()));
+        lines.push(format!("rng_stream_name={}", stream.name));
+    }
+    lines.push(format!("world_lookahead_edges={}", lookahead_graph.len()));
+    for edge in lookahead_graph {
+        lines.push(world_lookahead_edge_material(&edge));
+    }
+    lines.push(format!("bake_nodes={}", bake_nodes.len()));
+    for node in bake_nodes {
+        lines.push(trigger_node_material("bake_node", &node));
+    }
+    lines.join("\n")
+}
+
+fn world_lookahead_edge_material(edge: &WorldLookaheadEdge) -> String {
+    format!(
+        "world_edge_from_len={}\nworld_edge_from={}\nworld_edge_to_len={}\nworld_edge_to={}\nworld_edge_minimum_latency_ns={}",
+        edge.from.name.len(),
+        edge.from.name,
+        edge.to.name.len(),
+        edge.to.name,
         edge.minimum_latency.nanos,
     )
 }
@@ -3476,6 +3538,7 @@ fn trigger_log_level_label(level: LogLevel) -> &'static str {
 
 fn apply_trigger_action(
     state: &mut TriggerActionState,
+    static_topology: Option<&WorldStaticTopology>,
     firing: &EventFiring,
     action: &Action,
     path: &mut Vec<u64>,
@@ -3489,7 +3552,7 @@ fn apply_trigger_action(
                         message: String::from("trigger action group index exceeds u64"),
                     })?;
                 path.push(index);
-                apply_trigger_action(state, firing, action, path, entries)?;
+                apply_trigger_action(state, static_topology, firing, action, path, entries)?;
                 path.pop();
             }
             Ok(())
@@ -3517,7 +3580,7 @@ fn apply_trigger_action(
                 path: path.clone(),
                 action: action.clone(),
             };
-            apply_trigger_effect(state, &application)?;
+            apply_trigger_effect(state, static_topology, &application)?;
             state.applications.push(application.clone());
             entries.push(application);
             Ok(())
@@ -3527,6 +3590,7 @@ fn apply_trigger_action(
 
 fn apply_trigger_effect(
     state: &mut TriggerActionState,
+    static_topology: Option<&WorldStaticTopology>,
     application: &TriggerActionApplication,
 ) -> Result<(), SchedulerError> {
     match &application.action {
@@ -3555,11 +3619,13 @@ fn apply_trigger_effect(
             state.armed_timers.remove(name);
         }
         Action::StartNode { node } => {
+            validate_trigger_node_schedule_target(static_topology, node)?;
             state
                 .node_states
                 .insert(node.clone(), NodeLifecycle::Started);
         }
         Action::StopNode { node } => {
+            validate_trigger_node_schedule_target(static_topology, node)?;
             state
                 .node_states
                 .insert(node.clone(), NodeLifecycle::Exited);
@@ -3610,6 +3676,37 @@ fn apply_trigger_effect(
                 message: String::from("trigger group action must be flattened before application"),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_trigger_node_schedule_target(
+    static_topology: Option<&WorldStaticTopology>,
+    node: &NodeId,
+) -> Result<(), SchedulerError> {
+    let Some(static_topology) = static_topology else {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "trigger node scheduling action for `{}` has no world static topology",
+                node.name
+            ),
+        });
+    };
+    if !static_topology.participants.contains(node) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "trigger node scheduling action references undeclared node `{}`",
+                node.name
+            ),
+        });
+    }
+    if !static_topology.bake_nodes.contains(node) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "trigger node scheduling action references unbaked node `{}`",
+                node.name
+            ),
+        });
     }
     Ok(())
 }
@@ -4005,6 +4102,7 @@ pub struct SingleScheduler {
     condition_event_log_entries: Vec<SchedulerEventLogEntry>,
     condition_event_log_prefix: ConditionEventLogPrefix,
     trigger_actions: TriggerActionState,
+    trigger_static_topology: Option<WorldStaticTopology>,
     frontier: VirtualTime,
     quanta: u64,
     topology_epoch: u64,
@@ -4078,6 +4176,7 @@ impl SingleScheduler {
             condition_event_log_prefix: ConditionEventLogPrefix::genesis()
                 .with_event_log_offset(EventLogOffset::new(event_log_prefix, 0, 0)),
             trigger_actions: TriggerActionState::default(),
+            trigger_static_topology: scenario.trigger_static_topology,
             frontier,
             quanta: 0,
             topology_epoch: 0,
@@ -4405,6 +4504,12 @@ impl SingleScheduler {
         &self.trigger_actions
     }
 
+    /// Returns the world-derived static topology used for trigger action validation.
+    #[must_use]
+    pub fn trigger_static_topology(&self) -> Option<&WorldStaticTopology> {
+        self.trigger_static_topology.as_ref()
+    }
+
     /// Appends deterministic trigger firings as causal event-log entries.
     ///
     /// # Errors
@@ -4427,8 +4532,9 @@ impl SingleScheduler {
     ///
     /// Returns [`SchedulerError`] when the firings were computed at a different
     /// condition prefix than the scheduler's current prefix, when a timer action
-    /// would overflow virtual time, or when appending the event-log segment would
-    /// overflow the event-log offsets.
+    /// would overflow virtual time, when a node scheduling action references a
+    /// node outside the scheduler's world-derived static topology, or when
+    /// appending the event-log segment would overflow the event-log offsets.
     pub fn apply_trigger_firings(
         &mut self,
         firings: &EventFirings,
@@ -4441,6 +4547,7 @@ impl SingleScheduler {
             let mut path = Vec::new();
             apply_trigger_action(
                 &mut trigger_actions,
+                self.trigger_static_topology.as_ref(),
                 firing,
                 firing.action(),
                 &mut path,

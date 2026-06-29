@@ -62,8 +62,8 @@
         needle = "Completed by `checks.crucible.phase4.guestMarkerLeaf`";
       }
       {
-        label = "start stop validation remains open";
-        needle = "- [ ] **T-TRIG-13**";
+        label = "relative timer phase remains open";
+        needle = "- [ ] **T-TRIG-14**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -139,7 +139,7 @@
       }
       {
         label = "internal white-box node helper";
-        needle = "fn new_with_assertions_and_white_box_nodes";
+        needle = "fn new_with_assertions_and_world";
       }
       {
         label = "guest marker graph validation error";
@@ -223,7 +223,7 @@
       }
       {
         label = "public arbitrary white-box node graph constructor";
-        needle = "pub fn new_with_assertions_and_white_box_nodes";
+        needle = "pub fn new_with_assertions_and_world";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/guest_marker_condition_leaf.rs" guestMarkerTest [
