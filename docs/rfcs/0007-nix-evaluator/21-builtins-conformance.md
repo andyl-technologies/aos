@@ -563,7 +563,7 @@ a given mode does so identically.
       behavior at strictness boundaries.
 
 `exec` is effectful and remains a stub. Full `getFlake` support is scoped with
-the flake layer, while the narrow native local-inputless path is tracked in
+the flake layer, while the narrow native local/direct-input path is tracked in
 §17.
 
 ---
@@ -980,16 +980,18 @@ builtin subsets are implemented and tested where the pinned builtin surface
 requires them:
 
 - [x] `getFlake` (args) — **conditional subset only**. Native evaluation covers
-      local/inputless flakes through the native `fetchTree` subset: it imports
-      `flake.nix`, evaluates `outputs` with `self`, returns `_type = "flake"`,
-      empty `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock metadata, and
-      rejects declared inputs. Argument preflight, string-context rejection,
-      pure-mode locking, and declared-input rejection are covered by focused
-      `getFlake` tests.
+      local flakes through the native `fetchTree` subset: it imports
+      `flake.nix`, resolves direct string and exact `{ url = ...; }` declared
+      inputs recursively through `builtins.getFlake`, evaluates `outputs` with
+      `self` and the resolved direct input set, and returns `_type = "flake"`,
+      `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock metadata. Argument
+      preflight, string-context rejection, pure-mode locking, direct-input
+      resolution, and unsupported declared-input rejection are covered by
+      focused `getFlake` tests.
 - [ ] Full `getFlake` flake protocol remains scoped/open: declared-input
-      resolution, ambient registry lookup and non-exact indirect/ref merge
-      semantics, lock-file graph semantics, full input graph evaluation, and
-      general flake protocol parity.
+      forms beyond direct strings/exact `url` attrsets, `follows`/input-override
+      semantics, ambient registry lookup and non-exact indirect/ref merge
+      semantics, lock-file graph semantics, and general flake protocol parity.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.

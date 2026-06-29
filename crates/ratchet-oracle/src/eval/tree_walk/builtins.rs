@@ -6,10 +6,13 @@ let
 const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#";
   flake = import (sourceInfo.outPath + "/flake.nix");
   declaredInputs = flake.inputs or {};
-  inputs =
-    if builtins.length (builtins.attrNames declaredInputs) == 0
-    then {}
-    else builtins.throw "aos-nix builtins.getFlake currently supports only flakes without inputs";
+  resolveInput = name: input:
+    let inputRef =
+      if builtins.isString input then input
+      else if builtins.isAttrs input && builtins.attrNames input == [ "url" ] then input.url
+      else builtins.throw "aos-nix builtins.getFlake currently supports only direct string or exact url inputs";
+    in builtins.getFlake inputRef;
+  inputs = builtins.mapAttrs resolveInput declaredInputs;
   outputs = flake.outputs (inputs // { inherit self; });
   metadata = sourceInfo // {
     _type = "flake";
