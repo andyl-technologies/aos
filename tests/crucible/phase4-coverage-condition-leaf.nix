@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.coverageConditionLeaf`";
       }
       {
-        label = "deterministic evaluation remains open";
-        needle = "- [ ] **T-TRIG-10**";
+        label = "causal trigger recording remains open";
+        needle = "- [ ] **T-TRIG-11**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -215,8 +215,8 @@
         needle = "coverage_point_material_distinguishes_addresses_and_symbols";
       }
       {
-        label = "observable event injection";
-        needle = ".with_observable_events(events)";
+        label = "observable event prefix construction";
+        needle = "support::evaluation_with_observables";
       }
       {
         label = "no guest marker fallback";

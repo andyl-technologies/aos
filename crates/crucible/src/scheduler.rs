@@ -14,6 +14,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
+use crate::trigger::{ConditionEventLogPrefix, ObservableEventPayload};
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
     DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
@@ -126,15 +127,100 @@ pub struct SchedulerConcurrentRunCandidate {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerEventLogEntry {
     /// Dense per-run sequence number assigned by the scheduler append path.
-    pub sequence: u64,
+    sequence: u64,
     /// Virtual-time coordinate at which the entry occurred.
-    pub at: VirtualTime,
+    at: VirtualTime,
     /// Causal-vs-observational class recorded by the typed append path.
-    pub class: SchedulerEventLogClass,
+    class: SchedulerEventLogClass,
     /// Typed payload carried by the event-log entry.
-    pub payload: SchedulerEventLogPayload,
+    payload: SchedulerEventLogPayload,
     /// Content address of this entry's canonical material.
-    pub content_hash: ContentHash,
+    content_hash: ContentHash,
+    provenance: SchedulerEventLogEntryProvenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SchedulerEventLogEntryProvenance;
+
+impl SchedulerEventLogEntry {
+    /// Builds an observable condition entry as if appended by scheduler EMIT.
+    #[must_use]
+    pub(crate) fn observable(
+        sequence: u64,
+        at: VirtualTime,
+        payload: ObservableEventPayload,
+    ) -> Self {
+        scheduler_event_log_entry_with_class(
+            sequence,
+            at,
+            SchedulerEventLogClass::Observational,
+            SchedulerEventLogPayload::Observable(payload),
+        )
+    }
+
+    /// Builds a deterministic condition-evaluation boundary entry.
+    #[must_use]
+    pub(crate) fn evaluation_boundary(
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Self {
+        scheduler_event_log_entry_with_class(
+            sequence,
+            at,
+            SchedulerEventLogClass::Causal,
+            SchedulerEventLogPayload::EvaluationBoundary(kind),
+        )
+    }
+
+    /// Returns the dense event-log sequence number assigned by scheduler EMIT.
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the virtual-time coordinate at which the entry occurred.
+    #[must_use]
+    pub fn at(&self) -> VirtualTime {
+        self.at
+    }
+
+    /// Returns the causal-vs-observational class recorded for this entry.
+    #[must_use]
+    pub fn class(&self) -> SchedulerEventLogClass {
+        self.class
+    }
+
+    /// Returns the typed payload carried by this event-log entry.
+    #[must_use]
+    pub fn payload(&self) -> &SchedulerEventLogPayload {
+        &self.payload
+    }
+
+    /// Returns the content address of this entry's canonical material.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns whether this entry's content hash matches its canonical material.
+    #[must_use]
+    pub fn has_valid_content_hash(&self) -> bool {
+        if self.class != scheduler_event_log_payload_class(&self.payload) {
+            return false;
+        }
+        self.content_hash
+            == ContentHash::from_canonical_material(
+                "crucible.scheduler.event-log.entry.v1",
+                &scheduler_event_log_entry_material(self.sequence, self.at, &self.payload),
+            )
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn with_content_hash_for_test(mut self, content_hash: ContentHash) -> Self {
+        self.content_hash = content_hash;
+        self
+    }
 }
 
 /// Determinism class for a scheduler event-log entry.
@@ -146,6 +232,15 @@ pub enum SchedulerEventLogClass {
     Observational,
 }
 
+/// Deterministic scheduler boundary that may trigger condition evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SchedulerEvaluationBoundaryKind {
+    /// A quantum boundary keyed by virtual time / icount.
+    Quantum,
+    /// A rendezvous boundary keyed by virtual time / icount.
+    Rendezvous,
+}
+
 /// Payload variants emitted by the scheduler EMIT phase.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SchedulerEventLogPayload {
@@ -153,6 +248,10 @@ pub enum SchedulerEventLogPayload {
     ResolvedHappening(ScheduledEvent),
     /// A decision taken and appended to the schedule this quantum.
     Decision(Decision),
+    /// An observable condition fact appended to the event log.
+    Observable(ObservableEventPayload),
+    /// A deterministic evaluation boundary appended to the event log.
+    EvaluationBoundary(SchedulerEvaluationBoundaryKind),
 }
 
 /// Result of appending one scheduler quantum to the event log.
@@ -2999,6 +3098,15 @@ fn scheduler_event_log_entry(
     at: VirtualTime,
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
+    scheduler_event_log_entry_with_class(sequence, at, SchedulerEventLogClass::Causal, payload)
+}
+
+fn scheduler_event_log_entry_with_class(
+    sequence: u64,
+    at: VirtualTime,
+    class: SchedulerEventLogClass,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
         "crucible.scheduler.event-log.entry.v1",
         &scheduler_event_log_entry_material(sequence, at, &payload),
@@ -3006,9 +3114,10 @@ fn scheduler_event_log_entry(
     SchedulerEventLogEntry {
         sequence,
         at,
-        class: SchedulerEventLogClass::Causal,
+        class,
         payload,
         content_hash,
+        provenance: SchedulerEventLogEntryProvenance,
     }
 }
 
@@ -3020,18 +3129,38 @@ fn scheduler_event_log_entry_material(
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
     lines.push(format!("at_ticks={}", at.ticks));
-    lines.push(String::from("class=causal"));
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
+            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=resolved-happening"));
             lines.push(scheduled_event_material(event));
         }
         SchedulerEventLogPayload::Decision(decision) => {
+            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=decision"));
             lines.push(scheduler_decision_material(decision));
         }
+        SchedulerEventLogPayload::Observable(observable) => {
+            lines.push(String::from("class=observational"));
+            lines.push(String::from("payload=observable"));
+            lines.push(format!("observable={observable:?}"));
+        }
+        SchedulerEventLogPayload::EvaluationBoundary(kind) => {
+            lines.push(String::from("class=causal"));
+            lines.push(String::from("payload=evaluation-boundary"));
+            lines.push(format!("kind={kind:?}"));
+        }
     }
     lines.join("\n")
+}
+
+fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> SchedulerEventLogClass {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(_)
+        | SchedulerEventLogPayload::Decision(_)
+        | SchedulerEventLogPayload::EvaluationBoundary(_) => SchedulerEventLogClass::Causal,
+        SchedulerEventLogPayload::Observable(_) => SchedulerEventLogClass::Observational,
+    }
 }
 
 fn scheduler_event_log_segment_bytes(
@@ -3422,6 +3551,8 @@ pub struct SingleScheduler {
     event_log_prefix: ContentHash,
     event_log_bytes: u64,
     event_log_events: u64,
+    condition_event_log_entries: Vec<SchedulerEventLogEntry>,
+    condition_event_log_prefix: ConditionEventLogPrefix,
     frontier: VirtualTime,
     quanta: u64,
     topology_epoch: u64,
@@ -3490,6 +3621,8 @@ impl SingleScheduler {
             event_log_prefix: scheduler_event_log_empty_prefix(),
             event_log_bytes: 0,
             event_log_events: 0,
+            condition_event_log_entries: Vec::new(),
+            condition_event_log_prefix: ConditionEventLogPrefix::genesis(),
             frontier,
             quanta: 0,
             topology_epoch: 0,
@@ -3803,6 +3936,12 @@ impl SingleScheduler {
             self.event_log_bytes,
             self.event_log_events,
         )
+    }
+
+    /// Returns the scheduler-owned condition-evaluation prefix.
+    #[must_use]
+    pub fn condition_event_log_prefix(&self) -> &ConditionEventLogPrefix {
+        &self.condition_event_log_prefix
     }
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
@@ -5117,8 +5256,13 @@ impl SingleScheduler {
                 nanos: self.frontier.ticks,
             };
             let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
-            let event_log =
-                self.emit_quantum_event_log(&boundary_resolved_events, &decisions, at)?;
+            let emit_boundary = !decisions.is_empty() || topology_recomputed;
+            let event_log = self.emit_quantum_event_log(
+                &boundary_resolved_events,
+                &decisions,
+                at,
+                emit_boundary,
+            )?;
             let configuration = self.step_quantum(&decisions);
             if !decisions.is_empty() {
                 self.configuration = configuration.clone();
@@ -5222,7 +5366,7 @@ impl SingleScheduler {
                 after_time,
             )?;
             let event_log =
-                self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
+                self.emit_quantum_event_log(&resolved_events, &decisions, after_time, true)?;
             let configuration = self.step_quantum(&decisions);
             let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
 
@@ -5300,12 +5444,14 @@ impl SingleScheduler {
                         nanos: self.frontier.ticks,
                     },
                 )?;
+                let emit_boundary = !decisions.is_empty() || topology_recomputed;
                 let event_log = self.emit_quantum_event_log(
                     &resolved_events,
                     &decisions,
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
+                    emit_boundary,
                 )?;
                 let configuration = self.step_quantum(&decisions);
                 if !decisions.is_empty() {
@@ -5369,7 +5515,8 @@ impl SingleScheduler {
             &device_decisions,
             after_time,
         )?;
-        let event_log = self.emit_quantum_event_log(&resolved_events, &decisions, after_time)?;
+        let event_log =
+            self.emit_quantum_event_log(&resolved_events, &decisions, after_time, true)?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions);
         let frontier = frontier_for(&self.nodes, self.timeline.shift())?;
@@ -5460,6 +5607,7 @@ impl SingleScheduler {
         resolved_events: &[ScheduledEvent],
         decisions: &[Decision],
         at: SimInstant,
+        emit_boundary: bool,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let mut payloads = Vec::with_capacity(resolved_events.len() + decisions.len());
 
@@ -5477,10 +5625,20 @@ impl SingleScheduler {
         }
         payloads.sort_by(|left, right| left.0.ticks.cmp(&right.0.ticks));
 
-        let mut entries = Vec::with_capacity(payloads.len());
+        let mut entries = Vec::with_capacity(payloads.len() + 1);
         for (entry_time, payload) in payloads {
             let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
             entries.push(scheduler_event_log_entry(sequence, entry_time, payload));
+        }
+        if emit_boundary {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                VirtualTime { ticks: at.nanos },
+                SchedulerEventLogPayload::EvaluationBoundary(
+                    SchedulerEvaluationBoundaryKind::Quantum,
+                ),
+            ));
         }
 
         if entries.is_empty() {
@@ -5491,6 +5649,15 @@ impl SingleScheduler {
                 offset: self.event_log_offset(),
             });
         }
+
+        let mut condition_event_log_entries = self.condition_event_log_entries.clone();
+        condition_event_log_entries.extend(entries.iter().cloned());
+        let condition_event_log_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(
+            condition_event_log_entries.clone(),
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
+        })?;
 
         let segment_bytes = scheduler_event_log_segment_bytes(self.event_log_prefix, &entries);
         let segment_hash = ContentHash::from_bytes(&segment_bytes);
@@ -5532,6 +5699,8 @@ impl SingleScheduler {
         );
         self.event_log_bytes = bytes;
         self.event_log_events = events;
+        self.condition_event_log_entries = condition_event_log_entries;
+        self.condition_event_log_prefix = condition_event_log_prefix;
 
         Ok(SchedulerEventLogAppend {
             entries,

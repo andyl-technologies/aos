@@ -16,7 +16,10 @@ use crate::model::{
     MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId, NodeLifecycle, Predicate, RegexProgram,
     SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World,
 };
-use crate::scheduler::SchedulerQuiescence;
+use crate::scheduler::{
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerQuiescence,
+};
 
 pub use crate::model::EventId;
 
@@ -350,7 +353,7 @@ where
 }
 
 /// Shared evaluator used by both assertion and trigger consumers.
-pub trait ConditionEvaluator {
+pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     /// Returns the deterministic point where this evaluator observes the log.
     fn evaluation_point(&self) -> EventEvaluationPoint;
 
@@ -413,6 +416,162 @@ pub trait ConditionEvaluator {
     }
 }
 
+mod condition_evaluator_sealed {
+    pub trait Sealed {}
+}
+
+/// Error returned when constructing a deterministic condition-evaluation prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionEvaluationError {
+    /// A scheduler event-log prefix contained no entries.
+    EmptyEventLogPrefix,
+    /// A scheduler event-log entry does not continue the dense prefix sequence.
+    NonPrefixEventLogSequence {
+        /// Sequence number expected at this prefix offset.
+        expected: u64,
+        /// Sequence number carried by the entry.
+        actual: u64,
+    },
+    /// A scheduler event-log entry's content hash does not match its material.
+    InvalidEventLogEntryHash {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+    },
+    /// An event-log entry occurs after the derived evaluation point.
+    FutureEventLogEntry {
+        /// Deterministic evaluation point.
+        point: VirtualTime,
+        /// Sequence number carried by the future entry.
+        sequence: u64,
+        /// Time of the future event-log entry.
+        event_at: VirtualTime,
+    },
+}
+
+impl fmt::Display for ConditionEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyEventLogPrefix => write!(
+                formatter,
+                "scheduler event-log prefix must contain at least one entry"
+            ),
+            Self::NonPrefixEventLogSequence { expected, actual } => write!(
+                formatter,
+                "scheduler event-log prefix expected sequence {expected}, found {actual}"
+            ),
+            Self::InvalidEventLogEntryHash { sequence } => write!(
+                formatter,
+                "scheduler event-log entry {sequence} has an invalid content hash"
+            ),
+            Self::FutureEventLogEntry {
+                point,
+                sequence,
+                event_at,
+            } => write!(
+                formatter,
+                "event-log entry {sequence} at {} is after evaluation point {}",
+                event_at.ticks, point.ticks
+            ),
+        }
+    }
+}
+
+impl Error for ConditionEvaluationError {}
+
+/// Observable event-log prefix visible at one deterministic evaluation point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionEventLogPrefix {
+    point: EventEvaluationPoint,
+    observable_events: Vec<ObservableEvent>,
+}
+
+impl ConditionEventLogPrefix {
+    /// Builds the run-start genesis prefix.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            point: EventEvaluationPoint::genesis(),
+            observable_events: Vec::new(),
+        }
+    }
+
+    /// Builds a checked condition prefix from scheduler event-log entries.
+    ///
+    /// The evaluation point is derived from the final log entry: explicit
+    /// scheduler evaluation-boundary payloads produce quantum or rendezvous
+    /// points, while all other entries produce event-log-entry points. The
+    /// observable prefix is likewise derived from `Observable` payloads rather
+    /// than supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError::EmptyEventLogPrefix`] when no
+    /// scheduler entries are supplied,
+    /// [`ConditionEvaluationError::NonPrefixEventLogSequence`] when the entries
+    /// are not a dense prefix starting at zero,
+    /// [`ConditionEvaluationError::InvalidEventLogEntryHash`] when any entry's
+    /// content hash does not match its canonical material, or
+    /// [`ConditionEvaluationError::FutureEventLogEntry`] when an entry occurs
+    /// after the derived evaluation point.
+    pub(crate) fn from_scheduler_event_log_entries(
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Self, ConditionEvaluationError> {
+        let Some(last) = entries.last() else {
+            return Err(ConditionEvaluationError::EmptyEventLogPrefix);
+        };
+        let point = EventEvaluationPoint::event_log_entry(last);
+        let mut observable_events = Vec::new();
+        for (offset, entry) in entries.iter().enumerate() {
+            let expected = u64::try_from(offset).map_err(|_| {
+                ConditionEvaluationError::NonPrefixEventLogSequence {
+                    expected: u64::MAX,
+                    actual: entry.sequence(),
+                }
+            })?;
+            if entry.sequence() != expected {
+                return Err(ConditionEvaluationError::NonPrefixEventLogSequence {
+                    expected,
+                    actual: entry.sequence(),
+                });
+            }
+            if !entry.has_valid_content_hash() {
+                return Err(ConditionEvaluationError::InvalidEventLogEntryHash {
+                    sequence: entry.sequence(),
+                });
+            }
+            if entry.at().ticks > point.at().ticks {
+                return Err(ConditionEvaluationError::FutureEventLogEntry {
+                    point: point.at(),
+                    sequence: entry.sequence(),
+                    event_at: entry.at(),
+                });
+            }
+            if let SchedulerEventLogPayload::Observable(payload) = entry.payload() {
+                observable_events.push(ObservableEvent {
+                    at: entry.at(),
+                    payload: payload.clone(),
+                });
+            }
+        }
+        Ok(Self {
+            point,
+            observable_events,
+        })
+    }
+
+    /// Returns the deterministic evaluation point this prefix is visible at.
+    #[must_use]
+    pub fn point(&self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Returns observable event-log entries visible at [`Self::point`].
+    #[must_use]
+    pub fn observable_events(&self) -> &[ObservableEvent] {
+        &self.observable_events
+    }
+}
+
 /// Evaluates a condition through the shared assertion/trigger evaluator.
 ///
 /// The recursive structure lives in this non-overridable function. Implementors
@@ -420,7 +579,7 @@ pub trait ConditionEvaluator {
 /// sources, and `Once` latch storage at a deterministic evaluation point, so
 /// assertion and trigger consumers cannot diverge on compound predicate
 /// traversal.
-pub fn evaluate_condition<E>(evaluator: &mut E, condition: &Condition) -> bool
+pub(crate) fn evaluate_condition<E>(evaluator: &mut E, condition: &Condition) -> bool
 where
     E: ConditionEvaluator + ?Sized,
 {
@@ -745,15 +904,15 @@ pub struct ConditionEvaluation<O> {
 }
 
 impl<O> ConditionEvaluation<O> {
-    /// Builds a condition evaluator for one deterministic evaluation point.
+    /// Builds a condition evaluator for one deterministic event-log prefix.
     #[must_use]
-    pub fn new(point: EventEvaluationPoint, oracle: O) -> Self {
+    pub fn from_log_prefix(prefix: ConditionEventLogPrefix, oracle: O) -> Self {
         Self {
-            point,
+            point: prefix.point,
             oracle,
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
-            observable_events: Vec::new(),
+            observable_events: prefix.observable_events,
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -779,13 +938,6 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn with_timer_fires(mut self, timer_fires: BTreeMap<TimerId, VirtualTime>) -> Self {
         self.timer_fires = timer_fires;
-        self
-    }
-
-    /// Adds black-box observable event-log entries visible to observable leaves.
-    #[must_use]
-    pub fn with_observable_events(mut self, observable_events: Vec<ObservableEvent>) -> Self {
-        self.observable_events = observable_events;
         self
     }
 
@@ -838,13 +990,121 @@ impl<O> ConditionEvaluation<O> {
     }
 
     /// Evaluates a condition through the shared evaluator function.
-    pub fn evaluate_condition(&mut self, condition: &Condition) -> bool
+    pub(crate) fn evaluate_condition(&mut self, condition: &Condition) -> bool
     where
         O: ConditionLeafOracle,
     {
         evaluate_condition(self, condition)
     }
 }
+
+/// Shared assertion/trigger condition-evaluation pass for one log prefix.
+#[derive(Clone, Debug)]
+pub struct ConditionEvaluationPass<O> {
+    evaluation: ConditionEvaluation<O>,
+}
+
+impl<O> ConditionEvaluationPass<O> {
+    /// Builds a shared pass over one deterministic event-log prefix.
+    #[must_use]
+    pub fn from_log_prefix(prefix: ConditionEventLogPrefix, oracle: O) -> Self {
+        Self {
+            evaluation: ConditionEvaluation::from_log_prefix(prefix, oracle),
+        }
+    }
+
+    /// Adds event firing history visible to `After` predicates.
+    #[must_use]
+    pub fn with_event_firings(mut self, event_firings: BTreeMap<EventId, VirtualTime>) -> Self {
+        self.evaluation = self.evaluation.with_event_firings(event_firings);
+        self
+    }
+
+    /// Adds timer fire times visible to `Timer` predicates.
+    #[must_use]
+    pub fn with_timer_fires(mut self, timer_fires: BTreeMap<TimerId, VirtualTime>) -> Self {
+        self.evaluation = self.evaluation.with_timer_fires(timer_fires);
+        self
+    }
+
+    /// Adds scheduler-owned quiescence evidence visible to `Quiescent` leaves.
+    #[must_use]
+    pub fn with_scheduler_quiescence(mut self, quiescence: SchedulerQuiescence) -> Self {
+        self.evaluation = self.evaluation.with_scheduler_quiescence(quiescence);
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies for guest-marker leaves.
+    #[must_use]
+    pub fn with_white_box_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
+    ) -> Self {
+        self.evaluation = self.evaluation.with_white_box_policies(policies);
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies from a world definition.
+    #[must_use]
+    pub fn with_world_white_box_policies(mut self, world: &World) -> Self {
+        self.evaluation = self.evaluation.with_world_white_box_policies(world);
+        self
+    }
+
+    /// Adds host-side code point resolutions visible to coverage leaves.
+    #[must_use]
+    pub fn with_resolved_code_points(
+        mut self,
+        code_points: impl IntoIterator<Item = ((NodeId, CodePoint), ResolvedCodePoint)>,
+    ) -> Self {
+        self.evaluation = self.evaluation.with_resolved_code_points(code_points);
+        self
+    }
+
+    /// Adds host-side memory place resolutions visible to memory predicates.
+    #[must_use]
+    pub fn with_resolved_mem_places(
+        mut self,
+        mem_places: impl IntoIterator<Item = ((NodeId, MemPlace), ResolvedMemPlace)>,
+    ) -> Self {
+        self.evaluation = self.evaluation.with_resolved_mem_places(mem_places);
+        self
+    }
+
+    /// Returns the deterministic evaluation point for this pass.
+    #[must_use]
+    pub fn point(&self) -> EventEvaluationPoint {
+        self.evaluation.point()
+    }
+
+    /// Returns the underlying condition evaluator.
+    #[must_use]
+    pub fn evaluator(&self) -> &ConditionEvaluation<O> {
+        &self.evaluation
+    }
+
+    /// Evaluates an assertion predicate in this deterministic pass.
+    pub fn evaluate_assertion_condition(&mut self, condition: &Condition) -> bool
+    where
+        O: ConditionLeafOracle,
+    {
+        self.evaluation.evaluate_condition(condition)
+    }
+
+    /// Evaluates trigger conditions in this deterministic pass.
+    pub fn evaluate_event_graph(
+        &mut self,
+        graph: &EventGraph,
+        state: &mut EventGraphState,
+    ) -> Vec<EventFiring>
+    where
+        O: ConditionLeafOracle,
+    {
+        state.evaluate(graph, &mut self.evaluation)
+    }
+}
+
+impl<O> condition_evaluator_sealed::Sealed for ConditionEvaluation<O> where O: ConditionLeafOracle {}
 
 impl<O> ConditionEvaluator for ConditionEvaluation<O>
 where
@@ -1187,12 +1447,44 @@ impl EventEvaluationPoint {
         }
     }
 
-    /// Returns a non-genesis event or rendezvous boundary.
+    /// Returns a deterministic event-log-entry boundary.
     #[must_use]
-    pub const fn boundary(at: VirtualTime) -> Self {
+    pub(crate) const fn event_boundary(at: VirtualTime) -> Self {
         Self {
             at,
-            kind: EventEvaluationKind::Boundary,
+            kind: EventEvaluationKind::EventBoundary,
+        }
+    }
+
+    /// Returns a deterministic event-log-entry boundary for `entry`.
+    #[must_use]
+    pub fn event_log_entry(entry: &SchedulerEventLogEntry) -> Self {
+        match entry.payload() {
+            SchedulerEventLogPayload::EvaluationBoundary(
+                SchedulerEvaluationBoundaryKind::Quantum,
+            ) => Self::quantum_boundary(entry.at()),
+            SchedulerEventLogPayload::EvaluationBoundary(
+                SchedulerEvaluationBoundaryKind::Rendezvous,
+            ) => Self::rendezvous_boundary(entry.at()),
+            _ => Self::event_boundary(entry.at()),
+        }
+    }
+
+    /// Returns a deterministic quantum boundary.
+    #[must_use]
+    pub(crate) const fn quantum_boundary(at: VirtualTime) -> Self {
+        Self {
+            at,
+            kind: EventEvaluationKind::QuantumBoundary,
+        }
+    }
+
+    /// Returns a deterministic rendezvous boundary.
+    #[must_use]
+    pub(crate) const fn rendezvous_boundary(at: VirtualTime) -> Self {
+        Self {
+            at,
+            kind: EventEvaluationKind::RendezvousBoundary,
         }
     }
 
@@ -1214,8 +1506,12 @@ impl EventEvaluationPoint {
 pub enum EventEvaluationKind {
     /// The run-start genesis point; entrypoint events fire here.
     Genesis,
-    /// A deterministic event, quantum, or rendezvous boundary.
-    Boundary,
+    /// A deterministic boundary produced by an event-log entry.
+    EventBoundary,
+    /// A deterministic scheduler quantum boundary.
+    QuantumBoundary,
+    /// A deterministic scheduler rendezvous boundary.
+    RendezvousBoundary,
 }
 
 /// One action fired by the event graph at an evaluation point.
@@ -1273,7 +1569,7 @@ impl EventGraphState {
     /// `evaluator` is the deterministic predicate evaluator for non-entrypoint
     /// conditions. This method is the single local producer of [`EventFiring`]
     /// values; callers apply the returned actions at the same quantum boundary.
-    pub fn evaluate<E>(&mut self, graph: &EventGraph, evaluator: &mut E) -> Vec<EventFiring>
+    pub(crate) fn evaluate<E>(&mut self, graph: &EventGraph, evaluator: &mut E) -> Vec<EventFiring>
     where
         E: ConditionEvaluator,
     {
@@ -1317,6 +1613,11 @@ impl EventGraphState {
 struct EventGraphConditionEvaluator<'state, 'inner, E> {
     state: &'state mut EventGraphState,
     inner: &'inner mut E,
+}
+
+impl<E> condition_evaluator_sealed::Sealed for EventGraphConditionEvaluator<'_, '_, E> where
+    E: ConditionEvaluator
+{
 }
 
 impl<E> ConditionEvaluator for EventGraphConditionEvaluator<'_, '_, E>

@@ -240,7 +240,7 @@ fn event_hashes<'a>(
             outcome
                 .event_log_entries
                 .iter()
-                .map(|entry| entry.content_hash)
+                .map(|entry| entry.content_hash())
         })
         .collect()
 }

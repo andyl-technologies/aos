@@ -2,11 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, Condition, ConditionEvaluation, ConditionLeaf,
-    ConditionLeafOracle, Event, EventEvaluationPoint, EventGraph, EventGraphState, EventId, Icount,
-    MarkerId, NodeId, NodeTemplate, Predicate, Properties, Property, ReachabilityExpectation,
-    ReachableDisposition, ReadyPoint, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, AssertionDef, AssertionId, Condition, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, Event, EventGraph, EventGraphState, EventId, Icount, MarkerId, NodeId,
+    NodeTemplate, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    ReadyPoint, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -61,11 +63,11 @@ fn trigger_and_assertion_evaluation_use_the_same_predicate_function() {
     )])
     .expect("shared condition event graph should build");
     let mut state = EventGraphState::new();
-    let point = EventEvaluationPoint::boundary(crucible::VirtualTime { ticks: 7 });
-
-    let assertion_truth = evaluator(point, &["quorum-ready"])
-        .evaluate_condition(assertion_predicate(&assertion).expect("assertion carries predicate"));
-    let trigger_firings = state.evaluate(&graph, &mut evaluator(point, &["quorum-ready"]));
+    let assertion_truth = evaluator(7, &["quorum-ready"]).evaluate_assertion_condition(
+        assertion_predicate(&assertion).expect("assertion carries predicate"),
+    );
+    let trigger_firings =
+        support::evaluate_graph(&graph, &mut state, evaluator(7, &["quorum-ready"]));
 
     assert!(assertion_truth);
     assert_eq!(trigger_firings.len(), 1);
@@ -177,11 +179,8 @@ fn assertion_predicates(assertion: &AssertionDef) -> Vec<&Predicate> {
     }
 }
 
-fn evaluator<'a>(
-    point: EventEvaluationPoint,
-    true_names: &'a [&'a str],
-) -> ConditionEvaluation<TrueNames<'a>> {
-    ConditionEvaluation::new(point, TrueNames { true_names })
+fn evaluator<'a>(ticks: u64, true_names: &'a [&'a str]) -> ConditionEvaluationPass<TrueNames<'a>> {
+    support::evaluation_at(ticks, TrueNames { true_names })
 }
 
 struct TrueNames<'a> {

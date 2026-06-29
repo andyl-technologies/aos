@@ -3,12 +3,12 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    BackendInput, ContentHash, Decision, EventKey, ExactLocalEvent, FaultId, NetworkLookahead,
-    NodeCounter, NodeId, QuantumLoop, QuantumRequest, RngStreamId, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerResolveFaultChoice,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    VirtualTime, check_scheduler_liveness,
+    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, FaultId,
+    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, RngStreamId,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -55,7 +55,7 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     assert_eq!(outcome.event_log_entries, replay_outcome.event_log_entries);
     assert_eq!(outcome.event_log_offset, replay_outcome.event_log_offset);
     assert!(outcome.event_log_offset.appended_segment.is_some());
-    assert_eq!(outcome.event_log_offset.events, 5);
+    assert_eq!(outcome.event_log_offset.events, 6);
     assert!(outcome.event_log_offset.bytes > 0);
     assert!(!outcome.event_log_segment_bytes.is_empty());
     assert_eq!(
@@ -67,6 +67,14 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
         outcome.event_log_segment_hash
     );
     assert_eq!(
+        scheduler.condition_event_log_prefix().point().kind(),
+        EventEvaluationKind::QuantumBoundary
+    );
+    assert_eq!(
+        scheduler.condition_event_log_prefix().point().at(),
+        VirtualTime { ticks: 4 }
+    );
+    assert_eq!(
         outcome.event_log_offset.bytes,
         outcome.event_log_segment_bytes.len() as u64
     );
@@ -74,38 +82,44 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     let sequences = outcome
         .event_log_entries
         .iter()
-        .map(|entry| entry.sequence)
+        .map(|entry| entry.sequence())
         .collect::<Vec<_>>();
-    assert_eq!(sequences, vec![0, 1, 2, 3, 4]);
+    assert_eq!(sequences, vec![0, 1, 2, 3, 4, 5]);
     assert!(
         outcome
             .event_log_entries
             .iter()
-            .all(|entry| entry.class == SchedulerEventLogClass::Causal
-                && entry.content_hash != Default::default())
+            .all(|entry| entry.class() == SchedulerEventLogClass::Causal
+                && entry.content_hash() != Default::default())
     );
 
     assert!(matches!(
-        &outcome.event_log_entries[0].payload,
+        outcome.event_log_entries[0].payload(),
         SchedulerEventLogPayload::ResolvedHappening(event) if event == &probabilistic
     ));
     assert!(matches!(
-        &outcome.event_log_entries[1].payload,
+        outcome.event_log_entries[1].payload(),
         SchedulerEventLogPayload::ResolvedHappening(event) if event == &frame
     ));
     assert!(matches!(
-        &outcome.event_log_entries[2].payload,
+        outcome.event_log_entries[2].payload(),
         SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order))
             if order.order == vec![event_key(&probabilistic), event_key(&frame)]
     ));
     assert!(matches!(
-        &outcome.event_log_entries[3].payload,
+        outcome.event_log_entries[3].payload(),
         SchedulerEventLogPayload::Decision(Decision::RngDraw(draw)) if draw.stream == stream
     ));
     assert!(matches!(
-        &outcome.event_log_entries[4].payload,
+        outcome.event_log_entries[4].payload(),
         SchedulerEventLogPayload::Decision(Decision::FaultFires(recorded))
             if recorded.fault == fault && !recorded.fired
+    ));
+    assert!(matches!(
+        outcome.event_log_entries[5].payload(),
+        SchedulerEventLogPayload::EvaluationBoundary(
+            crucible::SchedulerEvaluationBoundaryKind::Quantum
+        )
     ));
 }
 
@@ -142,11 +156,11 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
         })
         .expect("second quantum should emit");
 
-    assert_eq!(first.event_log_entries.len(), 2);
-    assert_eq!(second.event_log_entries.len(), 2);
-    assert_eq!(first.event_log_offset.events, 2);
-    assert_eq!(second.event_log_entries[0].sequence, 2);
-    assert_eq!(second.event_log_offset.events, 4);
+    assert_eq!(first.event_log_entries.len(), 3);
+    assert_eq!(second.event_log_entries.len(), 3);
+    assert_eq!(first.event_log_offset.events, 3);
+    assert_eq!(second.event_log_entries[0].sequence(), 3);
+    assert_eq!(second.event_log_offset.events, 6);
     assert!(second.event_log_offset.bytes > first.event_log_offset.bytes);
     assert_ne!(
         second.event_log_offset.prefix,
@@ -165,10 +179,43 @@ fn liveness_report_includes_deterministic_event_log_hashes() {
 
     assert_eq!(first, second);
     assert_eq!(first.resolved_events, 2);
-    assert_eq!(first.event_log_entries, 4);
-    assert_eq!(first.event_log_entry_hashes.len(), 4);
-    assert_eq!(first.event_log_offset.events, 4);
+    assert_eq!(first.event_log_entries, 8);
+    assert_eq!(first.event_log_entry_hashes.len(), 8);
+    assert_eq!(first.event_log_offset.events, 8);
     assert!(first.event_log_offset.bytes > 0);
+}
+
+#[test]
+fn no_progress_quantum_does_not_append_polling_boundary_entries() {
+    let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+        "emit-step-no-progress-poll",
+        shift(0),
+        8,
+        SimInstant { nanos: 20 },
+        Vec::new(),
+        Vec::new(),
+    ))
+    .expect("empty scheduler scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first no-progress quantum should return");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second no-progress quantum should return");
+
+    assert!(first.event_log_entries.is_empty());
+    assert!(second.event_log_entries.is_empty());
+    assert_eq!(first.event_log_offset.events, 0);
+    assert_eq!(second.event_log_offset.events, 0);
+    assert!(first.event_log_segment_hash.is_none());
+    assert!(second.event_log_segment_hash.is_none());
 }
 
 fn report_scenario() -> SchedulerLivenessScenario {

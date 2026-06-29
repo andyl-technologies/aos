@@ -2,12 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, ConditionEvaluation, ConditionLeaf, ConditionLeafOracle,
-    EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphError, EventGraphState,
-    FramePredicate, Icount, IoEventKind, LinkId, LogLevel, NodeId, NodeLifecycle, NodeTemplate,
-    ObservableEvent, Predicate, Properties, Property, ReadyPoint, RegexProgram, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, AssertionDef, AssertionId, ConditionEvaluationError, ConditionEvaluationPass,
+    ConditionLeaf, ConditionLeafOracle, EngineError, Event, EventGraph, EventGraphError,
+    EventGraphState, FramePredicate, Icount, IoEventKind, LinkId, LogLevel, NodeId, NodeLifecycle,
+    NodeTemplate, ObservableEvent, Predicate, Properties, Property, ReadyPoint, RegexProgram,
+    SchedulerEvaluationBoundaryKind, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -24,15 +26,8 @@ fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(time(ticks))
-}
-
-fn evaluator(
-    point: EventEvaluationPoint,
-    events: Vec<ObservableEvent>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    ConditionEvaluation::new(point, NoNamedLeaves).with_observable_events(events)
+fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoNamedLeaves> {
+    support::evaluation_with_observables(ticks, events, NoNamedLeaves)
 }
 
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
@@ -113,18 +108,28 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     );
 
     assert!(
-        evaluator(point(20), vec![wrong_link, wrong_time, matching]).evaluate_condition(&condition)
+        evaluator(20, vec![wrong_link, wrong_time, matching])
+            .evaluate_assertion_condition(&condition)
     );
-    assert!(
-        !evaluator(
-            point(19),
-            vec![ObservableEvent::network_delivered(
-                time(20),
-                Some(link("client-server")),
-                b"HTTP/1.1 200 OK\r\n".to_vec(),
-            )],
-        )
-        .evaluate_condition(&condition)
+    let future = ObservableEvent::network_delivered(
+        time(20),
+        Some(link("client-server")),
+        b"HTTP/1.1 200 OK\r\n".to_vec(),
+    );
+    assert_eq!(
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+            crucible::test_support::condition_observation_entry_for_test(0, &future),
+            crucible::test_support::condition_boundary_entry_for_test(
+                1,
+                time(19),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        ]),
+        Err(ConditionEvaluationError::FutureEventLogEntry {
+            point: time(19),
+            sequence: 0,
+            event_at: time(20),
+        })
     );
 }
 
@@ -137,7 +142,7 @@ fn network_match_can_observe_any_link() {
         b"raft-append-entries".to_vec(),
     );
 
-    assert!(evaluator(point(3), vec![event]).evaluate_condition(&condition));
+    assert!(evaluator(3, vec![event]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -157,7 +162,7 @@ fn console_match_uses_host_side_regex_over_captured_console_bytes() {
         b"ready to accept connections\n".to_vec(),
     );
 
-    assert!(evaluator(point(9), vec![wrong_node, event]).evaluate_condition(&condition));
+    assert!(evaluator(9, vec![wrong_node, event]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -169,11 +174,11 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
     let first = ObservableEvent::console_output(time(8), node("server"), b"ready to ".to_vec());
     let second = ObservableEvent::console_output(time(9), node("server"), b"accept\n".to_vec());
 
-    assert!(!evaluator(point(8), vec![first.clone()]).evaluate_condition(&condition));
+    assert!(!evaluator(8, vec![first.clone()]).evaluate_assertion_condition(&condition));
     assert!(
-        evaluator(point(9), vec![first.clone(), second.clone()]).evaluate_condition(&condition)
+        evaluator(9, vec![first.clone(), second.clone()]).evaluate_assertion_condition(&condition)
     );
-    assert!(!evaluator(point(10), vec![first, second]).evaluate_condition(&condition));
+    assert!(!evaluator(10, vec![first, second]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -220,7 +225,7 @@ fn io_pattern_observes_deterministic_io_completion_kind() {
         b"ok".to_vec(),
     );
 
-    assert!(evaluator(point(11), vec![wrong_kind, event]).evaluate_condition(&condition));
+    assert!(evaluator(11, vec![wrong_kind, event]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -233,7 +238,7 @@ fn io_pattern_any_matches_any_completion_kind_for_the_node() {
         b"sector=12".to_vec(),
     );
 
-    assert!(evaluator(point(12), vec![event]).evaluate_condition(&condition));
+    assert!(evaluator(12, vec![event]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -242,7 +247,7 @@ fn node_state_observes_lifecycle_transition() {
     let event = ObservableEvent::node_state(time(14), node("worker"), NodeLifecycle::Exited);
     let earlier = ObservableEvent::node_state(time(13), node("worker"), NodeLifecycle::Exited);
 
-    assert!(evaluator(point(14), vec![earlier, event]).evaluate_condition(&condition));
+    assert!(evaluator(14, vec![earlier, event]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -269,7 +274,7 @@ fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
         b"server listening on 0.0.0.0:8080\n".to_vec(),
     )];
 
-    let firings = state.evaluate(&graph, &mut evaluator(point(33), events));
+    let firings = support::evaluate_graph(&graph, &mut state, evaluator(33, events));
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-console-ready");

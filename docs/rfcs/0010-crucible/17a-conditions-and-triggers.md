@@ -1186,13 +1186,14 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   Completed by `checks.crucible.phase4.eventGraphControlFlow`: `crucible::trigger`
   exposes the event-graph spine (`EventId`, `Event`, `Condition` handles,
   `Action`, `LogLevel`, `FirePolicy`, `EventGraph`, `EventGraphState`) and the
-  only local producer of opaque action firings, `EventGraphState::evaluate`. The
-  gate covers entrypoints, named trigger handles, once/repeatable policy,
-  deterministic declared-order firings, duplicate-id and repeatable-entrypoint
-  rejection, and a focused static guardrail against current direct scenario
-  poke/inject/heal APIs in the engine-facing control surfaces. Full condition leaf
-  semantics, action application, build-time reference validation, Plan lowering,
-  and verdict composition remain T-TRIG-3 through T-TRIG-20.
+  pass-driven local producer of opaque action firings,
+  `ConditionEvaluationPass::evaluate_event_graph`. The gate covers entrypoints,
+  named trigger handles, once/repeatable policy, deterministic declared-order
+  firings, duplicate-id and repeatable-entrypoint rejection, and a focused
+  static guardrail against current direct scenario poke/inject/heal APIs in the
+  engine-facing control surfaces. Full condition leaf semantics, action
+  application, build-time reference validation, Plan lowering, and verdict
+  composition remain T-TRIG-3 through T-TRIG-20.
 - [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
@@ -1201,12 +1202,13 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   Completed by `checks.crucible.phase4.sharedConditionVocabulary`: trigger
   `Condition` is a public alias of the assertion/property `Predicate` type, so
   `Property` declarations and event triggers consume the same value through the
-  shared non-overridable `evaluate_condition` entry point. The gate covers
-  assertion-to-trigger assignment, identical predicate evaluation over a shared
-  condition value and evaluation point, `Eventually` trigger/property reuse,
-  compound predicate reuse in `Properties` and `EventGraph`, and rejects a
-  separate trigger-only `Condition` enum. Full leaf semantics and event-log-backed
-  leaf resolution remain T-TRIG-3 through T-TRIG-11.
+  shared sealed evaluator pass (`ConditionEvaluationPass` over the crate-local
+  recursive evaluator). The gate covers assertion-to-trigger assignment,
+  identical predicate evaluation over a shared condition value and evaluation
+  point, `Eventually` trigger/property reuse, compound predicate reuse in
+  `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
+  enum. Full leaf semantics and event-log-backed leaf resolution remain
+  T-TRIG-3 through T-TRIG-11.
 - [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
@@ -1222,7 +1224,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   properties accept `At` as pure virtual-time vocabulary while rejecting
   edge-shaped `After` and `Timer` leaves as trigger-only. Full timer action
   application, the broader reference/cycle validator, and verdict composition
-  remain T-TRIG-10 through T-TRIG-20.
+  remain T-TRIG-11 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1239,7 +1241,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
   catalog integration, named-link topology validation, and the broader validator
-  remain T-OBS-* and T-TRIG-10 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-11 through T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1255,7 +1257,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
   production symbol-table loading, coverage-guided search consumption, and the
-  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-10 through T-TRIG-20.
+  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-11 through T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies
@@ -1271,7 +1273,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
   cadence, RFC 19 memory-sample catalog integration, and the broader validator
-  remain T-OBS-* and T-TRIG-10 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-11 through T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1288,7 +1290,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
   cooperation. Full action application, full validator reachability/cycle checks,
-  and production RFC 19 catalog integration remain T-TRIG-10 through T-TRIG-20
+  and production RFC 19 catalog integration remain T-TRIG-11 through T-TRIG-20
   and T-OBS-*.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
@@ -1310,7 +1312,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   guest-marker support; and unrelated guest-marker events are additive to
   non-marker conditions. Full action application, full validator
   reachability/cycle checks, and production RFC 19 catalog integration remain
-  T-TRIG-10 through T-TRIG-20 and T-OBS-*.
+  T-TRIG-11 through T-TRIG-20 and T-OBS-*.
 - [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
@@ -1324,14 +1326,30 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   condition even when another branch decides the current truth value. Event-graph
   construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
   deterministic `EmptyCompound` error; property validation already rejects the
-  same empty compounds. Deterministic-pass integration, causal trigger firing
-  records, full action application, and the broader validator remain T-TRIG-10
-  through T-TRIG-20.
-- [ ] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
+  same empty compounds. Causal trigger firing records, full action application,
+  and the broader validator remain T-TRIG-11 through T-TRIG-20.
+- [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
   on icount), in the same deterministic pass as assertion evaluation, never
   host-clock polled. — satisfies [TRIG-16], [TRIG-17]; spec §17a.3.1; cross-ref
   08, 18 §18.7.
+
+  Completed by `checks.crucible.phase4.deterministicConditionEvaluation`:
+  `EventEvaluationPoint` now distinguishes event-log entry, quantum, and
+  rendezvous boundaries derived from scheduler event-log entries, and scheduler
+  EMIT appends a quantum evaluation-boundary entry to each driven quantum.
+  `SingleScheduler` owns the checked `ConditionEventLogPrefix`, with the raw
+  scheduler-entry constructor kept crate-local and guarded against public API
+  exposure. The prefix validates dense scheduler log entries with matching
+  content hashes before deriving observable events and the evaluation point, so
+  leaves consume a prefix `[start, t]` rather than an arbitrary host-polled event
+  vector. `ConditionEvaluationPass` evaluates assertion predicates and trigger
+  graphs over the same checked prefix and point, and the phase guard forbids the
+  old raw observable-event injection path, public raw point constructors, public
+  raw prefix construction, public graph-evaluation bypasses, direct
+  assertion-evaluation bypasses, and host wall-clock APIs in the trigger
+  evaluation surface. Causal trigger firing records, full action application,
+  and the broader validator remain T-TRIG-11 through T-TRIG-20.
 - [ ] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
   recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
   outcomes are Decisions; prove triggers re-derive identically on a forked schedule

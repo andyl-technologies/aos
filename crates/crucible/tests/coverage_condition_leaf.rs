@@ -2,11 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, CodePoint, ConditionEvaluation, ConditionLeaf,
-    ConditionLeafOracle, EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphState,
-    Icount, NodeId, NodeTemplate, ObservableEvent, Predicate, Properties, Property, ReadyPoint,
-    ResolvedCodePoint, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, AssertionDef, AssertionId, CodePoint, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, EngineError, Event, EventGraph, EventGraphState, Icount, NodeId,
+    NodeTemplate, ObservableEvent, Predicate, Properties, Property, ReadyPoint, ResolvedCodePoint,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -23,23 +25,16 @@ fn icount(retired: u64) -> Icount {
     Icount { retired }
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(time(ticks))
-}
-
-fn evaluator(
-    point: EventEvaluationPoint,
-    events: Vec<ObservableEvent>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    ConditionEvaluation::new(point, NoNamedLeaves).with_observable_events(events)
+fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoNamedLeaves> {
+    support::evaluation_with_observables(ticks, events, NoNamedLeaves)
 }
 
 fn evaluator_with_resolution(
-    point: EventEvaluationPoint,
+    ticks: u64,
     events: Vec<ObservableEvent>,
     resolutions: Vec<((NodeId, CodePoint), ResolvedCodePoint)>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    evaluator(point, events).with_resolved_code_points(resolutions)
+) -> ConditionEvaluationPass<NoNamedLeaves> {
+    evaluator(ticks, events).with_resolved_code_points(resolutions)
 }
 
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
@@ -98,12 +93,12 @@ fn coverage_point_observes_current_basic_block_execution_event() {
     let wrong_block = ObservableEvent::coverage_block(icount(7), node("server"), 0x5000, 0x20);
 
     assert!(
-        evaluator(point(7), vec![wrong_node, wrong_block, matching_block])
-            .evaluate_condition(&condition)
+        evaluator(7, vec![wrong_node, wrong_block, matching_block])
+            .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(8),
+            8,
             vec![ObservableEvent::coverage_block(
                 icount(7),
                 node("server"),
@@ -111,7 +106,7 @@ fn coverage_point_observes_current_basic_block_execution_event() {
                 0x20,
             )],
         )
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -121,7 +116,9 @@ fn coverage_point_does_not_rematch_after_prior_block_execution() {
     let first_block = ObservableEvent::coverage_block(icount(6), node("server"), 0x4000, 0x20);
     let repeat_block = ObservableEvent::coverage_block(icount(7), node("server"), 0x4000, 0x20);
 
-    assert!(!evaluator(point(7), vec![first_block, repeat_block]).evaluate_condition(&condition));
+    assert!(
+        !evaluator(7, vec![first_block, repeat_block]).evaluate_assertion_condition(&condition)
+    );
 }
 
 #[test]
@@ -135,10 +132,10 @@ fn coverage_point_resolves_symbols_host_side_without_guest_marker_support() {
     );
 
     assert!(
-        evaluator_with_resolution(point(10), vec![block.clone()], vec![resolution])
-            .evaluate_condition(&condition)
+        evaluator_with_resolution(10, vec![block.clone()], vec![resolution])
+            .evaluate_assertion_condition(&condition)
     );
-    assert!(!evaluator(point(10), vec![block]).evaluate_condition(&condition));
+    assert!(!evaluator(10, vec![block]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -151,8 +148,8 @@ fn coverage_point_raw_guest_address_ignores_symbol_resolution_table() {
     );
 
     assert!(
-        !evaluator_with_resolution(point(7), vec![block], vec![bogus_resolution])
-            .evaluate_condition(&condition)
+        !evaluator_with_resolution(7, vec![block], vec![bogus_resolution])
+            .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -192,9 +189,10 @@ fn event_graph_fires_from_coverage_point_without_named_leaf_fallback() {
         ResolvedCodePoint::guest_address(0x8000),
     );
 
-    let firings = state.evaluate(
+    let firings = support::evaluate_graph(
         &graph,
-        &mut evaluator_with_resolution(point(33), events, vec![resolution]),
+        &mut state,
+        evaluator_with_resolution(33, events, vec![resolution]),
     );
 
     assert_eq!(firings.len(), 1);

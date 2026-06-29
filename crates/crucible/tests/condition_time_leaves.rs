@@ -2,12 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use std::collections::BTreeMap;
 
 use crucible::{
-    Action, AssertionDef, AssertionId, ConditionEvaluation, ConditionLeaf, ConditionLeafOracle,
-    EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphError, EventGraphState,
-    EventId, LogLevel, Predicate, Properties, Property, SimDuration, TimerId, VirtualTime, World,
+    Action, AssertionDef, AssertionId, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
+    EngineError, Event, EventGraph, EventGraphError, EventGraphState, EventId, LogLevel, Predicate,
+    Properties, Property, SimDuration, TimerId, VirtualTime, World,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -28,8 +30,8 @@ fn duration(nanos: u64) -> SimDuration {
     SimDuration { nanos }
 }
 
-fn evaluator(point: EventEvaluationPoint) -> ConditionEvaluation<NoLeaves> {
-    ConditionEvaluation::new(point, NoLeaves)
+fn evaluator(ticks: u64) -> ConditionEvaluationPass<NoLeaves> {
+    support::evaluation_at(ticks, NoLeaves)
 }
 
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
@@ -52,13 +54,13 @@ impl ConditionLeafOracle for NoLeaves {
 fn at_leaf_is_true_only_at_the_exact_virtual_time() {
     let condition = Predicate::at(time(10));
 
-    let mut before = evaluator(EventEvaluationPoint::boundary(time(9)));
-    let mut exact = evaluator(EventEvaluationPoint::boundary(time(10)));
-    let mut after = evaluator(EventEvaluationPoint::boundary(time(11)));
+    let mut before = evaluator(9);
+    let mut exact = evaluator(10);
+    let mut after = evaluator(11);
 
-    assert!(!before.evaluate_condition(&condition));
-    assert!(exact.evaluate_condition(&condition));
-    assert!(!after.evaluate_condition(&condition));
+    assert!(!before.evaluate_assertion_condition(&condition));
+    assert!(exact.evaluate_assertion_condition(&condition));
+    assert!(!after.evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -68,17 +70,15 @@ fn after_leaf_is_relative_to_known_event_firing_history() {
     let mut firings = BTreeMap::new();
     firings.insert(anchor, time(7));
 
-    let mut due =
-        evaluator(EventEvaluationPoint::boundary(time(12))).with_event_firings(firings.clone());
-    let mut early =
-        evaluator(EventEvaluationPoint::boundary(time(11))).with_event_firings(firings.clone());
-    let mut late = evaluator(EventEvaluationPoint::boundary(time(13))).with_event_firings(firings);
-    let mut no_history = evaluator(EventEvaluationPoint::boundary(time(12)));
+    let mut due = evaluator(12).with_event_firings(firings.clone());
+    let mut early = evaluator(11).with_event_firings(firings.clone());
+    let mut late = evaluator(13).with_event_firings(firings);
+    let mut no_history = evaluator(12);
 
-    assert!(due.evaluate_condition(&condition));
-    assert!(!early.evaluate_condition(&condition));
-    assert!(!late.evaluate_condition(&condition));
-    assert!(!no_history.evaluate_condition(&condition));
+    assert!(due.evaluate_assertion_condition(&condition));
+    assert!(!early.evaluate_assertion_condition(&condition));
+    assert!(!late.evaluate_assertion_condition(&condition));
+    assert!(!no_history.evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -88,17 +88,15 @@ fn timer_leaf_is_true_at_evaluator_supplied_timer_fire_time() {
     let mut timers = BTreeMap::new();
     timers.insert(timer, time(30));
 
-    let mut due =
-        evaluator(EventEvaluationPoint::boundary(time(30))).with_timer_fires(timers.clone());
-    let mut early =
-        evaluator(EventEvaluationPoint::boundary(time(29))).with_timer_fires(timers.clone());
-    let mut late = evaluator(EventEvaluationPoint::boundary(time(31))).with_timer_fires(timers);
-    let mut no_timer = evaluator(EventEvaluationPoint::boundary(time(30)));
+    let mut due = evaluator(30).with_timer_fires(timers.clone());
+    let mut early = evaluator(29).with_timer_fires(timers.clone());
+    let mut late = evaluator(31).with_timer_fires(timers);
+    let mut no_timer = evaluator(30);
 
-    assert!(due.evaluate_condition(&condition));
-    assert!(!early.evaluate_condition(&condition));
-    assert!(!late.evaluate_condition(&condition));
-    assert!(!no_timer.evaluate_condition(&condition));
+    assert!(due.evaluate_assertion_condition(&condition));
+    assert!(!early.evaluate_assertion_condition(&condition));
+    assert!(!late.evaluate_assertion_condition(&condition));
+    assert!(!no_timer.evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -174,21 +172,16 @@ fn event_graph_supplies_last_firing_history_to_after_leaves() {
         .expect("declared event references should build");
     let mut state = EventGraphState::new();
 
-    let genesis = state.evaluate(&graph, &mut evaluator(EventEvaluationPoint::genesis()));
+    let genesis =
+        support::evaluate_graph(&graph, &mut state, support::evaluation_at_genesis(NoLeaves));
     assert_eq!(genesis.len(), 1);
     assert_eq!(genesis[0].event(), &bootstrap.id);
     assert_eq!(state.last_firing(&bootstrap.id), Some(time(0)));
 
-    let early = state.evaluate(
-        &graph,
-        &mut evaluator(EventEvaluationPoint::boundary(time(4))),
-    );
+    let early = support::evaluate_graph(&graph, &mut state, evaluator(4));
     assert!(early.is_empty());
 
-    let due = state.evaluate(
-        &graph,
-        &mut evaluator(EventEvaluationPoint::boundary(time(5))),
-    );
+    let due = support::evaluate_graph(&graph, &mut state, evaluator(5));
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].event(), &delayed.id);
     assert_eq!(due[0].at(), time(5));

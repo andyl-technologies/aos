@@ -152,16 +152,16 @@
         needle = "pub fn action(&self) -> &Action";
       }
       {
-        label = "single local firing producer";
-        needle = "pub fn evaluate";
+        label = "pass-driven local firing producer";
+        needle = "pub fn evaluate_event_graph";
       }
       {
         label = "genesis entrypoint";
         needle = "pub const fn genesis()";
       }
       {
-        label = "deterministic boundary";
-        needle = "pub const fn boundary";
+        label = "deterministic scheduler entry boundary";
+        needle = "pub fn event_log_entry(entry: &SchedulerEventLogEntry) -> Self";
       }
       {
         label = "duplicate-id rejection";
@@ -232,8 +232,8 @@
         needle = "Event::repeatable";
       }
       {
-        label = "state evaluation";
-        needle = "state.evaluate";
+        label = "pass helper evaluation";
+        needle = "support::evaluate_graph";
       }
       {
         label = "evaluation point accessors";

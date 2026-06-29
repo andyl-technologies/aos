@@ -84,17 +84,18 @@ pub use scheduler::{
     SchedulerActorStateSnapshot, SchedulerConcurrentQuantumOutcome,
     SchedulerConcurrentRunCandidate, SchedulerConcurrentRunSet, SchedulerControlApplication,
     SchedulerEffectiveClock, SchedulerEffectiveClockSource, SchedulerError,
-    SchedulerEventLogAppend, SchedulerEventLogClass, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
-    SchedulerLivenessError, SchedulerLivenessReport, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadGraph,
-    SchedulerNodeActivity, SchedulerNodeVcpuIdleSnapshot, SchedulerPreemptionApplication,
-    SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerRendezvous, SchedulerRendezvousNode,
-    SchedulerRendezvousPurpose, SchedulerRendezvousRecord, SchedulerResolveDecisionRecord,
-    SchedulerResolveFaultChoice, SchedulerRunCeilingPublication, SchedulerRunSubdivisionPolicy,
-    SchedulerRunSubdivisionRecord, SchedulerRunSubdivisionSlice, SchedulerScenarioNode,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer, SchedulerTerminal,
-    SchedulerTopologyChange, SchedulerTopologyChangeApplication, SchedulerTopologyChangeEffect,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogAppend, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerHorizon, SchedulerHorizonLimit,
+    SchedulerHorizonSource, SchedulerLivenessError, SchedulerLivenessReport,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
+    SchedulerLookaheadGraph, SchedulerNodeActivity, SchedulerNodeVcpuIdleSnapshot,
+    SchedulerPreemptionApplication, SchedulerQuiescence, SchedulerQuiescenceBlocker,
+    SchedulerRendezvous, SchedulerRendezvousNode, SchedulerRendezvousPurpose,
+    SchedulerRendezvousRecord, SchedulerResolveDecisionRecord, SchedulerResolveFaultChoice,
+    SchedulerRunCeilingPublication, SchedulerRunSubdivisionPolicy, SchedulerRunSubdivisionRecord,
+    SchedulerRunSubdivisionSlice, SchedulerScenarioNode, SchedulerSendAuthorization,
+    SchedulerSendAuthorizer, SchedulerTerminal, SchedulerTopologyChange,
+    SchedulerTopologyChangeApplication, SchedulerTopologyChangeEffect,
     SchedulerTopologyChangeTrigger, SchedulerTopologyLookaheadUpdate, SchedulerVcpuIdleState,
     SharedTimeline, SharedTimelineKey, SingleScheduler, UnresolvedCrossNodeDependency,
     authorize_conservative_advance, check_scheduler_liveness, exact_local_event_from_io_completion,
@@ -113,11 +114,106 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use trigger::{
-    Action, Condition, ConditionEvaluation, ConditionEvaluator, ConditionLeaf, ConditionLeafOracle,
-    Event, EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph, EventGraphError,
+    Action, Condition, ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass,
+    ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
+    EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph, EventGraphError,
     EventGraphState, FirePolicy, LogLevel, ObservableEvent, ObservableEventPayload,
-    ResolvedCodePoint, ResolvedMemPlace, evaluate_condition,
+    ResolvedCodePoint, ResolvedMemPlace,
 };
+
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod test_support {
+    //! Debug-build helpers for integration tests.
+
+    use crate::{
+        ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, ObservableEvent,
+        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
+    };
+
+    /// Builds a scheduler observable event-log entry for integration tests.
+    #[must_use]
+    pub fn condition_observation_entry_for_test(
+        sequence: u64,
+        event: &ObservableEvent,
+    ) -> SchedulerEventLogEntry {
+        SchedulerEventLogEntry::observable(sequence, event.at(), event.payload().clone())
+    }
+
+    /// Builds a scheduler evaluation-boundary entry for integration tests.
+    #[must_use]
+    pub fn condition_boundary_entry_for_test(
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> SchedulerEventLogEntry {
+        SchedulerEventLogEntry::evaluation_boundary(sequence, at, kind)
+    }
+
+    /// Returns a test entry with an intentionally replaced content hash.
+    #[must_use]
+    pub fn condition_entry_with_content_hash_for_test(
+        entry: SchedulerEventLogEntry,
+        content_hash: ContentHash,
+    ) -> SchedulerEventLogEntry {
+        entry.with_content_hash_for_test(content_hash)
+    }
+
+    /// Builds a checked condition prefix from scheduler entries for integration tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] when the supplied entries do not form
+    /// a checked scheduler prefix.
+    pub fn condition_prefix_from_scheduler_entries_for_test(
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
+        ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
+    }
+
+    /// Builds a checked quantum-boundary condition prefix for integration tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the synthetic scheduler boundary entry does not form a valid
+    /// prefix.
+    #[must_use]
+    pub fn condition_prefix_at_quantum_boundary_for_test(ticks: u64) -> ConditionEventLogPrefix {
+        let at = VirtualTime { ticks };
+        ConditionEventLogPrefix::from_scheduler_event_log_entries(vec![
+            condition_boundary_entry_for_test(0, at, SchedulerEvaluationBoundaryKind::Quantum),
+        ])
+        .expect("test scheduler boundary entry should form a checked prefix")
+    }
+
+    /// Builds a checked condition prefix from observable events for integration tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] when the generated entries do not
+    /// form a checked scheduler prefix.
+    pub fn condition_prefix_from_observable_events_for_test(
+        ticks: u64,
+        events: Vec<ObservableEvent>,
+    ) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
+        let mut entries = events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| {
+                condition_observation_entry_for_test(
+                    u64::try_from(index).expect("test observable event index should fit in u64"),
+                    event,
+                )
+            })
+            .collect::<Vec<_>>();
+        entries.push(condition_boundary_entry_for_test(
+            u64::try_from(entries.len()).expect("test observable event count should fit in u64"),
+            VirtualTime { ticks },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ));
+        ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
+    }
+}
 
 #[cfg(test)]
 mod tests {

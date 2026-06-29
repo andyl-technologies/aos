@@ -89,7 +89,7 @@
       }
       {
         label = "shared evaluator entrypoint";
-        needle = "pub fn evaluate_condition";
+        needle = "pub fn evaluate_assertion_condition";
       }
       {
         label = "shared evaluator is non-overridable";
@@ -97,7 +97,7 @@
       }
       {
         label = "event graph uses shared evaluator";
-        needle = "evaluate_condition(evaluator, condition)";
+        needle = "evaluate_condition(&mut graph_evaluator, condition)";
       }
       {
         label = "trigger doc names shared vocabulary";
@@ -195,7 +195,7 @@
       }
       {
         label = "assertion and trigger use same evaluator method";
-        needle = ".evaluate_condition(";
+        needle = ".evaluate_assertion_condition(";
       }
       {
         label = "eventually trigger and property extracted";

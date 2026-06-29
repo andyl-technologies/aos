@@ -2,12 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, ConditionEvaluation, ConditionLeaf, ConditionLeafOracle,
-    EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphError, EventGraphState,
-    EventId, Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent, ObservableEventPayload,
-    Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
-    SchedulerQuiescence, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, AssertionDef, AssertionId, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
+    EngineError, Event, EventGraph, EventGraphError, EventGraphState, EventId, Icount, MarkerId,
+    NodeId, NodeTemplate, ObservableEvent, ObservableEventPayload, Predicate, Properties, Property,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, SchedulerQuiescence, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -32,15 +34,8 @@ fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(time(ticks))
-}
-
-fn evaluator(
-    point: EventEvaluationPoint,
-    events: Vec<ObservableEvent>,
-) -> ConditionEvaluation<NoLeafFallback> {
-    ConditionEvaluation::new(point, NoLeafFallback).with_observable_events(events)
+fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoLeafFallback> {
+    support::evaluation_with_observables(ticks, events, NoLeafFallback)
 }
 
 fn ready_node(name: &str, white_box: WhiteBoxPolicy) -> WorldNode {
@@ -119,9 +114,9 @@ fn guest_marker_observes_enabled_doorbell_marker_at_retirement_icount() {
     let wrong_time = ObservableEvent::guest_marker(icount(43), node("guest"), marker("commit"));
 
     assert!(
-        evaluator(point(44), vec![wrong_marker, wrong_time, matching])
+        evaluator(44, vec![wrong_marker, wrong_time, matching])
             .with_world_white_box_policies(&world)
-            .evaluate_condition(&condition)
+            .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -133,7 +128,7 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
 
     assert!(
         !evaluator(
-            point(44),
+            44,
             vec![ObservableEvent::guest_marker(
                 icount(44),
                 node("guest"),
@@ -141,11 +136,11 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
             )],
         )
         .with_world_white_box_policies(&enabled)
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(44),
+            44,
             vec![ObservableEvent::guest_marker(
                 icount(44),
                 node("guest"),
@@ -153,11 +148,11 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
             )],
         )
         .with_world_white_box_policies(&disabled)
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(44),
+            44,
             vec![ObservableEvent::guest_marker(
                 icount(43),
                 node("guest"),
@@ -165,18 +160,18 @@ fn guest_marker_rejects_wrong_marker_disabled_opt_in_and_wrong_time_in_isolation
             )],
         )
         .with_world_white_box_policies(&enabled)
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(44),
+            44,
             vec![ObservableEvent::guest_marker(
                 icount(44),
                 node("guest"),
                 marker("commit")
             )],
         )
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -187,7 +182,7 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
 
     assert!(
         evaluator(
-            point(50),
+            50,
             vec![ObservableEvent::guest_marker(
                 icount(50),
                 node("observer"),
@@ -195,11 +190,11 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
             )],
         )
         .with_world_white_box_policies(&world)
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(50),
+            50,
             vec![ObservableEvent::guest_marker(
                 icount(50),
                 node("blackbox"),
@@ -207,7 +202,7 @@ fn guest_marker_names_are_global_but_emitting_node_must_be_opted_in() {
             )],
         )
         .with_world_white_box_policies(&world)
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -249,9 +244,10 @@ fn event_graph_fires_from_guest_marker_without_named_leaf_fallback() {
         marker("commit"),
     )];
 
-    let firings = state.evaluate(
+    let firings = support::evaluate_graph(
         &graph,
-        &mut evaluator(point(91), events).with_world_white_box_policies(&world),
+        &mut state,
+        evaluator(91, events).with_world_white_box_policies(&world),
     );
 
     assert_eq!(firings.len(), 1);
@@ -313,7 +309,7 @@ fn zero_guest_marker_conditions_run_without_guest_marker_support() {
     .expect("zero-guest-marker event graph should build");
     let mut state = EventGraphState::new();
 
-    let firings = state.evaluate(&graph, &mut evaluator(point(12), Vec::new()));
+    let firings = support::evaluate_graph(&graph, &mut state, evaluator(12, Vec::new()));
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-at-boundary");
@@ -323,7 +319,7 @@ fn zero_guest_marker_conditions_run_without_guest_marker_support() {
 fn zero_guest_marker_conditions_ignore_guest_marker_events() {
     let condition = Predicate::quiescent();
     let mut evaluation = evaluator(
-        point(20),
+        20,
         vec![ObservableEvent::guest_marker(
             icount(20),
             node("guest"),
@@ -332,7 +328,7 @@ fn zero_guest_marker_conditions_ignore_guest_marker_events() {
     )
     .with_scheduler_quiescence(SchedulerQuiescence::default());
 
-    assert!(evaluation.evaluate_condition(&condition));
+    assert!(evaluation.evaluate_assertion_condition(&condition));
 }
 
 #[test]
