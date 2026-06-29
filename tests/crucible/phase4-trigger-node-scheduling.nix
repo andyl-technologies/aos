@@ -67,8 +67,8 @@
         needle = "Completed by `checks.crucible.phase4.triggerNodeScheduling`";
       }
       {
-        label = "relative timer phase remains open";
-        needle = "- [ ] **T-TRIG-14**";
+        label = "trigger graph validator remains open";
+        needle = "- [ ] **T-TRIG-15**";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [

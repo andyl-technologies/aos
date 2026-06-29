@@ -62,8 +62,8 @@
         needle = "Completed by `checks.crucible.phase4.guestMarkerLeaf`";
       }
       {
-        label = "relative timer phase remains open";
-        needle = "- [ ] **T-TRIG-14**";
+        label = "trigger graph validator remains open";
+        needle = "- [ ] **T-TRIG-15**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

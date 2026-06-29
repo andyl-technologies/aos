@@ -15,7 +15,8 @@ use std::fmt;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::trigger::{
-    Action, ConditionEventLogPrefix, EventFiring, EventFirings, LogLevel, ObservableEventPayload,
+    Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
+    EventFirings, EventGraph, EventGraphState, LogLevel, ObservableEvent, ObservableEventPayload,
 };
 use crate::{
     BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
@@ -4510,6 +4511,71 @@ impl SingleScheduler {
         self.trigger_static_topology.as_ref()
     }
 
+    /// Appends black-box observable condition facts to the scheduler event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
+    /// appending the event-log segment would overflow the scheduler offsets, or
+    /// when the resulting condition prefix is invalid.
+    pub fn append_observable_events(
+        &mut self,
+        events: impl IntoIterator<Item = ObservableEvent>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let mut entries = Vec::new();
+        for event in events {
+            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            entries.push(scheduler_event_log_entry(
+                sequence,
+                event.at(),
+                SchedulerEventLogPayload::Observable(event.payload().clone()),
+            ));
+        }
+        self.append_event_log_entries(entries)
+    }
+
+    /// Appends a deterministic trigger/assertion evaluation boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning the dense event-log sequence or
+    /// appending the event-log segment would overflow the scheduler offsets, or
+    /// when the boundary would make the checked condition prefix invalid.
+    pub fn append_evaluation_boundary(
+        &mut self,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let sequence = scheduler_event_log_sequence(self.event_log_events, 0)?;
+        self.append_event_log_entries(vec![scheduler_event_log_entry(
+            sequence,
+            at,
+            SchedulerEventLogPayload::EvaluationBoundary(kind),
+        )])
+    }
+
+    /// Evaluates an event graph over this scheduler's current condition prefix.
+    ///
+    /// Armed trigger timers are made visible to `Timer` leaves from the
+    /// scheduler-owned [`TriggerActionState`], so a timer fires exactly at the
+    /// virtual time produced by the `ArmTimer` action that armed it.
+    pub fn evaluate_event_graph<O>(
+        &self,
+        graph: &EventGraph,
+        state: &mut EventGraphState,
+        oracle: O,
+    ) -> EventFirings
+    where
+        O: ConditionLeafOracle,
+    {
+        let mut pass = ConditionEvaluationPass::from_log_prefix(
+            self.condition_event_log_prefix.clone(),
+            oracle,
+        )
+        .with_timer_fires(self.trigger_actions.armed_timers.clone());
+        pass.evaluate_event_graph(graph, state)
+    }
+
     /// Appends deterministic trigger firings as causal event-log entries.
     ///
     /// # Errors
@@ -4585,6 +4651,13 @@ impl SingleScheduler {
                     "trigger firings were evaluated at event-log offset {:?}, but scheduler offset is {:?}",
                     firings.event_log_offset(),
                     current_offset
+                ),
+            });
+        }
+        if firings.timer_fires() != &self.trigger_actions.armed_timers {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "trigger firings were evaluated with timer state that does not match scheduler trigger action state",
                 ),
             });
         }

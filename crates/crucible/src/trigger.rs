@@ -377,6 +377,11 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         None
     }
 
+    /// Returns the complete timer-fire map visible to `Timer` leaves.
+    fn timer_fires(&self) -> BTreeMap<TimerId, VirtualTime> {
+        BTreeMap::new()
+    }
+
     /// Returns observable event-log entries visible at the evaluation point.
     fn observable_events(&self) -> &[ObservableEvent] {
         &[]
@@ -1166,6 +1171,10 @@ where
         self.timer_fires.get(timer).copied()
     }
 
+    fn timer_fires(&self) -> BTreeMap<TimerId, VirtualTime> {
+        self.timer_fires.clone()
+    }
+
     fn observable_events(&self) -> &[ObservableEvent] {
         &self.observable_events
     }
@@ -1591,6 +1600,7 @@ pub struct EventFiring {
 pub struct EventFirings {
     point: EventEvaluationPoint,
     event_log_offset: EventLogOffset,
+    timer_fires: BTreeMap<TimerId, VirtualTime>,
     firings: Vec<EventFiring>,
 }
 
@@ -1598,11 +1608,13 @@ impl EventFirings {
     pub(crate) fn new(
         point: EventEvaluationPoint,
         event_log_offset: EventLogOffset,
+        timer_fires: BTreeMap<TimerId, VirtualTime>,
         firings: Vec<EventFiring>,
     ) -> Self {
         Self {
             point,
             event_log_offset,
+            timer_fires,
             firings,
         }
     }
@@ -1617,6 +1629,12 @@ impl EventFirings {
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
         self.event_log_offset
+    }
+
+    /// Returns the timer-fire map visible when these firings were computed.
+    #[must_use]
+    pub fn timer_fires(&self) -> &BTreeMap<TimerId, VirtualTime> {
+        &self.timer_fires
     }
 
     /// Returns the number of firings in the ordered batch.
@@ -1705,6 +1723,7 @@ impl EventGraphState {
         let mut firings = Vec::new();
         let point = evaluator.evaluation_point();
         let event_log_offset = evaluator.event_log_offset();
+        let timer_fires = evaluator.timer_fires();
         for event in graph.events() {
             let truth = match &event.trigger {
                 Some(condition) => {
@@ -1736,7 +1755,7 @@ impl EventGraphState {
                 self.last_firing.insert(event.id.clone(), point.at());
             }
         }
-        EventFirings::new(point, event_log_offset, firings)
+        EventFirings::new(point, event_log_offset, timer_fires, firings)
     }
 }
 
@@ -1774,6 +1793,10 @@ where
 
     fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
         self.inner.timer_fire_time(timer)
+    }
+
+    fn timer_fires(&self) -> BTreeMap<TimerId, VirtualTime> {
+        self.inner.timer_fires()
     }
 
     fn observable_events(&self) -> &[ObservableEvent] {
