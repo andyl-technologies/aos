@@ -317,6 +317,14 @@ impl TreeWalk {
         body: EvalNodeRef,
     ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(body.module().index())?;
+        if module
+            .ir
+            .arena
+            .node(body.id())
+            .is_some_and(Self::search_path_has_cacheable_ambient_origin)
+        {
+            return Self::cache_expression_identity_for_node(module, body.id());
+        }
         if !Self::subtree_is_force_lookup_safe(&module.ir, body.id()) {
             return None;
         }
@@ -328,6 +336,14 @@ impl TreeWalk {
         body: EvalNodeRef,
     ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(body.module().index())?;
+        if module
+            .ir
+            .arena
+            .node(body.id())
+            .is_some_and(Self::search_path_has_cacheable_ambient_origin)
+        {
+            return Self::cache_expression_identity_for_node(module, body.id());
+        }
         if !Self::subtree_is_force_observation_safe(&module.ir, body.id()) {
             return None;
         }
@@ -678,6 +694,16 @@ impl TreeWalk {
     fn node_is_builtin_nix_path_attr(ir: &Ir, node: &IrNode) -> bool {
         node.kind == IrKind::BuiltinAttr
             && Self::builtin_attr_execution(ir, node) == Some(BuiltinExecution::NixPathValue)
+    }
+
+    fn search_path_has_cacheable_ambient_origin(node: &IrNode) -> bool {
+        matches!(
+            node.data,
+            IrData::SearchPath {
+                search_path: None,
+                ..
+            }
+        )
     }
 
     fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
