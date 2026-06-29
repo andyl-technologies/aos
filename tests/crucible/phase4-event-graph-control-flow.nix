@@ -73,7 +73,7 @@
       }
       {
         label = "later trigger work remains open";
-        needle = "- [ ] **T-TRIG-19**";
+        needle = "- [ ] **T-TRIG-20**";
       }
       {
         label = "event graph serialization task text";
@@ -368,7 +368,8 @@ in
             plan_lowering=implemented-T-TRIG-16
             verdicts=implemented-T-TRIG-17
             event_graph_serialization=implemented-T-TRIG-18
-            black_box_guarantee=pending-T-TRIG-19
+            black_box_guarantee=implemented-T-TRIG-19
+            replay_oracle=pending-T-TRIG-20
             RESULT
           '';
         }
