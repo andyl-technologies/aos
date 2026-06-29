@@ -3631,9 +3631,11 @@ alone (`M-1`/`Q-A`).
       cache-root symlinks, and stale metadata-shaped cache directories, requiring
       byte-identical native closures and unchanged directory, symlink, target,
       and metadata-shaped tree snapshots. All disabled `AOS_NIX_CACHE=0`
-      eval/closure legs now also require zero force-cache hit/miss counters,
-      zero force-cache materialization threshold-decision counters, zero early
-      cutoffs, and zero derivation final-path/static-output side-record reuse.
+      eval/closure legs now also require zero aggregate evaluator cache hit/miss
+      counters, zero force-cache hit/miss counters, zero force-cache
+      memoization-decision counters, zero force-cache materialization
+      threshold-decision counters, zero early cutoffs, and zero derivation
+      final-path/static-output side-record reuse.
       This samples the public env/config kill switch at the strict-JSON
       `eval_expr`, raw-expression `.drv`, and file-backed native `.drv` closure
       boundaries; it is not the full periodic

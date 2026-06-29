@@ -2484,6 +2484,31 @@ mod tests {
             "{label} reported force-cache misses"
         );
         assert_eq!(
+            stats.cache_hits(),
+            0,
+            "{label} reported aggregate evaluator cache hits"
+        );
+        assert_eq!(
+            stats.cache_misses(),
+            0,
+            "{label} reported aggregate evaluator cache misses"
+        );
+        assert_eq!(
+            stats.force_cache_memoization_admits(),
+            0,
+            "{label} reported force-cache memoization admit decisions"
+        );
+        assert_eq!(
+            stats.force_cache_memoization_bypasses(),
+            0,
+            "{label} reported force-cache memoization bypass decisions"
+        );
+        assert_eq!(
+            stats.force_cache_memoization_demands(),
+            0,
+            "{label} reported force-cache memoization demand decisions"
+        );
+        assert_eq!(
             stats.force_cache_materialization_materializes(),
             0,
             "{label} reported durable force-cache materialization decisions"
