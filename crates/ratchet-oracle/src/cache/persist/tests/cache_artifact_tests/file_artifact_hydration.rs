@@ -426,11 +426,17 @@ fn cache_file_artifact_hydrates_parse_entry_from_index_lookup() {
         .expect("entry should materialize");
     let hydrated = ParseCacheEntry::new(root.join("hydrated-index-lookup"));
 
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
     let result = persist
         .hydrate_file_artifact_bundle_from_index(&file_key, parsed.key, &hydrated)
         .expect("indexed entry hydrates");
 
     assert_eq!(result, Some(expected_entry));
+    assert_eq!(
+        persist.file_pack().mapped_read_count_for_tests(),
+        1,
+        "indexed file-artifact hydration should decode through the scoped mapped files pack"
+    );
     assert!(hydrated.is_complete());
     assert_eq!(
         hydrated

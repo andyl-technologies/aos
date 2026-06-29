@@ -240,12 +240,18 @@ fn cache_parse_index_hydrates_normal_parse_cache_entry() {
         .expect("entry should materialize");
     fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
 
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
     let result = persist
         .hydrate_parse_cache_entry_from_parse_index(&parse_cache, source)
         .expect("parse-indexed entry hydrates");
 
     let hydrated = parse_cache.entry_for_source(source);
     assert_eq!(result, Some(expected_entry));
+    assert_eq!(
+        persist.file_pack().mapped_read_count_for_tests(),
+        1,
+        "indexed parse-artifact hydration should decode through the scoped mapped files pack"
+    );
     assert!(hydrated.is_complete());
     assert_eq!(
         hydrated
