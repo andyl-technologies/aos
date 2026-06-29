@@ -224,8 +224,8 @@ hold invariant.
       (`aos nix-diff --all`: 0 divergences / 0 eval-failures across all 546
       packages), and the representative eval-time + `NIX_SHOW_STATS` baseline is
       committed (`docs/rfcs/0007-nix-evaluator/phase1-baseline.jsonl`).
-- [ ] Standing harness robustness remains: rnix parser acceptance differential
-      coverage is now present in `aos-nix-syntax`'s test-only
+- [x] Standing parser/fuzz harness robustness: rnix parser acceptance
+      differential coverage is present in `aos-nix-syntax`'s test-only
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus` plus
       automatically enumerated local language fixtures, source-seed fuzz
       corpora with explicit `internal_diff_raw` and `parity_json` sentinels, and
@@ -235,10 +235,26 @@ hold invariant.
       generated conformance corpus. The configured pinned C++ oracle recursion
       semantics check now runs on a fixed 32 MiB worker stack, so recursive
       fixed-point regressions report as semantic test failures instead of
-      aborting the `ratchet-oracle cpp_nix` harness process. Full parity-fuzzer
-      budget/quiescence remains.
+      aborting the `ratchet-oracle cpp_nix` harness process. Covered by
+      `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus`,
+      `parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds`,
+      `parser_acceptance_matches_rnix_oracle_on_workspace_nix_sources`,
+      `nix_fuzz_corpus` command/CLI tests,
+      `fuzz_source_seed_uses_string_attr_path_segments`,
+      `explicit_toolchain_corpus_names_foundational_roots`,
+      `gcc_toolchain_tier_components_name_derivation_roots`,
+      `toolchain_attr_expr_absolutizes_and_filters_existing_derivations`,
+      `system_attr_expr_absolutizes_relative_file_and_selects_toplevels`,
+      `conformance_corpus_generates_eval_okay_derivation_attrs`, and
+      `recursive_lambda_eval_fail_uses_stack_safe_max_call_depth`.
       This is a standing-harness robustness item, not the falsifiable byte-green
       gate, which is met.
+- [ ] Full parity-fuzzer budget/quiescence and post-change conformance
+      revalidation remain: after the last evaluator semantics change, run the
+      configured `internal_diff_raw` and `parity_json` fuzz targets for the
+      acceptance budget with zero new divergences, and keep the full conformance
+      harness green before default-on cutover. This is tracked as a cutover soak
+      gate, not as a local unit-test scaffold.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 
