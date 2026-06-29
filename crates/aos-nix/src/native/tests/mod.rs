@@ -109,8 +109,10 @@ fn instantiate_file_closure_with_stats_and_hits(
         native.eval_cache.clone(),
     )
     .map_err(|error| match diagnostic_source {
-        Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
-        None => native_eval_error(error, None),
+        Some(diagnostic_source) => {
+            native_eval_error_with_source_trace(error, diagnostic_source, EvalTraceStyle::Summary)
+        }
+        None => native_eval_error_with_trace(error, None, EvalTraceStyle::Summary),
     })?;
     let stats = *outcome.stats();
     let persistent_hit_keys = outcome.persist_force_cache_hit_keys().to_vec();

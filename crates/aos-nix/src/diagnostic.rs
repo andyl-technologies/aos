@@ -11,11 +11,12 @@ use miette::{Diagnostic, GraphicalReportHandler, LabeledSpan, NamedSource, Sever
 
 use crate::{
     compile::{IrError, IrErrorKind, ScopeError, ScopeErrorKind},
-    eval::{TreeWalkError, TreeWalkErrorKind},
+    eval::{EvalErrorSource, TreeWalkError, TreeWalkErrorKind},
     syntax::{LexError, LexErrorKind, ParseError, ParseErrorKind, Span},
 };
 
 const DIAGNOSTIC_URL: &str = "https://github.com/andyl-technologies/aos/blob/main/docs/rfcs/0007-nix-evaluator/24-observability-and-diagnostics.md";
+const SUMMARY_TRACE_FRAME_LIMIT: usize = 3;
 
 /// A source-backed parser diagnostic.
 pub type ParseDiagnostic = SourceDiagnostic<ParseError>;
@@ -31,6 +32,52 @@ pub type ScopeDiagnostic = SourceDiagnostic<ScopeError>;
 
 /// A source-backed IR-lowering diagnostic.
 pub type IrDiagnostic = SourceDiagnostic<IrError>;
+
+/// Selects how much logical evaluation trace to render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalTraceStyle {
+    /// Renders the default short trace.
+    Summary,
+    /// Renders every frame currently retained on the logical eval-context stack.
+    Full,
+}
+
+/// One frame in an evaluation trace reconstructed from logical evaluator state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalTraceFrame {
+    message: String,
+    source_name: Option<String>,
+    line: Option<usize>,
+    column: Option<usize>,
+    span: Span,
+}
+
+impl EvalTraceFrame {
+    /// Returns the frame message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the source name associated with the frame, if known.
+    pub fn source_name(&self) -> Option<&str> {
+        self.source_name.as_deref()
+    }
+
+    /// Returns the one-based source line associated with the frame, if known.
+    pub const fn line(&self) -> Option<usize> {
+        self.line
+    }
+
+    /// Returns the one-based source column associated with the frame, if known.
+    pub const fn column(&self) -> Option<usize> {
+        self.column
+    }
+
+    /// Returns the byte span associated with the frame.
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+}
 
 /// A typed native error paired with the source text that produced it.
 #[derive(Clone, Debug)]
@@ -224,6 +271,115 @@ pub fn render_fancy_report(diagnostic: &dyn Diagnostic) -> Result<String, fmt::E
     Ok(out)
 }
 
+/// Returns logical evaluation trace frames from outermost to innermost.
+pub fn eval_trace_frames(error: &TreeWalkError) -> Vec<EvalTraceFrame> {
+    error
+        .contexts()
+        .iter()
+        .map(|context| {
+            let (source_name, line, column) = context
+                .source()
+                .map(|source| {
+                    let (line, column) = source_position(source, context.span().start);
+                    (
+                        Some(String::from_utf8_lossy(source.name()).into_owned()),
+                        line,
+                        column,
+                    )
+                })
+                .unwrap_or((None, None, None));
+            EvalTraceFrame {
+                message: String::from_utf8_lossy(context.message()).into_owned(),
+                source_name,
+                line,
+                column,
+                span: context.span(),
+            }
+        })
+        .collect()
+}
+
+/// Renders logical evaluation trace frames for a tree-walk error.
+pub fn render_eval_trace(error: &TreeWalkError, style: EvalTraceStyle) -> Option<String> {
+    let frames = eval_trace_frames(error);
+    if frames.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("Evaluation trace:\n");
+    let visible = match style {
+        EvalTraceStyle::Summary => frames.len().min(SUMMARY_TRACE_FRAME_LIMIT),
+        EvalTraceStyle::Full => frames.len(),
+    };
+
+    for (index, frame) in frames.iter().take(visible).enumerate() {
+        out.push_str("  ");
+        out.push_str(&(index + 1).to_string());
+        out.push_str(". while evaluating: ");
+        out.push_str(frame.message());
+        if let (Some(source_name), Some(line), Some(column)) =
+            (frame.source_name(), frame.line(), frame.column())
+        {
+            out.push_str(" at ");
+            out.push_str(source_name);
+            out.push(':');
+            out.push_str(&line.to_string());
+            out.push(':');
+            out.push_str(&column.to_string());
+        }
+        out.push('\n');
+    }
+
+    if matches!(style, EvalTraceStyle::Summary) && frames.len() > visible {
+        let omitted = frames.len() - visible;
+        out.push_str("  ... ");
+        out.push_str(&omitted.to_string());
+        out.push_str(" more frame");
+        if omitted != 1 {
+            out.push('s');
+        }
+        out.push_str(" hidden; enable full evaluation tracing for the full trace\n");
+    }
+
+    Some(out)
+}
+
+/// Appends a logical evaluation trace to an already-rendered diagnostic report.
+pub fn append_eval_trace_report(
+    mut report: String,
+    error: &TreeWalkError,
+    style: EvalTraceStyle,
+) -> String {
+    if let Some(trace) = render_eval_trace(error, style) {
+        if !report.ends_with('\n') {
+            report.push('\n');
+        }
+        report.push('\n');
+        report.push_str(&trace);
+    }
+    report
+}
+
+fn source_position(source: &EvalErrorSource, offset: u32) -> (Option<usize>, Option<usize>) {
+    let offset = offset as usize;
+    let bytes = source.bytes();
+    if offset > bytes.len() {
+        return (None, None);
+    }
+
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for byte in &bytes[..offset] {
+        if *byte == b'\n' {
+            line = line.saturating_add(1);
+            column = 1;
+        } else {
+            column = column.saturating_add(1);
+        }
+    }
+    (Some(line), Some(column))
+}
+
 fn label_for_span(span: Span, label: &'static str) -> LabeledSpan {
     let range = span_range(span);
     LabeledSpan::new_with_span(Some(label.to_owned()), range)
@@ -279,7 +435,8 @@ fn context_matches_error_source(
 ) -> bool {
     match (error_source, context.source()) {
         (Some(error_source), Some(context_source)) => context_source == error_source,
-        _ => true,
+        (Some(_), None) => false,
+        (None, _) => true,
     }
 }
 
@@ -510,7 +667,7 @@ mod tests {
     use super::*;
     use crate::{
         compile::{IrError, IrErrorKind, IrId, lower, resolve},
-        eval::eval_whnf_owned,
+        eval::{eval_whnf_owned, tree_walk::EvalErrorContext},
         syntax::{Lexer, parse_str},
     };
 
@@ -686,6 +843,84 @@ mod tests {
         let report = render_fancy_report(&diagnostic).expect("diagnostic renders");
         assert!(report.contains("while evaluating: outer"), "{report}");
         assert!(report.contains("while evaluating: inner"), "{report}");
+    }
+
+    #[test]
+    fn eval_trace_frames_preserve_order_and_source_positions() {
+        let source = EvalErrorSource::new(b"expr.nix".to_vec(), b"a\nb\nc\n".to_vec());
+        let error = TreeWalkError::new(
+            TreeWalkErrorKind::Thrown {
+                id: IrId::new(1),
+                message: b"boom".to_vec(),
+            },
+            Span::new(0, 1),
+        )
+        .with_contexts(vec![
+            EvalErrorContext::new(b"outer".to_vec())
+                .with_span(Span::new(0, 1))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"inner".to_vec())
+                .with_span(Span::new(2, 3))
+                .with_source(source),
+        ]);
+
+        let frames = eval_trace_frames(&error);
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].message(), "outer");
+        assert_eq!(frames[0].source_name(), Some("expr.nix"));
+        assert_eq!(frames[0].line(), Some(1));
+        assert_eq!(frames[0].column(), Some(1));
+        assert_eq!(frames[1].message(), "inner");
+        assert_eq!(frames[1].source_name(), Some("expr.nix"));
+        assert_eq!(frames[1].line(), Some(2));
+        assert_eq!(frames[1].column(), Some(1));
+    }
+
+    #[test]
+    fn eval_trace_rendering_summarizes_and_expands_frames() {
+        let source = EvalErrorSource::new(b"expr.nix".to_vec(), b"a\nb\nc\nd\n".to_vec());
+        let error = TreeWalkError::new(
+            TreeWalkErrorKind::Thrown {
+                id: IrId::new(1),
+                message: b"boom".to_vec(),
+            },
+            Span::new(0, 1),
+        )
+        .with_contexts(vec![
+            EvalErrorContext::new(b"one".to_vec())
+                .with_span(Span::new(0, 1))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"two".to_vec())
+                .with_span(Span::new(2, 3))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"three".to_vec())
+                .with_span(Span::new(4, 5))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"four".to_vec())
+                .with_span(Span::new(6, 7))
+                .with_source(source),
+        ]);
+
+        let summary =
+            render_eval_trace(&error, EvalTraceStyle::Summary).expect("summary trace renders");
+        assert!(
+            summary.contains("while evaluating: one at expr.nix:1:1"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("while evaluating: three at expr.nix:3:1"),
+            "{summary}"
+        );
+        assert!(summary.contains("1 more frame hidden"), "{summary}");
+        assert!(!summary.contains("while evaluating: four"), "{summary}");
+
+        let full = render_eval_trace(&error, EvalTraceStyle::Full).expect("full trace renders");
+        assert!(
+            full.contains("while evaluating: four at expr.nix:4:1"),
+            "{full}"
+        );
+        assert!(!full.contains("hidden"), "{full}");
     }
 
     fn assert_eval_operand_labels(source: &str, left: &str, right: &str) {

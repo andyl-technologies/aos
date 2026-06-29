@@ -542,14 +542,32 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       evaluation-context labels (§5.1) — **P1** logical stack substrate,
       `D-OBS-2`; gate today: focused `addErrorContext`/diagnostic/native source
       tests.
-- [ ] Full `--show-trace` reconstruction remains: assemble summarized/full
-      trace frame chains from the evaluator's logical eval/force-context stack,
-      add any C++-Nix-required implicit frames beyond current `addErrorContext`
-      contexts, and validate the result under the future fiber scheduler where
-      the native stack reflects scheduling rather than Nix evaluation order
-      (§5.1) — **P1** logical stack, validated against the fiber model
+- [x] Current summarized/full trace-frame renderer: `EvalTraceFrame`
+      reconstructs retained logical eval-context frames from `TreeWalkError`
+      in outer-to-inner order with source name plus one-based line/column
+      derived from spans; `render_eval_trace` emits a summarized default trace
+      and a full trace, and native evaluation errors append the summarized form
+      by default while native evaluator verbosity selects full frames.
+      This covers currently retained `addErrorContext`-equivalent frames, not
+      future implicit C++-Nix frames or fiber scheduling validation (§5.1–§5.3)
+      — **P1** `D-OBS-2` slice; gate today:
+      `eval_trace_frames_preserve_order_and_source_positions`,
+      `eval_trace_rendering_summarizes_and_expands_frames`, and
+      `native_eval_error_summarizes_and_expands_logical_traces`,
+      `native_expression_eval_summarizes_and_expands_logical_traces_by_verbosity`,
+      `native_expression_import_error_does_not_attribute_root_trace_context_to_child_source`.
+- [ ] Full `--show-trace` reconstruction remains: add any C++-Nix-required
+      implicit frames beyond current `addErrorContext` contexts and validate
+      the result under the future fiber scheduler where the native stack
+      reflects scheduling rather than Nix evaluation order (§5.1) — **P1**
+      logical stack, validated against the fiber model
       ([13](13-parallel-evaluation.md) §5.5, **P3.5**); `D-OBS-2`.
-- [ ] Target structural parity (same frames, same order, same file:line:col from spans); frame *wording* best-effort; assemble the full chain only when tracing is requested, summarized by default, with lazy-vs-eager frame-string materialization a measure-first question (§5.2, §5.3, open question 1) — **P1**, `D-OBS-2`; text parity soft-gated like all error text (§3).
+- [ ] Full target structural parity remains: same frames, same order, same
+      file:line:col from spans across the expanded implicit-frame trace set;
+      frame *wording* best-effort; full chain only when tracing is requested,
+      summarized by default, with lazy-vs-eager frame-string materialization a
+      measure-first question (§5.2, §5.3, open question 1) — **P1**,
+      `D-OBS-2`; text parity soft-gated like all error text (§3).
 
 ### The native-backed REPL (§6)
 

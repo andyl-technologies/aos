@@ -24,6 +24,7 @@ use crate::cache::{
 #[cfg(test)]
 use crate::compile::{EffectClass, IrFacts};
 use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve};
+use crate::diagnostic::EvalTraceStyle;
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
@@ -286,9 +287,9 @@ impl NixNative {
         let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
         let ir = self.lower_native_source(&source, Some(source_map), Some(diagnostic_source))?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
-        let outcome = self
-            .eval_ir(&ir)
-            .map_err(|error| native_eval_error_with_source(error, diagnostic_source))?;
+        let outcome = self.eval_ir(&ir).map_err(|error| {
+            native_eval_error_with_source_trace(error, diagnostic_source, self.eval_trace_style())
+        })?;
         let string = outcome
             .heap()
             .get_string(outcome.value())
@@ -324,9 +325,9 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
     ) -> Result<PathBuf> {
         let ir = self.lower_native_source(source, source_map, None)?;
-        let outcome = self
-            .eval_instantiation_ir(&ir)
-            .map_err(|error| native_eval_error(error, source_map))?;
+        let outcome = self.eval_instantiation_ir(&ir).map_err(|error| {
+            native_eval_error_with_trace(error, source_map, self.eval_trace_style())
+        })?;
         derivation_path_from_value(outcome.value(), outcome.heap())
     }
 
@@ -359,8 +360,12 @@ impl NixNative {
         let outcome = self
             .eval_instantiation_ir(&ir)
             .map_err(|error| match diagnostic_source {
-                Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
-                None => native_eval_error(error, source_map),
+                Some(diagnostic_source) => native_eval_error_with_source_trace(
+                    error,
+                    diagnostic_source,
+                    self.eval_trace_style(),
+                ),
+                None => native_eval_error_with_trace(error, source_map, self.eval_trace_style()),
             })?;
         self.native_drv_closure_from_outcome(outcome)
     }
@@ -415,8 +420,12 @@ impl NixNative {
                 self.eval_cache.clone(),
             )
             .map_err(|error| match diagnostic_source {
-                Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
-                None => native_eval_error(error, None),
+                Some(diagnostic_source) => native_eval_error_with_source_trace(
+                    error,
+                    diagnostic_source,
+                    self.eval_trace_style(),
+                ),
+                None => native_eval_error_with_trace(error, None, self.eval_trace_style()),
             })?;
         self.observe_eval_cache(&outcome);
         self.native_drv_closure_from_outcome(outcome)
@@ -575,6 +584,14 @@ impl NixNative {
         options.set_reject_ambient_search_path(true);
         options.set_reject_unconfigured_impure_builtin_constants(true);
         options
+    }
+
+    fn eval_trace_style(&self) -> EvalTraceStyle {
+        if self.verbose() > 0 {
+            EvalTraceStyle::Full
+        } else {
+            EvalTraceStyle::Summary
+        }
     }
 
     #[cfg(test)]

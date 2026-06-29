@@ -15,7 +15,7 @@ fn native_eval_error_reports_invalid_ir_as_eval_error() {
         Span::new(0, 1),
     );
 
-    let native = native_eval_error(error, None);
+    let native = native_eval_error_with_trace(error, None, EvalTraceStyle::Summary);
 
     let NativeEvalError::EvalError { message } = native else {
         panic!("invalid IR should not fall back to native CLI");
@@ -627,6 +627,114 @@ fn native_expression_type_error_reports_add_error_context_labels() -> Result<()>
     assert!(message.contains("while evaluating: ctx"), "{message}");
     assert!(message.contains(source), "{message}");
     assert!(!message.contains("builtins.toJSON"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_summarizes_and_expands_logical_traces_by_verbosity() -> Result<()> {
+    let source = r#"
+        builtins.addErrorContext "one" (
+          builtins.addErrorContext "two" (
+            builtins.addErrorContext "three" (
+              builtins.addErrorContext "four" (builtins.throw "boom")
+            )
+          )
+        )
+    "#;
+
+    let summary_err = NixNative::new(0)?
+        .eval_expr(source)
+        .expect_err("throw should render a summarized native trace");
+    let Some(NativeEvalError::EvalError { message: summary }) =
+        summary_err.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("throw should surface as a native eval error: {summary_err:?}");
+    };
+    let summary_trace = summary
+        .split("Evaluation trace:")
+        .nth(1)
+        .expect("summary diagnostic should include an appended trace");
+    assert!(
+        summary_trace.contains("while evaluating: one at expr.nix:"),
+        "{summary}"
+    );
+    assert!(summary_trace.contains("1 more frame hidden"), "{summary}");
+    assert!(
+        !summary_trace.contains("while evaluating: four"),
+        "{summary}"
+    );
+
+    let full_err = NixNative::new(1)?
+        .eval_expr(source)
+        .expect_err("throw should render a full native trace");
+    let Some(NativeEvalError::EvalError { message: full }) =
+        full_err.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("throw should surface as a native eval error: {full_err:?}");
+    };
+    let full_trace = full
+        .split("Evaluation trace:")
+        .nth(1)
+        .expect("full diagnostic should include an appended trace");
+    assert!(
+        full_trace.contains("while evaluating: four at expr.nix:"),
+        "{full}"
+    );
+    assert!(!full_trace.contains("hidden"), "{full}");
+    Ok(())
+}
+
+#[test]
+fn native_expression_import_error_does_not_attribute_root_trace_context_to_child_source()
+-> Result<()> {
+    let root = unique_temp_dir("native-expression-imported-trace-source");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let child = root.join("child.nix");
+    let child_source = format!(r#"let padding = "{}"; in 1 + true"#, "a".repeat(256));
+    fs::write(&child, child_source.as_bytes())?;
+    let expr = format!(
+        r#"builtins.addErrorContext "root context" (import {})"#,
+        child.to_string_lossy()
+    );
+    let source = json_wrapper_source(&expr);
+    let source_map = WrappedSourceMap {
+        prefix_len: JSON_WRAPPER_PREFIX.len(),
+        expr_len: expr.len(),
+    };
+    let diagnostic_source = NativeDiagnosticSource::new("expr.nix", &expr, Some(source_map));
+    let native = NixNative::new(1)?;
+    let ir = native.lower_native_source(&source, Some(source_map), Some(diagnostic_source))?;
+    let error = native
+        .eval_ir(&ir)
+        .expect_err("imported child type error should fail native evaluation");
+    let native_error =
+        native_eval_error_with_source_trace(error, diagnostic_source, EvalTraceStyle::Full);
+
+    let NativeEvalError::EvalError { message } = native_error else {
+        panic!("imported child type error should surface as native eval error");
+    };
+    let trace = message
+        .split("Evaluation trace:")
+        .nth(1)
+        .expect("diagnostic should include an appended trace");
+    assert!(
+        trace.contains("while evaluating: root context"),
+        "{message}"
+    );
+    assert!(
+        !trace.contains(&format!(
+            "while evaluating: root context at {}",
+            child.to_string_lossy()
+        )),
+        "{message}"
+    );
+    assert!(
+        message.contains(&child.to_string_lossy().to_string()),
+        "{message}"
+    );
+
+    fs::remove_dir_all(root)?;
     Ok(())
 }
 

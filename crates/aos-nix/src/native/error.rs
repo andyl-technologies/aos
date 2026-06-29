@@ -9,7 +9,8 @@ use super::*;
 
 use crate::compile::{IrError, ScopeError};
 use crate::diagnostic::{
-    EvalDiagnostic, IrDiagnostic, ParseDiagnostic, ScopeDiagnostic, render_fancy_report,
+    EvalDiagnostic, EvalTraceStyle, IrDiagnostic, ParseDiagnostic, ScopeDiagnostic,
+    append_eval_trace_report, render_fancy_report,
 };
 use crate::syntax::{ParseError, ParseErrorKind};
 
@@ -189,24 +190,27 @@ fn rendered_ir_diagnostic(error: &IrError, source: NativeDiagnosticSource<'_>) -
     render_fancy_report(&diagnostic).ok()
 }
 
-pub(super) fn native_eval_error(
+pub(super) fn native_eval_error_with_trace(
     error: TreeWalkError,
     source_map: Option<WrappedSourceMap>,
+    trace_style: EvalTraceStyle,
 ) -> NativeEvalError {
-    native_eval_error_impl(error, source_map, None)
+    native_eval_error_impl(error, source_map, None, trace_style)
 }
 
-pub(super) fn native_eval_error_with_source(
+pub(super) fn native_eval_error_with_source_trace(
     error: TreeWalkError,
     source: NativeDiagnosticSource<'_>,
+    trace_style: EvalTraceStyle,
 ) -> NativeEvalError {
-    native_eval_error_impl(error, source.source_map, Some(source))
+    native_eval_error_impl(error, source.source_map, Some(source), trace_style)
 }
 
 fn native_eval_error_impl(
     error: TreeWalkError,
     source_map: Option<WrappedSourceMap>,
     diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+    trace_style: EvalTraceStyle,
 ) -> NativeEvalError {
     let kind = error.kind();
     if let Some(feature) = tree_walk_unsupported_feature(&kind) {
@@ -218,23 +222,28 @@ fn native_eval_error_impl(
     }
 
     NativeEvalError::EvalError {
-        message: native_eval_error_message(&error, diagnostic_source),
+        message: native_eval_error_message(&error, diagnostic_source, trace_style),
     }
 }
 
 fn native_eval_error_message(
     error: &TreeWalkError,
     diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+    trace_style: EvalTraceStyle,
 ) -> String {
     if error.source().is_some() {
-        return rendered_embedded_eval_diagnostic(error).unwrap_or_else(|| error.to_string());
+        return rendered_embedded_eval_diagnostic(error, trace_style)
+            .unwrap_or_else(|| append_eval_trace_report(error.to_string(), error, trace_style));
     }
     diagnostic_source
-        .and_then(|source| rendered_eval_diagnostic(error, source))
-        .unwrap_or_else(|| error.to_string())
+        .and_then(|source| rendered_eval_diagnostic(error, source, trace_style))
+        .unwrap_or_else(|| append_eval_trace_report(error.to_string(), error, trace_style))
 }
 
-fn rendered_embedded_eval_diagnostic(error: &TreeWalkError) -> Option<String> {
+fn rendered_embedded_eval_diagnostic(
+    error: &TreeWalkError,
+    trace_style: EvalTraceStyle,
+) -> Option<String> {
     let source = error.source()?;
     let source_text = std::str::from_utf8(source.bytes()).ok()?;
     if !span_fits_source(error.span(), source_text) {
@@ -258,7 +267,9 @@ fn rendered_embedded_eval_diagnostic(error: &TreeWalkError) -> Option<String> {
 
     let name = String::from_utf8_lossy(source.name());
     let diagnostic = EvalDiagnostic::new(name.as_ref(), source_text, error.clone());
-    render_fancy_report(&diagnostic).ok()
+    render_fancy_report(&diagnostic)
+        .ok()
+        .map(|report| append_eval_trace_report(report, error, trace_style))
 }
 
 fn context_matches_embedded_source(
@@ -267,7 +278,7 @@ fn context_matches_embedded_source(
 ) -> bool {
     match context.source() {
         Some(context_source) => context_source == source,
-        None => true,
+        None => false,
     }
 }
 
@@ -311,6 +322,10 @@ mod tests {
                     end: (root_context_start + "root-span-sentinel".len()) as u32,
                 })
                 .with_source(root_source),
+            EvalErrorContext::new(b"sourceless root context".to_vec()).with_span(Span {
+                start: root_context_start as u32,
+                end: (root_context_start + "root-span-sentinel".len()) as u32,
+            }),
             EvalErrorContext::new(b"child context".to_vec())
                 .with_span(Span {
                     start: child_context_start as u32,
@@ -320,7 +335,7 @@ mod tests {
         ])
         .with_source(child_source);
 
-        let report = rendered_embedded_eval_diagnostic(&error)
+        let report = rendered_embedded_eval_diagnostic(&error, EvalTraceStyle::Full)
             .expect("embedded diagnostic should render with mixed-source contexts");
 
         assert!(
@@ -334,11 +349,70 @@ mod tests {
         assert!(report.contains("child-context-line"), "{report}");
         assert!(!report.contains("root-span-sentinel"), "{report}");
     }
+
+    #[test]
+    fn native_eval_error_summarizes_and_expands_logical_traces() {
+        let source_text = "a\nb\nc\nd\n";
+        let source = EvalErrorSource::new(b"expr.nix".to_vec(), source_text.as_bytes().to_vec());
+        let error = TreeWalkError::new(
+            TreeWalkErrorKind::Thrown {
+                id: IrId::new(1),
+                message: b"boom".to_vec(),
+            },
+            Span::new(0, 1),
+        )
+        .with_contexts(vec![
+            EvalErrorContext::new(b"one".to_vec())
+                .with_span(Span::new(0, 1))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"two".to_vec())
+                .with_span(Span::new(2, 3))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"three".to_vec())
+                .with_span(Span::new(4, 5))
+                .with_source(source.clone()),
+            EvalErrorContext::new(b"four".to_vec())
+                .with_span(Span::new(6, 7))
+                .with_source(source.clone()),
+        ])
+        .with_source(source);
+        let diagnostic_source = NativeDiagnosticSource::new("expr.nix", source_text, None);
+
+        let summary = native_eval_error_with_source_trace(
+            error.clone(),
+            diagnostic_source,
+            EvalTraceStyle::Summary,
+        );
+        let NativeEvalError::EvalError { message: summary } = summary else {
+            panic!("summary trace should be an eval error");
+        };
+        assert!(
+            summary.contains("while evaluating: one at expr.nix:1:1"),
+            "{summary}"
+        );
+        assert!(summary.contains("1 more frame hidden"), "{summary}");
+        assert!(
+            !summary.contains("while evaluating: four at expr.nix:4:1"),
+            "{summary}"
+        );
+
+        let full =
+            native_eval_error_with_source_trace(error, diagnostic_source, EvalTraceStyle::Full);
+        let NativeEvalError::EvalError { message: full } = full else {
+            panic!("full trace should be an eval error");
+        };
+        assert!(
+            full.contains("while evaluating: four at expr.nix:4:1"),
+            "{full}"
+        );
+        assert!(!full.contains("hidden"), "{full}");
+    }
 }
 
 fn rendered_eval_diagnostic(
     error: &TreeWalkError,
     source: NativeDiagnosticSource<'_>,
+    trace_style: EvalTraceStyle,
 ) -> Option<String> {
     let span = match source.source_map {
         Some(source_map) => wrapped_source_span(error.span(), source_map)?,
@@ -364,8 +438,23 @@ fn rendered_eval_diagnostic(
         return None;
     }
 
+    let trace_source = crate::eval::EvalErrorSource::new(
+        source.name.as_bytes().to_vec(),
+        source.source.as_bytes().to_vec(),
+    );
+    let contexts = error
+        .contexts()
+        .iter()
+        .map(|context| match context.source() {
+            Some(_) => context.clone(),
+            None => context.clone().with_source(trace_source.clone()),
+        })
+        .collect();
+    let error = error.with_contexts(contexts).with_source(trace_source);
     let diagnostic = EvalDiagnostic::new(source.name, source.source, error);
-    render_fancy_report(&diagnostic).ok()
+    render_fancy_report(&diagnostic)
+        .ok()
+        .map(|report| append_eval_trace_report(report, diagnostic.error(), trace_style))
 }
 
 fn eval_error_for_source(
