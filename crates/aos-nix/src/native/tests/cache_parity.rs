@@ -3,12 +3,13 @@
 use super::*;
 use crate::cache::{
     CachedExpressionValue, DirEntryInput, DurableBlake3Hash, FileTypeForInput,
-    ImpureInputFingerprint, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
-    PersistNodeMetadataKey, ValueHash,
+    ImpureInputFingerprint, ImpureInputMode, ParseCache, ParseFileKey, PersistCache,
+    PersistFileArtifactKey, PersistNodeMetadataKey, ValueHash,
 };
 
 mod ambient_inputs;
 mod current_system;
+mod search_path;
 mod stale_metadata;
 
 #[test]

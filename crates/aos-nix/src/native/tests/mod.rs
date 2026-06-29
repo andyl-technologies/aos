@@ -67,7 +67,7 @@ fn instantiate_file_closure_with_stats_and_hits(
     Vec<PersistNodeMetadataKey>,
 )> {
     let attr_path = attr_path_drv_path_segments(attr)?;
-    let mut options = native.instantiation_options();
+    let mut options = native.file_instantiation_options();
     let file = native_source_file(file, &options)?;
     let source_name = path_bytes(&file)?;
     let source_name_text = String::from_utf8_lossy(&source_name);
@@ -185,6 +185,60 @@ fn assert_no_incremental_cache_activity(stats: &crate::eval::EvalStats, label: &
     );
 }
 
+fn assert_no_force_cache_or_side_record_activity(stats: &crate::eval::EvalStats, label: &str) {
+    assert_eq!(
+        stats.force_cache_hits(),
+        0,
+        "{label} reported force-cache hits"
+    );
+    assert_eq!(
+        stats.force_cache_misses(),
+        0,
+        "{label} reported force-cache misses"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_admits(),
+        0,
+        "{label} reported force-cache memoization admit decisions"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_bypasses(),
+        0,
+        "{label} reported force-cache memoization bypass decisions"
+    );
+    assert_eq!(
+        stats.force_cache_memoization_demands(),
+        0,
+        "{label} reported force-cache memoization demand decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_materializes(),
+        0,
+        "{label} reported durable materialization decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_keeps_in_memory(),
+        0,
+        "{label} reported keep-in-memory decisions"
+    );
+    assert_eq!(
+        stats.force_cache_materialization_decisions(),
+        0,
+        "{label} reported materialization decisions"
+    );
+    assert_eq!(stats.early_cutoffs(), 0, "{label} reported early cutoffs");
+    assert_eq!(
+        stats.derivation_aterm_path_reuses(),
+        0,
+        "{label} reported derivation ATerm path reuse"
+    );
+    assert_eq!(
+        stats.static_derivation_output_path_reuses(),
+        0,
+        "{label} reported static-output path reuse"
+    );
+}
+
 #[derive(Debug)]
 struct NativeFileClosureCacheParity {
     uncached: NativeDrvClosure,
@@ -219,6 +273,24 @@ impl NativeFileClosureCacheParity {
             );
         }
     }
+
+    fn assert_cache_off_observed_no_force_cache_or_side_record_activity(&self) {
+        for (label, stats) in [
+            ("uncached", &self.uncached_stats),
+            ("disabled eval-cache", &self.disabled_stats),
+        ] {
+            assert_no_force_cache_or_side_record_activity(
+                stats,
+                &format!("{label} native file-closure run"),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CacheOffStatsContract {
+    Strict,
+    AllowAggregateCacheStats,
 }
 
 fn native_file_closure_cache_parity<F>(
@@ -228,6 +300,51 @@ fn native_file_closure_cache_parity<F>(
     file: &Path,
     attr: &str,
     configure_options: F,
+) -> Result<NativeFileClosureCacheParity>
+where
+    F: Fn(&mut TreeWalkOptions) -> Result<()>,
+{
+    native_file_closure_cache_parity_with_cache_off_contract(
+        root,
+        store,
+        persist_root,
+        file,
+        attr,
+        configure_options,
+        CacheOffStatsContract::Strict,
+    )
+}
+
+fn native_file_closure_cache_parity_allowing_aggregate_cache_activity<F>(
+    root: &Path,
+    store: &Path,
+    persist_root: &Path,
+    file: &Path,
+    attr: &str,
+    configure_options: F,
+) -> Result<NativeFileClosureCacheParity>
+where
+    F: Fn(&mut TreeWalkOptions) -> Result<()>,
+{
+    native_file_closure_cache_parity_with_cache_off_contract(
+        root,
+        store,
+        persist_root,
+        file,
+        attr,
+        configure_options,
+        CacheOffStatsContract::AllowAggregateCacheStats,
+    )
+}
+
+fn native_file_closure_cache_parity_with_cache_off_contract<F>(
+    root: &Path,
+    store: &Path,
+    persist_root: &Path,
+    file: &Path,
+    attr: &str,
+    configure_options: F,
+    cache_off_contract: CacheOffStatsContract,
 ) -> Result<NativeFileClosureCacheParity>
 where
     F: Fn(&mut TreeWalkOptions) -> Result<()>,
@@ -366,7 +483,14 @@ where
         persistent_hit_keys,
     };
     report.assert_byte_identical();
-    report.assert_cache_off_observed_no_incremental_cache_activity();
+    match cache_off_contract {
+        CacheOffStatsContract::Strict => {
+            report.assert_cache_off_observed_no_incremental_cache_activity();
+        }
+        CacheOffStatsContract::AllowAggregateCacheStats => {
+            report.assert_cache_off_observed_no_force_cache_or_side_record_activity();
+        }
+    }
 
     let canaries = persistent_force_cache_surface_canaries(persist_root)?;
     if !canaries.is_empty() {

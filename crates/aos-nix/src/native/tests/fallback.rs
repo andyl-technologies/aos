@@ -45,6 +45,35 @@ fn native_instantiation_search_path_stays_fallback_eligible() -> Result<()> {
         "unexpected error: {error:?}"
     );
 
+    let configured_dir = unique_temp_dir("aos-nix-native-raw-configured-search-path");
+    fs::create_dir_all(configured_dir.join("source"))?;
+    let mut configured_options = TreeWalkOptions::new();
+    configured_options.add_nix_path_entry(
+        b"pkg".to_vec(),
+        configured_dir.as_os_str().as_bytes().to_vec(),
+    )?;
+    let configured = NixNative::with_options(0, configured_options)?;
+    let error = configured
+        .instantiate_expr(
+            r#"derivationStrict {
+              name = "raw-configured-search-path";
+              system = "x86_64-linux";
+              builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              args = [ <pkg/source> ];
+            }"#,
+        )
+        .expect_err("raw expression search-path instantiation should still fall back");
+    let _ = fs::remove_dir_all(&configured_dir);
+
+    assert!(
+        matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { feature, .. })
+                if feature.contains("configured Nix search path lookup")
+        ),
+        "unexpected raw expression configured search-path error: {error:?}"
+    );
+
     let error = native
         .instantiate_expr(
             r#"builtins.findFile [ { path = "/definitely-missing-aos-nix"; } ] "missing""#,

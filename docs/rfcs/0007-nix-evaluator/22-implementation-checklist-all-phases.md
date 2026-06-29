@@ -3576,6 +3576,16 @@ alone (`M-1`/`Q-A`).
       hashes, load the keys for the changed metadata observations after
       recomputation, and keep all impure-input and persistent sidecar hashes out
       of `.drv` surfaces.
+      `native_file_cache_parity_harness_covers_configured_search_path_input`
+      drives a caller-configured visible `nix_path` entry through native
+      file-root instantiation, resolves a direct `<pkg/source>` lookup into a
+      `builtins.path` derivation argument, requires byte-identical closures
+      across the same five harness legs while allowing ordinary per-evaluator
+      search-path lookup-cache stats on disabled legs, scans closure surfaces for
+      search-path candidate identity, persistent force sidecar,
+      root parse/file-content, and source-payload canaries, and leaves
+      unconfigured native instantiation plus raw expression instantiation on the
+      existing ambient-search-path fallback path.
       `native_file_cache_parity_harness_covers_current_system_option_salt` seeds
       a persistent direct-file closure under `builtins.currentSystem =
       x86_64-linux`, reruns the same attr path under `aarch64-linux`, and
@@ -3586,8 +3596,8 @@ alone (`M-1`/`Q-A`).
       This broadens the reusable direct-file cache-parity harness across
       filesystem-sensitive forced inputs, source-path stale-content
       recomputation, filtered recursive source output parity, filesystem stale
-      content/metadata/existence recomputation, and ambient currentSystem
-      option-sensitive reuse; it is not full
+      content/metadata/existence recomputation, configured search-path closure
+      parity, and ambient currentSystem option-sensitive reuse; it is not full
       impure-input demand-graph integration, full AOS package-set coverage,
       syscall-level cache-off no-read proof, or the full cached-vs-uncached CI
       safety net

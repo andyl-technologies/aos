@@ -542,7 +542,7 @@ impl NixNative {
         attr: &str,
     ) -> Result<(NativeDrvClosure, EvalStats)> {
         let attr_path = attr_path_drv_path_segments(attr)?;
-        let mut options = self.instantiation_options();
+        let mut options = self.file_instantiation_options();
         let file = native_source_file(file, &options)?;
         let source_name = path_bytes(&file)?;
         let source_name_text = String::from_utf8_lossy(&source_name);
@@ -750,6 +750,12 @@ impl NixNative {
         let mut options = self.options.clone();
         options.set_reject_ambient_search_path(true);
         options.set_reject_unconfigured_impure_builtin_constants(true);
+        options
+    }
+
+    fn file_instantiation_options(&self) -> TreeWalkOptions {
+        let mut options = self.instantiation_options();
+        options.set_reject_ambient_search_path(options.nix_path().is_empty());
         options
     }
 

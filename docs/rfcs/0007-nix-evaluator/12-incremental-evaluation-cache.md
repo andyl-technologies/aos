@@ -1395,6 +1395,18 @@ harness, never cut for scope.
       hashes, load the keys for the changed metadata observations after
       recomputation, and keep all impure-input and persistent sidecar hashes out
       of `.drv` surfaces.
+      `native_file_cache_parity_harness_covers_configured_search_path_input`
+      drives a caller-configured visible `nix_path` entry through native
+      file-root instantiation, resolves a direct `<pkg/source>` lookup into a
+      `builtins.path` derivation argument, requires byte-identical closures
+      across the same five harness legs while allowing ordinary per-evaluator
+      search-path lookup-cache stats on disabled legs, and scans closure surfaces
+      for search-path candidate identity, persistent force sidecar,
+      root parse/file-content, and source-payload canaries.
+      Unconfigured native instantiation still rejects ambient search-path lookup
+      and falls back rather than observing host state; raw expression
+      instantiation also remains on that strict fallback path even when a caller
+      configures visible `nix_path` entries.
       `native_file_cache_parity_harness_covers_current_system_option_salt` seeds
       a persistent direct-file closure under `builtins.currentSystem =
       x86_64-linux`, reruns the same attr path under `aarch64-linux`, and
@@ -1405,8 +1417,9 @@ harness, never cut for scope.
       reusable direct-file cache-parity harness across filesystem-sensitive
       forced inputs, same-input source-path input surfaces, source-path
       stale-content recomputation, filtered recursive source output parity,
-      filesystem stale content/metadata/existence recomputation, and ambient
-      currentSystem option-sensitive reuse; it is not full impure-input
+      filesystem stale content/metadata/existence recomputation, configured
+      search-path closure parity, and ambient currentSystem option-sensitive
+      reuse; it is not full impure-input
       demand-graph integration, full AOS package-set coverage, syscall-level
       cache-off no-read proof, or the full cached-vs-uncached CI safety net.
       ([§6.3](#63-treating-importreadfile-reads-as-hashed-inputs),
@@ -1418,6 +1431,7 @@ harness, never cut for scope.
       `native_file_cache_parity_harness_covers_filtered_source_path_inputs`,
       `native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs`,
       `native_file_cache_parity_harness_covers_stale_metadata_impure_inputs`,
+      `native_file_cache_parity_harness_covers_configured_search_path_input`,
       `native_file_cache_parity_harness_covers_current_system_option_salt`.
 - [x] Current reusable native file-closure ambient-input parity witness: `native_file_cache_parity_harness_covers_get_env_impure_input` seeds a persistent direct-file closure with configured `builtins.getEnv`, mutates the configured environment value, and requires stale cached output to match the changed uncached closure, replace the same getEnv force-cache metadata key with a changed value hash, later hit the changed key, and keep the original/changed getEnv trace hashes plus persistent sidecar hashes out of `.drv` surfaces. `native_file_cache_parity_harness_covers_absent_empty_and_pure_get_env` seeds an absent getEnv read, requires configured empty getEnv to preserve the same empty-string closure while missing stale absent input and recording the explicit-empty trace, mutates it to a present value, requires stale cached output to recompute to the present closure, and then runs pure mode with that value configured to prove pure cached output still matches the empty-string closure rather than replaying the impure value. `native_file_cache_parity_harness_covers_current_time_configured_input` drives configured `builtins.currentTime` through the same file-closure boundary and requires a changed timestamp cached run to match the changed uncached closure rather than the original while scanning persistent sidecar hashes and currentTime hot hashes out of `.drv` surfaces. This extends the direct-file cache-parity harness to ambient impure inputs; it is not itself a currentTime uncacheability/tombstone proof, full currentTime taint propagation through future durable dependents, full impure-input demand-graph integration, full AOS package-set coverage, syscall-level cache-off no-read proof, or the full cached-vs-uncached CI safety net. ([§6.3](#63-treating-importreadfile-reads-as-hashed-inputs), [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `R-10`/`S-14`/`S-15`; gate: `native_file_cache_parity_harness_covers_get_env_impure_input`, `native_file_cache_parity_harness_covers_absent_empty_and_pure_get_env`, `native_file_cache_parity_harness_covers_current_time_configured_input`.
 - [x] Current native forced-expression sidecar leak/bypass canaries: `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` and `native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` drive raw-expression and file-root attr-path `NixNative` instantiation through cache-off, persistent demand observation, durable forced-value materialization, and a fresh-runtime persistent pass for a configured `currentSystem` thunk. The cache-off leak legs require zero aggregate evaluator cache hit/miss counters, zero force-cache hit/miss counters, zero force-cache memoization-decision counters, zero force-cache materialization threshold-decision counters, zero early cutoffs, and zero derivation final-path/static-output side-record reuse. The final fresh-runtime passes must report force-cache hits, and the canary scanner only admits persistent node metadata entries whose linked value loads through the cached-expression payload decoder. They then scan the resulting `.drv` path and ATerm closure surfaces for forced-expression node metadata BLAKE3 addresses, materialized value BLAKE3 addresses, trace-side BLAKE3 addresses when present, and a representative context-free `NixString` xxh3 hot-hash sentinel. `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects` and `native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects` seed real persistent forced-expression payloads, then rerun the same raw-expression and file-root closures with eval-cache disabled and the same persistent root configured, requiring byte-identical closure output, the same zero incremental-cache stats contract, unchanged latest logical node metadata and trace entries, and no sidecar hash leak into the disabled closures. The raw-expression canary additionally requires byte-identical persistent cache file contents; the file-root canary requires byte-identical force-cache node/value sidecar contents while leaving file-root parse artifact persistence to the separate frontend cache gates. This extends the current native closure safety net to forced-expression persistent sidecars and populated-root disabled-cache side-effect bypasses on both native source entry shapes; it is not syscall-level no-read instrumentation, the full cache-off AOS closure harness, full internal-hash leak invariant, or future value-memoization safety net. ([§5.2](#52-the-leak-invariant), [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P1/P2, `S-14`/`S-15`; gate: focused native force-cache sidecar leak/bypass canaries.
