@@ -2,16 +2,17 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, AssertionPhase, ConditionEvaluation, ConditionLeaf,
-    ConditionLeafOracle, EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphError,
-    EventGraphState, EventId, ExactLocalEvent, Icount, NetworkLookahead, NodeCounter, NodeId,
-    NodeTemplate, ObservableEvent, ObservableEventPayload, Predicate, Properties, Property,
-    ReadyPoint, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerNodeVcpuIdleSnapshot, SchedulerQuiescence, SchedulerQuiescenceBlocker,
-    SchedulerScenarioNode, SchedulerVcpuIdleState, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, SingleScheduler, VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
-    WorldNode,
+    Action, AssertionDef, AssertionId, AssertionPhase, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, EngineError, Event, EventGraph, EventGraphError, EventGraphState, EventId,
+    ExactLocalEvent, Icount, NetworkLookahead, NodeCounter, NodeId, NodeTemplate, ObservableEvent,
+    ObservableEventPayload, Predicate, Properties, Property, ReadyPoint, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerNodeVcpuIdleSnapshot, SchedulerQuiescence,
+    SchedulerQuiescenceBlocker, SchedulerScenarioNode, SchedulerVcpuIdleState, SchedulingNodeKind,
+    Shift, SimDuration, SimInstant, SingleScheduler, VcpuId, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -35,19 +36,12 @@ fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(time(ticks))
-}
-
 fn shift(bits: u8) -> Shift {
     Shift::new(bits).expect("test shift should be valid")
 }
 
-fn evaluator(
-    point: EventEvaluationPoint,
-    events: Vec<ObservableEvent>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    ConditionEvaluation::new(point, NoNamedLeaves).with_observable_events(events)
+fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoNamedLeaves> {
+    support::evaluation_with_observables(ticks, events, NoNamedLeaves)
 }
 
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
@@ -164,11 +158,8 @@ fn assertion_state_observes_current_causal_entry() {
     );
 
     assert!(
-        evaluator(
-            point(42),
-            vec![wrong_state, wrong_assertion, wrong_time, matching]
-        )
-        .evaluate_condition(&condition)
+        evaluator(42, vec![wrong_state, wrong_assertion, wrong_time, matching])
+            .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -179,36 +170,36 @@ fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
 
     assert!(
         !evaluator(
-            point(42),
+            42,
             vec![ObservableEvent::assertion_state_changed(
                 time(42),
                 assertion_id("leader-elected"),
                 AssertionPhase::Violated,
             )],
         )
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(42),
+            42,
             vec![ObservableEvent::assertion_state_changed(
                 time(42),
                 assertion_id("log-matches"),
                 AssertionPhase::Satisfied,
             )],
         )
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
     assert!(
         !evaluator(
-            point(42),
+            42,
             vec![ObservableEvent::assertion_state_changed(
                 time(41),
                 assertion_id("leader-elected"),
                 AssertionPhase::Satisfied,
             )],
         )
-        .evaluate_condition(&condition)
+        .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -241,16 +232,16 @@ fn quiescent_uses_scheduler_owned_evidence() {
     };
 
     assert!(
-        ConditionEvaluation::new(point(60), NoNamedLeaves)
+        support::evaluation_at(60, NoNamedLeaves)
             .with_scheduler_quiescence(quiescent)
-            .evaluate_condition(&condition)
+            .evaluate_assertion_condition(&condition)
     );
     assert!(
-        !ConditionEvaluation::new(point(60), NoNamedLeaves)
+        !support::evaluation_at(60, NoNamedLeaves)
             .with_scheduler_quiescence(non_quiescent)
-            .evaluate_condition(&condition)
+            .evaluate_assertion_condition(&condition)
     );
-    assert!(!ConditionEvaluation::new(point(60), NoNamedLeaves).evaluate_condition(&condition));
+    assert!(!support::evaluation_at(60, NoNamedLeaves).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -262,9 +253,9 @@ fn quiescent_leaf_consumes_scheduler_computed_quiescence() {
 
     assert!(quiescence.is_quiescent());
     assert!(
-        ConditionEvaluation::new(point(scheduler.frontier().ticks), NoNamedLeaves)
+        support::evaluation_at(scheduler.frontier().ticks, NoNamedLeaves)
             .with_scheduler_quiescence(quiescence)
-            .evaluate_condition(&Predicate::quiescent())
+            .evaluate_assertion_condition(&Predicate::quiescent())
     );
 }
 
@@ -289,7 +280,7 @@ fn event_graph_fires_from_assertion_state_with_declared_assertion() {
         AssertionPhase::Satisfied,
     )];
 
-    let firings = state.evaluate(&graph, &mut evaluator(point(99), events));
+    let firings = support::evaluate_graph(&graph, &mut state, evaluator(99, events));
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-leader");
@@ -326,10 +317,10 @@ fn event_graph_fires_from_quiescent_scheduler_evidence() {
     )])
     .expect("quiescent event graph should build");
     let mut state = EventGraphState::new();
-    let mut evaluation = ConditionEvaluation::new(point(120), NoNamedLeaves)
+    let evaluation = support::evaluation_at(120, NoNamedLeaves)
         .with_scheduler_quiescence(SchedulerQuiescence::default());
 
-    let firings = state.evaluate(&graph, &mut evaluation);
+    let firings = support::evaluate_graph(&graph, &mut state, evaluation);
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-quiescence");

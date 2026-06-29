@@ -2,11 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, ConditionEvaluation, ConditionLeaf, ConditionLeafOracle,
-    EngineError, Event, EventEvaluationPoint, EventGraph, EventGraphState, Icount, MemPlace,
-    MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, Predicate, Properties, Property,
-    ReadyPoint, ResolvedMemPlace, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    Action, AssertionDef, AssertionId, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
+    EngineError, Event, EventGraph, EventGraphState, Icount, MemPlace, MemoryCmp, MemoryWidth,
+    NodeId, NodeTemplate, ObservableEvent, Predicate, Properties, Property, ReadyPoint,
+    ResolvedMemPlace, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -23,23 +25,16 @@ fn icount(retired: u64) -> Icount {
     Icount { retired }
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(time(ticks))
-}
-
-fn evaluator(
-    point: EventEvaluationPoint,
-    events: Vec<ObservableEvent>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    ConditionEvaluation::new(point, NoNamedLeaves).with_observable_events(events)
+fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoNamedLeaves> {
+    support::evaluation_with_observables(ticks, events, NoNamedLeaves)
 }
 
 fn evaluator_with_resolution(
-    point: EventEvaluationPoint,
+    ticks: u64,
     events: Vec<ObservableEvent>,
     resolutions: Vec<((NodeId, MemPlace), ResolvedMemPlace)>,
-) -> ConditionEvaluation<NoNamedLeaves> {
-    evaluator(point, events).with_resolved_mem_places(resolutions)
+) -> ConditionEvaluationPass<NoNamedLeaves> {
+    evaluator(ticks, events).with_resolved_mem_places(resolutions)
 }
 
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
@@ -117,8 +112,8 @@ fn memory_predicate_observes_current_physical_sample() {
     );
 
     assert!(
-        evaluator(point(21), vec![wrong_place, wrong_time, matching])
-            .evaluate_condition(&condition)
+        evaluator(21, vec![wrong_place, wrong_time, matching])
+            .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -134,29 +129,18 @@ fn memory_predicate_comparisons_are_unsigned_and_deterministic() {
     );
 
     assert!(
-        evaluator(point(5), vec![sample.clone()]).evaluate_condition(&Predicate::memory_predicate(
-            node("server"),
-            place.clone(),
-            MemoryCmp::Ge,
-            10
-        ),)
+        evaluator(5, vec![sample.clone()]).evaluate_assertion_condition(
+            &Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Ge, 10),
+        )
     );
     assert!(
-        evaluator(point(5), vec![sample.clone()]).evaluate_condition(&Predicate::memory_predicate(
-            node("server"),
-            place.clone(),
-            MemoryCmp::Lt,
-            11
-        ),)
+        evaluator(5, vec![sample.clone()]).evaluate_assertion_condition(
+            &Predicate::memory_predicate(node("server"), place.clone(), MemoryCmp::Lt, 11),
+        )
     );
-    assert!(
-        !evaluator(point(5), vec![sample]).evaluate_condition(&Predicate::memory_predicate(
-            node("server"),
-            place,
-            MemoryCmp::Gt,
-            10
-        ),)
-    );
+    assert!(!evaluator(5, vec![sample]).evaluate_assertion_condition(
+        &Predicate::memory_predicate(node("server"), place, MemoryCmp::Gt, 10),
+    ));
 }
 
 #[test]
@@ -176,10 +160,10 @@ fn memory_predicate_resolves_symbols_host_side() {
     );
 
     assert!(
-        evaluator_with_resolution(point(33), vec![sample.clone()], vec![resolution])
-            .evaluate_condition(&condition)
+        evaluator_with_resolution(33, vec![sample.clone()], vec![resolution])
+            .evaluate_assertion_condition(&condition)
     );
-    assert!(!evaluator(point(33), vec![sample]).evaluate_condition(&condition));
+    assert!(!evaluator(33, vec![sample]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -198,10 +182,10 @@ fn memory_predicate_virtual_address_requires_host_resolution() {
         ResolvedMemPlace::virtual_address(0x7000, 1),
     );
 
-    assert!(!evaluator(point(34), vec![sample.clone()]).evaluate_condition(&condition));
+    assert!(!evaluator(34, vec![sample.clone()]).evaluate_assertion_condition(&condition));
     assert!(
-        evaluator_with_resolution(point(34), vec![sample], vec![resolution])
-            .evaluate_condition(&condition)
+        evaluator_with_resolution(34, vec![sample], vec![resolution])
+            .evaluate_assertion_condition(&condition)
     );
 }
 
@@ -246,7 +230,7 @@ fn event_graph_fires_from_memory_predicate_without_guest_marker_support() {
         3,
     )];
 
-    let firings = state.evaluate(&graph, &mut evaluator(point(55), events));
+    let firings = support::evaluate_graph(&graph, &mut state, evaluator(55, events));
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-state");

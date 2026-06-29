@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "deterministic evaluation remains open";
-        needle = "- [ ] **T-TRIG-10**";
+        label = "causal trigger recording remains open";
+        needle = "- [ ] **T-TRIG-11**";
       }
       {
         label = "full timer action semantics remain open";

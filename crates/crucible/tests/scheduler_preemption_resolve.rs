@@ -53,16 +53,17 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
         outcome
             .event_log_entries
             .iter()
-            .map(|entry| entry.at)
+            .map(|entry| entry.at())
             .collect::<Vec<_>>(),
         vec![
             VirtualTime { ticks: 4 },
             VirtualTime { ticks: 8 },
             VirtualTime { ticks: 8 },
+            VirtualTime { ticks: 8 },
         ]
     );
     assert!(matches!(
-        &outcome.event_log_entries[0].payload,
+        outcome.event_log_entries[0].payload(),
         crucible::SchedulerEventLogPayload::Decision(Decision::Preemption(decision))
             if decision == &preemption
     ));
@@ -439,9 +440,14 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             .outcomes
             .iter()
             .flat_map(|outcome| outcome.event_log_entries.iter())
-            .map(|entry| entry.at)
+            .map(|entry| entry.at())
             .collect::<Vec<_>>(),
-        vec![VirtualTime { ticks: 2 }, VirtualTime { ticks: 5 }]
+        vec![
+            VirtualTime { ticks: 2 },
+            VirtualTime { ticks: 6 },
+            VirtualTime { ticks: 5 },
+            VirtualTime { ticks: 6 },
+        ]
     );
 }
 

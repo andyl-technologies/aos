@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.observableConditionLeaves`";
       }
       {
-        label = "deterministic evaluation remains open";
-        needle = "- [ ] **T-TRIG-10**";
+        label = "causal trigger recording remains open";
+        needle = "- [ ] **T-TRIG-11**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -159,8 +159,12 @@
         needle = "fn observable_events(&self) -> &[ObservableEvent]";
       }
       {
-        label = "observable evaluator builder";
-        needle = "pub fn with_observable_events";
+        label = "checked observable log prefix";
+        needle = "pub struct ConditionEventLogPrefix";
+      }
+      {
+        label = "checked scheduler event-log prefix constructor";
+        needle = "pub(crate) fn from_scheduler_event_log_entries";
       }
       {
         label = "NetworkMatch evaluation";
@@ -267,8 +271,8 @@
         needle = "observable_leaf_material_distinguishes_predicate_payloads";
       }
       {
-        label = "observable event injection";
-        needle = ".with_observable_events(events)";
+        label = "observable event prefix construction";
+        needle = "support::evaluation_with_observables";
       }
       {
         label = "no guest marker fallback";

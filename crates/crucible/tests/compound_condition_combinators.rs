@@ -2,11 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::{
-    Action, AssertionDef, AssertionId, ConditionEvaluation, ConditionLeaf, ConditionLeafOracle,
-    EngineError, Event, EventEvaluationPoint, EventFiring, EventGraph, EventGraphError,
-    EventGraphState, EventId, LogLevel, Predicate, Properties, Property, ReachabilityExpectation,
-    ReachableDisposition, VirtualTime, World,
+    Action, AssertionDef, AssertionId, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
+    EngineError, Event, EventFiring, EventGraph, EventGraphError, EventGraphState, EventId,
+    LogLevel, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    World,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -17,15 +19,8 @@ fn assertion_id(name: &str) -> AssertionId {
     AssertionId::from_name(name)
 }
 
-fn point(ticks: u64) -> EventEvaluationPoint {
-    EventEvaluationPoint::boundary(VirtualTime { ticks })
-}
-
-fn evaluator<'a>(
-    point: EventEvaluationPoint,
-    true_names: &'a [&'a str],
-) -> ConditionEvaluation<TrueNames<'a>> {
-    ConditionEvaluation::new(point, TrueNames { true_names })
+fn evaluator<'a>(ticks: u64, true_names: &'a [&'a str]) -> ConditionEvaluationPass<TrueNames<'a>> {
+    support::evaluation_at(ticks, TrueNames { true_names })
 }
 
 fn fired_ids(firings: &[EventFiring]) -> Vec<&str> {
@@ -63,10 +58,10 @@ fn compound_combinators_nest_arbitrarily() {
         ]),
     ]);
 
-    assert!(evaluator(point(1), &["ready"]).evaluate_condition(&condition));
-    assert!(evaluator(point(1), &["warm"]).evaluate_condition(&condition));
-    assert!(!evaluator(point(1), &["ready", "blocked"]).evaluate_condition(&condition));
-    assert!(!evaluator(point(1), &["warm", "cold"]).evaluate_condition(&condition));
+    assert!(evaluator(1, &["ready"]).evaluate_assertion_condition(&condition));
+    assert!(evaluator(1, &["warm"]).evaluate_assertion_condition(&condition));
+    assert!(!evaluator(1, &["ready", "blocked"]).evaluate_assertion_condition(&condition));
+    assert!(!evaluator(1, &["warm", "cold"]).evaluate_assertion_condition(&condition));
 }
 
 #[test]
@@ -82,10 +77,10 @@ fn once_latches_after_inner_was_true_even_when_all_of_was_false() {
     .expect("compound graph should build");
     let mut state = EventGraphState::new();
 
-    let before_gate = state.evaluate(&graph, &mut evaluator(point(10), &["pulse"]));
+    let before_gate = support::evaluate_graph(&graph, &mut state, evaluator(10, &["pulse"]));
     assert!(before_gate.is_empty());
 
-    let after_gate = state.evaluate(&graph, &mut evaluator(point(11), &["gate"]));
+    let after_gate = support::evaluate_graph(&graph, &mut state, evaluator(11, &["gate"]));
     assert_eq!(
         fired_ids(&after_gate),
         vec!["fire-after-gate-and-past-pulse"]
@@ -108,13 +103,13 @@ fn once_inside_any_of_observes_non_short_circuited_branch() {
     .expect("compound graph should build");
     let mut state = EventGraphState::new();
 
-    let first = state.evaluate(&graph, &mut evaluator(point(20), &["gate", "pulse"]));
+    let first = support::evaluate_graph(&graph, &mut state, evaluator(20, &["gate", "pulse"]));
     assert_eq!(fired_ids(&first), vec!["pulse-or-gate"]);
 
-    let no_inputs = state.evaluate(&graph, &mut evaluator(point(21), &[]));
+    let no_inputs = support::evaluate_graph(&graph, &mut state, evaluator(21, &[]));
     assert!(no_inputs.is_empty());
 
-    let gate_again = state.evaluate(&graph, &mut evaluator(point(22), &["gate"]));
+    let gate_again = support::evaluate_graph(&graph, &mut state, evaluator(22, &["gate"]));
     assert!(
         gate_again.is_empty(),
         "latched Once keeps the repeatable condition continuously true"
@@ -144,10 +139,10 @@ fn equivalent_once_conditions_share_latch_state_across_events() {
     .expect("compound graph should build");
     let mut state = EventGraphState::new();
 
-    let pulse_only = state.evaluate(&graph, &mut evaluator(point(30), &["pulse"]));
+    let pulse_only = support::evaluate_graph(&graph, &mut state, evaluator(30, &["pulse"]));
     assert_eq!(fired_ids(&pulse_only), vec!["pulse-seen"]);
 
-    let gate_after_pulse = state.evaluate(&graph, &mut evaluator(point(31), &["gate"]));
+    let gate_after_pulse = support::evaluate_graph(&graph, &mut state, evaluator(31, &["gate"]));
     assert_eq!(fired_ids(&gate_after_pulse), vec!["gate-after-pulse"]);
 }
 

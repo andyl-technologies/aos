@@ -2,12 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod support;
+
 use crucible::ConditionLeafOracle;
 use crucible::{
-    Action, Condition, ConditionEvaluation, ConditionLeaf, Event, EventEvaluationKind,
-    EventEvaluationPoint, EventFiring, EventGraph, EventGraphError, EventGraphState, EventId,
-    FaultTag, FirePolicy, LogLevel, MembershipFault, NodeId, PartitionDirection, RestartPolicy,
-    SimDuration, TimerId, VirtualTime,
+    Action, Condition, ConditionEvaluationPass, ConditionLeaf, Event, EventEvaluationKind,
+    EventFiring, EventGraph, EventGraphError, EventGraphState, EventId, FaultTag, FirePolicy,
+    LogLevel, MembershipFault, NodeId, PartitionDirection, RestartPolicy, SimDuration, TimerId,
+    VirtualTime,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -30,11 +32,8 @@ fn timer(name: &str) -> TimerId {
     }
 }
 
-fn evaluator<'a>(
-    point: EventEvaluationPoint,
-    true_names: &'a [&'a str],
-) -> ConditionEvaluation<TrueNames<'a>> {
-    ConditionEvaluation::new(point, TrueNames { true_names })
+fn evaluator<'a>(ticks: u64, true_names: &'a [&'a str]) -> ConditionEvaluationPass<TrueNames<'a>> {
+    support::evaluation_at(ticks, TrueNames { true_names })
 }
 
 struct TrueNames<'a> {
@@ -97,11 +96,15 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
     ])
     .expect("unique event ids should build");
     let mut state = EventGraphState::new();
-    let boundary = EventEvaluationPoint::boundary(VirtualTime { ticks: 10 });
+    let boundary = support::quantum_prefix(10).point();
     assert_eq!(boundary.at(), VirtualTime { ticks: 10 });
-    assert_eq!(boundary.kind(), EventEvaluationKind::Boundary);
+    assert_eq!(boundary.kind(), EventEvaluationKind::QuantumBoundary);
 
-    let genesis = state.evaluate(&graph, &mut evaluator(EventEvaluationPoint::genesis(), &[]));
+    let genesis = support::evaluate_graph(
+        &graph,
+        &mut state,
+        support::evaluation_at_genesis(TrueNames { true_names: &[] }),
+    );
     assert_eq!(
         firing_records(&genesis),
         vec![(
@@ -111,16 +114,10 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
         )]
     );
 
-    let ready_false = state.evaluate(&graph, &mut evaluator(boundary, &[]));
+    let ready_false = support::evaluate_graph(&graph, &mut state, evaluator(10, &[]));
     assert!(ready_false.is_empty());
 
-    let ready_true = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 11 }),
-            &["ready"],
-        ),
-    );
+    let ready_true = support::evaluate_graph(&graph, &mut state, evaluator(11, &["ready"]));
     assert_eq!(
         firing_records(&ready_true),
         vec![(
@@ -130,22 +127,10 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
         )]
     );
 
-    let ready_still_true = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 12 }),
-            &["ready"],
-        ),
-    );
+    let ready_still_true = support::evaluate_graph(&graph, &mut state, evaluator(12, &["ready"]));
     assert!(ready_still_true.is_empty());
 
-    let pulse_true = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 13 }),
-            &["pulse"],
-        ),
-    );
+    let pulse_true = support::evaluate_graph(&graph, &mut state, evaluator(13, &["pulse"]));
     assert_eq!(
         firing_records(&pulse_true),
         vec![(
@@ -155,31 +140,13 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
         )]
     );
 
-    let pulse_still_true = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 14 }),
-            &["pulse"],
-        ),
-    );
+    let pulse_still_true = support::evaluate_graph(&graph, &mut state, evaluator(14, &["pulse"]));
     assert!(pulse_still_true.is_empty());
 
-    let pulse_false = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 15 }),
-            &[],
-        ),
-    );
+    let pulse_false = support::evaluate_graph(&graph, &mut state, evaluator(15, &[]));
     assert!(pulse_false.is_empty());
 
-    let pulse_true_again = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 16 }),
-            &["pulse"],
-        ),
-    );
+    let pulse_true_again = support::evaluate_graph(&graph, &mut state, evaluator(16, &["pulse"]));
     assert_eq!(
         firing_records(&pulse_true_again),
         vec![(
@@ -262,13 +229,7 @@ fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
     .expect("unique event ids should build");
     let mut state = EventGraphState::new();
 
-    let fired = state.evaluate(
-        &graph,
-        &mut evaluator(
-            EventEvaluationPoint::boundary(VirtualTime { ticks: 99 }),
-            &["shared"],
-        ),
-    );
+    let fired = support::evaluate_graph(&graph, &mut state, evaluator(99, &["shared"]));
     let fired_ids = fired
         .iter()
         .map(|firing| firing.event().name.as_str())
