@@ -275,7 +275,7 @@
       }
       {
         label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\"]";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
       }
     ];
 in

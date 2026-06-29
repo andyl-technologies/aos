@@ -4,7 +4,8 @@
 
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[test]
 fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Error>> {
@@ -54,6 +55,8 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     assert_contains(&harness_spec, "- [x] **T-HARN-19**");
     assert_contains(&harness_spec, "filesystem semantics");
 
+    run_plugin_io_wire_fuzz_unit_target(&root)?;
+
     Ok(())
 }
 
@@ -75,5 +78,31 @@ fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
         if !current.pop() {
             return Err("could not locate workspace root".into());
         }
+    }
+}
+
+fn run_plugin_io_wire_fuzz_unit_target(root: &Path) -> Result<(), Box<dyn Error>> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(cargo)
+        .current_dir(root)
+        .args([
+            "test",
+            "--frozen",
+            "--offline",
+            "--manifest-path",
+            "crates/Cargo.toml",
+            "-p",
+            "crucible-qemu-plugin",
+            "--lib",
+            "io_wire_fuzz",
+            "--",
+            "--test-threads=1",
+        ])
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("plugin I/O wire fuzz unit target failed with status {status}").into())
     }
 }

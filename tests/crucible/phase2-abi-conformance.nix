@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.abiConformance",
-  taskIds ? ["T-HARN-17" "T-API-11" "T-API-12"],
+  taskIds ? ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -17,11 +17,14 @@
   shmemGateTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
   protocolGateTest = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
   protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  pluginGateTest = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+  engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
+  patternsSpec = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -89,6 +92,24 @@
                   required_features: &[],
                   placeholder: false,'';
       }
+      {
+        label = "qemu plugin ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible-qemu-plugin",
+                  test_target: "gate_abi_conformance",
+                  required_features: &[],
+                  placeholder: false,'';
+      }
+      {
+        label = "engine ABI target implemented";
+        needle = ''
+          gate: "gate:abi-conformance",
+                  package: "crucible",
+                  test_target: "gate_abi_conformance",
+                  required_features: &["test-double"],
+                  placeholder: false,'';
+      }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_abi_conformance.rs" harnessGateTest [
       {
@@ -132,6 +153,30 @@
       {
         label = "protocol golden vector corpus still covered";
         needle = "golden_vectors_match_canonical_codec_bytes";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs" pluginGateTest [
+      {
+        label = "plugin I/O wire ABI owner";
+        needle = "gate_abi_conformance_covers_plugin_io_wire_fuzzing";
+      }
+      {
+        label = "plugin fuzz phase execution assertion";
+        needle = "run-qemu-plugin-io-wire-fuzz";
+      }
+      {
+        label = "plugin owner executes I/O wire unit target";
+        needle = "run_plugin_io_wire_fuzz_unit_target(&root)?";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_abi_conformance.rs" engineGateTest [
+      {
+        label = "engine ABI aggregate owner";
+        needle = "gate_abi_conformance_engine_aggregates_boundary_abi_owners";
+      }
+      {
+        label = "engine plugin I/O wire aggregate";
+        needle = "PluginIoWireAbi";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
@@ -260,6 +305,12 @@
         needle = "- [ ] **T-API-13**";
       }
     ]
+    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsSpec [
+      {
+        label = "T-PAT-8 checklist complete";
+        needle = "- [x] **T-PAT-8**";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase2 exposes ABI conformance check";
@@ -267,7 +318,7 @@
       }
       {
         label = "phase2 gate passes task IDs";
-        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\"]";
+        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
       }
     ];
 in
@@ -357,6 +408,23 @@ in
               -p crucible-api \
               --test gate_abi_conformance \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              --test gate_abi_conformance \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --features test-double \
+              --test gate_abi_conformance \
+              -- --test-threads=1
           '';
         }
         {
@@ -369,9 +437,11 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            shmem_vectors=generated-header,layout-fixture,spsc-structure-aware
+            shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
             protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
             rpc_vectors=hello-request,hello-response,attached,send-command-request,send-command-response,event-fault-injected
+            plugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz
+            engine_abi_aggregate=true
             version_bump_rule=shmem+protocol+rpc-golden-corpora
             rpc_major_mismatch_rejection=true
             reference_client_scope=pending-T-API-13

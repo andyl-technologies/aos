@@ -10,7 +10,20 @@ use crucible_api::{
 };
 
 #[test]
+fn rpc_abi_conformance_runs_named_checks() {
+    assert_frozen_golden_vectors();
+    assert_decode_encode_roundtrip();
+    assert_abi_version_field();
+    assert_version_bump_regenerates_vectors();
+    assert_structure_aware_fuzz_corpus();
+}
+
+#[test]
 fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
+    assert_abi_version_field();
+}
+
+fn assert_abi_version_field() {
     assert_eq!(RPC_PROTOCOL_MAJOR, 1);
     assert_eq!(RPC_PROTOCOL_MINOR, 0);
     assert_eq!(RPC_PROTOCOL_PATCH, 0);
@@ -46,6 +59,10 @@ fn rpc_protocol_version_is_explicit_and_rejects_major_mismatch() {
 
 #[test]
 fn rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds() {
+    assert_frozen_golden_vectors();
+}
+
+fn assert_frozen_golden_vectors() {
     assert_eq!(
         GOLDEN_RPC_VECTORS.map(|vector| vector.name),
         [
@@ -98,6 +115,10 @@ fn rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds() {
 
 #[test]
 fn rpc_golden_vectors_match_live_encoder() {
+    assert_decode_encode_roundtrip();
+}
+
+fn assert_decode_encode_roundtrip() {
     for vector in GOLDEN_RPC_VECTORS {
         assert_eq!(encode_rpc_message(vector.message), vector.bytes);
     }
@@ -105,6 +126,10 @@ fn rpc_golden_vectors_match_live_encoder() {
 
 #[test]
 fn rpc_golden_vectors_freeze_literal_wire_bytes() {
+    assert_structure_aware_fuzz_corpus();
+}
+
+fn assert_structure_aware_fuzz_corpus() {
     assert_vector_bytes(
         "hello-request",
         b"crucible.rpc/hello-request\nversion=1.0.0+crucible-rpc-abi-v1\nclient=crucible-api-golden-client\n",
@@ -129,14 +154,35 @@ fn rpc_golden_vectors_freeze_literal_wire_bytes() {
         "event-fault-injected",
         b"crucible.rpc/event\nseq=1234\nclass=fault\npayload-kind=event.fault-injected\n",
     );
+
+    for vector in regression_corpus() {
+        assert!(vector.bytes.starts_with(b"crucible.rpc/"));
+        assert!(vector.bytes.ends_with(b"\n"));
+        assert_eq!(encode_rpc_message(vector.message), vector.bytes);
+    }
 }
 
 #[test]
 fn rpc_golden_vector_negative_control_detects_wire_drift() {
+    assert_version_bump_regenerates_vectors();
+}
+
+fn assert_version_bump_regenerates_vectors() {
     let vector = vector_by_name("hello-response");
     let mut drifted = encode_rpc_message(vector.message);
     drifted.extend_from_slice(b"extra-field=unexpected\n");
     assert_ne!(drifted, vector.bytes);
+
+    let bumped = encode_rpc_message(RpcGoldenVectorMessage::HelloRequest {
+        client_name: "crucible-api-golden-client",
+        version: ProtocolVersion {
+            major: RPC_PROTOCOL_MAJOR,
+            minor: RPC_PROTOCOL_MINOR + 1,
+            patch: RPC_PROTOCOL_PATCH,
+            build: RPC_PROTOCOL_BUILD,
+        },
+    });
+    assert_ne!(bumped, vector_by_name("hello-request").bytes);
 }
 
 fn assert_vector_bytes(name: &str, expected: &[u8]) {
@@ -151,4 +197,8 @@ fn vector_by_name(name: &str) -> RpcGoldenVector {
         }
     }
     panic!("missing RPC golden vector {name}");
+}
+
+fn regression_corpus() -> &'static [RpcGoldenVector] {
+    &GOLDEN_RPC_VECTORS
 }

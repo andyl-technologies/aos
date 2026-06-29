@@ -1570,6 +1570,113 @@ impl SpscRingSnapshot {
         }
         Ok(bytes)
     }
+
+    /// Decodes a snapshot from [`SpscRingSnapshot::canonical_bytes`].
+    ///
+    /// The decoder accepts only the canonical little-endian byte stream and
+    /// rejects truncated frames, impossible payload lengths, and trailing bytes.
+    /// Decoded frames are rebuilt through [`FrameEntry::new`] so padding and
+    /// unused payload capacity are normalized before the snapshot is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError::SnapshotDecodeTruncated`] when the byte stream
+    /// ends before a field or payload is complete,
+    /// [`SpscRingError::InvalidFrameLength`] when a frame length exceeds
+    /// [`MAX_FRAME_DATA`], [`SpscRingError::SnapshotFrameCountOverflow`] when
+    /// the encoded frame count cannot fit in memory on this target, or
+    /// [`SpscRingError::SnapshotDecodeTrailingBytes`] when extra bytes remain
+    /// after the declared frames.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, SpscRingError> {
+        let mut cursor = SnapshotByteCursor::new(bytes);
+        let frame_count = cursor.read_u64()?;
+        let _frame_count_fits_target = usize::try_from(frame_count)
+            .map_err(|_| SpscRingError::SnapshotFrameCountOverflow { count: frame_count })?;
+        let mut frames = Vec::new();
+
+        for _ in 0..frame_count {
+            let delivery_icount = cursor.read_u64()?;
+            let src_node = cursor.read_u32()?;
+            let seq = cursor.read_u32()?;
+            let len = usize::from(cursor.read_u16()?);
+            if len > MAX_FRAME_DATA {
+                return Err(SpscRingError::InvalidFrameLength {
+                    len,
+                    capacity: MAX_FRAME_DATA,
+                });
+            }
+            let payload = cursor.read_bytes(len)?;
+            let frame = FrameEntry::new(delivery_icount, src_node, seq, payload).map_err(
+                |FrameEntryError::PayloadLengthExceedsCapacity { len, capacity }| {
+                    SpscRingError::InvalidFrameLength { len, capacity }
+                },
+            )?;
+            frames.push(frame);
+        }
+
+        cursor.finish()?;
+        Ok(Self { frames })
+    }
+}
+
+struct SnapshotByteCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SnapshotByteCursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_u16(&mut self) -> Result<u16, SpscRingError> {
+        let bytes = self.read_bytes(2)?;
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, SpscRingError> {
+        let bytes = self.read_bytes(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, SpscRingError> {
+        let bytes = self.read_bytes(8)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], SpscRingError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(SpscRingError::SnapshotDecodeTruncated {
+                offset: self.offset,
+                needed: len,
+                available: self.bytes.len().saturating_sub(self.offset),
+            })?;
+        if end > self.bytes.len() {
+            return Err(SpscRingError::SnapshotDecodeTruncated {
+                offset: self.offset,
+                needed: len,
+                available: self.bytes.len().saturating_sub(self.offset),
+            });
+        }
+        let bytes = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn finish(&self) -> Result<(), SpscRingError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(SpscRingError::SnapshotDecodeTrailingBytes {
+                offset: self.offset,
+                available: self.bytes.len() - self.offset,
+            })
+        }
+    }
 }
 
 /// A shared-memory frame whose delivery time is carried in band.
@@ -2761,6 +2868,32 @@ pub enum SpscRingError {
     SnapshotLengthOverflow {
         /// The number of frames in the snapshot.
         len: usize,
+    },
+    /// The encoded snapshot frame count cannot fit in this target's memory size.
+    #[error("SPSC snapshot frame count {count} cannot fit in usize")]
+    SnapshotFrameCountOverflow {
+        /// The rejected encoded frame count.
+        count: u64,
+    },
+    /// The canonical snapshot byte stream ended before the declared field.
+    #[error(
+        "SPSC snapshot decode truncated at byte {offset}: needed {needed} bytes, available {available}"
+    )]
+    SnapshotDecodeTruncated {
+        /// The byte offset where the decoder needed more input.
+        offset: usize,
+        /// The number of bytes needed for the current field.
+        needed: usize,
+        /// The bytes remaining in the input.
+        available: usize,
+    },
+    /// The canonical snapshot byte stream contained bytes after declared frames.
+    #[error("SPSC snapshot decode left {available} trailing bytes at byte {offset}")]
+    SnapshotDecodeTrailingBytes {
+        /// The byte offset where declared frames ended.
+        offset: usize,
+        /// The number of bytes left after declared frames.
+        available: usize,
     },
 }
 

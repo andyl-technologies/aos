@@ -46,6 +46,11 @@ path = "tests/gate_content_address.rs"
 required-features = ["test-double"]
 
 [[test]]
+name = "gate_abi_conformance"
+path = "tests/gate_abi_conformance.rs"
+required-features = ["test-double"]
+
+[[test]]
 name = "gate_scheduler_liveness"
 path = "tests/gate_scheduler_liveness.rs"
 required-features = ["test-double"]
