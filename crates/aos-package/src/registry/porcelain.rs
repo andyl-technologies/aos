@@ -988,7 +988,15 @@ fn merge(dir: &Path, rest: &[&str]) -> Result<Output> {
         let object = repo
             .find_object(their_commit.id(), None)
             .context("merge target")?;
-        repo.checkout_tree(&object, None)
+        // Force the working tree/index to the fast-forward target. git2's
+        // default SAFE checkout diffs against HEAD, which we just advanced to
+        // `their_commit`; every fast-forwarded file would then look like a
+        // local modification and be skipped, leaving the working tree stale
+        // (so `apr show`/`apr packages` would read pre-merge data). A real
+        // `git` fast-forward resets the working tree to the target, so force.
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_tree(&object, Some(&mut checkout))
             .context("checking out merge result")?;
         return Ok(Output::ok_str("Fast-forward\n"));
     }
