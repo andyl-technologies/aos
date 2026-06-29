@@ -6,16 +6,33 @@ let
 const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#";
   flake = import (sourceInfo.outPath + "/flake.nix");
   declaredInputs = flake.inputs or {};
+  unsupportedInput = builtins.throw "aos-nix builtins.getFlake currently supports only direct string, exact url, or non-empty exact follows inputs";
+  followsSegments = follows: builtins.filter builtins.isString (builtins.split "/" follows);
+  resolveFollowsRoot = segment:
+    if segment == "" then unsupportedInput
+    else if builtins.hasAttr segment inputs then builtins.getAttr segment inputs
+    else unsupportedInput;
+  resolveFollowsChild = current: segment:
+    if segment == "" then unsupportedInput
+    else if builtins.isAttrs current
+      && builtins.hasAttr "inputs" current
+      && builtins.isAttrs current.inputs
+      && builtins.hasAttr segment current.inputs
+    then builtins.getAttr segment current.inputs
+    else unsupportedInput;
+  resolveFollows = follows:
+    let segments = followsSegments follows;
+    in if segments == []
+      then unsupportedInput
+      else builtins.foldl' resolveFollowsChild (resolveFollowsRoot (builtins.head segments)) (builtins.tail segments);
   resolveInput = name: input:
     if builtins.isString input then builtins.getFlake input
     else if builtins.isAttrs input && builtins.attrNames input == [ "url" ] then builtins.getFlake input.url
     else if builtins.isAttrs input
       && builtins.attrNames input == [ "follows" ]
       && builtins.isString input.follows
-      && builtins.match ".*/.*" input.follows == null
-      && builtins.hasAttr input.follows inputs
-    then builtins.getAttr input.follows inputs
-    else builtins.throw "aos-nix builtins.getFlake currently supports only direct string, exact url, or top-level follows inputs";
+    then resolveFollows input.follows
+    else unsupportedInput;
   inputs = builtins.mapAttrs resolveInput declaredInputs;
   outputs = flake.outputs (inputs // { inherit self; });
   metadata = sourceInfo // {

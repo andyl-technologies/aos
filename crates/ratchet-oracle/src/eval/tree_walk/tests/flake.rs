@@ -813,18 +813,36 @@ fn get_flake_resolves_direct_declared_inputs() {
 }
 
 #[test]
-fn get_flake_resolves_top_level_follows_inputs() {
-    let child = unique_temp_dir("get-flake-follows-child");
+fn get_flake_resolves_follows_input_paths() {
+    let deeper = unique_temp_dir("get-flake-follows-deeper");
     fs::write(
-        child.join("flake.nix"),
+        deeper.join("flake.nix"),
         br#"
             {
               outputs = { self }: {
-                answer = 17;
+                answer = 23;
                 fromSelfOutPath = self.outPath;
               };
             }
             "#,
+    )
+    .expect("deeper flake.nix writes");
+    let child = unique_temp_dir("get-flake-follows-child");
+    fs::write(
+        child.join("flake.nix"),
+        format!(
+            r#"
+            {{
+              inputs.deeper.url = "path:{}";
+              outputs = {{ self, deeper }}: {{
+                answer = 17;
+                fromSelfOutPath = self.outPath;
+                deeperAnswer = deeper.answer;
+              }};
+            }}
+            "#,
+            path_source(&deeper)
+        ),
     )
     .expect("child flake.nix writes");
     let root = unique_temp_dir("get-flake-follows-parent");
@@ -842,9 +860,11 @@ fn get_flake_resolves_top_level_follows_inputs() {
                 answer = child.answer + alias.answer;
                 aliasOutPath = alias.outPath;
                 childOutPath = child.outPath;
+                nestedOutPath = self.inputs.nested.outPath;
                 inputNames = builtins.attrNames self.inputs;
                 missingAnswer = self.inputs.missing.answer;
                 nestedAnswer = self.inputs.nested.answer;
+                nestedSelfOutPath = self.inputs.nested.fromSelfOutPath;
                 selfAnswer = self.inputs.self.answer;
               }};
             }}
@@ -866,6 +886,9 @@ fn get_flake_resolves_top_level_follows_inputs() {
               answer = f.answer;
               aliasOutPath = f.aliasOutPath;
               childOutPath = f.childOutPath;
+              nestedAnswer = f.nestedAnswer;
+              nestedOutPath = f.nestedOutPath;
+              nestedSelfOutPath = f.nestedSelfOutPath;
               inputs = f.inputNames;
             }}
             "#
@@ -873,9 +896,11 @@ fn get_flake_resolves_top_level_follows_inputs() {
         options,
     );
     let value: serde_json::Value =
-        serde_json::from_slice(&json).expect("top-level follows getFlake JSON parses");
+        serde_json::from_slice(&json).expect("follows getFlake JSON parses");
     assert_eq!(value["answer"], 34);
     assert_eq!(value["aliasOutPath"], value["childOutPath"]);
+    assert_eq!(value["nestedAnswer"], 23);
+    assert_eq!(value["nestedOutPath"], value["nestedSelfOutPath"]);
     assert_eq!(
         value["inputs"],
         serde_json::json!(["alias", "child", "missing", "nested", "self"])
@@ -889,17 +914,6 @@ fn get_flake_resolves_top_level_follows_inputs() {
     .expect_err("missing follows target remains unsupported when demanded");
     assert!(matches!(
         missing_error.kind(),
-        TreeWalkErrorKind::Thrown { .. }
-    ));
-
-    let nested_error = eval_whnf_owned_with_options(
-        &lower(&format!("(builtins.getFlake {flake_ref}).nestedAnswer")),
-        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
-            .expect("temporary store root configures"),
-    )
-    .expect_err("slash-path follows remains unsupported when demanded");
-    assert!(matches!(
-        nested_error.kind(),
         TreeWalkErrorKind::Thrown { .. }
     ));
 
@@ -917,6 +931,7 @@ fn get_flake_resolves_top_level_follows_inputs() {
         }
     ));
 
+    fs::remove_dir_all(deeper).expect("deeper flake temp directory removes");
     fs::remove_dir_all(child).expect("child flake temp directory removes");
     fs::remove_dir_all(root).expect("parent flake temp directory removes");
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
