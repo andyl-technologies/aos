@@ -705,6 +705,116 @@ fn get_flake_resolves_direct_declared_inputs() {
 }
 
 #[test]
+fn get_flake_resolves_top_level_follows_inputs() {
+    let child = unique_temp_dir("get-flake-follows-child");
+    fs::write(
+        child.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 17;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("child flake.nix writes");
+    let root = unique_temp_dir("get-flake-follows-parent");
+    fs::write(
+        root.join("flake.nix"),
+        format!(
+            r#"
+            {{
+              inputs.child.url = "path:{}";
+              inputs.alias.follows = "child";
+              inputs.nested.follows = "child/deeper";
+              inputs.missing.follows = "missing-target";
+              inputs.self.follows = "self";
+              outputs = {{ self, child, alias, ... }}: {{
+                answer = child.answer + alias.answer;
+                aliasOutPath = alias.outPath;
+                childOutPath = child.outPath;
+                inputNames = builtins.attrNames self.inputs;
+                missingAnswer = self.inputs.missing.answer;
+                nestedAnswer = self.inputs.nested.answer;
+                selfAnswer = self.inputs.self.answer;
+              }};
+            }}
+            "#,
+            path_source(&child)
+        ),
+    )
+    .expect("parent flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-follows-parent-store");
+    let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let flake_ref = nix_string_literal(&format!("path:{}", path_source(&root)));
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+            let f = builtins.getFlake {flake_ref};
+            in {{
+              answer = f.answer;
+              aliasOutPath = f.aliasOutPath;
+              childOutPath = f.childOutPath;
+              inputs = f.inputNames;
+            }}
+            "#
+        ),
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("top-level follows getFlake JSON parses");
+    assert_eq!(value["answer"], 34);
+    assert_eq!(value["aliasOutPath"], value["childOutPath"]);
+    assert_eq!(
+        value["inputs"],
+        serde_json::json!(["alias", "child", "missing", "nested", "self"])
+    );
+
+    let missing_error = eval_whnf_owned_with_options(
+        &lower(&format!("(builtins.getFlake {flake_ref}).missingAnswer")),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("missing follows target remains unsupported when demanded");
+    assert!(matches!(
+        missing_error.kind(),
+        TreeWalkErrorKind::Thrown { .. }
+    ));
+
+    let nested_error = eval_whnf_owned_with_options(
+        &lower(&format!("(builtins.getFlake {flake_ref}).nestedAnswer")),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("slash-path follows remains unsupported when demanded");
+    assert!(matches!(
+        nested_error.kind(),
+        TreeWalkErrorKind::Thrown { .. }
+    ));
+
+    let self_error = eval_whnf_owned_with_options(
+        &lower(&format!("(builtins.getFlake {flake_ref}).selfAnswer")),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("self follows cycle rejects when demanded");
+    assert!(matches!(
+        self_error.kind(),
+        TreeWalkErrorKind::Force {
+            source: ForceError::InfiniteRecursion,
+            ..
+        }
+    ));
+
+    fs::remove_dir_all(child).expect("child flake temp directory removes");
+    fs::remove_dir_all(root).expect("parent flake temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn get_flake_obeys_fetch_tree_locking_and_rejects_unsupported_declared_inputs() {
     let child = unique_temp_dir("get-flake-unsupported-input-child");
     fs::write(

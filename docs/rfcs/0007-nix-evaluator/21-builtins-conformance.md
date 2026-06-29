@@ -982,16 +982,19 @@ requires them:
 - [x] `getFlake` (args) — **conditional subset only**. Native evaluation covers
       local flakes through the native `fetchTree` subset: it imports
       `flake.nix`, resolves direct string and exact `{ url = ...; }` declared
-      inputs recursively through `builtins.getFlake`, evaluates `outputs` with
-      `self` and the resolved direct input set, and returns `_type = "flake"`,
-      `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock metadata. Argument
-      preflight, string-context rejection, pure-mode locking, direct-input
-      resolution, and unsupported declared-input rejection are covered by
-      focused `getFlake` tests.
+      inputs recursively through `builtins.getFlake`, resolves exact top-level
+      `{ follows = "name"; }` aliases within the same declared input set,
+      evaluates `outputs` with `self` and the resolved input set, and returns
+      `_type = "flake"`, `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock
+      metadata. Argument preflight, string-context rejection,
+      pure-mode locking, direct-input resolution, top-level follows resolution,
+      and unsupported declared-input rejection are covered by focused
+      `getFlake` tests.
 - [ ] Full `getFlake` flake protocol remains scoped/open: declared-input
-      forms beyond direct strings/exact `url` attrsets, `follows`/input-override
-      semantics, ambient registry lookup and non-exact indirect/ref merge
-      semantics, lock-file graph semantics, and general flake protocol parity.
+      forms beyond direct strings/exact `url` attrsets/exact top-level
+      `follows` attrsets, nested slash-path follows semantics, input overrides,
+      ambient registry lookup and non-exact indirect/ref merge semantics,
+      lock-file graph semantics, and general flake protocol parity.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.

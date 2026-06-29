@@ -7,11 +7,15 @@ const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#";
   flake = import (sourceInfo.outPath + "/flake.nix");
   declaredInputs = flake.inputs or {};
   resolveInput = name: input:
-    let inputRef =
-      if builtins.isString input then input
-      else if builtins.isAttrs input && builtins.attrNames input == [ "url" ] then input.url
-      else builtins.throw "aos-nix builtins.getFlake currently supports only direct string or exact url inputs";
-    in builtins.getFlake inputRef;
+    if builtins.isString input then builtins.getFlake input
+    else if builtins.isAttrs input && builtins.attrNames input == [ "url" ] then builtins.getFlake input.url
+    else if builtins.isAttrs input
+      && builtins.attrNames input == [ "follows" ]
+      && builtins.isString input.follows
+      && builtins.match ".*/.*" input.follows == null
+      && builtins.hasAttr input.follows inputs
+    then builtins.getAttr input.follows inputs
+    else builtins.throw "aos-nix builtins.getFlake currently supports only direct string, exact url, or top-level follows inputs";
   inputs = builtins.mapAttrs resolveInput declaredInputs;
   outputs = flake.outputs (inputs // { inherit self; });
   metadata = sourceInfo // {
