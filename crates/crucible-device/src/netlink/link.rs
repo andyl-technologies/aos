@@ -502,10 +502,32 @@ impl NetLink {
         rng: &mut DeviceRng,
         policy: PastDeliveryPolicy,
     ) -> Result<ResolveOutcome, DeviceError> {
+        let (outcome, _draws) = self.emit_with_rng_draws(frame, rng, policy)?;
+        Ok(outcome)
+    }
+
+    /// Resolves one emitted frame from the seeded RNG and returns the consumed draws.
+    ///
+    /// This is the recording-friendly twin of [`NetLink::emit_from_rng`]: it
+    /// draws the frame's [`FrameDraws`] from `rng`, resolves the frame through
+    /// [`NetLink::emit`], advances [`NetLink::rng_position`], and returns both the
+    /// [`ResolveOutcome`] and the raw draws. The engine uses this to record the
+    /// same draw stream as engine `RngDraw` decisions without re-deriving link
+    /// fault choices from the final payload.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`NetLink::emit`].
+    pub fn emit_with_rng_draws(
+        &mut self,
+        frame: &Frame,
+        rng: &mut DeviceRng,
+        policy: PastDeliveryPolicy,
+    ) -> Result<(ResolveOutcome, FrameDraws), DeviceError> {
         let draws = FrameDraws::from_rng(rng, self.faults.corrupt_bit_flips);
         let outcome = self.emit(frame, &draws, policy)?;
         self.rng_position = rng.position();
-        Ok(outcome)
+        Ok((outcome, draws))
     }
 
     /// Builds a seeded RNG positioned at this link's captured cursor ([IO-23]).
