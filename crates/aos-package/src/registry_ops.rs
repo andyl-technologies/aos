@@ -6039,18 +6039,24 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        // `clean` must come from the name-status entries, not `output`: with
+        // `--stat`, libgit2's diffstat emits a `0 files changed, ...` summary
+        // line even when nothing changed, so `output.is_empty()` is never true
+        // for a stat diff and would wrongly report a clean tree as dirty.
+        let changed_files = diff_name_status_entries(&dir, Some((&base, "HEAD")))?;
+        let clean = changed_files.is_empty();
         if printer.mode() == OutputMode::Json {
             printer.json(&serde_json::json!({
                 "remote": true,
                 "base": base,
                 "stat": stat,
-                "clean": output.is_empty(),
-                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "clean": clean,
+                "changed_files": changed_files,
                 "output": output,
             }));
             return Ok(());
         }
-        if output.is_empty() {
+        if clean {
             printer.info("No pending changes.");
         } else {
             printer.plain(&output);
