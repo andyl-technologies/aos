@@ -490,6 +490,42 @@ fn native_instantiation_expr_returns_drv_closure_bytes() -> Result<()> {
 }
 
 #[test]
+fn native_instantiation_expr_orders_quoted_non_ascii_derivation_env_attrs() -> Result<()> {
+    let native = NixNative::new(0)?;
+
+    let closure = native.instantiate_expr_closure(
+        r#"derivationStrict {
+             name = "quoted-order";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             zz = "after-system";
+             "é" = "non-ascii";
+             aardvark = "before-builder";
+           }"#,
+    )?;
+
+    let root_bytes = closure
+        .drvs()
+        .get(closure.root())
+        .expect("root derivation bytes are recorded");
+    assert!(nix_compat::derivation::Derivation::from_aterm_bytes(root_bytes).is_ok());
+    let root_text = std::str::from_utf8(root_bytes)?;
+    assert_substrings_in_order(
+        root_text,
+        &[
+            r#"("aardvark","before-builder")"#,
+            r#"("builder","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder")"#,
+            r#"("name","quoted-order")"#,
+            r#"("out","/nix/store/"#,
+            r#"("system","x86_64-linux")"#,
+            r#"("zz","after-system")"#,
+            r#"("é","non-ascii")"#,
+        ],
+    );
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_expr_closure_includes_input_derivation_bytes() -> Result<()> {
     let native = NixNative::new(0)?;
 
@@ -682,6 +718,7 @@ fn configured_cpp_nix_native_drv_closure_bytes_match_cli() -> Result<()> {
     let consumer_name = format!("consumer-{nonce}");
     let ca_name = format!("ca-{nonce}");
     let ca_consumer_name = format!("ca-consumer-{nonce}");
+    let quoted_order_name = format!("quoted-order-{nonce}");
 
     for expr in [
         format!(
@@ -730,6 +767,16 @@ fn configured_cpp_nix_native_drv_closure_bytes_match_cli() -> Result<()> {
              system = "x86_64-linux";
              builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
              input = "${{base.out}}";
+           }}"#
+        ),
+        format!(
+            r#"derivationStrict {{
+             name = "{quoted_order_name}";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             zz = "after-system";
+             "é" = "non-ascii";
+             aardvark = "before-builder";
            }}"#
         ),
     ] {
@@ -781,6 +828,16 @@ fn configured_cpp_nix_native_drv_closure_bytes_match_cli() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn assert_substrings_in_order(haystack: &str, needles: &[&str]) {
+    let mut cursor = 0;
+    for needle in needles {
+        let Some(relative_offset) = haystack[cursor..].find(needle) else {
+            panic!("expected to find {needle:?} after byte offset {cursor} in {haystack}");
+        };
+        cursor += relative_offset + needle.len();
+    }
 }
 
 #[test]
