@@ -526,3 +526,92 @@ fn harness_lint_rejects_custom_static_analysis_drift() {
         "expected deterministic custom tier sample to pass, got {allowed_findings:?}"
     );
 }
+
+#[test]
+fn harness_lint_rejects_host_or_topology_mutation_in_fault_apply_path() {
+    let findings = fault_apply_path_failures(
+        Path::new("crucible/src/scheduler.rs"),
+        r#"
+            fn apply_trigger_effect(
+                state: &mut TriggerActionState,
+                application: &TriggerActionApplication,
+            ) -> Result<(), SchedulerError> {
+                match &application.action {
+                    Action::InjectFault { tag, fault } => {
+                        let _stamp = std::time::SystemTime::now();
+                        state.active_faults.insert(tag.clone(), fault.clone());
+                        self.trigger_static_topology = None;
+                    }
+                    Action::HealFault { tag } => {
+                        state.active_faults.remove(tag);
+                    }
+                    Action::ArmTimer { .. } => {}
+                }
+                Ok(())
+            }
+        "#,
+    );
+
+    assert_contains(&findings, "host wall-clock");
+    assert_contains(&findings, "topology mutation");
+}
+
+#[test]
+fn harness_lint_rejects_non_direct_fault_apply_path_effects() {
+    let findings = fault_apply_path_failures(
+        Path::new("crucible/src/scheduler.rs"),
+        r#"
+            fn apply_trigger_effect(
+                state: &mut TriggerActionState,
+                application: &TriggerActionApplication,
+            ) -> Result<(), SchedulerError> {
+                match &application.action {
+                    Action::InjectFault { tag, fault } => {
+                        // state.active_faults.insert(tag.clone(), fault.clone());
+                        apply_fault_with_host_fs(tag, fault);
+                    }
+                    Action::HealFault { tag } => {
+                        let _fake = "state.active_faults.remove(tag)";
+                    }
+                    Action::ArmTimer { .. } => {}
+                }
+                Ok(())
+            }
+        "#,
+    );
+
+    assert_contains(&findings, "missing modeled fault-state effect");
+    assert_contains(&findings, "unmodeled fault apply call");
+    assert_contains(&findings, "unmodeled fault apply assignment");
+}
+
+#[test]
+fn harness_lint_accepts_scheduler_fault_apply_path() -> Result<(), Box<dyn Error>> {
+    let source = workspace_root().join("crucible/src/scheduler.rs");
+    let content = fs::read_to_string(&source)?;
+    let findings = fault_apply_path_failures(&source, &content);
+
+    assert!(
+        findings.is_empty(),
+        "scheduler fault apply path findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn harness_lint_custom_static_analysis_covers_scheduler_fault_apply_path()
+-> Result<(), Box<dyn Error>> {
+    let source = workspace_root().join("crucible/src/scheduler.rs");
+    let content = fs::read_to_string(&source)?;
+    let findings = custom_static_analysis_failures(&source, &content);
+
+    assert!(
+        findings.is_empty(),
+        "scheduler custom static-analysis findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
