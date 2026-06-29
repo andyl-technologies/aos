@@ -272,6 +272,69 @@ fn cache_cached_expression_node_payload_trace_revalidation_checks_memo_read_depe
 }
 
 #[test]
+fn cache_trace_revalidation_rejects_uncacheable_memo_read_dependency() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let dependency_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("dependency payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let dependency_value_hash = dependency_payload
+        .value_hash()
+        .expect("dependency payload hashes");
+    let dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 7);
+    let node_trace = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("node trace builds")
+    .with_memo_read_dependency_records([(dependency_key, dependency_value_hash)])
+    .expect("node trace dependency records");
+    let dependency_trace =
+        PersistNodeTracePayload::from_cacheable_inputs([dependency_input.clone()])
+            .expect("dependency trace builds");
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &node_trace)
+        .expect("node trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, dependency_value_hash, &dependency_trace)
+        .expect("dependency trace records");
+
+    let mut revalidator = FixedRevalidator::new(ImpureInputFingerprint::current_time());
+    assert_eq!(
+        cache
+            .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut revalidator)
+            .expect("trace-verified payload lookup succeeds"),
+        None,
+        "uncacheable memo-read supplier traces must reject the parent hit"
+    );
+    assert_eq!(
+        revalidator.calls(),
+        1,
+        "supplier trace should be revalidated before rejecting the parent hit"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_trace_revalidation_rejects_changed_memo_read_value_hash() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

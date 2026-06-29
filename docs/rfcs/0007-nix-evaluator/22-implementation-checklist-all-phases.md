@@ -547,8 +547,9 @@ alone (`M-1`/`Q-A`).
       backed by a matching materialized value link plus live verifying trace nor
       a clean live inline supplier with no nested memo-read suppliers and no
       impure-input leaves outside the parent trace's cacheable leaves.
-      Trace-backed durable loads recursively revalidate those supplier traces
-      and pinned hashes before accepting the parent payload. Durable hits also
+      Trace-backed durable loads recursively revalidate those supplier traces,
+      reject uncacheable supplier revalidation such as `currentTime`, and check
+      pinned hashes before accepting the parent payload. Durable hits also
       replace the current runtime node's memo-read group from dependency keys
       when every supplier node is already present, and reject/clear the durable
       parent payload when any supplier key is unresolved, any pinned supplier
@@ -575,6 +576,7 @@ alone (`M-1`/`Q-A`).
       `source_backed_active_persistent_force_cache_hits_record_memo_read_edges`,
       trace-backed `effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation`,
       `cache_cached_expression_node_payload_trace_revalidation_checks_memo_read_dependencies`,
+      `cache_trace_revalidation_rejects_uncacheable_memo_read_dependency`,
       `cacheable_impure_force_observation_writes_persistent_value_link`,
       `force_observation_with_unproven_memo_supplier_clears_persistent_value_link`,
       `persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key`,
