@@ -848,10 +848,23 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
   default hasher on response paths). — satisfies [IO-21], [IO-24]; spec §15.5;
   cross-ref 04, 08.
-- [ ] **T-IO-11** Wire device RNG state and active I/O faults into the device half
+- [x] **T-IO-11** Wire device RNG state and active I/O faults into the device half
   of `MaterializedState`, proving a snapshot that omits RNG position or active
   faults fails the replay oracle. — satisfies [IO-23], [IO-26]; spec §15.5,
   §15.6; cross-ref 07 §3, §6.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  device` and `cargo test --manifest-path crates/Cargo.toml -p crucible-device`.
+  `DeviceOverlayDelta` carries a `DeviceRngState` keyed by the canonical device
+  RNG stream, and `with_active_io_faults` folds the active I/O fault table into
+  `SchedulerState.active_faults`; both feed the canonical `MaterializedState`
+  hash. The replay-oracle test builds a faithful fat checkpoint with a non-zero
+  device RNG cursor plus active jitter/loss faults, proves it replays, then proves
+  checkpoints omitting either the cursor or active faults are rejected. A stripped
+  hash-mode negative control proves the test would go red if the device cursor or
+  active faults stopped affecting the state id. Block, 9p, and link snapshots
+  also carry their concrete fault tables and RNG cursors.
+  Summary: device RNG cursors and active I/O faults are materialized state, not
+  hidden process state; omitting either is replay-oracle visible.
 - [x] **T-IO-12** Implement uniform I/O fault injection (latency/jitter/failure/
   reorder/duplicate/corrupt/bandwidth) on block and 9p as perturbations of the
   modeled completion/response, sharing the fault taxonomy and activation
@@ -873,14 +886,37 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   network-link faults.
   Summary: block and 9p faults perturb modeled completions/responses, not host
   I/O, and use the same taxonomy and activation-state shape as network faults.
-- [ ] **T-IO-13** Build the in-process device test harness (construct node,
+- [x] **T-IO-13** Build the in-process device test harness (construct node,
   enqueue requests, advance clock, assert responses + delivery icounts + overlay/
   fid state) and the per-device run-twice determinism + divergence-localization
   tests. — satisfies [IO-27], [IO-28]; spec §15.7; cross-ref 24.
-- [ ] **T-IO-14** Prove correctness is independent of guest idle-vs-busy-poll
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device
+  --test device_harness`.
+  The `HarnessDevice` adapters project block, 9p, and network-link sub-nodes onto
+  one in-process script surface: request/emit at chosen icounts, advance the
+  device clock, and drain normalized delivery records keyed by
+  `(delivery_icount, src_node, seq)`. The tests assert block overlay/dirty-page
+  state, 9p fid/negotiated-msize state, link delivery streams, per-device
+  run-twice byte identity, and deterministic first-difference localization for
+  block payload drift, 9p fid/content drift, and link payload corruption drift.
+  Summary: every I/O sub-node has a no-QEMU harness that can assert visible state,
+  delivery icounts, run-twice determinism, and localized divergence.
+- [x] **T-IO-14** Prove correctness is independent of guest idle-vs-busy-poll
   (completion lands at its exact icount either way) and record the busy-poll
   prevalence/mitigation spike; any mitigation preserves exactness. — satisfies
   [IO-29], [IO-30]; spec §15.8; forward-ref 30.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device
+  --test device_harness`.
+  `idle_busy_poll_equivalence` runs the same device script through both one-shot
+  idle fast-forward and one-icount-at-a-time busy-poll advancement, then compares
+  byte-identical delivery logs. Block, 9p, and link tests all assert nonempty
+  idle/busy equivalence, and a bounded-outbox block regression proves the idle
+  path drains all coincident completions instead of truncating at outbox capacity.
+  `BUSY_POLL_SPIKE` records the §15.8 result: correctness is independent of poll
+  mode, busy-poll is a performance concern only, and any mitigation must preserve
+  exact delivery.
+  Summary: exact completion visibility is independent of whether the consumer
+  idles or polls; busy-poll remains a performance issue, not a correctness input.
 - [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
   split (host access decoupled from virtual-time visibility), an in-flight
   response queue ordered by `delivery_icount` exposed as the sub-node's
