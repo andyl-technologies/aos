@@ -4,8 +4,8 @@
 //! module owns the first, condition-agnostic layer of that model: an [`Event`]
 //! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
 //! [`EventGraphState`] is the only local producer of fired actions. Later trigger
-//! tasks extend the condition leaves, action application semantics, and legacy
-//! `Plan` lowering without adding a separate scenario poke path.
+//! tasks extend verdict composition and graph-native serialization without adding
+//! a separate scenario poke path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -15,8 +15,8 @@ use std::ops::Deref;
 use crate::model::{
     AssertionId, AssertionPhase, CodePoint, ContentHash, EventLogOffset, FaultTag, FramePredicate,
     Icount, IoEventKind, LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp, NodeId,
-    NodeLifecycle, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy,
-    World, WorldStaticTopology,
+    NodeLifecycle, Plan, PlanEntry, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
+    WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
@@ -31,6 +31,88 @@ pub use crate::model::EventId;
 /// assertion [`crate::model::Property`] layer is the same value accepted by an
 /// event trigger.
 pub type Condition = Predicate;
+
+/// Identity-preserving event-graph lowering of a time-scheduled [`Plan`].
+///
+/// This is the RFC-0010 §17a.7 bridge between the legacy declarative fault plan
+/// and trigger events: every lowered event has a pure [`Condition::At`] trigger
+/// and an [`Action::InjectFault`] or [`Action::HealFault`] action. The lowering
+/// deliberately carries the source plan's canonical bytes and content hash so a
+/// pure-`At` plan and the equivalent event graph remain one content-addressed
+/// value until the full event-graph serialization surface lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoweredPlanEventGraph {
+    graph: EventGraph,
+    content_hash: ContentHash,
+    canonical_bytes: Vec<u8>,
+    evaluation_times: Vec<VirtualTime>,
+}
+
+impl LoweredPlanEventGraph {
+    /// Returns the lowered trigger graph.
+    #[must_use]
+    pub fn event_graph(&self) -> &EventGraph {
+        &self.graph
+    }
+
+    /// Consumes the lowering and returns the trigger graph.
+    #[must_use]
+    pub fn into_event_graph(self) -> EventGraph {
+        self.graph
+    }
+
+    /// Returns the identity-preserving content hash inherited from the source plan.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the canonical bytes used by the inherited content hash.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Returns the exact virtual-time points where the pure-`At` graph must run.
+    #[must_use]
+    pub fn evaluation_times(&self) -> &[VirtualTime] {
+        &self.evaluation_times
+    }
+}
+
+impl Plan {
+    /// Lowers this time-scheduled fault plan into its degenerate event graph.
+    ///
+    /// Each [`PlanEntry::Activate`] becomes one once-only event with an
+    /// [`Condition::At`] trigger and [`Action::InjectFault`] action. Each
+    /// [`PlanEntry::Heal`] becomes one once-only event with an [`Action::HealFault`]
+    /// action. The returned lowering preserves this plan's canonical bytes and
+    /// content hash as the graph identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventGraphError`] when the lowered graph fails event-graph
+    /// validation against `world`.
+    pub fn lower_to_event_graph_for_world(
+        &self,
+        world: &World,
+    ) -> Result<LoweredPlanEventGraph, EventGraphError> {
+        let events = self
+            .entries()
+            .iter()
+            .enumerate()
+            .map(lower_plan_entry_to_event)
+            .collect::<Vec<_>>();
+        let evaluation_times = plan_evaluation_times(self.entries());
+        let graph = EventGraph::new_for_world(events, world)?;
+        Ok(LoweredPlanEventGraph {
+            graph,
+            content_hash: self.content_hash(),
+            canonical_bytes: self.canonical_bytes(),
+            evaluation_times,
+        })
+    }
+}
 
 /// Host-resolved executable guest code coordinate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1345,6 +1427,39 @@ impl Event {
             policy: FirePolicy::Repeatable,
         }
     }
+}
+
+fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
+    match entry {
+        PlanEntry::Activate { at, tag, fault } => Event::once(
+            lowered_plan_event_id(index, "activate", tag),
+            Some(Condition::At { at: *at }),
+            Action::InjectFault {
+                tag: tag.clone(),
+                fault: fault.clone(),
+            },
+        ),
+        PlanEntry::Heal { at, tag } => Event::once(
+            lowered_plan_event_id(index, "heal", tag),
+            Some(Condition::At { at: *at }),
+            Action::HealFault { tag: tag.clone() },
+        ),
+    }
+}
+
+fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
+    EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
+}
+
+fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Scenario control flow expressed as declared events.

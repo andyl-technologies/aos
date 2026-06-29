@@ -118,7 +118,7 @@ pub use trigger::{
     Action, Condition, ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass,
     ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
     EventEvaluationKind, EventEvaluationPoint, EventFiring, EventFirings, EventGraph,
-    EventGraphError, EventGraphState, FirePolicy, LogLevel, ObservableEvent,
+    EventGraphError, EventGraphState, FirePolicy, LogLevel, LoweredPlanEventGraph, ObservableEvent,
     ObservableEventPayload, ResolvedCodePoint, ResolvedMemPlace,
 };
 
