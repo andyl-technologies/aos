@@ -215,6 +215,249 @@ fn native_file_cache_parity_harness_covers_get_env_impure_input() -> Result<()> 
 }
 
 #[test]
+fn native_file_cache_parity_harness_covers_absent_and_pure_get_env() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-cache-parity-get-env-absent-pure");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+
+    let env_name = b"AOS_NATIVE_FILE_CACHE_OPTIONAL_ENV";
+    let present_env = b"now-present".as_slice();
+    let absent_trace = vec![ImpureInputFingerprint::get_env(env_name, None)?];
+    let present_trace = vec![ImpureInputFingerprint::get_env(
+        env_name,
+        Some(present_env),
+    )?];
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+          payload = b.getEnv "AOS_NATIVE_FILE_CACHE_OPTIONAL_ENV";
+          marker = if payload == "" then "empty" else payload;
+        in {
+          pkgs.optionalEnvInput = derivationStrict {
+            name = "get-env-${marker}";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [
+              marker
+              "arg-${marker}"
+            ];
+          };
+        }"#,
+    )?;
+
+    let original = native_file_closure_cache_parity(
+        &root,
+        &store,
+        &persist_root,
+        &file,
+        "pkgs.optionalEnvInput",
+        |_| Ok(()),
+    )?;
+    assert_drv_aterm_contains_all(
+        "absent getEnv closure",
+        &original.uncached,
+        &[
+            ("absent derivation name", b"get-env-empty"),
+            ("absent getEnv arg", b"arg-empty"),
+        ],
+    );
+    let original_force_canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    let absent_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &absent_trace,
+        "absent getEnv native closure",
+    )?;
+
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let options_for =
+        |mode, env_value: Option<&[u8]>, parse_root: Option<&Path>, persist| -> Result<_> {
+            let mut options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+            options.set_eval_mode(mode);
+            if mode == EvalMode::Pure {
+                options.add_allowed_path(root.as_os_str().as_bytes().to_vec())?;
+            }
+            if let Some(env_value) = env_value {
+                options.set_env_var(env_name.to_vec(), env_value.to_vec());
+            } else {
+                options.clear_env_var(env_name);
+            }
+            if let Some(parse_root) = parse_root {
+                options.set_parse_cache_root(parse_root);
+            } else {
+                options.clear_parse_cache_root();
+            }
+            if persist {
+                options.set_persist_cache_root(&persist_root);
+            } else {
+                options.clear_persist_cache_root();
+            }
+            options.set_eval_cache_enabled(persist);
+            Ok(options)
+        };
+
+    let (present_uncached, present_uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(
+            0,
+            options_for(EvalMode::Impure, Some(present_env), None, false)?,
+        )?,
+        &file,
+        "pkgs.optionalEnvInput",
+    )?;
+    assert_eq!(present_uncached_stats.force_cache_hits(), 0);
+    assert_eq!(present_uncached_stats.force_cache_misses(), 0);
+    assert_ne!(
+        present_uncached, original.uncached,
+        "present getEnv value must change the uncached .drv closure"
+    );
+    assert_drv_aterm_contains_all(
+        "present getEnv closure",
+        &present_uncached,
+        &[
+            ("present derivation name", b"get-env-now-present"),
+            ("present getEnv arg", b"arg-now-present"),
+        ],
+    );
+    assert_drv_aterm_lacks_all(
+        "present getEnv closure",
+        &present_uncached,
+        &[
+            ("absent derivation name", b"get-env-empty"),
+            ("absent getEnv arg", b"arg-empty"),
+        ],
+    );
+
+    let (present_cached, present_cached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(
+            0,
+            options_for(
+                EvalMode::Impure,
+                Some(present_env),
+                Some(&root.join("present-get-env-parse")),
+                true,
+            )?,
+        )?,
+        &file,
+        "pkgs.optionalEnvInput",
+    )?;
+    assert_eq!(
+        present_cached, present_uncached,
+        "stale absent getEnv input should recompute to the present closure"
+    );
+    assert_ne!(
+        present_cached, original.uncached,
+        "stale absent getEnv input must not replay the empty-string closure"
+    );
+    assert!(
+        present_cached_stats.force_cache_misses() > 0,
+        "stale absent getEnv input should miss before recomputing"
+    );
+    let present_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &present_trace,
+        "present getEnv native closure",
+    )?;
+    assert_eq!(
+        present_trace_entry.0, absent_trace_entry.0,
+        "present getEnv recomputation should replace the same force-cache metadata key"
+    );
+    assert_ne!(
+        present_trace_entry.1, absent_trace_entry.1,
+        "present getEnv recomputation should materialize a changed force-cache value"
+    );
+
+    let (pure_uncached, pure_uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(
+            0,
+            options_for(EvalMode::Pure, Some(present_env), None, false)?,
+        )?,
+        &file,
+        "pkgs.optionalEnvInput",
+    )?;
+    assert_eq!(pure_uncached_stats.force_cache_hits(), 0);
+    assert_eq!(pure_uncached_stats.force_cache_misses(), 0);
+    assert_eq!(
+        pure_uncached, original.uncached,
+        "pure mode should hide configured getEnv values and keep the empty-string closure"
+    );
+    assert_ne!(
+        pure_uncached, present_uncached,
+        "pure mode must not expose the configured present getEnv payload"
+    );
+
+    let (pure_cached, _pure_cached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(
+            0,
+            options_for(
+                EvalMode::Pure,
+                Some(present_env),
+                Some(&root.join("pure-get-env-parse")),
+                true,
+            )?,
+        )?,
+        &file,
+        "pkgs.optionalEnvInput",
+    )?;
+    assert_eq!(
+        pure_cached, pure_uncached,
+        "pure-mode cached run should preserve the empty-string getEnv closure"
+    );
+    assert_ne!(
+        pure_cached, present_uncached,
+        "pure-mode cached run must not replay the impure present getEnv payload"
+    );
+
+    let mut canaries = original_force_canaries;
+    canaries.extend(persistent_force_cache_surface_canaries(&persist_root)?);
+    canaries.extend(file_parse_artifact_surface_canaries(
+        &root,
+        "optional getEnv root file",
+        &file,
+    )?);
+    canaries.extend(impure_trace_surface_canaries(
+        "absent getEnv trace",
+        &absent_trace,
+    ));
+    canaries.extend(impure_trace_surface_canaries(
+        "present getEnv trace",
+        &present_trace,
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "absent getEnv closure",
+        &original.uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "present uncached getEnv closure",
+        &present_uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "present cached getEnv closure",
+        &present_cached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "pure uncached getEnv closure",
+        &pure_uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "pure cached getEnv closure",
+        &pure_cached,
+        &canaries,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_file_cache_parity_harness_covers_current_time_configured_input() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-current-time");
     fs::create_dir_all(&root)?;
