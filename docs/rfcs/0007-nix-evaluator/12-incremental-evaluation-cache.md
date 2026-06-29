@@ -1112,6 +1112,21 @@ harness, never cut for scope.
       [§8.3](#83-kill-switch-and-cache-off-mode)) — P2 precursor, `S-15`;
       gate: fetchTree/fetchGit store-path surface canaries and fetchTree hash
       mismatch tests.
+- [x] Current hash builtin/conversion Nix digest type boundary:
+      `NixHashDigest` carries a `HashStringAlgorithm` with validated digest
+      bytes for `hashString`, `hashFile`, and `convertHash` decode/encode
+      flows. `decode_convert_hash`, `decode_hash_payload`,
+      `decode_sri_hash_payload`, `hash_bytes`, `alloc_hash_digest`, and
+      `encode_convert_hash_digest` now traffic in that typed Nix-observed hash
+      domain instead of naked digest vectors, while SHA-256-only fetch/path
+      callers explicitly extract `NixSha256Digest` before store-path
+      construction. This type-enforces the current hash builtin and conversion
+      corridor only; other source/fetch variants, non-hash Nix byte surfaces,
+      and the full differential leak-invariant harness remain open
+      ([§5.2](#52-the-leak-invariant),
+      [§8.3](#83-kill-switch-and-cache-off-mode)) — P2 precursor, `S-15`;
+      gate: `op_types` hash-domain tests plus hashString/hashFile/convertHash
+      behavior and cache-surface canaries.
 - [ ] Full P2 cache hashing remains: xxh3 demand-graph/in-process cache keys, BLAKE3 durable value-hashes and CA-store keys for persisted values/files, full type-enforced leak-invariant boundaries, and harness coverage proving xxh3/BLAKE3 cannot reach SHA-256 store-path or `.drv` hashes ([§5](#5-hashing-policy), [§5.2](#52-the-leak-invariant)) — P2, `S-15`.
 - [ ] **Leak invariant**: no xxh3/blake3 output ever reaches a SHA-256 store-path/`.drv` hash; type-enforced ([§5.2](#52-the-leak-invariant)) — P2, `S-15`; gate: differential `.drv` harness.
 

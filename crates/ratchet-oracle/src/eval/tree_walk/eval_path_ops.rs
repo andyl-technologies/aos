@@ -556,25 +556,22 @@ impl TreeWalk {
             let hash_value = self.force_value(argument, argument_span, hash_value)?;
             let hash =
                 self.context_free_string_bytes(argument, argument_span, hash_value, "path")?;
-            let (algorithm, digest) = self.decode_convert_hash(
+            let digest = self.decode_convert_hash(
                 argument,
                 argument_span,
                 &hash,
                 Some(HashStringAlgorithm::Sha256),
             )?;
-            if algorithm != HashStringAlgorithm::Sha256 {
-                return Err(TreeWalkError::new(
+            Some(digest.as_nix_sha256().ok_or_else(|| {
+                TreeWalkError::new(
                     TreeWalkErrorKind::HashAlgorithmMismatch {
                         id: argument,
-                        hash,
+                        hash: hash.clone(),
                         expected: b"sha256".to_vec(),
                     },
                     argument_span,
-                ));
-            }
-            let mut fixed = [0_u8; 32];
-            fixed.copy_from_slice(&digest);
-            Some(NixSha256Digest::from_bytes(fixed))
+                )
+            })?)
         } else {
             None
         };

@@ -1474,6 +1474,19 @@ alone (`M-1`/`Q-A`).
       differential leak-invariant harness remain open (`S-15`). Gate:
       fetchTree/fetchGit store-path surface canaries and fetchTree hash
       mismatch tests.
+- [x] Current hash builtin/conversion Nix digest type boundary:
+      `NixHashDigest` carries a `HashStringAlgorithm` with validated digest
+      bytes for `hashString`, `hashFile`, and `convertHash` decode/encode
+      flows. `decode_convert_hash`, `decode_hash_payload`,
+      `decode_sri_hash_payload`, `hash_bytes`, `alloc_hash_digest`, and
+      `encode_convert_hash_digest` now traffic in that typed Nix-observed hash
+      domain instead of naked digest vectors, while SHA-256-only fetch/path
+      callers explicitly extract `NixSha256Digest` before store-path
+      construction. This type-enforces the current hash builtin and conversion
+      corridor only; other source/fetch variants, non-hash Nix byte surfaces,
+      and the full differential leak-invariant harness remain open (`S-15`).
+      Gate: `op_types` hash-domain tests plus hashString/hashFile/convertHash
+      behavior and cache-surface canaries.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot

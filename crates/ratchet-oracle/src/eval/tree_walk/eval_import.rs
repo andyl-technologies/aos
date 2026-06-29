@@ -54,31 +54,18 @@ impl TreeWalk {
                 self.emit_warning_output(id, span, EMPTY_FETCHURL_SHA256_WARNING.to_vec())?;
                 Some(NixSha256Digest::from_bytes([0_u8; 32]))
             } else {
-                let (algorithm, digest) =
+                let digest =
                     self.decode_convert_hash(id, span, &hash, Some(HashStringAlgorithm::Sha256))?;
-                if algorithm != HashStringAlgorithm::Sha256 {
-                    return Err(TreeWalkError::new(
+                Some(digest.as_nix_sha256().ok_or_else(|| {
+                    TreeWalkError::new(
                         TreeWalkErrorKind::HashAlgorithmMismatch {
                             id,
-                            hash,
+                            hash: hash.clone(),
                             expected: b"sha256".to_vec(),
                         },
                         span,
-                    ));
-                }
-                if digest.len() != 32 {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::HashAlgorithmMismatch {
-                            id,
-                            hash,
-                            expected: b"sha256".to_vec(),
-                        },
-                        span,
-                    ));
-                }
-                let mut fixed = [0_u8; 32];
-                fixed.copy_from_slice(&digest);
-                Some(NixSha256Digest::from_bytes(fixed))
+                    )
+                })?)
             }
         } else {
             None

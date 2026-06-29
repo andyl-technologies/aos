@@ -292,21 +292,17 @@ impl TreeWalk {
         span: Span,
         hash: &[u8],
     ) -> Result<NixSha256Digest, TreeWalkError> {
-        let (algorithm, digest) =
-            self.decode_convert_hash(id, span, hash, Some(HashStringAlgorithm::Sha256))?;
-        if algorithm != HashStringAlgorithm::Sha256 || digest.len() != 32 {
-            return Err(TreeWalkError::new(
+        let digest = self.decode_convert_hash(id, span, hash, Some(HashStringAlgorithm::Sha256))?;
+        digest.as_nix_sha256().ok_or_else(|| {
+            TreeWalkError::new(
                 TreeWalkErrorKind::HashAlgorithmMismatch {
                     id,
                     hash: hash.to_vec(),
                     expected: b"sha256".to_vec(),
                 },
                 span,
-            ));
-        }
-        let mut fixed = [0_u8; 32];
-        fixed.copy_from_slice(&digest);
-        Ok(NixSha256Digest::from_bytes(fixed))
+            )
+        })
     }
 
     pub(super) fn check_fetch_tree_locked(
@@ -432,9 +428,8 @@ impl TreeWalk {
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
-            HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            digest.as_bytes(),
+            &NixHashDigest::from_nix_sha256(digest),
         )?;
         let out_path = self.fetch_tree_store_path_from_digest(id, span, &path, digest)?;
         self.materialize_fetch_tree_store_path(id, span, &path, source, &out_path, digest)?;
@@ -511,9 +506,8 @@ impl TreeWalk {
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
-            HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            digest.as_bytes(),
+            &NixHashDigest::from_nix_sha256(digest),
         )?;
         let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, digest)?;
         self.materialize_fetch_tree_store_path(id, span, &url, source, &out_path, digest)?;
@@ -600,9 +594,8 @@ impl TreeWalk {
             let nar_hash = Self::encode_convert_hash_digest(
                 id,
                 span,
-                HashStringAlgorithm::Sha256,
                 ConvertHashFormat::Sri,
-                digest.as_bytes(),
+                &NixHashDigest::from_nix_sha256(digest),
             )?;
             let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, digest)?;
             self.materialize_fetch_tree_store_path(
@@ -754,9 +747,8 @@ impl TreeWalk {
         result.nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
-            HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            digest.as_bytes(),
+            &NixHashDigest::from_nix_sha256(digest),
         )?;
         result.out_path = self.fetch_tree_store_path_from_digest(id, span, input, digest)?;
         self.materialize_fetch_tree_store_path(

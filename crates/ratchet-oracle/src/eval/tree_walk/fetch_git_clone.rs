@@ -51,9 +51,8 @@ impl TreeWalk {
         let nar_hash = Self::encode_convert_hash_digest(
             argument,
             argument_span,
-            HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            digest.as_bytes(),
+            &NixHashDigest::from_nix_sha256(digest),
         )?;
         let out_path = self.fetch_git_store_path_from_digest(
             argument,
@@ -142,9 +141,8 @@ impl TreeWalk {
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,
-            HashStringAlgorithm::Sha256,
             ConvertHashFormat::Sri,
-            digest.as_bytes(),
+            &NixHashDigest::from_nix_sha256(digest),
         )?;
         let out_path =
             self.fetch_git_store_path_from_digest(id, span, &args.url, &args.name, digest)?;

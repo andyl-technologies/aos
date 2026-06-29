@@ -446,11 +446,8 @@ impl TreeWalk {
         span: Span,
         rev: &[u8],
     ) -> Result<Vec<u8>, TreeWalkError> {
-        let (algorithm, digest) =
-            self.decode_convert_hash(id, span, rev, Some(HashStringAlgorithm::Sha1))?;
-        if algorithm != HashStringAlgorithm::Sha1
-            || digest.len() != HashStringAlgorithm::Sha1.digest_len()
-        {
+        let digest = self.decode_convert_hash(id, span, rev, Some(HashStringAlgorithm::Sha1))?;
+        if digest.algorithm() != HashStringAlgorithm::Sha1 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::HashAlgorithmMismatch {
                     id,
@@ -460,13 +457,7 @@ impl TreeWalk {
                 span,
             ));
         }
-        Self::encode_convert_hash_digest(
-            id,
-            span,
-            HashStringAlgorithm::Sha1,
-            ConvertHashFormat::Base16,
-            &digest,
-        )
+        Self::encode_convert_hash_digest(id, span, ConvertHashFormat::Base16, &digest)
     }
 
     pub(super) fn canonical_flake_ref_nar_hash(
@@ -492,7 +483,7 @@ impl TreeWalk {
             ));
         }
         let digest = self.decode_sri_hash_payload(id, span, hash, algorithm, payload)?;
-        Self::encode_convert_hash_digest(id, span, algorithm, ConvertHashFormat::Sri, &digest)
+        Self::encode_convert_hash_digest(id, span, ConvertHashFormat::Sri, &digest)
     }
 
     pub(super) fn insert_git_verified_fetch_query_updates(

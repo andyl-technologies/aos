@@ -131,6 +131,52 @@ impl HashStringAlgorithm {
     }
 }
 
+/// A Nix-observed hash digest paired with the algorithm that defines its length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NixHashDigest {
+    algorithm: HashStringAlgorithm,
+    bytes: Vec<u8>,
+}
+
+impl NixHashDigest {
+    /// Wraps digest bytes after confirming they match `algorithm`.
+    pub(crate) fn new(algorithm: HashStringAlgorithm, bytes: Vec<u8>) -> Option<Self> {
+        if bytes.len() == algorithm.digest_len() {
+            Some(Self { algorithm, bytes })
+        } else {
+            None
+        }
+    }
+
+    /// Wraps a SHA-256 digest already tagged as a Nix store/hash digest.
+    pub(crate) fn from_nix_sha256(digest: NixSha256Digest) -> Self {
+        Self {
+            algorithm: HashStringAlgorithm::Sha256,
+            bytes: digest.as_bytes().to_vec(),
+        }
+    }
+
+    /// Returns the algorithm that defines the digest length and encoding tag.
+    pub(crate) const fn algorithm(&self) -> HashStringAlgorithm {
+        self.algorithm
+    }
+
+    /// Returns the raw Nix-observed digest bytes.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the digest as a Nix SHA-256 value when its algorithm permits it.
+    pub(crate) fn as_nix_sha256(&self) -> Option<NixSha256Digest> {
+        if self.algorithm != HashStringAlgorithm::Sha256 || self.bytes.len() != 32 {
+            return None;
+        }
+        let mut fixed = [0_u8; 32];
+        fixed.copy_from_slice(&self.bytes);
+        Some(NixSha256Digest::from_bytes(fixed))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ConvertHashFormat {
     Base16,
@@ -155,6 +201,39 @@ impl ConvertHashFormat {
 pub(crate) enum ConvertHashInputFormat {
     Sri,
     Typed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nix_hash_digest_tracks_algorithm_and_sha256_domain() {
+        let sha256 = NixSha256Digest::from_bytes([7; 32]);
+        let digest = NixHashDigest::from_nix_sha256(sha256);
+
+        assert_eq!(digest.algorithm(), HashStringAlgorithm::Sha256);
+        assert_eq!(digest.bytes(), &[7; 32]);
+        assert_eq!(digest.as_nix_sha256(), Some(sha256));
+
+        let md5 = NixHashDigest::new(HashStringAlgorithm::Md5, vec![3; 16])
+            .expect("md5 digest has the expected length");
+        assert_eq!(md5.algorithm(), HashStringAlgorithm::Md5);
+        assert_eq!(md5.bytes(), &[3; 16]);
+        assert_eq!(md5.as_nix_sha256(), None);
+    }
+
+    #[test]
+    fn nix_hash_digest_rejects_wrong_algorithm_length() {
+        assert_eq!(
+            NixHashDigest::new(HashStringAlgorithm::Sha1, vec![0; 32]),
+            None
+        );
+        assert_eq!(
+            NixHashDigest::new(HashStringAlgorithm::Sha256, vec![0; 20]),
+            None
+        );
+    }
 }
 
 pub(crate) fn unsupported_primop(call: BuiltinCall) -> Result<Value, TreeWalkError> {

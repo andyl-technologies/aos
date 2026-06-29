@@ -577,20 +577,24 @@ impl TreeWalk {
         let format =
             self.eval_convert_hash_format(argument, argument_span, format_value, "convertHash")?;
 
-        let (algorithm, digest) =
+        let digest =
             self.decode_convert_hash(argument, argument_span, &hash, expected_algorithm)?;
-        let bytes = Self::encode_convert_hash_digest(id, span, algorithm, format, &digest)?;
+        let bytes = Self::encode_convert_hash_digest(id, span, format, &digest)?;
         self.heap
             .alloc_string(NixString::from_bytes(bytes))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
-    pub(super) fn hash_bytes(bytes: &[u8], algorithm: HashStringAlgorithm) -> Vec<u8> {
-        match algorithm {
+    pub(super) fn hash_bytes(bytes: &[u8], algorithm: HashStringAlgorithm) -> NixHashDigest {
+        let digest = match algorithm {
             HashStringAlgorithm::Md5 => Md5::digest(bytes).to_vec(),
             HashStringAlgorithm::Sha1 => Sha1::digest(bytes).to_vec(),
             HashStringAlgorithm::Sha256 => Sha256::digest(bytes).to_vec(),
             HashStringAlgorithm::Sha512 => Sha512::digest(bytes).to_vec(),
+        };
+        match NixHashDigest::new(algorithm, digest) {
+            Some(digest) => digest,
+            None => unreachable!("hash implementations emit the selected algorithm's digest size"),
         }
     }
 
@@ -598,9 +602,9 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         span: Span,
-        digest: &[u8],
+        digest: &NixHashDigest,
     ) -> Result<Value, TreeWalkError> {
-        let bytes = Self::lower_hex_bytes(id, span, digest)?;
+        let bytes = Self::lower_hex_bytes(id, span, digest.bytes())?;
         self.heap
             .alloc_string(NixString::from_bytes(bytes))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
@@ -667,7 +671,7 @@ impl TreeWalk {
         argument_span: Span,
         hash: &[u8],
         expected_algorithm: Option<HashStringAlgorithm>,
-    ) -> Result<(HashStringAlgorithm, Vec<u8>), TreeWalkError> {
+    ) -> Result<NixHashDigest, TreeWalkError> {
         if let Some((algorithm, input_format, payload)) =
             Self::split_convert_hash_typed_input(argument, argument_span, hash)?
         {
@@ -688,15 +692,14 @@ impl TreeWalk {
                 ));
             }
 
-            let digest = match input_format {
+            return match input_format {
                 ConvertHashInputFormat::Sri => {
-                    self.decode_sri_hash_payload(argument, argument_span, hash, algorithm, payload)?
+                    self.decode_sri_hash_payload(argument, argument_span, hash, algorithm, payload)
                 }
                 ConvertHashInputFormat::Typed => {
-                    self.decode_hash_payload(argument, argument_span, hash, algorithm, payload)?
+                    self.decode_hash_payload(argument, argument_span, hash, algorithm, payload)
                 }
             };
-            return Ok((algorithm, digest));
         }
 
         let Some(algorithm) = expected_algorithm else {
@@ -708,8 +711,7 @@ impl TreeWalk {
                 argument_span,
             ));
         };
-        let digest = self.decode_hash_payload(argument, argument_span, hash, algorithm, hash)?;
-        Ok((algorithm, digest))
+        self.decode_hash_payload(argument, argument_span, hash, algorithm, hash)
     }
 
     pub(super) fn split_convert_hash_typed_input(
@@ -747,7 +749,7 @@ impl TreeWalk {
         hash: &[u8],
         algorithm: HashStringAlgorithm,
         payload: &[u8],
-    ) -> Result<Vec<u8>, TreeWalkError> {
+    ) -> Result<NixHashDigest, TreeWalkError> {
         let digest_len = algorithm.digest_len();
         let padded_len = Self::base64_encoded_len(digest_len);
         let unpadded_len = Self::base64_unpadded_encoded_len(digest_len);
@@ -783,7 +785,7 @@ impl TreeWalk {
         hash: &[u8],
         algorithm: HashStringAlgorithm,
         payload: &[u8],
-    ) -> Result<Vec<u8>, TreeWalkError> {
+    ) -> Result<NixHashDigest, TreeWalkError> {
         let digest_len = algorithm.digest_len();
         if payload.len()
             == digest_len.checked_mul(2).ok_or_else(|| {
@@ -796,10 +798,12 @@ impl TreeWalk {
                 )
             })?
         {
-            return Self::decode_base16_hash(id, span, hash, payload);
+            let decoded = Self::decode_base16_hash(id, span, hash, payload)?;
+            return self.check_hash_digest_len(id, span, hash, algorithm, decoded);
         }
         if payload.len() == Self::nix_base32_encoded_len(digest_len) {
-            return Self::decode_nix_base32_hash(id, span, hash, payload);
+            let decoded = Self::decode_nix_base32_hash(id, span, hash, payload)?;
+            return self.check_hash_digest_len(id, span, hash, algorithm, decoded);
         }
         let base64_len = Self::base64_encoded_len(digest_len);
         let decoded = base64::engine::general_purpose::STANDARD

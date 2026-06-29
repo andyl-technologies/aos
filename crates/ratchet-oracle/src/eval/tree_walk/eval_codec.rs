@@ -10,19 +10,17 @@ impl TreeWalk {
         hash: &[u8],
         algorithm: HashStringAlgorithm,
         digest: Vec<u8>,
-    ) -> Result<Vec<u8>, TreeWalkError> {
-        if digest.len() == algorithm.digest_len() {
-            Ok(digest)
-        } else {
-            Err(TreeWalkError::new(
+    ) -> Result<NixHashDigest, TreeWalkError> {
+        NixHashDigest::new(algorithm, digest).ok_or_else(|| {
+            TreeWalkError::new(
                 TreeWalkErrorKind::HashWrongLength {
                     id,
                     hash: hash.to_vec(),
                     algorithm: algorithm.name().to_vec(),
                 },
                 span,
-            ))
-        }
+            )
+        })
     }
 
     pub(super) fn decode_base16_hash(
@@ -139,20 +137,20 @@ impl TreeWalk {
     pub(super) fn encode_convert_hash_digest(
         id: IrId,
         span: Span,
-        algorithm: HashStringAlgorithm,
         format: ConvertHashFormat,
-        digest: &[u8],
+        digest: &NixHashDigest,
     ) -> Result<Vec<u8>, TreeWalkError> {
         match format {
-            ConvertHashFormat::Base16 => Self::lower_hex_bytes(id, span, digest),
-            ConvertHashFormat::Nix32 => Self::encode_nix_base32(id, span, digest),
+            ConvertHashFormat::Base16 => Self::lower_hex_bytes(id, span, digest.bytes()),
+            ConvertHashFormat::Nix32 => Self::encode_nix_base32(id, span, digest.bytes()),
             ConvertHashFormat::Base64 => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(digest);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(digest.bytes());
                 Self::copy_bytes_for_node(id, span, encoded.as_bytes())
             }
             ConvertHashFormat::Sri => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(digest);
-                let len = algorithm
+                let encoded = base64::engine::general_purpose::STANDARD.encode(digest.bytes());
+                let len = digest
+                    .algorithm()
                     .name()
                     .len()
                     .checked_add(1)
@@ -170,7 +168,7 @@ impl TreeWalk {
                 out.try_reserve_exact(len).map_err(|_| {
                     TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
                 })?;
-                out.extend_from_slice(algorithm.name());
+                out.extend_from_slice(digest.algorithm().name());
                 out.push(b'-');
                 out.extend_from_slice(encoded.as_bytes());
                 Ok(out)
