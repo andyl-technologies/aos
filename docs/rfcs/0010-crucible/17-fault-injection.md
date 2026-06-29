@@ -989,9 +989,22 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   checks the block/9p/link shared device transforms for exact-fraction
   probability, integer serialization delay, and integer jitter/reorder
   arithmetic.
-- [ ] **T-FAULT-5** Implement deterministic, injection-order-independent
+- [x] **T-FAULT-5** Implement deterministic, injection-order-independent
   combination of overlapping same-kind faults per the §17.3.3 table. — satisfies
   [FAULT-15]; spec §17.3.3.
+
+  Completed by `checks.crucible.phase4.faultCombination`: the model layer now
+  exposes a pure `CombinedFaults::from_faults` reducer that groups active
+  taxonomy faults by target and computes combined effects from the set, not
+  declaration or injection order. The reducer implements the §17.3.3 table with
+  highest-first loss/block/9p failure rate lists for any-fires evaluation,
+  while preserving each 9p failure rate with its errno payload; saturating
+  integer sums for latency and clock skew; widest windows for reorder;
+  highest-rate duplicate/corruption/slow choices; any-covers partition coverage;
+  any-crash node state; and most-severe block failure mode. The focused
+  regression reverses the same active set to prove order independence, checks
+  network, node, block, and 9p rows explicitly, and includes independent second
+  targets to prove same-kind faults do not combine across targets.
 - [ ] **T-FAULT-6** Apply network faults on the link sub-node at RESOLVE
   (partition/loss drop; latency/jitter/reorder/bandwidth shift delivery_icount;
   duplicate emits a second frame; corruption mutates payload), honor

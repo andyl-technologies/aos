@@ -3769,6 +3769,14 @@ impl FaultDuration {
         self.nanos
     }
 
+    /// Adds two fault durations, saturating at `u64::MAX`.
+    #[must_use]
+    pub const fn saturating_add(self, other: Self) -> Self {
+        Self {
+            nanos: self.nanos.saturating_add(other.nanos),
+        }
+    }
+
     /// Converts this duration to the shared execution-model duration type.
     #[must_use]
     pub const fn to_sim_duration(self) -> SimDuration {
@@ -4205,6 +4213,393 @@ impl NinePFault {
                 errno.code()
             ),
         }
+    }
+}
+
+/// The deterministic, target-grouped combination of active fault taxonomy values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CombinedFaults {
+    /// Combined network-link faults keyed by declared link.
+    pub network: BTreeMap<LinkId, CombinedNetworkFaults>,
+    /// Combined node/runtime faults keyed by declared node.
+    pub node: BTreeMap<NodeId, CombinedNodeFaults>,
+    /// Combined block-device faults keyed by declared device.
+    pub block: BTreeMap<DeviceId, CombinedBlockFaults>,
+    /// Combined 9p-device faults keyed by declared device.
+    pub ninep: BTreeMap<DeviceId, CombinedNinePFaults>,
+}
+
+impl CombinedFaults {
+    /// Combines active faults by target and kind.
+    ///
+    /// The result is a pure function of the supplied set: input order does not
+    /// affect output maps, rate lists, selected maximums, summed delays, or fixed
+    /// corruption strategy order.
+    #[must_use]
+    pub fn from_faults(faults: &[Fault]) -> Self {
+        let mut combined = Self::default();
+
+        for fault in faults {
+            match fault {
+                Fault::Network(fault) => combine_network_fault(&mut combined.network, fault),
+                Fault::Node(fault) => combine_node_fault(&mut combined.node, fault),
+                Fault::Block(fault) => combine_block_fault(&mut combined.block, fault),
+                Fault::NineP(fault) => combine_ninep_fault(&mut combined.ninep, fault),
+            }
+        }
+
+        combined.finish()
+    }
+
+    fn finish(mut self) -> Self {
+        for effects in self.network.values_mut() {
+            effects.finish();
+        }
+        for effects in self.block.values_mut() {
+            effects.finish();
+        }
+        for effects in self.ninep.values_mut() {
+            effects.finish();
+        }
+        self
+    }
+}
+
+/// Combined network-link effects for one link.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CombinedNetworkFaults {
+    /// Directed partition coverage; absent when no partition is active.
+    pub partition: Option<CombinedPartitionFault>,
+    /// Loss rates evaluated highest-first for the any-fires rule.
+    pub loss_rates: Vec<FaultRateBasisPoints>,
+    /// Total fixed latency bump from all active latency faults.
+    pub latency: FaultDuration,
+    /// Widest active reorder window.
+    pub reorder_window: Option<FaultDuration>,
+    /// Highest-rate duplicate fault, with deterministic tie-breaking for gap.
+    pub duplicate: Option<CombinedDuplicateFault>,
+    /// Highest-rate corruption decision and fixed-order strategies.
+    pub corruption: Option<CombinedNetworkCorruptionFault>,
+    /// Active bandwidth limits, all contributing integer serialization delay.
+    pub bandwidth_limits: Vec<FaultBandwidthBitsPerSecond>,
+}
+
+impl CombinedNetworkFaults {
+    fn finish(&mut self) {
+        sort_rates_highest_first(&mut self.loss_rates);
+        self.bandwidth_limits.sort();
+        if let Some(corruption) = &mut self.corruption {
+            corruption
+                .strategies
+                .sort_by(network_corruption_strategy_cmp);
+        }
+    }
+}
+
+/// Directed partition coverage for one link.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombinedPartitionFault {
+    /// Whether endpoint A to endpoint B is suppressed.
+    pub endpoint_a_to_endpoint_b: bool,
+    /// Whether endpoint B to endpoint A is suppressed.
+    pub endpoint_b_to_endpoint_a: bool,
+}
+
+impl CombinedPartitionFault {
+    fn cover(&mut self, direction: PartitionDirection) {
+        match direction {
+            PartitionDirection::Bidirectional => {
+                self.endpoint_a_to_endpoint_b = true;
+                self.endpoint_b_to_endpoint_a = true;
+            }
+            PartitionDirection::EndpointAToEndpointB => {
+                self.endpoint_a_to_endpoint_b = true;
+            }
+            PartitionDirection::EndpointBToEndpointA => {
+                self.endpoint_b_to_endpoint_a = true;
+            }
+        }
+    }
+}
+
+/// The effective duplicate rule for one link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CombinedDuplicateFault {
+    /// Highest active duplicate rate.
+    pub rate: FaultRateBasisPoints,
+    /// Deterministically selected duplicate gap among faults at that rate.
+    pub gap: FaultDuration,
+}
+
+/// The effective corruption rule for one link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CombinedNetworkCorruptionFault {
+    /// Highest active corruption rate.
+    pub rate: FaultRateBasisPoints,
+    /// Corruption strategies applied in fixed kind order when the rate fires.
+    pub strategies: Vec<NetworkCorruptionFault>,
+}
+
+/// Combined node/runtime effects for one node.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CombinedNodeFaults {
+    /// Most conservative restart policy when any crash fault names the node.
+    pub crash_restart: Option<RestartPolicy>,
+    /// Largest active slowdown factor.
+    pub slow_factor: Option<FaultSlowdownFactorBasisPoints>,
+    /// Saturating sum of all signed clock-skew offsets.
+    pub clock_skew: SimOffset,
+}
+
+impl CombinedNodeFaults {
+    /// Returns whether at least one active crash fault names this node.
+    #[must_use]
+    pub const fn is_crashed(&self) -> bool {
+        self.crash_restart.is_some()
+    }
+}
+
+/// Combined block-device effects for one block device.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CombinedBlockFaults {
+    /// Total fixed latency from all active block latency faults.
+    pub latency_extra: FaultDuration,
+    /// Total jitter window from all active block latency faults.
+    pub latency_jitter: FaultDuration,
+    /// Failure rates evaluated highest-first for the any-fires rule.
+    pub failure_rates: Vec<FaultRateBasisPoints>,
+    /// Most severe failure mode among active block failure faults.
+    pub failure_mode: Option<IoFailureMode>,
+    /// Widest active block reorder window.
+    pub reorder_window: Option<FaultDuration>,
+}
+
+impl CombinedBlockFaults {
+    fn finish(&mut self) {
+        sort_rates_highest_first(&mut self.failure_rates);
+    }
+}
+
+/// Combined 9p-device effects for one 9p device.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CombinedNinePFaults {
+    /// Total fixed latency from all active 9p latency faults.
+    pub latency_extra: FaultDuration,
+    /// Total jitter window from all active 9p latency faults.
+    pub latency_jitter: FaultDuration,
+    /// Failure choices evaluated highest-rate-first for the any-fires rule.
+    pub failures: Vec<CombinedNinePFailureFault>,
+}
+
+/// One 9p failure choice kept with its errno payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CombinedNinePFailureFault {
+    /// Failure probability in basis points.
+    pub rate: FaultRateBasisPoints,
+    /// Errno returned when this failure choice fires.
+    pub errno: NinePErrno,
+}
+
+impl CombinedNinePFaults {
+    fn finish(&mut self) {
+        self.failures.sort_by(|left, right| {
+            right
+                .rate
+                .cmp(&left.rate)
+                .then_with(|| left.errno.cmp(&right.errno))
+        });
+    }
+}
+
+fn combine_network_fault(
+    combined: &mut BTreeMap<LinkId, CombinedNetworkFaults>,
+    fault: &NetworkFault,
+) {
+    match fault {
+        NetworkFault::Partition { link, direction } => {
+            combined
+                .entry(link.clone())
+                .or_default()
+                .partition
+                .get_or_insert_with(CombinedPartitionFault::default)
+                .cover(*direction);
+        }
+        NetworkFault::Loss { link, rate } => {
+            combined
+                .entry(link.clone())
+                .or_default()
+                .loss_rates
+                .push(*rate);
+        }
+        NetworkFault::Reorder { link, window } => {
+            let entry = combined.entry(link.clone()).or_default();
+            entry.reorder_window = Some(max_duration(entry.reorder_window, *window));
+        }
+        NetworkFault::Duplicate { link, rate, gap } => {
+            let entry = combined.entry(link.clone()).or_default();
+            let candidate = CombinedDuplicateFault {
+                rate: *rate,
+                gap: *gap,
+            };
+            entry.duplicate = Some(match entry.duplicate {
+                Some(current) => max_duplicate(current, candidate),
+                None => candidate,
+            });
+        }
+        NetworkFault::Corruption { link, kind } => {
+            let entry = combined.entry(link.clone()).or_default();
+            match &mut entry.corruption {
+                Some(corruption) => {
+                    corruption.rate = corruption.rate.max(corruption_rate(kind));
+                    corruption.strategies.push(kind.clone());
+                }
+                None => {
+                    entry.corruption = Some(CombinedNetworkCorruptionFault {
+                        rate: corruption_rate(kind),
+                        strategies: vec![kind.clone()],
+                    });
+                }
+            }
+        }
+        NetworkFault::Bandwidth { link, limit } => {
+            combined
+                .entry(link.clone())
+                .or_default()
+                .bandwidth_limits
+                .push(*limit);
+        }
+        NetworkFault::LatencyBump { link, extra } => {
+            let entry = combined.entry(link.clone()).or_default();
+            entry.latency = entry.latency.saturating_add(*extra);
+        }
+    }
+}
+
+fn combine_node_fault(combined: &mut BTreeMap<NodeId, CombinedNodeFaults>, fault: &NodeFault) {
+    match fault {
+        NodeFault::Crash { node, restart } => {
+            let entry = combined.entry(node.clone()).or_default();
+            entry.crash_restart = Some(
+                entry
+                    .crash_restart
+                    .map_or(*restart, |current| current.max(*restart)),
+            );
+        }
+        NodeFault::Slow { node, factor } => {
+            let entry = combined.entry(node.clone()).or_default();
+            entry.slow_factor = Some(
+                entry
+                    .slow_factor
+                    .map_or(*factor, |current| current.max(*factor)),
+            );
+        }
+        NodeFault::ClockSkew { node, offset } => {
+            let entry = combined.entry(node.clone()).or_default();
+            entry.clock_skew = saturating_offset_add(entry.clock_skew, *offset);
+        }
+    }
+}
+
+fn combine_block_fault(combined: &mut BTreeMap<DeviceId, CombinedBlockFaults>, fault: &BlockFault) {
+    match fault {
+        BlockFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.latency_extra = entry.latency_extra.saturating_add(*extra);
+            entry.latency_jitter = entry.latency_jitter.saturating_add(*jitter);
+        }
+        BlockFault::Failure { device, rate, mode } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.failure_rates.push(*rate);
+            entry.failure_mode = Some(
+                entry
+                    .failure_mode
+                    .map_or(*mode, |current| current.max(*mode)),
+            );
+        }
+        BlockFault::Reorder { device, window } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.reorder_window = Some(max_duration(entry.reorder_window, *window));
+        }
+    }
+}
+
+fn combine_ninep_fault(combined: &mut BTreeMap<DeviceId, CombinedNinePFaults>, fault: &NinePFault) {
+    match fault {
+        NinePFault::Latency {
+            device,
+            extra,
+            jitter,
+        } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.latency_extra = entry.latency_extra.saturating_add(*extra);
+            entry.latency_jitter = entry.latency_jitter.saturating_add(*jitter);
+        }
+        NinePFault::Failure {
+            device,
+            rate,
+            errno,
+        } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.failures.push(CombinedNinePFailureFault {
+                rate: *rate,
+                errno: *errno,
+            });
+        }
+    }
+}
+
+fn max_duration(current: Option<FaultDuration>, candidate: FaultDuration) -> FaultDuration {
+    current.map_or(candidate, |current| current.max(candidate))
+}
+
+fn max_duplicate(
+    current: CombinedDuplicateFault,
+    candidate: CombinedDuplicateFault,
+) -> CombinedDuplicateFault {
+    match candidate.rate.cmp(&current.rate) {
+        std::cmp::Ordering::Greater => candidate,
+        std::cmp::Ordering::Equal if candidate.gap > current.gap => candidate,
+        _ => current,
+    }
+}
+
+fn corruption_rate(fault: &NetworkCorruptionFault) -> FaultRateBasisPoints {
+    match fault {
+        NetworkCorruptionFault::BitFlip { rate, .. }
+        | NetworkCorruptionFault::FieldMutation { rate }
+        | NetworkCorruptionFault::Truncation { rate, .. } => *rate,
+    }
+}
+
+fn network_corruption_strategy_cmp(
+    left: &NetworkCorruptionFault,
+    right: &NetworkCorruptionFault,
+) -> std::cmp::Ordering {
+    network_corruption_kind_order(left)
+        .cmp(&network_corruption_kind_order(right))
+        .then_with(|| left.canonical_material().cmp(&right.canonical_material()))
+}
+
+fn network_corruption_kind_order(fault: &NetworkCorruptionFault) -> u8 {
+    match fault {
+        NetworkCorruptionFault::BitFlip { .. } => 0,
+        NetworkCorruptionFault::FieldMutation { .. } => 1,
+        NetworkCorruptionFault::Truncation { .. } => 2,
+    }
+}
+
+fn sort_rates_highest_first(rates: &mut [FaultRateBasisPoints]) {
+    rates.sort_by(|left, right| right.cmp(left));
+}
+
+fn saturating_offset_add(left: SimOffset, right: SimOffset) -> SimOffset {
+    let sum = i128::from(left.nanos) + i128::from(right.nanos);
+    SimOffset {
+        nanos: sum.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
     }
 }
 
