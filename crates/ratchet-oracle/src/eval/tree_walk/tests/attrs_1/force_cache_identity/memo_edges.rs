@@ -562,6 +562,11 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
     );
     assert_eq!(evaluator.stats().cache_hits(), 0);
     assert_eq!(evaluator.stats().cache_misses(), 1);
+    assert_eq!(
+        evaluator.stats().early_cutoffs(),
+        0,
+        "rejected persistent hits should not count an early cutoff"
+    );
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
@@ -662,6 +667,11 @@ fn persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key()
     );
     assert_eq!(evaluator.stats().cache_hits(), 0);
     assert_eq!(evaluator.stats().cache_misses(), 1);
+    assert_eq!(
+        evaluator.stats().early_cutoffs(),
+        0,
+        "dirty supplier rejection should not count an early cutoff"
+    );
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     assert_eq!(
         persist
@@ -754,6 +764,11 @@ fn persistent_force_cache_hit_rejects_unresolved_supplier_without_runtime_payloa
     );
     assert_eq!(evaluator.stats().cache_hits(), 0);
     assert_eq!(evaluator.stats().cache_misses(), 2);
+    assert_eq!(
+        evaluator.stats().early_cutoffs(),
+        0,
+        "unresolved supplier rejection should not count an early cutoff"
+    );
 
     fs::remove_dir_all(persist_root).expect("temp tree removed");
 }

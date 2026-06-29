@@ -1282,12 +1282,15 @@ alone (`M-1`/`Q-A`).
       graph, including pure empty-trace payloads and trace-backed payloads with
       revalidated impure-input leaves. If the durable hit rehydrates a dirty
       same-hash runtime node, tree-walk increments `EvalStats::early_cutoffs`
-      just like an in-memory dirty hit. This is accounting for persistent-hit
-      runtime seeding only; evaluator-owned dirty-frontier scheduling,
-      transitive red/green propagation, canonical hashes for all values, and
-      cached/uncached `.drv` parity proof remain open (`S-14`/`M-11`). Gates:
+      just like an in-memory dirty hit; rejected dirty or unresolved supplier
+      rehydrations remain misses and keep `early_cutoffs` at zero. This is
+      accounting for persistent-hit runtime seeding only; evaluator-owned
+      dirty-frontier scheduling, transitive red/green propagation, canonical
+      hashes for all values, and cached/uncached `.drv` parity proof remain
+      open (`S-14`/`M-11`). Gates:
       `dirty_persistent_pure_force_cache_hit_counts_early_cutoff` and
-      `dirty_persistent_effectful_force_cache_hit_counts_early_cutoff`.
+      `dirty_persistent_effectful_force_cache_hit_counts_early_cutoff`, plus
+      persistent force-cache supplier-rejection tests.
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.
