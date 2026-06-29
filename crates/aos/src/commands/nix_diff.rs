@@ -2652,6 +2652,7 @@ const fn side_name(side: DiffSide) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2695,6 +2696,57 @@ mod tests {
         }
     }
 
+    struct FixedClosureEval {
+        name: &'static str,
+        closure: DrvClosure,
+        instantiate_calls: AtomicUsize,
+        instantiate_closure_calls: AtomicUsize,
+    }
+
+    impl FixedClosureEval {
+        fn new(name: &'static str, root: &str, marker: &str) -> Self {
+            Self {
+                name,
+                closure: single_drv_closure(root, marker),
+                instantiate_calls: AtomicUsize::new(0),
+                instantiate_closure_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn instantiate_calls(&self) -> usize {
+            self.instantiate_calls.load(Ordering::SeqCst)
+        }
+
+        fn instantiate_closure_calls(&self) -> usize {
+            self.instantiate_closure_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NixEval for FixedClosureEval {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            self.instantiate_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.closure.root().to_path_buf())
+        }
+
+        fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+            Ok(self.closure.root().to_path_buf())
+        }
+
+        fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+            self.instantiate_closure_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.closure.clone()))
+        }
+
+        fn eval_expr(&self, _expr: &str) -> Result<String> {
+            Ok("null".to_string())
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
     fn repro_config() -> NixEvalConfig {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
@@ -2703,6 +2755,20 @@ mod tests {
         config.clear_allowed_uris();
         config.set_trace_verbose(false);
         config
+    }
+
+    fn single_drv_closure(root: &str, marker: &str) -> DrvClosure {
+        let root = PathBuf::from(root);
+        let mut drvs = BTreeMap::new();
+        drvs.insert(root.clone(), single_drv_bytes(marker));
+        DrvClosure::new(root, drvs)
+    }
+
+    fn single_drv_bytes(marker: &str) -> Vec<u8> {
+        format!(
+            r#"Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out","","")],[],[],"x86_64-linux","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash",[],[("builder","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash"),("name","{marker}"),("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out"),("system","x86_64-linux")])"#
+        )
+        .into_bytes()
     }
 
     #[test]
@@ -2737,6 +2803,101 @@ mod tests {
         assert_eq!(oracle.instantiate_calls(), 1);
         assert_eq!(cache_off.instantiate_calls(), 1);
         assert_eq!(cold_cache.instantiate_calls(), 1);
+    }
+
+    #[test]
+    fn cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let cache_off = FixedClosureEval::new("cache-off", root, "same");
+        let cold_cache = FixedClosureEval::new("cold-cache", root, "same");
+
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Byte,
+        );
+
+        assert!(!report.has_failure());
+        assert_eq!(oracle.instantiate_calls(), 0);
+        assert_eq!(cache_off.instantiate_calls(), 0);
+        assert_eq!(cold_cache.instantiate_calls(), 0);
+        assert_eq!(oracle.instantiate_closure_calls(), 1);
+        assert_eq!(cache_off.instantiate_closure_calls(), 1);
+        assert_eq!(cold_cache.instantiate_closure_calls(), 1);
+        assert!(report.comparisons().iter().all(|comparison| {
+            comparison
+                .report
+                .as_ref()
+                .is_some_and(|report| report.mode == DiffMode::Byte)
+        }));
+    }
+
+    #[test]
+    fn cache_validation_byte_mode_detects_cold_closure_byte_drift() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let cache_off = FixedClosureEval::new("cache-off", root, "same");
+        let cold_cache = FixedClosureEval::new("cold-cache", root, "cold");
+
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Byte,
+        );
+
+        assert!(report.has_failure());
+        assert!(report.oracle_vs_cache_off.failure.is_none());
+        assert!(report.oracle_vs_cold_cache.failure.is_some());
+        assert!(report.cache_off_vs_cold_cache.failure.is_some());
+        assert_eq!(oracle.instantiate_calls(), 0);
+        assert_eq!(cache_off.instantiate_calls(), 0);
+        assert_eq!(cold_cache.instantiate_calls(), 0);
+        assert_eq!(oracle.instantiate_closure_calls(), 1);
+        assert_eq!(cache_off.instantiate_closure_calls(), 1);
+        assert_eq!(cold_cache.instantiate_closure_calls(), 1);
+
+        let reports = vec![report];
+        let failure = cache_validation_failure(&reports).expect("byte drift fails validation");
+        assert_eq!(
+            failure.to_string(),
+            "drv diff failed for 1 attribute(s) with 2 divergence(s)"
+        );
+        let comparison_kinds = reports[0]
+            .comparisons()
+            .iter()
+            .map(|comparison| {
+                comparison
+                    .report
+                    .as_ref()
+                    .map(|report| {
+                        report
+                            .divergences
+                            .iter()
+                            .map(diff_json)
+                            .map(|value| value["kind"].clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(comparison_kinds[0], Vec::<serde_json::Value>::new());
+        assert_eq!(
+            comparison_kinds[1],
+            [serde_json::Value::String("bytes".to_string())]
+        );
+        assert_eq!(
+            comparison_kinds[2],
+            [serde_json::Value::String("bytes".to_string())]
+        );
     }
 
     #[test]
