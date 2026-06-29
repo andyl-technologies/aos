@@ -507,6 +507,11 @@ in {
     };
   };
   phase4 = {
+    eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventGraphControlFlow";
+      taskIds = ["T-TRIG-1"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

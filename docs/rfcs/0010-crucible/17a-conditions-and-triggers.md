@@ -1177,11 +1177,22 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
 > after the L1 scheduler, event log, and fault primitives and shared with the
 > assertion layer (18), before any L3+ feature built on triggers (search/fuzz, 22).
 
-- [ ] **T-TRIG-1** Define the event graph as the single control-flow mechanism:
+- [x] **T-TRIG-1** Define the event graph as the single control-flow mechanism:
   `Event = (id, trigger: Option<Condition>, action, policy)`, with the engine
   firing an event's action when its trigger becomes true at a deterministic
   evaluation point; forbid any parallel ad-hoc poke mechanism. — satisfies
   [TRIG-1], [TRIG-21]; spec §17a.1, §17a.4.
+
+  Completed by `checks.crucible.phase4.eventGraphControlFlow`: `crucible::trigger`
+  defines the event-graph spine (`EventId`, `Event`, `Condition` handles,
+  `Action`, `LogLevel`, `FirePolicy`, `EventGraph`, `EventGraphState`) and the
+  only local producer of opaque action firings, `EventGraphState::evaluate`. The
+  gate covers entrypoints, named trigger handles, once/repeatable policy,
+  deterministic declared-order firings, duplicate-id and repeatable-entrypoint
+  rejection, and a focused static guardrail against current direct scenario
+  poke/inject/heal APIs in the engine-facing control surfaces. Full condition leaf
+  semantics, action application, build-time reference validation, Plan lowering,
+  and verdict composition remain T-TRIG-2 through T-TRIG-20.
 - [ ] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
