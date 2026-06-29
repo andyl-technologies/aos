@@ -172,7 +172,7 @@ fn control_kinds(events: &[crucible::ScheduledEvent]) -> Vec<ControlOperationKin
     events
         .iter()
         .filter_map(|event| match &event.payload {
-            ScheduledEventPayload::Control(operation) => Some(operation.kind),
+            ScheduledEventPayload::Control(operation) => Some(operation.kind.clone()),
             _ => None,
         })
         .collect()

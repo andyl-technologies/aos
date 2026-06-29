@@ -1,10 +1,11 @@
 //! Canonical hashing for execution-model identities.
 
 use super::{
-    Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
-    EventLogOffset, EventSequenceState, FaultState, Icount, NodeBlobRef, NodeId, PendingFrame,
-    PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
+    Configuration, ContentHash, ControlFaultAction, Decision, DecisionRngState, DeviceOverlayDelta,
+    DeviceRngState, EventLogOffset, EventSequenceState, FaultState, Icount, NodeBlobRef, NodeId,
+    PendingFrame, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef, Schedule,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime,
+    VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -117,6 +118,26 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
             hasher.write_u64(random.request_id);
             hasher.write_u64(u64::from(random.width));
             hasher.write_u64(random.value);
+        }
+        Decision::ControlFault(control) => {
+            hasher.write_u64(6);
+            write_virtual_time(hasher, control.at);
+            hasher.write_u64(control.sequence);
+            write_control_fault_action(hasher, &control.action);
+        }
+    }
+}
+
+fn write_control_fault_action(hasher: &mut MaterialHasher, action: &ControlFaultAction) {
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            hasher.write_u64(0);
+            hasher.write_bytes(tag.name.as_bytes());
+            hasher.write_bytes(fault.canonical_material().as_bytes());
+        }
+        ControlFaultAction::Heal { tag } => {
+            hasher.write_u64(1);
+            hasher.write_bytes(tag.name.as_bytes());
         }
     }
 }

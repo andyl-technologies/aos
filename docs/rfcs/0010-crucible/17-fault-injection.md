@@ -1096,10 +1096,20 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   matches the mechanically equivalent pure-`At` event graph; block/9p device refs
   fail closed until the implemented `World` grows first-class I/O participant
   declarations.
-- [ ] **T-FAULT-11** Implement imperative inject/heal over the control plane
+- [x] **T-FAULT-11** Implement imperative inject/heal over the control plane
   applied at quantum boundaries and recorded in the `Schedule`, so an
   imperatively-driven session reduces to the same self-contained repro artifact.
   — satisfies [FAULT-26]; spec §17.6.2; cross-ref 20, 05.
+  Completed by `checks.crucible.phase4.imperativeFaultControl`: control
+  operations and session commands now carry typed full-taxonomy
+  `InjectFault`/`HealFault` actions, apply them only during scheduler boundary
+  drain, record each action as a `Decision::ControlFault` with exact virtual
+  time and control sequence, and feed the resulting active-fault table through
+  the same scheduler-owned node/topology/device application path used by
+  declarative trigger faults. Recorded schedule prefixes rehydrate active
+  imperative fault state without resubmitting controls, and compact-binary
+  schedule round trips include control-fault decisions. Unknown imperative heals
+  remain runtime no-ops while still being recorded in the schedule artifact.
 - [ ] **T-FAULT-12** Implement tag-based activation/heal (heal by tag,
   replace-on-retag, build-time rejection of declarative heal of an uninjected
   tag, runtime no-op heal of an unknown tag) and carry the active-tag set in

@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ControlOperation, ControlOperationKind, Decision,
-    DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
-    QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
-    SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime, step,
+    DeliveryOrderDecision, EventKey, Fault, FaultSlowdownFactorBasisPoints, FaultTag,
+    GenesisCheckpoint, NodeFault, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
+    ScheduledEvent, ScheduledEventKey, SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed,
+    TemporalGraph, VirtualTime, step,
 };
 use crucible_session::{Engine, LiveStateKind, SessionActor, SessionCommand};
 use tokio::sync::mpsc;
@@ -31,6 +32,7 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
 
     send_command(&sender, SessionCommand::Start).await;
     send_command(&sender, SessionCommand::Continue).await;
+    wait_until_running(&live).await;
 
     let mut last = live.read();
     let mut observed_progress = false;
@@ -112,10 +114,88 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
     assert_eq!(report.final_snapshot.quanta, report.quanta);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn gate_control_responsive_accepts_typed_fault_control_commands() {
+    let scenario = generated_scenario(37);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let observed_control = Arc::new(Mutex::new(Vec::new()));
+    let engine = Engine::new(
+        config,
+        graph,
+        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+    );
+    let (sender, receiver) = mpsc::channel(8);
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+    let actor_task = tokio::spawn(async move { actor.run().await });
+
+    send_command(&sender, SessionCommand::Start).await;
+    send_command(&sender, SessionCommand::Continue).await;
+    wait_until_running(&live).await;
+
+    let tag = FaultTag::from_name("slow-db0");
+    let fault = Fault::Node(NodeFault::Slow {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        factor: FaultSlowdownFactorBasisPoints::from_basis_points(20_000)
+            .unwrap_or_else(|error| panic!("valid slowdown factor: {error}")),
+    });
+    let inject_acknowledged = acknowledge_operation(
+        &sender,
+        &live,
+        SessionCommand::InjectFault {
+            tag: tag.clone(),
+            fault: fault.clone(),
+        },
+        "inject-fault",
+    )
+    .await;
+    assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
+    let heal_acknowledged = acknowledge_operation(
+        &sender,
+        &live,
+        SessionCommand::HealFault { tag: tag.clone() },
+        "heal-fault",
+    )
+    .await;
+    assert_eq!(heal_acknowledged.state_kind, LiveStateKind::Running);
+
+    assert_eq!(
+        observed_control_operations(&observed_control),
+        vec![
+            ControlOperationKind::InjectFault {
+                tag: tag.clone(),
+                fault,
+            },
+            ControlOperationKind::HealFault { tag },
+        ]
+    );
+
+    send_command(&sender, SessionCommand::Stop).await;
+    let report = match actor_task.await {
+        Ok(Ok(report)) => report,
+        Ok(Err(error)) => panic!("actor should stop cleanly: {error}"),
+        Err(error) => panic!("actor task should join cleanly: {error}"),
+    };
+    assert!(report.quanta >= heal_acknowledged.quanta_stepped);
+}
+
 async fn send_command(sender: &mpsc::Sender<SessionCommand>, command: SessionCommand) {
     if let Err(error) = sender.send(command).await {
         panic!("session command should enqueue: {error}");
     }
+}
+
+async fn wait_until_running(live: &crucible_session::LiveSnapshot) {
+    for _ in 0..128 {
+        if live.read().state_kind == LiveStateKind::Running {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("session should enter Running within bounded actor yields");
 }
 
 async fn acknowledge_operation(
@@ -181,7 +261,11 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             advanced_node: None,
             resolved_events,
             decisions: vec![decision],
-            event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
+            event_log_entries: vec![crucible::SchedulerEventLogEntry::evaluation_boundary(
+                self.quanta - 1,
+                VirtualTime { ticks: self.quanta },
+                crucible::SchedulerEvaluationBoundaryKind::Quantum,
+            )],
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
             event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
@@ -196,7 +280,7 @@ fn record_control_operations(
     let mut observed = observed_control
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    observed.extend(operations.iter().map(|operation| operation.kind));
+    observed.extend(operations.iter().map(|operation| operation.kind.clone()));
 }
 
 fn observed_control_operations(
@@ -234,20 +318,6 @@ fn resolved_control_event(sequence: u64) -> ScheduledEvent {
             sequence,
             kind: ControlOperationKind::Query,
         }),
-    }
-}
-
-fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
-    let material = format!("sequence={sequence}");
-    crucible::SchedulerEventLogEntry {
-        sequence,
-        at: VirtualTime { ticks: sequence },
-        class: crucible::SchedulerEventLogClass::Causal,
-        payload: crucible::SchedulerEventLogPayload::Decision(generated_decision(sequence)),
-        content_hash: crucible::ContentHash::from_canonical_material(
-            "crucible.session.gate-control-responsive.event-log-entry",
-            &material,
-        ),
     }
 }
 
