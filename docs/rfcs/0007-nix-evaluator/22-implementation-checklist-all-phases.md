@@ -3347,6 +3347,26 @@ alone (`M-1`/`Q-A`).
       full cached-vs-uncached AOS closure harness, full leak-invariant harness,
       or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current reusable native file-closure cache-parity harness and empty-fold
+      update regression witness:
+      `native_file_closure_cache_parity` drives one file-root attr selection
+      through native cache disabled, cache-on miss/write, a second cache-on
+      pass, a fresh parse-root persistent-hit pass, and a disabled-eval-cache
+      pass over the populated persistent root, requiring byte-identical `.drv`
+      closures while checking disabled-cache force sidecars and persistent files
+      remain unchanged.
+      `native_file_cache_parity_harness_covers_empty_foldl_update_regression`
+      applies that harness to a `pkgs.zlib`-style file where
+      `subdirPackages = builtins.foldl' ... {} []` flows into
+      `filePackages // subdirPackages`, so strict attr-update consumers must
+      force the lazy empty-fold accumulator before type-checking. The witness
+      also scans all cache-off/cache-on-second/persistent-hit/disabled
+      closure surfaces for the exercised file-root parse-cache and file-content
+      BLAKE3 renderings. This is a focused reusable harness and regression
+      canary for native file closures, not full persistent demand-graph replay,
+      full AOS package-set coverage, syscall-level cache-off no-read proof, or
+      the full cached-vs-uncached CI safety net
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

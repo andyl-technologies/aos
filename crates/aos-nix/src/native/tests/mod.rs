@@ -1,7 +1,9 @@
 //! Unit and oracle-differential tests for the native evaluator shim.
 
 use super::*;
-use crate::cache::{DurableBlake3Hash, PersistCache};
+use crate::cache::{
+    DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
+};
 use crate::eval::IfdRealizationError;
 use crate::string::NixString;
 use std::fs;
@@ -12,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod attr_path;
+mod cache_parity;
 mod expr_eval;
 mod fallback;
 mod ifd;
@@ -98,6 +101,212 @@ fn instantiate_file_closure_with_stats(
     native.observe_eval_cache(&outcome);
     let closure = native.native_drv_closure_from_outcome(outcome)?;
     Ok((closure, stats))
+}
+
+#[derive(Debug)]
+struct NativeFileClosureCacheParity {
+    uncached: NativeDrvClosure,
+    cache_miss: NativeDrvClosure,
+    cache_second: NativeDrvClosure,
+    persistent_hit: NativeDrvClosure,
+    disabled_with_persist_root: NativeDrvClosure,
+    uncached_stats: crate::eval::EvalStats,
+    cache_miss_stats: crate::eval::EvalStats,
+    cache_second_stats: crate::eval::EvalStats,
+    persistent_hit_stats: crate::eval::EvalStats,
+    disabled_stats: crate::eval::EvalStats,
+}
+
+impl NativeFileClosureCacheParity {
+    fn assert_byte_identical(&self) {
+        assert_eq!(self.cache_miss, self.uncached);
+        assert_eq!(self.cache_second, self.uncached);
+        assert_eq!(self.persistent_hit, self.uncached);
+        assert_eq!(self.disabled_with_persist_root, self.uncached);
+    }
+
+    fn assert_disabled_cache_observed_no_force_cache_activity(&self) {
+        assert_eq!(self.disabled_stats.force_cache_hits(), 0);
+        assert_eq!(self.disabled_stats.force_cache_misses(), 0);
+    }
+}
+
+fn native_file_closure_cache_parity<F>(
+    root: &Path,
+    store: &Path,
+    persist_root: &Path,
+    file: &Path,
+    attr: &str,
+    configure_options: F,
+) -> Result<NativeFileClosureCacheParity>
+where
+    F: Fn(&mut TreeWalkOptions) -> Result<()>,
+{
+    let store_bytes = store.as_os_str().as_bytes().to_vec();
+    let source = fs::read(file)?;
+    let realpath = fs::canonicalize(file)?;
+    let file_key = ParseFileKey::for_source(&realpath, &source);
+    let cache_miss_parse_root = root.join("cache-miss-parse");
+    let cache_second_parse_root = root.join("cache-second-parse");
+    let persistent_hit_parse_root = root.join("persistent-hit-parse");
+    let options_for =
+        |parse_root: Option<&Path>, persist: bool, eval_cache_enabled: bool| -> Result<_> {
+            let mut options = TreeWalkOptions::with_store_dir(store_bytes.clone())?;
+            configure_options(&mut options)?;
+            if let Some(parse_root) = parse_root {
+                options.set_parse_cache_root(parse_root);
+            } else {
+                options.clear_parse_cache_root();
+            }
+            if persist {
+                options.set_persist_cache_root(persist_root);
+            } else {
+                options.clear_persist_cache_root();
+            }
+            options.set_eval_cache_enabled(eval_cache_enabled);
+            Ok(options)
+        };
+
+    let (uncached, uncached_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(None, false, false)?)?,
+        file,
+        attr,
+    )?;
+    assert_eq!(uncached_stats.force_cache_hits(), 0);
+    assert_eq!(uncached_stats.force_cache_misses(), 0);
+
+    let (cache_miss, cache_miss_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(Some(&cache_miss_parse_root), true, true)?)?,
+        file,
+        attr,
+    )?;
+    assert_eq!(cache_miss, uncached);
+    let cache_miss_parse_cache = ParseCache::new(&cache_miss_parse_root);
+    let parse_key = cache_miss_parse_cache.key_for_source(&source);
+    assert!(
+        cache_miss_parse_cache
+            .entry_for_key(parse_key)
+            .is_complete(),
+        "cache-on miss should populate the local parse cache"
+    );
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    assert!(
+        PersistCache::open(persist_root)?
+            .lookup_file_artifact(file_artifact_key)?
+            .is_some(),
+        "cache-on miss should write a durable file-backed parse artifact"
+    );
+
+    let (cache_second, cache_second_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(Some(&cache_second_parse_root), true, true)?)?,
+        file,
+        attr,
+    )?;
+    assert_eq!(cache_second, uncached);
+    assert!(
+        ParseCache::new(&cache_second_parse_root)
+            .entry_for_key(parse_key)
+            .is_complete(),
+        "second cache-on pass should populate its local parse cache"
+    );
+
+    let observed_hits = Arc::new(Mutex::new(Vec::new()));
+    let observed_hits_for_hook = Arc::clone(&observed_hits);
+    let mut persistent_hit_native = NixNative::with_options(
+        0,
+        options_for(Some(&persistent_hit_parse_root), true, true)?,
+    )?;
+    persistent_hit_native.set_persistent_parse_hit_hook(move |hit| {
+        observed_hits_for_hook
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .push(hit);
+    });
+    let (persistent_hit, persistent_hit_stats) =
+        instantiate_file_closure_with_stats(&persistent_hit_native, file, attr)?;
+    assert_eq!(persistent_hit, uncached);
+    assert_eq!(
+        observed_hits
+            .lock()
+            .expect("persistent parse hit observations lock")
+            .clone(),
+        vec![NativePersistentParseHit::Source],
+        "fresh file-root parse cache should hydrate from the durable source artifact"
+    );
+    assert!(
+        ParseCache::new(&persistent_hit_parse_root)
+            .entry_for_key(parse_key)
+            .is_complete(),
+        "persistent file-backed parse hit should hydrate the fresh parse-cache entry"
+    );
+
+    let persist = PersistCache::open(persist_root)?;
+    let force_sidecar_snapshot =
+        snapshot_regular_file_paths(persist_root, &persistent_force_sidecar_paths(&persist))?;
+    let full_persist_snapshot = snapshot_regular_file_tree(persist_root)?;
+
+    let (disabled_with_persist_root, disabled_stats) = instantiate_file_closure_with_stats(
+        &NixNative::with_options(0, options_for(None, true, false)?)?,
+        file,
+        attr,
+    )?;
+    assert_eq!(disabled_with_persist_root, uncached);
+    assert_eq!(
+        snapshot_regular_file_paths(persist_root, &persistent_force_sidecar_paths(&persist))?,
+        force_sidecar_snapshot,
+        "disabled eval-cache must not mutate persistent force sidecars"
+    );
+    assert_eq!(
+        snapshot_regular_file_tree(persist_root)?,
+        full_persist_snapshot,
+        "disabled eval-cache must not mutate persistent cache file contents"
+    );
+
+    let report = NativeFileClosureCacheParity {
+        uncached,
+        cache_miss,
+        cache_second,
+        persistent_hit,
+        disabled_with_persist_root,
+        uncached_stats,
+        cache_miss_stats,
+        cache_second_stats,
+        persistent_hit_stats,
+        disabled_stats,
+    };
+    report.assert_byte_identical();
+    report.assert_disabled_cache_observed_no_force_cache_activity();
+
+    let canaries = persistent_force_cache_surface_canaries(persist_root)?;
+    if !canaries.is_empty() {
+        assert_native_closure_surfaces_do_not_contain_canaries(
+            "uncached native cache-parity closure",
+            &report.uncached,
+            &canaries,
+        );
+        assert_native_closure_surfaces_do_not_contain_canaries(
+            "cache-miss native cache-parity closure",
+            &report.cache_miss,
+            &canaries,
+        );
+        assert_native_closure_surfaces_do_not_contain_canaries(
+            "second cache-on native cache-parity closure",
+            &report.cache_second,
+            &canaries,
+        );
+        assert_native_closure_surfaces_do_not_contain_canaries(
+            "persistent-hit native cache-parity closure",
+            &report.persistent_hit,
+            &canaries,
+        );
+        assert_native_closure_surfaces_do_not_contain_canaries(
+            "disabled native cache-parity closure",
+            &report.disabled_with_persist_root,
+            &canaries,
+        );
+    }
+
+    Ok(report)
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
