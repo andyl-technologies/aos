@@ -451,6 +451,114 @@ fn fetch_tree_resolves_configured_indirect_flake_refs() {
 }
 
 #[test]
+fn fetch_tree_resolves_configured_indirect_attrset_refs() {
+    let root = unique_temp_dir("fetch-tree-indirect-attrset");
+    fs::write(
+        root.join("payload.txt"),
+        b"configured indirect attrset fetchTree",
+    )
+    .expect("payload fixture writes");
+    let store_dir = unique_temp_dir("fetch-tree-indirect-attrset-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    options.set_flake_ref_resolution(
+        b"flake:nixpkgs/unstable".to_vec(),
+        format!("path:{}", path_source(&root)).into_bytes(),
+    );
+
+    let json = eval_json_bytes_with_options(
+        r#"
+        let x = builtins.fetchTree {
+          type = "indirect";
+          id = "nixpkgs";
+          ref = "unstable";
+        };
+        in {
+          keys = builtins.attrNames x;
+          payload = builtins.readFile "${x.outPath}/payload.txt";
+        }
+        "#,
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("indirect attrset fetchTree JSON parses");
+    assert_eq!(
+        value["keys"],
+        serde_json::json!(["lastModified", "lastModifiedDate", "narHash", "outPath"])
+    );
+    assert_eq!(value["payload"], "configured indirect attrset fetchTree");
+
+    fs::remove_dir_all(root).expect("fetchTree indirect attrset temp directory removes");
+    fs::remove_dir_all(store_dir).expect("fetchTree indirect attrset store directory removes");
+}
+
+#[test]
+fn fetch_tree_indirect_attrset_refs_include_rev_and_dir_in_resolution_key() {
+    let root = unique_temp_dir("fetch-tree-indirect-attrset-rev-dir");
+    fs::write(
+        root.join("payload.txt"),
+        b"configured indirect attrset rev dir",
+    )
+    .expect("payload fixture writes");
+    let store_dir = unique_temp_dir("fetch-tree-indirect-attrset-rev-dir-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let rev = "0000000000000000000000000000000000000000";
+    options.set_flake_ref_resolution(
+        format!("flake:nixpkgs/{rev}?dir=sub").into_bytes(),
+        format!("path:{}", path_source(&root)).into_bytes(),
+    );
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+            let x = builtins.fetchTree {{
+              type = "indirect";
+              id = "nixpkgs";
+              rev = "{rev}";
+              dir = "sub";
+            }};
+            in {{
+              keys = builtins.attrNames x;
+              payload = builtins.readFile "${{x.outPath}}/payload.txt";
+            }}
+            "#
+        ),
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("indirect attrset rev dir JSON parses");
+    assert_eq!(
+        value["keys"],
+        serde_json::json!(["lastModified", "lastModifiedDate", "narHash", "outPath"])
+    );
+    assert_eq!(value["payload"], "configured indirect attrset rev dir");
+
+    fs::remove_dir_all(root).expect("fetchTree indirect attrset rev dir temp directory removes");
+    fs::remove_dir_all(store_dir)
+        .expect("fetchTree indirect attrset rev dir store directory removes");
+}
+
+#[test]
+fn fetch_tree_indirect_attrsets_reject_unpreserved_metadata() {
+    let error = eval_whnf_owned(&lower(
+        r#"
+        builtins.fetchTree {
+          type = "indirect";
+          id = "nixpkgs";
+          narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        }
+        "#,
+    ))
+    .expect_err("indirect attrset narHash is not silently ignored");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::UnsupportedFetchTreeAttr { attr, .. }
+            if attr.as_slice() == b"narHash"
+    ));
+}
+
+#[test]
 fn fetch_tree_rejects_configured_indirect_ref_resolution_cycles() {
     let mut options = TreeWalkOptions::new();
     options.set_flake_ref_resolution(b"flake:nixpkgs".to_vec(), b"flake:aos".to_vec());

@@ -662,10 +662,10 @@ eval (network access is disabled unless explicitly allowed).
         URLs with canonical flake-ref restricted-mode gating. The native subset
         is covered by focused `fetchTree` tests for local inputs, string refs,
         git metadata, forge archive lowering, configured GitHub/GitLab/SourceHut
-        resolution, configured indirect ref resolution to supported native
-        targets, configured forge `dir` rerooting, lock gates, and direct
-        path/tarball/git/configured-forge attrset lock-metadata mismatch
-        rejection, and invalid-shape rejection.
+        resolution, configured indirect string/attrset ref resolution to
+        supported native targets, configured forge `dir` rerooting, lock gates,
+        and direct path/tarball/git/configured-forge attrset lock-metadata
+        mismatch rejection, and invalid-shape rejection.
 - [ ] Full `fetchTree` flake fetcher remains — ambient registry lookup,
       non-exact indirect/ref merge semantics, live provider ref-resolution
       parity beyond the configured-response forge canaries, remaining
@@ -1003,12 +1003,13 @@ requires them:
       path/file/tarball/git inputs are native; rev-pinned forge archive lowering
       is native; configured GitHub/GitLab ref-resolution test hooks and
       SourceHut `/HEAD` plus `info/refs` ref-resolution hooks are covered;
-      configured indirect refs can resolve exactly to supported native target
-      refs; configured forge `dir` rerooting is covered; bare absolute path
-      strings are rejected for parity. Full `fetchTree` remains open in §11 and
-      the next row.
+      configured indirect string refs and exact indirect attrsets can resolve
+      exactly to supported native target refs; configured forge `dir` rerooting
+      is covered; bare absolute path strings are rejected for parity. Full
+      `fetchTree` remains open in §11 and the next row.
 - [ ] Full `fetchTree` flake layer remains scoped/open for ambient registry
-      lookup, non-exact indirect/ref merge semantics, live provider resolution
+      lookup, non-exact indirect/ref merge semantics, indirect attrset lock
+      metadata beyond the exact configured subset, live provider resolution
       across forges, remaining live-provider forge `dir`/metadata parity,
       lock-file graph semantics, and full flakes integration.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix

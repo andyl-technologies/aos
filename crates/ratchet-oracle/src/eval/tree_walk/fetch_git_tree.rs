@@ -393,6 +393,7 @@ impl TreeWalk {
         let type_value = self.force_value(id, span, type_value)?;
         let input_type = self.context_free_string_bytes(id, span, type_value, "fetchTree")?;
         match input_type.as_slice() {
+            b"indirect" => self.fetch_tree_indirect_arguments(id, span, value),
             b"path" => self.fetch_tree_path_arguments(id, span, value),
             b"file" => self.fetch_tree_file_arguments(id, span, value),
             b"tarball" => self.fetch_tree_tarball_arguments(id, span, value),
@@ -409,6 +410,48 @@ impl TreeWalk {
                 span,
             )),
         }
+    }
+
+    fn fetch_tree_indirect_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[TYPE_ATTR, ID_ATTR, REF_ATTR, REV_ATTR, DIR_ATTR],
+        )?;
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(b"indirect".to_vec()),
+        );
+
+        let id_value = self.required_attr_value_by_name(id, value, ID_ATTR, span)?;
+        let id_value = self.force_value(id, span, id_value)?;
+        attrs.insert(
+            ID_ATTR.to_vec(),
+            FlakeRefAttrValue::String(self.context_free_string_bytes(
+                id,
+                span,
+                id_value,
+                "fetchTree",
+            )?),
+        );
+        if let Some(reference) = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)? {
+            attrs.insert(REF_ATTR.to_vec(), FlakeRefAttrValue::String(reference));
+        }
+        if let Some(rev) = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)? {
+            attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
+        }
+        if let Some(dir) = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)? {
+            attrs.insert(DIR_ATTR.to_vec(), FlakeRefAttrValue::String(dir));
+        }
+        let input = self.flake_ref_attrs_to_string(id, span, &attrs)?;
+        self.fetch_tree_flake_ref_arguments(id, span, &input, &attrs)
     }
 
     pub(super) fn fetch_tree_flake_ref_arguments(
