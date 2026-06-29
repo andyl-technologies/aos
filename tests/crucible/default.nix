@@ -587,6 +587,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerPlanLowering";
       taskIds = ["T-TRIG-16"];
     };
+    triggerVerdictComposition = import ./phase4-trigger-verdict-composition.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerVerdictComposition";
+      taskIds = ["T-TRIG-17"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

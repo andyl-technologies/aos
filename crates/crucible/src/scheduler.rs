@@ -19,12 +19,13 @@ use crate::trigger::{
     EventFirings, EventGraph, EventGraphState, LogLevel, ObservableEvent, ObservableEventPayload,
 };
 use crate::{
-    BackendError, BackendInput, Configuration, ContentHash, Decision, DecisionRecorder,
-    DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset, EventSequenceState, FaultId,
-    Icount, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
-    PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    AssertionId, BackendError, BackendInput, Configuration, ContentHash, Decision,
+    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EventKey, EventLogOffset,
+    EventSequenceState, FaultId, Icount, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
+    PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration,
+    SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
+    WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -277,10 +278,70 @@ pub struct TriggerActionState {
     pub savepoints: Vec<TriggerLabelRecord>,
     /// Fork requests raised by trigger actions.
     pub forks: Vec<TriggerLabelRecord>,
-    /// Most recent pass/fail verdict raised by a trigger action.
+    /// Latest pass verdict or first sticky fail verdict raised by a trigger action.
     pub verdict: Option<TriggerVerdict>,
+    /// Whether a trigger pass/fail action requested run termination.
+    pub termination_requested: bool,
     /// Observational diagnostics raised by trigger log actions.
     pub diagnostics: Vec<TriggerDiagnosticRecord>,
+}
+
+impl TriggerActionState {
+    /// Composes trigger pass/fail state with the final assertion-layer verdict.
+    ///
+    /// Assertion failures and explicit trigger failures both fail the run. An
+    /// explicit trigger pass is retained only when the assertion layer passed and
+    /// no trigger failure fired.
+    #[must_use]
+    pub fn compose_run_verdict(&self, assertions: AssertionRunVerdict) -> ComposedRunVerdict {
+        let mut assertion_failures = assertions.failures().to_vec();
+        assertion_failures.sort();
+        let mut failures = assertion_failures
+            .into_iter()
+            .map(ComposedRunVerdictFailure::Assertion)
+            .collect::<Vec<_>>();
+        if let Some(trigger) = self
+            .verdict
+            .as_ref()
+            .filter(|verdict| verdict.failed_reason.is_some())
+        {
+            failures.push(ComposedRunVerdictFailure::Trigger(trigger.clone()));
+        }
+        if failures.is_empty() {
+            ComposedRunVerdict::Passed {
+                trigger: self.verdict.clone(),
+            }
+        } else {
+            ComposedRunVerdict::Failed { failures }
+        }
+    }
+
+    /// Composes a run verdict by replaying trigger verdict actions from event-log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when any supplied event-log
+    /// entry has a content hash that does not match its canonical material.
+    pub fn compose_run_verdict_from_event_log(
+        entries: &[SchedulerEventLogEntry],
+        assertions: AssertionRunVerdict,
+    ) -> Result<ComposedRunVerdict, SchedulerError> {
+        let mut state = Self::default();
+        for entry in entries {
+            if !entry.has_valid_content_hash() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "event-log entry {} has invalid content hash during trigger verdict replay",
+                        entry.sequence()
+                    ),
+                });
+            }
+            if let SchedulerEventLogPayload::TriggerActionApplied(application) = entry.payload() {
+                apply_trigger_verdict_effect(&mut state, application);
+            }
+        }
+        Ok(state.compose_run_verdict(assertions))
+    }
 }
 
 /// One deterministic non-group trigger action application.
@@ -330,6 +391,124 @@ pub struct TriggerVerdict {
     pub at: VirtualTime,
     /// Failure reason when this is a fail verdict; absent for pass.
     pub failed_reason: Option<String>,
+}
+
+/// Final assertion-layer verdict supplied to trigger verdict composition.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AssertionRunVerdict {
+    /// The assertion layer finalized without failing properties.
+    Passed,
+    /// One or more assertion properties failed.
+    Failed {
+        /// Assertion failures supplied by the assertion layer.
+        ///
+        /// [`Self::failed`] sorts this list when constructing the verdict, and
+        /// final run-verdict composition normalizes it before emitting failure
+        /// causes.
+        failures: Vec<AssertionVerdictFailure>,
+    },
+}
+
+impl AssertionRunVerdict {
+    /// Builds a passed assertion verdict.
+    #[must_use]
+    pub const fn passed() -> Self {
+        Self::Passed
+    }
+
+    /// Builds a failed assertion verdict with deterministic failure ordering.
+    ///
+    /// Empty failure lists normalize to [`Self::Passed`].
+    #[must_use]
+    pub fn failed(mut failures: Vec<AssertionVerdictFailure>) -> Self {
+        if failures.is_empty() {
+            return Self::Passed;
+        }
+        failures.sort();
+        Self::Failed { failures }
+    }
+
+    /// Returns true when the assertion layer failed the run.
+    #[must_use]
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+
+    /// Returns the assertion failures stored in this verdict.
+    ///
+    /// Use [`Self::failed`] or final run-verdict composition when deterministic
+    /// failure ordering is required.
+    #[must_use]
+    pub fn failures(&self) -> &[AssertionVerdictFailure] {
+        match self {
+            Self::Passed => &[],
+            Self::Failed { failures } => failures,
+        }
+    }
+}
+
+/// One assertion failure participating in final run-verdict composition.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AssertionVerdictFailure {
+    /// Assertion that failed.
+    pub assertion: AssertionId,
+    /// Deterministic virtual time where the failure was observed.
+    pub at: VirtualTime,
+    /// Stable failure detail from the assertion layer.
+    pub reason: String,
+}
+
+impl AssertionVerdictFailure {
+    /// Builds an assertion-failure record.
+    #[must_use]
+    pub fn new(assertion: AssertionId, at: VirtualTime, reason: impl Into<String>) -> Self {
+        Self {
+            assertion,
+            at,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Final run verdict after composing trigger and assertion outcomes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ComposedRunVerdict {
+    /// No trigger or assertion failure occurred.
+    Passed {
+        /// Optional explicit trigger pass request.
+        trigger: Option<TriggerVerdict>,
+    },
+    /// At least one trigger or assertion failure occurred.
+    Failed {
+        /// Deterministically ordered failure causes.
+        failures: Vec<ComposedRunVerdictFailure>,
+    },
+}
+
+impl ComposedRunVerdict {
+    /// Returns true when the composed verdict failed the run.
+    #[must_use]
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+
+    /// Returns the composed failure causes.
+    #[must_use]
+    pub fn failures(&self) -> &[ComposedRunVerdictFailure] {
+        match self {
+            Self::Passed { .. } => &[],
+            Self::Failed { failures } => failures,
+        }
+    }
+}
+
+/// One failure cause in the composed run verdict.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ComposedRunVerdictFailure {
+    /// Failure from the assertion layer.
+    Assertion(AssertionVerdictFailure),
+    /// Failure from an explicit trigger `Fail` action.
+    Trigger(TriggerVerdict),
 }
 
 /// One observational diagnostic emitted by a trigger log action.
@@ -3648,20 +3827,10 @@ fn apply_trigger_effect(
             });
         }
         Action::Pass => {
-            state.verdict = Some(TriggerVerdict {
-                sequence: application.sequence,
-                event: application.event.clone(),
-                at: application.at,
-                failed_reason: None,
-            });
+            apply_trigger_verdict_effect(state, application);
         }
-        Action::Fail { reason } => {
-            state.verdict = Some(TriggerVerdict {
-                sequence: application.sequence,
-                event: application.event.clone(),
-                at: application.at,
-                failed_reason: Some(reason.clone()),
-            });
+        Action::Fail { .. } => {
+            apply_trigger_verdict_effect(state, application);
         }
         Action::Log { level, message } => {
             state.diagnostics.push(TriggerDiagnosticRecord {
@@ -3679,6 +3848,43 @@ fn apply_trigger_effect(
         }
     }
     Ok(())
+}
+
+fn apply_trigger_verdict_effect(
+    state: &mut TriggerActionState,
+    application: &TriggerActionApplication,
+) {
+    match &application.action {
+        Action::Pass => {
+            state.termination_requested = true;
+            if !matches!(
+                state.verdict.as_ref(),
+                Some(verdict) if verdict.failed_reason.is_some()
+            ) {
+                state.verdict = Some(TriggerVerdict {
+                    sequence: application.sequence,
+                    event: application.event.clone(),
+                    at: application.at,
+                    failed_reason: None,
+                });
+            }
+        }
+        Action::Fail { reason } => {
+            state.termination_requested = true;
+            if !matches!(
+                state.verdict.as_ref(),
+                Some(verdict) if verdict.failed_reason.is_some()
+            ) {
+                state.verdict = Some(TriggerVerdict {
+                    sequence: application.sequence,
+                    event: application.event.clone(),
+                    at: application.at,
+                    failed_reason: Some(reason.clone()),
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 fn validate_trigger_node_schedule_target(
