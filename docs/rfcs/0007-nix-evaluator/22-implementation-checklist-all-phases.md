@@ -1155,6 +1155,25 @@ alone (`M-1`/`Q-A`).
       modulo-hash shortcuts, and full derivationStrict-node SHA-256/store-path
       early cutoff remain open
       (`S-14`/`S-15`).
+- [x] Current native file-closure derivation side-record parity canary:
+      `native_file_cache_parity_harness_covers_derivation_side_record_reuse`
+      drives a three-derivation static input closure through the public
+      `NixNative` file-closure path with eval cache disabled, cache-on
+      miss/write, fresh cache-on reuse, fresh persistent-hit reuse, and
+      cache-disabled-over-populated-persistent-root legs. It requires
+      byte-identical `.drv` closures, proves the miss/write leg performs normal
+      derivation hash and final text-path work without side-record reuse, proves
+      the fresh cache-on and persistent-hit legs reuse exactly three
+      static-output side records and three final ATerm path side records while
+      performing zero derivation hash and final text-path calculations, and
+      proves the cache-disabled leg reports no side-record reuse while leaving
+      the populated persistent root unchanged.
+      This is a public native API canary for the existing exact static
+      side-record path only; dynamic dependency capture beyond hashable lexical
+      captures, dirty-frontier scheduling, stale side-record recomputation
+      through native source edits, broader modulo-hash shortcuts, full AOS
+      package-set closure parity, and full derivationStrict-node
+      SHA-256/store-path early cutoff remain open (`S-14`/`S-15`).
 - [x] Current dirty derivation side-record revalidation canary:
       tree-walk tests dirty both the static-output side-record node and final
       ATerm path side-record node after a successful observation, then
@@ -3945,6 +3964,20 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       symbol-sorted slots. Global/shared symbol ranks, runtime shape/HAMT use,
       `derivationStrict` shape-order consumption, and full order-parity harness
       proof remain open.
+- [x] Current native derivationStrict quoted/non-ASCII ordering canary:
+      `native_instantiation_expr_orders_quoted_non_ascii_derivation_env_attrs`
+      instantiates a static derivation whose environment mixes ordinary keys
+      with a quoted `é` key and asserts the emitted root ATerm environment
+      tuples appear in raw-byte lexicographic order (`aardvark`, `builder`,
+      `name`, `out`, `system`, `zz`, then `é`). The env-gated
+      `configured_cpp_nix_native_drv_closure_bytes_match_cli` oracle test
+      includes the same shape and, when `AOS_NIX_ORACLE` is configured, compares
+      the native `.drv` root path and recorded ATerm bytes against C++ Nix
+      materialization. This is a focused current flat/native derivationStrict
+      canary only; global/shared symbol ranks, future shaped/HAMT evaluator
+      representations, active cached-order consumption by those representations,
+      full conformance 20-21, and full AOS closure ordering parity remain open
+      (`S-13`).
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       generic/shaped/HAMT select-cache terminal-state histograms and lookup
