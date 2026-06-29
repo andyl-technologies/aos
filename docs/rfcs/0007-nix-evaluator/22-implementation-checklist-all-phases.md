@@ -1372,6 +1372,17 @@ alone (`M-1`/`Q-A`).
       value hashes, or demand-graph value-hash production. Gates: evaluator heap
       value-hash cache tests and materialized capture payload-extraction cache
       tests.
+- [x] Current heap value-hash insertion-contract precursor:
+      `EvalHeap::cache_value_hash` now accepts only the first canonical
+      `ValueHash` for a heap record or the same hash again, returning an
+      explicit inserted/already-present status and rejecting mismatched hashes
+      without mutating the record. Tree-walk payload extraction still
+      field-checks before writes and warns without overwrite on mismatch. This
+      hardens current-run heap value-hash storage only; it is not generic
+      post-force immutable-value hash-consing, persisted heap hashes,
+      demand-graph value-hash production, or full O(1) equality. Gates:
+      evaluator heap mismatch tests and materialized payload stale-hash
+      preservation tests.
 - [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
       values: generic post-force interning for composite values, O(1) equality,
       cached value hashes that make value-hashing a field load, and integration

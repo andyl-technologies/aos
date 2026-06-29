@@ -331,20 +331,36 @@ impl EvalHeap {
 
     /// Stores the canonical value hash for a reusable heap value.
     ///
+    /// Repeated writes of the same hash are accepted, but a different hash for
+    /// the same immutable heap record is rejected and leaves the cached hash
+    /// unchanged.
+    ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError::Value`] if `value` is not a string, path, list,
     /// or attrset. Returns [`EvalHeapError::UnknownPointer`] if the heap handle
     /// does not belong to this heap. Returns
     /// [`EvalHeapError::RecordTypeMismatch`] if the handle belongs to this heap
-    /// but references a different typed record.
+    /// but references a different typed record. Returns
+    /// [`EvalHeapError::ValueHashMismatch`] if the record already carries a
+    /// different canonical value hash.
     pub(crate) fn cache_value_hash(
         &self,
         value: Value,
         hash: ValueHash,
-    ) -> Result<(), EvalHeapError> {
-        self.record_for_value(value)?.value_hash.set(Some(hash));
-        Ok(())
+    ) -> Result<HeapValueHashCacheUpdate, EvalHeapError> {
+        let record = self.record_for_value(value)?;
+        match record.value_hash.get() {
+            Some(existing) if existing == hash => Ok(HeapValueHashCacheUpdate::AlreadyPresent),
+            Some(existing) => Err(EvalHeapError::ValueHashMismatch {
+                existing,
+                attempted: hash,
+            }),
+            None => {
+                record.value_hash.set(Some(hash));
+                Ok(HeapValueHashCacheUpdate::Inserted)
+            }
+        }
     }
 
     /// Returns the cached force-capture value hash for a reusable heap value.

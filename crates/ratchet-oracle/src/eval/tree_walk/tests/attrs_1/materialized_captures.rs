@@ -833,18 +833,22 @@ fn replayable_payload_extraction_caches_heap_value_hashes() {
         );
     }
 
+    let stale_path = evaluator
+        .heap
+        .alloc_path(NixString::from_bytes(b"/tmp/stale".to_vec()))
+        .expect("stale path allocates");
     let stale_hash = crate::cache::ValueHash::from_context_free_string_bytes(b"stale");
     evaluator
         .heap()
-        .cache_value_hash(path, stale_hash)
+        .cache_value_hash(stale_path, stale_hash)
         .expect("stale test hash stores");
     let _payload = evaluator
-        .force_cache_payload_for_value(path)
+        .force_cache_payload_for_value(stale_path)
         .expect("payload extraction succeeds");
     assert_eq!(
         evaluator
             .heap()
-            .cached_value_hash(path)
+            .cached_value_hash(stale_path)
             .expect("heap record exists"),
         Some(stale_hash),
         "a recomputed mismatch must not silently overwrite an existing heap value hash"

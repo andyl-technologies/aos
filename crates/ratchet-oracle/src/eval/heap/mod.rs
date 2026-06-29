@@ -175,6 +175,15 @@ struct HeapRecord {
     object: HeapObjectValue,
 }
 
+/// The result of writing a canonical value hash onto a heap record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HeapValueHashCacheUpdate {
+    /// The record had no cached hash and now stores the supplied hash.
+    Inserted,
+    /// The record already stored the same hash.
+    AlreadyPresent,
+}
+
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),
@@ -244,6 +253,14 @@ pub enum EvalHeapError {
         actual: ValueTag,
         /// The pointer address shared by the runtime value and heap record.
         address: usize,
+    },
+    /// A heap record already carries a different canonical value hash.
+    #[error("heap value hash mismatch: existing {existing:?}, attempted {attempted:?}")]
+    ValueHashMismatch {
+        /// The hash already cached on the heap record.
+        existing: ValueHash,
+        /// The hash the caller attempted to cache.
+        attempted: ValueHash,
     },
 }
 

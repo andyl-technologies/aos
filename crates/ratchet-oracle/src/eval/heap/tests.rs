@@ -155,12 +155,60 @@ fn hash_consed_heap_records_share_cached_value_hashes() {
     assert_eq!(heap.cached_value_hash(first), Ok(None));
     assert_eq!(heap.cached_value_hash(second), Ok(None));
 
-    heap.cache_value_hash(first, hash)
-        .expect("value hash caches");
+    assert_eq!(
+        heap.cache_value_hash(first, hash)
+            .expect("value hash caches"),
+        HeapValueHashCacheUpdate::Inserted
+    );
 
     assert_eq!(heap.cached_value_hash(first), Ok(Some(hash)));
     assert_eq!(heap.cached_value_hash(second), Ok(Some(hash)));
     assert_eq!(heap.cached_value_hash(list), Ok(None));
+
+    assert_eq!(
+        heap.cache_value_hash(second, hash)
+            .expect("alias accepts same value hash"),
+        HeapValueHashCacheUpdate::AlreadyPresent
+    );
+    let other_hash = ValueHash::from_context_free_string_bytes(b"other");
+    assert_eq!(
+        heap.cache_value_hash(second, other_hash),
+        Err(EvalHeapError::ValueHashMismatch {
+            existing: hash,
+            attempted: other_hash,
+        })
+    );
+    assert_eq!(heap.cached_value_hash(first), Ok(Some(hash)));
+    assert_eq!(heap.cached_value_hash(second), Ok(Some(hash)));
+}
+
+#[test]
+fn cached_value_hashes_reject_mismatched_rewrites() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let value = heap
+        .alloc_string(NixString::from_bytes(b"value".to_vec()))
+        .expect("string allocates");
+    let first_hash = ValueHash::from_context_free_string_bytes(b"value");
+    let second_hash = ValueHash::from_context_free_string_bytes(b"other");
+
+    assert_eq!(
+        heap.cache_value_hash(value, first_hash)
+            .expect("first hash caches"),
+        HeapValueHashCacheUpdate::Inserted
+    );
+    assert_eq!(
+        heap.cache_value_hash(value, first_hash)
+            .expect("same hash is accepted"),
+        HeapValueHashCacheUpdate::AlreadyPresent
+    );
+    assert_eq!(
+        heap.cache_value_hash(value, second_hash),
+        Err(EvalHeapError::ValueHashMismatch {
+            existing: first_hash,
+            attempted: second_hash,
+        })
+    );
+    assert_eq!(heap.cached_value_hash(value), Ok(Some(first_hash)));
 }
 
 #[test]
