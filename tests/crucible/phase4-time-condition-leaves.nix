@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "later memory predicate leaf remains open";
-        needle = "- [ ] **T-TRIG-6**";
+        label = "later assertion state leaf remains open";
+        needle = "- [ ] **T-TRIG-7**";
       }
       {
         label = "full timer action semantics remain open";

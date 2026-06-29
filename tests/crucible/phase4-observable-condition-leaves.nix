@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.observableConditionLeaves`";
       }
       {
-        label = "memory predicate remains open";
-        needle = "- [ ] **T-TRIG-6**";
+        label = "assertion state remains open";
+        needle = "- [ ] **T-TRIG-7**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -134,7 +134,7 @@
       }
       {
         label = "observable properties validate nodes";
-        needle = "Predicate::CoveragePoint { node, .. }\n        | Predicate::IoPattern { node, .. }\n        | Predicate::NodeState { node, .. }";
+        needle = "Predicate::CoveragePoint { node, .. }\n        | Predicate::MemoryPredicate { node, .. }\n        | Predicate::IoPattern { node, .. }\n        | Predicate::NodeState { node, .. }";
       }
       {
         label = "invalid regex property error";
