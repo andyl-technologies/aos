@@ -317,6 +317,124 @@ fn source_backed_forced_inline_thunks_hit_shared_eval_cache_without_body_eval() 
     assert_eq!(third.stats().thunk_cache_hits(), 1);
 }
 
+#[test]
+fn dirty_persistent_pure_force_cache_hit_counts_early_cutoff() {
+    let persist_root = unique_temp_dir("force-cache-persistent-pure-dirty-cutoff");
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options.set_persist_cache_root(&persist_root);
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "expr.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
+    assert_eq!(forced.as_int(), Ok(3));
+    drop(first);
+
+    let shared_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let prime_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    let mut prime = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        prime_options,
+        "expr.nix",
+        source,
+        shared_runtime.clone(),
+    );
+    let (primed, subject) = force_attr_a_with_force_cache_subject(&mut prime, &ir, a);
+    assert_eq!(primed.as_int(), Ok(3));
+    let identity = subject
+        .lookup_identity
+        .expect("source-backed pure attr has a lookup identity");
+    let owner_key =
+        DemandCacheKey::for_free_vars(identity, subject.free_var_value_hashes.iter().copied())
+            .expect("owner key builds");
+    {
+        let mut runtime = shared_runtime.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime
+                .invalidate_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied()
+                )
+                .expect("payload invalidates"),
+            Some(true)
+        );
+        assert!(
+            runtime
+                .lookup_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied()
+                )
+                .expect("payload lookup succeeds")
+                .is_none(),
+            "invalidated pure payload should no longer hit in memory"
+        );
+        let cache = runtime.cache().expect("cache is enabled");
+        let owner = cache
+            .graph()
+            .node_id_for_key(owner_key)
+            .expect("forced expression node remains");
+        assert!(
+            cache
+                .graph()
+                .node(owner)
+                .expect("owner node exists")
+                .value_hash()
+                .is_some(),
+            "invalidation should retain the prior same-value hash for reconsideration"
+        );
+        assert_eq!(
+            cache
+                .graph()
+                .node(owner)
+                .expect("owner node exists")
+                .freshness(),
+            crate::cache::NodeFreshness::Dirty
+        );
+    }
+    drop(prime);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "expr.nix",
+        source,
+        shared_runtime,
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_int(), Ok(3));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "persistent hit should replay without forcing the thunk body"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+    assert_eq!(
+        second.stats().early_cutoffs(),
+        1,
+        "empty-trace persistent hit runtime seeding should count same-hash dirty cutoff"
+    );
+    assert!(
+        second.impure_input_trace().is_empty(),
+        "pure persistent hit should use the empty verifying trace path"
+    );
+
+    fs::remove_dir_all(&persist_root).expect("persistent temp tree removed");
+}
+
 fn synthetic_selected_force_cache_subject(identity: CacheExprIdentity) -> ForceCacheSubject {
     ForceCacheSubject {
         lookup_identity: Some(identity),

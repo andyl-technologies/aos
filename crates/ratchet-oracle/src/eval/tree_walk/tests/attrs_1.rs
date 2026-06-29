@@ -277,7 +277,7 @@ fn force_attr_a_with_impure_observation_key(
     ir: &Ir,
     a: Symbol,
 ) -> (Value, DemandCacheKey) {
-    let (forced, subject) = force_attr_a_with_impure_observation_subject(evaluator, ir, a);
+    let (forced, subject) = force_attr_a_with_force_cache_subject(evaluator, ir, a);
     let key = DemandCacheKey::for_free_vars(
         subject
             .impure_observation_identity
@@ -289,6 +289,14 @@ fn force_attr_a_with_impure_observation_key(
 }
 
 fn force_attr_a_with_impure_observation_subject(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    a: Symbol,
+) -> (Value, ForceCacheSubject) {
+    force_attr_a_with_force_cache_subject(evaluator, ir, a)
+}
+
+fn force_attr_a_with_force_cache_subject(
     evaluator: &mut TreeWalk,
     ir: &Ir,
     a: Symbol,
