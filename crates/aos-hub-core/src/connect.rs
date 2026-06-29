@@ -244,6 +244,25 @@ async fn facade(
                 nested_dispatch(svc, headers, &slug, &path, query).await
             }
         }
+        // A `not_found("registry")` for a single-segment slug that is itself a
+        // real registry is a genuine miss (`404`); otherwise it is the
+        // nested-canonical case the `Ok(None)` arm also handles. `facade_fetch`
+        // reports `Err(NotFound)` rather than `Ok(None)` precisely when the
+        // requested machine path is suffix-classified (`*.narinfo`) at the
+        // org-level slug — e.g. `/andyl/main/<hash>.narinfo` splits to
+        // `slug = "andyl"`, `path = "main/<hash>.narinfo"`, whose `.narinfo`
+        // suffix makes `is_machine_path` true even though `andyl` names no
+        // registry. Root machine pointers (`info/refs`, `HEAD`, `nar/…`) are
+        // dir/exact-classified and so reach `Ok(None)` and the nested
+        // fallthrough already; this arm extends that same fallthrough to the
+        // suffix-classified paths so a nested registry's narinfos resolve too.
+        Err(err) if matches!(err, RpcError::NotFound(_)) => {
+            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
+                error_response(&err)
+            } else {
+                nested_dispatch(svc, headers, &slug, &path, query).await
+            }
+        }
         Err(err) => error_response(&err),
     }
 }
