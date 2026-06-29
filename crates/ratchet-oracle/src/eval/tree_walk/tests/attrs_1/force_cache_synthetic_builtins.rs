@@ -506,6 +506,80 @@ fn source_less_synthetic_builtin_attr_current_system_thunks_hit_with_matching_op
 }
 
 #[test]
+fn synthetic_builtin_attr_nix_path_thunks_hit_and_miss_by_search_path_salt() {
+    let root = unique_temp_dir("force-cache-synthetic-nix-path");
+    let first_root = root.join("first");
+    let second_root = root.join("second");
+    fs::create_dir_all(&first_root).expect("first search root exists");
+    fs::create_dir_all(&second_root).expect("second search root exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let first_root = root.join("first");
+    let second_root = root.join("second");
+    let source = "let b = builtins; in { a = b.nixPath; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("first nixPath entry configures");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options.clone(),
+        "synthetic-nix-path.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_single_nix_path_entry(&first, forced, b"pkg", &path_bytes(&first_root));
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-nix-path.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut second, &ir, a);
+    assert_single_nix_path_entry(&second, forced, b"pkg", &path_bytes(&first_root));
+    assert_eq!(
+        second.stats().cache_hits(),
+        1,
+        "matching nixPath option salt should permit a synthetic list payload hit"
+    );
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&second_root))
+        .expect("changed nixPath entry configures");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-nix-path.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_single_nix_path_entry(&changed, forced, b"pkg", &path_bytes(&second_root));
+    assert_eq!(
+        changed.stats().cache_hits(),
+        0,
+        "different nixPath option salts must not share one synthetic payload"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "changed nixPath options must allocate separate synthetic builtin nodes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn synthetic_builtin_attr_store_dir_thunks_hit_and_miss_by_store_dir_salt() {
     let root = unique_temp_dir("force-cache-synthetic-store-dir");
     let first_store = root.join("store-a");
@@ -793,4 +867,38 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
             .is_none(),
         "uncacheable currentTime observation should invalidate the stale payload"
     );
+}
+
+fn assert_single_nix_path_entry(evaluator: &TreeWalk, value: Value, prefix: &[u8], path: &[u8]) {
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("nixPath result is a list");
+    assert_eq!(list.len(), 1);
+    let entry = list.get(0).expect("nixPath has one entry");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(entry)
+        .expect("nixPath entry is an attrset");
+    let mut actual_prefix = None;
+    let mut actual_path = None;
+    for entry in attrs.iter_source_order() {
+        let name = evaluator
+            .symbols
+            .resolve(entry.key)
+            .expect("nixPath entry key resolves");
+        let value = evaluator
+            .heap()
+            .get_string(entry.value)
+            .expect("nixPath entry value is a string")
+            .bytes()
+            .to_vec();
+        match name {
+            b"prefix" => actual_prefix = Some(value),
+            b"path" => actual_path = Some(value),
+            _ => {}
+        }
+    }
+    assert_eq!(actual_prefix.as_deref(), Some(prefix));
+    assert_eq!(actual_path.as_deref(), Some(path));
 }

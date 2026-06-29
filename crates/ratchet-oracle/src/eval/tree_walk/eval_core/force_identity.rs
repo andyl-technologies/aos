@@ -588,6 +588,7 @@ impl TreeWalk {
                 | BuiltinExecution::StoreDirValue
                 | BuiltinExecution::NixVersionValue
                 | BuiltinExecution::LangVersionValue
+                | BuiltinExecution::NixPathValue
         )
     }
 
@@ -610,6 +611,7 @@ impl TreeWalk {
             BuiltinExecution::StoreDirValue => Some(b"store-dir"),
             BuiltinExecution::NixVersionValue => Some(b"nix-version"),
             BuiltinExecution::LangVersionValue => Some(b"lang-version"),
+            BuiltinExecution::NixPathValue => Some(b"nix-path"),
             _ => None,
         }
     }
@@ -648,7 +650,7 @@ impl TreeWalk {
             return false;
         };
         match ir.symbols.resolve(symbol) {
-            Some(b"findFile") => Self::primop_find_file_has_explicit_search_path_list(ir, node),
+            Some(b"findFile") => Self::primop_find_file_has_cacheable_search_path_arg(ir, node),
             Some(
                 b"import" | b"getEnv" | b"hashFile" | b"pathExists" | b"readDir" | b"readFile"
                 | b"readFileType",
@@ -657,7 +659,7 @@ impl TreeWalk {
         }
     }
 
-    fn primop_find_file_has_explicit_search_path_list(ir: &Ir, node: &IrNode) -> bool {
+    fn primop_find_file_has_cacheable_search_path_arg(ir: &Ir, node: &IrNode) -> bool {
         let IrData::PrimOp { args, .. } = node.data else {
             return false;
         };
@@ -667,9 +669,15 @@ impl TreeWalk {
         let Some(first_arg) = args.first() else {
             return false;
         };
-        ir.arena
-            .node(*first_arg)
-            .is_some_and(|arg| arg.kind == IrKind::List)
+        let Some(first_arg) = ir.arena.node(*first_arg) else {
+            return false;
+        };
+        first_arg.kind == IrKind::List || Self::node_is_builtin_nix_path_attr(ir, first_arg)
+    }
+
+    fn node_is_builtin_nix_path_attr(ir: &Ir, node: &IrNode) -> bool {
+        node.kind == IrKind::BuiltinAttr
+            && Self::builtin_attr_execution(ir, node) == Some(BuiltinExecution::NixPathValue)
     }
 
     fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
