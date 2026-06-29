@@ -3428,9 +3428,13 @@ alone (`M-1`/`Q-A`).
       `search_path_literal_thunks_do_not_replay_across_allowed_path_policy`
       proves a restricted-mode direct `<...>` payload rehydrates in a
       same-policy fresh runtime but is not replayed when the same search path is
-      denied. This is scoped to force-cache identity and direct search-path
-      policy replay, not first-class/curried `findFile`, fetch interactions, or
-      the persistent demand graph (`R-10`/`S-14`).
+      denied. First-class `findFile builtins.nixPath` and closed/replayable
+      explicit-list `findFile` child-call policy canaries now prove same-policy
+      fresh-runtime replay and denied-policy miss/error behavior for those
+      admitted child-call slices. This is scoped to force-cache identity, direct
+      search-path policy replay, and the admitted first-class `findFile`
+      child-call slices, not fetch interactions or the persistent demand graph
+      (`R-10`/`S-14`).
 - [x] Current precursor: first-class `findFile builtins.nixPath` child-call
       admission. Saturated first-class `findFile` calls whose first argument is
       the suspended synthetic `builtins.nixPath` attr now hash that argument
@@ -3439,9 +3443,8 @@ alone (`M-1`/`Q-A`).
       fresh-runtime persistent child-call hits, and miss when the configured
       `nix_path` changes. This is scoped to the `builtins.nixPath` child-call
       replay slice only; the enclosing thunk still evaluates unless separately
-      admitted, and first-class allowed-path policy coverage, fetch
-      interactions, and broad search-path edge-exactness remain open
-      (`R-10`/`S-14`).
+      admitted, and fetch interactions and broad search-path edge-exactness
+      remain open (`R-10`/`S-14`).
 - [x] Current precursor: first-class explicit-list `findFile` child-call
       admission. Saturated first-class `findFile` calls whose first argument is
       a closed/replayable explicit search-path list now fall back from the
@@ -3452,8 +3455,8 @@ alone (`M-1`/`Q-A`).
       closed/replayable explicit-list child-call replay only; the enclosing
       thunk still evaluates unless separately admitted, captured/non-replayable
       explicit-list entries are still rejected by the child-call key, and
-      first-class allowed-path policy coverage, fetch interactions, and broad
-      search-path edge-exactness remain open (`R-10`/`S-14`).
+      fetch interactions and broad search-path edge-exactness remain open
+      (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
