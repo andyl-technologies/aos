@@ -3348,7 +3348,11 @@ alone (`M-1`/`Q-A`).
       `getEnv` plus a two-leaf `pathExists (readFile ./target)` trace;
       `nested_multi_input_builtins_record_exact_force_cache_graph_edges` covers
       a composed three-leaf `readFile`-fed `pathExists` plus a second
-      `pathExists` trace; and
+      `pathExists` trace;
+      `nested_multi_input_payload_hits_persistent_cache_and_records_exact_edges`
+      verifies that the same composed trace persists under the attr-thunk
+      metadata key and rehydrates into a fresh runtime graph with the exact
+      replayed leaves; and
       `import_backed_inline_thunks_record_exact_force_cache_graph_edges` covers
       canonical plain-file `import`;
       `find_file_forced_inline_thunks_revalidate_candidate_edges_before_hits`
