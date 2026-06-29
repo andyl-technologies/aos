@@ -1600,63 +1600,50 @@ in {
         resume_reg="$data/apm/registries/host-resume"
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
-        resume_hash="dddddddddddddddddddddddddddddddd"
-        mkdir -p "$resume_reg/packages/h" "$resume_reg/store/$(printf %.2s "$resume_hash")"
-        printf '%s\n' \
-          '[package]' \
-          'name = "hostresume"' \
-          'description = "Host release resume fixture"' \
-          'license = "MIT"' \
-          'maintainer = "host@example.invalid"' \
-          "" \
-          '[[versions]]' \
-          'version = "1.0.0"' \
-          "" \
-          '[versions.platforms.x86_64-linux]' \
-          "store_path = \"/nix/store/$resume_hash-hostresume-1.0.0\"" \
-          'nar_hash = "sha256-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="' \
-          'nar_size = 1234' \
-          'closure_size = 1234' \
-          'source_drv = ""' \
-          'source_nar_hash = ""' \
-          'references = []' \
-          > "$resume_reg/packages/h/hostresume.toml"
-        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$resume_reg/store/$(printf %.2s "$resume_hash")/$resume_hash"
-        git -C "$resume_reg" add -A
-        run_clean git -C "$resume_reg" commit -m "release: hostresume 1.0.0" \
-          > "$work/git-commit-host-resume.out" 2>&1
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
-        if run_clean ${self}/bin/apr --json release 1.0.0 \
+        # The release pipeline now generates and uploads the static cache
+        # before creating the signed tag, so a partially-interrupted release
+        # can no longer be simulated with a missing store path. Instead drive
+        # the resume contract directly: a completed release creates a signed
+        # tag + release pack; re-releasing the same version must refuse unless
+        # --resume is given, and --resume reuses the existing tag/pack.
+        run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
+          --store-path "${pkgs.jq}" \
+          --name hostresume \
+          --description "Host release resume fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
           --key "$work/resume-release-key" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
           --upload-url "file://$work/resume-upload" \
-          > "$work/apr-release-host-resume-interrupted.json" 2>&1; then
-          cat "$work/apr-release-host-resume-interrupted.json"
-          exit 1
-        fi
-        ${pkgs.jq}/bin/jq -e \
-          '.error
-            | contains("nix-store -qR failed")
-            and contains("hostresume-1.0.0")
-            and contains("not in the Nix store")' \
-          "$work/apr-release-host-resume-interrupted.json" >/dev/null
+          > "$work/apr-release-host-resume-initial.json"
+        ${pkgs.jq}/bin/jq -e '.status == "released" and .version == "1.0.0"' \
+          "$work/apr-release-host-resume-initial.json" >/dev/null
         git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
           > "$work/apr-release-host-resume-tag.out"
         resume_pack_dir="$resume_reg/.git/releases/1/0/0/objects/pack"
         test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         if run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
+          --store-path "${pkgs.jq}" \
+          --name hostresume \
           --key "$work/resume-release-key" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          --upload-url "file://$work/resume-upload" \
           > "$work/apr-release-host-resume-without-flag.json" 2>&1; then
           cat "$work/apr-release-host-resume-without-flag.json"
           exit 1
         fi
-        grep -q "pass --resume to reuse it" \
+        grep -q "already exists" \
           "$work/apr-release-host-resume-without-flag.json"
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
+          --store-path "${pkgs.jq}" \
+          --name hostresume \
           --key "$work/resume-release-key" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          --upload-url "file://$work/resume-upload" \
           --resume > "$work/apr-release-host-resume-after-interrupt.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "release"
@@ -1664,10 +1651,7 @@ in {
             and .registry == "host-resume"
             and .version == "1.0.0"
             and .resume == true
-            and .cache == null
-            and .cache_pointer_updated == false
-            and (.full_pack | startswith("pack-") and endswith(".pack"))
-            and .deltas == []' \
+            and (.full_pack | startswith("pack-") and endswith(".pack"))' \
           "$work/apr-release-host-resume-after-interrupt.json" >/dev/null
         test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         assert_no_profile
