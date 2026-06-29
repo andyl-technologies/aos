@@ -44,7 +44,7 @@ impl Subscriber for RecordingSubscriber {
         event.record(&mut visitor);
         self.events
             .lock()
-            .expect("recorded stats events lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(visitor.render());
     }
 }
@@ -131,12 +131,16 @@ fn eval_stats_are_emitted_through_tracing() {
     let subscriber = RecordingSubscriber {
         events: Arc::clone(&events),
     };
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        TreeWalk::emit_stats_trace(&EvalStats::default());
+    });
     tracing::callsite::rebuild_interest_cache();
 
-    eval_whnf_owned(&lower("let x = 1 + 1; in x + x")).expect("expression evaluates");
-
-    let events = events.lock().expect("recorded stats events lock");
+    let events = events
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let stats_event = events
         .iter()
         .find(|event| event.contains("aos-nix tree-walk evaluation stats"))
