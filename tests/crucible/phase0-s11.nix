@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  qemuPackage ? pkgs.qemu-crucible,
   accelerator ? "tcg,thread=single",
   cadence ? 100000000,
   requireGuestPass ? true,
@@ -239,7 +240,7 @@ in
       pkgs.gawk
       pkgs.grep
       pkgs.jq
-      pkgs.qemu-crucible
+      qemuPackage
       pkgs.crucible-qemu-trace-plugin
       pkgs.socat
     ];

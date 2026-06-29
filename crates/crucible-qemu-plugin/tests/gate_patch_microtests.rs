@@ -35,6 +35,7 @@ const EXPECTED_PATCHES: &[&str] = &[
     "0025-crucible-sim-idle-callbacks.patch",
     "0026-crucible-sim-shmem-dispatch.patch",
     "0027-crucible-sim-batch-tcg-exec.patch",
+    "0028-crucible-det-ipi.patch",
 ];
 
 #[test]
@@ -67,6 +68,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &aggregate,
         "qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix",
     );
+    assert_contains(&aggregate, "qemuDetIpi = import ./phase2-qemu-det-ipi.nix");
     assert_contains(
         &aggregate,
         "qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix",
@@ -120,6 +122,28 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         "grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$'",
     );
     assert_contains(&aggregate, "qemu_rr_quantum_icount_gate_passed=true");
+    assert_contains(&aggregate, "cp \"${qemuDetIpi}/result\"");
+    assert_contains(
+        &aggregate,
+        "grep -q '^deterministic_ipi_rr_handoff=queued-drain-before-next-vcpu$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^deterministic_ipi_fixed_mode_trace=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^deterministic_ipi_init_mode_trace=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^deterministic_ipi_sipi_mode_trace=true$'",
+    );
+    assert_contains(
+        &aggregate,
+        "grep -q '^deterministic_ipi_delivery_icount_trace_match=true$'",
+    );
+    assert_contains(&aggregate, "qemu_det_ipi_gate_passed=true");
     assert_contains(
         &aggregate,
         "grep -q '^regenerated_patch_bytes_match_committed=true$'",
@@ -172,6 +196,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
     assert_contains(&aggregate, "qemu_plugin_register_vcpu_idle_resume_cb");
     assert_contains(&aggregate, "qemu_plugin_register_sim_shmem_dispatch_cb");
+    assert_contains(&aggregate, "qemu_plugin_crucible_register_ipi_delivery_cb");
     assert_contains(&aggregate, "qemu_plugin_register_blk_cb");
     assert_contains(&aggregate, "qemu_plugin_register_9p_cb");
     assert_contains(&aggregate, "qemu_plugin_register_net_tx_cb");
@@ -179,6 +204,7 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
         &aggregate,
         "qemu_plugin_sim_correctness_exports_present=true",
     );
+    assert_contains(&aggregate, "qemu_plugin_det_ipi_exports_present=true");
     assert_contains(&aggregate, "qemu_inert_gate_wired=true");
     assert_contains(&aggregate, "qemu_inert_depends_on_patch_microtests=true");
     assert_contains(
@@ -237,6 +263,10 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &default_checks,
         "qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "qemuDetIpi = import ./phase2-qemu-det-ipi.nix",
     );
     assert_contains(
         &default_checks,
@@ -402,6 +432,38 @@ fn gate_patch_microtests_covers_carried_qemu_patch_series() -> Result<(), Box<dy
     assert_contains(
         &qemu_rr_quantum_icount,
         "patched_non_sim_rr_switch_trace_negative_control=red",
+    );
+
+    let qemu_det_ipi = fs::read_to_string(root.join("tests/crucible/phase2-qemu-det-ipi.nix"))?;
+    assert_contains(&qemu_det_ipi, "T-PATCH-22");
+    assert_contains(&qemu_det_ipi, "0028-crucible-det-ipi.patch");
+    assert_contains(&qemu_det_ipi, "crucible_sim_det_ipi_enqueue");
+    assert_contains(&qemu_det_ipi, "crucible_sim_det_ipi_drain_pending();");
+    assert_contains(&qemu_det_ipi, "icount_crucible_rr_switch_quantum() != 0");
+    assert_contains(
+        &qemu_det_ipi,
+        "qemu_plugin_crucible_maybe_fire_ipi_delivery_cb",
+    );
+    assert_contains(
+        &qemu_det_ipi,
+        "qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL)",
+    );
+    assert_contains(&qemu_det_ipi, "accelerator = \"sim\";");
+    assert_contains(&qemu_det_ipi, "stopAt = 32768;");
+    assert_contains(&qemu_det_ipi, "select(.kind == \"det_ipi\")");
+    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 0)");
+    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 5)");
+    assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 6)");
+    assert_contains(&qemu_det_ipi, "deterministic_ipi_fixed_mode_trace=true");
+    assert_contains(&qemu_det_ipi, "deterministic_ipi_init_mode_trace=true");
+    assert_contains(&qemu_det_ipi, "deterministic_ipi_sipi_mode_trace=true");
+    assert_contains(
+        &qemu_det_ipi,
+        "deterministic_ipi_delivery_icount_trace_match=true",
+    );
+    assert_contains(
+        &qemu_det_ipi,
+        "stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path",
     );
 
     let qemu_patch_regeneration =
@@ -627,6 +689,11 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             "tests/crucible/phase1-qemu-sim-batch-tcg-exec.c",
             "0027-crucible-sim-batch-tcg-exec.patch",
         ),
+        (
+            "tests/crucible/phase2-qemu-det-ipi.nix",
+            "",
+            "0028-crucible-det-ipi.patch",
+        ),
     ];
 
     for (nix_path, c_path, patch) in per_patch_checks {
@@ -673,6 +740,21 @@ fn per_patch_microtests_publish_required_evidence() -> Result<(), Box<dyn Error>
             );
             assert_contains(&nix_source, "sim_batch_tcg_exec_timer_between_slots=true");
             assert_contains(&nix_source, "sim_batch_tcg_exec_shmem_ceiling_guard=true");
+        } else if nix_path == "tests/crucible/phase2-qemu-det-ipi.nix" {
+            assert_contains(&nix_source, "patch=${patchName}");
+            assert_contains(&nix_source, patch);
+            assert_contains(
+                &nix_source,
+                "deterministic_ipi_rr_handoff=queued-drain-before-next-vcpu",
+            );
+            assert_contains(&nix_source, "deterministic_ipi_fixed_mode_trace=true");
+            assert_contains(&nix_source, "deterministic_ipi_init_mode_trace=true");
+            assert_contains(&nix_source, "deterministic_ipi_sipi_mode_trace=true");
+            assert_contains(
+                &nix_source,
+                "deterministic_ipi_delivery_icount_trace_match=true",
+            );
+            assert_contains(&nix_source, "deterministic_ipi_source_target_distinct=true");
         } else {
             assert_contains(&nix_source, &format!("patch={patch}"));
         }

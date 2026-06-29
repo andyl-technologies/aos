@@ -1439,10 +1439,18 @@ time-control primitives the whole design rests on.
     switch-boundary and per-vCPU icount-delta event traces across a jittered
     second run, and the aggregate gate consumes adaptive and configured-non-sim
     RR switch trace negative controls as red evidence.
-- [ ] **T-PATCH-22** Implement `crucible-det-ipi`: deterministic inter-vCPU
+- [x] **T-PATCH-22** Implement `crucible-det-ipi`: deterministic inter-vCPU
   IPI/SIPI/INIT delivery at a fixed node-icount via the round-robin event path,
   with a cross-run identical-delivery-icount micro-test on a multi-vCPU guest. —
   satisfies [PATCH-45]; spec §11.4.
+  - Completed by `0028-crucible-det-ipi.patch`,
+    `checks.crucible.phase2.qemuDetIpi`, and `gate:patch-microtests`: sim-mode
+    APIC inter-vCPU FIXED/INIT/SIPI deliveries are queued only when
+    `-accel sim`, precise icount, and a pinned `rr_switch_quantum` are active;
+    the round-robin handoff path drains the queue before the next vCPU runs;
+    non-sim, unpinned, and self-IPI paths fall through to upstream behavior; and
+    the trace plugin records `det_ipi` delivery rows while the multi-vCPU S11
+    fixture diffs fixed/INIT/SIPI delivery-icount traces across jittered runs.
 - [ ] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
   read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
   side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec

@@ -54,6 +54,7 @@ static uint64_t last_switch_per_vcpu_retired[MAX_TRACKED_VCPUS];
 static uint64_t last_rr_current_vcpu = UINT64_MAX;
 static uint64_t last_rr_cursor_position = UINT64_MAX;
 static uint64_t rr_switch_events;
+static uint64_t det_ipi_events;
 static bool rr_switch_trace_initialized;
 
 static uint64_t
@@ -424,6 +425,45 @@ record_rr_switch_event(void)
 }
 
 static void
+on_det_ipi_delivery(
+    uint64_t event_id,
+    uint64_t delivery_icount,
+    unsigned int src_vcpu,
+    unsigned int dst_vcpu,
+    unsigned int delivery_mode,
+    unsigned int vector,
+    void *userdata)
+{
+  (void)userdata;
+
+  det_ipi_events++;
+  if (trace_file == NULL || !extended_fingerprint) {
+    return;
+  }
+
+  fprintf(
+      trace_file,
+      "{\"kind\":\"det_ipi\""
+      ",\"det_ipi_event\":%" PRIu64
+      ",\"event_id\":%" PRIu64
+      ",\"retired\":%" PRIu64
+      ",\"delivery_icount\":%" PRIu64
+      ",\"src_vcpu\":%u"
+      ",\"dst_vcpu\":%u"
+      ",\"delivery_mode\":%u"
+      ",\"vector\":%u"
+      "}\n",
+      det_ipi_events,
+      event_id,
+      retired,
+      delivery_icount,
+      src_vcpu,
+      dst_vcpu,
+      delivery_mode,
+      vector);
+}
+
+static void
 on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void *userdata)
 {
   (void)userdata;
@@ -621,6 +661,7 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
 
   qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
   qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
+  qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }
