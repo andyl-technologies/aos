@@ -168,14 +168,17 @@ fn coverage_block_event_point_is_derived_from_execution_icount() {
 
 #[test]
 fn event_graph_fires_from_coverage_point_without_named_leaf_fallback() {
-    let graph = EventGraph::new(vec![Event::once(
-        crucible::EventId::from_name("pass-on-recovery-path"),
-        Some(Predicate::coverage_point(
-            node("server"),
-            CodePoint::symbol("recovery_entered"),
-        )),
-        Action::Pass,
-    )])
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            crucible::EventId::from_name("pass-on-recovery-path"),
+            Some(Predicate::coverage_point(
+                node("server"),
+                CodePoint::symbol("recovery_entered"),
+            )),
+            Action::Pass,
+        )],
+        &coverage_world(),
+    )
     .expect("coverage event graph should build");
     let mut state = EventGraphState::new();
     let events = vec![ObservableEvent::coverage_block(

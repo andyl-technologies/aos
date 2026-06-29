@@ -8,8 +8,9 @@ use crucible::ConditionLeafOracle;
 use crucible::{
     Action, Condition, ConditionEvaluationPass, ConditionLeaf, Event, EventEvaluationKind,
     EventFiring, EventGraph, EventGraphError, EventGraphState, EventId, FaultTag, FirePolicy,
-    LogLevel, MembershipFault, NodeId, PartitionDirection, RestartPolicy, SimDuration, TimerId,
-    VirtualTime,
+    Icount, LinkDef, LogLevel, MembershipFault, NodeId, NodeTemplate, PartitionDirection,
+    ReadyPoint, RestartPolicy, SimDuration, TimerId, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -20,6 +21,32 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: String::from(name),
     }
+}
+
+fn ready_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
+
+fn partition_world() -> World {
+    World::from_nodes_and_links(
+        vec![ready_node("db-0"), ready_node("db-1")],
+        vec![LinkDef::new(node("db-0"), node("db-1")).expect("test link should build")],
+    )
+    .expect("partition test world should build")
 }
 
 fn tag(name: &str) -> FaultTag {
@@ -85,11 +112,14 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
             message: String::from("pulse observed"),
         },
     );
-    let graph = EventGraph::new(vec![
-        bootstrap.clone(),
-        ready_injection.clone(),
-        pulse_log.clone(),
-    ])
+    let graph = EventGraph::new_for_world(
+        vec![
+            bootstrap.clone(),
+            ready_injection.clone(),
+            pulse_log.clone(),
+        ],
+        &partition_world(),
+    )
     .expect("unique event ids should build");
     let mut state = EventGraphState::new();
     let boundary = support::quantum_prefix(10).point();

@@ -577,6 +577,11 @@ in {
       attrPath = "checks.crucible.phase4.triggerRelativeTimers";
       taskIds = ["T-TRIG-14"];
     };
+    triggerGraphValidator = import ./phase4-trigger-graph-validator.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.triggerGraphValidator";
+      taskIds = ["T-TRIG-15"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

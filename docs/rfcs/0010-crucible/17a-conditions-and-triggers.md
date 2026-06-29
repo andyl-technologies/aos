@@ -1208,7 +1208,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   point, `Eventually` trigger/property reuse, compound predicate reuse in
   `Properties` and `EventGraph`, and rejects a separate trigger-only `Condition`
   enum. Specialized action validation, Plan lowering, verdict composition, and the
-  broader validator remain T-TRIG-15 through T-TRIG-20.
+  broader validator remain T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
@@ -1224,7 +1224,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   properties accept `At` as pure virtual-time vocabulary while rejecting
   edge-shaped `After` and `Timer` leaves as trigger-only. Full timer action
   application, the broader reference/cycle validator, and verdict composition
-  remain T-TRIG-15 through T-TRIG-20.
+  remain T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
@@ -1241,7 +1241,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   entries without using named predicates or guest-marker cooperation. Console
   regexes are validated during graph/property construction. Full RFC 19 event-log
   catalog integration, named-link topology validation, and the broader validator
-  remain T-OBS-* and T-TRIG-15 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;
@@ -1257,7 +1257,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prefix suppress later matches, and the path requires no named predicates or
   guest-marker cooperation. Full RFC 19 coverage-entry catalog integration,
   production symbol-table loading, coverage-guided search consumption, and the
-  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-15 through T-TRIG-20.
+  broader validator remain T-OBS-9, T-ADV-10, and T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-6** Implement `MemoryPredicate` over the QMP/plugin guest-memory
   read at a deterministic sample icount with a deterministic cadence; gate it on
   spike S5 and default to the conservative form until S5 resolves. — satisfies
@@ -1273,7 +1273,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   resolution metadata. The path requires no named predicates or guest-marker
   cooperation. Production QMP/plugin sample scheduling, author-declared stride
   cadence, RFC 19 memory-sample catalog integration, and the broader validator
-  remain T-OBS-* and T-TRIG-15 through T-TRIG-20.
+  remain T-OBS-* and T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-7** Implement `AssertionState` (Satisfied/Violated, closing the
   grading↔steering loop) and `Quiescent`, sourced from the causal
   `assertion_state_changed` entry and scheduler quiescence respectively. —
@@ -1290,7 +1290,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   validates assertion-state triggers through the declared assertion namespace.
   Both leaves require no named predicate, host timeout, or guest-marker
   cooperation. Specialized action validation, full validator reachability/cycle checks,
-  and production RFC 19 catalog integration remain T-TRIG-15 through T-TRIG-20
+  and production RFC 19 catalog integration remain T-TRIG-16 through T-TRIG-20
   and T-OBS-*.
 - [x] **T-TRIG-8** Implement the optional white-box `GuestMarker` leaf (doorbell
   marker, opt-in, additive, fingerprint-neutral) and prove the engine functions
@@ -1312,7 +1312,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   guest-marker support; and unrelated guest-marker events are additive to
   non-marker conditions. Specialized action validation, full validator
   reachability/cycle checks, and production RFC 19 catalog integration remain
-  T-TRIG-15 through T-TRIG-20 and T-OBS-*.
+  T-TRIG-16 through T-TRIG-20 and T-OBS-*.
 - [x] **T-TRIG-9** Implement the compound combinators `AllOf`, `AnyOf`,
   `Once` (latch), `Not`, nesting arbitrarily, with empty `AllOf`/`AnyOf` rejected
   at build time. — satisfies [TRIG-15]; spec §17a.2.11.
@@ -1327,7 +1327,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   construction rejects empty `AllOf` and `AnyOf` at any nesting depth with a
   deterministic `EmptyCompound` error; property validation already rejects the
   same empty compounds. Specialized action validation and the broader validator remain
-  T-TRIG-15 through T-TRIG-20.
+  T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-10** Enforce that conditions are evaluated only over the event log
   at deterministic evaluation points (event + quantum/rendezvous boundaries keyed
   on icount), in the same deterministic pass as assertion evaluation, never
@@ -1349,7 +1349,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   raw prefix construction, public graph-evaluation bypasses, direct
   assertion-evaluation bypasses, and host wall-clock APIs in the trigger
   evaluation surface. Specialized action validation and the broader validator remain
-  T-TRIG-15 through T-TRIG-20.
+  T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-11** Enforce that a trigger firing is deterministic engine behavior
   recorded as a causal log entry, NOT a `Decision`; only probabilistic fault
   outcomes are Decisions; prove triggers re-derive identically on a forked schedule
@@ -1368,7 +1368,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   forked schedulers rederive byte-identical trigger-firing entries, and a trigger
   whose action activates a fault still keeps the deterministic firing separate
   from later probabilistic fault outcome `Decision`s. Specialized action
-  validation and the broader validator remain T-TRIG-15 through T-TRIG-20.
+  validation and the broader validator remain T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-12** Implement the `Action` set (InjectFault/HealFault,
   ArmTimer/CancelTimer, StartNode/StopNode, CreateSavepoint/Fork, Pass/Fail, Log,
   Group), each applied deterministically at the firing virtual time at a quantum
@@ -1389,7 +1389,7 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   causal, prove trigger actions do not append `Decision`s, and prove same-prefix
   forked schedulers rederive identical action state and event-log bytes.
   Relative timer phase semantics, Plan lowering, verdict/assertion composition,
-  and broader graph validation remain T-TRIG-15 through T-TRIG-20.
+  and broader graph validation remain T-TRIG-16 through T-TRIG-20.
 - [x] **T-TRIG-13** Implement `StartNode`/`StopNode` as scheduling of a declared,
   baked node (not topology mutation): verify the participant set, RNG-stream set,
   lookahead graph, and bake set stay functions of the `World` alone. — satisfies
@@ -1427,11 +1427,21 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   prove `CancelTimer` prevents the former deadline from firing, and prove the
   scheduler rejects trigger-firing batches evaluated without its armed timer
   state.
-- [ ] **T-TRIG-15** Implement the build-time trigger-graph validator
+- [x] **T-TRIG-15** Implement the build-time trigger-graph validator
   (dangling-ref, empty-compound, DFS cycle detection over non-repeatable events,
   reachability from entrypoints) with precise localized deterministic errors;
   reject before hashing/running. — satisfies [TRIG-26], [TRIG-27]; spec §17a.6;
   cross-ref 06 §9.
+
+  Completed by `checks.crucible.phase4.triggerGraphValidator`: event-graph
+  construction now validates topology-bearing condition leaves and membership
+  fault actions against the world when a world is required, rejects missing
+  fault-tag heals, preserves local empty-compound errors, detects hard cycles
+  over non-repeatable event dependencies, and rejects events unreachable from
+  entrypoint, named, or armable-timer roots before hashing/running. Focused
+  tests cover world-required and unknown node/link errors, missing fault tags,
+  injected faults with dangling topology, empty compounds, non-repeatable
+  cycles, unreachable events, and reachable repeatable feedback.
 - [ ] **T-TRIG-16** Unify the time-scheduled `Plan` with the event graph: lower
   `At`/`PermanentAt`/`Heal` to `At`-triggered Inject/Heal events; prove the Plan
   and the equivalent event graph hash and reduce identically and that adding an

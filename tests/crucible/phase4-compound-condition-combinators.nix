@@ -62,8 +62,8 @@
         needle = "Completed by `checks.crucible.phase4.compoundConditionCombinators`";
       }
       {
-        label = "trigger graph validator remains open";
-        needle = "- [ ] **T-TRIG-15**";
+        label = "Plan lowering remains open";
+        needle = "- [ ] **T-TRIG-16**";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [

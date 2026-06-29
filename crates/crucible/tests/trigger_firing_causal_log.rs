@@ -4,9 +4,10 @@
 
 use crucible::{
     Action, Condition, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
-    EventEvaluationKind, EventGraph, EventGraphState, EventId, FaultTag, LogLevel, MembershipFault,
-    NodeId, PartitionDirection, RestartPolicy, SchedulerEventLogClass, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, VirtualTime,
+    EventEvaluationKind, EventGraph, EventGraphState, EventId, FaultTag, Icount, LinkDef, LogLevel,
+    MembershipFault, NodeId, NodeTemplate, PartitionDirection, ReadyPoint, RestartPolicy,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SchedulerLivenessScenario, Shift, SimInstant,
+    SingleScheduler, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -42,19 +43,48 @@ fn scenario(name: &str) -> SchedulerLivenessScenario {
     )
 }
 
-fn trigger_graph() -> EventGraph {
-    EventGraph::new(vec![Event::once(
-        event_id("activate-split"),
-        None,
-        Action::InjectFault {
-            tag: tag("split"),
-            fault: MembershipFault::Partition {
-                endpoint_a: node("db-0"),
-                endpoint_b: node("db-1"),
-                direction: PartitionDirection::Bidirectional,
-            },
+fn ready_node(name: &str) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
         },
-    )])
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
+
+fn fault_world() -> World {
+    World::from_nodes_and_links(
+        vec![ready_node("db-0"), ready_node("db-1")],
+        vec![LinkDef::new(node("db-0"), node("db-1")).expect("test link should build")],
+    )
+    .expect("trigger firing test world should build")
+}
+
+fn trigger_graph() -> EventGraph {
+    EventGraph::new_for_world(
+        vec![Event::once(
+            event_id("activate-split"),
+            None,
+            Action::InjectFault {
+                tag: tag("split"),
+                fault: MembershipFault::Partition {
+                    endpoint_a: node("db-0"),
+                    endpoint_b: node("db-1"),
+                    direction: PartitionDirection::Bidirectional,
+                },
+            },
+        )],
+        &fault_world(),
+    )
     .expect("entrypoint trigger graph should build")
 }
 
@@ -229,17 +259,20 @@ fn forked_same_prefix_rederives_identical_trigger_firing_entries() {
 
 #[test]
 fn trigger_firing_for_probabilistic_fault_action_is_not_a_fault_outcome_decision() {
-    let graph = EventGraph::new(vec![Event::once(
-        event_id("activate-crash"),
-        None,
-        Action::InjectFault {
-            tag: tag("crash"),
-            fault: MembershipFault::Crash {
-                node: node("db-0"),
-                restart: RestartPolicy::FromReadyPoint,
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            event_id("activate-crash"),
+            None,
+            Action::InjectFault {
+                tag: tag("crash"),
+                fault: MembershipFault::Crash {
+                    node: node("db-0"),
+                    restart: RestartPolicy::FromReadyPoint,
+                },
             },
-        },
-    )])
+        )],
+        &fault_world(),
+    )
     .expect("crash trigger graph should build");
     let mut scheduler = SingleScheduler::new(scenario("trigger-firing-probabilistic-action"))
         .expect("scheduler builds");
