@@ -572,7 +572,9 @@ impl TreeWalk {
                     argument_span,
                 ));
             }
-            Some(digest)
+            let mut fixed = [0_u8; 32];
+            fixed.copy_from_slice(&digest);
+            Some(NixSha256Digest::from_bytes(fixed))
         } else {
             None
         };
@@ -583,7 +585,7 @@ impl TreeWalk {
             &source_path,
             name,
             recursive,
-            expected_sha256.as_deref(),
+            expected_sha256,
             filter.as_ref(),
         )?;
         self.heap

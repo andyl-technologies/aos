@@ -176,7 +176,7 @@ impl TreeWalk {
         span: Span,
         bytes: &[u8],
         recursive: bool,
-        expected_sha256: Option<&[u8]>,
+        expected_sha256: Option<NixSha256Digest>,
         filter: Option<&SourcePathFilter>,
     ) -> Result<NixString, TreeWalkError> {
         if !Path::new(OsStr::from_bytes(bytes)).is_absolute() {
@@ -209,7 +209,7 @@ impl TreeWalk {
         bytes: &[u8],
         name: &str,
         recursive: bool,
-        expected_sha256: Option<&[u8]>,
+        expected_sha256: Option<NixSha256Digest>,
         filter: Option<&SourcePathFilter>,
     ) -> Result<NixString, TreeWalkError> {
         let source_path = Path::new(OsStr::from_bytes(bytes));
@@ -219,13 +219,13 @@ impl TreeWalk {
             self.source_path_flat_sha256(id, span, source_path)?
         };
         if let Some(expected) = expected_sha256
-            && expected != digest.as_slice()
+            && expected.as_bytes() != &digest
         {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::SourcePathHashMismatch {
                     id,
                     path: bytes.to_vec(),
-                    expected: expected.to_vec(),
+                    expected: expected.as_bytes().to_vec(),
                     actual: digest.to_vec(),
                 },
                 span,

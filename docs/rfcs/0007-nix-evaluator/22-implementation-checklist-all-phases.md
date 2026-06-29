@@ -1451,6 +1451,17 @@ alone (`M-1`/`Q-A`).
       the full differential leak-invariant harness remain open (`S-15`). Gate:
       fetchurl/fetchTarball store-path surface canaries and fetch hash mismatch
       tests.
+- [x] Current `builtins.path` expected-SHA type boundary: decoded
+      `builtins.path { sha256 = ...; }` arguments now become `NixSha256Digest`
+      before entering the shared source-path store-string helpers; recursive and
+      flat source hashing still compute raw Nix SHA-256 bytes for mismatch
+      diagnostics, then compare through the typed boundary and continue to typed
+      store-path fingerprint construction. This type-enforces the current
+      `builtins.path` expected-hash corridor only; hash builtin
+      outputs/conversions, other source/fetch variants, and the full
+      differential leak-invariant harness remain open (`S-15`). Gate:
+      `path_primop_supports_flat_hashing_and_sha256_checks` and path store-path
+      surface canary.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
