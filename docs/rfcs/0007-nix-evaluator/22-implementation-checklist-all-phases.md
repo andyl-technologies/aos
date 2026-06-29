@@ -3383,12 +3383,21 @@ alone (`M-1`/`Q-A`).
       covers imported parse-cache miss/hit activity on the cache-miss and
       persistent-hit legs, and scans all closure surfaces for root/imported
       parse-cache, root/imported file-content, and filesystem impure-input
-      identity/observation BLAKE3 renderings. This broadens the reusable
-      direct-file cache-parity harness across filesystem-sensitive forced inputs;
-      it is not currentSystem support, full impure-input demand-graph
-      integration, stale-input recomputation coverage, full AOS package-set
-      coverage, syscall-level cache-off no-read proof, or the full
-      cached-vs-uncached CI safety net
+      identity/observation BLAKE3 renderings.
+      `native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs`
+      seeds the same native file-closure persistent root with `readFile` and
+      `hashFile` payloads, mutates the payload file, then requires stale cached
+      and post-recompute persistent runs to match the changed uncached closure,
+      differ from the original closure, and contain only the changed payload and
+      digest; it also requires stale force-cache miss activity, replacement of
+      the original `readFile`/`hashFile` trace value hashes under the same
+      metadata keys, post-recompute force-cache hits with no misses, and scans
+      original/changed impure-input plus persistent sidecar hashes. This broadens
+      the reusable direct-file cache-parity harness across
+      filesystem-sensitive forced inputs and stale `readFile`/`hashFile`
+      recomputation; it is not currentSystem support, full impure-input
+      demand-graph integration, full AOS package-set coverage, syscall-level
+      cache-off no-read proof, or the full cached-vs-uncached CI safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
