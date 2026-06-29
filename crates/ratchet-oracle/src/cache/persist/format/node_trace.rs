@@ -251,7 +251,7 @@ impl PersistNodeTracePayload {
             }
 
             let kind = node_trace_input_kind_from_tag(bytes[cursor])?;
-            let mode = node_trace_input_mode_from_tag(bytes[cursor + 1])?;
+            let mode = node_trace_input_mode_from_tag(version, bytes[cursor + 1])?;
             let subject_len = read_u64(&bytes[cursor + 2..cursor + 10]);
             let mut observation_hash = [0; 32];
             observation_hash.copy_from_slice(&bytes[cursor + 10..cursor + 42]);
@@ -327,15 +327,18 @@ fn node_trace_input_mode_tag(mode: ImpureInputMode) -> u8 {
     match mode {
         ImpureInputMode::Default => 1,
         ImpureInputMode::RequireDirectory => 2,
+        ImpureInputMode::FindFileCandidate => 3,
     }
 }
 
 fn node_trace_input_mode_from_tag(
+    version: u32,
     tag: u8,
 ) -> Result<ImpureInputMode, PersistNodeTracePayloadError> {
     match tag {
         1 => Ok(ImpureInputMode::Default),
         2 => Ok(ImpureInputMode::RequireDirectory),
+        3 if version >= 3 => Ok(ImpureInputMode::FindFileCandidate),
         _ => Err(PersistNodeTracePayloadError::InvalidInputModeTag { tag }),
     }
 }

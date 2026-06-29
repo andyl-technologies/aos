@@ -256,8 +256,13 @@ impl FindFileCacheKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FindFileCacheEntry {
-    Hit(Vec<u8>),
-    Miss,
+    Hit {
+        path: Vec<u8>,
+        trace: Vec<ImpureInputFingerprint>,
+    },
+    Miss {
+        trace: Vec<ImpureInputFingerprint>,
+    },
 }
 
 #[allow(clippy::enum_variant_names)]

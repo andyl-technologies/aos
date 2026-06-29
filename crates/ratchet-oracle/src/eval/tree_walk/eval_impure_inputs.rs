@@ -214,13 +214,19 @@ impl<'a> TreeWalkImpureInputRevalidator<'a> {
         if !self.filesystem_path_is_allowed(path) {
             return None;
         }
-        let must_be_dir = identity.mode() == ImpureInputMode::RequireDirectory;
-        let metadata = if must_be_dir {
-            fs::metadata(Path::new(OsStr::from_bytes(path)))
-        } else {
-            fs::symlink_metadata(Path::new(OsStr::from_bytes(
-                path_without_trailing_path_markers(path),
-            )))
+        let (metadata, must_be_dir) = match identity.mode() {
+            ImpureInputMode::Default => (
+                fs::symlink_metadata(Path::new(OsStr::from_bytes(
+                    path_without_trailing_path_markers(path),
+                ))),
+                false,
+            ),
+            ImpureInputMode::RequireDirectory => {
+                (fs::metadata(Path::new(OsStr::from_bytes(path))), true)
+            }
+            ImpureInputMode::FindFileCandidate => {
+                (fs::metadata(Path::new(OsStr::from_bytes(path))), false)
+            }
         };
         let exists = match metadata {
             Ok(metadata) => !must_be_dir || metadata.is_dir(),

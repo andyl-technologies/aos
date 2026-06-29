@@ -369,6 +369,8 @@ pub enum ImpureInputMode {
     Default,
     /// A path probe that requires the target to be a directory.
     RequireDirectory,
+    /// A `builtins.findFile` candidate probe using `metadata` existence.
+    FindFileCandidate,
 }
 
 impl ImpureInputMode {
@@ -377,6 +379,7 @@ impl ImpureInputMode {
         match self {
             Self::Default => b"default",
             Self::RequireDirectory => b"require-directory",
+            Self::FindFileCandidate => b"find-file-candidate",
         }
     }
 }
@@ -474,7 +477,10 @@ fn validate_input_mode(
 ) -> Result<(), InputFingerprintError> {
     match (kind, mode) {
         (_, ImpureInputMode::Default)
-        | (ImpureInputKind::PathExists, ImpureInputMode::RequireDirectory) => Ok(()),
+        | (
+            ImpureInputKind::PathExists,
+            ImpureInputMode::RequireDirectory | ImpureInputMode::FindFileCandidate,
+        ) => Ok(()),
         _ => Err(InputFingerprintError::InvalidInputMode { kind, mode }),
     }
 }
@@ -719,6 +725,14 @@ mod tests {
             )
             .expect("hashes"),
         );
+        let find_file_candidate = cacheable(
+            ImpureInputFingerprint::path_exists_with_mode(
+                b"/tmp/x",
+                ImpureInputMode::FindFileCandidate,
+                true,
+            )
+            .expect("hashes"),
+        );
 
         assert_eq!(existing.kind(), ImpureInputKind::PathExists);
         assert_eq!(existing.identity().mode(), ImpureInputMode::Default);
@@ -726,14 +740,26 @@ mod tests {
             directory_marker.identity().mode(),
             ImpureInputMode::RequireDirectory
         );
+        assert_eq!(
+            find_file_candidate.identity().mode(),
+            ImpureInputMode::FindFileCandidate
+        );
         assert_ne!(missing.observation_hash(), existing.observation_hash());
         assert_eq!(
             existing.observation_hash(),
             directory_marker.observation_hash()
         );
+        assert_eq!(
+            existing.observation_hash(),
+            find_file_candidate.observation_hash()
+        );
         assert_ne!(
             existing.identity().hash(),
             directory_marker.identity().hash()
+        );
+        assert_ne!(
+            existing.identity().hash(),
+            find_file_candidate.identity().hash()
         );
     }
 

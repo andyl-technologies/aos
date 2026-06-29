@@ -29,7 +29,7 @@ use super::{
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
-pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 5;
+pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 6;
 /// The fixed magic bytes at the start of every immutable blob packfile.
 pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
 /// The immutable blob packfile format version.
@@ -76,7 +76,7 @@ pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 /// The fixed magic bytes at the start of a node verifying-trace payload.
 pub const PERSIST_NODE_TRACE_PAYLOAD_MAGIC: [u8; 16] = *b"AOS-NIX-NTRACE01";
 /// The node verifying-trace payload format version.
-pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 2;
+pub const PERSIST_NODE_TRACE_PAYLOAD_VERSION: u32 = 3;
 /// The encoded length of a node verifying-trace payload header.
 pub const PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN: usize = 28;
 const PERSIST_NODE_TRACE_PAYLOAD_MIN_VERSION: u32 = 1;

@@ -44,7 +44,9 @@ fn mismatched_schema_discards_payload_and_rewrites_version() {
     assert!(layout.files_dir().is_dir());
     assert_eq!(
         fs::read_to_string(layout.schema_path()).expect("schema reads"),
-        "format = \"aos-nix-eval-cache\"\nschema_version = 5\n"
+        format!(
+            "format = \"aos-nix-eval-cache\"\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"
+        )
     );
 
     let _ = fs::remove_dir_all(root);
@@ -103,7 +105,7 @@ fn wrong_schema_format_errors_without_discarding_payload() {
     let value_file = sentinel(layout.values_dir().join("value"));
     fs::write(
         layout.schema_path(),
-        "format = \"other-cache\"\nschema_version = 5\n",
+        format!("format = \"other-cache\"\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"),
     )
     .expect("schema rewrites");
 
@@ -121,7 +123,11 @@ fn missing_schema_format_errors_without_discarding_payload() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let value_file = sentinel(layout.values_dir().join("value"));
-    fs::write(layout.schema_path(), "schema_version = 5\n").expect("schema rewrites");
+    fs::write(
+        layout.schema_path(),
+        format!("schema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"),
+    )
+    .expect("schema rewrites");
 
     let error = PersistCache::open(&root).expect_err("missing format errors");
 

@@ -127,7 +127,9 @@ fn open_creates_versioned_layout() {
     );
     assert_eq!(
         fs::read_to_string(layout.schema_path()).expect("schema reads"),
-        "format = \"aos-nix-eval-cache\"\nschema_version = 5\n"
+        format!(
+            "format = \"aos-nix-eval-cache\"\nschema_version = {PERSIST_CACHE_SCHEMA_VERSION}\n"
+        )
     );
 
     let _ = fs::remove_dir_all(root);

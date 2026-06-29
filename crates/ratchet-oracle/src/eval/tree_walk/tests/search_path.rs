@@ -545,6 +545,65 @@ fn find_file_caches_successful_lookup_results() {
 }
 
 #[test]
+fn find_file_records_candidate_existence_impure_trace() {
+    let (root, nixpkgs, subdir) = search_path_fixture();
+    let ir = lower("0");
+    let mut evaluator = TreeWalk::new(&ir);
+    let missing_root = root.join("missing");
+    let entries = vec![
+        resolved_search_path_entry(b"nixpkgs", &missing_root),
+        resolved_search_path_entry(b"nixpkgs", &nixpkgs),
+    ];
+    let lookup = b"nixpkgs/subdir";
+    let span = Span::new(0, 0);
+    let missing_candidate = path_bytes(&missing_root.join("subdir"));
+    let hit_candidate = path_bytes(&subdir);
+    let expected = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &missing_candidate,
+            ImpureInputMode::FindFileCandidate,
+            false,
+        )
+        .expect("missing findFile candidate fingerprint builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            &hit_candidate,
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("hit findFile candidate fingerprint builds"),
+    ];
+
+    let first = evaluator
+        .find_file_in_entries(
+            ir.root,
+            span,
+            &entries,
+            lookup,
+            FindFileLookupOrigin::ExplicitSearchPath,
+        )
+        .expect("initial search-path lookup finds existing directory");
+    assert_eq!(path_value_bytes(&evaluator, first), hit_candidate);
+    assert_eq!(evaluator.impure_input_trace(), expected.as_slice());
+
+    let cached = evaluator
+        .find_file_in_entries(
+            ir.root,
+            span,
+            &entries,
+            lookup,
+            FindFileLookupOrigin::ExplicitSearchPath,
+        )
+        .expect("cached search-path hit replays candidate trace");
+    let expected_twice: Vec<_> = expected
+        .iter()
+        .cloned()
+        .chain(expected.iter().cloned())
+        .collect();
+    assert_eq!(path_value_bytes(&evaluator, cached), hit_candidate);
+    assert_eq!(evaluator.impure_input_trace(), expected_twice.as_slice());
+}
+
+#[test]
 fn find_file_caches_exhausted_lookup_results() {
     let (_root, nixpkgs, _subdir) = search_path_fixture();
     let ir = lower("0");
@@ -552,6 +611,15 @@ fn find_file_caches_exhausted_lookup_results() {
     let entries = vec![resolved_search_path_entry(b"nixpkgs", &nixpkgs)];
     let lookup = b"nixpkgs/later";
     let later = nixpkgs.join("later");
+    let candidate = path_bytes(&later);
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &candidate,
+            ImpureInputMode::FindFileCandidate,
+            false,
+        )
+        .expect("missing findFile candidate fingerprint builds"),
+    ];
     let span = Span::new(0, 0);
 
     let first = evaluator
@@ -564,6 +632,7 @@ fn find_file_caches_exhausted_lookup_results() {
         )
         .expect_err("initial missing search-path lookup is rejected");
     assert_search_path_not_found(first, lookup);
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
 
     fs::create_dir(&later).expect("late fixture directory creates");
 
@@ -577,6 +646,12 @@ fn find_file_caches_exhausted_lookup_results() {
         )
         .expect_err("cached search-path miss survives filesystem mutation");
     assert_search_path_not_found(cached, lookup);
+    let expected_twice: Vec<_> = expected_trace
+        .iter()
+        .cloned()
+        .chain(expected_trace.iter().cloned())
+        .collect();
+    assert_eq!(evaluator.impure_input_trace(), expected_twice.as_slice());
 
     let mut fresh = TreeWalk::new(&ir);
     let found = fresh

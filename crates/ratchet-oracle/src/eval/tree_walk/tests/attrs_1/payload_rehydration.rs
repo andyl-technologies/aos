@@ -36,8 +36,23 @@ fn search_path_forced_inline_thunks_wait_for_impure_input_edges() {
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("thunk force succeeds");
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&target),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("findFile candidate trace builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&target),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("cached findFile candidate trace builds"),
+    ];
 
     assert_eq!(forced.as_bool(), Ok(true));
+    assert_eq!(evaluator.impure_input_trace(), expected_trace.as_slice());
     let runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime.cache().expect("cache is enabled").is_empty(),

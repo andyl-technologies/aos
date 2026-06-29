@@ -46,15 +46,26 @@ fn node_trace_payload_uses_stable_wire_bytes() {
         DurableBlake3Hash::from_bytes([0x22; 32]),
     )
     .expect("pathExists persisted input builds");
-    let payload =
-        PersistNodeTracePayload::from_cacheable_inputs([read_file, hash_file, path_exists])
-            .expect("payload builds");
+    let find_file_candidate = CacheableInputFingerprint::from_observation_hash(
+        ImpureInputKind::PathExists,
+        ImpureInputMode::FindFileCandidate,
+        b"/miss",
+        DurableBlake3Hash::from_bytes([0x44; 32]),
+    )
+    .expect("findFile candidate persisted input builds");
+    let payload = PersistNodeTracePayload::from_cacheable_inputs([
+        read_file,
+        hash_file,
+        path_exists,
+        find_file_candidate,
+    ])
+    .expect("payload builds");
 
     let encoded = payload.encode().expect("payload encodes");
     let mut expected = Vec::new();
     expected.extend_from_slice(b"AOS-NIX-NTRACE01");
-    expected.extend_from_slice(&2u32.to_le_bytes());
-    expected.extend_from_slice(&3u64.to_le_bytes());
+    expected.extend_from_slice(&3u32.to_le_bytes());
+    expected.extend_from_slice(&4u64.to_le_bytes());
     expected.push(2);
     expected.push(1);
     expected.extend_from_slice(&2u64.to_le_bytes());
@@ -70,6 +81,11 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     expected.extend_from_slice(&4u64.to_le_bytes());
     expected.extend_from_slice(&[0x22; 32]);
     expected.extend_from_slice(b"/dir");
+    expected.push(5);
+    expected.push(3);
+    expected.extend_from_slice(&5u64.to_le_bytes());
+    expected.extend_from_slice(&[0x44; 32]);
+    expected.extend_from_slice(b"/miss");
 
     assert_eq!(encoded, expected);
     assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
@@ -79,6 +95,8 @@ fn node_trace_payload_uses_stable_wire_bytes() {
     assert_eq!(encoded[73], 1);
     assert_eq!(encoded[118], 5);
     assert_eq!(encoded[119], 2);
+    assert_eq!(encoded[164], 5);
+    assert_eq!(encoded[165], 3);
 }
 
 #[test]
@@ -103,7 +121,7 @@ fn node_trace_payload_tombstone_uses_stable_wire_bytes() {
 
     assert_eq!(encoded.len(), PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN);
     assert_eq!(encoded[0..16], *b"AOS-NIX-NTRACE01");
-    assert_eq!(&encoded[16..20], 2u32.to_le_bytes().as_slice());
+    assert_eq!(&encoded[16..20], 3u32.to_le_bytes().as_slice());
     assert_eq!(&encoded[20..28], u64::MAX.to_le_bytes().as_slice());
     assert!(decoded.is_tombstone());
     assert_eq!(decoded.inputs(), &[]);
@@ -143,6 +161,12 @@ fn node_trace_payload_round_trips_cacheable_input_records() {
             true,
         )
         .expect("pathExists input builds"),
+        ImpureInputFingerprint::path_exists_with_mode(
+            b"/src/missing",
+            ImpureInputMode::FindFileCandidate,
+            false,
+        )
+        .expect("findFile candidate input builds"),
         ImpureInputFingerprint::get_env(b"HOME", Some(b"/homeless-shelter"))
             .expect("getEnv input builds"),
     ];
@@ -280,6 +304,16 @@ fn node_trace_payload_rejects_malformed_input_records() {
     assert_eq!(
         error,
         PersistNodeTracePayloadError::InvalidInputModeTag { tag: 99 }
+    );
+
+    let mut future_mode_in_old_payload = encoded.clone();
+    future_mode_in_old_payload[16..20].copy_from_slice(&2u32.to_le_bytes());
+    future_mode_in_old_payload[PERSIST_NODE_TRACE_PAYLOAD_HEADER_LEN + 1] = 3;
+    let error = PersistNodeTracePayload::decode(&future_mode_in_old_payload)
+        .expect_err("v2 payload cannot decode v3 findFile candidate mode");
+    assert_eq!(
+        error,
+        PersistNodeTracePayloadError::InvalidInputModeTag { tag: 3 }
     );
 
     let truncated = &encoded[..encoded.len() - 1];

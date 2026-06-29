@@ -447,6 +447,8 @@ impl TreeWalk {
             return self.find_file_cached_result(id, span, cached, lookup, origin);
         }
         self.find_file_cache_misses = self.find_file_cache_misses.saturating_add(1);
+        let mut trace = Vec::new();
+        let mut trace_cacheable = true;
 
         for entry in entries {
             let Some(suffix) = search_path_suffix(entry.prefix.as_slice(), lookup) else {
@@ -462,8 +464,17 @@ impl TreeWalk {
             self.check_find_file_candidate_access(id, span, &candidate, origin)?;
             match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
                 Ok(_) => {
-                    self.find_file_cache
-                        .insert(cache_key, FindFileCacheEntry::Hit(candidate.clone()));
+                    trace_cacheable &=
+                        self.record_find_file_candidate_probe(&mut trace, &candidate, true);
+                    if trace_cacheable {
+                        self.find_file_cache.insert(
+                            cache_key,
+                            FindFileCacheEntry::Hit {
+                                path: candidate.clone(),
+                                trace,
+                            },
+                        );
+                    }
                     return self.alloc_find_file_path(id, span, candidate);
                 }
                 Err(source)
@@ -472,6 +483,8 @@ impl TreeWalk {
                         io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
                     ) =>
                 {
+                    trace_cacheable &=
+                        self.record_find_file_candidate_probe(&mut trace, &candidate, false);
                     continue;
                 }
                 Err(source) => {
@@ -496,15 +509,28 @@ impl TreeWalk {
             self.check_find_file_candidate_access(id, span, &candidate, origin)?;
             match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
                 Ok(_) => {
-                    self.find_file_cache
-                        .insert(cache_key, FindFileCacheEntry::Hit(candidate.clone()));
+                    trace_cacheable &=
+                        self.record_find_file_candidate_probe(&mut trace, &candidate, true);
+                    if trace_cacheable {
+                        self.find_file_cache.insert(
+                            cache_key,
+                            FindFileCacheEntry::Hit {
+                                path: candidate.clone(),
+                                trace,
+                            },
+                        );
+                    }
                     return self.alloc_find_file_path(id, span, candidate);
                 }
                 Err(source)
                     if matches!(
                         source.kind(),
                         io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                    ) => {}
+                    ) =>
+                {
+                    trace_cacheable &=
+                        self.record_find_file_candidate_probe(&mut trace, &candidate, false);
+                }
                 Err(source) => {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::PathStat {
@@ -517,9 +543,37 @@ impl TreeWalk {
                 }
             }
         }
-        self.find_file_cache
-            .insert(cache_key, FindFileCacheEntry::Miss);
+        if trace_cacheable {
+            self.find_file_cache
+                .insert(cache_key, FindFileCacheEntry::Miss { trace });
+        }
         self.find_file_not_found(id, span, lookup, origin)
+    }
+
+    fn record_find_file_candidate_probe(
+        &mut self,
+        trace: &mut Vec<ImpureInputFingerprint>,
+        candidate: &[u8],
+        exists: bool,
+    ) -> bool {
+        let fingerprint = match ImpureInputFingerprint::path_exists_with_mode(
+            candidate,
+            ImpureInputMode::FindFileCandidate,
+            exists,
+        ) {
+            Ok(fingerprint) => fingerprint,
+            Err(_) => {
+                self.mark_impure_input_trace_incomplete();
+                return false;
+            }
+        };
+        if trace.try_reserve_exact(1).is_err() {
+            self.mark_impure_input_trace_incomplete();
+            return false;
+        }
+        trace.push(fingerprint.clone());
+        self.record_impure_input(fingerprint);
+        true
     }
 
     pub(super) fn check_find_file_candidate_access(
@@ -544,8 +598,18 @@ impl TreeWalk {
         origin: FindFileLookupOrigin,
     ) -> Result<Value, TreeWalkError> {
         match cached {
-            FindFileCacheEntry::Hit(path) => self.alloc_find_file_path(id, span, path),
-            FindFileCacheEntry::Miss => self.find_file_not_found(id, span, lookup, origin),
+            FindFileCacheEntry::Hit { path, trace } => {
+                for fingerprint in trace {
+                    self.record_impure_input(fingerprint);
+                }
+                self.alloc_find_file_path(id, span, path)
+            }
+            FindFileCacheEntry::Miss { trace } => {
+                for fingerprint in trace {
+                    self.record_impure_input(fingerprint);
+                }
+                self.find_file_not_found(id, span, lookup, origin)
+            }
         }
     }
 
