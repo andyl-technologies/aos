@@ -421,11 +421,52 @@ fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
             .unwrap_or(actual - 31_536_000)
     }
 
+    fn append_future_tar_bytes<W: std::io::Write>(
+        builder: &mut tar::Builder<W>,
+        path: &str,
+        mode: u32,
+        bytes: &[u8],
+        mtime: i64,
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).expect("tar path is valid");
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_mtime(u64::try_from(mtime).expect("test mtime is non-negative"));
+        header.set_cksum();
+        builder
+            .append(&header, bytes)
+            .expect("tar fixture entry appends");
+    }
+
     let dir = unique_temp_dir("fetch-tree-metadata-mismatch");
     let source_dir = dir.join("source");
     fs::create_dir(&source_dir).expect("source directory creates");
     fs::write(source_dir.join("file.txt"), b"path-data").expect("source file writes");
-    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-metadata-tarball");
+    let future_tarball_last_modified = current_unix_seconds()
+        .checked_add(31_536_000)
+        .expect("future test mtime fits in Nix int");
+    let archive_dir = unique_temp_dir("fetch-tree-metadata-tarball");
+    let archive_path = archive_dir.join("root.tar.gz");
+    let file = fs::File::create(&archive_path).expect("tarball fixture creates");
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    append_future_tar_bytes(
+        &mut builder,
+        "root/file.txt",
+        0o644,
+        b"data",
+        future_tarball_last_modified,
+    );
+    append_future_tar_bytes(
+        &mut builder,
+        "root/sub/nested.txt",
+        0o644,
+        b"inner",
+        future_tarball_last_modified,
+    );
+    let encoder = builder.into_inner().expect("tar fixture finalizes");
+    encoder.finish().expect("gzip fixture finalizes");
     let store_dir = unique_temp_dir("fetch-tree-metadata-store");
     let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
         .expect("temporary store root configures");
@@ -454,6 +495,7 @@ fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
     let tarball_last_modified = value["tarballLastModified"]
         .as_i64()
         .expect("tarball lastModified is an integer");
+    assert_eq!(tarball_last_modified, future_tarball_last_modified);
     let wrong_path_last_modified = mismatched_timestamp(path_last_modified);
     let wrong_tarball_last_modified = mismatched_timestamp(tarball_last_modified);
 
@@ -473,7 +515,6 @@ fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
         } if expected == wrong_path_last_modified && actual == path_last_modified
     ));
 
-    let tarball_eval_before = current_unix_seconds().saturating_sub(1);
     let error = eval_whnf_owned_with_options(
         &lower(&format!(
             r#"builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; lastModified = {wrong_tarball_last_modified}; }}"#
@@ -481,17 +522,13 @@ fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
         options,
     )
     .expect_err("direct tarball fetchTree rejects mismatched lastModified");
-    let tarball_eval_after = current_unix_seconds().saturating_add(1);
     assert!(matches!(
         error.kind(),
         TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
             expected,
             actual,
             ..
-        } if expected == wrong_tarball_last_modified
-            && actual != wrong_tarball_last_modified
-            && actual >= tarball_eval_before
-            && actual <= tarball_eval_after
+        } if expected == wrong_tarball_last_modified && actual == future_tarball_last_modified
     ));
 
     fs::remove_dir_all(dir).expect("source temp directory removes");
