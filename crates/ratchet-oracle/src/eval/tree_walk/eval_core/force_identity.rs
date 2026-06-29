@@ -83,10 +83,30 @@ impl TreeWalk {
         &self,
         value: Value,
     ) -> Option<DurableBlake3Hash> {
+        let mut seen_thunks = BTreeSet::new();
+        self.force_cache_free_var_value_hash_with_seen(value, &mut seen_thunks, true)
+    }
+
+    pub(super) fn force_cache_free_var_value_hash_without_suspended_aliases(
+        &self,
+        value: Value,
+    ) -> Option<DurableBlake3Hash> {
+        let mut seen_thunks = BTreeSet::new();
+        self.force_cache_free_var_value_hash_with_seen(value, &mut seen_thunks, false)
+    }
+
+    pub(super) fn force_cache_free_var_value_hash_with_seen(
+        &self,
+        value: Value,
+        seen_thunks: &mut BTreeSet<u64>,
+        allow_suspended_capture_aliases: bool,
+    ) -> Option<DurableBlake3Hash> {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
             return Some(hash.as_durable_hash());
         }
-        if let Ok(Some(hash)) = self.heap.cached_captured_value_hash(value) {
+        if allow_suspended_capture_aliases
+            && let Ok(Some(hash)) = self.heap.cached_captured_value_hash(value)
+        {
             return Some(hash);
         }
         match value.tag() {
@@ -113,30 +133,99 @@ impl TreeWalk {
                 self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::List | ValueTag::Attrs => {
-                let payload = self.force_cache_payload_for_value(value)?;
+                let payload = self.force_cache_payload_for_value_with_depth(
+                    value,
+                    0,
+                    seen_thunks,
+                    allow_suspended_capture_aliases,
+                )?;
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
                 self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
             }
             ValueTag::Thunk => {
-                let cached = {
-                    let thunk = self.heap.get_thunk(value).ok()?;
-                    match thunk.cell().cached_value().ok()? {
-                        Some(cached) => cached,
-                        None => {
-                            let payload = self.force_cache_payload_for_suspended_thunk(thunk, 0)?;
-                            return self.force_cache_free_var_payload_hash(&payload);
-                        }
-                    }
-                };
-                if cached.is_thunk() {
+                let thunk_key = value.payload_bits();
+                if !seen_thunks.insert(thunk_key) {
                     return None;
                 }
-                self.force_cache_free_var_value_hash(cached)
+                let result = (|| {
+                    let thunk = self.heap.get_thunk(value).ok()?;
+                    match thunk.cell().cached_value().ok()? {
+                        Some(cached) => {
+                            if cached.is_thunk() {
+                                return None;
+                            }
+                            self.force_cache_free_var_value_hash_with_seen(
+                                cached,
+                                seen_thunks,
+                                allow_suspended_capture_aliases,
+                            )
+                        }
+                        None => {
+                            if allow_suspended_capture_aliases {
+                                if let Some(hash) = self
+                                    .force_cache_hash_for_suspended_capture_alias_thunk(
+                                        thunk,
+                                        seen_thunks,
+                                    )
+                                {
+                                    return Some(hash);
+                                }
+                            }
+                            let payload = if allow_suspended_capture_aliases {
+                                self.force_cache_payload_for_suspended_thunk_with_seen(
+                                    thunk,
+                                    0,
+                                    seen_thunks,
+                                )?
+                            } else {
+                                self.force_cache_payload_for_suspended_closed_thunk(thunk, 0)?
+                            };
+                            self.force_cache_free_var_payload_hash(&payload)
+                        }
+                    }
+                })();
+                seen_thunks.remove(&thunk_key);
+                result
             }
             _ => None,
         }
+    }
+
+    fn force_cache_hash_for_suspended_capture_alias_thunk(
+        &self,
+        thunk: &EvalThunk,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<DurableBlake3Hash> {
+        let EvalThunkKind::Node {
+            body,
+            env,
+            with_env,
+            scoped_globals,
+        } = thunk.kind()
+        else {
+            return None;
+        };
+        if !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty() {
+            return None;
+        }
+        let frames = env.frames();
+        let module = self.modules.get(body.module().index())?;
+        let node = module.ir.arena.node(body.id())?;
+        let (frame_index, slot) = match node.data {
+            IrData::Local { slot } => (frames.len().checked_sub(1)?, slot),
+            IrData::Upval { depth, slot } => {
+                let depth = depth as usize;
+                if depth >= frames.len() {
+                    return None;
+                }
+                (frames.len() - 1 - depth, slot)
+            }
+            _ => return None,
+        };
+        let value = frames.get(frame_index)?.get(slot).ok()?;
+        self.force_cache_free_var_value_hash_with_seen(value, seen_thunks, true)
     }
 
     fn cache_force_capture_hash(

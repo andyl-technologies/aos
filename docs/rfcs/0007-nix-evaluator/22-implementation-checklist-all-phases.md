@@ -817,8 +817,9 @@ alone (`M-1`/`Q-A`).
       attrset whose source-order metadata and binding positions are preserved
       when present, a
       fulfilled thunk cell whose cached value is one of those replayable values,
-      or a suspended closed literal thunk whose static payload is one of those
-      replayable values.
+      a suspended closed literal thunk whose static payload is one of those
+      replayable values, or a suspended captured local/upvalue alias thunk whose
+      referenced captured payload is one of those replayable values.
       Strings and paths are hashed in one durable force-capture domain with typed
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
@@ -835,15 +836,17 @@ alone (`M-1`/`Q-A`).
       arbitrary non-literal lazy-binding attrsets,
       position-bearing attrsets whose retained module ids cannot be resolved to
       loaded module identities, lambdas, primops,
-      suspended non-literal/non-replayable thunk-cell captures including computed
-      values not already forced in the captured slot, captured bodies with nested lexical-frame introducers, apply/select
+      suspended computed/non-replayable thunk-cell captures including computed
+      values not already forced in the captured slot, recursive captured alias
+      cycles, captured bodies with nested lexical-frame introducers, apply/select
       thunks, full strictness/escape free-variable analysis, remaining
       heap/composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
       hit/miss tests, lowered lambda-argument coverage, cross-type string/path
       hash separation, materialized context-bearing string/path capture hash
       tests, preforced computed string thunk-cell capture tests, fulfilled
-      replayable-attrset thunk-cell hash tests, direct suspended thunk-cell skip tests, caller-level
+      replayable-attrset thunk-cell hash tests, direct suspended computed and
+      recursive alias thunk-cell skip tests, caller-level
       suspended computed capture subject-skip canary, dynamic `with`/scoped-import
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
@@ -851,7 +854,9 @@ alone (`M-1`/`Q-A`).
       canaries, captured root/imported positioned attrset source-salted
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
-      and lazy-binding attrset subject-skip canaries, and representative captured unsupported free-variable skips
+      and lazy-binding attrset subject-skip canaries, direct and first-class
+      captured explicit-list `findFile` hit canaries, and representative
+      captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's
@@ -3465,20 +3470,21 @@ alone (`M-1`/`Q-A`).
       remain open (`R-10`/`S-14`).
 - [x] Current precursor: first-class explicit-list `findFile` child-call
       admission. Saturated first-class `findFile` calls whose first argument is
-      a closed/replayable explicit search-path list now fall back from the
-      synthetic `builtins.nixPath` hash path to the normal replayable argument
-      payload hash, replay candidate traces on in-memory and fresh-runtime
-      persistent child-call hits, and miss when the path-literal
-      base/search-path payload identity changes. The exact-edge canary
+      a replayable explicit search-path list, including captured local/upvalue
+      alias entries, now fall back from the synthetic `builtins.nixPath` hash path
+      to the normal replayable argument payload hash, replay candidate traces on
+      in-memory and fresh-runtime persistent child-call hits, and miss when the
+      path-literal base/search-path payload identity changes. The exact-edge canary
       `find_file_first_class_explicit_list_records_exact_force_cache_graph_edges`
       proves the admitted child-call key owns the observed miss-then-hit
       `FindFileCandidate` leaves. The persistent-hit canary also verifies the
       trace-log metadata key belongs to that child call and the fresh runtime
-      graph owns the revalidated candidate edge. This is scoped to
-      closed/replayable explicit-list child-call replay only; the enclosing
-      thunk still evaluates unless separately admitted, captured/non-replayable
-      explicit-list entries are still rejected by the child-call key, and fetch
-      interactions, broad persistent graph replay, and broad search-path
+      graph owns the revalidated candidate edge. This is scoped to replayable
+      explicit-list child-call replay only; the enclosing thunk still evaluates
+      unless separately admitted, computed or otherwise non-replayable captured
+      explicit-list entries remain outside child-call key admission, non-`findFile`
+      first-class impure primop arguments still use the prior closed/fulfilled-thunk
+      payload key path, and fetch interactions, broad persistent graph replay, and broad search-path
       edge-exactness remain open (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears

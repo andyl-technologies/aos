@@ -7,10 +7,32 @@ impl TreeWalk {
         &self,
         value: Value,
     ) -> Option<CachedExpressionValue> {
-        self.force_cache_payload_for_value_with_depth(value, 0)
+        let mut seen_thunks = BTreeSet::new();
+        self.force_cache_payload_for_value_with_depth(value, 0, &mut seen_thunks, true)
     }
 
-    pub(super) fn force_cache_payload_for_suspended_thunk(
+    pub(super) fn force_cache_payload_for_suspended_thunk_with_seen(
+        &self,
+        thunk: &EvalThunk,
+        depth: usize,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<CachedExpressionValue> {
+        let EvalThunkKind::Node {
+            body,
+            env,
+            with_env,
+            scoped_globals,
+        } = thunk.kind()
+        else {
+            return None;
+        };
+        if !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty() {
+            return None;
+        }
+        self.force_cache_payload_for_ir_node_with_frames(*body, env.frames(), depth, seen_thunks)
+    }
+
+    pub(super) fn force_cache_payload_for_suspended_closed_thunk(
         &self,
         thunk: &EvalThunk,
         depth: usize,
@@ -111,6 +133,203 @@ impl TreeWalk {
                 )
             }
             _ => None,
+        }
+    }
+
+    fn force_cache_payload_for_ir_node_with_frames(
+        &self,
+        id: EvalNodeRef,
+        frames: &[Rc<EvalFrame>],
+        depth: usize,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<CachedExpressionValue> {
+        if frames.is_empty() {
+            return self.force_cache_payload_for_closed_ir_node(id, depth);
+        }
+        if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
+            return None;
+        }
+        let module_id = id.module();
+        let node_id = id.id();
+        let node = *self
+            .modules
+            .get(module_id.index())?
+            .ir
+            .arena
+            .node(node_id)?;
+        if !node.effect.is_speculable() {
+            return None;
+        }
+        match node.data {
+            IrData::Local { slot } => {
+                let frame_index = frames.len().checked_sub(1)?;
+                let value = frames.get(frame_index)?.get(slot).ok()?;
+                self.force_cache_payload_for_value_with_depth(
+                    value,
+                    depth.saturating_add(1),
+                    seen_thunks,
+                    true,
+                )
+            }
+            IrData::Upval {
+                depth: upval_depth,
+                slot,
+            } => {
+                let upval_depth = upval_depth as usize;
+                if upval_depth >= frames.len() {
+                    return None;
+                }
+                let frame_index = frames.len() - 1 - upval_depth;
+                let value = frames.get(frame_index)?.get(slot).ok()?;
+                self.force_cache_payload_for_value_with_depth(
+                    value,
+                    depth.saturating_add(1),
+                    seen_thunks,
+                    true,
+                )
+            }
+            IrData::Node(child) if node.kind == IrKind::ThunkAlloc => self
+                .force_cache_payload_for_ir_node_with_frames(
+                    EvalNodeRef::new(module_id, child),
+                    frames,
+                    depth.saturating_add(1),
+                    seen_thunks,
+                ),
+            _ => match node.kind {
+                IrKind::Int
+                | IrKind::Float
+                | IrKind::Bool
+                | IrKind::Null
+                | IrKind::Str
+                | IrKind::Uri
+                | IrKind::Path => self.force_cache_payload_for_closed_ir_node(id, depth),
+                IrKind::List => self.force_cache_payload_for_ir_list_with_frames(
+                    module_id,
+                    node.data,
+                    frames,
+                    depth,
+                    seen_thunks,
+                ),
+                IrKind::AttrSet => self.force_cache_payload_for_ir_attrset_with_frames(
+                    module_id,
+                    node.data,
+                    frames,
+                    depth,
+                    seen_thunks,
+                ),
+                _ => None,
+            },
+        }
+    }
+
+    fn force_cache_payload_for_ir_list_with_frames(
+        &self,
+        module_id: EvalModuleId,
+        data: IrData,
+        frames: &[Rc<EvalFrame>],
+        depth: usize,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<CachedExpressionValue> {
+        let IrData::Children(children) = data else {
+            return None;
+        };
+        let children = self
+            .modules
+            .get(module_id.index())?
+            .ir
+            .arena
+            .child_slice(children)?
+            .to_vec();
+        let mut elements = Vec::new();
+        elements.try_reserve_exact(children.len()).ok()?;
+        for child in children {
+            elements.push(self.force_cache_payload_for_ir_node_with_frames(
+                EvalNodeRef::new(module_id, child),
+                frames,
+                depth.saturating_add(1),
+                seen_thunks,
+            )?);
+        }
+        Some(CachedExpressionValue::strict_list(elements))
+    }
+
+    fn force_cache_payload_for_ir_attrset_with_frames(
+        &self,
+        module_id: EvalModuleId,
+        data: IrData,
+        frames: &[Rc<EvalFrame>],
+        depth: usize,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<CachedExpressionValue> {
+        let IrData::AttrSet {
+            bindings,
+            recursive,
+            has_dynamic,
+            ..
+        } = data
+        else {
+            return None;
+        };
+        if recursive || has_dynamic {
+            return None;
+        }
+        let entries = {
+            let module = self.modules.get(module_id.index())?;
+            let start = bindings.start as usize;
+            let end = start.checked_add(bindings.len())?;
+            let bindings = module.ir.bindings.get(start..end)?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(bindings.len()).ok()?;
+            for binding in bindings {
+                let IrAttrPathSegment::Static(symbol) = binding.key else {
+                    return None;
+                };
+                let name = try_clone_bytes(module.ir.symbols.resolve(symbol)?).ok()?;
+                let position = binding
+                    .position
+                    .map(|span| AttrPosition::new(module_id.as_u32(), span));
+                entries.push((name, position, binding.value));
+            }
+            entries
+        };
+        let source_order_is_lexicographic = entries.windows(2).all(|pair| pair[0].0 < pair[1].0);
+        let has_positions = entries.iter().any(|(_, position, _)| position.is_some());
+        let mut payload_entries = Vec::new();
+        payload_entries.try_reserve_exact(entries.len()).ok()?;
+        for (name, position, value) in entries {
+            payload_entries.push((
+                name,
+                position,
+                self.force_cache_payload_for_ir_node_with_frames(
+                    EvalNodeRef::new(module_id, value),
+                    frames,
+                    depth.saturating_add(1),
+                    seen_thunks,
+                )?,
+            ));
+        }
+        if has_positions {
+            if source_order_is_lexicographic {
+                CachedExpressionValue::positioned_attrs(payload_entries).ok()
+            } else {
+                CachedExpressionValue::source_ordered_positioned_attrs(payload_entries).ok()
+            }
+        } else if source_order_is_lexicographic {
+            CachedExpressionValue::strict_attrs(
+                payload_entries
+                    .into_iter()
+                    .map(|(name, _, value)| (name, value))
+                    .collect(),
+            )
+            .ok()
+        } else {
+            CachedExpressionValue::source_ordered_attrs(
+                payload_entries
+                    .into_iter()
+                    .map(|(name, _, value)| (name, value))
+                    .collect(),
+            )
+            .ok()
         }
     }
 
@@ -219,10 +438,12 @@ impl TreeWalk {
         }
     }
 
-    fn force_cache_payload_for_value_with_depth(
+    pub(super) fn force_cache_payload_for_value_with_depth(
         &self,
         value: Value,
         depth: usize,
+        seen_thunks: &mut BTreeSet<u64>,
+        allow_suspended_capture_aliases: bool,
     ) -> Option<CachedExpressionValue> {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
@@ -262,6 +483,8 @@ impl TreeWalk {
                         elements.push(self.force_cache_payload_for_value_with_depth(
                             *element,
                             depth.saturating_add(1),
+                            seen_thunks,
+                            allow_suspended_capture_aliases,
                         )?);
                     }
                     Some(CachedExpressionValue::strict_list(elements))
@@ -287,6 +510,8 @@ impl TreeWalk {
                                 self.force_cache_payload_for_value_with_depth(
                                     entry.value,
                                     depth.saturating_add(1),
+                                    seen_thunks,
+                                    allow_suspended_capture_aliases,
                                 )?,
                             ));
                         }
@@ -299,6 +524,8 @@ impl TreeWalk {
                                 self.force_cache_payload_for_value_with_depth(
                                     entry.value,
                                     depth.saturating_add(1),
+                                    seen_thunks,
+                                    allow_suspended_capture_aliases,
                                 )?,
                             ));
                         }
@@ -329,15 +556,36 @@ impl TreeWalk {
                 }
             }
             ValueTag::Thunk => {
-                let thunk = self.heap.get_thunk(value).ok()?;
-                match thunk.cell().cached_value().ok()? {
-                    Some(cached) if cached.is_thunk() => None,
-                    Some(cached) => self
-                        .force_cache_payload_for_value_with_depth(cached, depth.saturating_add(1)),
-                    None => {
-                        self.force_cache_payload_for_suspended_thunk(thunk, depth.saturating_add(1))
-                    }
+                let thunk_key = value.payload_bits();
+                if !seen_thunks.insert(thunk_key) {
+                    return None;
                 }
+                let thunk = self.heap.get_thunk(value).ok()?;
+                let result = match thunk.cell().cached_value().ok()? {
+                    Some(cached) if cached.is_thunk() => None,
+                    Some(cached) => self.force_cache_payload_for_value_with_depth(
+                        cached,
+                        depth.saturating_add(1),
+                        seen_thunks,
+                        allow_suspended_capture_aliases,
+                    ),
+                    None => {
+                        if allow_suspended_capture_aliases {
+                            self.force_cache_payload_for_suspended_thunk_with_seen(
+                                thunk,
+                                depth.saturating_add(1),
+                                seen_thunks,
+                            )
+                        } else {
+                            self.force_cache_payload_for_suspended_closed_thunk(
+                                thunk,
+                                depth.saturating_add(1),
+                            )
+                        }
+                    }
+                };
+                seen_thunks.remove(&thunk_key);
+                result
             }
             _ => None,
         }

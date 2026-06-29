@@ -708,7 +708,11 @@ impl TreeWalk {
                 return Some(hash);
             }
         }
-        self.force_cache_free_var_value_hash(arg.value())
+        if builtin.execution() == BuiltinExecution::FindFile {
+            self.force_cache_free_var_value_hash(arg.value())
+        } else {
+            self.force_cache_free_var_value_hash_without_suspended_aliases(arg.value())
+        }
     }
 
     #[cfg(test)]

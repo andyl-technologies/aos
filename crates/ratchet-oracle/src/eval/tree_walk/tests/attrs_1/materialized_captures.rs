@@ -384,6 +384,43 @@ fn suspended_computed_thunk_cells_are_not_free_variable_hashable() {
 }
 
 #[test]
+fn suspended_recursive_alias_thunk_cells_are_not_free_variable_hashable() {
+    for source in ["rec { a = a; }", "rec { a = b; b = a; }"] {
+        let ir = lower(source);
+        let a = symbol_for(&ir, b"a");
+        let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a thunk");
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+
+        assert_eq!(
+            evaluator.force_cache_free_var_value_hash(thunk_value),
+            None,
+            "recursive alias thunk cells must not recurse while building free-variable hashes"
+        );
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is still a thunk");
+        assert_eq!(
+            thunk.cell().state(),
+            Ok(ThunkState::Suspended),
+            "hashing a recursive alias thunk cell must not force it"
+        );
+    }
+}
+
+#[test]
 fn suspended_closed_literal_thunk_cells_are_free_variable_hashable_without_forcing() {
     let ir = lower("{ a = [ 1 true null ]; }");
     let a = symbol_for(&ir, b"a");

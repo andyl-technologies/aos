@@ -266,7 +266,7 @@ fn find_file_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
 }
 
 #[test]
-fn find_file_explicit_list_with_captured_entries_waits_for_whole_thunk_hit() {
+fn find_file_explicit_list_with_captured_entries_hits_whole_thunk() {
     let root = unique_temp_dir("force-cache-find-file-captured-list");
     let hit_root = root.join("hit");
     let hit_candidate = hit_root.join("subdir");
@@ -319,11 +319,13 @@ fn find_file_explicit_list_with_captured_entries_waits_for_whole_thunk_hit() {
         path_value_bytes(&second, forced_again),
         path_bytes(&hit_candidate)
     );
-    assert!(
-        second.stats().thunks_forced() > 0,
-        "captured explicit-list entries are still outside whole-thunk hit coverage"
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "stable captured explicit-list entries should hit the whole-thunk payload"
     );
-    assert!(second.stats().cache_misses() > 0);
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
 
     fs::remove_dir_all(root).expect("temp tree removed");
@@ -1151,7 +1153,7 @@ fn find_file_first_class_explicit_list_hits_from_persistent_cache_after_revalida
 }
 
 #[test]
-fn find_file_first_class_explicit_list_with_captured_entries_waits_for_uncached_child_call() {
+fn find_file_first_class_explicit_list_with_captured_entries_hits_child_call() {
     let root = unique_temp_dir("force-cache-first-class-find-file-captured-list");
     let hit_root = root.join("hit");
     let hit_candidate = hit_root.join("subdir");
@@ -1210,13 +1212,38 @@ fn find_file_first_class_explicit_list_with_captured_entries_waits_for_uncached_
     assert_eq!(
         second.stats().force_cache_hits(),
         0,
-        "captured first-class explicit-list entries should not hit a child-call payload"
+        "the second captured first-class explicit-list demand should materialize the child-call payload"
     );
     assert!(
-        second.stats().cache_misses() > 0,
-        "captured first-class explicit-list entries should continue through uncached evaluation"
+        second.stats().force_cache_misses() > 0,
+        "the second captured first-class explicit-list demand should record a child-call miss"
     );
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    drop(second);
+
+    let mut third = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "default.nix",
+        source.as_str(),
+        cache.clone(),
+    );
+    let forced_third = force_attr_a(&mut third, &ir, a);
+    assert_eq!(
+        path_value_bytes(&third, forced_third),
+        path_bytes(&hit_candidate)
+    );
+    assert!(
+        third.stats().thunks_forced() > 0,
+        "captured first-class explicit-list child hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(
+        third.stats().force_cache_hits(),
+        1,
+        "matching captured first-class explicit-list entries should hit the child-call payload"
+    );
+    assert_eq!(third.stats().force_cache_misses(), 0);
+    assert_eq!(third.impure_input_trace(), expected_trace.as_slice());
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
