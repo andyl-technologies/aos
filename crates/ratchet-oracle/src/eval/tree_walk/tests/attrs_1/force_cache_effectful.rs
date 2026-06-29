@@ -3135,6 +3135,119 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
 }
 
 #[test]
+fn dirty_persistent_effectful_force_cache_hit_counts_early_cutoff() {
+    let persist_root = unique_temp_dir("force-cache-persistent-effectful-dirty-cutoff");
+    let root = unique_temp_dir("force-cache-persistent-effectful-dirty");
+    fs::write(root.join("marker"), b"present").expect("marker exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let source = "{ a = builtins.pathExists ./marker; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+
+    let mut first_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    first_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    first_options.set_persist_cache_root(&persist_root);
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let thunk_value = seed_prior_persistent_demand_for_attr(&mut first, &ir, a, &persist_root, "a");
+    let forced = first
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("attr force succeeds");
+    assert_eq!(forced.as_bool(), Ok(true));
+    drop(first);
+
+    let shared_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut prime_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    prime_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    let mut prime = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        prime_options,
+        "default.nix",
+        source,
+        shared_runtime.clone(),
+    );
+    let (primed, subject) = force_attr_a_with_impure_observation_subject(&mut prime, &ir, a);
+    assert_eq!(primed.as_bool(), Ok(true));
+    let identity = subject
+        .lookup_identity
+        .expect("trace-backed attr has a lookup identity");
+    let owner_key =
+        DemandCacheKey::for_free_vars(identity, subject.free_var_value_hashes.iter().copied())
+            .expect("owner key builds");
+    {
+        let mut runtime = shared_runtime.lock().expect("cache lock is valid");
+        assert_eq!(
+            runtime
+                .invalidate_inline_expression_payload(
+                    identity,
+                    subject.free_var_value_hashes.iter().copied()
+                )
+                .expect("payload invalidates"),
+            Some(true)
+        );
+        let cache = runtime.cache().expect("cache is enabled");
+        let owner = cache
+            .graph()
+            .node_id_for_key(owner_key)
+            .expect("forced expression node remains");
+        assert_eq!(
+            cache
+                .graph()
+                .node(owner)
+                .expect("owner node exists")
+                .freshness(),
+            crate::cache::NodeFreshness::Dirty
+        );
+    }
+    drop(prime);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options
+        .set_path_literal_base(path_bytes(&root))
+        .expect("path base is absolute");
+    second_options.set_persist_cache_root(&persist_root);
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        shared_runtime,
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(forced_again.as_bool(), Ok(true));
+    assert_eq!(
+        second.stats().thunks_forced(),
+        0,
+        "persistent hit should replay without forcing the thunk body"
+    );
+    assert_eq!(second.stats().cache_hits(), 1);
+    assert_eq!(second.stats().cache_misses(), 0);
+    assert_eq!(
+        second.stats().early_cutoffs(),
+        1,
+        "persistent hit runtime seeding should count same-hash dirty cutoff"
+    );
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists(&path_bytes(&root.join("marker")), true)
+            .expect("fingerprint builds"),
+    ];
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(&persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn changed_effectful_forced_inline_thunks_miss_persistent_cache_after_revalidation() {
     let persist_root = unique_temp_dir("force-cache-persistent-effectful-changed");
     let root = unique_temp_dir("force-cache-persistent-effectful-stale");

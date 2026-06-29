@@ -277,6 +277,22 @@ fn force_attr_a_with_impure_observation_key(
     ir: &Ir,
     a: Symbol,
 ) -> (Value, DemandCacheKey) {
+    let (forced, subject) = force_attr_a_with_impure_observation_subject(evaluator, ir, a);
+    let key = DemandCacheKey::for_free_vars(
+        subject
+            .impure_observation_identity
+            .expect("a has an impure observation identity"),
+        subject.free_var_value_hashes.iter().copied(),
+    )
+    .expect("a force-cache impure observation key builds");
+    (forced, key)
+}
+
+fn force_attr_a_with_impure_observation_subject(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    a: Symbol,
+) -> (Value, ForceCacheSubject) {
     let root = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {
         let attrs = evaluator
@@ -294,18 +310,11 @@ fn force_attr_a_with_impure_observation_key(
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
             .expect("a force-cache subject builds")
     };
-    let key = DemandCacheKey::for_free_vars(
-        subject
-            .impure_observation_identity
-            .expect("a has an impure observation identity"),
-        subject.free_var_value_hashes.iter().copied(),
-    )
-    .expect("a force-cache impure observation key builds");
     evaluator.record_force_cache_memoization_demand(&subject);
     evaluator.record_force_cache_memoization_demand(&subject);
     let forced = TreeWalk::force_value(evaluator, ir.root, Span::new(0, 0), thunk_value)
         .expect("attr force succeeds");
-    (forced, key)
+    (forced, subject)
 }
 
 fn persistent_path_exists_trace_payload(path: &[u8], exists: bool) -> PersistNodeTracePayload {

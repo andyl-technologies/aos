@@ -1276,6 +1276,17 @@ alone (`M-1`/`Q-A`).
       parity proof remain open (`S-14`/`M-11`). Gates:
       dirty trace-backed inline-payload cache tests and
       `dirty_effectful_force_cache_hit_revalidates_and_counts_early_cutoff`.
+- [x] Current persistent-hit force-payload early-cutoff accounting:
+      fresh-runtime persistent force-cache hits now preserve the runtime
+      payload-observation `Reconsideration` when seeding the in-memory demand
+      graph, including trace-backed payloads with revalidated impure-input
+      leaves. If the durable hit rehydrates a dirty same-hash runtime node,
+      tree-walk increments `EvalStats::early_cutoffs` just like an in-memory
+      dirty hit. This is accounting for persistent-hit runtime seeding only;
+      evaluator-owned dirty-frontier scheduling, transitive red/green
+      propagation, canonical hashes for all values, and cached/uncached `.drv`
+      parity proof remain open (`S-14`/`M-11`). Gate:
+      `dirty_persistent_effectful_force_cache_hit_counts_early_cutoff`.
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.

@@ -20,7 +20,10 @@ enum ForcePayloadPersistenceAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistRuntimeHitObservation {
-    Accepted(DemandNodeId),
+    Accepted {
+        node: DemandNodeId,
+        early_cutoff: bool,
+    },
     Rejected,
     Skipped,
 }
@@ -863,8 +866,14 @@ impl TreeWalk {
             &trace,
             &memo_read_dependencies,
         ) {
-            PersistRuntimeHitObservation::Accepted(dependency) => {
+            PersistRuntimeHitObservation::Accepted {
+                node: dependency,
+                early_cutoff,
+            } => {
                 self.record_active_memo_read(active_force_cache_node, dependency);
+                if early_cutoff {
+                    self.increment_early_cutoffs();
+                }
             }
             PersistRuntimeHitObservation::Rejected => {
                 self.clear_persist_forced_expression_payload(subject);
@@ -908,7 +917,14 @@ impl TreeWalk {
                     subject.free_var_value_hashes.iter().copied(),
                     payload,
                 )
-                .map(|observation| observation.map(|reconsideration| reconsideration.node()))
+                .map(|observation| {
+                    observation.map(|reconsideration| {
+                        (
+                            reconsideration.node(),
+                            reconsideration.decision() == CutoffDecision::CutOff,
+                        )
+                    })
+                })
         } else {
             let mut runtime_trace = Vec::new();
             if runtime_trace.try_reserve_exact(trace.len()).is_err() {
@@ -930,15 +946,26 @@ impl TreeWalk {
                     payload,
                     &source,
                 )
-                .map(|observation| observation.and_then(|observation| observation.node()))
+                .map(|observation| {
+                    observation.and_then(|observation| {
+                        let node = observation.node()?;
+                        let early_cutoff =
+                            observation
+                                .payload_reconsideration()
+                                .is_some_and(|reconsideration| {
+                                    reconsideration.decision() == CutoffDecision::CutOff
+                                });
+                        Some((node, early_cutoff))
+                    })
+                })
         };
         match observation {
-            Ok(Some(node)) => match cache
+            Ok(Some((node, early_cutoff))) => match cache
                 .replace_memo_read_dependencies_by_persist_keys(node, memo_read_dependencies)
             {
                 Ok(Some(true)) => PersistRuntimeHitObservation::Rejected,
-                Ok(Some(false)) => PersistRuntimeHitObservation::Accepted(node),
-                Ok(None) => PersistRuntimeHitObservation::Accepted(node),
+                Ok(Some(false)) => PersistRuntimeHitObservation::Accepted { node, early_cutoff },
+                Ok(None) => PersistRuntimeHitObservation::Accepted { node, early_cutoff },
                 Err(error) => {
                     tracing::warn!(
                         target: "aos_nix::cache",
