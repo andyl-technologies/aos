@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 
 use aos_core::error::AosError;
 use aos_core::nix::{
-    NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
+    DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
     select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
@@ -234,13 +234,30 @@ pub fn run(
     systems: bool,
     mode: DiffMode,
     oracle_stats: bool,
+    cache_validation: bool,
 ) -> Result<()> {
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
     }
-    let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
     NixRunner::ensure_nix_instantiate_available()?;
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
+
+    if cache_validation {
+        return run_cache_validation(
+            printer,
+            verbose,
+            &oracle,
+            &eval_config,
+            file,
+            attr,
+            smoke,
+            all,
+            systems,
+            mode,
+        );
+    }
+
+    let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
     let candidate_name = candidate.name();
 
     if smoke || all || systems {
@@ -316,6 +333,138 @@ pub fn run(
         render_eval_divergence_classes(printer, &eval_config, file, attr, &report, "  ");
         render_single_oracle_stats(printer, oracle_stats.as_ref());
     }
+    Err(failure.into())
+}
+
+fn run_cache_validation(
+    printer: &Printer,
+    verbose: u8,
+    oracle: &NixCli,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: Option<&str>,
+    smoke: bool,
+    all: bool,
+    systems: bool,
+    mode: DiffMode,
+) -> Result<()> {
+    let mut cache_off_config = eval_config.clone();
+    cache_off_config.clear_native_cache_root();
+    let cache_off = select_native_diff_candidate_with_config(verbose, cache_off_config)?;
+
+    let entries = if smoke || all || systems {
+        corpus_entries(oracle, file, smoke, all, systems)?.entries
+    } else {
+        let attr = attr.ok_or_else(|| AosError::InvalidArgument {
+            message: "provide --attr <ATTR>, --smoke, --all, or --systems".to_string(),
+        })?;
+        vec![CorpusEntry {
+            file: file.to_path_buf(),
+            attr: attr.to_string(),
+        }]
+    };
+
+    if entries.is_empty() {
+        return Err(AosError::InvalidArgument {
+            message: "nix-diff cache validation selection found no derivations".to_string(),
+        }
+        .into());
+    }
+
+    printer.info(&format!(
+        "Cache-validating {} selected derivation(s)...",
+        entries.len()
+    ));
+
+    let mut reports = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let cold_cache_root = create_cold_cache_validation_root()?;
+        let mut cold_cache_config = eval_config.clone();
+        cold_cache_config.set_native_cache_root(&cold_cache_root)?;
+        let cold_cache = select_native_diff_candidate_with_config(verbose, cold_cache_config)?;
+        reports.push(cache_validation_attr_report(
+            oracle,
+            cache_off.as_ref(),
+            cold_cache.as_ref(),
+            cold_cache_root,
+            &entry.file,
+            &entry.attr,
+            mode,
+        ));
+    }
+
+    let failure = cache_validation_failure(&reports);
+    cleanup_successful_cache_validation_roots(&reports);
+
+    if printer.json_if_active(&cache_validation_json(
+        &reports,
+        eval_config,
+        file,
+        mode,
+        failure.as_ref(),
+    )) {
+        if let Some(failure) = failure {
+            return Err(failure.into());
+        }
+        return Ok(());
+    }
+
+    let Some(failure) = failure else {
+        printer.success(&format!(
+            "cache validation matched {} selected derivation(s): nix-cli, native cache-off, native cold-cache ({mode:?})",
+            reports.len()
+        ));
+        printer.info("successful cold cache roots were removed");
+        return Ok(());
+    };
+
+    if printer.mode() == OutputMode::Quiet {
+        printer.error(&failure.to_string());
+    } else {
+        let failed = reports.iter().filter(|report| report.has_failure()).count();
+        printer.warning(&format!(
+            "cache validation failed for {failed} of {} selected derivation(s)",
+            reports.len()
+        ));
+        for attr_report in reports.iter().filter(|report| report.has_failure()) {
+            printer.plain(&format!(
+                "  - {} {}",
+                attr_report.file.display(),
+                attr_report.attr
+            ));
+            printer.plain(&format!(
+                "      reproduce: {}",
+                cache_validation_reproduction_command(
+                    eval_config,
+                    &attr_report.file,
+                    &attr_report.attr,
+                    mode,
+                )
+            ));
+            printer.plain(&format!(
+                "      cold cache root: {}",
+                attr_report.cold_cache_root.display()
+            ));
+            for comparison in attr_report
+                .comparisons()
+                .iter()
+                .filter(|comparison| comparison.failure.is_some())
+            {
+                let failure = comparison
+                    .failure
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "drv diff failed".to_string());
+                printer.plain(&format!("      {}: {failure}", comparison.name));
+                if let Some(report) = &comparison.report {
+                    for divergence in &report.divergences {
+                        printer.plain(&format!("        - {}", render_diff(divergence)));
+                    }
+                }
+            }
+        }
+    }
+
     Err(failure.into())
 }
 
@@ -555,6 +704,85 @@ struct AttrDiffReport {
     report: Option<DrvDiffReport>,
     failure: Option<NixDiffReportedFailure>,
     oracle_stats: Option<NixInstantiateStats>,
+}
+
+#[derive(Debug)]
+struct CacheValidationAttrReport {
+    file: PathBuf,
+    attr: String,
+    cold_cache_root: PathBuf,
+    oracle_vs_cache_off: CacheValidationComparison,
+    oracle_vs_cold_cache: CacheValidationComparison,
+    cache_off_vs_cold_cache: CacheValidationComparison,
+}
+
+impl CacheValidationAttrReport {
+    fn comparisons(&self) -> [&CacheValidationComparison; 3] {
+        [
+            &self.oracle_vs_cache_off,
+            &self.oracle_vs_cold_cache,
+            &self.cache_off_vs_cold_cache,
+        ]
+    }
+
+    fn has_failure(&self) -> bool {
+        self.comparisons()
+            .iter()
+            .any(|comparison| comparison.failure.is_some())
+    }
+}
+
+#[derive(Debug)]
+struct CacheValidationComparison {
+    name: &'static str,
+    oracle: &'static str,
+    candidate: &'static str,
+    report: Option<DrvDiffReport>,
+    failure: Option<NixDiffReportedFailure>,
+}
+
+#[derive(Debug, Clone)]
+enum CacheValidationInstantiation {
+    Closure(DrvClosure),
+    Path(PathBuf),
+    Error(String),
+}
+
+struct CacheValidationFixedEval<'a> {
+    name: &'static str,
+    result: &'a CacheValidationInstantiation,
+}
+
+impl NixEval for CacheValidationFixedEval<'_> {
+    fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+        match self.result {
+            CacheValidationInstantiation::Closure(closure) => Ok(closure.root().to_path_buf()),
+            CacheValidationInstantiation::Path(path) => Ok(path.clone()),
+            CacheValidationInstantiation::Error(error) => Err(anyhow::anyhow!(error.clone())),
+        }
+    }
+
+    fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+        self.instantiate(Path::new("expr"), "")
+    }
+
+    fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+        match self.result {
+            CacheValidationInstantiation::Closure(closure) => Ok(Some(closure.clone())),
+            CacheValidationInstantiation::Path(_) => Ok(None),
+            CacheValidationInstantiation::Error(error) => Err(anyhow::anyhow!(error.clone())),
+        }
+    }
+
+    fn eval_expr(&self, _expr: &str) -> Result<String> {
+        Err(anyhow::anyhow!(
+            "cache-validation fixed evaluator only supports derivation instantiation"
+        ))
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
 }
 
 #[derive(Debug)]
@@ -1350,6 +1578,166 @@ fn corpus_failure(reports: &[AttrDiffReport]) -> Option<NixDiffReportedFailure> 
     ))
 }
 
+fn cache_validation_attr_report(
+    oracle: &dyn NixEval,
+    cache_off: &dyn NixEval,
+    cold_cache: &dyn NixEval,
+    cold_cache_root: PathBuf,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> CacheValidationAttrReport {
+    let oracle_result = instantiate_cache_validation_side(oracle, file, attr, mode);
+    let cache_off_result = instantiate_cache_validation_side(cache_off, file, attr, mode);
+    let cold_cache_result = instantiate_cache_validation_side(cold_cache, file, attr, mode);
+
+    CacheValidationAttrReport {
+        file: file.to_path_buf(),
+        attr: attr.to_string(),
+        cold_cache_root,
+        oracle_vs_cache_off: cache_validation_comparison(
+            "oracle_vs_cache_off",
+            "nix-cli",
+            "aos-nix-cache-off",
+            &oracle_result,
+            &cache_off_result,
+            file,
+            attr,
+            mode,
+        ),
+        oracle_vs_cold_cache: cache_validation_comparison(
+            "oracle_vs_cold_cache",
+            "nix-cli",
+            "aos-nix-cold-cache",
+            &oracle_result,
+            &cold_cache_result,
+            file,
+            attr,
+            mode,
+        ),
+        cache_off_vs_cold_cache: cache_validation_comparison(
+            "cache_off_vs_cold_cache",
+            "aos-nix-cache-off",
+            "aos-nix-cold-cache",
+            &cache_off_result,
+            &cold_cache_result,
+            file,
+            attr,
+            mode,
+        ),
+    }
+}
+
+fn instantiate_cache_validation_side(
+    eval: &dyn NixEval,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> CacheValidationInstantiation {
+    match mode {
+        DiffMode::Path => match eval.instantiate(file, attr) {
+            Ok(path) => CacheValidationInstantiation::Path(path),
+            Err(error) => CacheValidationInstantiation::Error(format!("{error:#}")),
+        },
+        DiffMode::Byte | DiffMode::Structural => match eval.instantiate_closure(file, attr) {
+            Ok(Some(closure)) => CacheValidationInstantiation::Closure(closure),
+            Ok(None) => match eval.instantiate(file, attr) {
+                Ok(path) => CacheValidationInstantiation::Path(path),
+                Err(error) => CacheValidationInstantiation::Error(format!("{error:#}")),
+            },
+            Err(error) => CacheValidationInstantiation::Error(format!("{error:#}")),
+        },
+    }
+}
+
+fn cache_validation_comparison(
+    name: &'static str,
+    oracle_label: &'static str,
+    candidate_label: &'static str,
+    oracle_result: &CacheValidationInstantiation,
+    candidate_result: &CacheValidationInstantiation,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> CacheValidationComparison {
+    let oracle = CacheValidationFixedEval {
+        name: oracle_label,
+        result: oracle_result,
+    };
+    let candidate = CacheValidationFixedEval {
+        name: candidate_label,
+        result: candidate_result,
+    };
+    match diff_closure(&oracle, &candidate, file, attr, mode)
+        .with_context(|| format!("cache-validating {name} for {attr}"))
+    {
+        Ok(report) => {
+            let failure = report_failure(&report);
+            CacheValidationComparison {
+                name,
+                oracle: oracle_label,
+                candidate: candidate_label,
+                report: Some(report),
+                failure,
+            }
+        }
+        Err(error) => CacheValidationComparison {
+            name,
+            oracle: oracle_label,
+            candidate: candidate_label,
+            report: None,
+            failure: Some(NixDiffReportedFailure::attr_error(format!("{error:#}"))),
+        },
+    }
+}
+
+fn cache_validation_failure(
+    reports: &[CacheValidationAttrReport],
+) -> Option<NixDiffReportedFailure> {
+    let failing_attrs = reports.iter().filter(|report| report.has_failure()).count();
+    if failing_attrs == 0 {
+        return None;
+    }
+
+    let divergence_count = reports
+        .iter()
+        .flat_map(CacheValidationAttrReport::comparisons)
+        .filter_map(|comparison| comparison.report.as_ref())
+        .map(|report| report.divergences.len())
+        .sum();
+    Some(NixDiffReportedFailure::corpus_failed(
+        failing_attrs,
+        divergence_count,
+    ))
+}
+
+fn create_cold_cache_validation_root() -> Result<PathBuf> {
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    for attempt in 0..100_u32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system time is before UNIX_EPOCH")?
+            .as_nanos();
+        let root = tmp.join(format!("aos-nix-diff-cold-cache-{pid}-{nanos}-{attempt}"));
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok(root),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating cold cache root {}", root.display()));
+            }
+        }
+    }
+    anyhow::bail!("creating unique cold cache root in {}", tmp.display())
+}
+
+fn cleanup_successful_cache_validation_roots(reports: &[CacheValidationAttrReport]) {
+    for report in reports.iter().filter(|report| !report.has_failure()) {
+        let _ = fs::remove_dir_all(&report.cold_cache_root);
+    }
+}
+
 fn report_failure(report: &DrvDiffReport) -> Option<NixDiffReportedFailure> {
     if !report.divergences.is_empty() {
         return Some(NixDiffReportedFailure::diverged(report.divergences.len()));
@@ -1519,6 +1907,79 @@ fn attr_report_json(
         );
     }
     value
+}
+
+fn cache_validation_json(
+    reports: &[CacheValidationAttrReport],
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    mode: DiffMode,
+    failure: Option<&NixDiffReportedFailure>,
+) -> serde_json::Value {
+    let failed_attrs = reports.iter().filter(|report| report.has_failure()).count();
+    let divergence_count: usize = reports
+        .iter()
+        .flat_map(CacheValidationAttrReport::comparisons)
+        .filter_map(|comparison| comparison.report.as_ref())
+        .map(|report| report.divergences.len())
+        .sum();
+
+    serde_json::json!({
+        "mode": mode_name(mode),
+        "cache_validation": true,
+        "file": file.to_string_lossy(),
+        "matched": failure.is_none(),
+        "error": failure.map(ToString::to_string),
+        "attrs_checked": reports.len(),
+        "attrs_failed": failed_attrs,
+        "divergence_count": divergence_count,
+        "reports": reports.iter()
+            .map(|report| cache_validation_attr_json(report, eval_config, mode))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn cache_validation_attr_json(
+    report: &CacheValidationAttrReport,
+    eval_config: &NixEvalConfig,
+    mode: DiffMode,
+) -> serde_json::Value {
+    serde_json::json!({
+        "attr": report.attr,
+        "file": report.file.to_string_lossy(),
+        "cold_cache_root": report.cold_cache_root.to_string_lossy(),
+        "cold_cache_root_retained": report.has_failure(),
+        "matched": !report.has_failure(),
+        "reproduce": cache_validation_reproduction_command(
+            eval_config,
+            &report.file,
+            &report.attr,
+            mode,
+        ),
+        "comparisons": report.comparisons()
+            .iter()
+            .map(|comparison| cache_validation_comparison_json(comparison))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn cache_validation_comparison_json(comparison: &CacheValidationComparison) -> serde_json::Value {
+    serde_json::json!({
+        "name": comparison.name,
+        "oracle": comparison.oracle,
+        "candidate": comparison.candidate,
+        "matched": comparison.failure.is_none(),
+        "error": comparison.failure.as_ref().map(ToString::to_string),
+        "oracle_root": comparison.report.as_ref()
+            .and_then(|report| report.oracle_root.as_ref())
+            .map(|path| path.to_string_lossy().to_string()),
+        "candidate_root": comparison.report.as_ref()
+            .and_then(|report| report.candidate_root.as_ref())
+            .map(|path| path.to_string_lossy().to_string()),
+        "divergences": comparison.report.as_ref()
+            .map(|report| report.divergences.iter().map(diff_json).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    })
 }
 
 fn insert_oracle_stats(value: &mut serde_json::Value, stats: Option<&NixInstantiateStats>) {
@@ -1862,6 +2323,34 @@ fn reproduction_args(
     args
 }
 
+fn cache_validation_reproduction_command(
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> String {
+    cache_validation_reproduction_args(eval_config, file, attr, mode)
+        .iter()
+        .map(|arg| shell_word(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn cache_validation_reproduction_args(
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> Vec<String> {
+    let mut args = reproduction_args(eval_config, file, attr, mode);
+    let insert_at = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.insert(insert_at, "--cache-validation".to_string());
+    args
+}
+
 fn node_reproduction_command(
     oracle_drv: &Path,
     candidate_drv: &Path,
@@ -2165,6 +2654,46 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FixedEval {
+        name: &'static str,
+        path: PathBuf,
+        instantiate_calls: AtomicUsize,
+    }
+
+    impl FixedEval {
+        fn new(name: &'static str, path: &str) -> Self {
+            Self {
+                name,
+                path: PathBuf::from(path),
+                instantiate_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn instantiate_calls(&self) -> usize {
+            self.instantiate_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NixEval for FixedEval {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            self.instantiate_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.path.clone())
+        }
+
+        fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+            Ok(self.path.clone())
+        }
+
+        fn eval_expr(&self, _expr: &str) -> Result<String> {
+            Ok("null".to_string())
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
 
     fn repro_config() -> NixEvalConfig {
         let mut config = NixEvalConfig::new();
@@ -2174,6 +2703,144 @@ mod tests {
         config.clear_allowed_uris();
         config.set_trace_verbose(false);
         config
+    }
+
+    #[test]
+    fn cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache() {
+        let oracle = FixedEval::new("oracle", "/nix/store/same.drv");
+        let cache_off = FixedEval::new("cache-off", "/nix/store/same.drv");
+        let cold_cache = FixedEval::new("cold-cache", "/nix/store/same.drv");
+
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Path,
+        );
+
+        assert!(!report.has_failure());
+        assert_eq!(
+            report
+                .comparisons()
+                .iter()
+                .map(|comparison| comparison.name)
+                .collect::<Vec<_>>(),
+            [
+                "oracle_vs_cache_off",
+                "oracle_vs_cold_cache",
+                "cache_off_vs_cold_cache"
+            ]
+        );
+        assert_eq!(oracle.instantiate_calls(), 1);
+        assert_eq!(cache_off.instantiate_calls(), 1);
+        assert_eq!(cold_cache.instantiate_calls(), 1);
+    }
+
+    #[test]
+    fn cache_validation_json_renders_matrix_failures() {
+        let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
+        let cache_off = FixedEval::new("cache-off", "/nix/store/oracle.drv");
+        let cold_cache = FixedEval::new("cold-cache", "/nix/store/cold.drv");
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/aos-cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Path,
+        );
+        let reports = vec![report];
+        let failure = cache_validation_failure(&reports);
+
+        let value = cache_validation_json(
+            &reports,
+            &repro_config(),
+            Path::new("default.nix"),
+            DiffMode::Path,
+            failure.as_ref(),
+        );
+
+        assert_eq!(value["cache_validation"], true);
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["attrs_checked"], 1);
+        assert_eq!(value["attrs_failed"], 1);
+        assert_eq!(value["divergence_count"], 2);
+        assert_eq!(value["reports"][0]["attr"], "pkgs.hello");
+        assert_eq!(
+            value["reports"][0]["cold_cache_root"],
+            "/tmp/aos-cold-cache"
+        );
+        assert_eq!(value["reports"][0]["cold_cache_root_retained"], true);
+        assert_eq!(
+            value["reports"][0]["reproduce"],
+            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=path --cache-validation -- default.nix"
+        );
+        assert_eq!(
+            value["reports"][0]["comparisons"][0]["name"],
+            "oracle_vs_cache_off"
+        );
+        assert_eq!(value["reports"][0]["comparisons"][0]["matched"], true);
+        assert_eq!(
+            value["reports"][0]["comparisons"][1]["name"],
+            "oracle_vs_cold_cache"
+        );
+        assert_eq!(value["reports"][0]["comparisons"][1]["matched"], false);
+        assert_eq!(
+            value["reports"][0]["comparisons"][2]["name"],
+            "cache_off_vs_cold_cache"
+        );
+        assert_eq!(
+            value["reports"][0]["comparisons"][2]["divergences"][0]["kind"],
+            "root_path"
+        );
+    }
+
+    #[test]
+    fn cache_validation_cleanup_removes_only_successful_cold_roots() -> Result<()> {
+        let matching_root = tempfile::tempdir()?;
+        let failing_root = tempfile::tempdir()?;
+        let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
+        let matching_cache_off = FixedEval::new("matching-cache-off", "/nix/store/oracle.drv");
+        let matching_cold = FixedEval::new("matching-cold", "/nix/store/oracle.drv");
+        let failing_cache_off = FixedEval::new("failing-cache-off", "/nix/store/oracle.drv");
+        let failing_cold = FixedEval::new("failing-cold", "/nix/store/cold.drv");
+        let matching_path = matching_root.keep();
+        let failing_path = failing_root.keep();
+        let matching = cache_validation_attr_report(
+            &oracle,
+            &matching_cache_off,
+            &matching_cold,
+            matching_path.clone(),
+            Path::new("default.nix"),
+            "pkgs.matching",
+            DiffMode::Path,
+        );
+        let failing = cache_validation_attr_report(
+            &oracle,
+            &failing_cache_off,
+            &failing_cold,
+            failing_path.clone(),
+            Path::new("default.nix"),
+            "pkgs.failing",
+            DiffMode::Path,
+        );
+
+        cleanup_successful_cache_validation_roots(&[matching, failing]);
+
+        assert!(
+            !matching_path.exists(),
+            "successful cold cache roots should be removed"
+        );
+        assert!(
+            failing_path.exists(),
+            "failing cold cache roots should remain for debugging"
+        );
+        fs::remove_dir_all(&failing_path)?;
+        Ok(())
     }
 
     #[test]

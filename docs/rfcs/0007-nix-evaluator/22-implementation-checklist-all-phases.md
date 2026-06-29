@@ -3905,6 +3905,28 @@ alone (`M-1`/`Q-A`).
       cache-off/cold cached CI harness, syscall-level no-read proof, complete
       cache metadata/symlink/directory-only proof, or future value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current `nix-diff` cache-validation command precursor:
+      `aos nix-diff --cache-validation` evaluates each selected attr once
+      through each side of the existing differential closure harness, then
+      compares the recorded results as a three-way cold safety matrix: C++ Nix
+      oracle versus native cache-off, C++ Nix oracle versus native cold-cache,
+      and native cache-off versus native cold-cache. The mode works with
+      `--attr`, `--smoke`, `--all`, and `--systems`, creates an empty per-attr
+      native cache root for the cold-cache leg, clears `native_cache_root` for
+      the cache-off leg, rejects direct `.drv` pair mode and `--oracle-stats`,
+      renders machine-readable JSON with per-comparison roots/divergences and
+      per-attr cold roots, removes successful cold roots, retains failing cold
+      roots, and reports a reproduction command carrying `--cache-validation`
+      on failures. This is a runnable command-level validation hook only;
+      scheduled CI wiring, full AOS package-set closure coverage on Linux,
+      syscall-level cache-off no-read proof, and full future value-memoization
+      safety remain open. Gates:
+      `nix_diff_parses_cache_validation`,
+      `nix_diff_cache_validation_rejects_incompatible_modes`,
+      `cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache`,
+      `cache_validation_json_renders_matrix_failures`, and
+      `cache_validation_cleanup_removes_only_successful_cold_roots`
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation

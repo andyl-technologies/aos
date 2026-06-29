@@ -148,6 +148,7 @@ async fn run(cli: &Cli) -> Result<()> {
         file,
         mode,
         oracle_stats,
+        cache_validation,
         oracle_drv,
         candidate_drv,
         oracle_drv_bundle,
@@ -188,6 +189,7 @@ async fn run(cli: &Cli) -> Result<()> {
             *systems,
             (*mode).into(),
             *oracle_stats,
+            *cache_validation,
         );
     }
 
@@ -395,6 +397,7 @@ fn run_nix_diff_threaded(
     systems: bool,
     mode: DiffMode,
     oracle_stats: bool,
+    cache_validation: bool,
 ) -> Result<()> {
     const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -416,6 +419,7 @@ fn run_nix_diff_threaded(
                 systems,
                 mode,
                 oracle_stats,
+                cache_validation,
             )
         })
         .context("spawning nix-diff worker thread")?;
@@ -676,6 +680,7 @@ mod tests {
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
                 oracle_stats: false,
+                cache_validation: false,
                 oracle_drv: None,
                 candidate_drv: None,
                 oracle_drv_bundle: None,

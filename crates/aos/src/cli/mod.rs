@@ -212,6 +212,12 @@ pub enum Commands {
         /// Capture raw NIX_SHOW_STATS JSON from the C++ Nix oracle
         #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
         oracle_stats: bool,
+        /// Compare native cache-off and cold-cache output against the oracle
+        #[arg(
+            long,
+            conflicts_with_all = ["oracle_drv", "candidate_drv", "oracle_stats"]
+        )]
+        cache_validation: bool,
         /// Existing oracle .drv path for direct node comparison
         #[arg(long, value_name = "PATH", requires = "candidate_drv")]
         oracle_drv: Option<std::path::PathBuf>,
@@ -223,7 +229,7 @@ pub enum Commands {
             long,
             value_name = "PATH",
             requires = "oracle_drv",
-            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats"]
+            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats", "cache_validation"]
         )]
         oracle_drv_bundle: Option<std::path::PathBuf>,
         /// Candidate closure bundle for direct node comparison
@@ -231,7 +237,7 @@ pub enum Commands {
             long,
             value_name = "PATH",
             requires = "candidate_drv",
-            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats"]
+            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats", "cache_validation"]
         )]
         candidate_drv_bundle: Option<std::path::PathBuf>,
     },
@@ -394,6 +400,7 @@ mod tests {
                 file,
                 mode,
                 oracle_stats,
+                cache_validation,
                 oracle_drv,
                 candidate_drv,
                 oracle_drv_bundle,
@@ -406,6 +413,7 @@ mod tests {
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
+                assert!(!cache_validation);
                 assert_eq!(oracle_drv, None);
                 assert_eq!(candidate_drv, None);
                 assert_eq!(oracle_drv_bundle, None);
@@ -436,6 +444,7 @@ mod tests {
                 file,
                 mode,
                 oracle_stats,
+                cache_validation,
                 oracle_drv,
                 candidate_drv,
                 oracle_drv_bundle,
@@ -448,6 +457,7 @@ mod tests {
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
                 assert!(!oracle_stats);
+                assert!(!cache_validation);
                 assert_eq!(oracle_drv, None);
                 assert_eq!(candidate_drv, None);
                 assert_eq!(oracle_drv_bundle, None);
@@ -489,6 +499,23 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_cache_validation() {
+        let cli = parse_cli(["aos", "nix-diff", "--smoke", "--cache-validation"]);
+
+        match cli.command {
+            Commands::NixDiff {
+                smoke,
+                cache_validation,
+                ..
+            } => {
+                assert!(smoke);
+                assert!(cache_validation);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
     fn nix_diff_parses_direct_drv_pair() {
         let cli = parse_cli([
             "aos",
@@ -510,6 +537,7 @@ mod tests {
                 file,
                 mode,
                 oracle_stats,
+                cache_validation,
                 oracle_drv,
                 candidate_drv,
                 oracle_drv_bundle,
@@ -522,6 +550,7 @@ mod tests {
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Structural);
                 assert!(!oracle_stats);
+                assert!(!cache_validation);
                 assert_eq!(
                     oracle_drv,
                     Some(std::path::PathBuf::from("/tmp/oracle.drv"))
@@ -953,6 +982,29 @@ mod tests {
             "--candidate-drv",
             "/tmp/candidate.drv",
             "default.nix",
+        ]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn nix_diff_cache_validation_rejects_incompatible_modes() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--smoke",
+            "--cache-validation",
+            "--oracle-stats",
+        ]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--cache-validation",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
         ]);
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
