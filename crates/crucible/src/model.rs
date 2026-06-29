@@ -3812,7 +3812,7 @@ pub enum ReachabilityExpectation {
     Unreachable,
 }
 
-/// The declarative predicate vocabulary used by properties.
+/// The shared declarative predicate vocabulary used by properties and triggers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Predicate {
     /// A named host-side predicate resolved by the harness and event log.
@@ -3847,6 +3847,60 @@ pub enum Predicate {
         /// Predicate being negated.
         predicate: Box<Predicate>,
     },
+}
+
+impl Predicate {
+    /// Builds a named host-side predicate with no declared node references.
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        Self::Named {
+            name: name.into(),
+            nodes: Vec::new(),
+        }
+    }
+
+    /// Builds a named host-side predicate with explicit declared node references.
+    #[must_use]
+    pub fn named_for_nodes(name: impl Into<String>, nodes: Vec<NodeId>) -> Self {
+        Self::Named {
+            name: name.into(),
+            nodes,
+        }
+    }
+
+    /// Builds a guest-marker predicate.
+    #[must_use]
+    pub fn guest_marker(marker: MarkerId) -> Self {
+        Self::GuestMarker { marker }
+    }
+
+    /// Builds a conjunction predicate.
+    #[must_use]
+    pub fn all_of(predicates: Vec<Predicate>) -> Self {
+        Self::AllOf { predicates }
+    }
+
+    /// Builds a disjunction predicate.
+    #[must_use]
+    pub fn any_of(predicates: Vec<Predicate>) -> Self {
+        Self::AnyOf { predicates }
+    }
+
+    /// Builds a latching predicate.
+    #[must_use]
+    pub fn once(predicate: Predicate) -> Self {
+        Self::Once {
+            predicate: Box::new(predicate),
+        }
+    }
+
+    /// Builds a negated predicate.
+    #[must_use]
+    pub fn not(predicate: Predicate) -> Self {
+        Self::Not {
+            predicate: Box::new(predicate),
+        }
+    }
 }
 
 /// A temporal property declaration.

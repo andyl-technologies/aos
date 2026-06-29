@@ -85,8 +85,8 @@
         needle = "pub struct EventId";
       }
       {
-        label = "condition handle";
-        needle = "pub enum Condition";
+        label = "shared condition alias";
+        needle = "pub type Condition = Predicate";
       }
       {
         label = "event shape";

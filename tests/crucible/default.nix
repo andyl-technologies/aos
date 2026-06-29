@@ -512,6 +512,11 @@ in {
       attrPath = "checks.crucible.phase4.eventGraphControlFlow";
       taskIds = ["T-TRIG-1"];
     };
+    sharedConditionVocabulary = import ./phase4-shared-condition-vocabulary.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.sharedConditionVocabulary";
+      taskIds = ["T-TRIG-2"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

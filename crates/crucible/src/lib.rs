@@ -111,8 +111,9 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use trigger::{
-    Action, Condition, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph,
-    EventGraphError, EventGraphState, EventId, FirePolicy, LogLevel,
+    Action, Condition, ConditionEvaluation, ConditionEvaluator, ConditionLeaf, ConditionLeafOracle,
+    Event, EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph, EventGraphError,
+    EventGraphState, EventId, FirePolicy, LogLevel, evaluate_condition,
 };
 
 #[cfg(test)]

@@ -1192,11 +1192,21 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   rejection, and a focused static guardrail against current direct scenario
   poke/inject/heal APIs in the engine-facing control surfaces. Full condition leaf
   semantics, action application, build-time reference validation, Plan lowering,
-  and verdict composition remain T-TRIG-2 through T-TRIG-20.
-- [ ] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
+  and verdict composition remain T-TRIG-3 through T-TRIG-20.
+- [x] **T-TRIG-2** Define the shared `Condition` vocabulary as one predicate type
   with two consumers (assertion 18 + trigger), evaluated identically over the same
   log at the same points; prove a predicate usable as an assertion is usable as a
   trigger. — satisfies [TRIG-4]; spec §17a.2.
+
+  Completed by `checks.crucible.phase4.sharedConditionVocabulary`: trigger
+  `Condition` is a public alias of the assertion/property `Predicate` type, so
+  `Property` declarations and event triggers consume the same value through the
+  shared non-overridable `evaluate_condition` entry point. The gate covers
+  assertion-to-trigger assignment, identical predicate evaluation over a shared
+  condition value and evaluation point, `Eventually` trigger/property reuse,
+  compound predicate reuse in `Properties` and `EventGraph`, and rejects a
+  separate trigger-only `Condition` enum. Full leaf semantics and event-log-backed
+  leaf resolution remain T-TRIG-3 through T-TRIG-11.
 - [ ] **T-TRIG-3** Implement the time leaves `At`, `After { duration, of }`
   (relative timer), and `Timer { name }`, all functions of virtual time and the
   graph's firing history, with build-time reference validation. — satisfies
