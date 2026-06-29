@@ -7,6 +7,7 @@ use crate::cache::{
     PersistNodeMetadataKey, ValueHash,
 };
 
+mod ambient_inputs;
 mod current_system;
 mod stale_metadata;
 

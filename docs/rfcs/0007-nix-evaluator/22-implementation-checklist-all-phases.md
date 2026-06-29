@@ -3415,6 +3415,26 @@ alone (`M-1`/`Q-A`).
       impure-input demand-graph integration, full AOS package-set coverage,
       syscall-level cache-off no-read proof, or the full cached-vs-uncached CI safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
+- [x] Current reusable native file-closure ambient-input parity witness:
+      `native_file_cache_parity_harness_covers_get_env_impure_input` seeds a
+      persistent direct-file closure with configured `builtins.getEnv`, mutates
+      the configured environment value, and requires stale cached output to
+      match the changed uncached closure, replace the same getEnv force-cache
+      metadata key with a changed value hash, later hit the changed key, and
+      keep the original/changed getEnv trace hashes plus persistent sidecar
+      hashes out of `.drv` surfaces.
+      `native_file_cache_parity_harness_covers_current_time_configured_input`
+      drives configured `builtins.currentTime` through the same file-closure
+      boundary and requires a changed timestamp cached run to match the changed
+      uncached closure rather than the original while scanning persistent
+      sidecar hashes and currentTime hot hashes out of `.drv` surfaces.
+      This extends the direct-file cache-parity harness to ambient impure
+      inputs; it is not itself a currentTime uncacheability/tombstone proof,
+      full currentTime taint propagation through future durable dependents,
+      full impure-input demand-graph integration, full AOS package-set coverage,
+      syscall-level cache-off no-read proof, or the full cached-vs-uncached CI
+      safety net
+      ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,
