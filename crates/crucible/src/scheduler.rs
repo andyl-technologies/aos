@@ -846,6 +846,89 @@ pub struct SchedulerTopologyChangeApplication {
     pub updates: Vec<SchedulerTopologyLookaheadUpdate>,
 }
 
+/// One scheduler-owned event discarded by node crash handling.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerDiscardedEvent {
+    /// The event's deterministic scheduler key.
+    pub key: ScheduledEventKey,
+    /// The resolved event class that would have been emitted if it survived.
+    pub class: ScheduledEventResolveClass,
+}
+
+/// One scheduler-owned device completion discarded by node crash handling.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerDiscardedIoCompletion {
+    /// The scheduler sub-node that produced the completion.
+    pub sub_node: SchedulerNodeId,
+    /// The target VM node that would have observed the completion.
+    pub target: NodeId,
+    /// The target instruction count where the completion would become visible.
+    pub delivery_icount: Icount,
+    /// The device-core source id in the completion delivery key.
+    pub source_node: u32,
+    /// The device-core sequence number in the completion delivery key.
+    pub sequence: u32,
+    /// The deterministic completion payload.
+    pub payload: Vec<u8>,
+}
+
+/// Scheduler-side checkpoint anchor for one VM node.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SchedulerNodeCheckpoint {
+    /// The checkpointed VM node.
+    pub node: NodeId,
+    /// The VM counter captured by the checkpoint.
+    pub counter: NodeCounter,
+    /// Scheduler-time projection of `counter` when the checkpoint was recorded.
+    pub at: SimInstant,
+}
+
+/// Evidence that a VM node crash was applied to scheduler-owned state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNodeCrashApplication {
+    /// Session-local sequence number of the applied crash.
+    pub sequence: u64,
+    /// The crashed VM node.
+    pub node: NodeId,
+    /// Restart policy recorded by the crash fault.
+    pub restart: RestartPolicy,
+    /// Scheduler-time point observed for the node at crash activation.
+    pub at: SimInstant,
+    /// Node counter captured at crash activation.
+    pub counter: NodeCounter,
+    /// Runtime activity the node had before the crash stopped it.
+    pub previous_activity: SchedulerNodeActivity,
+    /// Scheduler events deterministically discarded by the crash.
+    pub discarded_events: Vec<SchedulerDiscardedEvent>,
+    /// Device completions deterministically voided by the crash.
+    pub discarded_io: Vec<SchedulerDiscardedIoCompletion>,
+    /// Effective topology edges incident to the crashed node and removed.
+    pub removed_edges: Vec<SchedulerLookaheadEdge>,
+    /// Last checkpoint anchor available to checkpoint-based restart.
+    pub checkpoint: Option<SchedulerNodeCheckpoint>,
+}
+
+/// Evidence that a crashed VM node was healed or kept down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNodeRestartApplication {
+    /// Session-local sequence number of the heal/restart application.
+    pub sequence: u64,
+    /// The VM node whose crash fault healed.
+    pub node: NodeId,
+    /// Restart policy that governed the heal.
+    pub restart: RestartPolicy,
+    /// Scheduler frontier point used as the restart anchor.
+    pub at: SimInstant,
+    /// Whether the node resumed execution automatically.
+    pub restarted: bool,
+    /// Node counter after applying the restart policy.
+    pub counter: NodeCounter,
+    /// Effective topology edges queued for restoration.
+    pub restored_edges: Vec<SchedulerLookaheadEdge>,
+    /// Checkpoint anchor used by [`RestartPolicy::FromLastCheckpoint`].
+    pub checkpoint: Option<SchedulerNodeCheckpoint>,
+}
+
 /// Authorization for emitting one cross-node frame under the current topology.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerSendAuthorization {
@@ -4332,6 +4415,8 @@ pub struct SingleScheduler {
     quanta: u64,
     topology_epoch: u64,
     topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
+    node_crash_applications: Vec<SchedulerNodeCrashApplication>,
+    node_restart_applications: Vec<SchedulerNodeRestartApplication>,
     rendezvous_records: Vec<SchedulerRendezvousRecord>,
     boundary_yields: u64,
     ceiling_publications: Vec<SchedulerRunCeilingPublication>,
@@ -4406,6 +4491,8 @@ impl SingleScheduler {
             quanta: 0,
             topology_epoch: 0,
             topology_change_applications: Vec::new(),
+            node_crash_applications: Vec::new(),
+            node_restart_applications: Vec::new(),
             rendezvous_records: Vec::new(),
             boundary_yields: 0,
             ceiling_publications: Vec::new(),
@@ -4558,6 +4645,9 @@ impl SingleScheduler {
         // iteration) so the refresh is deterministic.
         let mut earliest_by_target: Vec<(NodeId, SimInstant)> = Vec::new();
         for (target, sub_nodes) in &self.device_sub_nodes {
+            if self.is_node_down(target) {
+                continue;
+            }
             let mut earliest: Option<SimInstant> = None;
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
@@ -4587,6 +4677,8 @@ impl SingleScheduler {
                 .nodes
                 .iter_mut()
                 .find(|runtime| runtime.id.node == target)
+                && runtime.crash.is_none()
+                && runtime.stopped_crash.is_none()
                 && runtime.activity == SchedulerNodeActivity::Idle
             {
                 runtime.activity = SchedulerNodeActivity::Runnable;
@@ -4946,6 +5038,18 @@ impl SingleScheduler {
         &self.topology_change_applications
     }
 
+    /// Returns node crash applications completed by this scheduler.
+    #[must_use]
+    pub fn node_crash_applications(&self) -> &[SchedulerNodeCrashApplication] {
+        &self.node_crash_applications
+    }
+
+    /// Returns node heal/restart applications completed by this scheduler.
+    #[must_use]
+    pub fn node_restart_applications(&self) -> &[SchedulerNodeRestartApplication] {
+        &self.node_restart_applications
+    }
+
     /// Returns allowed rendezvous records completed at scheduler boundaries.
     #[must_use]
     pub fn rendezvous_records(&self) -> &[SchedulerRendezvousRecord] {
@@ -5063,6 +5167,313 @@ impl SingleScheduler {
         Ok(timing_faults)
     }
 
+    /// Applies a crash fault to a VM scheduler node.
+    ///
+    /// The crash stops the runtime, removes all incident effective topology
+    /// edges, clears exact local wakeups, discards scheduler-owned events whose
+    /// producer or consumer is the crashed node, and voids all in-flight device
+    /// completions targeting the node. The returned application records the
+    /// deterministic discard set used for replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node or the node is already crashed. Returns
+    /// [`SchedulerError::TimeConversion`] when the crash activation time cannot
+    /// be projected.
+    pub fn apply_node_crash(
+        &mut self,
+        sequence: u64,
+        node: &NodeId,
+        restart: RestartPolicy,
+    ) -> Result<SchedulerNodeCrashApplication, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        if self.node_execution_stopped(&self.nodes[index]) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("node crash or stop already active for {}", node.name),
+            });
+        }
+
+        let scheduler_node = self.nodes[index].id.clone();
+        let at = self.node_current_time(&self.nodes[index])?;
+        let counter = self.nodes[index].counter;
+        let previous_activity = self.nodes[index].activity;
+        let timing_faults_at_crash = self.nodes[index].timing_faults;
+        let checkpoint = self.nodes[index].last_checkpoint.clone();
+        let removed_edges = self.incident_effective_edges(&scheduler_node);
+        let removed_endpoints = removed_edges
+            .iter()
+            .map(SchedulerLookaheadEdge::endpoint)
+            .collect::<Vec<_>>();
+        let discarded_events = self.discard_pending_events_for_node(&scheduler_node);
+        let discarded_io = self.discard_device_completions_for_node(node);
+        self.preemption_requests
+            .retain(|decision| decision.node != *node);
+        self.device_horizons.remove(node);
+
+        self.nodes[index].crash = Some(RuntimeNodeCrashState {
+            activation_sequence: sequence,
+            restart,
+            previous_activity,
+            counter_at_crash: counter,
+            timing_faults_at_crash,
+            removed_edges: removed_edges.clone(),
+            checkpoint: checkpoint.clone(),
+        });
+        self.nodes[index].activity = SchedulerNodeActivity::Halted;
+        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
+        self.nodes[index].vcpu_idle_states.clear();
+
+        if !removed_endpoints.is_empty() {
+            self.schedule_topology_change(SchedulerTopologyChange::partition(
+                sequence,
+                removed_endpoints,
+            ))?;
+        }
+        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+
+        let application = SchedulerNodeCrashApplication {
+            sequence,
+            node: node.clone(),
+            restart,
+            at,
+            counter,
+            previous_activity,
+            discarded_events,
+            discarded_io,
+            removed_edges,
+            checkpoint,
+        };
+        self.node_crash_applications.push(application.clone());
+        Ok(application)
+    }
+
+    /// Records the current VM node counter as its last checkpoint anchor.
+    ///
+    /// This scheduler-side anchor is the crash/restart contract needed by
+    /// [`RestartPolicy::FromLastCheckpoint`]. Materialized VM/device state lives
+    /// in the temporal graph; the scheduler records the counter/time identity
+    /// that a checkpoint restore must resume from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node or that node is currently stopped by a crash. Returns
+    /// [`SchedulerError::TimeConversion`] when the checkpoint time cannot be
+    /// projected.
+    pub fn record_node_checkpoint(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<SchedulerNodeCheckpoint, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        if self.node_execution_stopped(&self.nodes[index]) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("cannot checkpoint stopped node {}", node.name),
+            });
+        }
+        let checkpoint = SchedulerNodeCheckpoint {
+            node: node.clone(),
+            counter: self.nodes[index].counter,
+            at: self.node_current_time(&self.nodes[index])?,
+        };
+        self.nodes[index].last_checkpoint = Some(checkpoint.clone());
+        Ok(checkpoint)
+    }
+
+    /// Heals an active crash fault and applies the node's restart policy.
+    ///
+    /// [`RestartPolicy::FromReadyPoint`] reboots the node from counter zero at
+    /// the current scheduler frontier. [`RestartPolicy::FromLastCheckpoint`]
+    /// resumes from the node's last recorded pre-crash checkpoint. Both policies
+    /// re-anchor the node's active timing projection at the current frontier and
+    /// queue restoration of the edges removed by the crash.
+    /// [`RestartPolicy::StayDown`] records the heal but leaves the node stopped
+    /// until a future explicit restart command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node or no crash is active for the node.
+    pub fn heal_node_crash(
+        &mut self,
+        sequence: u64,
+        node: &NodeId,
+    ) -> Result<SchedulerNodeRestartApplication, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let Some(state) = self.nodes[index].crash.clone() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("node crash is not active for {}", node.name),
+            });
+        };
+        if state.restart == RestartPolicy::FromLastCheckpoint && state.checkpoint.is_none() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "checkpoint restart requested for {} without a recorded pre-crash checkpoint",
+                    node.name
+                ),
+            });
+        }
+        let Some(state) = self.nodes[index].crash.take() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("node crash is not active for {}", node.name),
+            });
+        };
+
+        let restart_time = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        if state.restart == RestartPolicy::StayDown {
+            self.nodes[index].stopped_crash = Some(RuntimeNodeStoppedState {
+                activation_sequence: state.activation_sequence,
+                previous_activity: state.previous_activity,
+                timing_faults_at_stop: state.timing_faults_at_crash,
+                removed_edges: state.removed_edges,
+            });
+            let application = SchedulerNodeRestartApplication {
+                sequence,
+                node: node.clone(),
+                restart: state.restart,
+                at: restart_time,
+                restarted: false,
+                counter: self.nodes[index].counter,
+                restored_edges: Vec::new(),
+                checkpoint: state.checkpoint,
+            };
+            self.node_restart_applications.push(application.clone());
+            return Ok(application);
+        }
+
+        let checkpoint = match state.restart {
+            RestartPolicy::FromLastCheckpoint => state.checkpoint.clone(),
+            RestartPolicy::FromReadyPoint | RestartPolicy::StayDown => state.checkpoint.clone(),
+        };
+        let counter = match state.restart {
+            RestartPolicy::FromReadyPoint => NodeCounter::default(),
+            RestartPolicy::FromLastCheckpoint => checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.counter)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "checkpoint restart requested for {} without a recorded pre-crash checkpoint",
+                        node.name
+                    ),
+                })?,
+            RestartPolicy::StayDown => state.counter_at_crash,
+        };
+        let mut timing_faults = state.timing_faults_at_crash;
+        timing_faults.anchor_counter = counter;
+        timing_faults.anchor_time = restart_time;
+
+        self.nodes[index].counter = counter;
+        self.nodes[index].timing_faults = timing_faults;
+        self.nodes[index].activity = state.previous_activity;
+        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
+        self.nodes[index].vcpu_idle_states.clear();
+        if state.restart == RestartPolicy::FromReadyPoint {
+            self.nodes[index].last_checkpoint = None;
+        }
+
+        if !state.removed_edges.is_empty() {
+            self.schedule_topology_change(SchedulerTopologyChange::heal(
+                sequence,
+                state.removed_edges.clone(),
+            ))?;
+        }
+        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+
+        let application = SchedulerNodeRestartApplication {
+            sequence,
+            node: node.clone(),
+            restart: state.restart,
+            at: restart_time,
+            restarted: true,
+            counter,
+            restored_edges: state.removed_edges,
+            checkpoint,
+        };
+        self.node_restart_applications.push(application.clone());
+        Ok(application)
+    }
+
+    /// Explicitly restarts a node left stopped by [`RestartPolicy::StayDown`].
+    ///
+    /// The restart uses the baked ready-point counter and restores the effective
+    /// topology edges that were suppressed while the node was down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` does not name a
+    /// VM scheduler node or the node is not waiting in the StayDown stopped
+    /// state.
+    pub fn restart_stopped_node(
+        &mut self,
+        sequence: u64,
+        node: &NodeId,
+    ) -> Result<SchedulerNodeRestartApplication, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let Some(state) = self.nodes[index].stopped_crash.take() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("node is not stopped after crash: {}", node.name),
+            });
+        };
+
+        let restart_time = SimInstant {
+            nanos: self.frontier.ticks,
+        };
+        let counter = NodeCounter::default();
+        let mut timing_faults = state.timing_faults_at_stop;
+        timing_faults.anchor_counter = counter;
+        timing_faults.anchor_time = restart_time;
+
+        self.nodes[index].counter = counter;
+        self.nodes[index].timing_faults = timing_faults;
+        self.nodes[index].activity = state.previous_activity;
+        self.nodes[index].exact_local_event = ExactLocalEvent::NoArmedTimer;
+        self.nodes[index].vcpu_idle_states.clear();
+        self.nodes[index].last_checkpoint = None;
+
+        if !state.removed_edges.is_empty() {
+            self.schedule_topology_change(SchedulerTopologyChange::heal(
+                sequence,
+                state.removed_edges.clone(),
+            ))?;
+        }
+        self.frontier = frontier_for(&self.nodes, self.timeline.shift())?;
+
+        let application = SchedulerNodeRestartApplication {
+            sequence,
+            node: node.clone(),
+            restart: RestartPolicy::StayDown,
+            at: restart_time,
+            restarted: true,
+            counter,
+            restored_edges: state.removed_edges,
+            checkpoint: None,
+        };
+        self.node_restart_applications.push(application.clone());
+        Ok(application)
+    }
+
+    /// Returns whether a VM node is currently crashed.
+    #[must_use]
+    pub fn is_node_crashed(&self, node: &NodeId) -> bool {
+        self.nodes.iter().any(|runtime| {
+            runtime.id.node == *node
+                && runtime.id.kind == SchedulingNodeKind::Vm
+                && runtime.crash.is_some()
+        })
+    }
+
+    /// Returns whether a VM node is stopped after a healed StayDown crash.
+    #[must_use]
+    pub fn is_node_stopped_after_crash(&self, node: &NodeId) -> bool {
+        self.nodes.iter().any(|runtime| {
+            runtime.id.node == *node
+                && runtime.id.kind == SchedulingNodeKind::Vm
+                && runtime.stopped_crash.is_some()
+        })
+    }
+
     /// Projects one VM node's current counter under active timing faults.
     ///
     /// # Errors
@@ -5144,6 +5555,9 @@ impl SingleScheduler {
         // system is not quiescent while one is undelivered, even when every node
         // is parked `Idle`. Ordered by target `NodeId` (BTreeMap iteration).
         for (target, sub_nodes) in &self.device_sub_nodes {
+            if self.is_node_down(target) {
+                continue;
+            }
             if sub_nodes
                 .iter()
                 .any(|sub_node| sub_node.next_exact_local_event().is_some())
@@ -5289,7 +5703,9 @@ impl SingleScheduler {
     }
 
     fn effective_node_activity(&self, node: &RuntimeSchedulerNode) -> SchedulerNodeActivity {
-        if node.activity == SchedulerNodeActivity::Idle
+        if self.node_execution_stopped(node) {
+            SchedulerNodeActivity::Halted
+        } else if node.activity == SchedulerNodeActivity::Idle
             && node
                 .vcpu_idle_states
                 .iter()
@@ -5298,6 +5714,181 @@ impl SingleScheduler {
             SchedulerNodeActivity::Runnable
         } else {
             node.activity
+        }
+    }
+
+    fn is_node_down(&self, node: &NodeId) -> bool {
+        self.nodes.iter().any(|runtime| {
+            runtime.id.node == *node
+                && runtime.id.kind == SchedulingNodeKind::Vm
+                && self.node_execution_stopped(runtime)
+        })
+    }
+
+    fn node_execution_stopped(&self, node: &RuntimeSchedulerNode) -> bool {
+        node.crash.is_some() || node.stopped_crash.is_some()
+    }
+
+    fn incident_effective_edges(&self, node: &SchedulerNodeId) -> Vec<SchedulerLookaheadEdge> {
+        self.effective_topology
+            .edges()
+            .iter()
+            .filter(|edge| &edge.from == node || &edge.to == node)
+            .cloned()
+            .collect()
+    }
+
+    fn discard_pending_events_for_node(
+        &mut self,
+        node: &SchedulerNodeId,
+    ) -> Vec<SchedulerDiscardedEvent> {
+        let mut pending = Vec::with_capacity(self.pending_events.len());
+        let mut discarded = Vec::new();
+        for event in std::mem::take(&mut self.pending_events) {
+            if event.key.consumer() == node || event.key.producer() == node {
+                let class = scheduled_event_resolve_class(&event);
+                discarded.push(SchedulerDiscardedEvent {
+                    key: event.key,
+                    class,
+                });
+            } else {
+                pending.push(event);
+            }
+        }
+        discarded.sort_by(|left, right| left.key.cmp(&right.key));
+        self.pending_events = pending;
+        discarded
+    }
+
+    fn discard_device_completions_for_node(
+        &mut self,
+        node: &NodeId,
+    ) -> Vec<SchedulerDiscardedIoCompletion> {
+        let Some(sub_nodes) = self.device_sub_nodes.get_mut(node) else {
+            return Vec::new();
+        };
+        let mut discarded = Vec::new();
+        for sub_node in sub_nodes {
+            discarded.extend(sub_node.discard_in_flight());
+        }
+        discarded.sort_by(|left, right| {
+            left.delivery_icount
+                .cmp(&right.delivery_icount)
+                .then_with(|| left.sub_node.cmp(&right.sub_node))
+                .then_with(|| left.source_node.cmp(&right.source_node))
+                .then_with(|| left.sequence.cmp(&right.sequence))
+                .then_with(|| left.target.cmp(&right.target))
+                .then_with(|| left.payload.cmp(&right.payload))
+        });
+        discarded
+    }
+
+    fn suppress_down_edges(&mut self, graph: SchedulerLookaheadGraph) -> SchedulerLookaheadGraph {
+        let down = self
+            .nodes
+            .iter()
+            .filter(|node| self.node_execution_stopped(node))
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        if down.is_empty() {
+            return graph;
+        }
+        let mut live_edges = Vec::new();
+        for edge in graph.edges() {
+            if down.contains(&edge.from) || down.contains(&edge.to) {
+                self.remember_suppressed_down_edge(edge);
+            } else {
+                live_edges.push(edge.clone());
+            }
+        }
+        SchedulerLookaheadGraph::from_edges(live_edges)
+    }
+
+    fn replace_suppressed_down_edges(&mut self, edges: &[SchedulerLookaheadEdge]) {
+        for node in &mut self.nodes {
+            if node.crash.is_none() && node.stopped_crash.is_none() {
+                continue;
+            }
+            let incident = canonical_edges_by_endpoint(
+                edges
+                    .iter()
+                    .filter(|edge| edge.from == node.id || edge.to == node.id)
+                    .cloned(),
+            );
+            if let Some(state) = &mut node.crash {
+                state.removed_edges = incident.clone();
+            }
+            if let Some(state) = &mut node.stopped_crash {
+                state.removed_edges = incident.clone();
+            }
+        }
+    }
+
+    fn remove_suppressed_down_edges(
+        &mut self,
+        sequence: u64,
+        endpoints: &[SchedulerLookaheadEdgeEndpoint],
+    ) {
+        let endpoints = endpoints.iter().cloned().collect::<BTreeSet<_>>();
+        for node in &mut self.nodes {
+            if let Some(state) = &mut node.crash {
+                if state.activation_sequence != sequence {
+                    state
+                        .removed_edges
+                        .retain(|edge| !endpoints.contains(&edge.endpoint()));
+                }
+            }
+            if let Some(state) = &mut node.stopped_crash {
+                if state.activation_sequence != sequence {
+                    state
+                        .removed_edges
+                        .retain(|edge| !endpoints.contains(&edge.endpoint()));
+                }
+            }
+        }
+    }
+
+    fn update_suppressed_down_edges(&mut self, updated_edges: &[SchedulerLookaheadEdge]) {
+        let updates = updated_edges
+            .iter()
+            .map(|edge| (edge.endpoint(), edge.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for node in &mut self.nodes {
+            if let Some(state) = &mut node.crash {
+                replace_existing_edges_by_endpoint(&mut state.removed_edges, &updates);
+            }
+            if let Some(state) = &mut node.stopped_crash {
+                replace_existing_edges_by_endpoint(&mut state.removed_edges, &updates);
+            }
+        }
+    }
+
+    fn suppressed_down_edge_exists(&self, endpoint: &SchedulerLookaheadEdgeEndpoint) -> bool {
+        let has_endpoint = |edges: &[SchedulerLookaheadEdge]| {
+            edges.iter().any(|edge| edge.endpoint() == *endpoint)
+        };
+        self.nodes.iter().any(|node| {
+            node.crash
+                .as_ref()
+                .is_some_and(|state| has_endpoint(&state.removed_edges))
+                || node
+                    .stopped_crash
+                    .as_ref()
+                    .is_some_and(|state| has_endpoint(&state.removed_edges))
+        })
+    }
+
+    fn remember_suppressed_down_edge(&mut self, edge: &SchedulerLookaheadEdge) {
+        for node in &mut self.nodes {
+            if node.id != edge.from && node.id != edge.to {
+                continue;
+            }
+            if let Some(state) = &mut node.crash {
+                upsert_edge_by_endpoint(&mut state.removed_edges, edge.clone());
+            }
+            if let Some(state) = &mut node.stopped_crash {
+                upsert_edge_by_endpoint(&mut state.removed_edges, edge.clone());
+            }
         }
     }
 
@@ -5369,7 +5960,8 @@ impl SingleScheduler {
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] if the link reports a zero
     /// effective latency or if the directed edge is absent from the current
-    /// effective topology. Returns [`SchedulerError::TopologyActivationInPast`] if
+    /// effective topology or from a topology edge suppressed by a crashed or
+    /// stopped node. Returns [`SchedulerError::TopologyActivationInPast`] if
     /// enqueue-time validation observes an impossible activation time, which does
     /// not occur for this no-activation latency-change path but is propagated from
     /// [`SingleScheduler::schedule_topology_change`] for uniformity.
@@ -5403,6 +5995,9 @@ impl SingleScheduler {
                 found = true;
                 break;
             }
+        }
+        if !found {
+            found = self.suppressed_down_edge_exists(&endpoint);
         }
         if !found {
             return Err(SchedulerError::BoundaryViolation {
@@ -5504,18 +6099,23 @@ impl SingleScheduler {
             }
             let graph = match effect {
                 SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
+                    self.replace_suppressed_down_edges(&effective_edges);
                     SchedulerLookaheadGraph::from_edges(effective_edges)
                 }
                 SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
+                    self.remove_suppressed_down_edges(sequence, &endpoints);
                     self.effective_topology.remove_effective_edges(endpoints)
                 }
-                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => self
-                    .effective_topology
-                    .update_effective_edges(updated_edges),
+                SchedulerTopologyChangeEffect::UpdateEffectiveEdges(updated_edges) => {
+                    self.update_suppressed_down_edges(&updated_edges);
+                    self.effective_topology
+                        .update_effective_edges(updated_edges)
+                }
                 SchedulerTopologyChangeEffect::RestoreEffectiveEdges(restored_edges) => self
                     .effective_topology
                     .restore_effective_edges(restored_edges),
             };
+            let graph = self.suppress_down_edges(graph);
             let mut updates = Vec::with_capacity(self.nodes.len());
             for node in &mut self.nodes {
                 let previous_lookahead = node.network_lookahead;
@@ -7096,6 +7696,26 @@ pub fn apply_combined_node_timing_faults_to_scheduler(
     scheduler.apply_combined_node_timing_faults(node, faults)
 }
 
+/// Applies the crash component of combined node faults to a scheduler VM node.
+///
+/// Returns `Ok(None)` when the combined fault set contains no active crash.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when the crash target cannot be applied by
+/// [`SingleScheduler::apply_node_crash`].
+pub fn apply_combined_node_crash_to_scheduler(
+    scheduler: &mut SingleScheduler,
+    sequence: u64,
+    node: &NodeId,
+    faults: &CombinedNodeFaults,
+) -> Result<Option<SchedulerNodeCrashApplication>, SchedulerError> {
+    faults
+        .crash_restart
+        .map(|restart| scheduler.apply_node_crash(sequence, node, restart))
+        .transpose()
+}
+
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(
         &self,
@@ -7231,10 +7851,32 @@ struct RuntimeSchedulerNode {
     id: SchedulerNodeId,
     counter: NodeCounter,
     timing_faults: NodeTimingFaults,
+    last_checkpoint: Option<SchedulerNodeCheckpoint>,
+    crash: Option<RuntimeNodeCrashState>,
+    stopped_crash: Option<RuntimeNodeStoppedState>,
     activity: SchedulerNodeActivity,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeNodeCrashState {
+    activation_sequence: u64,
+    restart: RestartPolicy,
+    previous_activity: SchedulerNodeActivity,
+    counter_at_crash: NodeCounter,
+    timing_faults_at_crash: NodeTimingFaults,
+    removed_edges: Vec<SchedulerLookaheadEdge>,
+    checkpoint: Option<SchedulerNodeCheckpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeNodeStoppedState {
+    activation_sequence: u64,
+    previous_activity: SchedulerNodeActivity,
+    timing_faults_at_stop: NodeTimingFaults,
+    removed_edges: Vec<SchedulerLookaheadEdge>,
 }
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
@@ -7243,6 +7885,9 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
             id: node.id,
             counter: node.counter,
             timing_faults: NodeTimingFaults::default(),
+            last_checkpoint: None,
+            crash: None,
+            stopped_crash: None,
             activity: node.activity,
             network_lookahead: node.network_lookahead,
             exact_local_event: node.exact_local_event,
@@ -7469,6 +8114,7 @@ fn frontier_for(
     shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
+    let mut crashed_frontier = None;
 
     for node in nodes {
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
@@ -7477,6 +8123,13 @@ fn frontier_for(
         } else {
             node.counter.to_virtual(shift)?
         };
+        if node.crash.is_some() || node.stopped_crash.is_some() {
+            crashed_frontier = Some(match crashed_frontier {
+                Some(current) => min_instant(current, virtual_time),
+                None => virtual_time,
+            });
+            continue;
+        }
         frontier = Some(match frontier {
             Some(current) => min_instant(current, virtual_time),
             None => virtual_time,
@@ -7484,12 +8137,53 @@ fn frontier_for(
     }
 
     Ok(VirtualTime {
-        ticks: frontier.unwrap_or(SimInstant::EPOCH).nanos,
+        ticks: frontier
+            .or(crashed_frontier)
+            .unwrap_or(SimInstant::EPOCH)
+            .nanos,
     })
 }
 
 fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
+}
+
+fn upsert_edge_by_endpoint(edges: &mut Vec<SchedulerLookaheadEdge>, edge: SchedulerLookaheadEdge) {
+    let endpoint = edge.endpoint();
+    if let Some(index) = edges
+        .iter()
+        .position(|candidate| candidate.endpoint() == endpoint)
+    {
+        edges[index] = edge;
+    } else {
+        edges.push(edge);
+    }
+    edges.sort();
+    edges.dedup();
+}
+
+fn canonical_edges_by_endpoint<I>(edges: I) -> Vec<SchedulerLookaheadEdge>
+where
+    I: IntoIterator<Item = SchedulerLookaheadEdge>,
+{
+    let mut canonical = Vec::new();
+    for edge in edges {
+        upsert_edge_by_endpoint(&mut canonical, edge);
+    }
+    canonical
+}
+
+fn replace_existing_edges_by_endpoint(
+    edges: &mut Vec<SchedulerLookaheadEdge>,
+    updates: &BTreeMap<SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadEdge>,
+) {
+    for edge in edges.iter_mut() {
+        if let Some(updated) = updates.get(&edge.endpoint()) {
+            *edge = updated.clone();
+        }
+    }
+    edges.sort();
+    edges.dedup();
 }
 
 /// An error produced by the scheduler boundary.

@@ -58,7 +58,7 @@ use crucible_device::{
     BlockDevice, BlockRequest, DeviceError, NinepDevice, PendingResponse, ResponseStatus,
 };
 
-use crate::scheduler::IoCompletion;
+use crate::scheduler::{IoCompletion, SchedulerDiscardedIoCompletion};
 use crate::{
     Decision, DeviceId, FaultDecision, FaultId, NodeId, RngDecision, SchedulerNodeId, Seed,
 };
@@ -469,6 +469,35 @@ impl DeviceSchedulingSubNode {
         }
         delivered
     }
+
+    /// Discards every not-yet-delivered completion owned by this sub-node.
+    ///
+    /// Crash handling uses this to void in-flight device responses before they
+    /// can become scheduler-visible events. Returned completions are ordered by
+    /// the sub-node's deterministic delivery order.
+    #[must_use]
+    pub fn discard_in_flight(&mut self) -> Vec<SchedulerDiscardedIoCompletion> {
+        let discarded = self
+            .resolved
+            .iter()
+            .skip(self.next_delivery)
+            .map(|completion| SchedulerDiscardedIoCompletion {
+                sub_node: self.sub_node.clone(),
+                target: self.target.clone(),
+                delivery_icount: crate::Icount {
+                    retired: completion.delivery_icount,
+                },
+                source_node: completion.src_node,
+                sequence: completion.seq,
+                payload: completion.payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.modeled.clear();
+        self.resolved.clear();
+        self.next_delivery = 0;
+        self.device.discard_inflight();
+        discarded
+    }
 }
 
 /// The concrete device a scheduler sub-node owns.
@@ -516,6 +545,14 @@ impl ScheduledDevice {
         match self {
             ScheduledDevice::Block(device) => device.core().snapshot().inflight,
             ScheduledDevice::Ninep(device) => device.core().snapshot().inflight,
+        }
+    }
+
+    /// Discards all concrete in-flight completions held by the device core.
+    fn discard_inflight(&mut self) -> Vec<PendingResponse> {
+        match self {
+            ScheduledDevice::Block(device) => device.core_mut().discard_inflight(),
+            ScheduledDevice::Ninep(device) => device.core_mut().discard_inflight(),
         }
     }
 
