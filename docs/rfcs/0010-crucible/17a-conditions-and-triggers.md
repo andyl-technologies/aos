@@ -1223,11 +1223,24 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   edge-shaped `After` and `Timer` leaves as trigger-only. Event-log-backed
   observable leaves, full timer action application, the broader reference/cycle
   validator, and verdict composition remain T-TRIG-4 through T-TRIG-20.
-- [ ] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
+- [x] **T-TRIG-4** Implement the black-box observable leaves `NetworkMatch`,
   `ConsoleMatch`, `IoPattern`, and `NodeState` over the event log (delivery /
   console / I/O completion / lifecycle entries), each with its deterministic
   evaluation point and zero guest cooperation. — satisfies [TRIG-6], [TRIG-7],
   [TRIG-10], [TRIG-11]; spec §17a.2.2, §17a.2.3, §17a.2.6, §17a.2.7.
+
+  Completed by `checks.crucible.phase4.observableConditionLeaves`: shared
+  `Predicate` includes the black-box observable leaves, with typed `LinkId`,
+  `FramePredicate`, `RegexProgram`, `IoEventKind`, and `NodeLifecycle` support.
+  The shared evaluator consumes a deterministic typed observable-log prefix and
+  resolves `NetworkMatch` from delivered frame bytes, `ConsoleMatch` from the
+  node's host-captured console stream prefix at the current evaluation point,
+  `IoPattern` from deterministic I/O completions, and `NodeState` from lifecycle
+  entries without using named predicates or guest-marker cooperation. Console
+  regexes are validated during graph/property construction. Full RFC 19 event-log
+  catalog integration, named-link topology validation, coverage/memory leaves,
+  assertion/quiescence leaves, and the broader validator remain T-OBS-* and
+  T-TRIG-5 through T-TRIG-20.
 - [ ] **T-TRIG-5** Implement `CoveragePoint` from the TCG-exec hook (zero
   instrumentation, host-side symbol resolution), sampled by the block-execution
   event itself. — satisfies [TRIG-8], [TRIG-18]; spec §17a.2.4, §17a.3.2;

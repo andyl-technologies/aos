@@ -3807,6 +3807,105 @@ impl EventId {
     }
 }
 
+/// Stable identity of an observable network link.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkId {
+    /// Canonical link name.
+    pub name: String,
+}
+
+impl LinkId {
+    /// Builds a link id from a canonical name.
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// Host-side byte predicate for a delivered network frame.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FramePredicate {
+    /// Match any delivered frame.
+    Any,
+    /// Match a frame whose bytes exactly equal the declared bytes.
+    Exact(Vec<u8>),
+    /// Match a frame containing the declared byte sequence.
+    Contains(Vec<u8>),
+    /// Match a frame starting with the declared byte sequence.
+    Prefix(Vec<u8>),
+}
+
+impl FramePredicate {
+    /// Builds a predicate that matches any frame.
+    #[must_use]
+    pub const fn any() -> Self {
+        Self::Any
+    }
+
+    /// Builds an exact frame-byte predicate.
+    #[must_use]
+    pub fn exact(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Exact(bytes.into())
+    }
+
+    /// Builds a contained-byte-sequence frame predicate.
+    #[must_use]
+    pub fn contains(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Contains(bytes.into())
+    }
+
+    /// Builds a prefix frame-byte predicate.
+    #[must_use]
+    pub fn prefix(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Prefix(bytes.into())
+    }
+}
+
+/// Bounded host-side regex program for console output.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RegexProgram {
+    /// Regex pattern evaluated by the host over captured output bytes.
+    pub pattern: String,
+}
+
+impl RegexProgram {
+    /// Builds a regex program from a pattern string.
+    #[must_use]
+    pub fn from_pattern(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+        }
+    }
+}
+
+/// Observable I/O operation class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IoEventKind {
+    /// Match any deterministic I/O completion.
+    Any,
+    /// A block-device read completed.
+    BlockRead,
+    /// A block-device write completed.
+    BlockWrite,
+    /// A durable flush completed.
+    Fsync,
+    /// A 9p filesystem operation completed.
+    NineP,
+    /// A network-device operation completed.
+    Network,
+}
+
+/// Lifecycle state entered by a scenario node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NodeLifecycle {
+    /// The node started or became runnable.
+    Started,
+    /// The node crashed.
+    Crashed,
+    /// The node exited or completed.
+    Exited,
+}
+
 /// Disposition for an ordinary reachable marker that is never reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReachableDisposition {
@@ -3847,6 +3946,34 @@ pub enum Predicate {
     Timer {
         /// Timer identity armed by an event action.
         name: TimerId,
+    },
+    /// True when a delivered network frame matches a host-side predicate.
+    NetworkMatch {
+        /// Optional link to constrain the delivered frame.
+        link: Option<LinkId>,
+        /// Host-side frame predicate.
+        predicate: FramePredicate,
+    },
+    /// True when a node's captured console stream matches a regex.
+    ConsoleMatch {
+        /// Node whose console output is observed.
+        node: NodeId,
+        /// Host-side regex program matched against console bytes.
+        regex: RegexProgram,
+    },
+    /// True when a node performs an I/O completion of the requested kind.
+    IoPattern {
+        /// Node whose deterministic I/O completion is observed.
+        node: NodeId,
+        /// I/O completion kind to match.
+        kind: IoEventKind,
+    },
+    /// True when a node enters a lifecycle state.
+    NodeState {
+        /// Node whose lifecycle is observed.
+        node: NodeId,
+        /// Lifecycle state to match.
+        state: NodeLifecycle,
     },
     /// A named host-side predicate resolved by the harness and event log.
     Named {
@@ -3917,6 +4044,30 @@ impl Predicate {
     #[must_use]
     pub fn timer(name: TimerId) -> Self {
         Self::Timer { name }
+    }
+
+    /// Builds a delivered-network-frame predicate.
+    #[must_use]
+    pub fn network_match(link: Option<LinkId>, predicate: FramePredicate) -> Self {
+        Self::NetworkMatch { link, predicate }
+    }
+
+    /// Builds a console-output predicate.
+    #[must_use]
+    pub fn console_match(node: NodeId, regex: RegexProgram) -> Self {
+        Self::ConsoleMatch { node, regex }
+    }
+
+    /// Builds an I/O completion predicate.
+    #[must_use]
+    pub fn io_pattern(node: NodeId, kind: IoEventKind) -> Self {
+        Self::IoPattern { node, kind }
+    }
+
+    /// Builds a node-lifecycle predicate.
+    #[must_use]
+    pub fn node_state(node: NodeId, state: NodeLifecycle) -> Self {
+        Self::NodeState { node, state }
     }
 
     /// Builds a guest-marker predicate.
@@ -7558,6 +7709,13 @@ pub enum EngineError {
         /// Stable name of the trigger-only predicate kind.
         kind: &'static str,
     },
+    /// A property predicate contains an invalid regex program.
+    PropertyPredicateInvalidRegex {
+        /// Regex pattern that failed validation.
+        pattern: String,
+        /// Stable validation failure text from the regex compiler.
+        reason: String,
+    },
     /// A scenario-builder node template reference names no concrete node.
     ScenarioBuilderUnknownNodeTemplate {
         /// The node that requested a copied template.
@@ -7754,6 +7912,9 @@ impl fmt::Display for EngineError {
             }
             Self::PropertyPredicateTriggerOnly { kind } => {
                 write!(f, "property predicate {kind} is trigger-only")
+            }
+            Self::PropertyPredicateInvalidRegex { reason, .. } => {
+                write!(f, "property predicate regex is invalid: {reason}")
             }
             Self::ScenarioBuilderUnknownNodeTemplate { .. } => {
                 f.write_str("scenario builder node template is unknown")
@@ -8929,9 +9090,16 @@ fn validate_property_predicate_for_world(
     node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match predicate {
-        Predicate::At { .. } => Ok(()),
+        Predicate::At { .. } | Predicate::NetworkMatch { .. } => Ok(()),
         Predicate::After { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "after" }),
         Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "timer" }),
+        Predicate::ConsoleMatch { node, regex } => {
+            validate_property_node(node, node_ids)?;
+            validate_property_regex(regex)
+        }
+        Predicate::IoPattern { node, .. } | Predicate::NodeState { node, .. } => {
+            validate_property_node(node, node_ids)
+        }
         Predicate::Named { nodes, .. } => {
             for node in nodes {
                 validate_property_node(node, node_ids)?;
@@ -8973,6 +9141,15 @@ fn validate_property_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result
     } else {
         Err(EngineError::PropertyPredicateUnknownNode { node: node.clone() })
     }
+}
+
+fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
+    regex::bytes::Regex::new(&regex.pattern)
+        .map(|_| ())
+        .map_err(|source| EngineError::PropertyPredicateInvalidRegex {
+            pattern: regex.pattern.clone(),
+            reason: source.to_string(),
+        })
 }
 
 fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
@@ -9122,6 +9299,22 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
             of: of.clone(),
         },
         Predicate::Timer { name } => Predicate::Timer { name: name.clone() },
+        Predicate::NetworkMatch { link, predicate } => Predicate::NetworkMatch {
+            link: link.clone(),
+            predicate: predicate.clone(),
+        },
+        Predicate::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
+            node: node.clone(),
+            regex: regex.clone(),
+        },
+        Predicate::IoPattern { node, kind } => Predicate::IoPattern {
+            node: node.clone(),
+            kind: *kind,
+        },
+        Predicate::NodeState { node, state } => Predicate::NodeState {
+            node: node.clone(),
+            state: *state,
+        },
         Predicate::Named { name, nodes } => Predicate::Named {
             name: name.clone(),
             nodes: nodes.clone(),
@@ -9392,6 +9585,23 @@ enum PredicateToml {
     Timer {
         name: String,
     },
+    NetworkMatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+        predicate: FramePredicateToml,
+    },
+    ConsoleMatch {
+        node: String,
+        regex: String,
+    },
+    IoPattern {
+        node: String,
+        io_kind: IoEventKindToml,
+    },
+    NodeState {
+        node: String,
+        state: NodeLifecycleToml,
+    },
     Named {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -9412,6 +9622,37 @@ enum PredicateToml {
     Not {
         predicate: Box<PredicateToml>,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum FramePredicateToml {
+    Any,
+    Exact { bytes_hex: String },
+    Contains { needle_hex: String },
+    Prefix { prefix_hex: String },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum IoEventKindToml {
+    Any,
+    BlockRead,
+    BlockWrite,
+    Fsync,
+    NineP,
+    Network,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum NodeLifecycleToml {
+    Started,
+    Crashed,
+    Exited,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -9766,7 +10007,7 @@ fn properties_from_toml(world: &World, toml: PropertiesToml) -> Result<Propertie
         .assertion
         .into_iter()
         .map(assertion_from_toml)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let properties = Properties::from_assertions_for_world(world, assertions)?;
     validate_serialized_id("properties", id, properties.content_hash())?;
     Ok(properties)
@@ -9780,12 +10021,12 @@ fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
     }
 }
 
-fn assertion_from_toml(toml: AssertionToml) -> AssertionDef {
-    AssertionDef {
+fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError> {
+    Ok(AssertionDef {
         id: AssertionId { name: toml.id },
         message: toml.message,
-        property: property_from_toml(toml.property),
-    }
+        property: property_from_toml(toml.property)?,
+    })
 }
 
 fn property_to_toml(property: &Property) -> PropertyToml {
@@ -9818,36 +10059,36 @@ fn property_to_toml(property: &Property) -> PropertyToml {
     }
 }
 
-fn property_from_toml(toml: PropertyToml) -> Property {
-    match toml {
+fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
+    Ok(match toml {
         PropertyToml::Always { predicate } => Property::Always {
-            predicate: predicate_from_toml(predicate),
+            predicate: predicate_from_toml(predicate)?,
         },
         PropertyToml::Sometimes { predicate } => Property::Sometimes {
-            predicate: predicate_from_toml(predicate),
+            predicate: predicate_from_toml(predicate)?,
         },
         PropertyToml::Eventually {
             trigger,
             property,
             deadline_ticks,
         } => Property::Eventually {
-            trigger: predicate_from_toml(trigger),
-            property: predicate_from_toml(property),
+            trigger: predicate_from_toml(trigger)?,
+            property: predicate_from_toml(property)?,
             deadline: VirtualTime {
                 ticks: deadline_ticks,
             },
         },
         PropertyToml::AfterQuiescence { predicate } => Property::AfterQuiescence {
-            predicate: predicate_from_toml(predicate),
+            predicate: predicate_from_toml(predicate)?,
         },
         PropertyToml::Reachable {
             predicate,
             expectation,
         } => Property::Reachable {
-            predicate: predicate_from_toml(predicate),
+            predicate: predicate_from_toml(predicate)?,
             expectation: reachability_expectation_from_toml(expectation),
         },
-    }
+    })
 }
 
 fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
@@ -9859,6 +10100,22 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
         },
         Predicate::Timer { name } => PredicateToml::Timer {
             name: name.name.clone(),
+        },
+        Predicate::NetworkMatch { link, predicate } => PredicateToml::NetworkMatch {
+            link: link.as_ref().map(|link| link.name.clone()),
+            predicate: frame_predicate_to_toml(predicate),
+        },
+        Predicate::ConsoleMatch { node, regex } => PredicateToml::ConsoleMatch {
+            node: node.name.clone(),
+            regex: regex.pattern.clone(),
+        },
+        Predicate::IoPattern { node, kind } => PredicateToml::IoPattern {
+            node: node.name.clone(),
+            io_kind: io_event_kind_to_toml(*kind),
+        },
+        Predicate::NodeState { node, state } => PredicateToml::NodeState {
+            node: node.name.clone(),
+            state: node_lifecycle_to_toml(*state),
         },
         Predicate::Named { name, nodes } => PredicateToml::Named {
             name: name.clone(),
@@ -9882,8 +10139,8 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
     }
 }
 
-fn predicate_from_toml(toml: PredicateToml) -> Predicate {
-    match toml {
+fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
+    Ok(match toml {
         PredicateToml::At { at_ticks } => Predicate::At {
             at: VirtualTime { ticks: at_ticks },
         },
@@ -9896,6 +10153,22 @@ fn predicate_from_toml(toml: PredicateToml) -> Predicate {
         PredicateToml::Timer { name } => Predicate::Timer {
             name: TimerId { name },
         },
+        PredicateToml::NetworkMatch { link, predicate } => Predicate::NetworkMatch {
+            link: link.map(|name| LinkId { name }),
+            predicate: frame_predicate_from_toml(predicate)?,
+        },
+        PredicateToml::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
+            node: NodeId { name: node },
+            regex: RegexProgram { pattern: regex },
+        },
+        PredicateToml::IoPattern { node, io_kind } => Predicate::IoPattern {
+            node: NodeId { name: node },
+            kind: io_event_kind_from_toml(io_kind),
+        },
+        PredicateToml::NodeState { node, state } => Predicate::NodeState {
+            node: NodeId { name: node },
+            state: node_lifecycle_from_toml(state),
+        },
         PredicateToml::Named { name, nodes } => Predicate::Named {
             name,
             nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
@@ -9904,17 +10177,91 @@ fn predicate_from_toml(toml: PredicateToml) -> Predicate {
             marker: MarkerId { name: marker },
         },
         PredicateToml::AllOf { predicates } => Predicate::AllOf {
-            predicates: predicates.into_iter().map(predicate_from_toml).collect(),
+            predicates: predicates
+                .into_iter()
+                .map(predicate_from_toml)
+                .collect::<Result<Vec<_>, _>>()?,
         },
         PredicateToml::AnyOf { predicates } => Predicate::AnyOf {
-            predicates: predicates.into_iter().map(predicate_from_toml).collect(),
+            predicates: predicates
+                .into_iter()
+                .map(predicate_from_toml)
+                .collect::<Result<Vec<_>, _>>()?,
         },
         PredicateToml::Once { predicate } => Predicate::Once {
-            predicate: Box::new(predicate_from_toml(*predicate)),
+            predicate: Box::new(predicate_from_toml(*predicate)?),
         },
         PredicateToml::Not { predicate } => Predicate::Not {
-            predicate: Box::new(predicate_from_toml(*predicate)),
+            predicate: Box::new(predicate_from_toml(*predicate)?),
         },
+    })
+}
+
+fn frame_predicate_to_toml(predicate: &FramePredicate) -> FramePredicateToml {
+    match predicate {
+        FramePredicate::Any => FramePredicateToml::Any,
+        FramePredicate::Exact(bytes) => FramePredicateToml::Exact {
+            bytes_hex: bytes_hex(bytes),
+        },
+        FramePredicate::Contains(bytes) => FramePredicateToml::Contains {
+            needle_hex: bytes_hex(bytes),
+        },
+        FramePredicate::Prefix(bytes) => FramePredicateToml::Prefix {
+            prefix_hex: bytes_hex(bytes),
+        },
+    }
+}
+
+fn frame_predicate_from_toml(toml: FramePredicateToml) -> Result<FramePredicate, EngineError> {
+    Ok(match toml {
+        FramePredicateToml::Any => FramePredicate::Any,
+        FramePredicateToml::Exact { bytes_hex } => {
+            FramePredicate::Exact(parse_hex_bytes("frame exact bytes", &bytes_hex)?)
+        }
+        FramePredicateToml::Contains { needle_hex } => {
+            FramePredicate::Contains(parse_hex_bytes("frame contains bytes", &needle_hex)?)
+        }
+        FramePredicateToml::Prefix { prefix_hex } => {
+            FramePredicate::Prefix(parse_hex_bytes("frame prefix bytes", &prefix_hex)?)
+        }
+    })
+}
+
+fn io_event_kind_to_toml(kind: IoEventKind) -> IoEventKindToml {
+    match kind {
+        IoEventKind::Any => IoEventKindToml::Any,
+        IoEventKind::BlockRead => IoEventKindToml::BlockRead,
+        IoEventKind::BlockWrite => IoEventKindToml::BlockWrite,
+        IoEventKind::Fsync => IoEventKindToml::Fsync,
+        IoEventKind::NineP => IoEventKindToml::NineP,
+        IoEventKind::Network => IoEventKindToml::Network,
+    }
+}
+
+fn io_event_kind_from_toml(toml: IoEventKindToml) -> IoEventKind {
+    match toml {
+        IoEventKindToml::Any => IoEventKind::Any,
+        IoEventKindToml::BlockRead => IoEventKind::BlockRead,
+        IoEventKindToml::BlockWrite => IoEventKind::BlockWrite,
+        IoEventKindToml::Fsync => IoEventKind::Fsync,
+        IoEventKindToml::NineP => IoEventKind::NineP,
+        IoEventKindToml::Network => IoEventKind::Network,
+    }
+}
+
+fn node_lifecycle_to_toml(state: NodeLifecycle) -> NodeLifecycleToml {
+    match state {
+        NodeLifecycle::Started => NodeLifecycleToml::Started,
+        NodeLifecycle::Crashed => NodeLifecycleToml::Crashed,
+        NodeLifecycle::Exited => NodeLifecycleToml::Exited,
+    }
+}
+
+fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
+    match toml {
+        NodeLifecycleToml::Started => NodeLifecycle::Started,
+        NodeLifecycleToml::Crashed => NodeLifecycle::Crashed,
+        NodeLifecycleToml::Exited => NodeLifecycle::Exited,
     }
 }
 
@@ -10856,6 +11203,32 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
             writer.write_u8(8);
             writer.write_string(&name.name);
         }
+        Predicate::NetworkMatch { link, predicate } => {
+            writer.write_u8(9);
+            match link {
+                Some(link) => {
+                    writer.write_u8(1);
+                    writer.write_string(&link.name);
+                }
+                None => writer.write_u8(0),
+            }
+            write_frame_predicate_binary(predicate, writer);
+        }
+        Predicate::ConsoleMatch { node, regex } => {
+            writer.write_u8(10);
+            writer.write_string(&node.name);
+            writer.write_string(&regex.pattern);
+        }
+        Predicate::IoPattern { node, kind } => {
+            writer.write_u8(11);
+            writer.write_string(&node.name);
+            write_io_event_kind_binary(*kind, writer);
+        }
+        Predicate::NodeState { node, state } => {
+            writer.write_u8(12);
+            writer.write_string(&node.name);
+            write_node_lifecycle_binary(*state, writer);
+        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -10951,7 +11324,124 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
                 name: reader.read_string()?,
             },
         }),
+        9 => {
+            let link = match reader.read_u8()? {
+                0 => None,
+                1 => Some(LinkId {
+                    name: reader.read_string()?,
+                }),
+                _ => {
+                    return Err(scenario_serialization_error(
+                        "invalid network-match link presence tag",
+                    ));
+                }
+            };
+            Ok(Predicate::NetworkMatch {
+                link,
+                predicate: read_frame_predicate_binary(reader)?,
+            })
+        }
+        10 => Ok(Predicate::ConsoleMatch {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            regex: RegexProgram {
+                pattern: reader.read_string()?,
+            },
+        }),
+        11 => Ok(Predicate::IoPattern {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            kind: read_io_event_kind_binary(reader)?,
+        }),
+        12 => Ok(Predicate::NodeState {
+            node: NodeId {
+                name: reader.read_string()?,
+            },
+            state: read_node_lifecycle_binary(reader)?,
+        }),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
+    }
+}
+
+fn write_frame_predicate_binary(predicate: &FramePredicate, writer: &mut ScenarioBinaryWriter) {
+    match predicate {
+        FramePredicate::Any => writer.write_u8(0),
+        FramePredicate::Exact(bytes) => {
+            writer.write_u8(1);
+            writer.write_binary_blob(bytes);
+        }
+        FramePredicate::Contains(bytes) => {
+            writer.write_u8(2);
+            writer.write_binary_blob(bytes);
+        }
+        FramePredicate::Prefix(bytes) => {
+            writer.write_u8(3);
+            writer.write_binary_blob(bytes);
+        }
+    }
+}
+
+fn read_frame_predicate_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<FramePredicate, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(FramePredicate::Any),
+        1 => Ok(FramePredicate::Exact(
+            reader.read_binary_blob("frame exact bytes")?.to_vec(),
+        )),
+        2 => Ok(FramePredicate::Contains(
+            reader.read_binary_blob("frame contains bytes")?.to_vec(),
+        )),
+        3 => Ok(FramePredicate::Prefix(
+            reader.read_binary_blob("frame prefix bytes")?.to_vec(),
+        )),
+        _ => Err(scenario_serialization_error("invalid frame predicate tag")),
+    }
+}
+
+fn write_io_event_kind_binary(kind: IoEventKind, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match kind {
+        IoEventKind::Any => 0,
+        IoEventKind::BlockRead => 1,
+        IoEventKind::BlockWrite => 2,
+        IoEventKind::Fsync => 3,
+        IoEventKind::NineP => 4,
+        IoEventKind::Network => 5,
+    });
+}
+
+fn read_io_event_kind_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<IoEventKind, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(IoEventKind::Any),
+        1 => Ok(IoEventKind::BlockRead),
+        2 => Ok(IoEventKind::BlockWrite),
+        3 => Ok(IoEventKind::Fsync),
+        4 => Ok(IoEventKind::NineP),
+        5 => Ok(IoEventKind::Network),
+        _ => Err(scenario_serialization_error("invalid I/O event kind tag")),
+    }
+}
+
+fn write_node_lifecycle_binary(state: NodeLifecycle, writer: &mut ScenarioBinaryWriter) {
+    writer.write_u8(match state {
+        NodeLifecycle::Started => 0,
+        NodeLifecycle::Crashed => 1,
+        NodeLifecycle::Exited => 2,
+    });
+}
+
+fn read_node_lifecycle_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NodeLifecycle, EngineError> {
+    match reader.read_u8()? {
+        0 => Ok(NodeLifecycle::Started),
+        1 => Ok(NodeLifecycle::Crashed),
+        2 => Ok(NodeLifecycle::Exited),
+        _ => Err(scenario_serialization_error("invalid node lifecycle tag")),
     }
 }
 
@@ -11235,6 +11725,26 @@ fn parse_fixed_hex_32(hex: &str, label: &'static str) -> Result<[u8; 32], Engine
             scenario_serialization_error(format!("{label} contains non-lowercase-hex character"))
         })?;
         bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn parse_hex_bytes(label: &'static str, hex: &str) -> Result<Vec<u8>, EngineError> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(scenario_serialization_error(format!(
+            "{label} must contain an even number of lowercase hex characters"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    let raw = hex.as_bytes();
+    for index in 0..bytes.capacity() {
+        let high = hex_value(raw[index * 2]).ok_or_else(|| {
+            scenario_serialization_error(format!("{label} contains non-lowercase-hex character"))
+        })?;
+        let low = hex_value(raw[index * 2 + 1]).ok_or_else(|| {
+            scenario_serialization_error(format!("{label} contains non-lowercase-hex character"))
+        })?;
+        bytes.push((high << 4) | low);
     }
     Ok(bytes)
 }
@@ -11713,6 +12223,38 @@ fn predicate_material(predicate: &Predicate) -> String {
         Predicate::Timer { name } => {
             format!("predicate=timer\n{}", timer_id_material(name))
         }
+        Predicate::NetworkMatch { link, predicate } => {
+            let link_material = match link {
+                Some(link) => format!("network_link=some\n{}", link_id_material(link)),
+                None => String::from("network_link=any"),
+            };
+            format!(
+                "predicate=network-match\n{}\n{}",
+                link_material,
+                frame_predicate_material(predicate)
+            )
+        }
+        Predicate::ConsoleMatch { node, regex } => {
+            format!(
+                "predicate=console-match\n{}\n{}",
+                node_ref_material("console_node", node),
+                regex_program_material(regex)
+            )
+        }
+        Predicate::IoPattern { node, kind } => {
+            format!(
+                "predicate=io-pattern\n{}\nio_kind={}",
+                node_ref_material("io_node", node),
+                io_event_kind_label(*kind)
+            )
+        }
+        Predicate::NodeState { node, state } => {
+            format!(
+                "predicate=node-state\n{}\nnode_lifecycle={}",
+                node_ref_material("lifecycle_node", node),
+                node_lifecycle_label(*state)
+            )
+        }
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
@@ -11763,6 +12305,54 @@ fn event_id_material(id: &EventId) -> String {
 
 fn timer_id_material(id: &TimerId) -> String {
     format!("timer_id_len={}\ntimer_id={}", id.name.len(), id.name)
+}
+
+fn link_id_material(id: &LinkId) -> String {
+    format!("link_id_len={}\nlink_id={}", id.name.len(), id.name)
+}
+
+fn frame_predicate_material(predicate: &FramePredicate) -> String {
+    match predicate {
+        FramePredicate::Any => String::from("frame_predicate=any"),
+        FramePredicate::Exact(bytes) => format!(
+            "frame_predicate=exact\nframe_bytes_len={}\nframe_bytes={}",
+            bytes.len(),
+            bytes_hex(bytes)
+        ),
+        FramePredicate::Contains(bytes) => format!(
+            "frame_predicate=contains\nframe_needle_len={}\nframe_needle={}",
+            bytes.len(),
+            bytes_hex(bytes)
+        ),
+        FramePredicate::Prefix(bytes) => format!(
+            "frame_predicate=prefix\nframe_prefix_len={}\nframe_prefix={}",
+            bytes.len(),
+            bytes_hex(bytes)
+        ),
+    }
+}
+
+fn regex_program_material(regex: &RegexProgram) -> String {
+    format!("regex_len={}\nregex={}", regex.pattern.len(), regex.pattern)
+}
+
+fn io_event_kind_label(kind: IoEventKind) -> &'static str {
+    match kind {
+        IoEventKind::Any => "any",
+        IoEventKind::BlockRead => "block-read",
+        IoEventKind::BlockWrite => "block-write",
+        IoEventKind::Fsync => "fsync",
+        IoEventKind::NineP => "ninep",
+        IoEventKind::Network => "network",
+    }
+}
+
+fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
+    match state {
+        NodeLifecycle::Started => "started",
+        NodeLifecycle::Crashed => "crashed",
+        NodeLifecycle::Exited => "exited",
+    }
 }
 
 fn assertion_id_material(id: &AssertionId) -> String {

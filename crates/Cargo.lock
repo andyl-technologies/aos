@@ -1538,6 +1538,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-shmem",
  "crucible-sim",
+ "regex",
  "serde",
  "thiserror",
  "toml",
