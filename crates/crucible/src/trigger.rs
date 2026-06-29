@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use crate::model::{FaultTag, MembershipFault, NodeId, SimDuration, TimerId, VirtualTime};
+use crate::model::{
+    FaultTag, MarkerId, MembershipFault, NodeId, Predicate, SimDuration, TimerId, VirtualTime,
+};
 
 /// Stable identity of an event inside an [`EventGraph`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -28,26 +30,128 @@ impl EventId {
     }
 }
 
-/// A condition handle used by an event trigger.
+/// Shared predicate vocabulary used by both assertions and event triggers.
 ///
-/// The complete leaf vocabulary is implemented by later `T-TRIG-*` tasks. This
-/// first slice intentionally treats conditions as stable named predicates so the
-/// event graph and firing policy can be validated without introducing an
-/// ad-hoc control path.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Condition {
-    /// A stable predicate resolved by the condition evaluator.
+/// This is a public alias rather than a second enum: a predicate usable by the
+/// assertion [`crate::model::Property`] layer is the same value accepted by an
+/// event trigger.
+pub type Condition = Predicate;
+
+/// One leaf predicate request made by the shared condition evaluator.
+///
+/// Later `T-TRIG-*` tasks extend the leaf set with concrete event-log backed
+/// predicates and add the stateful `Once` latch from T-TRIG-9. This first
+/// evaluator centralizes the currently implemented point-local structure so
+/// assertions and triggers cannot use different boolean composition code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionLeaf<'a> {
+    /// A named host-side predicate resolved over the current event-log point.
     Named {
-        /// Canonical predicate name.
-        name: String,
+        /// Stable predicate name.
+        name: &'a str,
+        /// Declared nodes referenced by the predicate.
+        nodes: &'a [NodeId],
+    },
+    /// A named white-box marker resolved over the current event-log point.
+    GuestMarker {
+        /// Stable marker identity.
+        marker: &'a MarkerId,
     },
 }
 
-impl Condition {
-    /// Builds a named condition handle.
+/// Oracle for condition leaves at one deterministic evaluation point.
+pub trait ConditionLeafOracle {
+    /// Returns whether one leaf predicate is true.
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
+}
+
+impl<F> ConditionLeafOracle for F
+where
+    F: for<'leaf> FnMut(ConditionLeaf<'leaf>) -> bool,
+{
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        self(leaf)
+    }
+}
+
+/// Shared evaluator used by both assertion and trigger consumers.
+pub trait ConditionEvaluator {
+    /// Returns the deterministic point where this evaluator observes the log.
+    fn evaluation_point(&self) -> EventEvaluationPoint;
+
+    /// Resolves a leaf predicate at [`Self::evaluation_point`].
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
+}
+
+/// Evaluates a condition through the shared assertion/trigger evaluator.
+///
+/// The recursive structure lives in this non-overridable function. Implementors
+/// of [`ConditionEvaluator`] provide only leaf truth at a deterministic
+/// evaluation point, so assertion and trigger consumers cannot diverge on
+/// compound predicate traversal. The `Once` arm is point-local until T-TRIG-9
+/// adds latch state.
+pub fn evaluate_condition<E>(evaluator: &mut E, condition: &Condition) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    match condition {
+        Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
+            name: name.as_str(),
+            nodes,
+        }),
+        Condition::GuestMarker { marker } => {
+            evaluator.leaf_is_true(ConditionLeaf::GuestMarker { marker })
+        }
+        Condition::AllOf { predicates } => predicates
+            .iter()
+            .all(|condition| evaluate_condition(evaluator, condition)),
+        Condition::AnyOf { predicates } => predicates
+            .iter()
+            .any(|condition| evaluate_condition(evaluator, condition)),
+        Condition::Once { predicate } => evaluate_condition(evaluator, predicate),
+        Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
+    }
+}
+
+/// Condition evaluator backed by a leaf oracle.
+#[derive(Clone, Debug)]
+pub struct ConditionEvaluation<O> {
+    point: EventEvaluationPoint,
+    oracle: O,
+}
+
+impl<O> ConditionEvaluation<O> {
+    /// Builds a condition evaluator for one deterministic evaluation point.
     #[must_use]
-    pub fn named(name: impl Into<String>) -> Self {
-        Self::Named { name: name.into() }
+    pub fn new(point: EventEvaluationPoint, oracle: O) -> Self {
+        Self { point, oracle }
+    }
+
+    /// Returns the deterministic point where this evaluator observes the log.
+    #[must_use]
+    pub fn point(&self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Evaluates a condition through the shared evaluator function.
+    pub fn evaluate_condition(&mut self, condition: &Condition) -> bool
+    where
+        O: ConditionLeafOracle,
+    {
+        evaluate_condition(self, condition)
+    }
+}
+
+impl<O> ConditionEvaluator for ConditionEvaluation<O>
+where
+    O: ConditionLeafOracle,
+{
+    fn evaluation_point(&self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        self.oracle.leaf_is_true(leaf)
     }
 }
 
@@ -312,23 +416,18 @@ impl EventGraphState {
 
     /// Evaluates every event in declared order and returns fired actions.
     ///
-    /// `condition_true` is the deterministic predicate evaluator for
-    /// non-entrypoint conditions. This method is the single local producer of
-    /// [`EventFiring`] values; callers apply the returned actions at the same
-    /// quantum boundary.
-    pub fn evaluate<F>(
-        &mut self,
-        graph: &EventGraph,
-        point: EventEvaluationPoint,
-        mut condition_true: F,
-    ) -> Vec<EventFiring>
+    /// `evaluator` is the deterministic predicate evaluator for non-entrypoint
+    /// conditions. This method is the single local producer of [`EventFiring`]
+    /// values; callers apply the returned actions at the same quantum boundary.
+    pub fn evaluate<E>(&mut self, graph: &EventGraph, evaluator: &mut E) -> Vec<EventFiring>
     where
-        F: FnMut(&Condition) -> bool,
+        E: ConditionEvaluator,
     {
         let mut firings = Vec::new();
+        let point = evaluator.evaluation_point();
         for event in graph.events() {
             let truth = match &event.trigger {
-                Some(condition) => condition_true(condition),
+                Some(condition) => evaluate_condition(evaluator, condition),
                 None => point.kind() == EventEvaluationKind::Genesis,
             };
             let previously_true = self

@@ -2,10 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+use crucible::ConditionLeafOracle;
 use crucible::{
-    Action, Condition, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring, EventGraph,
-    EventGraphError, EventGraphState, EventId, FaultTag, FirePolicy, LogLevel, MembershipFault,
-    NodeId, PartitionDirection, RestartPolicy, SimDuration, TimerId, VirtualTime,
+    Action, Condition, ConditionEvaluation, ConditionLeaf, Event, EventEvaluationKind,
+    EventEvaluationPoint, EventFiring, EventGraph, EventGraphError, EventGraphState, EventId,
+    FaultTag, FirePolicy, LogLevel, MembershipFault, NodeId, PartitionDirection, RestartPolicy,
+    SimDuration, TimerId, VirtualTime,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -28,9 +30,25 @@ fn timer(name: &str) -> TimerId {
     }
 }
 
-fn named_truth<'a>(true_names: &'a [&str]) -> impl FnMut(&Condition) -> bool + 'a {
-    move |condition| match condition {
-        Condition::Named { name } => true_names.contains(&name.as_str()),
+fn evaluator<'a>(
+    point: EventEvaluationPoint,
+    true_names: &'a [&'a str],
+) -> ConditionEvaluation<TrueNames<'a>> {
+    ConditionEvaluation::new(point, TrueNames { true_names })
+}
+
+struct TrueNames<'a> {
+    true_names: &'a [&'a str],
+}
+
+impl ConditionLeafOracle for TrueNames<'_> {
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        match leaf {
+            ConditionLeaf::Named { name, .. } => self.true_names.contains(&name),
+            ConditionLeaf::GuestMarker { marker } => {
+                self.true_names.contains(&marker.name.as_str())
+            }
+        }
     }
 }
 
@@ -83,7 +101,7 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
     assert_eq!(boundary.at(), VirtualTime { ticks: 10 });
     assert_eq!(boundary.kind(), EventEvaluationKind::Boundary);
 
-    let genesis = state.evaluate(&graph, EventEvaluationPoint::genesis(), named_truth(&[]));
+    let genesis = state.evaluate(&graph, &mut evaluator(EventEvaluationPoint::genesis(), &[]));
     assert_eq!(
         firing_records(&genesis),
         vec![(
@@ -93,13 +111,15 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
         )]
     );
 
-    let ready_false = state.evaluate(&graph, boundary, named_truth(&[]));
+    let ready_false = state.evaluate(&graph, &mut evaluator(boundary, &[]));
     assert!(ready_false.is_empty());
 
     let ready_true = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 11 }),
-        named_truth(&["ready"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 11 }),
+            &["ready"],
+        ),
     );
     assert_eq!(
         firing_records(&ready_true),
@@ -112,15 +132,19 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
 
     let ready_still_true = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 12 }),
-        named_truth(&["ready"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 12 }),
+            &["ready"],
+        ),
     );
     assert!(ready_still_true.is_empty());
 
     let pulse_true = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 13 }),
-        named_truth(&["pulse"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 13 }),
+            &["pulse"],
+        ),
     );
     assert_eq!(
         firing_records(&pulse_true),
@@ -133,22 +157,28 @@ fn event_graph_evaluates_entrypoints_named_triggers_and_fire_policies() {
 
     let pulse_still_true = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 14 }),
-        named_truth(&["pulse"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 14 }),
+            &["pulse"],
+        ),
     );
     assert!(pulse_still_true.is_empty());
 
     let pulse_false = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 15 }),
-        named_truth(&[]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 15 }),
+            &[],
+        ),
     );
     assert!(pulse_false.is_empty());
 
     let pulse_true_again = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 16 }),
-        named_truth(&["pulse"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 16 }),
+            &["pulse"],
+        ),
     );
     assert_eq!(
         firing_records(&pulse_true_again),
@@ -234,8 +264,10 @@ fn event_graph_preserves_declared_order_for_simultaneous_triggers() {
 
     let fired = state.evaluate(
         &graph,
-        EventEvaluationPoint::boundary(VirtualTime { ticks: 99 }),
-        named_truth(&["shared"]),
+        &mut evaluator(
+            EventEvaluationPoint::boundary(VirtualTime { ticks: 99 }),
+            &["shared"],
+        ),
     );
     let fired_ids = fired
         .iter()
