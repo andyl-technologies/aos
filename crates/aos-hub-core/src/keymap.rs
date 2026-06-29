@@ -198,6 +198,23 @@ mod tests {
     }
 
     #[test]
+    fn suffix_classified_paths_match_with_a_leading_segment() {
+        // `*.narinfo` is suffix-classified, so it matches even when a leading
+        // path segment precedes it — e.g. the `/{slug}/{*path}` wildcard for a
+        // nested-canonical registry splits `/andyl/main/<hash>.narinfo` into
+        // `slug = "andyl"`, `path = "main/<hash>.narinfo"`. The dir/exact
+        // classes do NOT match with a leading segment, so the root pointers
+        // reach the nested fallthrough on their own; only the suffix class is
+        // asymmetric, which is why the facade handler must extend the
+        // nested fallthrough to a `not_found` for these paths too.
+        assert!(is_machine_path("main/abcd.narinfo"));
+        assert!(!is_machine_path("main/info/refs"));
+        assert!(!is_machine_path("main/HEAD"));
+        assert!(!is_machine_path("main/nar/x.nar.zst"));
+        assert!(!is_machine_path("main/nix-cache-info"));
+    }
+
+    #[test]
     fn relative_key_inverts_r2_key() {
         for (prefix, path) in [
             ("demo", "channels/stable/00"),
