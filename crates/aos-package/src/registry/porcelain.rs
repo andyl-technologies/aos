@@ -888,13 +888,39 @@ fn branch(dir: &Path, rest: &[&str]) -> Result<Output> {
         .iter()
         .copied()
         .find(|a| !a.starts_with('-') && *a != "--");
-    if rest.contains(&"-d") {
+    let force_delete = rest.contains(&"-D");
+    if rest.contains(&"-d") || force_delete {
         let Some(name) = name else {
             bail!("git branch -d requires a name");
         };
         let mut b = repo
             .find_branch(name, git2::BranchType::Local)
             .with_context(|| format!("finding branch {name}"))?;
+        // `-d` is the merge-safe delete: refuse a branch whose tip is not
+        // reachable from HEAD (git2's `Branch::delete` is unconditional, i.e.
+        // `-D` semantics, so the check is ours to enforce). `-D` force-deletes.
+        if !force_delete {
+            let branch_oid = b
+                .get()
+                .peel_to_commit()
+                .with_context(|| format!("reading branch {name} tip"))?
+                .id();
+            let head_oid = repo
+                .head()
+                .context("resolving HEAD")?
+                .peel_to_commit()
+                .context("HEAD commit")?
+                .id();
+            let merged = branch_oid == head_oid
+                || repo
+                    .graph_descendant_of(head_oid, branch_oid)
+                    .unwrap_or(false);
+            if !merged {
+                return Ok(Output::fail(format!(
+                    "the branch '{name}' is not fully merged"
+                )));
+            }
+        }
         b.delete()
             .with_context(|| format!("deleting branch {name}"))?;
         return Ok(Output::ok_str(""));
