@@ -411,7 +411,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       self
       // {
-        inherit mkDerivation fetchurl;
+        inherit mkDerivation fetchurl callPackage;
       }
     );
   in

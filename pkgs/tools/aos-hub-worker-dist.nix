@@ -145,13 +145,20 @@ in
           export PROTOC="${protobuf}/bin/protoc"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
+          #
+          # Features are passed package-qualified (`aos-hub-worker/<feat>`): a
+          # bare `--features <feat>` with `-p` in this virtual workspace is
+          # silently dropped (the cfg never activates), so the qualified form is
+          # the reliable one.
           cargo build \
             -p aos-hub-worker \
             --target wasm32-unknown-unknown \
             --release \
             --frozen \
             --offline \
-            ${lib.optionalString (cargoFeatures != "") "--features ${cargoFeatures}"} \
+            ${lib.optionalString (cargoFeatures != "") "--features ${
+            lib.concatMapStringsSep "," (f: "aos-hub-worker/${f}") (lib.splitString " " cargoFeatures)
+          }"} \
             -j"$NIX_BUILD_CORES"
 
           test -f target/wasm32-unknown-unknown/release/aos_hub_worker.wasm
