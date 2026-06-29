@@ -15,20 +15,7 @@ use crate::model::{
     FaultTag, MarkerId, MembershipFault, NodeId, Predicate, SimDuration, TimerId, VirtualTime,
 };
 
-/// Stable identity of an event inside an [`EventGraph`].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EventId {
-    /// Canonical event name, unique within the graph.
-    pub name: String,
-}
-
-impl EventId {
-    /// Builds an event id from a canonical name.
-    #[must_use]
-    pub fn from_name(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
-    }
-}
+pub use crate::model::EventId;
 
 /// Shared predicate vocabulary used by both assertions and event triggers.
 ///
@@ -81,6 +68,18 @@ pub trait ConditionEvaluator {
 
     /// Resolves a leaf predicate at [`Self::evaluation_point`].
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
+
+    /// Returns the most recent firing time for an event, when known.
+    fn last_event_firing(&self, event: &EventId) -> Option<VirtualTime> {
+        let _ = event;
+        None
+    }
+
+    /// Returns the virtual time where a timer fires, when armed and known.
+    fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
+        let _ = timer;
+        None
+    }
 }
 
 /// Evaluates a condition through the shared assertion/trigger evaluator.
@@ -95,6 +94,14 @@ where
     E: ConditionEvaluator + ?Sized,
 {
     match condition {
+        Condition::At { at } => evaluator.evaluation_point().at() == *at,
+        Condition::After { duration, of } => evaluator
+            .last_event_firing(of)
+            .and_then(|fired_at| fired_at.ticks.checked_add(duration.nanos))
+            .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at().ticks),
+        Condition::Timer { name } => evaluator
+            .timer_fire_time(name)
+            .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at()),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -118,19 +125,40 @@ where
 pub struct ConditionEvaluation<O> {
     point: EventEvaluationPoint,
     oracle: O,
+    event_firings: BTreeMap<EventId, VirtualTime>,
+    timer_fires: BTreeMap<TimerId, VirtualTime>,
 }
 
 impl<O> ConditionEvaluation<O> {
     /// Builds a condition evaluator for one deterministic evaluation point.
     #[must_use]
     pub fn new(point: EventEvaluationPoint, oracle: O) -> Self {
-        Self { point, oracle }
+        Self {
+            point,
+            oracle,
+            event_firings: BTreeMap::new(),
+            timer_fires: BTreeMap::new(),
+        }
     }
 
     /// Returns the deterministic point where this evaluator observes the log.
     #[must_use]
     pub fn point(&self) -> EventEvaluationPoint {
         self.point
+    }
+
+    /// Adds event firing history visible to `After` predicates.
+    #[must_use]
+    pub fn with_event_firings(mut self, event_firings: BTreeMap<EventId, VirtualTime>) -> Self {
+        self.event_firings = event_firings;
+        self
+    }
+
+    /// Adds timer fire times visible to `Timer` predicates.
+    #[must_use]
+    pub fn with_timer_fires(mut self, timer_fires: BTreeMap<TimerId, VirtualTime>) -> Self {
+        self.timer_fires = timer_fires;
+        self
     }
 
     /// Evaluates a condition through the shared evaluator function.
@@ -152,6 +180,14 @@ where
 
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
         self.oracle.leaf_is_true(leaf)
+    }
+
+    fn last_event_firing(&self, event: &EventId) -> Option<VirtualTime> {
+        self.event_firings.get(event).copied()
+    }
+
+    fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
+        self.timer_fires.get(timer).copied()
     }
 }
 
@@ -292,8 +328,11 @@ impl EventGraph {
     /// # Errors
     ///
     /// Returns [`EventGraphError::DuplicateEventId`] when two events carry the
-    /// same stable id, or [`EventGraphError::RepeatableEntrypoint`] when an
-    /// entrypoint tries to use repeatable firing policy.
+    /// same stable id, [`EventGraphError::RepeatableEntrypoint`] when an
+    /// entrypoint tries to use repeatable firing policy,
+    /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
+    /// names no declared event, or [`EventGraphError::UnknownTimerReference`]
+    /// when a `Timer` predicate names no armable timer.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
         let mut seen = BTreeSet::new();
         for event in &events {
@@ -306,6 +345,12 @@ impl EventGraph {
                 return Err(EventGraphError::RepeatableEntrypoint {
                     event: event.id.clone(),
                 });
+            }
+        }
+        let timer_names = armed_timer_names(&events);
+        for event in &events {
+            if let Some(condition) = &event.trigger {
+                validate_condition_references(event, condition, &seen, &timer_names)?;
             }
         }
         Ok(Self { events })
@@ -405,6 +450,7 @@ impl EventFiring {
 pub struct EventGraphState {
     consumed_once: BTreeSet<EventId>,
     previous_truth: BTreeMap<EventId, bool>,
+    last_firing: BTreeMap<EventId, VirtualTime>,
 }
 
 impl EventGraphState {
@@ -412,6 +458,12 @@ impl EventGraphState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns the last firing time for an event, when that event has fired.
+    #[must_use]
+    pub fn last_firing(&self, event: &EventId) -> Option<VirtualTime> {
+        self.last_firing.get(event).copied()
     }
 
     /// Evaluates every event in declared order and returns fired actions.
@@ -427,7 +479,13 @@ impl EventGraphState {
         let point = evaluator.evaluation_point();
         for event in graph.events() {
             let truth = match &event.trigger {
-                Some(condition) => evaluate_condition(evaluator, condition),
+                Some(condition) => {
+                    let mut graph_evaluator = EventGraphConditionEvaluator {
+                        state: self,
+                        inner: evaluator,
+                    };
+                    evaluate_condition(&mut graph_evaluator, condition)
+                }
                 None => point.kind() == EventEvaluationKind::Genesis,
             };
             let previously_true = self
@@ -447,9 +505,38 @@ impl EventGraphState {
                     at: point.at(),
                     action: event.action.clone(),
                 });
+                self.last_firing.insert(event.id.clone(), point.at());
             }
         }
         firings
+    }
+}
+
+struct EventGraphConditionEvaluator<'state, 'inner, E> {
+    state: &'state EventGraphState,
+    inner: &'inner mut E,
+}
+
+impl<E> ConditionEvaluator for EventGraphConditionEvaluator<'_, '_, E>
+where
+    E: ConditionEvaluator,
+{
+    fn evaluation_point(&self) -> EventEvaluationPoint {
+        self.inner.evaluation_point()
+    }
+
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        self.inner.leaf_is_true(leaf)
+    }
+
+    fn last_event_firing(&self, event: &EventId) -> Option<VirtualTime> {
+        self.state
+            .last_firing(event)
+            .or_else(|| self.inner.last_event_firing(event))
+    }
+
+    fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
+        self.inner.timer_fire_time(timer)
     }
 }
 
@@ -465,6 +552,20 @@ pub enum EventGraphError {
     RepeatableEntrypoint {
         /// Invalid entrypoint event id.
         event: EventId,
+    },
+    /// An `After` predicate references no declared event.
+    UnknownEventReference {
+        /// Event containing the invalid reference.
+        event: EventId,
+        /// Referenced event id.
+        reference: EventId,
+    },
+    /// A `Timer` predicate references no timer that can be armed.
+    UnknownTimerReference {
+        /// Event containing the invalid timer reference.
+        event: EventId,
+        /// Referenced timer id.
+        timer: TimerId,
     },
 }
 
@@ -485,8 +586,93 @@ impl fmt::Display for EventGraphError {
                     event.name
                 )
             }
+            Self::UnknownEventReference { event, reference } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown event `{}`",
+                    event.name, reference.name
+                )
+            }
+            Self::UnknownTimerReference { event, timer } => {
+                write!(
+                    formatter,
+                    "event `{}` references unknown timer `{}`",
+                    event.name, timer.name
+                )
+            }
         }
     }
 }
 
 impl Error for EventGraphError {}
+
+fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
+    let mut timers = BTreeSet::new();
+    for event in events {
+        collect_timer_names(&event.action, &mut timers);
+    }
+    timers
+}
+
+fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
+    match action {
+        Action::ArmTimer { name, .. } => {
+            timers.insert(name.clone());
+        }
+        Action::Group(actions) => {
+            for action in actions {
+                collect_timer_names(action, timers);
+            }
+        }
+        Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => {}
+    }
+}
+
+fn validate_condition_references(
+    event: &Event,
+    condition: &Condition,
+    event_ids: &BTreeSet<EventId>,
+    timer_names: &BTreeSet<TimerId>,
+) -> Result<(), EventGraphError> {
+    match condition {
+        Condition::After { of, .. } => {
+            if event_ids.contains(of) {
+                Ok(())
+            } else {
+                Err(EventGraphError::UnknownEventReference {
+                    event: event.id.clone(),
+                    reference: of.clone(),
+                })
+            }
+        }
+        Condition::Timer { name } => {
+            if timer_names.contains(name) {
+                Ok(())
+            } else {
+                Err(EventGraphError::UnknownTimerReference {
+                    event: event.id.clone(),
+                    timer: name.clone(),
+                })
+            }
+        }
+        Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
+            for predicate in predicates {
+                validate_condition_references(event, predicate, event_ids, timer_names)?;
+            }
+            Ok(())
+        }
+        Condition::Once { predicate } | Condition::Not { predicate } => {
+            validate_condition_references(event, predicate, event_ids, timer_names)
+        }
+        Condition::At { .. } | Condition::Named { .. } | Condition::GuestMarker { .. } => Ok(()),
+    }
+}
