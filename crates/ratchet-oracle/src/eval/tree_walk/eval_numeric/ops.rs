@@ -176,18 +176,17 @@ impl TreeWalk {
             Self::clone_attr_entries(id, rhs_span, attrs)?
         };
 
-        let capacity = left_entries
-            .len()
-            .checked_add(right_entries.len())
-            .ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Attr {
-                        id,
-                        source: AttrError::TooManyEntries { len: usize::MAX },
-                    },
-                    node.span,
-                )
-            })?;
+        let left_len = left_entries.len();
+        let right_len = right_entries.len();
+        let capacity = left_entries.len().checked_add(right_len).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::TooManyEntries { len: usize::MAX },
+                },
+                node.span,
+            )
+        })?;
         let mut entries = Vec::new();
         entries.try_reserve_exact(capacity).map_err(|_| {
             TreeWalkError::new(
@@ -208,9 +207,11 @@ impl TreeWalk {
         let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
         })?;
-        self.heap
-            .alloc_attrs(0, attrs)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        let result = self.heap.alloc_attrs(0, attrs).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        self.record_attr_update_telemetry(id, node.span, lhs, left_len, right_len);
+        Ok(result)
     }
 
     pub(in crate::eval::tree_walk) fn concat_lists(

@@ -43,6 +43,7 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         value,
         heap: evaluator.heap,
         stats,
+        attr_telemetry: evaluator.attr_telemetry,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
         impure_input_trace: evaluator.impure_input_trace,

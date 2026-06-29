@@ -88,6 +88,81 @@ impl TreeWalk {
         );
     }
 
+    pub(super) fn record_attr_update_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lhs: IrId,
+        left_len: usize,
+        right_len: usize,
+    ) {
+        let lhs_ref = (self.current_module.as_u32(), lhs.as_u32());
+        let left_state = self
+            .attr_update_node_states
+            .get(&lhs_ref)
+            .copied()
+            .unwrap_or(AttrUpdateTelemetryState {
+                override_chain_depth: 0,
+                projected_repr: AttrSetReprKind::Flat,
+            });
+        let Some(override_chain_depth) = left_state.override_chain_depth.checked_add(1) else {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                "skipping attr update telemetry after override-chain depth overflow"
+            );
+            return;
+        };
+        let policy = AttrSetReprPolicy::default();
+        let construction = AttrSetConstruction::UpdateMerge {
+            left_repr: left_state.projected_repr,
+            left_len,
+            right_len,
+            override_chain_depth,
+        };
+        let decision = match policy.classify(construction) {
+            Ok(decision) => decision,
+            Err(source) => {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    node = id.as_u32(),
+                    span_start = span.start,
+                    span_end = span.end,
+                    error = %source,
+                    "skipping attr update telemetry after representation policy failure"
+                );
+                return;
+            }
+        };
+
+        if let Err(source) = self.attr_telemetry.record_update_merge(
+            left_len,
+            right_len,
+            override_chain_depth,
+            decision,
+            None,
+        ) {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping attr update telemetry after recording failure"
+            );
+            return;
+        }
+
+        let result_state = AttrUpdateTelemetryState {
+            override_chain_depth,
+            projected_repr: decision.kind(),
+        };
+        self.attr_update_node_states
+            .insert((self.current_module.as_u32(), id.as_u32()), result_state);
+    }
+
     pub(super) fn increment_thunks_allocated(&mut self) {
         self.stats.thunks_allocated = self.stats.thunks_allocated.saturating_add(1);
     }

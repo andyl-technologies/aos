@@ -1,6 +1,7 @@
 //! Thunk and strictness tests for tree-walk attr evaluation.
 
 use super::*;
+use crate::attrs::telemetry::HistogramBucket;
 
 #[test]
 fn shared_thunks_emit_trace_once_when_forced_repeatedly() {
@@ -202,6 +203,140 @@ fn strictness_analysis_keeps_foldl_empty_initial_accumulator_lazy() {
     assert_eq!(outcome.value().tag(), ValueTag::Thunk);
     assert_eq!(outcome.stats().thunks_allocated(), 1);
     assert_eq!(outcome.stats().thunks_elided(), 0);
+}
+
+#[test]
+fn attr_update_records_active_merge_telemetry() {
+    let ir = lower("(({ a = 1; } // { b = 2; a = 3; }) // { c = 4; }).c");
+
+    let outcome = eval_whnf_owned(&ir).expect("nested attr update evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(4));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("merge telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 2);
+    assert_eq!(snapshot.flat_decisions, 2);
+    assert_eq!(snapshot.hamt_decisions, 0);
+    assert_eq!(snapshot.update_merges, 2);
+    assert_eq!(snapshot.flat_update_merges, 2);
+    assert_eq!(snapshot.hamt_update_merges, 0);
+    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    assert_eq!(
+        &*snapshot.left_len_distribution,
+        &[
+            HistogramBucket { value: 1, count: 1 },
+            HistogramBucket { value: 2, count: 1 },
+        ],
+    );
+    assert_eq!(
+        &*snapshot.right_len_distribution,
+        &[
+            HistogramBucket { value: 1, count: 1 },
+            HistogramBucket { value: 2, count: 1 },
+        ],
+    );
+    assert_eq!(
+        &*snapshot.result_len_upper_bound_distribution,
+        &[HistogramBucket { value: 3, count: 2 }],
+    );
+    assert_eq!(
+        &*snapshot.override_chain_depth_distribution,
+        &[
+            HistogramBucket { value: 1, count: 1 },
+            HistogramBucket { value: 2, count: 1 },
+        ],
+    );
+}
+
+#[test]
+fn attr_update_telemetry_tracks_projected_hamt_left_state() {
+    let ir = lower(
+        "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; }).f",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("deep attr update chain evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(6));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("merge telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 5);
+    assert_eq!(snapshot.flat_decisions, 3);
+    assert_eq!(snapshot.hamt_decisions, 2);
+    assert_eq!(snapshot.reasons.small_shape_stable, 3);
+    assert_eq!(snapshot.reasons.deep_override_chain, 1);
+    assert_eq!(snapshot.reasons.left_already_hamt, 1);
+}
+
+#[test]
+fn attr_update_telemetry_does_not_attach_reused_result_depth_to_canonical_attrs() {
+    let ir = lower(
+        "let base = { a = 1; }; noop = base // {}; in builtins.seq noop ((base // { b = 2; }).b)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("reused attr update result evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(2));
+    let snapshot = outcome
+        .attr_telemetry()
+        .update_merge_snapshot()
+        .expect("merge telemetry snapshot allocates");
+    assert_eq!(snapshot.update_merges, 2);
+    assert_eq!(
+        &*snapshot.override_chain_depth_distribution,
+        &[HistogramBucket { value: 1, count: 2 }],
+    );
+}
+
+#[test]
+fn attr_update_telemetry_keys_projected_state_by_module() {
+    let ir = lower("1");
+    let mut evaluator = TreeWalk::new(&ir);
+    let span = Span::new(0, 0);
+    let module = evaluator
+        .push_module(
+            IrId::new(0),
+            span,
+            lower("1"),
+            b"/tmp".to_vec(),
+            b"/tmp/imported.nix".to_vec(),
+            b"1".to_vec(),
+        )
+        .expect("test module loads");
+
+    evaluator
+        .with_current_module(module, |eval| {
+            eval.record_attr_update_telemetry(IrId::new(10), span, IrId::new(1), 1, 1);
+            eval.record_attr_update_telemetry(IrId::new(11), span, IrId::new(10), 2, 1);
+            eval.record_attr_update_telemetry(IrId::new(12), span, IrId::new(11), 3, 1);
+            eval.record_attr_update_telemetry(IrId::new(13), span, IrId::new(12), 4, 1);
+            Ok(())
+        })
+        .expect("imported module telemetry records");
+    evaluator.record_attr_update_telemetry(IrId::new(20), span, IrId::new(13), 1, 1);
+
+    let snapshot = evaluator
+        .attr_telemetry
+        .update_merge_snapshot()
+        .expect("merge telemetry snapshot allocates");
+    assert_eq!(snapshot.decisions, 5);
+    assert_eq!(snapshot.flat_decisions, 4);
+    assert_eq!(snapshot.hamt_decisions, 1);
+    assert_eq!(snapshot.reasons.small_shape_stable, 4);
+    assert_eq!(snapshot.reasons.deep_override_chain, 1);
+    assert_eq!(snapshot.reasons.left_already_hamt, 0);
+    assert_eq!(
+        &*snapshot.override_chain_depth_distribution,
+        &[
+            HistogramBucket { value: 1, count: 2 },
+            HistogramBucket { value: 2, count: 1 },
+            HistogramBucket { value: 3, count: 1 },
+            HistogramBucket { value: 4, count: 1 },
+        ],
+    );
 }
 
 #[test]

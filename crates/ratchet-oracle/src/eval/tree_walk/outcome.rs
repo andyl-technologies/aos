@@ -12,6 +12,7 @@ pub struct EvalOutcome {
     pub(crate) value: Value,
     pub(crate) heap: EvalHeap,
     pub(crate) stats: EvalStats,
+    pub(crate) attr_telemetry: AttrTelemetry,
     pub(crate) trace_output: Vec<EvalTraceOutput>,
     pub(crate) warning_output: Vec<EvalWarningOutput>,
     pub(crate) impure_input_trace: Vec<ImpureInputFingerprint>,
@@ -27,6 +28,7 @@ impl std::fmt::Debug for EvalOutcome {
             .field("value", &self.value)
             .field("heap", &self.heap)
             .field("stats", &self.stats)
+            .field("attr_telemetry", &self.attr_telemetry)
             .field("trace_output", &self.trace_output)
             .field("warning_output", &self.warning_output)
             .field("impure_input_trace", &self.impure_input_trace)
@@ -53,6 +55,11 @@ impl EvalOutcome {
     /// Returns mirrored evaluator counters captured at the end of evaluation.
     pub const fn stats(&self) -> &EvalStats {
         &self.stats
+    }
+
+    /// Returns byte-neutral attribute-set telemetry captured during evaluation.
+    pub const fn attr_telemetry(&self) -> &AttrTelemetry {
+        &self.attr_telemetry
     }
 
     /// Returns user-facing trace output emitted during evaluation.

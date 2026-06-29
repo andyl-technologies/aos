@@ -50,7 +50,11 @@ use super::heap::{
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
-use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
+use crate::attrs::{
+    AttrEntry, AttrError, AttrPosition, FlatAttrs,
+    repr::{AttrSetConstruction, AttrSetReprKind, AttrSetReprPolicy},
+    telemetry::AttrTelemetry,
+};
 use crate::cache::{
     CacheExprIdentity, CachedDerivationOutputPath, CachedDerivationOutputPaths,
     CachedExpressionValue, CachedParse, CutoffDecision, DemandNodeId, DirEntryInput,
@@ -755,6 +759,14 @@ enum FetchTarballCompression {
     Zstd,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AttrUpdateTelemetryState {
+    override_chain_depth: usize,
+    projected_repr: AttrSetReprKind,
+}
+
+type AttrUpdateTelemetryNodeKey = (u32, u32);
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk {
@@ -767,6 +779,8 @@ pub struct TreeWalk {
     scoped_globals: Vec<Value>,
     options: TreeWalkOptions,
     stats: EvalStats,
+    attr_telemetry: AttrTelemetry,
+    attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
     impure_input_trace: Vec<ImpureInputFingerprint>,
