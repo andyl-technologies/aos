@@ -717,17 +717,46 @@ impl TreeWalk {
         id: IrId,
         builtin: Builtin,
     ) -> Option<Vec<DurableBlake3Hash>> {
-        if builtin.execution() != BuiltinExecution::FindFile {
+        let arity = builtin.first_class_arity()?;
+        let mut argument_ids = Vec::new();
+        let mut current = id;
+        loop {
+            let node = *self.node(current).ok()?;
+            let IrData::Pair { first, second } = node.data else {
+                return None;
+            };
+            argument_ids.push(second);
+            let first_node = self.node(first).ok()?;
+            if first_node.kind != IrKind::Apply {
+                break;
+            }
+            current = first;
+        }
+        argument_ids.reverse();
+
+        if argument_ids.len() == arity {
+            let mut hashes = Vec::new();
+            hashes.try_reserve_exact(argument_ids.len()).ok()?;
+            for (index, argument_id) in argument_ids.iter().copied().enumerate() {
+                let argument_span = self.node(argument_id).ok()?.span;
+                let argument = self.eval_lazy_node(argument_id).ok()?;
+                let argument = EvalPrimOpArg::new_in_module(
+                    self.current_module,
+                    argument_id,
+                    argument_span,
+                    argument,
+                );
+                hashes.push(
+                    self.force_cache_free_var_value_hash_for_primop_arg(builtin, index, &argument)?,
+                );
+            }
+            return Some(hashes);
+        }
+
+        if builtin.execution() != BuiltinExecution::FindFile || argument_ids.len() != 1 {
             return None;
         }
-        let node = *self.node(id).ok()?;
-        let IrData::Pair {
-            second: argument_id,
-            ..
-        } = node.data
-        else {
-            return None;
-        };
+        let argument_id = argument_ids[0];
         let argument_span = self.node(argument_id).ok()?.span;
         let argument = self.eval_lazy_node(argument_id).ok()?;
         let argument =

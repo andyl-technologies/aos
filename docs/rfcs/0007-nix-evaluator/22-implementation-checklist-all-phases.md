@@ -3352,7 +3352,10 @@ alone (`M-1`/`Q-A`).
       covers a direct explicit-list `findFile` miss-then-hit candidate trace;
       and `find_file_first_class_nix_path_records_exact_force_cache_graph_edges`
       covers the admitted first-class `findFile builtins.nixPath` child-call key
-      with the same miss-then-hit `FindFileCandidate` leaves. They require the
+      with the same miss-then-hit `FindFileCandidate` leaves; and
+      `find_file_first_class_explicit_list_records_exact_force_cache_graph_edges`
+      covers the admitted first-class explicit-list child-call key with the same
+      miss-then-hit leaves. They require the
       evaluator trace to match the expected typed fingerprint(s) and the enabled
       runtime graph to contain exactly one impure-edge owner, which must be the
       node for that thunk's or admitted child call's force-cache
@@ -3360,11 +3363,10 @@ alone (`M-1`/`Q-A`).
       leaf or leaves keyed by those fingerprints, with reverse dependent edges
       on the leaves. This is a focused force-cache edge harness for the
       currently admitted ordinary filesystem/import/direct explicit-list
-      `findFile`/first-class `findFile builtins.nixPath` subset; it does not
-      cover broader nested/multi-input traces, first-class explicit-list
-      exact-key edge proof, search-path allowed-path/fetch interactions,
-      persistent graph replay, or `currentTime` taint propagation
-      (`R-10`/`S-14`).
+      `findFile`/first-class `findFile builtins.nixPath`/first-class
+      explicit-list `findFile` subset; it does not cover broader
+      nested/multi-input traces, search-path allowed-path/fetch interactions,
+      persistent graph replay, or `currentTime` taint propagation (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`hashFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
@@ -3459,12 +3461,14 @@ alone (`M-1`/`Q-A`).
       synthetic `builtins.nixPath` hash path to the normal replayable argument
       payload hash, replay candidate traces on in-memory and fresh-runtime
       persistent child-call hits, and miss when the path-literal
-      base/search-path payload identity changes. This is scoped to
-      closed/replayable explicit-list child-call replay only; the enclosing
-      thunk still evaluates unless separately admitted, captured/non-replayable
-      explicit-list entries are still rejected by the child-call key, and
-      fetch interactions and broad search-path edge-exactness remain open
-      (`R-10`/`S-14`).
+      base/search-path payload identity changes. The exact-edge canary
+      `find_file_first_class_explicit_list_records_exact_force_cache_graph_edges`
+      proves the admitted child-call key owns the observed miss-then-hit
+      `FindFileCandidate` leaves. This is scoped to closed/replayable
+      explicit-list child-call replay only; the enclosing thunk still evaluates
+      unless separately admitted, captured/non-replayable explicit-list entries
+      are still rejected by the child-call key, and fetch interactions and broad
+      search-path edge-exactness remain open (`R-10`/`S-14`).
 - [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
