@@ -41,6 +41,8 @@ const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
 const MIN_WORLD_MEMORY_MIB: u32 = 1;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_FAMILY_FAULT_DENSITY_MILLIONTHS: u32 = 1_000_000;
+const MAX_FAULT_RATE_BASIS_POINTS: u32 = 10_000;
+const MIN_FAULT_SLOWDOWN_FACTOR_BASIS_POINTS: u32 = 10_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_TOPOLOGY_SIZE: u32 = 256;
 const FAMILY_FAULT_STEP_TICKS: u64 = 20;
@@ -3596,6 +3598,626 @@ pub enum PartitionDirection {
     EndpointAToEndpointB,
     /// Suppress delivery from `endpoint_b` to `endpoint_a`.
     EndpointBToEndpointA,
+}
+
+/// Mode used when a block fault fails an I/O operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IoFailureMode {
+    /// Complete the operation with a modeled I/O error status.
+    ErrorStatus,
+    /// Drop the operation so it never completes.
+    Drop,
+}
+
+/// A positive POSIX errno value returned by a 9p failure fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NinePErrno {
+    code: i32,
+}
+
+impl NinePErrno {
+    /// The portable `EIO` errno value.
+    pub const EIO: Self = Self { code: 5 };
+
+    /// Builds a positive errno code for 9p failure injection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::NinePErrnoMustBePositive`] when `code` is zero or
+    /// negative.
+    pub fn from_code(code: i32) -> Result<Self, EngineError> {
+        if code <= 0 {
+            return Err(EngineError::NinePErrnoMustBePositive { code });
+        }
+
+        Ok(Self { code })
+    }
+
+    /// Returns this errno as its positive integer code.
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        self.code
+    }
+}
+
+/// A fixed-point fault probability or ratio in integer basis points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultRateBasisPoints {
+    basis_points: u16,
+}
+
+impl FaultRateBasisPoints {
+    /// The zero-rate value.
+    pub const ZERO: Self = Self { basis_points: 0 };
+
+    /// The always-on or full-scale value.
+    pub const ONE: Self = Self {
+        basis_points: MAX_FAULT_RATE_BASIS_POINTS as u16,
+    };
+
+    /// Builds a basis-point value in the closed range `[0, 10_000]`.
+    ///
+    /// `0` represents `0.00%`, and `10_000` represents `100.00%`. The
+    /// representation is integer-only so canonical fault material never depends
+    /// on floating-point formatting or rounding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::FaultRateBasisPointsOutOfRange`] when
+    /// `basis_points` is greater than `10_000`.
+    pub fn from_basis_points(basis_points: u32) -> Result<Self, EngineError> {
+        if basis_points > MAX_FAULT_RATE_BASIS_POINTS {
+            return Err(EngineError::FaultRateBasisPointsOutOfRange {
+                basis_points,
+                maximum: MAX_FAULT_RATE_BASIS_POINTS,
+            });
+        }
+
+        Ok(Self {
+            basis_points: basis_points as u16,
+        })
+    }
+
+    /// Returns this value as integer basis points.
+    #[must_use]
+    pub fn basis_points(self) -> u16 {
+        self.basis_points
+    }
+}
+
+/// A fixed-point slowdown factor in integer basis points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultSlowdownFactorBasisPoints {
+    basis_points: u32,
+}
+
+impl FaultSlowdownFactorBasisPoints {
+    /// The identity slowdown factor, equal to `1.0`.
+    pub const ONE: Self = Self {
+        basis_points: MIN_FAULT_SLOWDOWN_FACTOR_BASIS_POINTS,
+    };
+
+    /// Builds a slowdown factor in basis points.
+    ///
+    /// `10_000` represents `1.0`, `20_000` represents `2.0`, and so on. Values
+    /// below `10_000` would speed a node up and are outside the fault taxonomy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::FaultSlowdownFactorBelowOne`] when
+    /// `basis_points` is less than `10_000`.
+    pub fn from_basis_points(basis_points: u32) -> Result<Self, EngineError> {
+        if basis_points < MIN_FAULT_SLOWDOWN_FACTOR_BASIS_POINTS {
+            return Err(EngineError::FaultSlowdownFactorBelowOne {
+                basis_points,
+                minimum: MIN_FAULT_SLOWDOWN_FACTOR_BASIS_POINTS,
+            });
+        }
+
+        Ok(Self { basis_points })
+    }
+
+    /// Returns this slowdown factor as integer basis points.
+    #[must_use]
+    pub const fn basis_points(self) -> u32 {
+        self.basis_points
+    }
+}
+
+/// An integer virtual-time duration used by fault parameters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultDuration {
+    nanos: u64,
+}
+
+impl FaultDuration {
+    /// The zero-length duration.
+    pub const ZERO: Self = Self { nanos: 0 };
+
+    /// Builds a duration from integer virtual nanoseconds.
+    #[must_use]
+    pub const fn from_nanos(nanos: u64) -> Self {
+        Self { nanos }
+    }
+
+    /// Returns this duration as integer virtual nanoseconds.
+    #[must_use]
+    pub const fn nanos(self) -> u64 {
+        self.nanos
+    }
+
+    /// Converts this duration to the shared execution-model duration type.
+    #[must_use]
+    pub const fn to_sim_duration(self) -> SimDuration {
+        SimDuration { nanos: self.nanos }
+    }
+}
+
+/// An integer bandwidth limit used by network faults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultBandwidthBitsPerSecond {
+    bits_per_second: u64,
+}
+
+impl FaultBandwidthBitsPerSecond {
+    /// Builds a nonzero integer bits-per-virtual-second bandwidth limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::FaultBandwidthMustBeNonZero`] when
+    /// `bits_per_second` is zero.
+    pub fn new(bits_per_second: u64) -> Result<Self, EngineError> {
+        if bits_per_second == 0 {
+            return Err(EngineError::FaultBandwidthMustBeNonZero { bits_per_second });
+        }
+
+        Ok(Self { bits_per_second })
+    }
+
+    /// Returns this limit as integer bits per virtual second.
+    #[must_use]
+    pub const fn bits_per_second(self) -> u64 {
+        self.bits_per_second
+    }
+}
+
+/// The complete RFC-0010 fault taxonomy.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Fault {
+    /// A network-link fault.
+    Network(NetworkFault),
+    /// A node/runtime fault.
+    Node(NodeFault),
+    /// A block-device fault.
+    Block(BlockFault),
+    /// A 9p-device fault.
+    NineP(NinePFault),
+}
+
+impl Fault {
+    /// Returns a stable dotted taxonomy key for this fault.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::Network(fault) => fault.kind_key(),
+            Self::Node(fault) => fault.kind_key(),
+            Self::Block(fault) => fault.kind_key(),
+            Self::NineP(fault) => fault.kind_key(),
+        }
+    }
+
+    /// Returns canonical line-oriented material for this fault.
+    ///
+    /// The material includes only integer fields and stable target identifiers,
+    /// making it suitable for deterministic content addressing and guard tests.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        match self {
+            Self::Network(fault) => format!("category=network\n{}", fault.canonical_material()),
+            Self::Node(fault) => format!("category=node\n{}", fault.canonical_material()),
+            Self::Block(fault) => format!("category=block\n{}", fault.canonical_material()),
+            Self::NineP(fault) => format!("category=9p\n{}", fault.canonical_material()),
+        }
+    }
+
+    /// Computes the content address of this fault taxonomy value.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            "crucible.fault.taxonomy.v1",
+            &self.canonical_material(),
+        )
+    }
+}
+
+/// Network fault variants over a declared logical link.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NetworkFault {
+    /// Suppress delivery for one direction or both directions of a link.
+    Partition {
+        /// Link affected by the partition.
+        link: LinkId,
+        /// Direction of delivery suppression.
+        direction: PartitionDirection,
+    },
+    /// Drop frames with a fixed basis-point probability.
+    Loss {
+        /// Link whose frames may be dropped.
+        link: LinkId,
+        /// Drop probability in basis points.
+        rate: FaultRateBasisPoints,
+    },
+    /// Delay delivery within an integer virtual-time reorder window.
+    Reorder {
+        /// Link whose frame order may change.
+        link: LinkId,
+        /// Maximum integer virtual-time reorder window.
+        window: FaultDuration,
+    },
+    /// Emit a second delivery with a fixed basis-point probability.
+    Duplicate {
+        /// Link whose frames may be duplicated.
+        link: LinkId,
+        /// Duplicate probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Integer virtual-time gap before the duplicate delivery.
+        gap: FaultDuration,
+    },
+    /// Mutate delivered frame bytes.
+    Corruption {
+        /// Link whose frames may be corrupted.
+        link: LinkId,
+        /// Corruption mode and parameters.
+        kind: NetworkCorruptionFault,
+    },
+    /// Cap link throughput with an integer bandwidth limit.
+    Bandwidth {
+        /// Link affected by the cap.
+        link: LinkId,
+        /// Integer bits-per-virtual-second limit.
+        limit: FaultBandwidthBitsPerSecond,
+    },
+    /// Add deterministic integer virtual-time latency to deliveries.
+    LatencyBump {
+        /// Link whose deliveries are delayed.
+        link: LinkId,
+        /// Extra integer virtual-time latency.
+        extra: FaultDuration,
+    },
+}
+
+impl NetworkFault {
+    /// Returns a stable dotted taxonomy key for this network fault.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::Partition { .. } => "network.partition",
+            Self::Loss { .. } => "network.loss",
+            Self::Reorder { .. } => "network.reorder",
+            Self::Duplicate { .. } => "network.duplicate",
+            Self::Corruption { kind, .. } => kind.kind_key(),
+            Self::Bandwidth { .. } => "network.bandwidth",
+            Self::LatencyBump { .. } => "network.latency-bump",
+        }
+    }
+
+    fn canonical_material(&self) -> String {
+        match self {
+            Self::Partition { link, direction } => {
+                format!(
+                    "kind=network.partition\n{}\ndirection={}",
+                    fault_link_material(link),
+                    partition_direction_key(*direction)
+                )
+            }
+            Self::Loss { link, rate } => format!(
+                "kind=network.loss\n{}\nrate_basis_points={}",
+                fault_link_material(link),
+                rate.basis_points()
+            ),
+            Self::Reorder { link, window } => format!(
+                "kind=network.reorder\n{}\nwindow_nanos={}",
+                fault_link_material(link),
+                window.nanos()
+            ),
+            Self::Duplicate { link, rate, gap } => format!(
+                "kind=network.duplicate\n{}\nrate_basis_points={}\ngap_nanos={}",
+                fault_link_material(link),
+                rate.basis_points(),
+                gap.nanos()
+            ),
+            Self::Corruption { link, kind } => {
+                format!(
+                    "{}\n{}",
+                    kind.canonical_material(),
+                    fault_link_material(link)
+                )
+            }
+            Self::Bandwidth { link, limit } => format!(
+                "kind=network.bandwidth\n{}\nbits_per_second={}",
+                fault_link_material(link),
+                limit.bits_per_second()
+            ),
+            Self::LatencyBump { link, extra } => format!(
+                "kind=network.latency-bump\n{}\nextra_nanos={}",
+                fault_link_material(link),
+                extra.nanos()
+            ),
+        }
+    }
+}
+
+/// Network payload corruption modes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NetworkCorruptionFault {
+    /// Flip up to `max_bits` payload bits.
+    BitFlip {
+        /// Bit-flip probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Maximum number of bits to flip in one frame.
+        max_bits: u32,
+    },
+    /// Mutate one modeled protocol field.
+    FieldMutation {
+        /// Field-mutation probability in basis points.
+        rate: FaultRateBasisPoints,
+    },
+    /// Truncate delivered payloads.
+    Truncation {
+        /// Truncation probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Maximum number of bytes removed from a frame.
+        max_bytes: u64,
+    },
+}
+
+impl NetworkCorruptionFault {
+    /// Returns a stable dotted taxonomy key for this corruption mode.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::BitFlip { .. } => "network.corruption.bit-flip",
+            Self::FieldMutation { .. } => "network.corruption.field-mutation",
+            Self::Truncation { .. } => "network.corruption.truncation",
+        }
+    }
+
+    fn canonical_material(&self) -> String {
+        match self {
+            Self::BitFlip { rate, max_bits } => format!(
+                "kind=network.corruption.bit-flip\nrate_basis_points={}\nmax_bits={max_bits}",
+                rate.basis_points()
+            ),
+            Self::FieldMutation { rate } => format!(
+                "kind=network.corruption.field-mutation\nrate_basis_points={}",
+                rate.basis_points()
+            ),
+            Self::Truncation { rate, max_bytes } => format!(
+                "kind=network.corruption.truncation\nrate_basis_points={}\nmax_bytes={max_bytes}",
+                rate.basis_points()
+            ),
+        }
+    }
+}
+
+/// Node/runtime fault variants over a declared VM node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NodeFault {
+    /// Stop a node until a restart policy acts.
+    Crash {
+        /// Node affected by the crash.
+        node: NodeId,
+        /// Restart behavior when the crash heals.
+        restart: RestartPolicy,
+    },
+    /// Stretch the node's virtual-time mapping by an integer basis-point rate.
+    Slow {
+        /// Node affected by the slowdown.
+        node: NodeId,
+        /// Slowdown factor in basis points, where `10_000` is the identity.
+        factor: FaultSlowdownFactorBasisPoints,
+    },
+    /// Offset guest-visible time-of-day without moving scheduler virtual time.
+    ClockSkew {
+        /// Node whose guest-visible clock is skewed.
+        node: NodeId,
+        /// Signed integer virtual-time offset.
+        offset: SimOffset,
+    },
+}
+
+impl NodeFault {
+    /// Returns a stable dotted taxonomy key for this node fault.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::Crash { .. } => "node.crash",
+            Self::Slow { .. } => "node.slow",
+            Self::ClockSkew { .. } => "node.clock-skew",
+        }
+    }
+
+    fn canonical_material(&self) -> String {
+        match self {
+            Self::Crash { node, restart } => format!(
+                "kind=node.crash\n{}\nrestart={}",
+                fault_node_material(node),
+                restart_policy_key(*restart)
+            ),
+            Self::Slow { node, factor } => format!(
+                "kind=node.slow\n{}\nfactor_basis_points={}",
+                fault_node_material(node),
+                factor.basis_points()
+            ),
+            Self::ClockSkew { node, offset } => format!(
+                "kind=node.clock-skew\n{}\noffset_nanos={}",
+                fault_node_material(node),
+                offset.nanos
+            ),
+        }
+    }
+}
+
+/// Block-device fault variants over a declared block device.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlockFault {
+    /// Add integer virtual-time latency to block completions.
+    Latency {
+        /// Block device affected by the latency.
+        device: DeviceId,
+        /// Extra integer virtual-time latency.
+        extra: FaultDuration,
+        /// Integer virtual-time latency jitter.
+        jitter: FaultDuration,
+    },
+    /// Fail block operations with a fixed basis-point probability.
+    Failure {
+        /// Block device affected by the failure.
+        device: DeviceId,
+        /// Failure probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Mode used to fail the operation.
+        mode: IoFailureMode,
+    },
+    /// Reorder block completions inside an integer virtual-time window.
+    Reorder {
+        /// Block device affected by reordering.
+        device: DeviceId,
+        /// Maximum integer virtual-time reorder window.
+        window: FaultDuration,
+    },
+}
+
+impl BlockFault {
+    /// Returns a stable dotted taxonomy key for this block fault.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::Latency { .. } => "block.latency",
+            Self::Failure { .. } => "block.failure",
+            Self::Reorder { .. } => "block.reorder",
+        }
+    }
+
+    fn canonical_material(&self) -> String {
+        match self {
+            Self::Latency {
+                device,
+                extra,
+                jitter,
+            } => format!(
+                "kind=block.latency\n{}\nextra_nanos={}\njitter_nanos={}",
+                fault_device_material(device),
+                extra.nanos(),
+                jitter.nanos()
+            ),
+            Self::Failure { device, rate, mode } => format!(
+                "kind=block.failure\n{}\nrate_basis_points={}\nmode={}",
+                fault_device_material(device),
+                rate.basis_points(),
+                io_failure_mode_key(*mode)
+            ),
+            Self::Reorder { device, window } => format!(
+                "kind=block.reorder\n{}\nwindow_nanos={}",
+                fault_device_material(device),
+                window.nanos()
+            ),
+        }
+    }
+}
+
+/// 9p-device fault variants over a declared 9p device.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NinePFault {
+    /// Add integer virtual-time latency to 9p completions.
+    Latency {
+        /// 9p device affected by the latency.
+        device: DeviceId,
+        /// Extra integer virtual-time latency.
+        extra: FaultDuration,
+        /// Integer virtual-time latency jitter.
+        jitter: FaultDuration,
+    },
+    /// Fail 9p operations with a fixed basis-point probability.
+    Failure {
+        /// 9p device affected by the failure.
+        device: DeviceId,
+        /// Failure probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Errno returned by the failed operation.
+        errno: NinePErrno,
+    },
+}
+
+impl NinePFault {
+    /// Returns a stable dotted taxonomy key for this 9p fault.
+    #[must_use]
+    pub fn kind_key(&self) -> &'static str {
+        match self {
+            Self::Latency { .. } => "9p.latency",
+            Self::Failure { .. } => "9p.failure",
+        }
+    }
+
+    fn canonical_material(&self) -> String {
+        match self {
+            Self::Latency {
+                device,
+                extra,
+                jitter,
+            } => format!(
+                "kind=9p.latency\n{}\nextra_nanos={}\njitter_nanos={}",
+                fault_device_material(device),
+                extra.nanos(),
+                jitter.nanos()
+            ),
+            Self::Failure {
+                device,
+                rate,
+                errno,
+            } => format!(
+                "kind=9p.failure\n{}\nrate_basis_points={}\nerrno={}",
+                fault_device_material(device),
+                rate.basis_points(),
+                errno.code()
+            ),
+        }
+    }
+}
+
+fn partition_direction_key(direction: PartitionDirection) -> &'static str {
+    match direction {
+        PartitionDirection::Bidirectional => "bidirectional",
+        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
+        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
+}
+
+fn restart_policy_key(policy: RestartPolicy) -> &'static str {
+    match policy {
+        RestartPolicy::FromReadyPoint => "from-ready-point",
+        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
+        RestartPolicy::StayDown => "stay-down",
+    }
+}
+
+fn io_failure_mode_key(mode: IoFailureMode) -> &'static str {
+    match mode {
+        IoFailureMode::Drop => "drop",
+        IoFailureMode::ErrorStatus => "error-status",
+    }
+}
+
+fn fault_link_material(link: &LinkId) -> String {
+    format!("link_len={}\nlink={}", link.name.len(), link.name)
+}
+
+fn fault_node_material(node: &NodeId) -> String {
+    format!("node_len={}\nnode={}", node.name.len(), node.name)
+}
+
+fn fault_device_material(device: &DeviceId) -> String {
+    format!("device_len={}\ndevice={}", device.name.len(), device.name)
 }
 
 /// A membership-dynamics fault layered over a static [`World`].
@@ -7972,6 +8594,30 @@ pub enum EngineError {
         /// The maximum legal density in millionths.
         maximum: u32,
     },
+    /// A fixed-point fault rate is outside `[0.0, 1.0]`.
+    FaultRateBasisPointsOutOfRange {
+        /// The invalid rate in basis points.
+        basis_points: u32,
+        /// The maximum legal rate in basis points.
+        maximum: u32,
+    },
+    /// A fault slowdown factor is below the identity `1.0` factor.
+    FaultSlowdownFactorBelowOne {
+        /// The invalid slowdown factor in basis points.
+        basis_points: u32,
+        /// The minimum legal slowdown factor in basis points.
+        minimum: u32,
+    },
+    /// A fault bandwidth cap was configured as zero bits per second.
+    FaultBandwidthMustBeNonZero {
+        /// The invalid bandwidth cap in bits per virtual second.
+        bits_per_second: u64,
+    },
+    /// A 9p errno was configured as a non-positive integer.
+    NinePErrnoMustBePositive {
+        /// The invalid errno code.
+        code: i32,
+    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -8235,6 +8881,18 @@ impl fmt::Display for EngineError {
             }
             Self::FaultDensityOutOfRange { .. } => {
                 f.write_str("scenario family fault density is outside the legal range")
+            }
+            Self::FaultRateBasisPointsOutOfRange { .. } => {
+                f.write_str("fault rate basis points are outside the legal range")
+            }
+            Self::FaultSlowdownFactorBelowOne { .. } => {
+                f.write_str("fault slowdown factor must be at least 1.0")
+            }
+            Self::FaultBandwidthMustBeNonZero { .. } => {
+                f.write_str("fault bandwidth cap must be nonzero")
+            }
+            Self::NinePErrnoMustBePositive { .. } => {
+                f.write_str("9p errno must be a positive integer")
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")

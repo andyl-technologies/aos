@@ -916,12 +916,26 @@ Seed, Schedule)` exactly like a fault-free run — which is what
 > after the L1 scheduler and I/O-sub-node primitives and before any L3+ feature
 > built on faults (assertions, search, fuzzing).
 
-- [ ] **T-FAULT-1** Define the `Fault` taxonomy enum (network: partition[bi/A→B/
+- [x] **T-FAULT-1** Define the `Fault` taxonomy enum (network: partition[bi/A→B/
   B→A], loss, reorder, duplicate, corruption[bit-flip/field-mutation/truncation],
   bandwidth, latency bump; node: crash[restart policy], slow, clock-skew; block:
   latency, failure, reorder; 9p: latency, failure) with integer basis-point rates
   and integer time/bandwidth units. — satisfies [FAULT-3], [FAULT-4], [FAULT-5],
   [FAULT-6], [FAULT-7], [FAULT-8], [FAULT-9], [FAULT-10]; spec §17.2.
+
+  Completed by `checks.crucible.phase4.faultTaxonomy`: the engine model now
+  exports the closed `Fault` taxonomy with network, node, block, and 9p variants,
+  including directed/bidirectional partitions, loss, reorder, duplicate,
+  bit-flip/field-mutation/truncation corruption, bandwidth, latency bump, crash
+  restart policies, slow, and clock-skew. `FaultRateBasisPoints`,
+  `FaultSlowdownFactorBasisPoints`, `FaultDuration`, and
+  `FaultBandwidthBitsPerSecond` keep all rates and units integer-only, reject
+  out-of-range basis points, below-identity slow factors, zero bandwidth caps,
+  and invalid 9p errno values, and feed stable length-delimited canonical
+  material plus content hashes. The focused taxonomy test covers every RFC kind,
+  directed partition and restart-policy variants, block jitter and failure
+  modes, 9p errno, integer-only material, and content-address drift when
+  parameters change.
 - [ ] **T-FAULT-2** Enforce the one design rule: every fault perturbs modeled
   behavior only (no host wall-clock/scheduling/FS/entropy) and never mutates the
   static topology; add a harness-lint check on the fault apply path. — satisfies
