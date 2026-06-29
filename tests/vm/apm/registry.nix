@@ -1660,8 +1660,8 @@ in {
 
       export HOME=/tmp/override-consumer
       export USER=overrideuser
-      export APM_SYSTEM_CONFIG_DIR=/tmp/override-system-config
-      SYSTEM_REG_CONFIG="$APM_SYSTEM_CONFIG_DIR/registries.d/override-reg.toml"
+      export AOS_ROOT=/tmp/override-root
+      SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
       PROFILE_ROOT="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
       mkdir -p "$HOME"
