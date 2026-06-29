@@ -968,10 +968,27 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   are replayed as schedule material, not by re-rolling or advancing the decision
   RNG, and the check pins the reproduction-artifact replay test that carries
   recorded `FaultFires`/`RngDraw` entries through offline artifact replay.
-- [ ] **T-FAULT-4** Implement integer-basis-point rates and exact integer
+- [x] **T-FAULT-4** Implement integer-basis-point rates and exact integer
   Bernoulli decisions; ban floats on the determinism-relevant path and in the
   canonical `Plan` serialization; compute all delays/jitter/bandwidth in integer
   arithmetic. — satisfies [FAULT-13], [FAULT-14]; spec §17.3.2.
+
+  Completed by `checks.crucible.phase4.faultIntegerRates`: the shared
+  `FaultRateBasisPoints` type now exposes the canonical `10_000` denominator,
+  deterministic raw-draw-to-bucket reduction, and the exact
+  `bucket < basis_points` Bernoulli rule used by the scheduler's
+  `SchedulerResolveFaultChoice` payload and the recorder's
+  `decide_fault_basis_points` API, which records the raw `RngDraw` before the
+  derived `FaultFires` outcome. The focused regression covers zero, boundary,
+  wraparound, and always-on basis-point decisions; exercises the scheduler
+  RESOLVE boundary so `bucket == rate` does not fire and `bucket < rate` does;
+  verifies canonical fault material emits `rate_basis_points`,
+  `factor_basis_points`, `*_nanos`, and `bits_per_second` integer fields without
+  decimal rates; and pins scheduled plan TOML fault entries as float-free,
+  including rejection of decimal `rate = 1.5` fault parameters. The gate also
+  checks the block/9p/link shared device transforms for exact-fraction
+  probability, integer serialization delay, and integer jitter/reorder
+  arithmetic.
 - [ ] **T-FAULT-5** Implement deterministic, injection-order-independent
   combination of overlapping same-kind faults per the §17.3.3 table. — satisfies
   [FAULT-15]; spec §17.3.3.

@@ -91,7 +91,7 @@
       }
       {
         label = "fault outcome recording";
-        needle = "recorder.decide_fault";
+        needle = "recorder.decide_fault_basis_points";
       }
       {
         label = "live quantum probabilistic resolve";
