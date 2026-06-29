@@ -662,12 +662,13 @@ eval (network access is disabled unless explicitly allowed).
         URLs with canonical flake-ref restricted-mode gating. The native subset
         is covered by focused `fetchTree` tests for local inputs, string refs,
         git metadata, forge archive lowering, configured GitHub/GitLab/SourceHut
-        resolution, lock gates, and invalid-shape rejection.
+        resolution, configured forge `dir` rerooting, lock gates, and
+        invalid-shape rejection.
 - [ ] Full `fetchTree` flake fetcher remains — registry/indirect refs, live
       provider ref-resolution parity beyond the configured-response forge
-      canaries, remaining forge `dir`/metadata parity, full flakes integration,
-      and any pinned C++ Nix edge cases outside the native conditional subset
-      stay open.
+      canaries, remaining live-provider forge `dir`/metadata parity, full
+      flakes integration, and any pinned C++ Nix edge cases outside the native
+      conditional subset stay open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -992,12 +993,13 @@ requires them:
       Local attrset inputs and URL-style string refs for native
       path/file/tarball/git inputs are native; rev-pinned forge archive lowering
       is native; configured GitHub/GitLab ref-resolution test hooks and
-      SourceHut `/HEAD` plus `info/refs` ref-resolution hooks are covered; bare
-      absolute path strings are rejected for parity. Full `fetchTree` remains
-      open in §11 and the next row.
+      SourceHut `/HEAD` plus `info/refs` ref-resolution hooks are covered;
+      configured forge `dir` rerooting is covered; bare absolute path strings
+      are rejected for parity. Full `fetchTree` remains open in §11 and the next
+      row.
 - [ ] Full `fetchTree` flake layer remains scoped/open for registry/indirect
-      refs, live provider resolution across forges, remaining forge
-      `dir`/metadata parity, lock-file graph semantics, and full flakes
+      refs, live provider resolution across forges, remaining live-provider
+      forge `dir`/metadata parity, lock-file graph semantics, and full flakes
       integration.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).

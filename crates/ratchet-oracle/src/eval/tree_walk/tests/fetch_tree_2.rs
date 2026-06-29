@@ -724,6 +724,124 @@ fn fetch_tree_sourcehut_refs_resolve_with_test_url_responses() {
 }
 
 #[test]
+fn fetch_tree_forge_refs_reroot_dir_with_test_url_responses() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-forge-ref-dir");
+    let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
+    let store_dir = unique_temp_dir("fetch-tree-forge-ref-dir-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let resolved_rev = "0123456789abcdef0123456789abcdef01234567";
+    let subdir_recursive_nar_hash = "sha256-gSl6kgu8AUFiZkLorEwK2W4Cg+knYmndOninCstIAcI=";
+
+    options.add_fetch_tree_url_response(
+        "https://api.github.com/repos/NixOS/nixpkgs/commits/main",
+        format!(r#"{{"sha":"{resolved_rev}"}}"#).into_bytes(),
+    );
+    options.add_fetch_tree_url_response(
+        format!("https://github.com/NixOS/nixpkgs/archive/{resolved_rev}.tar.gz"),
+        archive_bytes.clone(),
+    );
+    options.add_fetch_tree_url_response(
+        "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/commits/main",
+        format!(r#"{{"id":"{resolved_rev}"}}"#).into_bytes(),
+    );
+    options.add_fetch_tree_url_response(
+        format!(
+            "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={resolved_rev}"
+        ),
+        archive_bytes.clone(),
+    );
+    options.add_fetch_tree_url_response(
+        "https://git.sr.ht/~andyl/aos/HEAD",
+        b"ref: refs/heads/main\n".to_vec(),
+    );
+    options.add_fetch_tree_url_response(
+        "https://git.sr.ht/~andyl/aos/info/refs",
+        format!("{resolved_rev}\trefs/heads/main\n").into_bytes(),
+    );
+    options.add_fetch_tree_url_response(
+        format!("https://git.sr.ht/~andyl/aos/archive/{resolved_rev}.tar.gz"),
+        archive_bytes,
+    );
+
+    let source = r#"
+        let
+          gh = builtins.fetchTree "github:NixOS/nixpkgs/main?dir=sub";
+          gl = builtins.fetchTree "gitlab:NixOS/nixpkgs/main?dir=sub";
+          sh = builtins.fetchTree "sourcehut:~andyl/aos?dir=sub";
+          ghAttrs = builtins.fetchTree {
+            type = "github";
+            owner = "NixOS";
+            repo = "nixpkgs";
+            ref = "main";
+            dir = "sub";
+          };
+          glAttrs = builtins.fetchTree {
+            type = "gitlab";
+            owner = "NixOS";
+            repo = "nixpkgs";
+            ref = "main";
+            dir = "sub";
+          };
+          shAttrs = builtins.fetchTree {
+            type = "sourcehut";
+            owner = "~andyl";
+            repo = "aos";
+            ref = "main";
+            dir = "sub";
+          };
+        in {
+          ghNested = builtins.readFile "${gh.outPath}/nested.txt";
+          glNested = builtins.readFile "${gl.outPath}/nested.txt";
+          shNested = builtins.readFile "${sh.outPath}/nested.txt";
+          ghAttrsNested = builtins.readFile "${ghAttrs.outPath}/nested.txt";
+          glAttrsNested = builtins.readFile "${glAttrs.outPath}/nested.txt";
+          shAttrsNested = builtins.readFile "${shAttrs.outPath}/nested.txt";
+          ghRootFileExists = builtins.pathExists "${gh.outPath}/file.txt";
+          ghSubdirStillNested = builtins.pathExists "${gh.outPath}/sub/nested.txt";
+          ghRev = gh.rev;
+          glRev = gl.rev;
+          shRev = sh.rev;
+          ghAttrsRev = ghAttrs.rev;
+          glAttrsRev = glAttrs.rev;
+          shAttrsRev = shAttrs.rev;
+          ghNarHash = gh.narHash;
+          glNarHash = gl.narHash;
+          shNarHash = sh.narHash;
+          ghAttrsNarHash = ghAttrs.narHash;
+          glAttrsNarHash = glAttrs.narHash;
+          shAttrsNarHash = shAttrs.narHash;
+        }
+        "#;
+    let json = eval_json_bytes_with_options(source, options);
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("forge fetchTree dir JSON parses");
+    assert_eq!(value["ghNested"], "inner");
+    assert_eq!(value["glNested"], "inner");
+    assert_eq!(value["shNested"], "inner");
+    assert_eq!(value["ghAttrsNested"], "inner");
+    assert_eq!(value["glAttrsNested"], "inner");
+    assert_eq!(value["shAttrsNested"], "inner");
+    assert_eq!(value["ghRootFileExists"], false);
+    assert_eq!(value["ghSubdirStillNested"], false);
+    assert_eq!(value["ghRev"], resolved_rev);
+    assert_eq!(value["glRev"], resolved_rev);
+    assert_eq!(value["shRev"], resolved_rev);
+    assert_eq!(value["ghAttrsRev"], resolved_rev);
+    assert_eq!(value["glAttrsRev"], resolved_rev);
+    assert_eq!(value["shAttrsRev"], resolved_rev);
+    assert_eq!(value["ghNarHash"], subdir_recursive_nar_hash);
+    assert_eq!(value["glNarHash"], subdir_recursive_nar_hash);
+    assert_eq!(value["shNarHash"], subdir_recursive_nar_hash);
+    assert_eq!(value["ghAttrsNarHash"], subdir_recursive_nar_hash);
+    assert_eq!(value["glAttrsNarHash"], subdir_recursive_nar_hash);
+    assert_eq!(value["shAttrsNarHash"], subdir_recursive_nar_hash);
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn fetch_tree_validates_input_shape() {
     let dir = unique_temp_dir("fetch-tree-invalid");
     fs::write(dir.join("data.txt"), b"data").expect("source file writes");
