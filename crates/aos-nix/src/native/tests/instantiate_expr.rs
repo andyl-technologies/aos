@@ -962,44 +962,29 @@ fn native_instantiation_rejects_fabricated_drv_path_attrsets() -> Result<()> {
 #[test]
 fn native_instantiation_fetch_tree_gaps_stay_fallback_eligible() -> Result<()> {
     let native = NixNative::new(0)?;
+    let source = r#"derivationStrict {
+         name = "x";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+         src = builtins.fetchTree {
+           type = "git";
+           url = "file:///no-such-repo";
+           verifyCommit = true;
+         };
+       }"#;
 
-    for (source, expected_feature) in [
-        (
-            r#"derivationStrict {
-                 name = "x";
-                 system = "x86_64-linux";
-                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                 src = builtins.fetchTree "sourcehut:~andyl/aos/main";
-               }"#,
-            "forge reference resolution",
-        ),
-        (
-            r#"derivationStrict {
-                 name = "x";
-                 system = "x86_64-linux";
-                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                 src = builtins.fetchTree {
-                   type = "git";
-                   url = "file:///no-such-repo";
-                   verifyCommit = true;
-                 };
-               }"#,
-            "verified git fetches",
-        ),
-    ] {
-        let error = native
-            .instantiate_expr(source)
-            .expect_err("native fetchTree implementation gaps should fall back");
+    let error = native
+        .instantiate_expr(source)
+        .expect_err("native fetchTree implementation gaps should fall back");
 
-        assert!(
-            matches!(
-                error.downcast_ref::<NativeEvalError>(),
-                Some(NativeEvalError::Unsupported { feature, span: Some(_) })
-                    if feature.contains(expected_feature)
-            ),
-            "{source}: {error:?}"
-        );
-    }
+    assert!(
+        matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                if feature.contains("verified git fetches")
+        ),
+        "{source}: {error:?}"
+    );
 
     Ok(())
 }

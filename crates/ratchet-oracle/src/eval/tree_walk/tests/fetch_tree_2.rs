@@ -155,6 +155,40 @@ fn fetch_tree_forge_refs_lower_to_archive_urls_and_gate_access() {
         b"https://git.example/api/v4/projects/NixOS%2Fnixpkgs/repository/commits/main"
     );
 
+    let sourcehut_refs_url =
+        TreeWalk::fetch_tree_sourcehut_refs_url(ir.root, span, b"~andyl", b"aos", None)
+            .expect("SourceHut refs URL renders");
+    assert_eq!(
+        sourcehut_refs_url,
+        b"https://git.sr.ht/~andyl/aos/info/refs"
+    );
+    let sourcehut_head_url =
+        TreeWalk::fetch_tree_sourcehut_head_url(ir.root, span, b"~andyl", b"aos", None)
+            .expect("SourceHut HEAD URL renders");
+    assert_eq!(sourcehut_head_url, b"https://git.sr.ht/~andyl/aos/HEAD");
+
+    let sourcehut_rev = TreeWalk::fetch_tree_sourcehut_rev_from_refs_response(
+        ir.root,
+        span,
+        b"sourcehut:~andyl/aos/main",
+        b"refs/heads/main",
+        b"1111111111111111111111111111111111111111\trefs/heads/dev\nref: refs/heads/main\tHEAD\n0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n",
+    )
+    .expect("SourceHut info/refs resolves the requested ref");
+    assert_eq!(sourcehut_rev, b"0123456789abcdef0123456789abcdef01234567");
+    let sourcehut_head_rev = TreeWalk::fetch_tree_sourcehut_rev_from_refs_response(
+        ir.root,
+        span,
+        b"sourcehut:~andyl/aos",
+        b"refs/heads/main",
+        b"ref: refs/heads/main\tHEAD\n0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n",
+    )
+    .expect("SourceHut info/refs resolves a symbolic HEAD target");
+    assert_eq!(
+        sourcehut_head_rev,
+        b"0123456789abcdef0123456789abcdef01234567"
+    );
+
     let resolved_rev = TreeWalk::fetch_tree_github_rev_from_commit_response(
         ir.root,
         span,
@@ -433,23 +467,6 @@ fn fetch_tree_forge_refs_lower_to_archive_urls_and_gate_access() {
 
     let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
     options
-        .add_allowed_uri("sourcehut:~andyl/aos/main")
-        .expect("unresolved sourcehut URI is a valid allowed URI prefix");
-    let error = eval_whnf_owned_with_options(
-        &lower(r#"builtins.fetchTree "sourcehut:~andyl/aos/main""#),
-        options,
-    )
-    .expect_err("allowed unresolved forge ref still needs resolution support");
-    assert!(matches!(
-        error.kind(),
-        TreeWalkErrorKind::UnsupportedFetchTreeFeature {
-            feature: "forge reference resolution",
-            ..
-        }
-    ));
-
-    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
-    options
         .add_allowed_uri("sourcehut:~andyl/aos/main?dir=lib")
         .expect("dir-bearing forge URI is a valid allowed URI prefix");
     let error = eval_whnf_owned_with_options(
@@ -470,17 +487,19 @@ fn fetch_tree_forge_refs_lower_to_archive_urls_and_gate_access() {
     options
         .add_allowed_uri("sourcehut:~andyl/aos/main")
         .expect("dir-stripped forge URI is a valid allowed URI prefix");
+    options.add_fetch_tree_url_response(
+        "https://git.sr.ht/~andyl/aos/info/refs",
+        b"0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n".to_vec(),
+    );
     let error = eval_whnf_owned_with_options(
         &lower(r#"builtins.fetchTree "sourcehut:~andyl/aos/main?dir=lib""#),
         options,
     )
-    .expect_err("allowed unresolved forge ref still needs resolution support");
+    .expect_err("allowed unresolved forge ref resolves before archive access");
     assert!(matches!(
         error.kind(),
-        TreeWalkErrorKind::UnsupportedFetchTreeFeature {
-            feature: "forge reference resolution",
-            ..
-        }
+        TreeWalkErrorKind::FetchTree { message, .. }
+            if message.contains("missing test fetchTree URL response")
     ));
 }
 
@@ -615,6 +634,96 @@ fn fetch_tree_gitlab_refs_resolve_with_test_url_responses() {
 }
 
 #[test]
+fn fetch_tree_sourcehut_refs_resolve_with_test_url_responses() {
+    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-sourcehut-ref");
+    let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
+    let store_dir = unique_temp_dir("fetch-tree-sourcehut-ref-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let resolved_rev = "0123456789abcdef0123456789abcdef01234567";
+    let recursive_nar_hash = "sha256-2huQKpXoKVd3jyPd2WSNvpaYPRMVWmOk+ehCZVNq3KI=";
+    let recursive_nar_hash_query =
+        url::form_urlencoded::byte_serialize(recursive_nar_hash.as_bytes()).collect::<String>();
+
+    options.add_fetch_tree_url_response(
+        "https://git.sr.ht/~andyl/aos/HEAD",
+        b"ref: refs/heads/main\n".to_vec(),
+    );
+    options.add_fetch_tree_url_response(
+        "https://git.sr.ht/~andyl/aos/info/refs",
+        format!(
+            "1111111111111111111111111111111111111111\trefs/heads/dev\nref: refs/heads/main\tHEAD\n{resolved_rev}\trefs/heads/main\n"
+        )
+        .into_bytes(),
+    );
+    options.add_fetch_tree_url_response(
+        format!("https://git.sr.ht/~andyl/aos/archive/{resolved_rev}.tar.gz"),
+        archive_bytes,
+    );
+
+    let source = format!(
+        r#"
+            let
+              x = builtins.fetchTree "sourcehut:~andyl/aos/main?narHash={recursive_nar_hash_query}";
+              head = builtins.fetchTree "sourcehut:~andyl/aos?narHash={recursive_nar_hash_query}";
+              y = builtins.fetchTree {{
+                type = "sourcehut";
+                owner = "~andyl";
+                repo = "aos";
+                ref = "main";
+                narHash = "{recursive_nar_hash}";
+              }};
+              default = builtins.fetchTree {{
+                type = "sourcehut";
+                owner = "~andyl";
+                repo = "aos";
+                narHash = "{recursive_nar_hash}";
+              }};
+            in {{
+              data = builtins.readFile "${{x.outPath}}/file.txt";
+              nested = builtins.readFile "${{y.outPath}}/sub/nested.txt";
+              headNested = builtins.readFile "${{head.outPath}}/sub/nested.txt";
+              rev = x.rev;
+              defaultRev = default.rev;
+              shortRev = x.shortRev;
+              narHash = y.narHash;
+            }}
+            "#
+    );
+    let json = eval_json_bytes_with_options(&source, options.clone());
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("SourceHut fetchTree JSON parses");
+    assert_eq!(value["data"], "data");
+    assert_eq!(value["nested"], "inner");
+    assert_eq!(value["headNested"], "inner");
+    assert_eq!(value["rev"], resolved_rev);
+    assert_eq!(value["defaultRev"], resolved_rev);
+    assert_eq!(value["shortRev"], &resolved_rev[..7]);
+    assert_eq!(value["narHash"], recursive_nar_hash);
+
+    let mut restricted_options = options;
+    restricted_options.set_eval_mode(EvalMode::Restricted);
+    restricted_options
+        .add_allowed_uri(format!(
+            "sourcehut:~andyl/aos?narHash={recursive_nar_hash_query}"
+        ))
+        .expect("restricted SourceHut ref URI configures");
+    let restricted_json = eval_json_bytes_with_options(
+        &format!(
+            r#"let x = builtins.fetchTree "sourcehut:~andyl/aos?narHash={recursive_nar_hash_query}"; in x.rev"#
+        ),
+        restricted_options,
+    );
+    assert_eq!(
+        restricted_json,
+        serde_json::to_vec(resolved_rev).expect("rev JSON serializes")
+    );
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn fetch_tree_validates_input_shape() {
     let dir = unique_temp_dir("fetch-tree-invalid");
     fs::write(dir.join("data.txt"), b"data").expect("source file writes");
@@ -710,23 +819,13 @@ fn fetch_tree_validates_input_shape() {
             ));
         }
 
-    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
-    options
-        .add_allowed_uri("sourcehut:")
-        .expect("sourcehut URI prefix is a valid allowed URI");
     for source in [
         r#"builtins.fetchTree { type = "sourcehut"; owner = "~andyl"; repo = "aos"; ref = ""; }"#,
         r#"builtins.fetchTree { type = "sourcehut"; owner = "~andyl"; repo = "aos"; ref = "bad?ref"; }"#,
     ] {
-        let error = eval_whnf_owned_with_options(&lower(source), options.clone())
-            .expect_err("allowed unresolved forge attrset still needs resolution support");
-        assert!(matches!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
-                feature: "forge reference resolution",
-                ..
-            }
-        ));
+        let error = eval_whnf_owned(&lower(source))
+            .expect_err("invalid sourcehut ref attrset rejects before fetching");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
     }
 
     let error = eval_whnf_owned(&lower(

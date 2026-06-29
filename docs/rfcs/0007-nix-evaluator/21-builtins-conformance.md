@@ -641,7 +641,9 @@ eval (network access is disabled unless explicitly allowed).
       `"tarball"`, `"git"`) plus supported URL-style string refs through
       `parseFlakeRef`; rev-pinned forge refs lower to provider archive URLs, and
       GitHub/GitLab ref resolution is covered through configured test URL
-      responses. Returns tree attrsets with `outPath` and lock metadata for the
+      responses, and SourceHut branch/tag/default-`HEAD` ref resolution matches
+      pinned Nix's `/HEAD` plus `info/refs` lookup path with configured response
+      coverage. Returns tree attrsets with `outPath` and lock metadata for the
       native subset.
       - Stabilized as non-experimental in Nix ≥ 2.19 (was experimental before).
         Tied to the flakes machinery; treat as **conditional scope** — implement
@@ -659,13 +661,13 @@ eval (network access is disabled unless explicitly allowed).
         (`github`, `gitlab`, `sourcehut`) lower to the pinned provider archive
         URLs with canonical flake-ref restricted-mode gating. The native subset
         is covered by focused `fetchTree` tests for local inputs, string refs,
-        git metadata, forge archive lowering, configured GitHub/GitLab
+        git metadata, forge archive lowering, configured GitHub/GitLab/SourceHut
         resolution, lock gates, and invalid-shape rejection.
 - [ ] Full `fetchTree` flake fetcher remains — registry/indirect refs, live
-      provider ref-resolution parity across supported forges, SourceHut
-      unresolved-ref coverage, remaining forge `dir`/metadata parity, full
-      flakes integration, and any pinned C++ Nix edge cases outside the native
-      conditional subset stay open.
+      provider ref-resolution parity beyond the configured-response forge
+      canaries, remaining forge `dir`/metadata parity, full flakes integration,
+      and any pinned C++ Nix edge cases outside the native conditional subset
+      stay open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -989,9 +991,10 @@ requires them:
 - [x] `fetchTree` (input) — flake fetcher; **conditional subset only** (§11).
       Local attrset inputs and URL-style string refs for native
       path/file/tarball/git inputs are native; rev-pinned forge archive lowering
-      is native; configured GitHub/GitLab ref-resolution test hooks are covered;
-      bare absolute path strings are rejected for parity. Full `fetchTree`
-      remains open in §11 and the next row.
+      is native; configured GitHub/GitLab ref-resolution test hooks and
+      SourceHut `/HEAD` plus `info/refs` ref-resolution hooks are covered; bare
+      absolute path strings are rejected for parity. Full `fetchTree` remains
+      open in §11 and the next row.
 - [ ] Full `fetchTree` flake layer remains scoped/open for registry/indirect
       refs, live provider resolution across forges, remaining forge
       `dir`/metadata parity, lock-file graph semantics, and full flakes

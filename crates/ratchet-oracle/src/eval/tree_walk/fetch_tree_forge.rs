@@ -1,6 +1,11 @@
-//! Forge (GitHub/GitLab) ref resolution and `fetchTree` argument assembly.
+//! Forge (GitHub/GitLab/SourceHut) ref resolution and `fetchTree` argument assembly.
 
 use super::*;
+
+struct SourcehutLsRemoteLine<'a> {
+    target: &'a [u8],
+    reference: Option<&'a [u8]>,
+}
 
 impl TreeWalk {
     pub(super) fn resolve_fetch_tree_github_ref(
@@ -50,6 +55,16 @@ impl TreeWalk {
                 check_url_access,
             ),
             b"gitlab" => self.resolve_fetch_tree_gitlab_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_url_access,
+            ),
+            b"sourcehut" => self.resolve_fetch_tree_sourcehut_ref(
                 id,
                 span,
                 canonical_uri,
@@ -148,6 +163,134 @@ impl TreeWalk {
         Ok(url)
     }
 
+    pub(super) fn resolve_fetch_tree_sourcehut_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let reference = if reference == b"HEAD" {
+            self.resolve_fetch_tree_sourcehut_head_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                check_url_access,
+            )?
+        } else {
+            Self::fetch_tree_sourcehut_named_ref(reference)
+        };
+        let url = Self::fetch_tree_sourcehut_refs_url(id, span, owner, repo, host)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
+        let rev = Self::fetch_tree_sourcehut_rev_from_refs_response(
+            id,
+            span,
+            canonical_uri,
+            &reference,
+            &response,
+        )?;
+        self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    pub(super) fn resolve_fetch_tree_sourcehut_head_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url = Self::fetch_tree_sourcehut_head_url(id, span, owner, repo, host)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
+        let first_line = response
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        let line = first_line.strip_suffix(b"\r").unwrap_or(first_line);
+        let Some(line) = Self::parse_sourcehut_ls_remote_line(line) else {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                canonical_uri,
+                "SourceHut HEAD response is invalid",
+            ));
+        };
+        Ok(line.target.to_vec())
+    }
+
+    fn fetch_tree_sourcehut_named_ref(reference: &[u8]) -> Vec<u8> {
+        let mut out = b"refs/heads/".to_vec();
+        out.extend_from_slice(reference);
+        out.push(0);
+        out.extend_from_slice(b"refs/tags/");
+        out.extend_from_slice(reference);
+        out
+    }
+
+    pub(super) fn fetch_tree_sourcehut_head_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut url = Self::fetch_tree_sourcehut_base_url(id, span, owner, repo, host)?;
+        url.extend_from_slice(b"/HEAD");
+        Ok(url)
+    }
+
+    pub(super) fn fetch_tree_sourcehut_refs_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut url = Self::fetch_tree_sourcehut_base_url(id, span, owner, repo, host)?;
+        url.extend_from_slice(b"/info/refs");
+        Ok(url)
+    }
+
+    pub(super) fn fetch_tree_sourcehut_base_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let host = match host {
+            Some(host) => std::str::from_utf8(host)
+                .map_err(|source| Self::fetch_tree_error(id, span, host, source))?,
+            None => "git.sr.ht",
+        };
+        let mut url = b"https://".to_vec();
+        url.extend_from_slice(host.as_bytes());
+        url.push(b'/');
+        url.extend_from_slice(&owner);
+        url.push(b'/');
+        url.extend_from_slice(&repo);
+        Ok(url)
+    }
+
     pub(super) fn fetch_tree_json_api_bytes(
         &self,
         id: IrId,
@@ -231,6 +374,85 @@ impl TreeWalk {
             ));
         }
         Ok(sha.as_bytes().to_vec())
+    }
+
+    pub(super) fn fetch_tree_sourcehut_rev_from_refs_response(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        reference_pattern: &[u8],
+        response: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        for raw_line in response.split(|byte| *byte == b'\n') {
+            let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+            let Some(line) = Self::parse_sourcehut_ls_remote_line(line) else {
+                continue;
+            };
+            let Some(name) = line.reference else {
+                continue;
+            };
+            if !Self::sourcehut_ref_pattern_matches(reference_pattern, name) {
+                continue;
+            }
+            if !Self::is_git_rev(line.target) {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    input,
+                    "SourceHut response commit id is invalid",
+                ));
+            }
+            return Ok(line.target.to_vec());
+        }
+
+        Err(Self::fetch_tree_error(
+            id,
+            span,
+            input,
+            "SourceHut response is missing the requested ref",
+        ))
+    }
+
+    fn sourcehut_ref_pattern_matches(pattern: &[u8], name: &[u8]) -> bool {
+        if let Some(split) = pattern.iter().position(|byte| *byte == 0) {
+            let head = &pattern[..split];
+            let tag = &pattern[(split + 1)..];
+            return name == head || name == tag;
+        }
+        name == pattern
+    }
+
+    fn parse_sourcehut_ls_remote_line(line: &[u8]) -> Option<SourcehutLsRemoteLine<'_>> {
+        let rest = if let Some(rest) = line.strip_prefix(b"ref:") {
+            let rest = rest
+                .iter()
+                .position(|byte| *byte != b' ')
+                .map_or(&[][..], |index| &rest[index..]);
+            rest
+        } else {
+            line
+        };
+        let target_end = rest
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        if target_end == 0 {
+            return None;
+        }
+        let target = &rest[..target_end];
+        let remaining = &rest[target_end..];
+        let reference = if remaining.is_empty() {
+            None
+        } else if remaining[0] == b'\t' {
+            let reference_start = remaining
+                .iter()
+                .position(|byte| *byte != b'\t')
+                .unwrap_or(remaining.len());
+            (reference_start < remaining.len()).then_some(&remaining[reference_start..])
+        } else {
+            return None;
+        };
+        Some(SourcehutLsRemoteLine { target, reference })
     }
 
     pub(super) fn fetch_tree_github_rev_from_commit_response(

@@ -602,6 +602,8 @@ impl TreeWalk {
         let expected_nar_hash = self.optional_flake_ref_nar_hash_attr(id, span, attrs)?;
         let expected_last_modified =
             Self::optional_flake_ref_i64_attr(id, span, attrs, LAST_MODIFIED_ATTR)?;
+        let reference =
+            reference.or_else(|| (input_type == b"sourcehut" && rev.is_none()).then_some(b"HEAD"));
         if let Some(reference) = reference {
             let canonical_uri =
                 self.fetch_tree_unresolved_forge_canonical_uri(id, span, input_type, attrs)?;
@@ -616,7 +618,7 @@ impl TreeWalk {
                     span,
                 ));
             }
-            if !matches!(input_type, b"github" | b"gitlab") {
+            if !matches!(input_type, b"github" | b"gitlab" | b"sourcehut") {
                 return Err(Self::unsupported_fetch_tree_feature(
                     id,
                     span,
