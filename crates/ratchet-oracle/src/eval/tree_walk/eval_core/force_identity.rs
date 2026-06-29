@@ -647,18 +647,29 @@ impl TreeWalk {
         let IrData::PrimOp { symbol, .. } = node.data else {
             return false;
         };
-        matches!(
-            ir.symbols.resolve(symbol),
+        match ir.symbols.resolve(symbol) {
+            Some(b"findFile") => Self::primop_find_file_has_explicit_search_path_list(ir, node),
             Some(
-                b"import"
-                    | b"getEnv"
-                    | b"hashFile"
-                    | b"pathExists"
-                    | b"readDir"
-                    | b"readFile"
-                    | b"readFileType",
-            )
-        )
+                b"import" | b"getEnv" | b"hashFile" | b"pathExists" | b"readDir" | b"readFile"
+                | b"readFileType",
+            ) => true,
+            _ => false,
+        }
+    }
+
+    fn primop_find_file_has_explicit_search_path_list(ir: &Ir, node: &IrNode) -> bool {
+        let IrData::PrimOp { args, .. } = node.data else {
+            return false;
+        };
+        let Some(args) = ir.arena.child_slice(args) else {
+            return false;
+        };
+        let Some(first_arg) = args.first() else {
+            return false;
+        };
+        ir.arena
+            .node(*first_arg)
+            .is_some_and(|arg| arg.kind == IrKind::List)
     }
 
     fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
