@@ -547,6 +547,11 @@ in {
       attrPath = "checks.crucible.phase4.guestMarkerLeaf";
       taskIds = ["T-TRIG-8"];
     };
+    compoundConditionCombinators = import ./phase4-compound-condition-combinators.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.compoundConditionCombinators";
+      taskIds = ["T-TRIG-9"];
+    };
     gates = {
       replayOracle = redGate {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

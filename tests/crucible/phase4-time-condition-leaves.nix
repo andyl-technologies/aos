@@ -63,8 +63,8 @@
         needle = "Completed by `checks.crucible.phase4.timeConditionLeaves`";
       }
       {
-        label = "later compound combinators remain open";
-        needle = "- [ ] **T-TRIG-9**";
+        label = "deterministic evaluation remains open";
+        needle = "- [ ] **T-TRIG-10**";
       }
       {
         label = "full timer action semantics remain open";

@@ -316,10 +316,8 @@ pub enum ObservableEventPayload {
 
 /// One leaf predicate request made by the shared condition evaluator.
 ///
-/// Later `T-TRIG-*` tasks extend the leaf set with concrete event-log backed
-/// predicates and add the stateful `Once` latch from T-TRIG-9. This first
-/// evaluator centralizes the currently implemented point-local structure so
-/// assertions and triggers cannot use different boolean composition code.
+/// The shared evaluator centralizes leaf dispatch so assertions and triggers
+/// cannot use different boolean composition code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConditionLeaf<'a> {
     /// A named host-side predicate resolved over the current event-log point.
@@ -387,6 +385,12 @@ pub trait ConditionEvaluator {
         None
     }
 
+    /// Returns whether a `Once` predicate has already latched true.
+    fn once_condition_is_latched(&self, condition: &Condition) -> bool;
+
+    /// Records that a `Once` predicate has latched true.
+    fn latch_once_condition(&mut self, condition: &Condition);
+
     /// Resolves an authored code point using host-side symbol metadata.
     fn resolve_code_point(&self, _node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
         match point {
@@ -412,10 +416,10 @@ pub trait ConditionEvaluator {
 /// Evaluates a condition through the shared assertion/trigger evaluator.
 ///
 /// The recursive structure lives in this non-overridable function. Implementors
-/// of [`ConditionEvaluator`] provide only leaf truth at a deterministic
-/// evaluation point, so assertion and trigger consumers cannot diverge on
-/// compound predicate traversal. The `Once` arm is point-local until T-TRIG-9
-/// adds latch state.
+/// of [`ConditionEvaluator`] provide leaf truth, deterministic observation
+/// sources, and `Once` latch storage at a deterministic evaluation point, so
+/// assertion and trigger consumers cannot diverge on compound predicate
+/// traversal.
 pub fn evaluate_condition<E>(evaluator: &mut E, condition: &Condition) -> bool
 where
     E: ConditionEvaluator + ?Sized,
@@ -470,13 +474,30 @@ where
             nodes,
         }),
         Condition::GuestMarker { marker } => guest_marker_matches(evaluator, marker),
-        Condition::AllOf { predicates } => predicates
-            .iter()
-            .all(|condition| evaluate_condition(evaluator, condition)),
-        Condition::AnyOf { predicates } => predicates
-            .iter()
-            .any(|condition| evaluate_condition(evaluator, condition)),
-        Condition::Once { predicate } => evaluate_condition(evaluator, predicate),
+        Condition::AllOf { predicates } => {
+            let mut all_true = true;
+            for condition in predicates {
+                all_true &= evaluate_condition(evaluator, condition);
+            }
+            all_true
+        }
+        Condition::AnyOf { predicates } => {
+            let mut any_true = false;
+            for condition in predicates {
+                any_true |= evaluate_condition(evaluator, condition);
+            }
+            any_true
+        }
+        Condition::Once { predicate } => {
+            if evaluator.once_condition_is_latched(predicate) {
+                true
+            } else if evaluate_condition(evaluator, predicate) {
+                evaluator.latch_once_condition(predicate);
+                true
+            } else {
+                false
+            }
+        }
         Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
     }
 }
@@ -718,6 +739,7 @@ pub struct ConditionEvaluation<O> {
     observable_events: Vec<ObservableEvent>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    once_latches: Vec<Condition>,
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
@@ -734,6 +756,7 @@ impl<O> ConditionEvaluation<O> {
             observable_events: Vec::new(),
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
+            once_latches: Vec::new(),
             code_points: BTreeMap::new(),
             mem_places: BTreeMap::new(),
         }
@@ -853,6 +876,16 @@ where
 
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.white_box_policies.get(node).copied()
+    }
+
+    fn once_condition_is_latched(&self, condition: &Condition) -> bool {
+        self.once_latches.iter().any(|latched| latched == condition)
+    }
+
+    fn latch_once_condition(&mut self, condition: &Condition) {
+        if !self.once_condition_is_latched(condition) {
+            self.once_latches.push(condition.clone());
+        }
     }
 
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
@@ -1020,8 +1053,10 @@ impl EventGraph {
     /// same stable id, [`EventGraphError::RepeatableEntrypoint`] when an
     /// entrypoint tries to use repeatable firing policy,
     /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
-    /// names no declared event, or [`EventGraphError::UnknownTimerReference`]
-    /// when a `Timer` predicate names no armable timer.
+    /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
+    /// a `Timer` predicate names no armable timer, or
+    /// [`EventGraphError::EmptyCompound`] when an `AllOf` or `AnyOf` predicate
+    /// has no children.
     /// [`EventGraphError::UnknownAssertionReference`] is returned for any
     /// assertion-state trigger because this constructor has no assertion
     /// declarations to validate against; use [`Self::new_with_assertions`] for
@@ -1043,6 +1078,8 @@ impl EventGraph {
     /// [`EventGraphError::UnknownEventReference`] when an `After` predicate
     /// names no declared event, [`EventGraphError::UnknownTimerReference`] when
     /// a `Timer` predicate names no armable timer,
+    /// [`EventGraphError::EmptyCompound`] when an `AllOf` or `AnyOf` predicate
+    /// has no children,
     /// [`EventGraphError::UnknownAssertionReference`] when an
     /// `AssertionState` predicate names no declared assertion, or
     /// [`EventGraphError::GuestMarkerWithoutWhiteBoxOptIn`] when a guest-marker
@@ -1215,6 +1252,7 @@ pub struct EventGraphState {
     consumed_once: BTreeSet<EventId>,
     previous_truth: BTreeMap<EventId, bool>,
     last_firing: BTreeMap<EventId, VirtualTime>,
+    once_latches: Vec<Condition>,
 }
 
 impl EventGraphState {
@@ -1277,7 +1315,7 @@ impl EventGraphState {
 }
 
 struct EventGraphConditionEvaluator<'state, 'inner, E> {
-    state: &'state EventGraphState,
+    state: &'state mut EventGraphState,
     inner: &'inner mut E,
 }
 
@@ -1313,6 +1351,24 @@ where
 
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.inner.white_box_policy_for_node(node)
+    }
+
+    fn once_condition_is_latched(&self, condition: &Condition) -> bool {
+        self.state
+            .once_latches
+            .iter()
+            .any(|latched| latched == condition)
+    }
+
+    fn latch_once_condition(&mut self, condition: &Condition) {
+        if !self
+            .state
+            .once_latches
+            .iter()
+            .any(|latched| latched == condition)
+        {
+            self.state.once_latches.push(condition.clone());
+        }
     }
 
     fn resolve_code_point(&self, node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
@@ -1357,6 +1413,13 @@ pub enum EventGraphError {
         event: EventId,
         /// Referenced assertion id.
         assertion: AssertionId,
+    },
+    /// An `AllOf` or `AnyOf` predicate has no children.
+    EmptyCompound {
+        /// Event containing the empty compound.
+        event: EventId,
+        /// Stable compound predicate kind.
+        kind: &'static str,
     },
     /// A `GuestMarker` trigger was used without any white-box-enabled node.
     GuestMarkerWithoutWhiteBoxOptIn {
@@ -1412,6 +1475,13 @@ impl fmt::Display for EventGraphError {
                     formatter,
                     "event `{}` references unknown assertion `{}`",
                     event.name, assertion.name
+                )
+            }
+            Self::EmptyCompound { event, kind } => {
+                write!(
+                    formatter,
+                    "event `{}` contains empty compound predicate `{kind}`",
+                    event.name
                 )
             }
             Self::GuestMarkerWithoutWhiteBoxOptIn { event, marker } => {
@@ -1523,19 +1593,24 @@ fn validate_condition_references(
                 Ok(())
             }
         }
-        Condition::AllOf { predicates } | Condition::AnyOf { predicates } => {
-            for predicate in predicates {
-                validate_condition_references(
-                    event,
-                    predicate,
-                    event_ids,
-                    timer_names,
-                    assertion_ids,
-                    white_box_nodes,
-                )?;
-            }
-            Ok(())
-        }
+        Condition::AllOf { predicates } => validate_compound_condition_references(
+            event,
+            "all-of",
+            predicates,
+            event_ids,
+            timer_names,
+            assertion_ids,
+            white_box_nodes,
+        ),
+        Condition::AnyOf { predicates } => validate_compound_condition_references(
+            event,
+            "any-of",
+            predicates,
+            event_ids,
+            timer_names,
+            assertion_ids,
+            white_box_nodes,
+        ),
         Condition::Once { predicate } | Condition::Not { predicate } => {
             validate_condition_references(
                 event,
@@ -1556,6 +1631,36 @@ fn validate_condition_references(
         | Condition::Quiescent
         | Condition::Named { .. } => Ok(()),
     }
+}
+
+fn validate_compound_condition_references(
+    event: &Event,
+    kind: &'static str,
+    predicates: &[Condition],
+    event_ids: &BTreeSet<EventId>,
+    timer_names: &BTreeSet<TimerId>,
+    assertion_ids: &BTreeSet<AssertionId>,
+    white_box_nodes: &BTreeSet<NodeId>,
+) -> Result<(), EventGraphError> {
+    if predicates.is_empty() {
+        return Err(EventGraphError::EmptyCompound {
+            event: event.id.clone(),
+            kind,
+        });
+    }
+
+    for predicate in predicates {
+        validate_condition_references(
+            event,
+            predicate,
+            event_ids,
+            timer_names,
+            assertion_ids,
+            white_box_nodes,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), EventGraphError> {

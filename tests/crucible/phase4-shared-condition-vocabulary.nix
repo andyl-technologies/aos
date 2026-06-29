@@ -93,7 +93,7 @@
       }
       {
         label = "shared evaluator is non-overridable";
-        needle = "Implementors\n/// of [`ConditionEvaluator`] provide only leaf truth";
+        needle = "Implementors\n/// of [`ConditionEvaluator`] provide leaf truth, deterministic observation";
       }
       {
         label = "event graph uses shared evaluator";
