@@ -342,13 +342,45 @@ fn fetch_tree_git_input_returns_flake_lock_metadata() {
             &lower(&format!(
                 r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; verifyCommit = true; publicKey = "abc"; }}"#
             )),
-            options,
+            options.clone(),
         )
         .expect_err("verified fetchTree git remains unsupported");
     assert!(matches!(
         verified_error.kind(),
         TreeWalkErrorKind::UnsupportedFetchTreeFeature {
             feature: "verified git fetches",
+            ..
+        }
+    ));
+
+    let last_modified_error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; lastModified = 1700000061; }}"#
+        )),
+        options.clone(),
+    )
+    .expect_err("direct git fetchTree rejects mismatched lastModified");
+    assert!(matches!(
+        last_modified_error.kind(),
+        TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+            expected: 1_700_000_061,
+            actual: 1_700_000_060,
+            ..
+        }
+    ));
+
+    let rev_count_error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; revCount = 3; }}"#
+        )),
+        options,
+    )
+    .expect_err("direct git fetchTree rejects mismatched revCount");
+    assert!(matches!(
+        rev_count_error.kind(),
+        TreeWalkErrorKind::FetchTreeRevCountMismatch {
+            expected: 3,
+            actual: 2,
             ..
         }
     ));

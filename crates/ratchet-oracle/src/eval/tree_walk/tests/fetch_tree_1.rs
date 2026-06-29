@@ -404,6 +404,102 @@ fn fetch_tree_file_and_tarball_inputs_materialize_expected_store_paths() {
 }
 
 #[test]
+fn fetch_tree_direct_path_and_tarball_reject_last_modified_mismatch() {
+    fn current_unix_seconds() -> i64 {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after Unix epoch")
+                .as_secs(),
+        )
+        .expect("current Unix time fits in Nix int")
+    }
+
+    fn mismatched_timestamp(actual: i64) -> i64 {
+        actual
+            .checked_add(31_536_000)
+            .unwrap_or(actual - 31_536_000)
+    }
+
+    let dir = unique_temp_dir("fetch-tree-metadata-mismatch");
+    let source_dir = dir.join("source");
+    fs::create_dir(&source_dir).expect("source directory creates");
+    fs::write(source_dir.join("file.txt"), b"path-data").expect("source file writes");
+    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-metadata-tarball");
+    let store_dir = unique_temp_dir("fetch-tree-metadata-store");
+    let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let path = nix_string_literal(&path_source(&source_dir));
+    let tarball_url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+                let
+                  pathTree = builtins.fetchTree {{ type = "path"; path = {path}; }};
+                  tarballTree = builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; }};
+                in {{
+                  pathLastModified = pathTree.lastModified;
+                  tarballLastModified = tarballTree.lastModified;
+                }}
+                "#
+        ),
+        options.clone(),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("fetchTree metadata JSON parses");
+    let path_last_modified = value["pathLastModified"]
+        .as_i64()
+        .expect("path lastModified is an integer");
+    let tarball_last_modified = value["tarballLastModified"]
+        .as_i64()
+        .expect("tarball lastModified is an integer");
+    let wrong_path_last_modified = mismatched_timestamp(path_last_modified);
+    let wrong_tarball_last_modified = mismatched_timestamp(tarball_last_modified);
+
+    let error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            r#"builtins.fetchTree {{ type = "path"; path = {path}; lastModified = {wrong_path_last_modified}; }}"#
+        )),
+        options.clone(),
+    )
+    .expect_err("direct path fetchTree rejects mismatched lastModified");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+            expected,
+            actual,
+            ..
+        } if expected == wrong_path_last_modified && actual == path_last_modified
+    ));
+
+    let tarball_eval_before = current_unix_seconds().saturating_sub(1);
+    let error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            r#"builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; lastModified = {wrong_tarball_last_modified}; }}"#
+        )),
+        options,
+    )
+    .expect_err("direct tarball fetchTree rejects mismatched lastModified");
+    let tarball_eval_after = current_unix_seconds().saturating_add(1);
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+            expected,
+            actual,
+            ..
+        } if expected == wrong_tarball_last_modified
+            && actual != wrong_tarball_last_modified
+            && actual >= tarball_eval_before
+            && actual <= tarball_eval_after
+    ));
+
+    fs::remove_dir_all(dir).expect("source temp directory removes");
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn fetch_tree_file_http_input_uses_identity_bytes() {
     let (url, body_hash, handle) = gzip_encoded_http_fixture("/tree-data.bin", b"abc");
     let url = nix_string_literal(&url);
