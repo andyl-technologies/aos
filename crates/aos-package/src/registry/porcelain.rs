@@ -1181,11 +1181,13 @@ fn fetch(dir: &Path, args: &[&str]) -> Result<Output> {
 
 /// `git pull [--rebase]` from `origin` into the current branch.
 ///
-/// Fetches the remote's configured refspecs and fast-forwards; a non-fast
-/// merge creates a merge commit (the `--rebase` flag is accepted but a
-/// fast-forward, when possible, is equivalent and preferred).
-fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
+/// Fetches the remote's configured refspecs and fast-forwards when possible.
+/// For a divergent history, `--rebase` replays the local commits on top of the
+/// fetched commit (keeping the branch linear); without it a merge commit is
+/// created.
+fn pull(dir: &Path, rest: &[&str]) -> Result<Output> {
     let repo = open(dir)?;
+    let rebase = rest.iter().any(|arg| *arg == "--rebase");
     let mut remote = repo
         .find_remote("origin")
         .context("finding remote origin")?;
@@ -1220,7 +1222,36 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
         return Ok(Output::ok_str("Fast-forward\n"));
     }
 
-    // Non-fast-forward: merge the fetched commit into HEAD.
+    let sig = commit_identity(&repo)?;
+
+    // Divergent history with `--rebase`: replay the local commits onto the
+    // fetched commit so the branch stays linear (no merge commit).
+    if rebase {
+        let head_ann = {
+            let head = repo.head().context("resolving HEAD")?;
+            repo.reference_to_annotated_commit(&head)
+                .context("annotating HEAD")?
+        };
+        let mut rb = repo
+            .rebase(Some(&head_ann), Some(&fetched), None, None)
+            .context("starting rebase")?;
+        while let Some(op) = rb.next() {
+            op.context("rebase operation")?;
+            if repo.index().context("rebase index")?.has_conflicts() {
+                rb.abort().ok();
+                return Ok(Output::fail("pull --rebase has conflicts"));
+            }
+            rb.commit(None, &sig, None)
+                .context("committing rebased change")?;
+        }
+        rb.finish(None).context("finishing rebase")?;
+        return Ok(Output::ok_str("Rebased\n"));
+    }
+
+    // Non-fast-forward merge: create a merge commit and force the working tree
+    // to the merged result. git2's default SAFE checkout diffs against HEAD and
+    // would skip files that differ from it, leaving the worktree stale (the
+    // same hazard as the fast-forward path above).
     let head_commit = repo
         .head()
         .context("HEAD")?
@@ -1235,7 +1266,6 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
     }
     let tree_oid = merged.write_tree_to(&repo).context("writing merged tree")?;
     let tree = repo.find_tree(tree_oid).context("merged tree")?;
-    let sig = commit_identity(&repo)?;
     repo.commit(
         Some("HEAD"),
         &sig,
@@ -1246,7 +1276,9 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
     )
     .context("merge commit")?;
     let merged_obj = repo.find_object(tree_oid, None).context("merged object")?;
-    repo.checkout_tree(&merged_obj, None)
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_tree(&merged_obj, Some(&mut checkout))
         .context("checking out merge")?;
     Ok(Output::ok_str("Merge made by the 'recursive' strategy.\n"))
 }
