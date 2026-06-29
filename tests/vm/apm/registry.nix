@@ -1662,6 +1662,11 @@ in {
       export HOME=/tmp/override-consumer
       export USER=overrideuser
       export AOS_ROOT=/tmp/override-root
+      # AOS_ROOT also derives the Nix store/state paths; keep the install
+      # operating on the real store so NAR import works (the redirect is only
+      # meant to relocate the apm system config tree here).
+      export AOS_NIX_STORE_DIR=/nix/store
+      export AOS_NIX_STATE_DIR=/nix/var/nix
       SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
       PROFILE_ROOT="/var/lib/profiles/system-packages/current/bin/closure-root"
