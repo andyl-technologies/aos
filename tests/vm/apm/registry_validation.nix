@@ -789,9 +789,15 @@ in {
               raise AssertionError(f"unexpected upload path {path}")
           return path[len(prefix):]
 
+      # The immutable-before-mutable ordering invariant applies to the git
+      # ORIGIN upload (immutable objects before the refs/pointers that name
+      # them). `nix-cache-info` is written in the earlier cache-upload phase
+      # (last, after the NARs/narinfos it describes), so it precedes the origin
+      # objects and is not part of the origin pointer group for ordering
+      # purposes (its mutable cache-control is still asserted separately below).
       def is_mutable(path):
           return (
-              path in {"HEAD", "info/refs", "nix-cache-info"}
+              path in {"HEAD", "info/refs"}
               or path.startswith("objects/info/")
               or path.startswith("channels/")
           )
