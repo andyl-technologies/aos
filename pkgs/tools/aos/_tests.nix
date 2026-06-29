@@ -1215,7 +1215,7 @@ in {
         test ! -e "$system_registry_cache"
         test ! -e "$system_registry_clone"
         test ! -e "$user_shadow_config"
-        ${pkgs.coreutils}/bin/rmdir "$system_config/registries.d"
+        ${pkgs.coreutils}/bin/rmdir "$aos_root/var/lib/apm/config/registries.d"
         assert_no_profile
 
         run_clean ${self}/bin/apm registry add --no-verify "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
