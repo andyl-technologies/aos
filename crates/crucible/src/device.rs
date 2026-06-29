@@ -37,14 +37,17 @@
 use std::collections::BTreeMap;
 
 use crucible_device::{
-    DeviceError, DeviceRng, Frame, FrameDraws, IoFaults, NetLink, PastDeliveryPolicy,
-    ResolveOutcome,
+    DeviceError, DeviceRng, Frame, FrameDraws, IoFaults, LinkCorruptionStrategy, LinkFaults,
+    NetLink, PastDeliveryPolicy, Probability, ResolveOutcome,
 };
 
 use crate::decision::DecisionRecorder;
 use crate::{
-    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, FaultDecision, FaultId, FaultState,
-    RngDecision, RngStreamId, RngStreamPosition, SchedulerState, Seed, VirtualTime,
+    CombinedNetworkFaults, CombinedPartitionFault, Decision, DeviceId, DeviceOverlayDelta,
+    DeviceRngState, FaultDecision, FaultId, FaultRateBasisPoints, FaultState,
+    NetworkCorruptionFault, RngDecision, RngStreamId, RngStreamPosition,
+    SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState, SchedulerTopologyChange, Seed,
+    VirtualTime,
 };
 
 /// Builds a device's seeded RNG, forked by name-hash from the scenario seed.
@@ -111,6 +114,24 @@ pub struct LinkEmitDecisionRecord {
     pub decisions: Vec<Decision>,
 }
 
+/// The orientation of one directed [`NetLink`] relative to a declared logical link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkLinkDirection {
+    /// The directed link carries frames from endpoint A to endpoint B.
+    EndpointAToEndpointB,
+    /// The directed link carries frames from endpoint B to endpoint A.
+    EndpointBToEndpointA,
+}
+
+impl NetworkLinkDirection {
+    fn is_partitioned_by(self, partition: &CombinedPartitionFault) -> bool {
+        match self {
+            Self::EndpointAToEndpointB => partition.endpoint_a_to_endpoint_b,
+            Self::EndpointBToEndpointA => partition.endpoint_b_to_endpoint_a,
+        }
+    }
+}
+
 /// Emits one network-link frame and records the link's RNG choices ([IO-21]).
 ///
 /// The link's [`NetLink::rng_position`] selects the starting cursor of the
@@ -118,7 +139,7 @@ pub struct LinkEmitDecisionRecord {
 /// [`FrameDraws`] through [`NetLink::emit_with_rng_draws`], so the deliveries are
 /// produced by the real link implementation and the returned schedule decisions
 /// record the exact same raw draw values in fixed model order: jitter, reorder,
-/// loss, duplicate, corrupt, and corruption-bit positions. The derived
+/// loss rates, duplicate, corrupt, and corruption-bit positions. The derived
 /// loss/duplicate/corrupt outcomes are appended as [`Decision::FaultFires`] using
 /// the same device-scoped [`FaultId`] namespace as block and 9p faults.
 ///
@@ -151,15 +172,10 @@ pub fn emit_link_frame_with_recorded_faults(
 
 /// Converts link fault draws into schedule decisions in consumption order.
 fn link_rng_draw_decisions(stream: &RngStreamId, draws: &FrameDraws) -> Vec<Decision> {
-    let values = [
-        draws.jitter,
-        draws.reorder,
-        draws.loss,
-        draws.duplicate,
-        draws.corrupt,
-    ];
-    values
+    [draws.jitter, draws.reorder, draws.loss]
         .into_iter()
+        .chain(draws.additional_loss.iter().copied())
+        .chain([draws.duplicate, draws.corrupt])
         .chain(draws.corrupt_bits.iter().copied())
         .map(|value| {
             Decision::RngDraw(RngDecision {
@@ -183,6 +199,130 @@ fn push_link_fault_outcome(
         fault: io_fault_id(link, kind),
         fired,
     }));
+}
+
+/// Applies combined RFC network faults to a live network link fault table.
+///
+/// The model layer reduces active faults into [`CombinedNetworkFaults`]; this
+/// helper lowers that target-local table to the concrete [`LinkFaults`] consumed
+/// by [`NetLink`] at RESOLVE. Partition coverage is intentionally excluded from
+/// the link table because it mutates scheduler topology, not per-frame payload
+/// or delivery timing; use [`network_partition_removed_edges`] for that half.
+pub fn apply_combined_network_faults_to_link(
+    link: &mut NetLink,
+    faults: &CombinedNetworkFaults,
+    direction: NetworkLinkDirection,
+) {
+    link.set_faults(link_faults_from_combined_network(faults, direction));
+}
+
+/// Lowers combined RFC network faults into a concrete link fault table.
+///
+/// Loss rates remain highest-first and use the any-fires rule, latency bumps are
+/// summed in the model before becoming the link's conservative latency raise,
+/// duplicate/corruption are already highest-rate choices, and every active
+/// bandwidth limit contributes exact bit-rate serialization delay.
+#[must_use]
+pub fn link_faults_from_combined_network(
+    faults: &CombinedNetworkFaults,
+    direction: NetworkLinkDirection,
+) -> LinkFaults {
+    let mut link = LinkFaults::none();
+    if let Some(partition) = &faults.partition {
+        link.partitioned = direction.is_partitioned_by(partition);
+    }
+    link.added_latency_ns = faults.latency.nanos();
+    if let Some(window) = faults.reorder_window {
+        link.reorder_window_ns = window.nanos();
+    }
+
+    let mut loss_rates = faults.loss_rates.iter().copied();
+    if let Some(rate) = loss_rates.next() {
+        link.loss = probability_from_basis_points(rate);
+        link.additional_loss = loss_rates.map(probability_from_basis_points).collect();
+    }
+
+    if let Some(duplicate) = faults.duplicate {
+        link.duplicate = probability_from_basis_points(duplicate.rate);
+        link.duplicate_gap_ns = duplicate.gap.nanos();
+    }
+
+    if let Some(corruption) = &faults.corruption {
+        link.corrupt = probability_from_basis_points(corruption.rate);
+        link.corruption_strategies = corruption
+            .strategies
+            .iter()
+            .map(link_corruption_strategy)
+            .collect();
+    }
+
+    link.bandwidth_bits_per_sec = faults
+        .bandwidth_limits
+        .iter()
+        .map(|limit| limit.bits_per_second())
+        .collect();
+    link
+}
+
+/// Builds the scheduler partition change for combined network partition faults.
+///
+/// Endpoint A/B are the declared logical link endpoints. A directed partition
+/// removes only its covered scheduler edge, while a bidirectional partition
+/// removes both edges.
+#[must_use]
+pub fn network_partition_change(
+    sequence: u64,
+    endpoint_a: SchedulerNodeId,
+    endpoint_b: SchedulerNodeId,
+    faults: &CombinedNetworkFaults,
+) -> Option<SchedulerTopologyChange> {
+    let partition = faults.partition.as_ref()?;
+    let removed_edges = network_partition_removed_edges(endpoint_a, endpoint_b, partition);
+    if removed_edges.is_empty() {
+        return None;
+    }
+    Some(SchedulerTopologyChange::partition(sequence, removed_edges))
+}
+
+/// Returns the directed scheduler edges removed by one combined partition fault.
+#[must_use]
+pub fn network_partition_removed_edges(
+    endpoint_a: SchedulerNodeId,
+    endpoint_b: SchedulerNodeId,
+    partition: &CombinedPartitionFault,
+) -> Vec<SchedulerLookaheadEdgeEndpoint> {
+    let mut removed = Vec::new();
+    if partition.endpoint_a_to_endpoint_b {
+        removed.push(SchedulerLookaheadEdgeEndpoint::new(
+            endpoint_a.clone(),
+            endpoint_b.clone(),
+        ));
+    }
+    if partition.endpoint_b_to_endpoint_a {
+        removed.push(SchedulerLookaheadEdgeEndpoint::new(endpoint_b, endpoint_a));
+    }
+    removed
+}
+
+fn probability_from_basis_points(rate: FaultRateBasisPoints) -> Probability {
+    Probability::new(
+        u64::from(rate.basis_points()),
+        u64::from(FaultRateBasisPoints::DENOMINATOR),
+    )
+}
+
+fn link_corruption_strategy(fault: &NetworkCorruptionFault) -> LinkCorruptionStrategy {
+    match fault {
+        NetworkCorruptionFault::BitFlip { max_bits, .. } => LinkCorruptionStrategy::BitFlip {
+            max_bits: *max_bits,
+        },
+        NetworkCorruptionFault::FieldMutation { .. } => LinkCorruptionStrategy::FieldMutation,
+        NetworkCorruptionFault::Truncation { max_bytes, .. } => {
+            LinkCorruptionStrategy::Truncation {
+                max_bytes: *max_bytes,
+            }
+        }
+    }
 }
 
 /// Builds a device overlay delta that captures the device's RNG cursor ([IO-23]).

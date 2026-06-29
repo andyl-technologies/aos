@@ -30,11 +30,11 @@
 //!
 //! # Determinism and the RNG seam
 //!
-//! Every probabilistic transform (jitter magnitude, reorder shift, loss decision,
-//! duplicate timing, corrupt bit positions) is a pure function of a **draw value**
+//! Every probabilistic transform (jitter magnitude, reorder shift, loss decisions,
+//! duplicate timing, corruption decision, and corrupt bit positions) is a pure function of a **draw value**
 //! carried in [`FrameDraws`]. The seeded per-device RNG ([`crate::fault::DeviceRng`])
 //! forked by name-hash produces those draws in their fixed consumption order via
-//! [`FrameDraws::from_rng`] and [`NetLink::emit_from_rng`] ([IO-21]); the snapshot
+//! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`] ([IO-21]); the snapshot
 //! captures the RNG cursor so a fork resumes the same sequence ([IO-23]). The same
 //! frame and the same draws always yield byte-identical deliveries ([IO-4],
 //! [IO-22]). No floating point, no host clock, and no default-hasher iteration
@@ -44,8 +44,8 @@ pub mod fault;
 pub mod link;
 
 pub use fault::{
-    LinkFaults, Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns,
-    serialization_delay_ns,
+    LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ns,
+    reorder_shift_ns, serialization_delay_ns,
 };
 pub use link::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
@@ -124,7 +124,7 @@ mod tests {
     fn added_latency_shifts_delivery_later() {
         let mut faults = LinkFaults::none();
         faults.added_latency_ns = 2_560; // +10 icounts
-        let mut l = link(faults);
+        let mut l = link(faults.clone());
         let out = ok(l.emit(
             &frame(vec![0; 4]),
             &FrameDraws::default(),
@@ -161,8 +161,8 @@ mod tests {
     fn jitter_shifts_later_and_is_deterministic() {
         let mut faults = LinkFaults::none();
         faults.jitter_window_ns = 2_560; // up to +10 icounts
-        let mut a = link(faults);
-        let mut b = link(faults);
+        let mut a = link(faults.clone());
+        let mut b = link(faults.clone());
         let draws = FrameDraws {
             jitter: 1_280, // 1280 ns extra => +5 icounts
             ..FrameDraws::default()
@@ -191,7 +191,7 @@ mod tests {
     fn reorder_moves_a_frame_past_its_sibling() {
         let mut faults = LinkFaults::none();
         faults.reorder_window_ns = 5_120; // up to +20 icounts
-        let mut l = link(faults);
+        let mut l = link(faults.clone());
         // Frame 1 emitted first at icount 0; frame 2 emitted later at icount 1.
         // Without reorder frame 1 would deliver first. Give frame 1 a big reorder
         // shift and frame 2 none, so frame 2 overtakes frame 1.
@@ -227,7 +227,7 @@ mod tests {
         // 256 bytes per icount-ns scale: pick a rate so a 256-byte frame adds a
         // round delay. 256 bytes at 1e9 B/s => 256 ns => +1 icount.
         faults.bandwidth_bytes_per_sec = 1_000_000_000;
-        let mut l = link(faults);
+        let mut l = link(faults.clone());
         let small = ok(l.emit(
             &Frame::new(0, 1, vec![0; 256]),
             &FrameDraws::default(),
@@ -272,6 +272,37 @@ mod tests {
             PastDeliveryPolicy::FailLoud,
         ));
         assert_eq!(out2.deliveries.len(), 1);
+    }
+
+    #[test]
+    fn partition_drops_the_frame() {
+        let mut faults = LinkFaults::none();
+        faults.partitioned = true;
+        let mut l = link(faults);
+        let out = ok(l.emit(
+            &frame(vec![1, 2, 3, 4]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+
+        assert_eq!(
+            out.deliveries.len(),
+            0,
+            "partition must produce no delivery"
+        );
+        assert_eq!(l.inflight_len(), 0);
+
+        ok(l.advance_to(100));
+        let late = ok(l.emit(
+            &frame(vec![1, 2, 3, 4]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert_eq!(
+            late.deliveries.len(),
+            0,
+            "partition drops before past-delivery guards can reject a frame"
+        );
     }
 
     // ---- duplicate emits exactly two deliveries (IO-20) ----
@@ -415,7 +446,7 @@ mod tests {
         // Raise the latency: signal must be set.
         let mut raised = LinkFaults::none();
         raised.added_latency_ns = 5_000;
-        l.set_faults(raised);
+        l.set_faults(raised.clone());
         assert!(l.lookahead_recompute_pending());
         // take_* returns it once then clears.
         assert!(l.take_lookahead_recompute());
@@ -446,7 +477,7 @@ mod tests {
         let mut l = link(LinkFaults::none());
         let mut faults = LinkFaults::none();
         faults.added_latency_ns = 5_000;
-        l.set_faults(faults);
+        l.set_faults(faults.clone());
         assert!(
             l.take_lookahead_recompute(),
             "added_latency_ns changes the conservative lookahead bound"
@@ -459,7 +490,8 @@ mod tests {
         );
 
         // A change to each non-bound field, in isolation, does NOT raise it.
-        let non_bound_changes: [FieldMutation; 7] = [
+        let non_bound_changes: [FieldMutation; 8] = [
+            ("partitioned", |f| f.partitioned = true),
             ("jitter_window_ns", |f| f.jitter_window_ns = 100_000),
             ("reorder_window_ns", |f| f.reorder_window_ns = 100_000),
             ("bandwidth_bytes_per_sec", |f| {
@@ -545,6 +577,7 @@ mod tests {
                     jitter: 300,
                     reorder: 700,
                     loss: 5,
+                    additional_loss: Vec::new(),
                     duplicate: 0,
                     corrupt: 0,
                     corrupt_bits: vec![3],
@@ -556,6 +589,7 @@ mod tests {
                     jitter: 100,
                     reorder: 50,
                     loss: 9,
+                    additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 1,
                     corrupt_bits: vec![17],
@@ -567,6 +601,7 @@ mod tests {
                     jitter: 1000,
                     reorder: 0,
                     loss: 1,
+                    additional_loss: Vec::new(),
                     duplicate: 1,
                     corrupt: 0,
                     corrupt_bits: vec![0],
@@ -646,7 +681,7 @@ mod tests {
         let root = 0x0117_5eed_u64;
         let domain = "crucible.test.link-stream";
         let name = "a->b";
-        let mut a = link(faults);
+        let mut a = link(faults.clone());
         let mut b = link(faults);
         let mut rng_a = DeviceRng::fork(root, domain, name);
         let mut rng_b = DeviceRng::fork(root, domain, name);

@@ -1005,12 +1005,25 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   regression reverses the same active set to prove order independence, checks
   network, node, block, and 9p rows explicitly, and includes independent second
   targets to prove same-kind faults do not combine across targets.
-- [ ] **T-FAULT-6** Apply network faults on the link sub-node at RESOLVE
+- [x] **T-FAULT-6** Apply network faults on the link sub-node at RESOLVE
   (partition/loss drop; latency/jitter/reorder/bandwidth shift delivery_icount;
   duplicate emits a second frame; corruption mutates payload), honor
   conservative-latency-bound raising as-is, clamp bound-lowering to the floor,
   and trigger the lookahead recompute on conservative latency-bound change. —
   satisfies [FAULT-16], [FAULT-17]; spec §17.4.1; cross-ref 08 §8.11, 15 §15.4.
+
+  Completed by `checks.crucible.phase4.networkFaultApplication`: the engine
+  bridge lowers combined RFC network faults onto the concrete link sub-node
+  before RESOLVE, preserving highest-first any-fires loss rates, summed exact
+  bit-rate bandwidth delays, latency-bound raises, duplicate gaps, fixed-order
+  corruption strategies, directed partition drops, and directed partition edge
+  removals. The link table now carries overlapping loss rates, exact
+  bit-per-second caps, and corruption strategy lists while retaining the existing
+  floor clamp and lookahead recompute signal for conservative latency changes.
+  The focused regression
+  drives a combined fault set through `NetLink::emit`, proving delivery shifts,
+  duplicate emission, payload mutation, any-fires loss drop, and scheduler
+  effective-edge removal for partitions.
 - [ ] **T-FAULT-7** Apply node faults on the VM: slow stretches the vt map
   without altering the retired instruction stream; clock-skew offsets only the
   perceived time-of-day source, never virtual time/icount. — satisfies

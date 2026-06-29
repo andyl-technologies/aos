@@ -20,11 +20,10 @@
 //!   delivery_ns += serialization_delay_ns(len, bandwidth)  // bandwidth (integer ns, no float)
 //!   delivery_ns += draw(jitter)  % (jitter_window_ns + 1)  // jitter   (seeded, shift later)
 //!   delivery_ns += draw(reorder) % (reorder_window_ns + 1) // reorder  (seeded, shift later)
-//!   if loss      and draw(loss)      < loss_num/loss_den    : DROP (no delivery)
+//!   if loss      and any draw(loss)  < loss_num/loss_den    : DROP (no delivery)
 //!   if duplicate and draw(dup)       < dup_num/dup_den      : emit a 2nd copy at
 //!                                                             delivery_ns + dup_gap_ns
-//!   if corrupt   and draw(corrupt)   < corrupt_num/cor_den  : flip bits at seeded
-//!                                                             positions in payload
+//!   if corrupt   and draw(corrupt)   < corrupt_num/cor_den  : mutate payload
 //! ```
 //!
 //! Every probabilistic decision is a pure function of an **injected draw value**
@@ -38,6 +37,37 @@ pub use crate::fault::{
     Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns, serialization_delay_ns,
 };
 
+/// A deterministic payload mutation applied when the link corruption decision fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkCorruptionStrategy {
+    /// Flips up to `max_bits` seeded bit positions in the frame payload.
+    BitFlip {
+        /// Number of bit-position draws consumed for this strategy.
+        max_bits: u32,
+    },
+    /// Mutates one stable modeled field of the opaque frame.
+    ///
+    /// Network frames are opaque at this layer, so the modeled field is the first
+    /// payload byte when one exists.
+    FieldMutation,
+    /// Removes up to `max_bytes` bytes from the end of the payload.
+    Truncation {
+        /// Maximum number of bytes removed from one delivered payload.
+        max_bytes: u64,
+    },
+}
+
+impl LinkCorruptionStrategy {
+    /// Returns the number of seeded bit-position draws this strategy needs.
+    #[must_use]
+    pub fn bit_draws(self) -> u32 {
+        match self {
+            Self::BitFlip { max_bits } => max_bits,
+            Self::FieldMutation | Self::Truncation { .. } => 0,
+        }
+    }
+}
+
 /// The effective fault table for a directed network link.
 ///
 /// Holds every fault parameter the link applies at RESOLVE. All fields are
@@ -49,8 +79,11 @@ pub use crate::fault::{
 /// The fields are deliberately a flat data contract: the link reads them, and a
 /// snapshot stores them verbatim, so the active fault set is part of the device
 /// half of `MaterializedState` ([IO-26], deferred wiring in CS-IO-5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct LinkFaults {
+    /// Whether this directed link is partitioned and drops every frame.
+    pub partitioned: bool,
+
     /// Extra fixed latency added to every frame, in virtual nanoseconds.
     ///
     /// A latency fault that *raises* the effective latency is honored as-is (it
@@ -78,8 +111,22 @@ pub struct LinkFaults {
     /// nanoseconds with no floating point ([IO-20], [IO-24]).
     pub bandwidth_bytes_per_sec: u64,
 
+    /// Additional RFC-level bandwidth caps in bits per virtual second.
+    ///
+    /// Each nonzero cap contributes its own integer serialization delay, and the
+    /// delays are summed. This keeps model-level `bits_per_second` limits exact
+    /// even when they are not divisible by eight.
+    pub bandwidth_bits_per_sec: Vec<u64>,
+
     /// The probability a frame is dropped (lost) entirely.
     pub loss: Probability,
+
+    /// Additional loss probabilities evaluated after [`Self::loss`].
+    ///
+    /// Overlapping loss faults use the any-fires rule. The bridge layer stores
+    /// the highest active rate in [`Self::loss`] and the remaining rates here, in
+    /// deterministic highest-first order.
+    pub additional_loss: Vec<Probability>,
 
     /// The probability a frame is duplicated (a second copy is emitted).
     pub duplicate: Probability,
@@ -98,6 +145,12 @@ pub struct LinkFaults {
     /// Each flipped position is derived from a seeded draw; the same draws flip
     /// exactly the same bits ([IO-20]).
     pub corrupt_bit_flips: u32,
+
+    /// Concrete corruption strategies applied when [`Self::corrupt`] fires.
+    ///
+    /// An empty list preserves the legacy bit-flip-only behavior described by
+    /// [`Self::corrupt_bit_flips`].
+    pub corruption_strategies: Vec<LinkCorruptionStrategy>,
 }
 
 impl LinkFaults {
@@ -119,6 +172,51 @@ impl LinkFaults {
     pub fn affects_latency(&self) -> bool {
         self.added_latency_ns != 0
     }
+
+    /// Returns the total serialization delay from every active bandwidth cap.
+    ///
+    /// The legacy byte-rate field and all exact bit-rate fields contribute
+    /// independently. Overlapping bandwidth faults therefore add their delays
+    /// rather than replacing each other.
+    #[must_use]
+    pub fn serialization_delay_ns(&self, len_bytes: u64) -> u64 {
+        let legacy_delay = serialization_delay_ns(len_bytes, self.bandwidth_bytes_per_sec);
+        self.bandwidth_bits_per_sec
+            .iter()
+            .copied()
+            .fold(legacy_delay, |total, bits_per_sec| {
+                total.saturating_add(serialization_delay_bits_per_sec(len_bytes, bits_per_sec))
+            })
+    }
+
+    /// Returns the number of corruption bit-position draws required per frame.
+    ///
+    /// When concrete strategies are present this is the sum of their bit-flip
+    /// needs. Otherwise it is the legacy [`Self::corrupt_bit_flips`] field.
+    #[must_use]
+    pub fn corrupt_bit_draws(&self) -> u32 {
+        if self.corruption_strategies.is_empty() {
+            return self.corrupt_bit_flips;
+        }
+        self.corruption_strategies
+            .iter()
+            .fold(0u32, |total, strategy| {
+                total.saturating_add(strategy.bit_draws())
+            })
+    }
+}
+
+/// Computes serialization delay for a bit-per-second bandwidth cap.
+#[must_use]
+fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
+    if bits_per_sec == 0 {
+        return 0;
+    }
+    let nanos = u128::from(len_bytes)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000_u128)
+        / u128::from(bits_per_sec);
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -193,6 +291,7 @@ mod tests {
     fn affects_latency_reports_only_minimum_bound_changes() {
         let mut f = LinkFaults::none();
         assert!(!f.affects_latency());
+        f.partitioned = true;
         f.loss = Probability::ALWAYS;
         f.duplicate = Probability::ALWAYS;
         f.duplicate_gap_ns = 5;
@@ -201,11 +300,24 @@ mod tests {
         f.jitter_window_ns = 5;
         f.reorder_window_ns = 7;
         f.bandwidth_bytes_per_sec = 1_000;
+        f.bandwidth_bits_per_sec.push(10_000);
         assert!(
             !f.affects_latency(),
             "faults whose minimum added delay is zero do not raise the conservative bound"
         );
         f.added_latency_ns = 1;
         assert!(f.affects_latency());
+    }
+
+    #[test]
+    fn bandwidth_delays_sum_across_byte_and_bit_caps() {
+        let mut faults = LinkFaults::none();
+        faults.bandwidth_bytes_per_sec = 1_000; // 100 bytes => 100_000_000 ns
+        faults.bandwidth_bits_per_sec = vec![
+            8_000,  // 100 bytes => 100_000_000 ns
+            16_000, // 100 bytes => 50_000_000 ns
+        ];
+
+        assert_eq!(faults.serialization_delay_ns(100), 250_000_000);
     }
 }
