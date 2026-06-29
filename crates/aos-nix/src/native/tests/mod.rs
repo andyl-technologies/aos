@@ -131,6 +131,7 @@ struct NativeFileClosureCacheParity {
     cache_second_stats: crate::eval::EvalStats,
     persistent_hit_stats: crate::eval::EvalStats,
     disabled_stats: crate::eval::EvalStats,
+    persistent_hit_keys: Vec<PersistNodeMetadataKey>,
 }
 
 impl NativeFileClosureCacheParity {
@@ -238,8 +239,8 @@ where
             .expect("persistent parse hit observations lock")
             .push(hit);
     });
-    let (persistent_hit, persistent_hit_stats) =
-        instantiate_file_closure_with_stats(&persistent_hit_native, file, attr)?;
+    let (persistent_hit, persistent_hit_stats, persistent_hit_keys) =
+        instantiate_file_closure_with_stats_and_hits(&persistent_hit_native, file, attr)?;
     assert_eq!(persistent_hit, uncached);
     assert_eq!(
         observed_hits
@@ -289,6 +290,7 @@ where
         cache_second_stats,
         persistent_hit_stats,
         disabled_stats,
+        persistent_hit_keys,
     };
     report.assert_byte_identical();
     report.assert_disabled_cache_observed_no_force_cache_activity();

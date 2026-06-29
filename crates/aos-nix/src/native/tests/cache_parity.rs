@@ -239,6 +239,211 @@ fn native_file_cache_parity_harness_covers_filesystem_impure_inputs() -> Result<
 }
 
 #[test]
+fn native_file_cache_parity_harness_covers_source_path_inputs() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-cache-parity-source-path");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let _cleanup = TempTreeCleanup::new(root.clone());
+    let store = root.join("store");
+    let persist_root = root.join("persist");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    let payload_file = dir.join("payload.txt");
+    let payload = b"native-source-path-payload";
+    fs::write(&payload_file, payload)?;
+    let payload_realpath = fs::canonicalize(&payload_file)?;
+    let payload_path = path_bytes(&payload_realpath)?;
+    let read_file_trace = vec![ImpureInputFingerprint::read_file(
+        payload_path.as_slice(),
+        payload,
+    )?];
+    let hash_file_trace = vec![ImpureInputFingerprint::hash_file(
+        payload_path.as_slice(),
+        payload,
+    )?];
+    let read_file_type_trace = vec![ImpureInputFingerprint::read_file_type(
+        payload_path.as_slice(),
+        FileTypeForInput::Regular,
+    )?];
+    let path_exists_trace = vec![ImpureInputFingerprint::path_exists(
+        payload_path.as_slice(),
+        true,
+    )?];
+    let file = dir.join("default.nix");
+    fs::write(
+        &file,
+        r#"let
+          b = builtins;
+          source = b.path {
+            path = ./payload.txt;
+            name = "source-path-input";
+            recursive = false;
+            sha256 = "5d4cd33d7579d79f979fe3dea163b7e003f260e027797d511fa6ef3eba28333f";
+          };
+          payload = b.readFile ./payload.txt;
+          digest = b.hashFile "sha256" ./payload.txt;
+          fileType = b.readFileType ./payload.txt;
+          exists = if b.pathExists ./payload.txt then "present" else "missing";
+        in {
+          pkgs.sourcePathInputs = derivationStrict {
+            name = "source-path-${payload}";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            args = [
+              source
+              payload
+              digest
+              fileType
+              exists
+            ];
+          };
+        }"#,
+    )?;
+
+    let report = native_file_closure_cache_parity(
+        &root,
+        &store,
+        &persist_root,
+        &file,
+        "pkgs.sourcePathInputs",
+        |_| Ok(()),
+    )?;
+    assert_eq!(report.uncached.drvs().len(), 1);
+    assert!(
+        report.uncached.root().starts_with(&store),
+        "{}",
+        report.uncached.root().display()
+    );
+    assert_drv_aterm_contains_all(
+        "source-path input uncached closure",
+        &report.uncached,
+        &[
+            ("source path store name", b"source-path-input"),
+            ("source path payload", payload),
+            (
+                "source path sha256 digest",
+                b"5d4cd33d7579d79f979fe3dea163b7e003f260e027797d511fa6ef3eba28333f",
+            ),
+            ("readFileType result", b"regular"),
+            ("pathExists result branch", b"present"),
+        ],
+    );
+    assert_eq!(report.uncached_stats.force_cache_hits(), 0);
+    assert_eq!(report.uncached_stats.force_cache_misses(), 0);
+    assert_eq!(report.disabled_stats.force_cache_hits(), 0);
+    assert_eq!(report.disabled_stats.force_cache_misses(), 0);
+    assert!(
+        report.cache_miss_stats.force_cache_misses() > 0,
+        "cache-on miss should report force-cache miss activity alongside the source-path input"
+    );
+    assert!(
+        report.persistent_hit_stats.force_cache_hits() > 0,
+        "persistent-hit run should replay forced payloads alongside the source-path input"
+    );
+    let read_file_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &read_file_trace,
+        "source-path sibling readFile native closure",
+    )?;
+    let hash_file_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &hash_file_trace,
+        "source-path sibling hashFile native closure",
+    )?;
+    let read_file_type_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &read_file_type_trace,
+        "source-path sibling readFileType native closure",
+    )?;
+    let path_exists_trace_entry = assert_persistent_force_cache_trace_log_contains(
+        &persist_root,
+        &path_exists_trace,
+        "source-path sibling pathExists native closure",
+    )?;
+    for (label, key) in [
+        ("source-path sibling readFile", read_file_trace_entry.0),
+        ("source-path sibling hashFile", hash_file_trace_entry.0),
+        (
+            "source-path sibling readFileType",
+            read_file_type_trace_entry.0,
+        ),
+        ("source-path sibling pathExists", path_exists_trace_entry.0),
+    ] {
+        assert!(
+            report.persistent_hit_keys.contains(&key),
+            "persistent-hit run should replay the {label} force-cache entry"
+        );
+    }
+
+    assert_file_artifact_written(&root, &persist_root, &file)?;
+    let mut canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
+    canaries.extend(file_parse_artifact_surface_canaries(
+        &root,
+        "source-path root file",
+        &file,
+    )?);
+    canaries.extend(durable_hash_surface_canaries(
+        "source-path payload BLAKE3 sentinel",
+        DurableBlake3Hash::for_bytes(payload),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "source-path input name",
+        context_free_nix_string_xxh3(b"source-path-input"),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "source-path realpath",
+        context_free_nix_string_xxh3(payload_path.as_slice()),
+    ));
+    canaries.extend(hot_xxh3_surface_canaries(
+        "source-path payload",
+        context_free_nix_string_xxh3(payload),
+    ));
+    canaries.extend(impure_trace_surface_canaries(
+        "source-path sibling readFile",
+        &read_file_trace,
+    ));
+    canaries.extend(impure_trace_surface_canaries(
+        "source-path sibling hashFile",
+        &hash_file_trace,
+    ));
+    canaries.extend(impure_trace_surface_canaries(
+        "source-path sibling readFileType",
+        &read_file_type_trace,
+    ));
+    canaries.extend(impure_trace_surface_canaries(
+        "source-path sibling pathExists",
+        &path_exists_trace,
+    ));
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "uncached source-path input closure",
+        &report.uncached,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "cache-miss source-path input closure",
+        &report.cache_miss,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "second cache-on source-path input closure",
+        &report.cache_second,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "persistent-hit source-path input closure",
+        &report.persistent_hit,
+        &canaries,
+    );
+    assert_native_closure_surfaces_do_not_contain_canaries(
+        "disabled source-path input closure",
+        &report.disabled_with_persist_root,
+        &canaries,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_file_cache_parity_harness_covers_stale_filesystem_impure_inputs() -> Result<()> {
     let root = unique_temp_dir("aos-nix-native-cache-parity-stale-fs-inputs");
     fs::create_dir_all(&root)?;
