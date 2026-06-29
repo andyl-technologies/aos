@@ -1153,10 +1153,30 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     `checks.crucible.phase1.executionBake`,
     `checks.crucible.phase1.executionStartResumeFork`, and
     `checks.crucible.phase1.gates.singleVmFingerprint` gate the pattern.
-- [ ] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
+- [x] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
   §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
   [PAT-4], [PAT-5]; realized by **T-SHM-6**, **T-SHM-8**, **T-SHM-9**,
   **T-SHM-15** (spec 13 §§13.6, 13.7, 13.9).
+  - Completed by `cargo test --manifest-path crates/Cargo.toml -p
+    crucible-shmem`, `cargo test --manifest-path crates/Cargo.toml -p
+    crucible-shmem --test gate_layer1_injection`, `cargo test --manifest-path
+    crates/Cargo.toml -p crucible-shmem --test advance_ceiling_handoff`, and
+    `cargo test --manifest-path crates/Cargo.toml -p crucible-shmem --test
+    icount_stamped_injection`. `crucible_shmem::RingHeader` is the
+    cache-line-separated Lamport SPSC queue with release-published frame writes
+    and acquire-observed peer indices; `NodeSlot` exposes the scheduler ceiling
+    handoff, acquire node-side ceiling loads, race-free idle precondition checks,
+    and non-private futex wait/wake path. `RegionAllocation` and the borrowed
+    `NodeSlot::publish_scheduler_inbox_and_ceiling` path preflight capacity,
+    enqueue pending frames, publish the ceiling, and only then wake. The SPSC
+    gate test carries the local loom-style model and seeded property corpus for
+    no loss, duplicate, FIFO drift, torn frame, early read, full/empty, and
+    wraparound regressions; the handoff tests assert input-before-ceiling-before-
+    wake ordering, idle/wake races, non-private futex behavior, and scheduler/
+    frame wake triggers.
+    Summary: the shared-memory transport now follows the §29.3 SPSC + ceiling +
+    futex pattern, with focused model/property and wake-order tests covering the
+    concurrency invariants.
 - [ ] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
   with round-trip + no-panic fuzz properties. — satisfies [PAT-10]; realized by
   **T-SHM-7**, **T-SHM-14** and the 14 protocol tasks (spec 13 §13.6, 14).
