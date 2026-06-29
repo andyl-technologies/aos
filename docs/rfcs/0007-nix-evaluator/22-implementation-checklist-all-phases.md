@@ -1167,12 +1167,13 @@ alone (`M-1`/`Q-A`).
       static-output side records and three final ATerm path side records while
       performing zero derivation hash and final text-path calculations, and
       proves the cache-disabled leg reports no side-record reuse while leaving
-      the populated persistent root unchanged.
+      the populated persistent root unchanged. Source-edit side-record reuse is
+      additionally sampled by the forced semantic-no-op leaf edit canary below.
       This is a public native API canary for the existing exact static
       side-record path only; dynamic dependency capture beyond hashable lexical
-      captures, dirty-frontier scheduling, stale side-record recomputation
-      through native source edits, broader modulo-hash shortcuts, full AOS
-      package-set closure parity, and full derivationStrict-node
+      captures, evaluator-owned dirty-frontier scheduling, transitive red/green
+      propagation beyond the local dirty canary, broader modulo-hash shortcuts,
+      full AOS package-set closure parity, and full derivationStrict-node
       SHA-256/store-path early cutoff remain open (`S-14`/`S-15`).
 - [x] Current dirty derivation side-record revalidation canary:
       tree-walk tests dirty both the static-output side-record node and final
@@ -3481,6 +3482,11 @@ alone (`M-1`/`Q-A`).
       the comment-only changed source through cached miss and later persistent-hit
       paths while scanning the byte-identical closure surfaces for the observed
       forced-payload sidecar hashes and the `currentSystem` hot xxh3 sentinel.
+      That forced-leaf path also proves the same-source materialization/fresh-hit
+      legs and the changed-source cached miss/fresh-hit legs reuse both
+      static-output side records and final ATerm path side records for the two
+      derivations while performing zero derivation hash and final text-path
+      calculations.
       The canaries also scan uncached/cached first and changed closures for the
       exercised first/changed raw-wrapper parse-cache BLAKE3, leaf parse-cache
       BLAKE3, and file-content BLAKE3 renderings in hex, raw bytes, and Nix

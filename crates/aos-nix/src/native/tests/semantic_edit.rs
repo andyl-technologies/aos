@@ -257,6 +257,10 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
     )?;
     assert_eq!(first_cached, uncached_first);
     assert_eq!(first_cached_stats.force_cache_hits(), 0);
+    assert_eq!(first_cached_stats.derivation_aterm_path_reuses(), 0);
+    assert_eq!(first_cached_stats.static_derivation_output_path_reuses(), 0);
+    assert!(first_cached_stats.derivation_hash_calculations() > 0);
+    assert!(first_cached_stats.derivation_text_path_calculations() > 0);
     assert!(
         first_cached_stats.force_cache_misses() > 0,
         "first forced leaf run should miss before recording demand"
@@ -269,6 +273,16 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
     )?;
     assert_eq!(first_materialized, uncached_first);
     assert_eq!(first_materialized_stats.force_cache_hits(), 0);
+    assert_eq!(first_materialized_stats.derivation_aterm_path_reuses(), 2);
+    assert_eq!(
+        first_materialized_stats.static_derivation_output_path_reuses(),
+        2
+    );
+    assert_eq!(first_materialized_stats.derivation_hash_calculations(), 0);
+    assert_eq!(
+        first_materialized_stats.derivation_text_path_calculations(),
+        0
+    );
     assert!(
         first_materialized_stats.force_cache_misses() > 0,
         "second forced leaf run should miss before materializing a persistent payload"
@@ -294,6 +308,10 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
         first_hit_stats.force_cache_hits() > 0,
         "same-source fresh runtime should load the first forced leaf payload"
     );
+    assert_eq!(first_hit_stats.derivation_aterm_path_reuses(), 2);
+    assert_eq!(first_hit_stats.static_derivation_output_path_reuses(), 2);
+    assert_eq!(first_hit_stats.derivation_hash_calculations(), 0);
+    assert_eq!(first_hit_stats.derivation_text_path_calculations(), 0);
     assert_eq!(
         first_hit_stats.force_cache_misses(),
         0,
@@ -324,10 +342,18 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
         instantiate_file_closure_with_stats(&changed_native, &file, "pkgs.hello")?;
 
     assert_eq!(cached_second, uncached_first);
+    assert_eq!(cached_second_stats.force_cache_hits(), 0);
     assert!(
         cached_second_stats.force_cache_misses() > 0,
         "comment-only forced leaf edit should not replay only the old source identity"
     );
+    assert_eq!(cached_second_stats.derivation_aterm_path_reuses(), 2);
+    assert_eq!(
+        cached_second_stats.static_derivation_output_path_reuses(),
+        2
+    );
+    assert_eq!(cached_second_stats.derivation_hash_calculations(), 0);
+    assert_eq!(cached_second_stats.derivation_text_path_calculations(), 0);
     assert_eq!(
         observed_hits
             .lock()
@@ -354,6 +380,10 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
         changed_hit_stats.force_cache_hits() > 0,
         "second changed-source run should still load a persistent force-cache payload"
     );
+    assert_eq!(changed_hit_stats.derivation_aterm_path_reuses(), 2);
+    assert_eq!(changed_hit_stats.static_derivation_output_path_reuses(), 2);
+    assert_eq!(changed_hit_stats.derivation_hash_calculations(), 0);
+    assert_eq!(changed_hit_stats.derivation_text_path_calculations(), 0);
     assert_eq!(
         changed_hit_stats.force_cache_misses(),
         0,
