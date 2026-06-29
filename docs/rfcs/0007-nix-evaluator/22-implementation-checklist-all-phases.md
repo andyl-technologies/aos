@@ -4013,10 +4013,21 @@ alone (`M-1`/`Q-A`).
       to fail while oracle-vs-cache-off remains clean. This is local unit
       coverage of the full-closure safety-net path only; scheduled CI wiring,
       full AOS package-set closure coverage on Linux, syscall-level cache-off
-      no-read proof, cache-validation mode policy, and future value-memoization
-      safety remain open. Gates:
+      no-read proof, and future value-memoization safety remain open. Gates:
       `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`
       and `cache_validation_byte_mode_detects_cold_closure_byte_drift`
+      ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current cache-validation full-closure mode guard:
+      `aos nix-diff --cache-validation` rejects `--mode=path` before probing
+      for `nix-instantiate` or selecting native side evaluators, and accepts
+      only `--mode=byte` or `--mode=structural`. The lower-level comparison
+      helpers still support path mode for direct unit fixtures, but the
+      user-facing cache-validation safety-net command cannot be accidentally run
+      as a root-path-only check. This pins command-mode policy only; scheduled
+      CI wiring, full AOS package-set closure coverage on Linux, syscall-level
+      cache-off no-read proof, and future value-memoization safety remain open.
+      Gates: `cache_validation_rejects_path_mode` and
+      `cache_validation_path_mode_rejects_before_nix_probe`
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation side-config planning unit witness:
       cache-validation side construction routes through explicit cache-off and

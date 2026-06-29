@@ -239,7 +239,11 @@ pub fn run(
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
     }
-    NixRunner::ensure_nix_instantiate_available()?;
+    ensure_nix_instantiate_after_cache_validation_mode_check(
+        cache_validation,
+        mode,
+        NixRunner::ensure_nix_instantiate_available,
+    )?;
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
 
     if cache_validation {
@@ -348,6 +352,7 @@ fn run_cache_validation(
     systems: bool,
     mode: DiffMode,
 ) -> Result<()> {
+    validate_cache_validation_mode(mode)?;
     let cache_off_config = cache_validation_cache_off_config(eval_config);
     let cache_off = select_native_diff_candidate_with_config(verbose, cache_off_config)?;
 
@@ -1591,6 +1596,31 @@ fn cache_validation_cold_cache_config(
     Ok(config)
 }
 
+fn validate_cache_validation_mode(mode: DiffMode) -> Result<()> {
+    if mode == DiffMode::Path {
+        return Err(AosError::InvalidArgument {
+            message: "nix-diff --cache-validation requires --mode=byte or --mode=structural"
+                .to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn ensure_nix_instantiate_after_cache_validation_mode_check<F>(
+    cache_validation: bool,
+    mode: DiffMode,
+    ensure: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if cache_validation {
+        validate_cache_validation_mode(mode)?;
+    }
+    ensure()
+}
+
 fn cache_validation_attr_report(
     oracle: &dyn NixEval,
     cache_off: &dyn NixEval,
@@ -2782,6 +2812,40 @@ mod tests {
             r#"Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out","","")],[],[],"x86_64-linux","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash",[],[("builder","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash"),("name","{marker}"),("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out"),("system","x86_64-linux")])"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn cache_validation_rejects_path_mode() {
+        let error = validate_cache_validation_mode(DiffMode::Path)
+            .expect_err("path mode is not full-closure cache validation");
+        assert_eq!(
+            error.to_string(),
+            "nix-diff --cache-validation requires --mode=byte or --mode=structural"
+        );
+        validate_cache_validation_mode(DiffMode::Byte).expect("byte mode is accepted");
+        validate_cache_validation_mode(DiffMode::Structural).expect("structural mode is accepted");
+    }
+
+    #[test]
+    fn cache_validation_path_mode_rejects_before_nix_probe() {
+        let error =
+            ensure_nix_instantiate_after_cache_validation_mode_check(true, DiffMode::Path, || {
+                panic!("path-mode cache validation should reject before probing Nix")
+            })
+            .expect_err("cache validation path mode rejects before probing Nix");
+
+        assert_eq!(
+            error.to_string(),
+            "nix-diff --cache-validation requires --mode=byte or --mode=structural"
+        );
+
+        let mut probe_called = false;
+        ensure_nix_instantiate_after_cache_validation_mode_check(false, DiffMode::Path, || {
+            probe_called = true;
+            Ok(())
+        })
+        .expect("ordinary path-mode diff still probes Nix");
+        assert!(probe_called);
     }
 
     #[test]
