@@ -496,10 +496,14 @@ struct TreeWalkModule {
 #[derive(Clone, Debug)]
 struct ForceCacheOptionsIdentity {
     store_dir: Vec<u8>,
+    search_path_base: Vec<u8>,
+    nix_path: Vec<NixSearchPathEntry>,
+    corepkgs_path: Option<Vec<u8>>,
     home_dir: Option<Vec<u8>>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
     eval_mode: EvalMode,
+    reject_ambient_search_path: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -218,6 +218,191 @@ fn source_backed_forced_inline_thunks_include_store_dir_in_cache_identity() {
 }
 
 #[test]
+fn source_backed_forced_inline_thunks_include_search_path_base_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-search-path-base-salt");
+    let first_base = root.join("first");
+    let second_base = root.join("second");
+    fs::create_dir_all(&first_base).expect("first base exists");
+    fs::create_dir_all(&second_base).expect("second base exists");
+    let first_base = fs::canonicalize(&first_base).expect("first base canonicalizes");
+    let second_base = fs::canonicalize(&second_base).expect("second base canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_search_path_base(path_bytes(&first_base))
+        .expect("first search-path base configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_search_path_base(path_bytes(&second_base))
+        .expect("second search-path base configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different search-path bases must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_nix_path_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-nix-path-salt");
+    let first_entry = root.join("first");
+    let second_entry = root.join("second");
+    fs::create_dir_all(&first_entry).expect("first entry exists");
+    fs::create_dir_all(&second_entry).expect("second entry exists");
+    let first_entry = fs::canonicalize(&first_entry).expect("first entry canonicalizes");
+    let second_entry = fs::canonicalize(&second_entry).expect("second entry canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_entry))
+        .expect("first nix path entry configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&second_entry))
+        .expect("second nix path entry configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different nix_path entries must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_nix_path_prefix_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-nix-path-prefix-salt");
+    let entry = root.join("entry");
+    fs::create_dir_all(&entry).expect("entry exists");
+    let entry = fs::canonicalize(&entry).expect("entry canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&entry))
+        .expect("first nix path prefix configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_nix_path_entry(b"other".to_vec(), path_bytes(&entry))
+        .expect("second nix path prefix configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different nix_path prefixes must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_nix_path_order_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-nix-path-order-salt");
+    let first_entry = root.join("first");
+    let second_entry = root.join("second");
+    fs::create_dir_all(&first_entry).expect("first entry exists");
+    fs::create_dir_all(&second_entry).expect("second entry exists");
+    let first_entry = fs::canonicalize(&first_entry).expect("first entry canonicalizes");
+    let second_entry = fs::canonicalize(&second_entry).expect("second entry canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"first".to_vec(), path_bytes(&first_entry))
+        .expect("first entry configures");
+    first_options
+        .add_nix_path_entry(b"second".to_vec(), path_bytes(&second_entry))
+        .expect("second entry configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .add_nix_path_entry(b"second".to_vec(), path_bytes(&second_entry))
+        .expect("second entry configures");
+    second_options
+        .add_nix_path_entry(b"first".to_vec(), path_bytes(&first_entry))
+        .expect("first entry configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under reordered nix_path entries must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_nix_path_entry_count_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-nix-path-count-salt");
+    let first_entry = root.join("first");
+    let second_entry = root.join("second");
+    fs::create_dir_all(&first_entry).expect("first entry exists");
+    fs::create_dir_all(&second_entry).expect("second entry exists");
+    let first_entry = fs::canonicalize(&first_entry).expect("first entry canonicalizes");
+    let second_entry = fs::canonicalize(&second_entry).expect("second entry canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"first".to_vec(), path_bytes(&first_entry))
+        .expect("first entry configures");
+    let mut second_options = first_options.clone();
+    second_options
+        .add_nix_path_entry(b"second".to_vec(), path_bytes(&second_entry))
+        .expect("second entry configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different nix_path entry counts must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_corepkgs_path_in_cache_identity() {
+    let root = unique_temp_dir("force-cache-corepkgs-salt");
+    let first_corepkgs = root.join("corepkgs-a");
+    let second_corepkgs = root.join("corepkgs-b");
+    fs::create_dir_all(&first_corepkgs).expect("first corepkgs exists");
+    fs::create_dir_all(&second_corepkgs).expect("second corepkgs exists");
+    let first_corepkgs = fs::canonicalize(&first_corepkgs).expect("first corepkgs canonicalizes");
+    let second_corepkgs =
+        fs::canonicalize(&second_corepkgs).expect("second corepkgs canonicalizes");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_corepkgs_path(path_bytes(&first_corepkgs))
+        .expect("first corepkgs path configures");
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_corepkgs_path(path_bytes(&second_corepkgs))
+        .expect("second corepkgs path configures");
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different corepkgs paths must not reuse one demand node",
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn source_backed_forced_inline_thunks_include_ambient_search_path_rejection_in_cache_identity() {
+    let first_options = TreeWalkOptions::new();
+    let mut second_options = TreeWalkOptions::new();
+    second_options.set_reject_ambient_search_path(true);
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different ambient search-path rejection must not reuse one demand node",
+    );
+}
+
+#[test]
 fn source_backed_forced_inline_thunks_include_home_dir_in_cache_identity() {
     let root = unique_temp_dir("force-cache-home-dir");
     let first_home = root.join("home-a");
@@ -308,5 +493,48 @@ fn source_backed_forced_inline_thunks_include_eval_mode_in_cache_identity() {
         runtime.cache().expect("cache is enabled").len(),
         2,
         "same source bytes under different eval modes must not reuse one demand node"
+    );
+}
+
+fn assert_source_backed_options_allocate_distinct_nodes(
+    first_options: TreeWalkOptions,
+    second_options: TreeWalkOptions,
+    message: &str,
+) {
+    let source = "{ a = 1 + 2; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (index, options) in [first_options, second_options].into_iter().enumerate() {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            "default.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("thunk force succeeds");
+        assert_eq!(forced.as_int(), Ok(3));
+        if index == 1 {
+            assert_eq!(evaluator.stats().cache_hits(), 0, "{message}");
+        }
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "{message}"
     );
 }

@@ -21,17 +21,41 @@ impl ForceCacheOptionsIdentity {
     fn new(options: &TreeWalkOptions) -> Self {
         Self {
             store_dir: options.store_dir().to_vec(),
+            search_path_base: options.search_path_base().to_vec(),
+            nix_path: options.nix_path().to_vec(),
+            corepkgs_path: options.corepkgs_path().map(<[u8]>::to_vec),
             home_dir: options.home_dir().map(<[u8]>::to_vec),
             current_system: options.current_system().map(<[u8]>::to_vec),
             current_time: options.current_time(),
             eval_mode: options.eval_mode(),
+            reject_ambient_search_path: options.reject_ambient_search_path(),
         }
     }
 
     fn update_cache_identity(&self, hasher: &mut blake3::Hasher) -> Option<()> {
-        hasher.update(b"force-cache-options-v1");
+        hasher.update(b"force-cache-options-v2");
         hasher.update(b"store-dir");
         TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
+        hasher.update(b"search-path-base");
+        TreeWalk::update_cache_identity_chunk(hasher, &self.search_path_base)?;
+        hasher.update(b"nix-path");
+        let nix_path_len = u64::try_from(self.nix_path.len()).ok()?;
+        hasher.update(&nix_path_len.to_le_bytes());
+        for entry in &self.nix_path {
+            hasher.update(b"entry-prefix");
+            TreeWalk::update_cache_identity_chunk(hasher, entry.prefix())?;
+            hasher.update(b"entry-path");
+            TreeWalk::update_cache_identity_chunk(hasher, entry.path())?;
+        }
+        match &self.corepkgs_path {
+            Some(corepkgs_path) => {
+                hasher.update(b"corepkgs-path");
+                TreeWalk::update_cache_identity_chunk(hasher, corepkgs_path)?;
+            }
+            None => {
+                hasher.update(b"no-corepkgs-path");
+            }
+        }
         match &self.home_dir {
             Some(home_dir) => {
                 hasher.update(b"home-dir");
@@ -61,6 +85,8 @@ impl ForceCacheOptionsIdentity {
         }
         hasher.update(b"eval-mode");
         hasher.update(self.eval_mode_cache_identity_bytes());
+        hasher.update(b"reject-ambient-search-path");
+        hasher.update(&[u8::from(self.reject_ambient_search_path)]);
         Some(())
     }
 
