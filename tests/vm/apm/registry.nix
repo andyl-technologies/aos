@@ -1618,6 +1618,7 @@ in {
         --license MIT \
         --maintainer override-workflow@example.invalid \
         --registry override-reg \
+        --sysroot \
         --no-commit
       $APR cache generate \
         --registry override-reg \
@@ -1663,7 +1664,7 @@ in {
       export AOS_ROOT=/tmp/override-root
       SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
-      PROFILE_ROOT="/var/lib/profiles/per-user/$USER/current/bin/closure-root"
+      PROFILE_ROOT="/var/lib/profiles/system-packages/current/bin/closure-root"
       mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
