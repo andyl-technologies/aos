@@ -604,6 +604,136 @@ fn find_file_first_class_nix_path_calls_hit_and_miss_on_option_change() {
     fs::remove_dir_all(root).expect("temp tree removed");
 }
 
+#[test]
+fn find_file_first_class_nix_path_hits_from_persistent_cache_after_revalidation() {
+    let persist_root = unique_temp_dir("force-cache-first-class-find-file-nix-path-persist");
+    let root = unique_temp_dir("force-cache-first-class-find-file-nix-path-persistent-hit");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    fs::create_dir_all(&hit_candidate).expect("hit candidate exists");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let hit_root = root.join("hit");
+    let hit_candidate = hit_root.join("subdir");
+    let source = "{ a = (let f = builtins.findFile builtins.nixPath; in f \"pkg/subdir\"); }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let apply_id = first_class_find_file_apply_id(&ir);
+    let builtin = lookup_builtin(b"findFile").expect("findFile builtin is registered");
+    let expected_trace = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            &path_bytes(&hit_candidate),
+            ImpureInputMode::FindFileCandidate,
+            true,
+        )
+        .expect("first-class findFile candidate fingerprint builds"),
+    ];
+
+    let mut demand_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    demand_options.set_persist_cache_root(&persist_root);
+    demand_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("search path entry configures");
+    let mut demand = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        demand_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let demand_forced = force_attr_a(&mut demand, &ir, a);
+    assert_eq!(
+        path_value_bytes(&demand, demand_forced),
+        path_bytes(&hit_candidate)
+    );
+    assert_eq!(demand.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        demand.stats().force_cache_misses(),
+        0,
+        "the first first-class findFile demand should only record memoization policy"
+    );
+    demand.advance_persist_eval_cache_run_boundary();
+    drop(demand);
+
+    let mut materialize_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    materialize_options.set_persist_cache_root(&persist_root);
+    materialize_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("matching search path entry configures for materialization");
+    let mut materialize = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        materialize_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let materialized = force_attr_a(&mut materialize, &ir, a);
+    assert_eq!(
+        path_value_bytes(&materialize, materialized),
+        path_bytes(&hit_candidate)
+    );
+    assert_eq!(materialize.impure_input_trace(), expected_trace.as_slice());
+    assert!(
+        materialize.stats().force_cache_misses() > 0,
+        "the second first-class findFile demand should materialize a cold trace-backed child payload"
+    );
+    let child_persist_key =
+        first_class_primop_persist_key_for_current_node(&mut materialize, apply_id, builtin)
+            .expect("first-class findFile child persistent subject builds");
+    let trace_entry = assert_persistent_find_file_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "first-class builtins.nixPath findFile materialization run",
+    );
+    assert_eq!(
+        trace_entry.0, child_persist_key,
+        "the materialized persistent trace should belong to the first-class findFile child call"
+    );
+    drop(materialize);
+
+    let mut second_options = TreeWalkOptions::with_eval_cache_enabled(true);
+    second_options.set_persist_cache_root(&persist_root);
+    second_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&hit_root))
+        .expect("matching search path entry configures");
+    let mut second = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        second_options,
+        "default.nix",
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let forced_again = force_attr_a(&mut second, &ir, a);
+
+    assert_eq!(
+        path_value_bytes(&second, forced_again),
+        path_bytes(&hit_candidate)
+    );
+    assert!(
+        second.stats().thunks_forced() > 0,
+        "fresh-runtime first-class child hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(second.stats().force_cache_hits(), 1);
+    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        second.persist_force_cache_hit_keys.as_slice(),
+        &[child_persist_key],
+        "fresh-runtime first-class findFile hit should load only the child-call metadata key"
+    );
+    assert_eq!(
+        assert_persistent_find_file_trace_log_contains(
+            &persist_root,
+            &expected_trace,
+            "fresh-runtime first-class findFile hit",
+        ),
+        trace_entry,
+        "fresh-runtime first-class findFile hit should keep the original verifying trace live"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
 fn first_class_find_file_apply_id(ir: &Ir) -> IrId {
     ir.arena
         .nodes()
@@ -641,6 +771,21 @@ fn first_class_primop_subject_key_for_current_node(
     DemandCacheKey::for_free_vars(identity, value_hashes.iter().copied()).ok()
 }
 
+fn first_class_primop_persist_key_for_current_node(
+    evaluator: &mut TreeWalk,
+    id: IrId,
+    builtin: Builtin,
+) -> Option<PersistNodeMetadataKey> {
+    let identity =
+        evaluator.test_cache_first_class_primop_call_identity_for_current_node(id, builtin)?;
+    let value_hashes =
+        evaluator.test_first_class_primop_arg_hashes_for_current_apply(id, builtin)?;
+    Some(PersistNodeMetadataKey::for_expression(
+        identity,
+        value_hashes.iter().copied(),
+    ))
+}
+
 fn runtime_contains_node_key(runtime: &Arc<Mutex<EvalCacheRuntime>>, key: DemandCacheKey) -> bool {
     runtime
         .lock()
@@ -650,6 +795,50 @@ fn runtime_contains_node_key(runtime: &Arc<Mutex<EvalCacheRuntime>>, key: Demand
         .graph()
         .node_id_for_key(key)
         .is_some()
+}
+
+fn assert_persistent_find_file_trace_log_contains(
+    persist_root: &Path,
+    expected_trace: &[ImpureInputFingerprint],
+    context: &str,
+) -> (PersistNodeMetadataKey, ValueHash) {
+    let expected = expected_trace
+        .iter()
+        .map(|input| {
+            input
+                .as_cacheable()
+                .unwrap_or_else(|| panic!("{context} expected trace should be cacheable"))
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let persist = PersistCache::open(persist_root).expect("persistent cache opens");
+    let metadata_entries = persist
+        .node_metadata_index()
+        .latest_entries()
+        .expect("persistent node metadata entries load");
+    let trace_entries = persist
+        .node_trace_log()
+        .latest_entries()
+        .expect("persistent node trace entries load");
+    let live_matches = trace_entries
+        .iter()
+        .filter_map(|entry| {
+            if entry.payload().is_tombstone() || entry.payload().inputs() != expected.as_slice() {
+                return None;
+            }
+            let metadata_links_trace = metadata_entries.iter().any(|metadata| {
+                metadata.key() == entry.key()
+                    && metadata.value().materialized_value_hash() == Some(entry.value_hash())
+            });
+            metadata_links_trace.then_some((entry.key(), entry.value_hash()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        live_matches.len(),
+        1,
+        "{context} should persist exactly one live force-cache verifying trace for the expected inputs"
+    );
+    live_matches[0]
 }
 
 #[test]
