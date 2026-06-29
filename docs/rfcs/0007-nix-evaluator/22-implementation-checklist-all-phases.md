@@ -3367,6 +3367,29 @@ alone (`M-1`/`Q-A`).
       full AOS package-set coverage, syscall-level cache-off no-read proof, or
       the full cached-vs-uncached CI safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current reusable native file-closure filesystem-input parity witness:
+      `native_file_cache_parity_harness_covers_filesystem_impure_inputs` reuses
+      `native_file_closure_cache_parity` on a direct file-root package that
+      imports `./dep.nix` and forces `builtins.readFile`, `builtins.hashFile`,
+      `builtins.readDir` through `attrNames`, `builtins.readFileType`, and
+      `builtins.pathExists` into derivation arguments. The witness requires
+      byte-identical `.drv` closures across disabled cache, cache-on miss/write,
+      second cache-on pass, persistent source-artifact hit, and
+      disabled-eval-cache over the populated persistent root; it positively
+      checks the root ATerm contains the imported suffix, readFile payload,
+      hashFile digest, readFileType/pathExists results, and readDir entry names;
+      it also proves both the root and imported file parse artifacts are written
+      locally and durably, requires aggregate cache miss/hit accounting that
+      covers imported parse-cache miss/hit activity on the cache-miss and
+      persistent-hit legs, and scans all closure surfaces for root/imported
+      parse-cache, root/imported file-content, and filesystem impure-input
+      identity/observation BLAKE3 renderings. This broadens the reusable
+      direct-file cache-parity harness across filesystem-sensitive forced inputs;
+      it is not currentSystem support, full impure-input demand-graph
+      integration, stale-input recomputation coverage, full AOS package-set
+      coverage, syscall-level cache-off no-read proof, or the full
+      cached-vs-uncached CI safety net
+      ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,
