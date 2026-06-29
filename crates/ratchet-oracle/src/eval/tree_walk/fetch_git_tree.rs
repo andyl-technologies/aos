@@ -418,11 +418,22 @@ impl TreeWalk {
         input: &[u8],
         attrs: &FlakeRefAttrs,
     ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.fetch_tree_flake_ref_arguments_with_resolution_depth(id, span, input, attrs, 0)
+    }
+
+    fn fetch_tree_flake_ref_arguments_with_resolution_depth(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        attrs: &FlakeRefAttrs,
+        resolution_depth: usize,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
         let input_type = Self::required_flake_ref_string_attr(id, span, attrs, TYPE_ATTR)?;
         if attrs.contains_key(DIR_ATTR)
             && !matches!(
                 input_type,
-                b"tarball" | b"git" | b"github" | b"gitlab" | b"sourcehut"
+                b"indirect" | b"tarball" | b"git" | b"github" | b"gitlab" | b"sourcehut"
             )
         {
             return Err(Self::fetch_tree_error(
@@ -433,6 +444,13 @@ impl TreeWalk {
             ));
         }
         match input_type {
+            b"indirect" => self.fetch_tree_indirect_flake_ref_arguments(
+                id,
+                span,
+                input,
+                attrs,
+                resolution_depth,
+            ),
             b"path" => self.fetch_tree_path_flake_ref_arguments(id, span, attrs),
             b"file" => self.fetch_tree_file_flake_ref_arguments(id, span, attrs),
             b"tarball" => self.fetch_tree_tarball_flake_ref_arguments(id, span, attrs),
@@ -447,6 +465,41 @@ impl TreeWalk {
                 "unsupported fetchTree string flake reference type",
             )),
         }
+    }
+
+    fn fetch_tree_indirect_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        attrs: &FlakeRefAttrs,
+        resolution_depth: usize,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        if resolution_depth >= MAX_FLAKE_REF_RESOLUTION_DEPTH {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "indirect fetchTree flake reference resolution depth exceeded",
+            ));
+        }
+        let indirect = self.flake_ref_attrs_to_string(id, span, attrs)?;
+        let Some(target) = self.options.flake_ref_resolution(&indirect) else {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                &indirect,
+                "unresolved indirect fetchTree flake reference",
+            ));
+        };
+        let target_attrs = Self::parse_flake_ref_attrs(id, span, target)?;
+        self.fetch_tree_flake_ref_arguments_with_resolution_depth(
+            id,
+            span,
+            target,
+            &target_attrs,
+            resolution_depth + 1,
+        )
     }
 
     pub(super) fn fetch_tree_path_flake_ref_arguments(

@@ -583,6 +583,34 @@ impl TreeWalkOptions {
         self.force_cache_materialization_costs = costs;
     }
 
+    /// Configures one exact indirect flake-reference resolution.
+    ///
+    /// The `indirect` key uses the same canonical string form returned by
+    /// `builtins.flakeRefToString`, such as `flake:nixpkgs` or
+    /// `flake:nixpkgs/unstable`. The `target` must be another flake reference
+    /// string that either `builtins.fetchTree` already supports natively or
+    /// another configured indirect ref. The evaluator never reads an ambient
+    /// registry, so callers must install every deterministic mapping they want
+    /// `flake:` refs to observe.
+    pub fn set_flake_ref_resolution(
+        &mut self,
+        indirect: impl Into<Vec<u8>>,
+        target: impl Into<Vec<u8>>,
+    ) {
+        self.flake_ref_resolutions
+            .insert(indirect.into(), target.into());
+    }
+
+    /// Clears one configured indirect flake-reference resolution.
+    pub fn clear_flake_ref_resolution(&mut self, indirect: &[u8]) {
+        self.flake_ref_resolutions.remove(indirect);
+    }
+
+    /// Clears every configured indirect flake-reference resolution.
+    pub fn clear_flake_ref_resolutions(&mut self) {
+        self.flake_ref_resolutions.clear();
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
@@ -712,6 +740,11 @@ impl TreeWalkOptions {
     /// Returns the durable materialization costs for forced-expression payloads.
     pub const fn force_cache_materialization_costs(&self) -> MaterializationCosts {
         self.force_cache_materialization_costs
+    }
+
+    /// Returns the configured target for an exact indirect flake reference.
+    pub fn flake_ref_resolution(&self, indirect: &[u8]) -> Option<&[u8]> {
+        self.flake_ref_resolutions.get(indirect).map(Vec::as_slice)
     }
 }
 

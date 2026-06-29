@@ -411,8 +411,109 @@ fn get_flake_preflights_argument_before_fetching() {
     assert!(matches!(
         error.kind(),
         TreeWalkErrorKind::FetchTree { message, .. }
-            if message == "unsupported fetchTree string flake reference type"
+            if message == "unresolved indirect fetchTree flake reference"
     ));
+}
+
+#[test]
+fn fetch_tree_resolves_configured_indirect_flake_refs() {
+    let root = unique_temp_dir("fetch-tree-indirect");
+    fs::write(root.join("payload.txt"), b"configured indirect fetchTree")
+        .expect("payload fixture writes");
+    let store_dir = unique_temp_dir("fetch-tree-indirect-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    options.set_flake_ref_resolution(
+        b"flake:nixpkgs".to_vec(),
+        format!("path:{}", path_source(&root)).into_bytes(),
+    );
+
+    let json = eval_json_bytes_with_options(
+        r#"
+        let x = builtins.fetchTree "nixpkgs";
+        in {
+          keys = builtins.attrNames x;
+          payload = builtins.readFile "${x.outPath}/payload.txt";
+        }
+        "#,
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("indirect fetchTree JSON parses");
+    assert_eq!(
+        value["keys"],
+        serde_json::json!(["lastModified", "lastModifiedDate", "narHash", "outPath"])
+    );
+    assert_eq!(value["payload"], "configured indirect fetchTree");
+
+    fs::remove_dir_all(root).expect("fetchTree indirect temp directory removes");
+    fs::remove_dir_all(store_dir).expect("fetchTree indirect store directory removes");
+}
+
+#[test]
+fn fetch_tree_rejects_configured_indirect_ref_resolution_cycles() {
+    let mut options = TreeWalkOptions::new();
+    options.set_flake_ref_resolution(b"flake:nixpkgs".to_vec(), b"flake:aos".to_vec());
+    options.set_flake_ref_resolution(b"flake:aos".to_vec(), b"flake:nixpkgs".to_vec());
+
+    let error = eval_whnf_owned_with_options(&lower(r#"builtins.fetchTree "nixpkgs""#), options)
+        .expect_err("indirect fetchTree cycle rejects at bounded depth");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::FetchTree { message, .. }
+            if message == "indirect fetchTree flake reference resolution depth exceeded"
+    ));
+}
+
+#[test]
+fn get_flake_resolves_configured_indirect_flake_refs() {
+    let root = unique_temp_dir("get-flake-indirect");
+    fs::write(
+        root.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 7;
+                fromSelfOutPath = self.outPath;
+              };
+            }
+            "#,
+    )
+    .expect("flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-indirect-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    options.set_flake_ref_resolution(
+        b"flake:nixpkgs".to_vec(),
+        format!("path:{}", path_source(&root)).into_bytes(),
+    );
+
+    let json = eval_json_bytes_with_options(
+        r#"
+        let f = builtins.getFlake "nixpkgs";
+        in {
+          answer = f.answer;
+          flakeType = f._type;
+          inputs = builtins.attrNames f.inputs;
+          selfOutPath = f.fromSelfOutPath;
+          flakeOutPath = f.outPath;
+        }
+        "#,
+        options,
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("indirect getFlake JSON parses");
+    assert_eq!(value["answer"], 7);
+    assert_eq!(value["flakeType"], "flake");
+    assert_eq!(value["inputs"], serde_json::json!([]));
+    assert_eq!(value["selfOutPath"], value["flakeOutPath"]);
+    let out_path = value["flakeOutPath"]
+        .as_str()
+        .expect("flakeOutPath is a string");
+    assert!(out_path.starts_with(path_source(&store_dir).as_str()));
+
+    fs::remove_dir_all(root).expect("getFlake indirect temp directory removes");
+    fs::remove_dir_all(store_dir).expect("getFlake indirect store directory removes");
 }
 
 #[test]

@@ -662,14 +662,16 @@ eval (network access is disabled unless explicitly allowed).
         URLs with canonical flake-ref restricted-mode gating. The native subset
         is covered by focused `fetchTree` tests for local inputs, string refs,
         git metadata, forge archive lowering, configured GitHub/GitLab/SourceHut
-        resolution, configured forge `dir` rerooting, lock gates, and
-        direct path/tarball/git/configured-forge attrset lock-metadata mismatch
+        resolution, configured indirect ref resolution to supported native
+        targets, configured forge `dir` rerooting, lock gates, and direct
+        path/tarball/git/configured-forge attrset lock-metadata mismatch
         rejection, and invalid-shape rejection.
-- [ ] Full `fetchTree` flake fetcher remains — registry/indirect refs, live
-      provider ref-resolution parity beyond the configured-response forge
-      canaries, remaining live-provider forge `dir`/metadata parity, full
-      flakes integration, and any pinned C++ Nix edge cases outside the native
-      conditional subset stay open.
+- [ ] Full `fetchTree` flake fetcher remains — ambient registry lookup,
+      non-exact indirect/ref merge semantics, live provider ref-resolution
+      parity beyond the configured-response forge canaries, remaining
+      live-provider forge `dir`/metadata parity, full flakes integration, and
+      any pinned C++ Nix edge cases outside the native conditional subset stay
+      open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -985,8 +987,9 @@ requires them:
       pure-mode locking, and declared-input rejection are covered by focused
       `getFlake` tests.
 - [ ] Full `getFlake` flake protocol remains scoped/open: declared-input
-      resolution, registry/indirect refs, lock-file graph semantics, full input
-      graph evaluation, and general flake protocol parity.
+      resolution, ambient registry lookup and non-exact indirect/ref merge
+      semantics, lock-file graph semantics, full input graph evaluation, and
+      general flake protocol parity.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
@@ -995,13 +998,14 @@ requires them:
       path/file/tarball/git inputs are native; rev-pinned forge archive lowering
       is native; configured GitHub/GitLab ref-resolution test hooks and
       SourceHut `/HEAD` plus `info/refs` ref-resolution hooks are covered;
-      configured forge `dir` rerooting is covered; bare absolute path strings
-      are rejected for parity. Full `fetchTree` remains open in §11 and the next
-      row.
-- [ ] Full `fetchTree` flake layer remains scoped/open for registry/indirect
-      refs, live provider resolution across forges, remaining live-provider
-      forge `dir`/metadata parity, lock-file graph semantics, and full flakes
-      integration.
+      configured indirect refs can resolve exactly to supported native target
+      refs; configured forge `dir` rerooting is covered; bare absolute path
+      strings are rejected for parity. Full `fetchTree` remains open in §11 and
+      the next row.
+- [ ] Full `fetchTree` flake layer remains scoped/open for ambient registry
+      lookup, non-exact indirect/ref merge semantics, live provider resolution
+      across forges, remaining live-provider forge `dir`/metadata parity,
+      lock-file graph semantics, and full flakes integration.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix

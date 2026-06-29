@@ -140,6 +140,7 @@ const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
+const MAX_FLAKE_REF_RESOLUTION_DEPTH: usize = 16;
 const DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS: MaterializationCosts =
     MaterializationCosts::new(4, 1, 1, 1);
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
@@ -339,6 +340,7 @@ pub struct TreeWalkOptions {
     persist_cache_root: Option<PathBuf>,
     eval_cache_enabled: bool,
     force_cache_materialization_costs: MaterializationCosts,
+    flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -368,6 +370,7 @@ impl Default for TreeWalkOptions {
             persist_cache_root: None,
             eval_cache_enabled: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
+            flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }
