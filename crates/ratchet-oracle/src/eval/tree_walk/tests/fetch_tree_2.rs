@@ -842,6 +842,83 @@ fn fetch_tree_forge_refs_reroot_dir_with_test_url_responses() {
 }
 
 #[test]
+fn fetch_tree_github_direct_attrset_rejects_last_modified_mismatch() {
+    fn current_unix_seconds() -> i64 {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after Unix epoch")
+                .as_secs(),
+        )
+        .expect("current Unix time fits in Nix int")
+    }
+
+    let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-forge-metadata");
+    let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
+    let store_dir = unique_temp_dir("fetch-tree-forge-metadata-store");
+    let mut options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let rev = "0123456789abcdef0123456789abcdef01234567";
+    let archive_url = format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz");
+
+    options.add_fetch_tree_url_response(archive_url, archive_bytes);
+
+    let json = eval_json_bytes_with_options(
+        &format!(
+            r#"
+                let x = builtins.fetchTree {{
+                  type = "github";
+                  owner = "NixOS";
+                  repo = "nixpkgs";
+                  rev = "{rev}";
+                }};
+                in {{ lastModified = x.lastModified; rev = x.rev; }}
+                "#
+        ),
+        options.clone(),
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&json).expect("forge metadata JSON parses");
+    assert_eq!(value["rev"], rev);
+    let observed_last_modified = value["lastModified"]
+        .as_i64()
+        .expect("lastModified is an integer");
+    let wrong_last_modified = observed_last_modified
+        .checked_add(31_536_000)
+        .unwrap_or(observed_last_modified - 31_536_000);
+
+    let eval_before = current_unix_seconds().saturating_sub(1);
+    let error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            r#"builtins.fetchTree {{
+                  type = "github";
+                  owner = "NixOS";
+                  repo = "nixpkgs";
+                  rev = "{rev}";
+                  lastModified = {wrong_last_modified};
+                }}"#
+        )),
+        options,
+    )
+    .expect_err("direct forge fetchTree rejects mismatched lastModified");
+    let eval_after = current_unix_seconds().saturating_add(1);
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+            expected,
+            actual,
+            ..
+        } if expected == wrong_last_modified
+            && actual != wrong_last_modified
+            && actual >= eval_before
+            && actual <= eval_after
+    ));
+
+    fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
 fn fetch_tree_validates_input_shape() {
     let dir = unique_temp_dir("fetch-tree-invalid");
     fs::write(dir.join("data.txt"), b"data").expect("source file writes");
