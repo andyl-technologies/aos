@@ -213,6 +213,15 @@ impl IoCore {
         self.inflight.len()
     }
 
+    /// Discards every computed response that has not yet been delivered.
+    ///
+    /// Returns the discarded responses in deterministic delivery order. Crash
+    /// fault handling uses this to void a node's in-flight I/O without advancing
+    /// the device clock or making any response visible.
+    pub fn discard_inflight(&mut self) -> Vec<PendingResponse> {
+        self.inflight.drain_all()
+    }
+
     /// Enqueues a request into the inbound ring (the ARRIVE step).
     ///
     /// The request lands at the requester's emit icount; it is COMPUTEd later by

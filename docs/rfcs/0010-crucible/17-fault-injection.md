@@ -1047,11 +1047,21 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   remain on the scheduler axis. The focused regression covers anchored slow
   projection, slowed scheduler RUN ceilings, slowed preemption and I/O
   completion timestamps, and guest-visible-only clock skew.
-- [ ] **T-FAULT-8** Implement crash semantics (stop runtime, discard in-flight
+- [x] **T-FAULT-8** Implement crash semantics (stop runtime, discard in-flight
   I/O, break connections, deterministic recorded discard set) and restart
   policies (FromReadyPoint / FromLastCheckpoint / StayDown), proving the crashed
   node constrains no peer and replays identically. — satisfies [FAULT-19],
   [FAULT-20]; spec §17.4.3.
+  Completed by `checks.crucible.phase4.nodeCrashApplication`: `SingleScheduler`
+  now records crash/restart applications, stops crashed VM nodes by removing
+  them from PICK/frontier pressure, discards incident scheduler events and
+  pending device completions with full delivery keys, suppresses incident
+  effective topology edges while retaining later edge updates for restart, and
+  applies FromReadyPoint, FromLastCheckpoint from a recorded scheduler
+  checkpoint anchor, and StayDown plus explicit restart. The focused regressions
+  cover deterministic run-twice replay evidence, unrelated-work survival,
+  peer progress, frozen all-crashed frontier behavior, and topology updates
+  while a node is down.
 - [ ] **T-FAULT-9** Apply block/9p faults on their I/O sub-nodes at RESOLVE,
   uniform with network faults (latency/jitter shift; failure error/drop; reorder;
   duplicate; corruption), drawn from the per-device RNG, with active I/O faults in

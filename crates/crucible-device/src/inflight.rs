@@ -124,6 +124,14 @@ impl InflightQueue {
         let future = self.entries.split_off(split);
         core::mem::replace(&mut self.entries, future)
     }
+
+    /// Removes and returns every in-flight response in delivery order.
+    ///
+    /// Crash fault handling uses this to void a target node's computed-but-not-
+    /// delivered responses while recording the deterministic discard set.
+    pub fn drain_all(&mut self) -> Vec<PendingResponse> {
+        core::mem::take(&mut self.entries)
+    }
 }
 
 #[cfg(test)]
