@@ -1570,6 +1570,18 @@ impl NativeOnlyEval {
         );
         Ok(Self { native, config })
     }
+
+    #[cfg(test)]
+    fn instantiate_closure_with_stats(
+        &self,
+        file: &Path,
+        attr: &str,
+    ) -> Result<(DrvClosure, aos_nix::eval::EvalStats)> {
+        let file = self.config.resolve_eval_file_path(file);
+        let (closure, stats) = self.native.instantiate_closure_with_stats(&file, attr)?;
+        let (root, drvs) = closure.into_parts();
+        Ok((DrvClosure::new(root, drvs), stats))
+    }
 }
 
 #[cfg(feature = "native-eval")]
@@ -2460,6 +2472,50 @@ mod tests {
     }
 
     #[cfg(feature = "native-eval")]
+    fn assert_no_incremental_cache_stats(stats: &aos_nix::eval::EvalStats, label: &str) {
+        assert_eq!(
+            stats.force_cache_hits(),
+            0,
+            "{label} reported force-cache hits"
+        );
+        assert_eq!(
+            stats.force_cache_misses(),
+            0,
+            "{label} reported force-cache misses"
+        );
+        assert_eq!(
+            stats.force_cache_materialization_materializes(),
+            0,
+            "{label} reported durable force-cache materialization decisions"
+        );
+        assert_eq!(
+            stats.force_cache_materialization_keeps_in_memory(),
+            0,
+            "{label} reported in-memory force-cache materialization decisions"
+        );
+        assert_eq!(
+            stats.force_cache_materialization_decisions(),
+            0,
+            "{label} reported force-cache materialization decisions"
+        );
+        assert_eq!(
+            stats.early_cutoffs(),
+            0,
+            "{label} reported incremental-cache early cutoffs"
+        );
+        assert_eq!(
+            stats.derivation_aterm_path_reuses(),
+            0,
+            "{label} reported derivation ATerm path reuse"
+        );
+        assert_eq!(
+            stats.static_derivation_output_path_reuses(),
+            0,
+            "{label} reported static derivation output path reuse"
+        );
+    }
+
+    #[cfg(feature = "native-eval")]
     fn snapshot_regular_file_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
         let mut snapshot = BTreeMap::new();
         if root.exists() {
@@ -3341,7 +3397,13 @@ mod tests {
         assert_eq!(disabled_options.persist_cache_root(), None);
         assert!(!disabled_options.eval_cache_enabled());
         let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-        let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+        let (disabled, disabled_stats) = disabled_evaluator
+            .native
+            .instantiate_expr_closure_with_stats(source)?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 raw expression closure over stale file cache root",
+        );
 
         let (baseline_root, baseline_drvs) = baseline.into_parts();
         let (disabled_root, disabled_drvs) = disabled.into_parts();
@@ -3420,7 +3482,13 @@ mod tests {
         assert_eq!(disabled_options.persist_cache_root(), None);
         assert!(!disabled_options.eval_cache_enabled());
         let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-        let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+        let (disabled, disabled_stats) = disabled_evaluator
+            .native
+            .instantiate_expr_closure_with_stats(source)?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 raw expression closure over populated cache root",
+        );
 
         let (baseline_root, baseline_drvs) = baseline.into_parts();
         let (disabled_root, disabled_drvs) = disabled.into_parts();
@@ -3493,7 +3561,11 @@ mod tests {
         assert_eq!(disabled_options.persist_cache_root(), None);
         assert!(!disabled_options.eval_cache_enabled());
         let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-        let disabled = disabled_evaluator.native.eval_expr(&source)?;
+        let (disabled, disabled_stats) = disabled_evaluator.native.eval_expr_with_stats(source)?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 strict JSON eval over populated cache root",
+        );
 
         assert_eq!(disabled, baseline);
         assert_eq!(
@@ -3571,7 +3643,13 @@ mod tests {
             assert_eq!(disabled_options.persist_cache_root(), None);
             assert!(!disabled_options.eval_cache_enabled());
             let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-            let disabled = disabled_evaluator.native.instantiate_expr_closure(source)?;
+            let (disabled, disabled_stats) = disabled_evaluator
+                .native
+                .instantiate_expr_closure_with_stats(source)?;
+            assert_no_incremental_cache_stats(
+                &disabled_stats,
+                "AOS_NIX_CACHE=0 raw expression closure over non-file cache root",
+            );
 
             assert_eq!(disabled, baseline);
         }
@@ -3651,9 +3729,12 @@ mod tests {
         assert_eq!(disabled_options.persist_cache_root(), None);
         assert!(!disabled_options.eval_cache_enabled());
         let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-        let disabled = disabled_evaluator
-            .instantiate_closure(&file, "pkgs.hello")?
-            .expect("native-only evaluator returns file closures");
+        let (disabled, disabled_stats) =
+            disabled_evaluator.instantiate_closure_with_stats(&file, "pkgs.hello")?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 file-backed closure over stale file cache root",
+        );
 
         let (baseline_root, baseline_drvs) = baseline.into_parts();
         let (disabled_root, disabled_drvs) = disabled.into_parts();
@@ -3742,9 +3823,12 @@ mod tests {
         assert_eq!(disabled_options.persist_cache_root(), None);
         assert!(!disabled_options.eval_cache_enabled());
         let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
-        let disabled = disabled_evaluator
-            .instantiate_closure(&file, "pkgs.hello")?
-            .expect("native-only evaluator returns disabled file closures");
+        let (disabled, disabled_stats) =
+            disabled_evaluator.instantiate_closure_with_stats(&file, "pkgs.hello")?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 file-backed closure over populated cache root",
+        );
 
         let (baseline_root, baseline_drvs) = baseline.into_parts();
         let (disabled_root, disabled_drvs) = disabled.into_parts();

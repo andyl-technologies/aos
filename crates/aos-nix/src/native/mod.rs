@@ -30,8 +30,8 @@ use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
 use crate::eval::{
-    EvalErrorLabel, EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind,
-    TreeWalkOptions,
+    EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, TreeWalkError,
+    TreeWalkErrorKind, TreeWalkOptions,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
     eval_whnf_owned_with_options_realizer_and_eval_cache,
 };
@@ -221,6 +221,26 @@ impl NixNative {
         self.eval_file_attr_derivation_closure(file, attr)
     }
 
+    /// Evaluates `attr` from `file` to an in-memory closure and evaluator counters.
+    ///
+    /// The returned stats describe the tree-walk evaluator work performed for
+    /// this instantiation and use the same schema as the native evaluator
+    /// tracing counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Unsupported`] when the selected expression
+    /// reaches an evaluator feature that is still outside the native tree-walk
+    /// subset. Returns [`NativeEvalError::EvalError`] when the selected value
+    /// does not expose a string `drvPath`.
+    pub fn instantiate_closure_with_stats(
+        &self,
+        file: &Path,
+        attr: &str,
+    ) -> Result<(NativeDrvClosure, EvalStats)> {
+        self.eval_file_attr_derivation_closure_with_stats(file, attr)
+    }
+
     /// Writes an in-memory derivation closure to the configured Nix store.
     ///
     /// Existing `.drv` files are accepted only when their bytes are identical to
@@ -293,13 +313,36 @@ impl NixNative {
     /// Returns [`NativeEvalError::EvalError`] when the expression does not
     /// evaluate to a derivation-like attribute set with a string `drvPath`.
     pub fn instantiate_expr_closure(&self, expr: &str) -> Result<NativeDrvClosure> {
+        Ok(self.instantiate_expr_closure_with_stats(expr)?.0)
+    }
+
+    /// Evaluates a raw expression to an in-memory derivation closure and counters.
+    ///
+    /// The returned stats describe the tree-walk evaluator work performed for
+    /// this instantiation and use the same schema as the native evaluator
+    /// tracing counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Unsupported`] when the expression reaches an
+    /// evaluator feature that is still outside the native tree-walk subset.
+    /// Returns [`NativeEvalError::EvalError`] when the expression does not
+    /// evaluate to a derivation-like attribute set with a string `drvPath`.
+    pub fn instantiate_expr_closure_with_stats(
+        &self,
+        expr: &str,
+    ) -> Result<(NativeDrvClosure, EvalStats)> {
         let source = derivation_path_wrapper_source(expr);
         let source_map = WrappedSourceMap {
             prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
             expr_len: expr.len(),
         };
         let diagnostic_source = NativeDiagnosticSource::new("expr.nix", expr, Some(source_map));
-        self.eval_derivation_closure_source(&source, Some(source_map), Some(diagnostic_source))
+        self.eval_derivation_closure_source_with_stats(
+            &source,
+            Some(source_map),
+            Some(diagnostic_source),
+        )
     }
 
     /// Evaluates a raw expression to an in-memory derivation closure with caller-selected diagnostics.
@@ -337,6 +380,22 @@ impl NixNative {
     /// Returns [`NativeEvalError::EvalError`] when the expression fails with
     /// normal Nix evaluation semantics or cannot be represented as JSON.
     pub fn eval_expr(&self, expr: &str) -> Result<String> {
+        Ok(self.eval_expr_with_stats(expr)?.0)
+    }
+
+    /// Evaluates a raw expression as strict JSON and returns evaluator counters.
+    ///
+    /// The returned stats describe the tree-walk evaluator work performed for
+    /// this expression evaluation and use the same schema as the native
+    /// evaluator tracing counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Unsupported`] when the expression reaches an
+    /// evaluator feature that is still outside the native tree-walk subset.
+    /// Returns [`NativeEvalError::EvalError`] when the expression fails with
+    /// normal Nix evaluation semantics or cannot be represented as JSON.
+    pub fn eval_expr_with_stats(&self, expr: &str) -> Result<(String, EvalStats)> {
         let source = json_wrapper_source(expr);
         let source_map = WrappedSourceMap {
             prefix_len: JSON_WRAPPER_PREFIX.len(),
@@ -348,18 +407,8 @@ impl NixNative {
         let outcome = self.eval_ir(&ir).map_err(|error| {
             native_eval_error_with_source_trace(error, diagnostic_source, self.eval_trace_style())
         })?;
-        let string = outcome
-            .heap()
-            .get_string(outcome.value())
-            .map_err(|source| NativeEvalError::Internal {
-                message: format!("JSON renderer returned a non-string value: {source}"),
-            })?;
-        String::from_utf8(string.bytes().to_vec()).map_err(|source| {
-            NativeEvalError::Internal {
-                message: format!("JSON renderer returned non-UTF-8 bytes: {source}"),
-            }
-            .into()
-        })
+        let stats = *outcome.stats();
+        Ok((json_string_from_outcome(&outcome)?, stats))
     }
 
     /// Evaluates a raw expression with caller-selected diagnostic source text.
@@ -396,18 +445,7 @@ impl NixNative {
         let outcome = self.eval_ir(&ir).map_err(|error| {
             native_eval_error_with_source_trace(error, diagnostic_source, self.eval_trace_style())
         })?;
-        let string = outcome
-            .heap()
-            .get_string(outcome.value())
-            .map_err(|source| NativeEvalError::Internal {
-                message: format!("JSON renderer returned a non-string value: {source}"),
-            })?;
-        String::from_utf8(string.bytes().to_vec()).map_err(|source| {
-            NativeEvalError::Internal {
-                message: format!("JSON renderer returned non-UTF-8 bytes: {source}"),
-            }
-            .into()
-        })
+        json_string_from_outcome(&outcome)
     }
 
     /// Returns a stable implementation name for diagnostics.
@@ -454,6 +492,17 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<NativeDrvClosure> {
+        Ok(self
+            .eval_derivation_closure_source_with_stats(source, source_map, diagnostic_source)?
+            .0)
+    }
+
+    fn eval_derivation_closure_source_with_stats(
+        &self,
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+    ) -> Result<(NativeDrvClosure, EvalStats)> {
         let ir = self.lower_native_source(source, source_map, diagnostic_source)?;
         if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
         {
@@ -473,7 +522,8 @@ impl NixNative {
                 ),
                 None => native_eval_error_with_trace(error, source_map, self.eval_trace_style()),
             })?;
-        self.native_drv_closure_from_outcome(outcome)
+        let stats = *outcome.stats();
+        Ok((self.native_drv_closure_from_outcome(outcome)?, stats))
     }
 
     fn eval_file_attr_derivation_closure(
@@ -481,6 +531,16 @@ impl NixNative {
         file: &Path,
         attr: &str,
     ) -> Result<NativeDrvClosure> {
+        Ok(self
+            .eval_file_attr_derivation_closure_with_stats(file, attr)?
+            .0)
+    }
+
+    fn eval_file_attr_derivation_closure_with_stats(
+        &self,
+        file: &Path,
+        attr: &str,
+    ) -> Result<(NativeDrvClosure, EvalStats)> {
         let attr_path = attr_path_drv_path_segments(attr)?;
         let mut options = self.instantiation_options();
         let file = native_source_file(file, &options)?;
@@ -533,8 +593,9 @@ impl NixNative {
                 ),
                 None => native_eval_error_with_trace(error, None, self.eval_trace_style()),
             })?;
+        let stats = *outcome.stats();
         self.observe_eval_cache(&outcome);
-        self.native_drv_closure_from_outcome(outcome)
+        Ok((self.native_drv_closure_from_outcome(outcome)?, stats))
     }
 
     fn native_drv_closure_from_outcome(&self, outcome: EvalOutcome) -> Result<NativeDrvClosure> {
@@ -733,6 +794,21 @@ impl NixNative {
             );
         }
     }
+}
+
+fn json_string_from_outcome(outcome: &EvalOutcome) -> Result<String> {
+    let string = outcome
+        .heap()
+        .get_string(outcome.value())
+        .map_err(|source| NativeEvalError::Internal {
+            message: format!("JSON renderer returned a non-string value: {source}"),
+        })?;
+    String::from_utf8(string.bytes().to_vec()).map_err(|source| {
+        NativeEvalError::Internal {
+            message: format!("JSON renderer returned non-UTF-8 bytes: {source}"),
+        }
+        .into()
+    })
 }
 
 fn native_source_file(file: &Path, options: &TreeWalkOptions) -> Result<PathBuf> {
