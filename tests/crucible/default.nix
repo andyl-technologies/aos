@@ -612,6 +612,11 @@ in {
       attrPath = "checks.crucible.phase4.faultModelRule";
       taskIds = ["T-FAULT-2"];
     };
+    faultDecisionRng = import ./phase4-fault-decision-rng.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.faultDecisionRng";
+      taskIds = ["T-FAULT-3"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
