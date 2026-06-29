@@ -4117,6 +4117,31 @@ pub enum BlockFault {
         /// Maximum integer virtual-time reorder window.
         window: FaultDuration,
     },
+    /// Emit a duplicate block completion with a fixed basis-point probability.
+    Duplicate {
+        /// Block device affected by duplication.
+        device: DeviceId,
+        /// Duplicate probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Integer virtual-time gap before the duplicate delivery.
+        gap: FaultDuration,
+    },
+    /// Corrupt block response bytes by flipping seeded payload bits.
+    Corruption {
+        /// Block device affected by corruption.
+        device: DeviceId,
+        /// Corruption probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Maximum number of response bits to flip.
+        bit_flips: u32,
+    },
+    /// Cap block transfer throughput with an integer bandwidth limit.
+    Bandwidth {
+        /// Block device affected by the cap.
+        device: DeviceId,
+        /// Integer bits-per-virtual-second limit.
+        limit: FaultBandwidthBitsPerSecond,
+    },
 }
 
 impl BlockFault {
@@ -4127,6 +4152,9 @@ impl BlockFault {
             Self::Latency { .. } => "block.latency",
             Self::Failure { .. } => "block.failure",
             Self::Reorder { .. } => "block.reorder",
+            Self::Duplicate { .. } => "block.duplicate",
+            Self::Corruption { .. } => "block.corruption.bit-flip",
+            Self::Bandwidth { .. } => "block.bandwidth",
         }
     }
 
@@ -4153,6 +4181,26 @@ impl BlockFault {
                 fault_device_material(device),
                 window.nanos()
             ),
+            Self::Duplicate { device, rate, gap } => format!(
+                "kind=block.duplicate\n{}\nrate_basis_points={}\ngap_nanos={}",
+                fault_device_material(device),
+                rate.basis_points(),
+                gap.nanos()
+            ),
+            Self::Corruption {
+                device,
+                rate,
+                bit_flips,
+            } => format!(
+                "kind=block.corruption.bit-flip\n{}\nrate_basis_points={}\nbit_flips={bit_flips}",
+                fault_device_material(device),
+                rate.basis_points()
+            ),
+            Self::Bandwidth { device, limit } => format!(
+                "kind=block.bandwidth\n{}\nbits_per_second={}",
+                fault_device_material(device),
+                limit.bits_per_second()
+            ),
         }
     }
 }
@@ -4178,6 +4226,38 @@ pub enum NinePFault {
         /// Errno returned by the failed operation.
         errno: NinePErrno,
     },
+    /// Reorder 9p completions inside an integer virtual-time window.
+    Reorder {
+        /// 9p device affected by reordering.
+        device: DeviceId,
+        /// Maximum integer virtual-time reorder window.
+        window: FaultDuration,
+    },
+    /// Emit a duplicate 9p reply with a fixed basis-point probability.
+    Duplicate {
+        /// 9p device affected by duplication.
+        device: DeviceId,
+        /// Duplicate probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Integer virtual-time gap before the duplicate delivery.
+        gap: FaultDuration,
+    },
+    /// Corrupt 9p reply bytes by flipping seeded payload bits.
+    Corruption {
+        /// 9p device affected by corruption.
+        device: DeviceId,
+        /// Corruption probability in basis points.
+        rate: FaultRateBasisPoints,
+        /// Maximum number of response bits to flip.
+        bit_flips: u32,
+    },
+    /// Cap 9p transfer throughput with an integer bandwidth limit.
+    Bandwidth {
+        /// 9p device affected by the cap.
+        device: DeviceId,
+        /// Integer bits-per-virtual-second limit.
+        limit: FaultBandwidthBitsPerSecond,
+    },
 }
 
 impl NinePFault {
@@ -4187,6 +4267,10 @@ impl NinePFault {
         match self {
             Self::Latency { .. } => "9p.latency",
             Self::Failure { .. } => "9p.failure",
+            Self::Reorder { .. } => "9p.reorder",
+            Self::Duplicate { .. } => "9p.duplicate",
+            Self::Corruption { .. } => "9p.corruption.bit-flip",
+            Self::Bandwidth { .. } => "9p.bandwidth",
         }
     }
 
@@ -4211,6 +4295,31 @@ impl NinePFault {
                 fault_device_material(device),
                 rate.basis_points(),
                 errno.code()
+            ),
+            Self::Reorder { device, window } => format!(
+                "kind=9p.reorder\n{}\nwindow_nanos={}",
+                fault_device_material(device),
+                window.nanos()
+            ),
+            Self::Duplicate { device, rate, gap } => format!(
+                "kind=9p.duplicate\n{}\nrate_basis_points={}\ngap_nanos={}",
+                fault_device_material(device),
+                rate.basis_points(),
+                gap.nanos()
+            ),
+            Self::Corruption {
+                device,
+                rate,
+                bit_flips,
+            } => format!(
+                "kind=9p.corruption.bit-flip\n{}\nrate_basis_points={}\nbit_flips={bit_flips}",
+                fault_device_material(device),
+                rate.basis_points()
+            ),
+            Self::Bandwidth { device, limit } => format!(
+                "kind=9p.bandwidth\n{}\nbits_per_second={}",
+                fault_device_material(device),
+                limit.bits_per_second()
             ),
         }
     }
@@ -4340,6 +4449,15 @@ pub struct CombinedNetworkCorruptionFault {
     pub strategies: Vec<NetworkCorruptionFault>,
 }
 
+/// The effective bit-flip corruption rule for one I/O device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CombinedIoCorruptionFault {
+    /// Highest active corruption rate.
+    pub rate: FaultRateBasisPoints,
+    /// Maximum active bit-flip count at the selected rate.
+    pub bit_flips: u32,
+}
+
 /// Combined node/runtime effects for one node.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CombinedNodeFaults {
@@ -4372,11 +4490,18 @@ pub struct CombinedBlockFaults {
     pub failure_mode: Option<IoFailureMode>,
     /// Widest active block reorder window.
     pub reorder_window: Option<FaultDuration>,
+    /// Highest-rate active block duplicate fault.
+    pub duplicate: Option<CombinedDuplicateFault>,
+    /// Highest-rate active block bit-flip corruption fault.
+    pub corruption: Option<CombinedIoCorruptionFault>,
+    /// Active bandwidth limits, all contributing integer serialization delay.
+    pub bandwidth_limits: Vec<FaultBandwidthBitsPerSecond>,
 }
 
 impl CombinedBlockFaults {
     fn finish(&mut self) {
         sort_rates_highest_first(&mut self.failure_rates);
+        self.bandwidth_limits.sort();
     }
 }
 
@@ -4389,6 +4514,14 @@ pub struct CombinedNinePFaults {
     pub latency_jitter: FaultDuration,
     /// Failure choices evaluated highest-rate-first for the any-fires rule.
     pub failures: Vec<CombinedNinePFailureFault>,
+    /// Widest active 9p reorder window.
+    pub reorder_window: Option<FaultDuration>,
+    /// Highest-rate active 9p duplicate fault.
+    pub duplicate: Option<CombinedDuplicateFault>,
+    /// Highest-rate active 9p bit-flip corruption fault.
+    pub corruption: Option<CombinedIoCorruptionFault>,
+    /// Active bandwidth limits, all contributing integer serialization delay.
+    pub bandwidth_limits: Vec<FaultBandwidthBitsPerSecond>,
 }
 
 /// One 9p failure choice kept with its errno payload.
@@ -4408,6 +4541,7 @@ impl CombinedNinePFaults {
                 .cmp(&left.rate)
                 .then_with(|| left.errno.cmp(&right.errno))
         });
+        self.bandwidth_limits.sort();
     }
 }
 
@@ -4524,6 +4658,39 @@ fn combine_block_fault(combined: &mut BTreeMap<DeviceId, CombinedBlockFaults>, f
             let entry = combined.entry(device.clone()).or_default();
             entry.reorder_window = Some(max_duration(entry.reorder_window, *window));
         }
+        BlockFault::Duplicate { device, rate, gap } => {
+            let entry = combined.entry(device.clone()).or_default();
+            let candidate = CombinedDuplicateFault {
+                rate: *rate,
+                gap: *gap,
+            };
+            entry.duplicate = Some(match entry.duplicate {
+                Some(current) => max_duplicate(current, candidate),
+                None => candidate,
+            });
+        }
+        BlockFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => {
+            let entry = combined.entry(device.clone()).or_default();
+            let candidate = CombinedIoCorruptionFault {
+                rate: *rate,
+                bit_flips: *bit_flips,
+            };
+            entry.corruption = Some(match entry.corruption {
+                Some(current) => max_io_corruption(current, candidate),
+                None => candidate,
+            });
+        }
+        BlockFault::Bandwidth { device, limit } => {
+            combined
+                .entry(device.clone())
+                .or_default()
+                .bandwidth_limits
+                .push(*limit);
+        }
     }
 }
 
@@ -4549,6 +4716,43 @@ fn combine_ninep_fault(combined: &mut BTreeMap<DeviceId, CombinedNinePFaults>, f
                 errno: *errno,
             });
         }
+        NinePFault::Reorder { device, window } => {
+            let entry = combined.entry(device.clone()).or_default();
+            entry.reorder_window = Some(max_duration(entry.reorder_window, *window));
+        }
+        NinePFault::Duplicate { device, rate, gap } => {
+            let entry = combined.entry(device.clone()).or_default();
+            let candidate = CombinedDuplicateFault {
+                rate: *rate,
+                gap: *gap,
+            };
+            entry.duplicate = Some(match entry.duplicate {
+                Some(current) => max_duplicate(current, candidate),
+                None => candidate,
+            });
+        }
+        NinePFault::Corruption {
+            device,
+            rate,
+            bit_flips,
+        } => {
+            let entry = combined.entry(device.clone()).or_default();
+            let candidate = CombinedIoCorruptionFault {
+                rate: *rate,
+                bit_flips: *bit_flips,
+            };
+            entry.corruption = Some(match entry.corruption {
+                Some(current) => max_io_corruption(current, candidate),
+                None => candidate,
+            });
+        }
+        NinePFault::Bandwidth { device, limit } => {
+            combined
+                .entry(device.clone())
+                .or_default()
+                .bandwidth_limits
+                .push(*limit);
+        }
     }
 }
 
@@ -4563,6 +4767,17 @@ fn max_duplicate(
     match candidate.rate.cmp(&current.rate) {
         std::cmp::Ordering::Greater => candidate,
         std::cmp::Ordering::Equal if candidate.gap > current.gap => candidate,
+        _ => current,
+    }
+}
+
+fn max_io_corruption(
+    current: CombinedIoCorruptionFault,
+    candidate: CombinedIoCorruptionFault,
+) -> CombinedIoCorruptionFault {
+    match candidate.rate.cmp(&current.rate) {
+        std::cmp::Ordering::Greater => candidate,
+        std::cmp::Ordering::Equal if candidate.bit_flips > current.bit_flips => candidate,
         _ => current,
     }
 }

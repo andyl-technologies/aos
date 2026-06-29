@@ -433,7 +433,7 @@ impl BlockDevice {
             full_pages: self.overlay.all_pages().clone(),
             dirty: self.overlay.dirty_pages().clone(),
             latency: self.latency,
-            faults: self.faults,
+            faults: self.faults.clone(),
             rng_position: self.rng_position,
         }
     }
@@ -506,7 +506,7 @@ impl BlockDevice {
             latency: snapshot.latency,
             // Restore the active fault table so post-restore completions are
             // perturbed identically ([IO-26]); omitting it would silently diverge.
-            faults: snapshot.faults,
+            faults: snapshot.faults.clone(),
             rng_position: snapshot.rng_position,
         })
     }

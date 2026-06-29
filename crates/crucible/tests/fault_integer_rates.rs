@@ -109,10 +109,44 @@ fn fault_canonical_material_uses_integer_rate_time_and_bandwidth_units() {
             rate: rate(10_000),
             mode: IoFailureMode::ErrorStatus,
         }),
+        Fault::Block(BlockFault::Duplicate {
+            device: device("disk0"),
+            rate: rate(125),
+            gap: duration(9),
+        }),
+        Fault::Block(BlockFault::Corruption {
+            device: device("disk0"),
+            rate: rate(250),
+            bit_flips: 3,
+        }),
+        Fault::Block(BlockFault::Bandwidth {
+            device: device("disk0"),
+            limit: FaultBandwidthBitsPerSecond::new(2_000_000)
+                .unwrap_or_else(|error| panic!("test bandwidth should be valid: {error}")),
+        }),
         Fault::NineP(NinePFault::Failure {
             device: device("fs0"),
             rate: rate(750),
             errno: NinePErrno::EIO,
+        }),
+        Fault::NineP(NinePFault::Reorder {
+            device: device("fs0"),
+            window: duration(11),
+        }),
+        Fault::NineP(NinePFault::Duplicate {
+            device: device("fs0"),
+            rate: rate(375),
+            gap: duration(13),
+        }),
+        Fault::NineP(NinePFault::Corruption {
+            device: device("fs0"),
+            rate: rate(500),
+            bit_flips: 4,
+        }),
+        Fault::NineP(NinePFault::Bandwidth {
+            device: device("fs0"),
+            limit: FaultBandwidthBitsPerSecond::new(3_000_000)
+                .unwrap_or_else(|error| panic!("test bandwidth should be valid: {error}")),
         }),
     ];
 

@@ -1243,9 +1243,9 @@ mod tests {
             ..IoFaults::none()
         };
         let mut a = device();
-        a.set_faults(faults);
+        a.set_faults(faults.clone());
         let mut b = device();
-        b.set_faults(faults);
+        b.set_faults(faults.clone());
         let oa = resolve_reply(&mut a, 5, vec![7; 8]);
         let ob = resolve_reply(&mut b, 5, vec![7; 8]);
         assert_eq!(oa, ob, "same seed + same inputs => identical outcome");

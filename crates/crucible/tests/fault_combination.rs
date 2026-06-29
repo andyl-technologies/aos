@@ -140,12 +140,77 @@ fn block_and_9p_faults_follow_the_rfc_combination_table() {
     assert_eq!(block.failure_rates, vec![rate(8_000), rate(1_000)]);
     assert_eq!(block.failure_mode, Some(IoFailureMode::Drop));
     assert_eq!(block.reorder_window, Some(duration(90)));
+    assert_eq!(
+        block
+            .duplicate
+            .unwrap_or_else(|| panic!("block duplicate should be active"))
+            .rate,
+        rate(7_000)
+    );
+    assert_eq!(
+        block
+            .duplicate
+            .unwrap_or_else(|| panic!("block duplicate should be active"))
+            .gap,
+        duration(5)
+    );
+    assert_eq!(
+        block
+            .corruption
+            .unwrap_or_else(|| panic!("block corruption should be active"))
+            .rate,
+        rate(6_500)
+    );
+    assert_eq!(
+        block
+            .corruption
+            .unwrap_or_else(|| panic!("block corruption should be active"))
+            .bit_flips,
+        4
+    );
+    assert_eq!(
+        block.bandwidth_limits,
+        vec![bandwidth(500), bandwidth(1_500)]
+    );
 
     assert_eq!(ninep.latency_extra, duration(12));
     assert_eq!(ninep.latency_jitter, duration(6));
     assert_eq!(
         ninep.failures,
         vec![ninep_failure(6_000, 5), ninep_failure(2_000, 13)]
+    );
+    assert_eq!(ninep.reorder_window, Some(duration(33)));
+    assert_eq!(
+        ninep
+            .duplicate
+            .unwrap_or_else(|| panic!("9p duplicate should be active"))
+            .rate,
+        rate(5_500)
+    );
+    assert_eq!(
+        ninep
+            .duplicate
+            .unwrap_or_else(|| panic!("9p duplicate should be active"))
+            .gap,
+        duration(8)
+    );
+    assert_eq!(
+        ninep
+            .corruption
+            .unwrap_or_else(|| panic!("9p corruption should be active"))
+            .rate,
+        rate(3_500)
+    );
+    assert_eq!(
+        ninep
+            .corruption
+            .unwrap_or_else(|| panic!("9p corruption should be active"))
+            .bit_flips,
+        9
+    );
+    assert_eq!(
+        ninep.bandwidth_limits,
+        vec![bandwidth(3_000), bandwidth(4_000)]
     );
 
     assert_eq!(second_block.latency_extra, duration(77));
@@ -297,6 +362,34 @@ fn sample_faults() -> Vec<Fault> {
             device: device("disk0"),
             window: duration(90),
         }),
+        Fault::Block(BlockFault::Duplicate {
+            device: device("disk0"),
+            rate: rate(7_000),
+            gap: duration(2),
+        }),
+        Fault::Block(BlockFault::Duplicate {
+            device: device("disk0"),
+            rate: rate(7_000),
+            gap: duration(5),
+        }),
+        Fault::Block(BlockFault::Corruption {
+            device: device("disk0"),
+            rate: rate(6_500),
+            bit_flips: 2,
+        }),
+        Fault::Block(BlockFault::Corruption {
+            device: device("disk0"),
+            rate: rate(6_500),
+            bit_flips: 4,
+        }),
+        Fault::Block(BlockFault::Bandwidth {
+            device: device("disk0"),
+            limit: bandwidth(1_500),
+        }),
+        Fault::Block(BlockFault::Bandwidth {
+            device: device("disk0"),
+            limit: bandwidth(500),
+        }),
         Fault::Block(BlockFault::Latency {
             device: device("disk1"),
             extra: duration(77),
@@ -326,6 +419,42 @@ fn sample_faults() -> Vec<Fault> {
             device: device("fs0"),
             rate: rate(2_000),
             errno: errno(13),
+        }),
+        Fault::NineP(NinePFault::Reorder {
+            device: device("fs0"),
+            window: duration(21),
+        }),
+        Fault::NineP(NinePFault::Reorder {
+            device: device("fs0"),
+            window: duration(33),
+        }),
+        Fault::NineP(NinePFault::Duplicate {
+            device: device("fs0"),
+            rate: rate(5_500),
+            gap: duration(3),
+        }),
+        Fault::NineP(NinePFault::Duplicate {
+            device: device("fs0"),
+            rate: rate(5_500),
+            gap: duration(8),
+        }),
+        Fault::NineP(NinePFault::Corruption {
+            device: device("fs0"),
+            rate: rate(3_500),
+            bit_flips: 6,
+        }),
+        Fault::NineP(NinePFault::Corruption {
+            device: device("fs0"),
+            rate: rate(3_500),
+            bit_flips: 9,
+        }),
+        Fault::NineP(NinePFault::Bandwidth {
+            device: device("fs0"),
+            limit: bandwidth(4_000),
+        }),
+        Fault::NineP(NinePFault::Bandwidth {
+            device: device("fs0"),
+            limit: bandwidth(3_000),
         }),
         Fault::NineP(NinePFault::Latency {
             device: device("fs1"),

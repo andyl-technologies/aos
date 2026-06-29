@@ -54,8 +54,12 @@
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
 //! ```
 
+use std::collections::BTreeSet;
+
+use crucible_device::ninep::codec as ninep_codec;
 use crucible_device::{
-    BlockDevice, BlockRequest, DeviceError, NinepDevice, PendingResponse, ResponseStatus,
+    BlockDevice, BlockRequest, BlockResponse, DeviceError, IoFaults, NinepDevice, PendingResponse,
+    ResponseStatus,
 };
 
 use crate::scheduler::{IoCompletion, SchedulerDiscardedIoCompletion};
@@ -71,6 +75,8 @@ use crate::{
 /// sequential request counts from the device core, so OR-ing this top bit places
 /// every duplicate in a disjoint namespace.
 const DUPLICATE_SEQ_NAMESPACE: u32 = 1 << 31;
+
+type ModeledKey = (u64, u32, u32);
 
 /// One modeled (pre-fault) completion the device COMPUTEd, ordered by its
 /// modeled delivery key. Fault resolution is a pure function of the *sorted* set
@@ -89,21 +95,58 @@ struct ModeledCompletion {
     payload: Vec<u8>,
 }
 
+impl ModeledCompletion {
+    fn key(&self) -> ModeledKey {
+        (self.modeled_icount, self.src_node, self.seq)
+    }
+}
+
 /// One pending device completion: its final delivery icount, payload, and the
 /// fault decisions it drew (recorded at RESOLVE, [SCHED-30]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingCompletion {
+    /// The modeled completion this resolved item came from.
+    modeled_key: ModeledKey,
     /// The post-fault icount at which the response becomes visible ([IO-2]).
     delivery_icount: u64,
     /// The source-node id stamped into the delivery order key.
     src_node: u32,
     /// The per-completion sequence number, breaking same-icount ties.
     seq: u32,
-    /// The deterministic response payload.
-    payload: Vec<u8>,
+    /// The deterministic response payload, or `None` for a drop-mode failure.
+    payload: Option<Vec<u8>>,
     /// The fault [`Decision`]s this completion drew, recorded at RESOLVE in
     /// delivery order ([SCHED-30]).
     decisions: Vec<Decision>,
+    /// Whether this item has already been drained through RESOLVE.
+    delivered: bool,
+}
+
+impl PendingCompletion {
+    fn delivery_key(&self) -> (u64, u32, u32) {
+        (self.delivery_icount, self.src_node, self.seq)
+    }
+}
+
+/// One due item drained from a device scheduling sub-node.
+///
+/// Most items carry a visible [`IoCompletion`]. Drop-mode block failures carry
+/// only the buffered fault decisions so the schedule records the deterministic
+/// fault choice without fabricating a VM-visible response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceDelivery {
+    /// The exact device icount at which this delivery item resolves.
+    pub delivery_icount: u64,
+    /// The scheduling sub-node that produced this delivery item.
+    pub sub_node: SchedulerNodeId,
+    /// The source-node id stamped into the device delivery order key.
+    pub source_node: u32,
+    /// The per-completion sequence stamped into the device delivery order key.
+    pub sequence: u32,
+    /// The completion emitted to the target VM, if the response was not dropped.
+    pub completion: Option<IoCompletion>,
+    /// The fault decisions this due item drew, recorded at RESOLVE.
+    pub decisions: Vec<Decision>,
 }
 
 /// A disk/9p device modeled as a first-class scheduling sub-node ([IO-1]).
@@ -131,8 +174,11 @@ pub struct DeviceSchedulingSubNode {
     /// order, recomputed whenever [`modeled`] grows. Ordered by
     /// `(delivery_icount, src_node, seq)`.
     resolved: Vec<PendingCompletion>,
-    /// The index of the next not-yet-delivered entry in [`resolved`].
-    next_delivery: usize,
+    /// Modeled completions whose resolved outcomes must not be recomputed after
+    /// at least one delivery has become visible.
+    frozen_modeled: BTreeSet<ModeledKey>,
+    /// Device RNG position after every frozen modeled completion.
+    frozen_rng_position: Option<u64>,
     /// The device RNG cursor after resolving every modeled completion ([IO-23]).
     rng_position: u64,
 }
@@ -160,7 +206,8 @@ impl DeviceSchedulingSubNode {
             seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
-            next_delivery: 0,
+            frozen_modeled: BTreeSet::new(),
+            frozen_rng_position: None,
             rng_position: 0,
         }
     }
@@ -189,7 +236,8 @@ impl DeviceSchedulingSubNode {
             seed,
             modeled: Vec::new(),
             resolved: Vec::new(),
-            next_delivery: 0,
+            frozen_modeled: BTreeSet::new(),
+            frozen_rng_position: None,
             rng_position: 0,
         }
     }
@@ -216,6 +264,26 @@ impl DeviceSchedulingSubNode {
     #[must_use]
     pub fn rng_position(&self) -> u64 {
         self.rng_position
+    }
+
+    /// Returns the active I/O fault table installed on this sub-node.
+    #[must_use]
+    pub fn io_faults(&self) -> &IoFaults {
+        self.device.faults()
+    }
+
+    /// Installs an active I/O fault table on this sub-node.
+    ///
+    /// Existing modeled completions are recomputed immediately so the in-flight
+    /// horizon and RESOLVE delivery reflect the live fault set.
+    pub fn set_io_faults(&mut self, faults: IoFaults) {
+        self.device.set_faults(faults);
+        if self.resolved.iter().any(|completion| completion.delivered) {
+            self.frozen_modeled
+                .extend(self.modeled.iter().map(ModeledCompletion::key));
+            self.frozen_rng_position = Some(self.rng_position);
+        }
+        self.resolve_all();
     }
 
     /// Returns a shared view of the held block device, when this is a disk sub-node.
@@ -340,15 +408,42 @@ impl DeviceSchedulingSubNode {
     /// the requests were submitted. Already-delivered completions are preserved at
     /// their cursor so a recompute after a partial delivery never re-emits them.
     fn resolve_all(&mut self) {
-        let mut rng = crate::device::device_rng(self.seed, &self.device_id, 0);
+        if self.resolved.iter().any(|completion| completion.delivered) {
+            let has_unfrozen_resolved = self
+                .resolved
+                .iter()
+                .any(|completion| !self.frozen_modeled.contains(&completion.modeled_key));
+            if has_unfrozen_resolved || self.frozen_rng_position.is_none() {
+                self.frozen_modeled.extend(
+                    self.resolved
+                        .iter()
+                        .map(|completion| completion.modeled_key),
+                );
+                self.frozen_rng_position = Some(self.rng_position);
+            }
+        }
+
+        let mut rng = crate::device::device_rng(
+            self.seed,
+            &self.device_id,
+            self.frozen_rng_position.unwrap_or(0),
+        );
         let stream = crate::device::device_stream_id(&self.device_id);
-        let mut resolved: Vec<PendingCompletion> = Vec::new();
+        let mut resolved = self
+            .resolved
+            .iter()
+            .filter(|completion| self.frozen_modeled.contains(&completion.modeled_key))
+            .cloned()
+            .collect::<Vec<_>>();
         for modeled in self.modeled.clone() {
+            if self.frozen_modeled.contains(&modeled.key()) {
+                continue;
+            }
             let before = rng.position();
             let outcome = self.device.resolve_response(
                 modeled.modeled_icount,
                 modeled.status,
-                modeled.payload,
+                modeled.payload.clone(),
                 &mut rng,
             );
             let after = rng.position();
@@ -388,15 +483,32 @@ impl DeviceSchedulingSubNode {
                 outcome.corrupt_fired,
             );
 
+            let primary_payload = if outcome.dropped {
+                None
+            } else {
+                Some(self.device.resolved_payload(
+                    &modeled.payload,
+                    &outcome.primary,
+                    outcome.failure_errno,
+                ))
+            };
             resolved.push(PendingCompletion {
+                modeled_key: modeled.key(),
                 delivery_icount: outcome.primary.delivery_icount,
                 src_node: modeled.src_node,
                 seq: modeled.seq,
-                payload: outcome.primary.payload,
+                payload: primary_payload,
                 decisions,
+                delivered: false,
             });
             if let Some(duplicate) = outcome.duplicate {
+                let payload = self.device.resolved_payload(
+                    &modeled.payload,
+                    &duplicate,
+                    outcome.failure_errno,
+                );
                 resolved.push(PendingCompletion {
+                    modeled_key: modeled.key(),
                     delivery_icount: duplicate.delivery_icount,
                     src_node: modeled.src_node,
                     // Duplicates live in a SEPARATE high-bit tie-break namespace
@@ -406,18 +518,13 @@ impl DeviceSchedulingSubNode {
                     // same-icount completions, so the namespace bit is harmless to
                     // ordering while guaranteeing uniqueness.
                     seq: modeled.seq | DUPLICATE_SEQ_NAMESPACE,
-                    payload: duplicate.payload,
+                    payload: Some(payload),
                     decisions: Vec::new(),
+                    delivered: false,
                 });
             }
         }
-        resolved.sort_by(|left, right| {
-            (left.delivery_icount, left.src_node, left.seq).cmp(&(
-                right.delivery_icount,
-                right.src_node,
-                right.seq,
-            ))
-        });
+        resolved.sort_by_key(PendingCompletion::delivery_key);
         self.rng_position = rng.position();
         self.resolved = resolved;
     }
@@ -432,7 +539,8 @@ impl DeviceSchedulingSubNode {
     #[must_use]
     pub fn next_exact_local_event(&self) -> Option<u64> {
         self.resolved
-            .get(self.next_delivery)
+            .iter()
+            .find(|completion| !completion.delivered)
             .map(|head| head.delivery_icount)
     }
 
@@ -450,22 +558,32 @@ impl DeviceSchedulingSubNode {
     ///
     /// Returns the `(event, decisions)` pairs in delivery order.
     #[must_use]
-    pub fn deliver_due(&mut self, consumer_icount: u64) -> Vec<(IoCompletion, Vec<Decision>)> {
+    pub fn deliver_due(&mut self, consumer_icount: u64) -> Vec<DeviceDelivery> {
         let mut delivered = Vec::new();
-        while let Some(completion) = self.resolved.get(self.next_delivery) {
+        for completion in &mut self.resolved {
+            if completion.delivered {
+                continue;
+            }
             if completion.delivery_icount > consumer_icount {
                 break;
             }
-            let event = IoCompletion {
+            let event = completion.payload.as_ref().map(|payload| IoCompletion {
                 sub_node: self.sub_node.clone(),
                 target: self.target.clone(),
                 delivery_icount: crate::Icount {
                     retired: completion.delivery_icount,
                 },
-                payload: completion.payload.clone(),
-            };
-            delivered.push((event, completion.decisions.clone()));
-            self.next_delivery += 1;
+                payload: payload.clone(),
+            });
+            delivered.push(DeviceDelivery {
+                delivery_icount: completion.delivery_icount,
+                sub_node: self.sub_node.clone(),
+                source_node: completion.src_node,
+                sequence: completion.seq,
+                completion: event,
+                decisions: completion.decisions.clone(),
+            });
+            completion.delivered = true;
         }
         delivered
     }
@@ -480,21 +598,27 @@ impl DeviceSchedulingSubNode {
         let discarded = self
             .resolved
             .iter()
-            .skip(self.next_delivery)
-            .map(|completion| SchedulerDiscardedIoCompletion {
-                sub_node: self.sub_node.clone(),
-                target: self.target.clone(),
-                delivery_icount: crate::Icount {
-                    retired: completion.delivery_icount,
-                },
-                source_node: completion.src_node,
-                sequence: completion.seq,
-                payload: completion.payload.clone(),
+            .filter(|completion| !completion.delivered)
+            .filter_map(|completion| {
+                completion
+                    .payload
+                    .as_ref()
+                    .map(|payload| SchedulerDiscardedIoCompletion {
+                        sub_node: self.sub_node.clone(),
+                        target: self.target.clone(),
+                        delivery_icount: crate::Icount {
+                            retired: completion.delivery_icount,
+                        },
+                        source_node: completion.src_node,
+                        sequence: completion.seq,
+                        payload: payload.clone(),
+                    })
             })
             .collect::<Vec<_>>();
         self.modeled.clear();
         self.resolved.clear();
-        self.next_delivery = 0;
+        self.frozen_modeled.clear();
+        self.frozen_rng_position = None;
         self.device.discard_inflight();
         discarded
     }
@@ -556,6 +680,22 @@ impl ScheduledDevice {
         }
     }
 
+    /// Returns the held device's active I/O fault table.
+    fn faults(&self) -> &IoFaults {
+        match self {
+            ScheduledDevice::Block(device) => device.faults(),
+            ScheduledDevice::Ninep(device) => device.faults(),
+        }
+    }
+
+    /// Installs an active I/O fault table on the held device.
+    fn set_faults(&mut self, faults: IoFaults) {
+        match self {
+            ScheduledDevice::Block(device) => device.set_faults(faults),
+            ScheduledDevice::Ninep(device) => device.set_faults(faults),
+        }
+    }
+
     /// Resolves a modeled response through the held device's active fault table.
     fn resolve_response(
         &mut self,
@@ -573,6 +713,38 @@ impl ScheduledDevice {
             }
         }
     }
+
+    /// Re-encodes a protocol-native error payload when a failure fault fires.
+    fn resolved_payload(
+        &self,
+        modeled_payload: &[u8],
+        outcome: &crucible_device::ResolvedResponse,
+        failure_errno: Option<u32>,
+    ) -> Vec<u8> {
+        if outcome.status != ResponseStatus::Error || failure_errno.is_none() {
+            return outcome.payload.clone();
+        }
+
+        match self {
+            ScheduledDevice::Block(_) => {
+                block_error_payload(modeled_payload).unwrap_or_else(|| outcome.payload.clone())
+            }
+            ScheduledDevice::Ninep(_) => ninep_error_payload(modeled_payload, failure_errno)
+                .unwrap_or_else(|| outcome.payload.clone()),
+        }
+    }
+}
+
+fn block_error_payload(modeled_payload: &[u8]) -> Option<Vec<u8>> {
+    let response = BlockResponse::decode(modeled_payload).ok()?;
+    BlockResponse::error(response.request_id).encode().ok()
+}
+
+fn ninep_error_payload(modeled_payload: &[u8], failure_errno: Option<u32>) -> Option<Vec<u8>> {
+    let errno = failure_errno?;
+    let tag_bytes = modeled_payload.get(5..7)?;
+    let tag = u16::from_le_bytes([tag_bytes[0], tag_bytes[1]]);
+    ninep_codec::encode_rlerror(tag, errno).ok()
 }
 
 /// Pushes a [`Decision::FaultFires`] for one I/O fault kind that could fire.
@@ -734,7 +906,10 @@ mod tests {
         // At exactly the delivery icount: the completion becomes visible.
         let delivered = disk.deliver_due(delivery);
         assert_eq!(delivered.len(), 1);
-        let (event, _decisions) = &delivered[0];
+        let event = delivered[0]
+            .completion
+            .as_ref()
+            .unwrap_or_else(|| panic!("fault-free delivery should emit a completion"));
         assert_eq!(event.delivery_icount.retired, delivery);
         assert_eq!(event.target, node_id("vm-a"));
         assert!(disk.next_exact_local_event().is_none());
@@ -756,7 +931,7 @@ mod tests {
             .unwrap_or_else(|| panic!("a completion must be in flight"));
         let delivered = disk.deliver_due(delivery);
         assert_eq!(delivered.len(), 1);
-        let (_event, decisions) = &delivered[0];
+        let decisions = &delivered[0].decisions;
 
         assert!(
             decisions
@@ -806,7 +981,11 @@ mod tests {
             delivered.len() >= 2,
             "duplicate fault should emit a second 9p reply"
         );
-        let (event, decisions) = &delivered[0];
+        let event = delivered[0]
+            .completion
+            .as_ref()
+            .unwrap_or_else(|| panic!("9p delivery should emit a completion"));
+        let decisions = &delivered[0].decisions;
         assert_eq!(event.delivery_icount.retired, first_delivery);
         assert_eq!(event.target, node_id("vm-a"));
         assert!(
@@ -876,7 +1055,7 @@ mod tests {
             ..IoFaults::none()
         };
         let drive = || {
-            let mut disk = fresh_disk(Seed::from_u64(0x7e57), faults);
+            let mut disk = fresh_disk(Seed::from_u64(0x7e57), faults.clone());
             for index in 0..4u64 {
                 disk.submit(index * 50, &read_request(index as u32 + 1, 0, 8))
                     .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
