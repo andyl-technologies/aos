@@ -898,6 +898,15 @@ fn persistent_static_derivation_output_paths_hit_rejects_dirty_runtime_supplier(
     assert_eq!(first.output_path_reuses, 0);
 
     let dirty_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let (final_identity, final_free_var_hashes) =
+        derivation_aterm_cache_subject(&ir, options(), dirty_runtime.clone());
+    PersistCache::open(&persist_root)
+        .expect("persistent cache opens")
+        .clear_node_materialized_value_hash(PersistNodeMetadataKey::for_expression(
+            final_identity,
+            final_free_var_hashes.iter().copied(),
+        ))
+        .expect("final ATerm side-record link clears");
     let (identity, free_var_hashes) =
         static_derivation_outputs_cache_subject(&ir, options(), dirty_runtime.clone());
     attach_dirty_memo_read_supplier(
@@ -911,6 +920,10 @@ fn persistent_static_derivation_output_paths_hit_rejects_dirty_runtime_supplier(
     assert_eq!(rejected.path, uncached.path);
     assert_eq!(rejected.aterm, uncached.aterm);
     assert_eq!(rejected.output_path_reuses, 0);
+    assert_eq!(
+        rejected.early_cutoffs, 0,
+        "rejected persistent static-output hits should not count an early cutoff"
+    );
     assert!(
         rejected.hash_calculations > 0,
         "dirty supplier should make the persistent static-output hit fall back to output hashing"

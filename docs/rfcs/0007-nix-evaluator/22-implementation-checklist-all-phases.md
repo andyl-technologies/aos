@@ -1133,14 +1133,17 @@ alone (`M-1`/`Q-A`).
       before seeding the runtime side record and reporting the seeded node to
       active memo-read observers. For new floating-CA payloads with no deferred
       input suppliers this skips both the final `.drv` text-path calculation
-      and modulo-hash recomputation on exact ATerm matches; final ATerm
-      serialization, old/no-hash payloads, deferred-input floating-CA hash
-      replay, deferred-placeholder derivations, broader dynamic dependency
-      capture beyond active memo-read side-record hits, full
+      and modulo-hash recomputation on exact ATerm matches; dirty-supplier
+      rehydration rejection falls back to normal path calculation, clears the
+      durable side-record link, and does not count an early cutoff. Final
+      ATerm serialization, old/no-hash payloads, deferred-input floating-CA
+      hash replay, deferred-placeholder derivations, broader dynamic
+      dependency capture beyond active memo-read side-record hits, full
       derivationStrict-node SHA-256/store-path early cutoff, and full
       cached/uncached `.drv` parity proof remain open. Gates: persistent
       derivation ATerm path payload round-trip, fresh-runtime path/hash-reuse,
-      and stale-ATerm mismatch plus invalid-path fallback tests (`S-14`/`S-15`).
+      and stale-ATerm mismatch, dirty-supplier, plus invalid-path fallback
+      tests (`S-14`/`S-15`).
 - [x] Current static derivation output-path reuse precursor:
       tree-walk `derivationStrict` records a crate-private side payload for
       static derivations keyed by a separate input-hash-substituted pre-output
@@ -1181,16 +1184,17 @@ alone (`M-1`/`Q-A`).
       output-set, configured-store, output-basename, and duplicate-output
       validation succeeds, seeding the runtime side record and reporting the
       seeded node to active memo-read observers. This skips the static-output
-      derivation hash/modulo work for exact pre-output matches; final ATerm
-      serialization, final
-      `.drv` path construction when no final-path side record exists,
-      deferred-placeholder derivations, broader dynamic dependency capture
-      beyond active memo-read side-record hits, full derivationStrict-node
-      SHA-256/store-path early cutoff, and full cached/uncached `.drv` parity
-      proof remain open.
-      Gates: persistent static-output payload round-trip, fresh-runtime reuse,
-      stale-pre-output mismatch fallback, and invalid-output-path fallback
-      tests (`S-14`/`S-15`).
+      derivation hash/modulo work for exact pre-output matches;
+      dirty-supplier rehydration rejection falls back to normal output hashing,
+      clears the durable side-record link, and does not count an early cutoff.
+      Final ATerm serialization, final `.drv` path construction when no
+      final-path side record exists, deferred-placeholder derivations, broader
+      dynamic dependency capture beyond active memo-read side-record hits, full
+      derivationStrict-node SHA-256/store-path early cutoff, and full
+      cached/uncached `.drv` parity proof remain open. Gates: persistent
+      static-output payload round-trip, fresh-runtime reuse, stale-pre-output
+      mismatch fallback, dirty-supplier fallback, and invalid-output-path
+      fallback tests (`S-14`/`S-15`).
 - [x] Current cached derivationStrict `.drv` surface parity canary:
       tree-walk tests compare cache-off, cache-on first-observation, and
       cache-on path-reuse runs for root static, floating-CA, and impure

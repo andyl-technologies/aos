@@ -510,6 +510,10 @@ fn persistent_derivation_aterm_path_hit_rejects_dirty_runtime_supplier() {
     assert_eq!(rejected.path, uncached.path);
     assert_eq!(rejected.aterm, uncached.aterm);
     assert_eq!(rejected.path_reuses, 0);
+    assert_eq!(
+        rejected.early_cutoffs, 0,
+        "rejected persistent ATerm path hits should not count an early cutoff"
+    );
     assert!(
         rejected.text_path_calculations > 0,
         "dirty supplier should make the persistent ATerm path hit fall back to path calculation"
