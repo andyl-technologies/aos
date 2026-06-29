@@ -951,11 +951,23 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   proving the path changes only modeled `active_faults`/causal trigger-action
   log state while the schedule, scheduler static topology, and source `World`
   topology remain unchanged.
-- [ ] **T-FAULT-3** Route every probabilistic fault decision through the single
+- [x] **T-FAULT-3** Route every probabilistic fault decision through the single
   seeded decision RNG in the scheduler's total order, fork per-link/per-device
   streams by name-hash, and record each decision as a `Decision`; prove
   replay re-applies recorded decisions without re-rolling. — satisfies [FAULT-2],
   [FAULT-11], [FAULT-12]; spec §17.3.1.
+
+  Completed by `checks.crucible.phase4.faultDecisionRng`: the scheduler RESOLVE
+  path consumes `ScheduledEventPayload::ProbabilisticFault` choices in canonical
+  event order, draws through `DecisionRecorder` seeded from the run
+  `Configuration`, appends the raw `RngDraw` and derived `FaultFires` decisions,
+  and advances per-stream cursors for those recorded draws. Link and device
+  fault streams use the name-hashed link/device RNG domains, including the
+  block/9p sub-node bridge tests that record device `RngDraw`/`FaultFires`
+  outcomes. The focused replay regressions prove recorded `FaultFires` outcomes
+  are replayed as schedule material, not by re-rolling or advancing the decision
+  RNG, and the check pins the reproduction-artifact replay test that carries
+  recorded `FaultFires`/`RngDraw` entries through offline artifact replay.
 - [ ] **T-FAULT-4** Implement integer-basis-point rates and exact integer
   Bernoulli decisions; ban floats on the determinism-relevant path and in the
   canonical `Plan` serialization; compute all delays/jitter/bandwidth in integer
