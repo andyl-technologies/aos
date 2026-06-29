@@ -3,9 +3,9 @@ After=systemd-user-sessions.service
 Description=Autologin Serial Getty on ttyS0
 
 [Service]
-Environment="PATH=/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/bin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/bin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/bin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/bin:/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/sbin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/sbin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/sbin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/sbin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<HASH>-coreutils-9.5/bin:/nix/store/<HASH>-findutils-4.10.0/bin:/nix/store/<HASH>-grep-3.11/bin:/nix/store/<HASH>-sed-4.9/bin:/nix/store/<HASH>-systemd-259.1/bin:/nix/store/<HASH>-coreutils-9.5/sbin:/nix/store/<HASH>-findutils-4.10.0/sbin:/nix/store/<HASH>-grep-3.11/sbin:/nix/store/<HASH>-sed-4.9/sbin:/nix/store/<HASH>-systemd-259.1/sbin"
 ExecStart=
-ExecStart=/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/sbin/agetty --autologin root --login-program=/nix/store/k9d6xlf020jg39y9fn37axymazrziy6j-autologin-shell/bin/autologin-shell -s ttyS0 115200 vt100
+ExecStart=/nix/store/<HASH>-util-linux-2.42.1/sbin/agetty --autologin root --login-program=/nix/store/<HASH>-autologin-shell/bin/autologin-shell -s ttyS0 115200 vt100
 Restart=always
 RestartSec=0
 SendSIGHUP=yes

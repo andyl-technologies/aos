@@ -1,4 +1,4 @@
-#!/nix/store/xjlpk0ffbq4jaqar3kgp7pnbza2x2yfy-bash-5.2.37/bin/bash
+#!/nix/store/<HASH>-bash-5.2.37/bin/bash
 # SPDX-License-Identifier: MIT
 #
 # modules/base/activate.sh.in — live install/upgrade/rollback driver.
@@ -64,9 +64,9 @@ cleanup_partial_gen() {
   # destroy the runtime /etc writes preserved from N's earlier life this boot.
   # A leftover fresh-empty upper from a never-completed new gen is harmless;
   # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
-  /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
+  /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
+  /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
+  /nix/store/<HASH>-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
                          "/run/etc/ignition-${N:-_}" 2>/dev/null || true
 }
 
@@ -102,7 +102,7 @@ if [ $# -ne 1 ]; then
   exit "$EX_PREFLIGHT"
 fi
 N=$1
-new_top=$(/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/readlink /var/lib/profiles/system/gen-${N}/toplevel)
+new_top=$(/nix/store/<HASH>-coreutils-9.5/bin/readlink /var/lib/profiles/system/gen-${N}/toplevel)
 
 sys=/run/etc/system-${N}
 ign=/run/etc/ignition-${N}
@@ -125,10 +125,10 @@ if [ ! -r /run/ignition/platform.env ]; then
 fi
 . /run/ignition/platform.env
 
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mkdir -p /run/apm
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/chmod 0700 /run/apm
+/nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/apm
+/nix/store/<HASH>-coreutils-9.5/bin/chmod 0700 /run/apm
 exec {LOCK_FD}>/run/apm/switch.lock
-if ! /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
+if ! /nix/store/<HASH>-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
   echo "activate: another system switch holds /run/apm/switch.lock" >&2
   exit "$EX_PREFLIGHT"
 fi
@@ -143,7 +143,7 @@ fi
 # ephemeral upper. Detection uses bash globbing (nullglob+dotglob) so it
 # needs no external tool; any immediate child of dir/ — file, subdir, or
 # overlay whiteout — counts as dirty.
-cur_upper=$(/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/readlink -f /run/etc/upper 2>/dev/null || true)
+cur_upper=$(/nix/store/<HASH>-coreutils-9.5/bin/readlink -f /run/etc/upper 2>/dev/null || true)
 if [ -n "$cur_upper" ] && [ -d "$cur_upper/dir" ]; then
   shopt -s nullglob dotglob
   cur_writes=("$cur_upper"/dir/*)
@@ -168,16 +168,16 @@ STAGE="$STAGE_PREPARE"
 # mounting unit; if the metadata mount was reaped, restore it here so
 # ignition's file provider can read /run/aos-metadata/config.json.)
 if [ "$PLATFORM_ID" = "file" ] && \
-   ! /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mountpoint -q /run/aos-metadata; then
-  /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mkdir -p /run/aos-metadata
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount -t iso9660 -o ro,nodev,nosuid \
+   ! /nix/store/<HASH>-util-linux-2.42.1/bin/mountpoint -q /run/aos-metadata; then
+  /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/aos-metadata
+  /nix/store/<HASH>-util-linux-2.42.1/bin/mount -t iso9660 -o ro,nodev,nosuid \
     /dev/disk/by-label/aos-metadata /run/aos-metadata
 fi
 
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount --bind \
+/nix/store/<HASH>-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
+/nix/store/<HASH>-util-linux-2.42.1/bin/mount --bind \
   "$new_top/etc-basedir" "$sys/content"
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
+/nix/store/<HASH>-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
 # Re-run ignition's fetch + files stages to render this generation's
@@ -190,19 +190,19 @@ fi
 # pkgs/boot/aos-platform-detect.nix), and ignition's file provider reads
 # it from the environment. `env` uses an absolute path so it doesn't
 # rely on the inherited PATH (which we cleared).
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/env -i \
+/nix/store/<HASH>-coreutils-9.5/bin/env -i \
     PLATFORM_ID="$PLATFORM_ID" \
     IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-    PATH="/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin" \
-  /nix/store/mzj89gcmc95w64dgl0z6x82gcbx5i1zv-ignition-2.25.1/bin/ignition --root="$ign" \
+    PATH="/nix/store/<HASH>-coreutils-9.5/bin" \
+  /nix/store/<HASH>-ignition-2.25.1/bin/ignition --root="$ign" \
                           --config-cache="/run/aos-ignition-$N.json" \
                           --platform="$PLATFORM_ID" --stage=fetch \
                           --log-to-stdout
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/env -i \
+/nix/store/<HASH>-coreutils-9.5/bin/env -i \
     PLATFORM_ID="$PLATFORM_ID" \
     IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-    PATH="/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin" \
-  /nix/store/mzj89gcmc95w64dgl0z6x82gcbx5i1zv-ignition-2.25.1/bin/ignition --root="$ign" \
+    PATH="/nix/store/<HASH>-coreutils-9.5/bin" \
+  /nix/store/<HASH>-ignition-2.25.1/bin/ignition --root="$ign" \
                           --config-cache="/run/aos-ignition-$N.json" \
                           --platform="$PLATFORM_ID" --stage=files \
                           --log-to-stdout
@@ -228,15 +228,15 @@ STAGE="$STAGE_COMPOSE"
 # /var/etc (a shared lower in every generation's overlay); the upper holds
 # only writes that escaped that allowlist, and it is wiped on reboot
 # (tmpfs) regardless.
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
+/nix/store/<HASH>-coreutils-9.5/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
 
-tmpEtc=$(/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
+tmpEtc=$(/nix/store/<HASH>-coreutils-9.5/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
+/nix/store/<HASH>-util-linux-2.42.1/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
 
 # The overlay option string must contain no spaces; the continuation
 # lines below are intentionally NOT indented so the `\`-joined value
 # stays comma-separated with no embedded whitespace.
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount -t overlay overlay -o \
+/nix/store/<HASH>-util-linux-2.42.1/bin/mount -t overlay overlay -o \
 nodev,nosuid,metacopy=on,redirect_dir=on,\
 lowerdir+=/var/etc,\
 lowerdir+="$ign/etc",\
@@ -252,13 +252,13 @@ workdir="$upper_root/work" \
 # command's only stdout; diagnostics go to stderr via Printer.
 STAGE="$STAGE_PRESWAP"
 set +e
-# Invoke the UNWRAPPED binary directly, not /nix/store/azzd4qyybicvg2ck0wxsrv9601c2sm6d-aos-0.1.0/bin/apm. The `apm` wrapper
+# Invoke the UNWRAPPED binary directly, not /nix/store/<HASH>-aos-0.1.0/bin/apm. The `apm` wrapper
 # runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
 # but this script runs with `PATH=` (empty), so the wrapper would die with
 # "dirname: command not found". The activate subcommands do pure filesystem +
 # D-Bus work and shell out to neither git nor nix-store, so they need none of
 # the git/nix PATH the wrapper sets up.
-plan=$(/nix/store/azzd4qyybicvg2ck0wxsrv9601c2sm6d-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
+plan=$(/nix/store/<HASH>-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
   --gen="$N" \
   --candidate-etc="$tmpEtc")
 pre_rc=$?
@@ -268,7 +268,7 @@ case "$pre_rc" in
   0) ;;                                              # proceed; $plan is the plan path
   *) cleanup_partial_gen; exit "$EX_RECONCILE" ;;    # catastrophic → abort before swap
 esac
-trap '[ -n "${plan:-}" ] && /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -f "$plan" 2>/dev/null || true' EXIT
+trap '[ -n "${plan:-}" ] && /nix/store/<HASH>-coreutils-9.5/bin/rm -f "$plan" 2>/dev/null || true' EXIT
 
 # --- swap ---
 # From here a failure maps to activate exit 4 (EX_SWAP): the swap is in
@@ -280,14 +280,14 @@ STAGE="$STAGE_SWAP"
 # Carry any existing submounts under /etc into the new mount. (Operators
 # may have manually mounted things under /etc — e.g. a /etc/secrets
 # bind-mount from an encrypted volume. We preserve those.)
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/findmnt /etc --submounts --list \
+/nix/store/<HASH>-util-linux-2.42.1/bin/findmnt /etc --submounts --list \
   --noheading --kernel --output TARGET |
 while read -r mountPoint; do
   [ "$mountPoint" = /etc ] && continue
   tmp="$tmpEtc/${mountPoint#/etc/}"
-  [ -d "$mountPoint" ] && /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mkdir -p "$tmp"
-  [ -f "$mountPoint" ] && /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/touch  "$tmp"
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount --bind "$mountPoint" "$tmp"
+  [ -d "$mountPoint" ] && /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p "$tmp"
+  [ -f "$mountPoint" ] && /nix/store/<HASH>-coreutils-9.5/bin/touch  "$tmp"
+  /nix/store/<HASH>-util-linux-2.42.1/bin/mount --bind "$mountPoint" "$tmp"
 done
 
 # `mount --move --beneath` requires util-linux 2.42.1+ (pinned in
@@ -295,24 +295,24 @@ done
 # old, then the recursive lazy-umount drops the old; open fds on the old
 # layer survive until their holders close them, so daemons that
 # reconcile land on the new view and the rest drain naturally.
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/mount --move --beneath "$tmpEtc" /etc
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy --recursive /etc
-/nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy "$tmpEtc"
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rmdir "$tmpEtc"
+/nix/store/<HASH>-util-linux-2.42.1/bin/mount --move --beneath "$tmpEtc" /etc
+/nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy --recursive /etc
+/nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "$tmpEtc"
+/nix/store/<HASH>-coreutils-9.5/bin/rmdir "$tmpEtc"
 
 # Retarget inspection symlinks.
-prev_gen=$(/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/readlink /run/etc/system \
-           | /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/cut -d- -f2-)
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/ln -sfn system-${N}   /run/etc/system
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/ln -sfn ignition-${N} /run/etc/ignition
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
+prev_gen=$(/nix/store/<HASH>-coreutils-9.5/bin/readlink /run/etc/system \
+           | /nix/store/<HASH>-coreutils-9.5/bin/cut -d- -f2-)
+/nix/store/<HASH>-coreutils-9.5/bin/ln -sfn system-${N}   /run/etc/system
+/nix/store/<HASH>-coreutils-9.5/bin/ln -sfn ignition-${N} /run/etc/ignition
+/nix/store/<HASH>-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
 
 # --- post-swap reconcile ---
 # The /etc swap is now the commit point. Any post-swap reconcile problem is
 # reported as degraded, never as a rollback/cleanup of the new live /etc.
 STAGE="$STAGE_POSTSWAP"
 set +e
-/nix/store/azzd4qyybicvg2ck0wxsrv9601c2sm6d-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+/nix/store/<HASH>-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
 post_rc=$?
 set -e
 
@@ -341,9 +341,9 @@ STAGE="$STAGE_CLEANUP"
 # tmpfs now, not its own mount. Stale uppers are reclaimed by generation GC
 # (when apm prunes the generation) and by reboot (tmpfs), never here.
 if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
-  /nix/store/r9x6kx7isq9p8zyaagp3dykwgfx1fhdg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
-  /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
+  /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
+  /nix/store/<HASH>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
+  /nix/store/<HASH>-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
                          "/run/etc/ignition-${prev_gen}"
 fi
 

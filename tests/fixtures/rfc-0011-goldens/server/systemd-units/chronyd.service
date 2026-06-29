@@ -5,7 +5,7 @@ Description=NTP Time Synchronization (chrony)
 Wants=network-online.target
 
 [Service]
-Environment="PATH=/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/bin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/bin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/bin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/bin:/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/sbin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/sbin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/sbin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/sbin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<HASH>-coreutils-9.5/bin:/nix/store/<HASH>-findutils-4.10.0/bin:/nix/store/<HASH>-grep-3.11/bin:/nix/store/<HASH>-sed-4.9/bin:/nix/store/<HASH>-systemd-259.1/bin:/nix/store/<HASH>-coreutils-9.5/sbin:/nix/store/<HASH>-findutils-4.10.0/sbin:/nix/store/<HASH>-grep-3.11/sbin:/nix/store/<HASH>-sed-4.9/sbin:/nix/store/<HASH>-systemd-259.1/sbin"
 CapabilityBoundingSet=CAP_CHOWN
 CapabilityBoundingSet=CAP_DAC_OVERRIDE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -17,8 +17,8 @@ DeviceAllow=char-pps rw
 DeviceAllow=char-ptp rw
 DeviceAllow=char-rtc rw
 DevicePolicy=closed
-ExecReload=/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/kill -HUP $MAINPID
-ExecStart=/nix/store/36a8ksyc4cx36xa4gk7vd4rinin0k7w7-chrony-4.8/sbin/chronyd -n -u chrony -f /etc/chrony.conf
+ExecReload=/nix/store/<HASH>-coreutils-9.5/bin/kill -HUP $MAINPID
+ExecStart=/nix/store/<HASH>-chrony-4.8/sbin/chronyd -n -u chrony -f /etc/chrony.conf
 LockPersonality=true
 MemoryDenyWriteExecute=true
 NoNewPrivileges=true

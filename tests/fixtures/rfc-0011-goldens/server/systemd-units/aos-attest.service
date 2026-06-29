@@ -3,9 +3,9 @@ After=aos-seed-baked-packages.service aos-install-packages.service
 Description=Produce AOS package attestation quote
 
 [Service]
-Environment="PATH=/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/bin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/bin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/bin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/bin:/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/sbin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/sbin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/sbin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/sbin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<HASH>-coreutils-9.5/bin:/nix/store/<HASH>-findutils-4.10.0/bin:/nix/store/<HASH>-grep-3.11/bin:/nix/store/<HASH>-sed-4.9/bin:/nix/store/<HASH>-systemd-259.1/bin:/nix/store/<HASH>-coreutils-9.5/sbin:/nix/store/<HASH>-findutils-4.10.0/sbin:/nix/store/<HASH>-grep-3.11/sbin:/nix/store/<HASH>-sed-4.9/sbin:/nix/store/<HASH>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/xjlpk0ffbq4jaqar3kgp7pnbza2x2yfy-bash-5.2.37/bin/bash
+#!/nix/store/<HASH>-bash-5.2.37/bin/bash
 set -e
 
 nonce_file=/run/aos-attest/nonce
@@ -15,7 +15,7 @@ quote_json=/var/lib/aos-attest/quote.json
 quote_json_tmp=/var/lib/aos-attest/quote.json.tmp
 cleanup() {
   status=$?
-  if ! /nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -f -- "$nonce_file" "$quote_json_tmp"; then
+  if ! /nix/store/<HASH>-coreutils-9.5/bin/rm -f -- "$nonce_file" "$quote_json_tmp"; then
     if [ "$status" -eq 0 ]; then
       status=1
     fi
@@ -42,10 +42,10 @@ if [ ! -s "$event_log" ]; then
   echo "package attestation event log $event_log is not ready" >&2
   exit 3
 fi
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -rf -- "$output_dir"
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/rm -f -- "$quote_json" "$quote_json_tmp"
-/nix/store/azzd4qyybicvg2ck0wxsrv9601c2sm6d-aos-0.1.0/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
-/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin/mv -f -- "$quote_json_tmp" "$quote_json"
+/nix/store/<HASH>-coreutils-9.5/bin/rm -rf -- "$output_dir"
+/nix/store/<HASH>-coreutils-9.5/bin/rm -f -- "$quote_json" "$quote_json_tmp"
+/nix/store/<HASH>-aos-0.1.0/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
+/nix/store/<HASH>-coreutils-9.5/bin/mv -f -- "$quote_json_tmp" "$quote_json"
 <<aos-job-script-end>>
 RuntimeDirectory=aos-attest
 RuntimeDirectoryMode=0700

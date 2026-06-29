@@ -5,9 +5,9 @@ Requires=dbus.socket systemd-tmpfiles-setup.service
 X-ReloadIfChanged=true
 
 [Service]
-Environment="PATH=/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/bin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/bin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/bin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/bin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/bin:/nix/store/zpzxzkj2m18xcdnv82fq870mjb4x54d3-coreutils-9.5/sbin:/nix/store/rwd094cc19w6kq3hw035lvswcaydxz70-findutils-4.10.0/sbin:/nix/store/mfwrbd36346z7h5vfz2qnvdrq3a9xsmg-grep-3.11/sbin:/nix/store/m8ii1f2w43mqbax78y5daxabf6cgv3sx-sed-4.9/sbin:/nix/store/z3xzkyz89bjq8d7h57b4hr6pcy3kfw78-systemd-259.1/sbin"
-ExecReload=/nix/store/2br20fv4a06bxy88wv6dx7kap829zsxd-dbus-1.14.10/bin/dbus-send --print-reply --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
-ExecStart=/nix/store/2br20fv4a06bxy88wv6dx7kap829zsxd-dbus-1.14.10/bin/dbus-daemon --address=systemd: --nofork --nopidfile --systemd-activation --config-file=/nix/store/q6f63g0wwl2qhvi566yl3gjdspj2mg5s-aos-dbus-1/system.conf
+Environment="PATH=/nix/store/<HASH>-coreutils-9.5/bin:/nix/store/<HASH>-findutils-4.10.0/bin:/nix/store/<HASH>-grep-3.11/bin:/nix/store/<HASH>-sed-4.9/bin:/nix/store/<HASH>-systemd-259.1/bin:/nix/store/<HASH>-coreutils-9.5/sbin:/nix/store/<HASH>-findutils-4.10.0/sbin:/nix/store/<HASH>-grep-3.11/sbin:/nix/store/<HASH>-sed-4.9/sbin:/nix/store/<HASH>-systemd-259.1/sbin"
+ExecReload=/nix/store/<HASH>-dbus-1.14.10/bin/dbus-send --print-reply --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig
+ExecStart=/nix/store/<HASH>-dbus-1.14.10/bin/dbus-daemon --address=systemd: --nofork --nopidfile --systemd-activation --config-file=/nix/store/<HASH>-aos-dbus-1/system.conf
 NotifyAccess=main
 OOMScoreAdjust=-900
 Restart=on-failure
