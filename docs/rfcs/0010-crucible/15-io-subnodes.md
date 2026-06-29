@@ -935,12 +935,29 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   exact delivery.
   Summary: exact completion visibility is independent of whether the consumer
   idles or polls; busy-poll remains a performance issue, not a correctness input.
-- [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
+- [x] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
   split (host access decoupled from virtual-time visibility), an in-flight
   response queue ordered by `delivery_icount` exposed as the sub-node's
   `next_exact_local_event`, and deterministic full-ring backpressure (block-and-
   wake, never drop/reorder). — satisfies [IO-31], [IO-32]; spec §15.1.1;
   cross-ref 08, 13.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device
+  --test io_subnode_lifecycle`, `cargo test --manifest-path crates/Cargo.toml
+  -p crucible-device`, and `cargo test --manifest-path crates/Cargo.toml -p
+  crucible`.
+  `IoCore::process_shmem_inbox` drains real VM-to-device `RingHeader`/
+  `FrameEntry` rings, wakes the freed producer slots, and computes block/9p
+  responses into the existing in-flight queue without making them visible early.
+  `IoCore::advance_to_shmem` publishes only due responses to the device-to-VM
+  ring, wakes the consumer slot on delivery, and requeues unpublished due
+  responses at their original `delivery_icount`s when the response ring is full.
+  `IoCore::dequeue_shmem_frame_and_wake_producer` covers the slot-free wake path
+  for device-to-VM rings. The block and 9p lifecycle tests exercise real shmem
+  rings, request-ring full/retry, response-ring full/retry with preserved order,
+  and slot wakes on both sides.
+  Summary: block and 9p request/response lifecycles now use real shmem rings
+  while preserving COMPUTE-then-DELIVER visibility, exact next-event ordering,
+  and deterministic block-and-wake backpressure.
 - [x] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
   positive latency floor at the link, clamp sub-floor latency faults, trigger the
   lookahead/horizon recompute on any conservative effective-latency-bound change

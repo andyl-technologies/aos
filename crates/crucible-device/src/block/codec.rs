@@ -26,14 +26,13 @@
 //!   off 12  [count bytes]    -- payload (read / get-length), empty otherwise
 //! ```
 //!
-//! TODO(shmem-slot-binding): the encoded bytes are carried as the opaque
+//! The encoded bytes are carried as the opaque
 //! [`crate::request::Request::payload`] / [`crate::request::Response::payload`]
 //! and ride the `FrameEntry.data` field of a `SLOT_BLK_IO` ring frame
 //! ([`crucible_shmem::MAX_FRAME_DATA`] = 4608 bytes, which fits a 4 KiB read
-//! response plus this 12-byte header). The transport wiring that copies these
-//! bytes into a mapped ring frame lands with the executor slot in a later
-//! changeset; the codec here is self-contained and endianness-explicit so that
-//! binding is byte-for-byte unambiguous.
+//! response plus this 12-byte header). [`crate::subnode::IoCore`] supplies the
+//! shmem lifecycle bridge that drains VM-to-block frames, computes responses,
+//! publishes block-to-VM frames, and issues the corresponding wake.
 
 /// The block wire ABI version encoded in every request and response.
 ///

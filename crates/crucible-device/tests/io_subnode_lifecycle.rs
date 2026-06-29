@@ -9,11 +9,20 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use crucible_device::{
-    AffineLatency, DeviceError, IoCore, IoSubNode, Request, Response, ResponseStatus,
+    AffineLatency, BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, BlockStatus,
+    DeviceError, FsTree, IoCore, IoSubNode, NinepDevice, NinepLatency, Node, Request, Response,
+    ResponseStatus,
 };
+use crucible_shmem::{
+    FrameEntry, KIND_9P, KIND_BLK, KIND_VM, NodeSlot, RingHeader, SLOT_9P_IO, SLOT_BLK_IO,
+    SpscRingError,
+};
+
+use crucible_device::ninep::codec;
 
 /// Unwraps a result in tests, panicking with the error on failure.
 fn ok<T, E: Debug>(result: Result<T, E>) -> T {
@@ -94,6 +103,55 @@ fn sample_requests() -> Vec<Request> {
         Request::new(2, 2, b"c".to_vec()),
         Request::new(10, 3, b"delta".to_vec()),
     ]
+}
+
+fn frame(delivery_icount: u64, src_node: u32, seq: u32, payload: &[u8]) -> FrameEntry {
+    ok(FrameEntry::new(delivery_icount, src_node, seq, payload))
+}
+
+fn frame_payload(frame: &FrameEntry) -> Vec<u8> {
+    ok(frame.payload()).to_vec()
+}
+
+fn block_device(inbox_capacity: u64, outbox_capacity: u64) -> BlockDevice {
+    let src = SLOT_BLK_IO as u32;
+    let core = ok(IoCore::new(SHIFT, src, inbox_capacity, outbox_capacity));
+    let base = BaseImage::new((0..4096u32).map(|value| (value % 251) as u8).collect());
+    BlockDevice::new(core, base, BlockLatency::default())
+}
+
+fn sample_tree() -> FsTree {
+    let mut root = BTreeMap::new();
+    root.insert(
+        "alpha".to_string(),
+        Node::File {
+            content: b"alpha".to_vec(),
+        },
+    );
+    FsTree::new(Node::Directory { children: root })
+}
+
+fn ninep_frame(msg_type: u8, tag: u16, body: &[u8]) -> Vec<u8> {
+    let size = (7 + body.len()) as u32;
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&size.to_le_bytes());
+    frame.push(msg_type);
+    frame.extend_from_slice(&tag.to_le_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+fn string_bytes(value: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+    bytes
+}
+
+fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
+    let mut body = msize.to_le_bytes().to_vec();
+    body.extend_from_slice(&string_bytes(version));
+    ninep_frame(codec::TVERSION, tag, &body)
 }
 
 #[test]
@@ -258,6 +316,205 @@ fn full_inbox_blocks_producer_without_drop() {
     let mut device = EchoDevice::new(1000, 4);
     ok(core.process_inbox(&mut device));
     ok(core.enqueue_request(rejected.into_item()));
+}
+
+#[test]
+fn block_shmem_lifecycle_uses_real_rings_and_wakes() {
+    let vm_slot_id = 0;
+    let block_slot_id = SLOT_BLK_IO as u32;
+    let vm_slot = NodeSlot::new(KIND_VM);
+    let block_slot = NodeSlot::new(KIND_BLK);
+    let inbox = RingHeader::new();
+    let mut inbox_entries = vec![FrameEntry::default(); 1];
+    let outbox = RingHeader::new();
+    let mut outbox_entries = vec![FrameEntry::default(); 2];
+    let mut device = block_device(4, 4);
+
+    let first = BlockRequest::read(1, 0, 4);
+    let second = BlockRequest::read(2, 4, 4);
+    let first_frame = frame(0, vm_slot_id, 10, &ok(first.encode()));
+    let second_frame = frame(1, vm_slot_id, 11, &ok(second.encode()));
+    ok(inbox.enqueue(&mut inbox_entries, &first_frame));
+    assert_eq!(
+        inbox.enqueue(&mut inbox_entries, &second_frame),
+        Err(SpscRingError::QueueFull { capacity: 1 })
+    );
+
+    let first_process = ok(device.process_shmem_inbox(&inbox, &inbox_entries, &vm_slot));
+    assert_eq!(first_process.processed, 1);
+    assert_eq!(first_process.producer_wakes.len(), 1);
+    assert_eq!(vm_slot.snapshot().wake_signal, 1);
+    assert_eq!(inbox.dequeue(&inbox_entries), Ok(None));
+
+    ok(inbox.enqueue(&mut inbox_entries, &second_frame));
+    let second_process = ok(device.process_shmem_inbox(&inbox, &inbox_entries, &vm_slot));
+    assert_eq!(second_process.processed, 1);
+    assert_eq!(vm_slot.snapshot().wake_signal, 2);
+
+    let limit = ok(device
+        .core()
+        .snapshot()
+        .inflight
+        .iter()
+        .map(|pending| pending.delivery_icount())
+        .max()
+        .ok_or("expected in-flight block responses"));
+    let delivered = ok(device.advance_to_shmem(limit, &outbox, &mut outbox_entries, &vm_slot));
+    assert_eq!(delivered.delivered, 2);
+    assert!(delivered.consumer_wake.is_some());
+    assert_eq!(vm_slot.snapshot().wake_signal, 3);
+
+    let first_out = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &block_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("first response frame should be present"));
+    let second_out = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &block_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("second response frame should be present"));
+    assert_eq!(block_slot.snapshot().wake_signal, 2);
+    assert_eq!(first_out.src_node, block_slot_id);
+    assert_eq!(second_out.src_node, block_slot_id);
+
+    let first_response = ok(BlockResponse::decode(&frame_payload(&first_out)));
+    let second_response = ok(BlockResponse::decode(&frame_payload(&second_out)));
+    assert_eq!(first_response.status, BlockStatus::Ok);
+    assert_eq!(second_response.status, BlockStatus::Ok);
+    assert_eq!(first_response.request_id, 1);
+    assert_eq!(second_response.request_id, 2);
+    assert_eq!(first_response.data, vec![0, 1, 2, 3]);
+    assert_eq!(second_response.data, vec![4, 5, 6, 7]);
+}
+
+#[test]
+fn block_shmem_full_response_ring_preserves_inflight_order() {
+    let vm_slot = NodeSlot::new(KIND_VM);
+    let block_slot = NodeSlot::new(KIND_BLK);
+    let inbox = RingHeader::new();
+    let mut inbox_entries = vec![FrameEntry::default(); 4];
+    let outbox = RingHeader::new();
+    let mut outbox_entries = vec![FrameEntry::default(); 1];
+    let mut device = block_device(4, 4);
+
+    for (seq, request) in [
+        BlockRequest::read(10, 0, 1),
+        BlockRequest::read(11, 1, 1),
+        BlockRequest::read(12, 2, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request_frame = frame(0, 0, seq as u32, &ok(request.encode()));
+        ok(inbox.enqueue(&mut inbox_entries, &request_frame));
+    }
+    assert_eq!(
+        ok(device.process_shmem_inbox(&inbox, &inbox_entries, &vm_slot)).processed,
+        3
+    );
+    let limit = ok(device
+        .core()
+        .next_exact_local_event()
+        .ok_or("expected response event"));
+
+    assert_eq!(
+        ok(device.advance_to_shmem(limit, &outbox, &mut outbox_entries, &vm_slot)).delivered,
+        1
+    );
+    assert_eq!(
+        device.core().next_exact_local_event(),
+        Some(limit),
+        "remaining due responses must stay in flight at the same icount"
+    );
+    let first = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &block_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("first response should be present"));
+    assert_eq!(
+        ok(BlockResponse::decode(&frame_payload(&first))).request_id,
+        10
+    );
+
+    assert_eq!(
+        ok(device.advance_to_shmem(limit, &outbox, &mut outbox_entries, &vm_slot)).delivered,
+        1
+    );
+    let second = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &block_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("second response should be present"));
+    assert_eq!(
+        ok(BlockResponse::decode(&frame_payload(&second))).request_id,
+        11
+    );
+
+    assert_eq!(
+        ok(device.advance_to_shmem(limit, &outbox, &mut outbox_entries, &vm_slot)).delivered,
+        1
+    );
+    let third = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &block_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("third response should be present"));
+    assert_eq!(
+        ok(BlockResponse::decode(&frame_payload(&third))).request_id,
+        12
+    );
+    assert!(device.core().next_exact_local_event().is_none());
+}
+
+#[test]
+fn ninep_shmem_lifecycle_uses_real_rings_and_wakes() {
+    let vm_slot = NodeSlot::new(KIND_VM);
+    let ninep_slot = NodeSlot::new(KIND_9P);
+    let inbox = RingHeader::new();
+    let mut inbox_entries = vec![FrameEntry::default(); 2];
+    let outbox = RingHeader::new();
+    let mut outbox_entries = vec![FrameEntry::default(); 2];
+    let src = SLOT_9P_IO as u32;
+    let core = ok(IoCore::new(SHIFT, src, 4, 4));
+    let mut device = NinepDevice::new(core, sample_tree(), NinepLatency::default());
+
+    let request = tversion(1, 4096, codec::PROTOCOL_VERSION);
+    ok(inbox.enqueue(&mut inbox_entries, &frame(0, 0, 0, &request)));
+    let processed = ok(device.process_shmem_inbox(&inbox, &inbox_entries, &vm_slot));
+    assert_eq!(processed.processed, 1);
+    assert_eq!(vm_slot.snapshot().wake_signal, 1);
+
+    let next = ok(device
+        .core()
+        .next_exact_local_event()
+        .ok_or("expected 9p response event"));
+    let delivered = ok(device.advance_to_shmem(next, &outbox, &mut outbox_entries, &vm_slot));
+    assert_eq!(delivered.delivered, 1);
+    assert!(delivered.consumer_wake.is_some());
+    assert_eq!(vm_slot.snapshot().wake_signal, 2);
+
+    let reply = ok(IoCore::dequeue_shmem_frame_and_wake_producer(
+        &outbox,
+        &outbox_entries,
+        &ninep_slot,
+    ))
+    .frame
+    .unwrap_or_else(|| panic!("9p reply frame should be present"));
+    assert_eq!(reply.src_node, src);
+    let payload = frame_payload(&reply);
+    assert_eq!(payload.get(4), Some(&codec::RVERSION));
+    assert_eq!(ninep_slot.snapshot().wake_signal, 1);
 }
 
 #[test]

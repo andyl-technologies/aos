@@ -5,9 +5,9 @@
 //! This L1 crate models a disk, a 9p server, and a network link as **uniform
 //! simulation sub-nodes**: each is a scheduling node with an icount-derived
 //! virtual clock, a request inbox, a response outbox, and a deterministic
-//! completion model. The concrete devices land in later changesets; this
-//! changeset (CS-IO-1, tasks T-IO-1 / T-IO-15) implements the *shared*
-//! abstraction every device composes.
+//! completion model. The shared lifecycle abstraction is backed by both an
+//! in-process harness queue and real `crucible-shmem` SPSC rings for the block
+//! and 9p request/response paths.
 //!
 //! # The COMPUTE-then-DELIVER lifecycle
 //!
@@ -108,4 +108,6 @@ pub use ninep::{
     QidType,
 };
 pub use request::{AffineLatency, LatencyModel, Request, RequestId, Response, ResponseStatus};
-pub use subnode::{IoCore, IoCoreSnapshot, IoSubNode};
+pub use subnode::{
+    IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
+};
