@@ -1,6 +1,7 @@
 //! Demand-node metadata key, value, entry, and index format adapters.
 
 use super::*;
+use crate::cache::hashing::PersistNodeMetadataKeyHash;
 use ratchet_cache::node_metadata::{
     NodeMetadataEntry as EngineNodeMetadataEntry,
     NodeMetadataFormatError as EngineNodeMetadataFormatError,
@@ -17,7 +18,7 @@ use ratchet_cache::node_metadata::{
 /// input leaves keyed by their typed input identity hash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PersistNodeMetadataKey {
-    hash: DurableBlake3Hash,
+    hash: PersistNodeMetadataKeyHash,
 }
 
 impl PersistNodeMetadataKey {
@@ -37,7 +38,7 @@ impl PersistNodeMetadataKey {
             update_persist_index_chunk(&mut hasher, &value_hash.as_durable_hash().as_bytes());
         }
         Self {
-            hash: DurableBlake3Hash::from_hasher(hasher),
+            hash: PersistNodeMetadataKeyHash::from_hasher(hasher),
         }
     }
 
@@ -48,20 +49,20 @@ impl PersistNodeMetadataKey {
         hasher.update(PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION);
         hasher.update(&identity_hash.as_bytes());
         Self {
-            hash: DurableBlake3Hash::from_hasher(hasher),
+            hash: PersistNodeMetadataKeyHash::from_hasher(hasher),
         }
     }
 
-    /// Returns the durable hash of the demand-node metadata identity.
+    /// Returns the durable hash for sidecar/engine adapters and inspection callers.
     pub const fn hash(self) -> DurableBlake3Hash {
-        self.hash
+        self.hash.as_durable_hash()
     }
 
     /// Returns the stable binary key for the future demand-node metadata index.
     pub fn index_bytes(self) -> [u8; PERSIST_NODE_METADATA_INDEX_KEY_LEN] {
         let mut bytes = [0; PERSIST_NODE_METADATA_INDEX_KEY_LEN];
         bytes[0] = PERSIST_NODE_METADATA_INDEX_TAG;
-        bytes[1..].copy_from_slice(&self.hash.as_bytes());
+        bytes[1..].copy_from_slice(&self.hash.as_durable_hash().as_bytes());
         bytes
     }
 
@@ -85,7 +86,9 @@ impl PersistNodeMetadataKey {
         let mut hash = [0; 32];
         hash.copy_from_slice(&bytes[1..PERSIST_NODE_METADATA_INDEX_KEY_LEN]);
         Ok(Self {
-            hash: DurableBlake3Hash::from_bytes(hash),
+            hash: PersistNodeMetadataKeyHash::from_persisted_hash(DurableBlake3Hash::from_bytes(
+                hash,
+            )),
         })
     }
 }

@@ -9,6 +9,7 @@
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DemandKeyHotHash -> demand-cache hot xxh3 probes
 //! DemandKeyConfirmationHash -> demand-cache BLAKE3 confirmations
+//! PersistNodeMetadataKeyHash -> persisted demand-node metadata/trace keys
 //! CacheExprSourceHash -> expression/artifact identity source components
 //! AttrPositionSourceHash -> positioned-payload source provenance
 //! ForceCapturePositionSourceHash -> positioned captured-value source salts
@@ -140,6 +141,34 @@ impl DemandKeyConfirmationHash {
     #[cfg(test)]
     pub(in crate::cache) const fn from_precomputed_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
+    }
+}
+
+/// A BLAKE3 key for persisted demand-node metadata and trace sidecars.
+///
+/// This type marks durable node keys derived from expression identities plus
+/// free-variable value hashes, or from impure-input identity hashes. The raw
+/// digest remains available through the existing
+/// `PersistNodeMetadataKey::hash` inspection accessor, and otherwise unwraps
+/// when encoding stable sidecar keys or adapting to lower-level persistence
+/// engine key types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::cache) struct PersistNodeMetadataKeyHash(DurableBlake3Hash);
+
+impl PersistNodeMetadataKeyHash {
+    /// Finalizes a BLAKE3 hasher in a persistent node-metadata key domain.
+    pub(in crate::cache) fn from_hasher(hasher: blake3::Hasher) -> Self {
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Wraps decoded persistent node-metadata key hash bytes.
+    pub(in crate::cache) const fn from_persisted_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(in crate::cache) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
     }
 }
 
@@ -521,6 +550,21 @@ mod tests {
 
         assert_eq!(from_hasher, precomputed);
         assert_ne!(from_hasher, other);
+    }
+
+    #[test]
+    fn persist_node_metadata_key_hash_wraps_metadata_hashes() {
+        let durable = DurableBlake3Hash::for_bytes(b"node metadata key");
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"node metadata key");
+        let from_hasher = PersistNodeMetadataKeyHash::from_hasher(hasher);
+        let persisted = PersistNodeMetadataKeyHash::from_persisted_hash(durable);
+        let other =
+            PersistNodeMetadataKeyHash::from_persisted_hash(DurableBlake3Hash::for_bytes(b"other"));
+
+        assert_eq!(from_hasher, persisted);
+        assert_ne!(from_hasher, other);
+        assert_eq!(persisted.as_durable_hash(), durable);
     }
 
     #[test]

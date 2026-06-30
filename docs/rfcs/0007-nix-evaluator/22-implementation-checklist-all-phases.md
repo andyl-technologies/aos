@@ -2014,6 +2014,22 @@ alone (`M-1`/`Q-A`).
       Gate: `cache::key`, `cache::dcg` key-collision tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       (`S-15`).
+- [x] Current persistent node metadata key hash boundary:
+      `PersistNodeMetadataKeyHash` marks BLAKE3 keys for durable demand-node
+      metadata and trace sidecar records. `PersistNodeMetadataKey::for_expression`,
+      `PersistNodeMetadataKey::for_impure_input`, and
+      `PersistNodeMetadataKey::decode_index_bytes` construct or decode the
+      typed key hash, while `PersistNodeMetadataKey::hash` preserves the
+      existing raw durable-hash inspection accessor and
+      `PersistNodeMetadataKey::index_bytes` unwraps at the stable sidecar and
+      engine key boundary. This type-enforces current persistent node
+      metadata/trace key finalization and decoding only; persisted value-hash
+      fields, full graph persistence, LMDB/redb indexes, and the full
+      differential leak-invariant harness remain open. Gate: `cache::hashing`,
+      node metadata/trace format tests, persistent force-cache
+      demand/materialization tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4634,6 +4650,22 @@ alone (`M-1`/`Q-A`).
       `cache::key`, `cache::dcg` key-collision tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §3.2/§5.2).
+- [x] Current persistent node metadata key hash boundary:
+      `PersistNodeMetadataKeyHash` marks BLAKE3 keys for durable demand-node
+      metadata and trace sidecar records. `PersistNodeMetadataKey::for_expression`,
+      `PersistNodeMetadataKey::for_impure_input`, and
+      `PersistNodeMetadataKey::decode_index_bytes` construct or decode the
+      typed key hash, while `PersistNodeMetadataKey::hash` preserves the
+      existing raw durable-hash inspection accessor and
+      `PersistNodeMetadataKey::index_bytes` unwraps at the stable sidecar and
+      engine key boundary. This type-enforces current persistent node
+      metadata/trace key finalization and decoding only; persisted value-hash
+      fields, full graph persistence, LMDB/redb indexes, and the full
+      internal-hash leak-invariant harness remain open. Gate: `cache::hashing`,
+      node metadata/trace format tests, persistent force-cache
+      demand/materialization tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §3.4/§5.2/§6.5).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

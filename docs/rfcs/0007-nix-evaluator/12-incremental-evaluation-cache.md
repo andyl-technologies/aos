@@ -987,6 +987,23 @@ harness, never cut for scope.
   [§5](#5-hashing-policy)) — P2 precursor, `S-15`; gate: `cache::key` and
   `cache::dcg` key-collision tests plus `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
   test-target compile coverage.
+- [x] Current persistent node metadata key hash boundary:
+  `PersistNodeMetadataKeyHash` marks BLAKE3 keys for durable demand-node
+  metadata and trace sidecar records. `PersistNodeMetadataKey::for_expression`,
+  `PersistNodeMetadataKey::for_impure_input`, and
+  `PersistNodeMetadataKey::decode_index_bytes` construct or decode the typed
+  key hash, while `PersistNodeMetadataKey::hash` preserves the existing raw
+  durable-hash inspection accessor and `PersistNodeMetadataKey::index_bytes`
+  unwraps at the stable sidecar and engine key boundary. This type-enforces current persistent node
+  metadata/trace key finalization and decoding only; persisted value-hash
+  fields, full graph persistence, LMDB/redb indexes, and the full
+  internal-hash leak-invariant harness remain open ([§3.4](#34-the-materialization-threshold-when-a-memoized-result-hits-disk),
+  [§5](#5-hashing-policy), [§6.5](#65-storage-engine-two-engines-for-two-data-natures))
+  — P2 precursor, `S-15`; gate: `cache::hashing`,
+  `cache::persist::tests::format_tests::node_metadata_index`,
+  `cache::persist::tests::format_tests::node_trace`, persistent force-cache
+  demand/materialization tests, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+  test-target compile coverage.
 - [x] Current nested-let free-variable narrowing precursor: the tree-walk
   force-cache free-variable collector now validates nested `let` binding keys
   as static as before, then computes a same-frame reachable binding slot set
@@ -1793,6 +1810,24 @@ harness, never cut for scope.
       [§5.2](#52-the-leak-invariant)) — P2, `S-15`; gate: `cache::key` and
       `cache::dcg` key-collision tests plus test-target compile coverage for
       `ratchet-oracle`, `aos-nix`, and `aos-nix-harness`.
+- [x] Current persistent node metadata key hash boundary:
+      `PersistNodeMetadataKeyHash` marks BLAKE3 keys for durable demand-node
+      metadata and trace sidecar records. `PersistNodeMetadataKey::for_expression`,
+      `PersistNodeMetadataKey::for_impure_input`, and
+      `PersistNodeMetadataKey::decode_index_bytes` construct or decode the
+      typed key hash, while `PersistNodeMetadataKey::hash` preserves the
+      existing raw durable-hash inspection accessor and
+      `PersistNodeMetadataKey::index_bytes` unwraps at the stable sidecar and
+      engine key boundary. This type-enforces current persistent node
+      metadata/trace key finalization and decoding only; persisted value-hash
+      fields, full graph persistence, LMDB/redb indexes, and the full
+      internal-hash leak-invariant harness remain open
+      ([§3.4](#34-the-materialization-threshold-when-a-memoized-result-hits-disk),
+      [§5.2](#52-the-leak-invariant),
+      [§6.5](#65-storage-engine-two-engines-for-two-data-natures)) — P2,
+      `S-15`; gate: `cache::hashing`, node metadata/trace format tests,
+      persistent force-cache demand/materialization tests, and test-target
+      compile coverage for `ratchet-oracle`, `aos-nix`, and `aos-nix-harness`.
 - [x] Current native forced-expression sidecar leak/bypass canaries: `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` and `native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` drive raw-expression and file-root attr-path `NixNative` instantiation through cache-off, persistent demand observation, durable forced-value materialization, and a fresh-runtime persistent pass for a configured `currentSystem` thunk. The cache-off leak legs require zero aggregate evaluator cache hit/miss counters, zero force-cache hit/miss counters, zero force-cache memoization-decision counters, zero force-cache materialization threshold-decision counters, zero early cutoffs, and zero derivation final-path/static-output side-record reuse. The final fresh-runtime passes must report force-cache hits, and the canary scanner only admits persistent node metadata entries whose linked value loads through the cached-expression payload decoder. They then scan the resulting `.drv` path and ATerm closure surfaces for forced-expression node metadata BLAKE3 addresses, materialized value BLAKE3 addresses, trace-side BLAKE3 addresses when present, and a representative context-free `NixString` xxh3 hot-hash sentinel. `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects` and `native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects` seed real persistent forced-expression payloads, then rerun the same raw-expression and file-root closures with eval-cache disabled and the same persistent root configured, requiring byte-identical closure output, the same zero incremental-cache stats contract, unchanged latest logical node metadata and trace entries, and no sidecar hash leak into the disabled closures. The raw-expression canary additionally requires byte-identical persistent cache file contents; the file-root canary requires byte-identical force-cache node/value sidecar contents while leaving file-root parse artifact persistence to the separate frontend cache gates. This extends the current native closure safety net to forced-expression persistent sidecars and populated-root disabled-cache side-effect bypasses on both native source entry shapes; it is not syscall-level no-read instrumentation, the full cache-off AOS closure harness, full internal-hash leak invariant, or future value-memoization safety net. ([§5.2](#52-the-leak-invariant), [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P1/P2, `S-14`/`S-15`; gate: focused native force-cache sidecar leak/bypass canaries.
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
