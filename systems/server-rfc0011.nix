@@ -21,7 +21,7 @@
   # The RFC-0011 provisioning path.
   aos.provisioning.ignition.enable = false;
   aos.provisioning.repart.enable = true;
-  aos.metadata.enable = true;
+  aos.provisioning.metadataAgent.enable = true;
 
   # On-host config evaluation. `baseLib` is wired by the system discovery in
   # default.nix; the service is `ConditionPathExists`-guarded on host.nix.
