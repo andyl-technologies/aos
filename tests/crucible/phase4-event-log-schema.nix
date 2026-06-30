@@ -137,7 +137,7 @@
       }
       {
         label = "entry hash material includes source level class";
-        needle = "scheduler_event_log_entry_material(sequence, &time, &source, level, class, &payload)";
+        needle = "scheduler_event_log_entry_material(\n            sequence,\n            &time,\n            &source,\n            level,\n            class,";
       }
       {
         label = "valid-hash material includes stored schema fields";

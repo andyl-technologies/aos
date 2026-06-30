@@ -224,6 +224,170 @@ pub enum EventLevel {
     Error,
 }
 
+/// Typed value carried by an open-set event payload attribute.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EventAttributeValue {
+    /// Boolean attribute.
+    Bool(bool),
+    /// Unsigned integer attribute.
+    U64(u64),
+    /// Stable string attribute.
+    String(String),
+    /// Raw byte attribute.
+    Bytes(Vec<u8>),
+    /// Scenario node identifier attribute.
+    Node(NodeId),
+    /// Event-graph identifier attribute.
+    Event(EventId),
+    /// Fault identifier attribute.
+    Fault(FaultId),
+    /// Virtual-time attribute.
+    VirtualTime(VirtualTime),
+    /// Retired-instruction count attribute.
+    Icount(Icount),
+    /// Display-level attribute.
+    Level(EventLevel),
+}
+
+/// Open-set event payload read by observability projections.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventPayload {
+    kind: String,
+    attributes: BTreeMap<String, EventAttributeValue>,
+}
+
+impl EventPayload {
+    /// Builds an open-set payload with typed named attributes.
+    #[must_use]
+    pub fn new(kind: impl Into<String>, attributes: BTreeMap<String, EventAttributeValue>) -> Self {
+        Self {
+            kind: kind.into(),
+            attributes,
+        }
+    }
+
+    /// Builds the diagnostic escape-hatch payload.
+    #[must_use]
+    pub fn diagnostic(
+        name: impl Into<String>,
+        mut details: BTreeMap<String, EventAttributeValue>,
+    ) -> Self {
+        details.insert(
+            String::from("name"),
+            EventAttributeValue::String(name.into()),
+        );
+        Self::new("diagnostic", details)
+    }
+
+    /// Returns the open-set payload kind.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Returns all typed attributes keyed by name.
+    #[must_use]
+    pub fn attributes(&self) -> &BTreeMap<String, EventAttributeValue> {
+        &self.attributes
+    }
+
+    /// Returns one typed attribute by name.
+    #[must_use]
+    pub fn attribute(&self, name: &str) -> Option<&EventAttributeValue> {
+        self.attributes.get(name)
+    }
+
+    /// Returns a string attribute by name.
+    #[must_use]
+    pub fn string(&self, name: &str) -> Option<&str> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::String(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Returns a boolean attribute by name.
+    #[must_use]
+    pub fn bool(&self, name: &str) -> Option<bool> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Bool(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Returns an unsigned integer attribute by name.
+    #[must_use]
+    pub fn u64(&self, name: &str) -> Option<u64> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::U64(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Returns a byte-string attribute by name.
+    #[must_use]
+    pub fn bytes(&self, name: &str) -> Option<&[u8]> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Bytes(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Returns a node-id attribute by name.
+    #[must_use]
+    pub fn node(&self, name: &str) -> Option<&NodeId> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Node(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Returns an event-id attribute by name.
+    #[must_use]
+    pub fn event(&self, name: &str) -> Option<&EventId> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Event(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Returns a fault-id attribute by name.
+    #[must_use]
+    pub fn fault(&self, name: &str) -> Option<&FaultId> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Fault(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Returns a virtual-time attribute by name.
+    #[must_use]
+    pub fn virtual_time(&self, name: &str) -> Option<VirtualTime> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::VirtualTime(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Returns an icount attribute by name.
+    #[must_use]
+    pub fn icount(&self, name: &str) -> Option<Icount> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Icount(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Returns a display-level attribute by name.
+    #[must_use]
+    pub fn level(&self, name: &str) -> Option<EventLevel> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::Level(value)) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
 /// One scheduler-emitted entry in the unified event log.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerEventLogEntry {
@@ -237,6 +401,8 @@ pub struct SchedulerEventLogEntry {
     level: EventLevel,
     /// Causal-vs-observational class recorded by the typed append path.
     class: SchedulerEventLogClass,
+    /// Open-set payload kind and typed named attributes.
+    event_payload: EventPayload,
     /// Typed payload carried by the event-log entry.
     payload: SchedulerEventLogPayload,
     /// Content address of this entry's canonical material.
@@ -314,6 +480,12 @@ impl SchedulerEventLogEntry {
         self.level
     }
 
+    /// Returns the open-set payload view for projection consumers.
+    #[must_use]
+    pub fn event_payload(&self) -> &EventPayload {
+        &self.event_payload
+    }
+
     /// Returns the causal-vs-observational class recorded for this entry.
     #[must_use]
     pub fn class(&self) -> SchedulerEventLogClass {
@@ -347,6 +519,7 @@ impl SchedulerEventLogEntry {
                     &self.source,
                     self.level,
                     self.class,
+                    &self.event_payload,
                     &self.payload,
                 ),
             )
@@ -534,6 +707,39 @@ pub enum SchedulerEvaluationBoundaryKind {
     Rendezvous,
 }
 
+/// Observational diagnostic payload used as the open-set escape hatch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventDiagnosticPayload {
+    /// Stable diagnostic name.
+    pub name: String,
+    /// Display level for this diagnostic.
+    pub level: EventLevel,
+    /// Typed diagnostic details keyed by stable field name.
+    pub details: BTreeMap<String, EventAttributeValue>,
+}
+
+impl EventDiagnosticPayload {
+    /// Builds a diagnostic payload.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        level: EventLevel,
+        details: BTreeMap<String, EventAttributeValue>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            level,
+            details,
+        }
+    }
+
+    /// Returns this diagnostic as an open-set event payload.
+    #[must_use]
+    pub fn event_payload(&self) -> EventPayload {
+        EventPayload::diagnostic(self.name.clone(), self.details.clone())
+    }
+}
+
 /// Payload variants emitted by the scheduler EMIT phase.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SchedulerEventLogPayload {
@@ -549,6 +755,8 @@ pub enum SchedulerEventLogPayload {
     TriggerFired(EventFiring),
     /// A deterministic trigger action effect applied at the firing boundary.
     TriggerActionApplied(TriggerActionApplication),
+    /// An observational diagnostic escape-hatch entry.
+    Diagnostic(EventDiagnosticPayload),
 }
 
 /// Scheduler-owned state produced by deterministic trigger action application.
@@ -3868,9 +4076,18 @@ fn scheduler_event_log_entry_with_class(
     let time = scheduler_event_log_time(at, &payload);
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
+    let event_payload = event_payload_from_scheduler_payload(&payload);
     let content_hash = ContentHash::from_canonical_material(
         "crucible.scheduler.event-log.entry.v1",
-        &scheduler_event_log_entry_material(sequence, &time, &source, level, class, &payload),
+        &scheduler_event_log_entry_material(
+            sequence,
+            &time,
+            &source,
+            level,
+            class,
+            &event_payload,
+            &payload,
+        ),
     );
     SchedulerEventLogEntry {
         sequence,
@@ -3878,6 +4095,7 @@ fn scheduler_event_log_entry_with_class(
         source,
         level,
         class,
+        event_payload,
         payload,
         content_hash,
         provenance: SchedulerEventLogEntryProvenance,
@@ -3890,6 +4108,7 @@ fn scheduler_event_log_entry_material(
     source: &EventSource,
     level: EventLevel,
     class: SchedulerEventLogClass,
+    event_payload: &EventPayload,
     payload: &SchedulerEventLogPayload,
 ) -> String {
     let mut lines = Vec::new();
@@ -3907,6 +4126,7 @@ fn scheduler_event_log_entry_material(
     lines.push(scheduler_event_log_source_material("source", source));
     lines.push(format!("level={}", event_level_label(level)));
     lines.push(format!("class={}", event_class_label(class)));
+    lines.push(event_payload_material("event_payload", event_payload));
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
             lines.push(String::from("payload=resolved-happening"));
@@ -3932,8 +4152,443 @@ fn scheduler_event_log_entry_material(
             lines.push(String::from("payload=trigger_action_applied"));
             lines.push(trigger_action_application_material(application));
         }
+        SchedulerEventLogPayload::Diagnostic(diagnostic) => {
+            lines.push(String::from("payload=diagnostic"));
+            lines.push(diagnostic_payload_material(diagnostic));
+        }
     }
     lines.join("\n")
+}
+
+fn event_payload_from_scheduler_payload(payload: &SchedulerEventLogPayload) -> EventPayload {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            resolved_happening_event_payload(event)
+        }
+        SchedulerEventLogPayload::Decision(decision) => decision_event_payload(decision),
+        SchedulerEventLogPayload::Observable(observable) => observable_event_payload(observable),
+        SchedulerEventLogPayload::EvaluationBoundary(kind) => {
+            let mut attributes = BTreeMap::new();
+            attributes.insert(
+                String::from("boundary"),
+                EventAttributeValue::String(evaluation_boundary_kind_label(*kind).to_owned()),
+            );
+            EventPayload::new("evaluation_boundary", attributes)
+        }
+        SchedulerEventLogPayload::TriggerFired(firing) => {
+            let mut attributes = BTreeMap::new();
+            attributes.insert(
+                String::from("event"),
+                EventAttributeValue::Event(firing.event().clone()),
+            );
+            attributes.insert(
+                String::from("at"),
+                EventAttributeValue::VirtualTime(firing.at()),
+            );
+            attributes.insert(
+                String::from("action"),
+                EventAttributeValue::String(trigger_action_kind_label(firing.action()).to_owned()),
+            );
+            EventPayload::new("trigger_fired", attributes)
+        }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            trigger_action_application_event_payload(application)
+        }
+        SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.event_payload(),
+    }
+}
+
+fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventPayload {
+    let mut attributes = BTreeMap::new();
+    attributes.insert(
+        String::from("virtual_time"),
+        EventAttributeValue::VirtualTime(event.key.virtual_time()),
+    );
+    attributes.insert(
+        String::from("consumer"),
+        EventAttributeValue::Node(event.key.consumer().node.clone()),
+    );
+    attributes.insert(
+        String::from("producer"),
+        EventAttributeValue::Node(event.key.producer().node.clone()),
+    );
+    attributes.insert(
+        String::from("sequence"),
+        EventAttributeValue::U64(event.key.sequence()),
+    );
+    match &event.payload {
+        ScheduledEventPayload::BackendInput(input) => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(input.node.clone()),
+            );
+            attributes.insert(
+                String::from("payload"),
+                EventAttributeValue::Bytes(input.payload.clone()),
+            );
+            EventPayload::new("backend_input", attributes)
+        }
+        ScheduledEventPayload::IoCompletion(completion) => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(completion.target.clone()),
+            );
+            attributes.insert(
+                String::from("delivery_icount"),
+                EventAttributeValue::Icount(completion.delivery_icount),
+            );
+            attributes.insert(
+                String::from("payload"),
+                EventAttributeValue::Bytes(completion.payload.clone()),
+            );
+            EventPayload::new("io_completion", attributes)
+        }
+        ScheduledEventPayload::FaultActivation(fault) => {
+            attributes.insert(
+                String::from("fault"),
+                EventAttributeValue::Fault(fault.clone()),
+            );
+            EventPayload::new("fault_activation", attributes)
+        }
+        ScheduledEventPayload::ProbabilisticFault(choice) => {
+            attributes.insert(
+                String::from("fault"),
+                EventAttributeValue::Fault(choice.fault.clone()),
+            );
+            attributes.insert(
+                String::from("stream_domain"),
+                EventAttributeValue::String(choice.stream.domain.clone()),
+            );
+            attributes.insert(
+                String::from("stream_name"),
+                EventAttributeValue::String(choice.stream.name.clone()),
+            );
+            attributes.insert(
+                String::from("rate_basis_points"),
+                EventAttributeValue::U64(u64::from(choice.rate.basis_points())),
+            );
+            EventPayload::new("probabilistic_fault", attributes)
+        }
+        ScheduledEventPayload::Control(operation) => {
+            attributes.insert(
+                String::from("command_id"),
+                EventAttributeValue::U64(operation.sequence),
+            );
+            attributes.insert(
+                String::from("command"),
+                EventAttributeValue::String(
+                    control_operation_kind_label(&operation.kind).to_owned(),
+                ),
+            );
+            EventPayload::new("control", attributes)
+        }
+    }
+}
+
+fn decision_event_payload(decision: &Decision) -> EventPayload {
+    let mut attributes = BTreeMap::new();
+    match decision {
+        Decision::DeliveryOrder(order) => {
+            attributes.insert(
+                String::from("at"),
+                EventAttributeValue::VirtualTime(order.at),
+            );
+            attributes.insert(
+                String::from("events"),
+                EventAttributeValue::U64(order.order.len() as u64),
+            );
+            EventPayload::new("delivery_order", attributes)
+        }
+        Decision::FaultFires(fault) => {
+            attributes.insert(
+                String::from("at"),
+                EventAttributeValue::VirtualTime(fault.at),
+            );
+            attributes.insert(
+                String::from("fault"),
+                EventAttributeValue::Fault(fault.fault.clone()),
+            );
+            attributes.insert(
+                String::from("fired"),
+                EventAttributeValue::Bool(fault.fired),
+            );
+            EventPayload::new("fault_fires", attributes)
+        }
+        Decision::RngDraw(draw) => {
+            attributes.insert(
+                String::from("stream_domain"),
+                EventAttributeValue::String(draw.stream.domain.clone()),
+            );
+            attributes.insert(
+                String::from("stream_name"),
+                EventAttributeValue::String(draw.stream.name.clone()),
+            );
+            attributes.insert(String::from("value"), EventAttributeValue::U64(draw.value));
+            EventPayload::new("rng_draw", attributes)
+        }
+        Decision::Override(override_decision) => {
+            attributes.insert(
+                String::from("point"),
+                EventAttributeValue::String(override_decision.point.key.clone()),
+            );
+            attributes.insert(
+                String::from("choice"),
+                EventAttributeValue::String(override_decision.choice.name.clone()),
+            );
+            EventPayload::new("override", attributes)
+        }
+        Decision::Preemption(preemption) => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(preemption.node.clone()),
+            );
+            attributes.insert(
+                String::from("at"),
+                EventAttributeValue::Icount(preemption.at),
+            );
+            attributes.insert(
+                String::from("kind"),
+                EventAttributeValue::String(preemption_kind_label(&preemption.kind).to_owned()),
+            );
+            EventPayload::new("preemption", attributes)
+        }
+        Decision::AppRandom(random) => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(random.node.clone()),
+            );
+            attributes.insert(
+                String::from("stream_domain"),
+                EventAttributeValue::String(random.stream.domain.clone()),
+            );
+            attributes.insert(
+                String::from("stream_name"),
+                EventAttributeValue::String(random.stream.name.clone()),
+            );
+            attributes.insert(
+                String::from("request_id"),
+                EventAttributeValue::U64(random.request_id),
+            );
+            attributes.insert(
+                String::from("width"),
+                EventAttributeValue::U64(u64::from(random.width)),
+            );
+            attributes.insert(
+                String::from("value"),
+                EventAttributeValue::U64(random.value),
+            );
+            EventPayload::new("app_random", attributes)
+        }
+        Decision::ControlFault(control) => {
+            attributes.insert(
+                String::from("at"),
+                EventAttributeValue::VirtualTime(control.at),
+            );
+            attributes.insert(
+                String::from("command_id"),
+                EventAttributeValue::U64(control.sequence),
+            );
+            attributes.insert(
+                String::from("action"),
+                EventAttributeValue::String(control_fault_action_label(&control.action).to_owned()),
+            );
+            EventPayload::new("control_fault", attributes)
+        }
+    }
+}
+
+fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload {
+    let mut attributes = BTreeMap::new();
+    match observable {
+        ObservableEventPayload::NetworkDelivered { link, payload } => {
+            if let Some(link) = link {
+                attributes.insert(
+                    String::from("link"),
+                    EventAttributeValue::String(link.name.clone()),
+                );
+            }
+            attributes.insert(
+                String::from("payload"),
+                EventAttributeValue::Bytes(payload.clone()),
+            );
+            EventPayload::new("network_delivered", attributes)
+        }
+        ObservableEventPayload::ConsoleOutput { node, bytes } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("bytes"),
+                EventAttributeValue::Bytes(bytes.clone()),
+            );
+            EventPayload::new("console_output", attributes)
+        }
+        ObservableEventPayload::CoverageBlock {
+            execution_icount,
+            node,
+            guest_pc,
+            block_len,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("execution_icount"),
+                EventAttributeValue::Icount(*execution_icount),
+            );
+            attributes.insert(
+                String::from("guest_pc"),
+                EventAttributeValue::U64(*guest_pc),
+            );
+            attributes.insert(
+                String::from("block_len"),
+                EventAttributeValue::U64(u64::from(*block_len)),
+            );
+            EventPayload::new("coverage", attributes)
+        }
+        ObservableEventPayload::MemorySample {
+            sample_icount,
+            node,
+            place,
+            value,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("sample_icount"),
+                EventAttributeValue::Icount(*sample_icount),
+            );
+            attributes.insert(
+                String::from("place"),
+                EventAttributeValue::String(format!("{place:?}")),
+            );
+            attributes.insert(String::from("value"), EventAttributeValue::U64(*value));
+            EventPayload::new("memory_sample", attributes)
+        }
+        ObservableEventPayload::IoCompletion {
+            node,
+            kind,
+            payload,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("kind"),
+                EventAttributeValue::String(format!("{kind:?}")),
+            );
+            attributes.insert(
+                String::from("payload"),
+                EventAttributeValue::Bytes(payload.clone()),
+            );
+            EventPayload::new("io_completion", attributes)
+        }
+        ObservableEventPayload::NodeState { node, state } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("state"),
+                EventAttributeValue::String(format!("{state:?}")),
+            );
+            EventPayload::new("node_state", attributes)
+        }
+        ObservableEventPayload::AssertionStateChanged { name, state } => {
+            attributes.insert(
+                String::from("assertion"),
+                EventAttributeValue::String(name.name.clone()),
+            );
+            attributes.insert(
+                String::from("state"),
+                EventAttributeValue::String(format!("{state:?}")),
+            );
+            EventPayload::new("assertion_state_changed", attributes)
+        }
+        ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("marker"),
+                EventAttributeValue::String(marker.name.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            EventPayload::new("guest_marker", attributes)
+        }
+        ObservableEventPayload::GuestAssertionMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            attributes.insert(
+                String::from("marker"),
+                EventAttributeValue::String(format!("{marker:?}")),
+            );
+            EventPayload::new("guest_assertion_marker", attributes)
+        }
+    }
+}
+
+fn trigger_action_application_event_payload(
+    application: &TriggerActionApplication,
+) -> EventPayload {
+    if let Action::Log { level, message } = &application.action {
+        let mut details = BTreeMap::new();
+        details.insert(
+            String::from("event"),
+            EventAttributeValue::Event(application.event.clone()),
+        );
+        details.insert(
+            String::from("level"),
+            EventAttributeValue::Level(event_level_from_trigger_log(*level)),
+        );
+        details.insert(
+            String::from("message"),
+            EventAttributeValue::String(message.clone()),
+        );
+        return EventPayload::diagnostic("trigger.log", details);
+    }
+
+    let mut attributes = BTreeMap::new();
+    attributes.insert(
+        String::from("event"),
+        EventAttributeValue::Event(application.event.clone()),
+    );
+    attributes.insert(
+        String::from("at"),
+        EventAttributeValue::VirtualTime(application.at),
+    );
+    attributes.insert(
+        String::from("sequence"),
+        EventAttributeValue::U64(application.sequence),
+    );
+    attributes.insert(
+        String::from("action"),
+        EventAttributeValue::String(trigger_action_kind_label(&application.action).to_owned()),
+    );
+    EventPayload::new("trigger_action_applied", attributes)
 }
 
 fn scheduler_event_log_time(at: VirtualTime, payload: &SchedulerEventLogPayload) -> EventLogTime {
@@ -3957,7 +4612,8 @@ fn scheduler_event_log_payload_icount(
         }
         SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
-        | SchedulerEventLogPayload::TriggerActionApplied(_) => boundary_icount(at),
+        | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::Diagnostic(_) => boundary_icount(at),
     }
 }
 
@@ -4060,6 +4716,7 @@ fn scheduler_event_log_payload_source(payload: &SchedulerEventLogPayload) -> Eve
         SchedulerEventLogPayload::TriggerActionApplied(application) => EventSource::Scenario {
             event: application.event.clone(),
         },
+        SchedulerEventLogPayload::Diagnostic(_) => EventSource::Engine,
     }
 }
 
@@ -4139,6 +4796,7 @@ fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPayload) -> Even
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             trigger_action_application_level(application)
         }
+        SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.level,
     }
 }
 
@@ -4223,6 +4881,121 @@ fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
     }
 }
 
+fn event_payload_material(prefix: &str, payload: &EventPayload) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("{prefix}.kind_len={}", payload.kind().len()));
+    lines.push(format!("{prefix}.kind={}", payload.kind()));
+    lines.push(format!(
+        "{prefix}.attributes={}",
+        payload.attributes().len()
+    ));
+    for (name, value) in payload.attributes() {
+        lines.push(format!("{prefix}.attribute.{name}.name_len={}", name.len()));
+        lines.push(format!("{prefix}.attribute.{name}.name={name}"));
+        lines.push(event_attribute_value_material(
+            &format!("{prefix}.attribute.{name}.value"),
+            value,
+        ));
+    }
+    lines.join("\n")
+}
+
+fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
+    match value {
+        EventAttributeValue::Bool(value) => format!("{prefix}.type=bool\n{prefix}.value={value}"),
+        EventAttributeValue::U64(value) => format!("{prefix}.type=u64\n{prefix}.value={value}"),
+        EventAttributeValue::String(value) => format!(
+            "{prefix}.type=string\n{prefix}.len={}\n{prefix}.value={value}",
+            value.len()
+        ),
+        EventAttributeValue::Bytes(value) => format!(
+            "{prefix}.type=bytes\n{prefix}.len={}\n{prefix}.value={}",
+            value.len(),
+            hex_bytes(value)
+        ),
+        EventAttributeValue::Node(value) => format!(
+            "{prefix}.type=node\n{prefix}.name_len={}\n{prefix}.name={}",
+            value.name.len(),
+            value.name
+        ),
+        EventAttributeValue::Event(value) => format!(
+            "{prefix}.type=event\n{prefix}.name_len={}\n{prefix}.name={}",
+            value.name.len(),
+            value.name
+        ),
+        EventAttributeValue::Fault(value) => format!(
+            "{prefix}.type=fault\n{prefix}.name_len={}\n{prefix}.name={}",
+            value.name.len(),
+            value.name
+        ),
+        EventAttributeValue::VirtualTime(value) => {
+            format!("{prefix}.type=virtual-time\n{prefix}.ticks={}", value.ticks)
+        }
+        EventAttributeValue::Icount(value) => {
+            format!("{prefix}.type=icount\n{prefix}.retired={}", value.retired)
+        }
+        EventAttributeValue::Level(value) => {
+            format!(
+                "{prefix}.type=level\n{prefix}.value={}",
+                event_level_label(*value)
+            )
+        }
+    }
+}
+
+fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("diagnostic.name_len={}", diagnostic.name.len()));
+    lines.push(format!("diagnostic.name={}", diagnostic.name));
+    lines.push(format!(
+        "diagnostic.level={}",
+        event_level_label(diagnostic.level)
+    ));
+    lines.push(event_payload_material(
+        "diagnostic.event_payload",
+        &diagnostic.event_payload(),
+    ));
+    lines.join("\n")
+}
+
+fn evaluation_boundary_kind_label(kind: SchedulerEvaluationBoundaryKind) -> &'static str {
+    match kind {
+        SchedulerEvaluationBoundaryKind::Quantum => "quantum",
+        SchedulerEvaluationBoundaryKind::Rendezvous => "rendezvous",
+    }
+}
+
+fn preemption_kind_label(kind: &PreemptionKind) -> &'static str {
+    match kind {
+        PreemptionKind::VcpuSwitch { .. } => "vcpu-switch",
+        PreemptionKind::InterruptAt { .. } => "interrupt-at",
+    }
+}
+
+fn control_fault_action_label(action: &ControlFaultAction) -> &'static str {
+    match action {
+        ControlFaultAction::Inject { .. } => "inject",
+        ControlFaultAction::Heal { .. } => "heal",
+    }
+}
+
+fn trigger_action_kind_label(action: &Action) -> &'static str {
+    match action {
+        Action::InjectFault { .. } => "inject-fault",
+        Action::HealFault { .. } => "heal-fault",
+        Action::ArmTimer { .. } => "arm-timer",
+        Action::CancelTimer { .. } => "cancel-timer",
+        Action::StartNode { .. } => "start-node",
+        Action::StopNode { .. } => "stop-node",
+        Action::CreateSavepoint { .. } => "create-savepoint",
+        Action::Fork { .. } => "fork",
+        Action::Pass => "pass",
+        Action::Fail { .. } => "fail",
+        Action::Log { .. } => "log",
+        Action::Group(_) => "group",
+    }
+}
+
 fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> SchedulerEventLogClass {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(_)
@@ -4236,7 +5009,9 @@ fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> Sche
                 SchedulerEventLogClass::Causal
             }
         }
-        SchedulerEventLogPayload::Observable(_) => SchedulerEventLogClass::Observational,
+        SchedulerEventLogPayload::Observable(_) | SchedulerEventLogPayload::Diagnostic(_) => {
+            SchedulerEventLogClass::Observational
+        }
     }
 }
 
@@ -4776,6 +5551,7 @@ pub(crate) fn scheduler_event_log_segment_bytes(
             &entry.source,
             entry.level,
             entry.class,
+            &entry.event_payload,
             &entry.payload,
         );
         lines.push(format!("entry.sequence={}", entry.sequence));
@@ -4800,6 +5576,11 @@ pub(crate) fn scheduler_event_log_segment_bytes(
         ));
         lines.push(format!("entry.level={}", event_level_label(entry.level)));
         lines.push(format!("entry.class={}", event_class_label(entry.class)));
+        lines.push(format!("entry.payload.kind={}", entry.event_payload.kind()));
+        lines.push(format!(
+            "entry.payload.attributes={}",
+            entry.event_payload.attributes().len()
+        ));
         lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
         lines.push(format!("entry.bytes={}", entry_material.len()));
         lines.push(String::from("entry.material_begin"));

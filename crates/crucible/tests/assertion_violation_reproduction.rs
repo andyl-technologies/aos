@@ -2,14 +2,17 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionViolationArtifactReplay,
-    AssertionViolationReplayError, ConditionLeaf, Decision, HostAssertionPredicate, Icount,
-    LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate, ObservableEvent, ObservedState,
-    Plan, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact,
-    RngDecision, RngStreamId, ScenarioDefForm, Schedule, SchedulerEventLogPayload, Seed,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
-    check_assertion_violation_reproduction, check_assertion_violation_reproduction_with_oracles,
+    AssertionViolationReplayError, ConditionLeaf, Decision, EventDiagnosticPayload, EventLevel,
+    HostAssertionPredicate, Icount, LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, ObservedState, Plan, Predicate, Properties, Property, ReadyPoint,
+    RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDefForm,
+    Schedule, SchedulerEventLogPayload, Seed, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
+    WorldNode, check_assertion_violation_reproduction,
+    check_assertion_violation_reproduction_with_oracles,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -117,6 +120,37 @@ fn recorded_log(marker: MarkerId) -> RecordedAssertionLog {
         .expect("violation reproduction log should fold")
 }
 
+fn event_log_with_diagnostic(marker: MarkerId) -> Vec<crucible::SchedulerEventLogEntry> {
+    let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("assertion-violation-reproduction"),
+        value: 0xa15e_0015,
+    }));
+    let diagnostic = SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+        "replay.poll",
+        EventLevel::Debug,
+        BTreeMap::new(),
+    ));
+    let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
+    let observed = ObservableEvent::guest_marker(icount(7), node("guest"), marker);
+    vec![
+        crucible::test_support::condition_payload_entry_for_test(0, time(0), decision),
+        crucible::test_support::condition_payload_entry_for_test(1, time(0), diagnostic),
+        crucible::test_support::condition_observation_entry_for_test(2, &decoy),
+        crucible::test_support::condition_observation_entry_for_test(3, &observed),
+        crucible::test_support::condition_boundary_entry_for_test(
+            4,
+            time(7),
+            crucible::SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ]
+}
+
+fn recorded_log_with_diagnostic(marker: MarkerId) -> RecordedAssertionLog {
+    let event_log = event_log_with_diagnostic(marker);
+    RecordedAssertionLog::from_segments(vec![event_log[..2].to_vec(), event_log[2..].to_vec()])
+        .expect("diagnostic reproduction log should fold")
+}
+
 fn artifact_replay(
     artifact: &ReproductionArtifact,
     assertion_log: RecordedAssertionLog,
@@ -159,6 +193,24 @@ fn violation_reproduction_replays_same_artifact_and_violation() {
 }
 
 #[test]
+fn violation_reproduction_ignores_observational_diagnostic_replay_entries() {
+    let world = world();
+    let properties = properties(&world);
+    let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
+    let recorded = recorded_log(marker_id("forbidden"));
+    let replayed = artifact_replay(
+        &artifact,
+        recorded_log_with_diagnostic(marker_id("forbidden")),
+    );
+
+    let report = check_assertion_violation_reproduction(&artifact, &recorded, &replayed)
+        .expect("diagnostic-only replay log difference should reproduce the violation");
+
+    assert_eq!(report.expected, report.reproduced);
+    assert_eq!(report.reproduced.violations().len(), 1);
+}
+
+#[test]
 fn violation_reproduction_localizes_non_reproduction_as_divergence() {
     let world = world();
     let properties = properties(&world);
@@ -174,30 +226,18 @@ fn violation_reproduction_localizes_non_reproduction_as_divergence() {
     };
 
     assert_eq!(divergence.artifact, artifact_id);
-    assert_eq!(divergence.first_different_prefix_len, 3);
+    assert_eq!(divergence.first_different_prefix_len, 4);
     assert_eq!(divergence.first_different_icount, Some(icount(7)));
     assert_eq!(divergence.bisection.artifact, artifact_id);
-    assert_eq!(divergence.bisection.last_matching_event_prefix_len, 2);
-    assert_eq!(divergence.bisection.first_different_event_prefix_len, 3);
+    assert_eq!(divergence.bisection.last_matching_event_prefix_len, 4);
+    assert_eq!(divergence.bisection.first_different_event_prefix_len, 4);
     assert_eq!(divergence.bisection.schedule_decision_count, 1);
     assert_eq!(
         divergence.bisection.first_different_decision_prefix_len,
         None
     );
-    assert_eq!(
-        divergence
-            .expected_event
-            .as_ref()
-            .map(crucible::SchedulerEventLogEntry::sequence),
-        Some(2)
-    );
-    assert_eq!(
-        divergence
-            .reproduced_event
-            .as_ref()
-            .map(crucible::SchedulerEventLogEntry::sequence),
-        Some(2)
-    );
+    assert!(divergence.expected_event.is_none());
+    assert!(divergence.reproduced_event.is_none());
     assert_eq!(
         divergence
             .expected_violation

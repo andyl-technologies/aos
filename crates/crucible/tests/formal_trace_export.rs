@@ -2,10 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use crucible::{
-    AssertionId, ConditionEvaluationError, ContentHash, ExternalFormalTraceExporter,
+    AssertionId, ConditionEvaluationError, ContentHash, EventAttributeValue,
+    EventDiagnosticPayload, EventId, EventLevel, ExternalFormalTraceExporter, FaultId,
     GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, NodeId,
-    ObservableEvent, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
+    ObservableEvent, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, VirtualTime,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -105,6 +109,100 @@ fn formal_trace_export_hex_encodes_free_form_strings() {
     assert!(!text.contains("value\nentry_end"));
     assert!(!text.contains("guest.rs\n42"));
     assert!(!text.contains("node\nzero"));
+}
+
+#[test]
+fn formal_trace_export_includes_typed_diagnostic_details() {
+    let mut details = BTreeMap::new();
+    details.insert(String::from("flag"), EventAttributeValue::Bool(true));
+    details.insert(String::from("count"), EventAttributeValue::U64(37));
+    details.insert(
+        String::from("detail\nkey"),
+        EventAttributeValue::String(String::from("value\nentry_end")),
+    );
+    details.insert(
+        String::from("bytes"),
+        EventAttributeValue::Bytes(vec![0, 10, 255]),
+    );
+    details.insert(
+        String::from("node"),
+        EventAttributeValue::Node(NodeId {
+            name: String::from("node\nzero"),
+        }),
+    );
+    details.insert(
+        String::from("event"),
+        EventAttributeValue::Event(EventId::from_name("event\nid")),
+    );
+    details.insert(
+        String::from("fault"),
+        EventAttributeValue::Fault(FaultId {
+            name: String::from("fault\nid"),
+        }),
+    );
+    details.insert(
+        String::from("time"),
+        EventAttributeValue::VirtualTime(time(9)),
+    );
+    details.insert(
+        String::from("icount"),
+        EventAttributeValue::Icount(Icount { retired: 12 }),
+    );
+    details.insert(
+        String::from("severity"),
+        EventAttributeValue::Level(EventLevel::Error),
+    );
+    let log = vec![crucible::test_support::condition_payload_entry_for_test(
+        0,
+        time(3),
+        SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+            "diag\nname",
+            EventLevel::Warn,
+            details,
+        )),
+    )];
+
+    let export =
+        ExternalFormalTraceExporter::export_event_log(&log).expect("diagnostic log should export");
+    let text = std::str::from_utf8(export.bytes()).expect("trace export should be utf-8");
+
+    assert!(text.contains("payload=diagnostic"));
+    assert!(text.contains("diagnostic.name.bytes=646961670a6e616d65"));
+    assert!(text.contains("diagnostic.level=warn"));
+    assert!(text.contains("diagnostic.details=10"));
+    for required in [
+        ".value.type=bool",
+        ".value.bool=true",
+        ".value.type=u64",
+        ".value.u64=37",
+        ".value.type=string",
+        ".value.string.bytes=76616c75650a656e7472795f656e64",
+        ".value.type=bytes",
+        ".value.bytes=000aff",
+        ".value.type=node",
+        ".value.node.bytes=6e6f64650a7a65726f",
+        ".value.type=event",
+        ".value.event.bytes=6576656e740a6964",
+        ".value.type=fault",
+        ".value.fault.bytes=6661756c740a6964",
+        ".value.type=virtual-time",
+        ".value.ticks=9",
+        ".value.type=icount",
+        ".value.retired=12",
+        ".value.type=level",
+        ".value.level=error",
+    ] {
+        assert!(
+            text.contains(required),
+            "diagnostic formal trace missing `{required}`"
+        );
+    }
+    assert!(!text.contains("diag\nname"));
+    assert!(!text.contains("detail\nkey"));
+    assert!(!text.contains("value\nentry_end"));
+    assert!(!text.contains("node\nzero"));
+    assert!(!text.contains("event\nid"));
+    assert!(!text.contains("fault\nid"));
 }
 
 #[test]

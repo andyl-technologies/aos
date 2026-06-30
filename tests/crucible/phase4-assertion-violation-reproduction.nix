@@ -181,15 +181,23 @@
       }
       {
         label = "divergence prefix assertion";
-        needle = "assert_eq!(divergence.first_different_prefix_len, 3)";
+        needle = "assert_eq!(divergence.first_different_prefix_len, 4)";
       }
       {
         label = "bisection request assertion";
-        needle = "assert_eq!(divergence.bisection.first_different_event_prefix_len, 3)";
+        needle = "assert_eq!(divergence.bisection.first_different_event_prefix_len, 4)";
       }
       {
         label = "divergence icount assertion";
         needle = "assert_eq!(divergence.first_different_icount, Some(icount(7)))";
+      }
+      {
+        label = "observational diagnostic replay nonperturbation test";
+        needle = "violation_reproduction_ignores_observational_diagnostic_replay_entries";
+      }
+      {
+        label = "report-only divergence has no event";
+        needle = "assert!(divergence.expected_event.is_none())";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

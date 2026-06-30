@@ -829,10 +829,16 @@ log, so they cannot disagree about what happened.
   node-local stamps), `EventSource`, `EventLevel`, and `EventClass`;
   command-caused entries preserve `Command { command_id }` correlation, and
   append material includes the schema fields in the content-addressed segment.
-- [ ] **T-OBS-3** Implement the open-set, typed `payload` (kind + named typed
+- [x] **T-OBS-3** Implement the open-set, typed `payload` (kind + named typed
   attributes, `diagnostic` escape hatch) read by name, and the orthogonal
   `Level`-vs-`EventClass` rule (level never consulted by the comparison). —
   satisfies [OBS-10], [OBS-11], [OBS-12]; spec §19.2.2, §19.2.3.
+  Completed by `checks.crucible.phase4.eventLogPayload`: `LogEntry` now stores an
+  open-set `EventPayload` projection with a kind string and typed named
+  `EventAttributeValue` fields, exposes name/type accessors for projections,
+  includes that payload view in canonical entry and segment material, and carries
+  a typed `diagnostic` escape hatch whose display `EventLevel` stays independent
+  from `EventClass`.
 - [ ] **T-OBS-4** Bake the causal/observational split into the schema: class is a
   function of the payload kind set at the typed append site, with a lint that
   rejects any append whose class mismatches the catalog. — satisfies [OBS-13],
