@@ -1620,8 +1620,18 @@ in {
           args = [ ./resume-build.sh ];
         }
         NIX
-        substitute_fixture_paths "$work/resume-build.sh"
-        substitute_fixture_paths "$work/resume-fixture.nix"
+        ${pkgs.python3}/bin/python3 - "$work/resume-build.sh" "$work/resume-fixture.nix" \
+          '${pkgs.bash}' '${pkgs.coreutils}' << 'PY'
+        from pathlib import Path
+        import sys
+        for p in sys.argv[1:3]:
+            path = Path(p)
+            path.write_text(
+                path.read_text()
+                .replace("@AOS_BASH@", sys.argv[3])
+                .replace("@AOS_COREUTILS@", sys.argv[4])
+            )
+        PY
         resume_store=$(nix_build "$work/resume-fixture.nix" --no-out-link)
         # The release pipeline now generates and uploads the static cache
         # before creating the signed tag, so a partially-interrupted release
