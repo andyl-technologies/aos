@@ -3995,17 +3995,18 @@ alone (`M-1`/`Q-A`).
       native cache root for the cold-cache leg, clears `native_cache_root` for
       the cache-off leg, rejects direct `.drv` pair mode and `--oracle-stats`,
       renders machine-readable JSON with per-comparison roots/divergences and
-      per-attr cold roots, removes successful cold roots, retains failing cold
-      roots, and reports a reproduction command carrying `--cache-validation`
-      on failures. This is a runnable command-level validation hook only;
+      per-attr cold roots in accepted byte-mode full-closure fixtures, removes
+      successful cold roots, retains failing cold roots, and reports a
+      reproduction command carrying `--cache-validation` on failures. This is a
+      runnable command-level validation hook only;
       scheduled CI wiring, full AOS package-set closure coverage on Linux,
       syscall-level cache-off no-read proof, and full future value-memoization
       safety remain open. Gates:
       `nix_diff_parses_cache_validation`,
       `nix_diff_cache_validation_rejects_incompatible_modes`,
       `cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache`,
-      `cache_validation_json_renders_matrix_failures`, and
-      `cache_validation_cleanup_removes_only_successful_cold_roots`
+      `cache_validation_json_renders_full_closure_matrix_failures`, and
+      `cache_validation_full_closure_cleanup_removes_only_successful_cold_roots`
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation full-closure matrix unit witness:
       `cache_validation_attr_report` is covered in `DiffMode::Byte` and

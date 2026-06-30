@@ -3174,10 +3174,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_validation_json_renders_matrix_failures() {
-        let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
-        let cache_off = FixedEval::new("cache-off", "/nix/store/oracle.drv");
-        let cold_cache = FixedEval::new("cold-cache", "/nix/store/cold.drv");
+    fn cache_validation_json_renders_full_closure_matrix_failures() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let cache_off = FixedClosureEval::new("cache-off", root, "same");
+        let cold_cache = FixedClosureEval::new("cold-cache", root, "cold");
         let report = cache_validation_attr_report(
             &oracle,
             &cache_off,
@@ -3185,7 +3186,7 @@ mod tests {
             PathBuf::from("/tmp/aos-cold-cache"),
             Path::new("default.nix"),
             "pkgs.hello",
-            DiffMode::Path,
+            DiffMode::Byte,
         );
         let reports = vec![report];
         let failure = cache_validation_failure(&reports);
@@ -3194,11 +3195,12 @@ mod tests {
             &reports,
             &repro_config(),
             Path::new("default.nix"),
-            DiffMode::Path,
+            DiffMode::Byte,
             failure.as_ref(),
         );
 
         assert_eq!(value["cache_validation"], true);
+        assert_eq!(value["mode"], "byte");
         assert_eq!(value["matched"], false);
         assert_eq!(value["attrs_checked"], 1);
         assert_eq!(value["attrs_failed"], 1);
@@ -3211,7 +3213,7 @@ mod tests {
         assert_eq!(value["reports"][0]["cold_cache_root_retained"], true);
         assert_eq!(
             value["reports"][0]["reproduce"],
-            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=path --cache-validation -- default.nix"
+            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte --cache-validation -- default.nix"
         );
         assert_eq!(
             value["reports"][0]["comparisons"][0]["name"],
@@ -3224,24 +3226,29 @@ mod tests {
         );
         assert_eq!(value["reports"][0]["comparisons"][1]["matched"], false);
         assert_eq!(
+            value["reports"][0]["comparisons"][1]["divergences"][0]["kind"],
+            "bytes"
+        );
+        assert_eq!(
             value["reports"][0]["comparisons"][2]["name"],
             "cache_off_vs_cold_cache"
         );
         assert_eq!(
             value["reports"][0]["comparisons"][2]["divergences"][0]["kind"],
-            "root_path"
+            "bytes"
         );
     }
 
     #[test]
-    fn cache_validation_cleanup_removes_only_successful_cold_roots() -> Result<()> {
+    fn cache_validation_full_closure_cleanup_removes_only_successful_cold_roots() -> Result<()> {
         let matching_root = tempfile::tempdir()?;
         let failing_root = tempfile::tempdir()?;
-        let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
-        let matching_cache_off = FixedEval::new("matching-cache-off", "/nix/store/oracle.drv");
-        let matching_cold = FixedEval::new("matching-cold", "/nix/store/oracle.drv");
-        let failing_cache_off = FixedEval::new("failing-cache-off", "/nix/store/oracle.drv");
-        let failing_cold = FixedEval::new("failing-cold", "/nix/store/cold.drv");
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let matching_cache_off = FixedClosureEval::new("matching-cache-off", root, "same");
+        let matching_cold = FixedClosureEval::new("matching-cold", root, "same");
+        let failing_cache_off = FixedClosureEval::new("failing-cache-off", root, "same");
+        let failing_cold = FixedClosureEval::new("failing-cold", root, "cold");
         let matching_path = matching_root.keep();
         let failing_path = failing_root.keep();
         let matching = cache_validation_attr_report(
@@ -3251,7 +3258,7 @@ mod tests {
             matching_path.clone(),
             Path::new("default.nix"),
             "pkgs.matching",
-            DiffMode::Path,
+            DiffMode::Byte,
         );
         let failing = cache_validation_attr_report(
             &oracle,
@@ -3260,7 +3267,7 @@ mod tests {
             failing_path.clone(),
             Path::new("default.nix"),
             "pkgs.failing",
-            DiffMode::Path,
+            DiffMode::Byte,
         );
 
         cleanup_successful_cache_validation_roots(&[matching, failing]);
