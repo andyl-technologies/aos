@@ -503,6 +503,125 @@ fn source_less_synthetic_builtin_attr_current_system_thunks_hit_with_matching_op
 }
 
 #[test]
+fn synthetic_builtin_attr_current_system_ignores_unrelated_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-synthetic-current-system-narrow-options");
+    let source = "let b = builtins; in { a = b.currentSystem; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options
+        .set_store_dir(path_bytes(&root.join("store-a")))
+        .expect("store dir is absolute");
+    first_options
+        .set_search_path_base(path_bytes(&root.join("search-a")))
+        .expect("search base is absolute");
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-a")))
+        .expect("nixPath entry configures");
+    first_options
+        .set_home_dir(path_bytes(&root.join("home-a")))
+        .expect("home dir is absolute");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime is valid");
+    first_options
+        .set_corepkgs_path(path_bytes(&root.join("corepkgs-a")))
+        .expect("corepkgs path is absolute");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path literal base is absolute");
+    first_options
+        .add_allowed_path(path_bytes(&root.join("allowed-a")))
+        .expect("allowed path is absolute");
+    first_options
+        .add_allowed_uri(b"https://cache-a.example/".to_vec())
+        .expect("allowed uri configures");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-current-system-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("currentSystem result is a string")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut changed_options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    changed_options
+        .set_store_dir(path_bytes(&root.join("store-b")))
+        .expect("store dir is absolute");
+    changed_options
+        .set_search_path_base(path_bytes(&root.join("search-b")))
+        .expect("search base is absolute");
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-b")))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_home_dir(path_bytes(&root.join("home-b")))
+        .expect("home dir is absolute");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime is valid");
+    changed_options
+        .set_corepkgs_path(path_bytes(&root.join("corepkgs-b")))
+        .expect("corepkgs path is absolute");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path literal base is absolute");
+    changed_options
+        .add_allowed_path(path_bytes(&root.join("allowed-b")))
+        .expect("allowed path is absolute");
+    changed_options
+        .add_allowed_uri(b"https://cache-b.example/".to_vec())
+        .expect("allowed uri configures");
+    changed_options.set_eval_mode(EvalMode::Restricted);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-current-system-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(forced)
+            .expect("cached currentSystem result rehydrates")
+            .bytes(),
+        b"x86_64-linux"
+    );
+    assert_eq!(
+        changed.stats().cache_hits(),
+        1,
+        "unchanged currentSystem should hit across unrelated option changes"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "synthetic currentSystem should not allocate a second node for unrelated option changes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn synthetic_builtin_attr_nix_path_thunks_hit_and_miss_by_search_path_salt() {
     let root = unique_temp_dir("force-cache-synthetic-nix-path");
     let first_root = root.join("first");
@@ -667,6 +786,100 @@ fn synthetic_builtin_attr_store_dir_thunks_hit_and_miss_by_store_dir_salt() {
 }
 
 #[test]
+fn synthetic_builtin_attr_store_dir_ignores_unrelated_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-synthetic-store-dir-narrow-options");
+    let store = root.join("store");
+    let source = "let b = builtins; in { a = b.storeDir; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_store_dir(path_bytes(&store))
+        .expect("store dir is absolute");
+    first_options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime is valid");
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-a")))
+        .expect("nixPath entry configures");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path literal base is absolute");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-store-dir-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(forced)
+            .expect("storeDir result is a string")
+            .bytes(),
+        path_bytes(&store).as_slice()
+    );
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_store_dir(path_bytes(&store))
+        .expect("store dir is absolute");
+    changed_options
+        .set_current_system(b"aarch64-linux".to_vec())
+        .expect("currentSystem is valid");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime is valid");
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-b")))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path literal base is absolute");
+    changed_options.set_eval_mode(EvalMode::Pure);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-store-dir-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(forced)
+            .expect("cached storeDir result rehydrates")
+            .bytes(),
+        path_bytes(&store).as_slice()
+    );
+    assert_eq!(
+        changed.stats().cache_hits(),
+        1,
+        "unchanged storeDir should hit across unrelated option changes"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "synthetic storeDir should not allocate a second node for unrelated option changes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
 fn synthetic_builtin_attr_immediate_constants_force_from_reified_attrset() {
     let source = "let b = builtins; in { t = b.true; f = b.false; n = b.null; }";
     let ir = lower(source);
@@ -692,6 +905,329 @@ fn synthetic_builtin_attr_immediate_constants_force_from_reified_attrset() {
         3,
         "reified immediate constants should observe separate synthetic nodes"
     );
+}
+
+#[test]
+fn synthetic_builtin_attr_immediate_constants_ignore_all_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-synthetic-immediate-narrow-options");
+    let source = "let b = builtins; in { a = b.true; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_store_dir(path_bytes(&root.join("store-a")))
+        .expect("store dir is absolute");
+    first_options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime is valid");
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-a")))
+        .expect("nixPath entry configures");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path literal base is absolute");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-immediate-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    assert_eq!(force_attr_a(&mut first, &ir, a).as_bool(), Ok(true));
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_store_dir(path_bytes(&root.join("store-b")))
+        .expect("store dir is absolute");
+    changed_options
+        .set_current_system(b"aarch64-linux".to_vec())
+        .expect("currentSystem is valid");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime is valid");
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-b")))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path literal base is absolute");
+    changed_options.set_eval_mode(EvalMode::Pure);
+    changed_options.set_reject_ambient_search_path(true);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-immediate-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    assert_eq!(force_attr_a(&mut changed, &ir, a).as_bool(), Ok(true));
+    assert_eq!(
+        changed.stats().cache_hits(),
+        1,
+        "immediate synthetic constants should hit across evaluator option changes"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "synthetic immediate constants should not allocate a second node for option changes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn synthetic_builtin_attr_version_constants_ignore_all_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-synthetic-version-narrow-options");
+    let source = "let b = builtins; in { n = b.nixVersion; l = b.langVersion; }";
+    let ir = lower(source);
+    let n = symbol_for(&ir, b"n");
+    let l = symbol_for(&ir, b"l");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_store_dir(path_bytes(&root.join("store-a")))
+        .expect("store dir is absolute");
+    first_options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime is valid");
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-a")))
+        .expect("nixPath entry configures");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path literal base is absolute");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-version-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let nix_version = force_attr(&mut first, &ir, n, "n");
+    assert_eq!(
+        first
+            .heap()
+            .get_string(nix_version)
+            .expect("nixVersion result is a string")
+            .bytes(),
+        PINNED_NIX_VERSION
+    );
+    assert_eq!(
+        force_attr(&mut first, &ir, l, "l").as_int(),
+        Ok(PINNED_NIX_LANG_VERSION)
+    );
+    assert_eq!(first.stats().cache_misses(), 2);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .set_store_dir(path_bytes(&root.join("store-b")))
+        .expect("store dir is absolute");
+    changed_options
+        .set_current_system(b"aarch64-linux".to_vec())
+        .expect("currentSystem is valid");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime is valid");
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-b")))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path literal base is absolute");
+    changed_options.set_eval_mode(EvalMode::Pure);
+    changed_options.set_reject_ambient_search_path(true);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-version-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let nix_version = force_attr(&mut changed, &ir, n, "n");
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(nix_version)
+            .expect("cached nixVersion result rehydrates")
+            .bytes(),
+        PINNED_NIX_VERSION
+    );
+    assert_eq!(
+        force_attr(&mut changed, &ir, l, "l").as_int(),
+        Ok(PINNED_NIX_LANG_VERSION)
+    );
+    assert_eq!(
+        changed.stats().cache_hits(),
+        2,
+        "version synthetic constants should hit across evaluator option changes"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "synthetic version constants should not allocate new nodes for option changes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn synthetic_builtin_attr_nix_path_ignores_unrelated_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-synthetic-nix-path-narrow-options");
+    let nix_root = root.join("nix");
+    let source = "let b = builtins; in { a = b.nixPath; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&nix_root))
+        .expect("nixPath entry configures");
+    first_options
+        .set_store_dir(path_bytes(&root.join("store-a")))
+        .expect("store dir is absolute");
+    first_options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem is valid");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime is valid");
+    first_options
+        .add_allowed_uri(b"https://cache-a.example/".to_vec())
+        .expect("allowed uri configures");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path literal base is absolute");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-nix-path-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_single_nix_path_entry(&first, forced, b"pkg", &path_bytes(&nix_root));
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&nix_root))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_store_dir(path_bytes(&root.join("store-b")))
+        .expect("store dir is absolute");
+    changed_options
+        .set_current_system(b"aarch64-linux".to_vec())
+        .expect("currentSystem is valid");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime is valid");
+    changed_options
+        .add_allowed_uri(b"https://cache-b.example/".to_vec())
+        .expect("allowed uri configures");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path literal base is absolute");
+    changed_options.set_eval_mode(EvalMode::Restricted);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-nix-path-narrow-options.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_single_nix_path_entry(&changed, forced, b"pkg", &path_bytes(&nix_root));
+    assert_eq!(
+        changed.stats().cache_hits(),
+        1,
+        "unchanged visible nixPath should hit across unrelated option changes"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "synthetic nixPath should not allocate a second node for unrelated option changes"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn synthetic_builtin_attr_nix_path_pure_mode_ignores_hidden_configured_entries() {
+    let root = unique_temp_dir("force-cache-synthetic-nix-path-pure-hidden");
+    let first_root = root.join("first");
+    let second_root = root.join("second");
+    let source = "let b = builtins; in { a = b.nixPath; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options.set_eval_mode(EvalMode::Pure);
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&first_root))
+        .expect("first hidden nixPath entry configures");
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        "synthetic-nix-path-pure-hidden.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut first, &ir, a);
+    assert_empty_nix_path(&first, forced);
+    assert_eq!(first.stats().cache_misses(), 1);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options.set_eval_mode(EvalMode::Pure);
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&second_root))
+        .expect("second hidden nixPath entry configures");
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        "synthetic-nix-path-pure-hidden.nix",
+        source,
+        cache.clone(),
+    );
+    let forced = force_attr_a(&mut changed, &ir, a);
+    assert_empty_nix_path(&changed, forced);
+    assert_eq!(
+        changed.stats().cache_hits(),
+        1,
+        "pure-mode builtins.nixPath should ignore hidden configured entries"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "hidden pure-mode nixPath entries should share one synthetic node"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
 }
 
 #[test]
@@ -909,4 +1445,12 @@ fn assert_single_nix_path_entry(evaluator: &TreeWalk, value: Value, prefix: &[u8
     }
     assert_eq!(actual_prefix.as_deref(), Some(prefix));
     assert_eq!(actual_path.as_deref(), Some(path));
+}
+
+fn assert_empty_nix_path(evaluator: &TreeWalk, value: Value) {
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("nixPath result is a list");
+    assert_eq!(list.len(), 0);
 }

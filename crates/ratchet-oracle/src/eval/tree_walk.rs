@@ -510,6 +510,7 @@ struct ForceCacheOptionsIdentity {
     current_time: Option<i64>,
     eval_mode: EvalMode,
     reject_ambient_search_path: bool,
+    reject_unconfigured_impure_builtin_constants: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

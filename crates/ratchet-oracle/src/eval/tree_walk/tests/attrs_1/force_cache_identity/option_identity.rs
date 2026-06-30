@@ -449,6 +449,19 @@ fn source_backed_forced_inline_thunks_include_ambient_search_path_rejection_in_c
 }
 
 #[test]
+fn source_backed_forced_inline_thunks_include_impure_builtin_rejection_in_cache_identity() {
+    let first_options = TreeWalkOptions::new();
+    let mut second_options = TreeWalkOptions::new();
+    second_options.set_reject_unconfigured_impure_builtin_constants(true);
+
+    assert_source_backed_options_allocate_distinct_nodes(
+        first_options,
+        second_options,
+        "same source bytes under different impure builtin rejection must not reuse one demand node",
+    );
+}
+
+#[test]
 fn source_backed_forced_inline_thunks_include_home_dir_in_cache_identity() {
     let root = unique_temp_dir("force-cache-home-dir");
     let first_home = root.join("home-a");

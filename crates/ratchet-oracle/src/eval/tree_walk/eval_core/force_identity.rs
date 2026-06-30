@@ -1503,13 +1503,13 @@ impl TreeWalk {
         builtin: Builtin,
     ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(site.module().index())?;
-        let module_hash = Self::cache_module_identity_hash(module)?;
         let site_node = module.ir.arena.node(site.id())?;
         let symbol_name = self
             .symbols
             .resolve(symbol)
             .unwrap_or_else(|| builtin.name());
         let execution = builtin.execution();
+        let module_hash = Self::cache_synthetic_builtin_module_identity_hash(module, execution)?;
         let execution_bytes = Self::builtin_execution_cache_identity_bytes(execution)?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION);

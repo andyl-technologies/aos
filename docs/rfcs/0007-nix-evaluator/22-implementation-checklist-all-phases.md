@@ -781,8 +781,9 @@ alone (`M-1`/`Q-A`).
       identities now hash the module's `store_dir`, search-path base, configured
       `nix_path` entries, hidden corepkgs path, `home_dir`, configured
       `current_system`, configured `current_time`, `eval_mode`, and
-      ambient-search-path rejection alongside source name or lowered-IR
-      fingerprint, path-literal base, lowered node source span, and IR node id.
+      ambient-search-path rejection plus unconfigured-impure-builtin rejection
+      alongside source name or lowered-IR fingerprint, path-literal base,
+      lowered node source span, and IR node id.
       This prevents the current admitted force-cache path from sharing inline
       payloads across evaluator configurations that can change path/context,
       search-path resolution, ambient builtin constants, impurity-policy
@@ -799,14 +800,22 @@ alone (`M-1`/`Q-A`).
       observation-only and remains uncacheable through its existing impure
       trace. Matching configured `currentSystem`, `storeDir`, and `nixPath`
       thunks can now hit as context-free string or replayable list payloads,
-      while changed `currentSystem`, `storeDir`, or `nixPath` options miss
-      through the expanded option identity salt.
+      while changed `currentSystem`, `storeDir`, or `nixPath` values still miss
+      through builtin-specific synthetic identity inputs.
       Reified `builtins` attrset entries for those constants are now delayed
       synthetic builtin-attr thunks, so constructing the attrset does not force
       `currentTime`, and runtime selections such as
       `let b = builtins; in b.currentSystem` use synthetic identities keyed by
-      module identity, force-site `IrId` and lowered source span, builtin
-      symbol, and execution tag. The observation-only `currentTime`
+      source/lowered-IR identity, force-site `IrId` and lowered source span,
+      builtin symbol, execution tag, and only the
+      evaluator-option fields observable by that builtin. Thus immediate
+      constants ignore evaluator options and path-literal base, version
+      constants ignore evaluator options and path-literal base while keying on
+      their pinned version/langVersion values,
+      `storeDir` keys only on `store_dir`, `currentSystem` keys on
+      `current_system` plus pure/non-pure visibility, and `nixPath` keys on
+      visible search-path inputs plus ambient-search-path rejection. The
+      observation-only `currentTime`
       canaries assert that ordinary forcing leaves persistent force metadata
       and trace sidecars empty, while seeded stale durable node-thunk and
       synthetic builtin-attr `currentTime` payloads are cleared and tombstoned
@@ -816,9 +825,12 @@ alone (`M-1`/`Q-A`).
       remaining dynamic/unhashable select thunks,
       broader persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
-      hit/miss, direct ambient/source-less nixPath hit/miss, synthetic storeDir
-      hit/miss/symbol-separation, synthetic nixPath hit/miss by search-path
-      option salt, synthetic force-site span separation, synthetic immediate
+      hit/miss, direct ambient/source-less nixPath hit/miss, synthetic
+      currentSystem/storeDir/nixPath/immediate/version unrelated-option hit canaries,
+      synthetic pure-hidden nixPath entry sharing, synthetic storeDir
+      hit/miss/symbol-separation, synthetic nixPath hit/miss by visible
+      search-path inputs, synthetic force-site span separation,
+      synthetic immediate
       constants, reified currentTime laziness, stale synthetic
       currentTime runtime payload invalidation, observation-only currentTime
       sidecar-empty and stale-durable tombstone canaries, and source-backed/source-less
@@ -826,15 +838,21 @@ alone (`M-1`/`Q-A`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and
       `symbols.bin` artifact encodings under the parse-cache schema version,
-      and tree-walk uses that digest when a module has no source provenance
-      before applying the same path-literal-base, `store_dir`, `home_dir`,
-      configured `current_system`, configured `current_time`, and `eval_mode`
-      salts plus lowered node and synthetic force-site source spans. This lets
-      caller-owned in-memory cache runtimes share conservative source-less
-      lowered-IR node-thunk and admitted synthetic builtin-attr payloads without
-      requiring source bytes, while still separating equal-shaped IR whose symbol
-      tables, path bases, evaluator options, node spans, or synthetic force-site
-      spans differ. It is a
+      and tree-walk uses that digest when a module has no source provenance.
+      Source-less node-thunk identities then apply the same path-literal-base,
+      `store_dir`, search-path base, configured `nix_path` entries, hidden
+      corepkgs path, `home_dir`, configured `current_system`, configured
+      `current_time`, `eval_mode`, ambient-search-path rejection, and
+      unconfigured-impure-builtin rejection salts plus the lowered node source
+      span. Source-less synthetic builtin-attr identities reuse the lowered-IR
+      fingerprint and synthetic force-site source span but deliberately omit
+      path-literal-base and the broad evaluator-option salt, adding only the
+      option fields observable by the selected builtin. This lets caller-owned
+      in-memory cache runtimes share conservative source-less lowered-IR
+      node-thunk and admitted synthetic builtin-attr payloads without requiring
+      source bytes, while still separating equal-shaped IR whose symbol tables,
+      node spans, synthetic force-site spans, or relevant evaluator options
+      differ. It is a
       source-independent identity substrate only; broader source-less raw eval
       surfaces, synthetic apply thunks, remaining dynamic/unhashable select
       thunk surfaces, remaining composite payloads, persistence,
@@ -995,8 +1013,9 @@ alone (`M-1`/`Q-A`).
       `IrId`/symbol/execution identity. This moves the current
       identity shape toward the RFC `source content hash + IR node position` key
       while preserving the existing source-byte/lowered-IR fingerprint,
-      path-literal-base, evaluator-option salt, synthetic builtin
-      symbol/execution behavior, and ordered free-variable value-hash behavior. Full cache-key integration still
+      path-literal-base and evaluator-option salt for node-thunk identities,
+      synthetic builtin symbol/execution behavior, builtin-specific option
+      salting, and ordered free-variable value-hash behavior. Full cache-key integration still
       requires canonical strictness/escape free-variable sets, real durable value
       hashes for all admitted values, persistent key compatibility decisions,
       and the cached/uncached false-hit harness. The gate covers source-backed

@@ -33,11 +33,13 @@ impl ForceCacheOptionsIdentity {
             current_time: options.current_time(),
             eval_mode: options.eval_mode(),
             reject_ambient_search_path: options.reject_ambient_search_path(),
+            reject_unconfigured_impure_builtin_constants: options
+                .reject_unconfigured_impure_builtin_constants(),
         }
     }
 
     fn update_cache_identity(&self, hasher: &mut blake3::Hasher) -> Option<()> {
-        hasher.update(b"force-cache-options-v3");
+        hasher.update(b"force-cache-options-v4");
         hasher.update(b"store-dir");
         TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
         hasher.update(b"search-path-base");
@@ -105,6 +107,8 @@ impl ForceCacheOptionsIdentity {
         hasher.update(self.eval_mode_cache_identity_bytes());
         hasher.update(b"reject-ambient-search-path");
         hasher.update(&[u8::from(self.reject_ambient_search_path)]);
+        hasher.update(b"reject-unconfigured-impure-builtin-constants");
+        hasher.update(&[u8::from(self.reject_unconfigured_impure_builtin_constants)]);
         Some(())
     }
 
@@ -114,6 +118,128 @@ impl ForceCacheOptionsIdentity {
             EvalMode::Restricted => b"restricted",
             EvalMode::Pure => b"pure",
         }
+    }
+
+    fn update_synthetic_builtin_cache_identity(
+        &self,
+        hasher: &mut blake3::Hasher,
+        execution: BuiltinExecution,
+    ) -> Option<()> {
+        hasher.update(b"force-cache-synthetic-builtin-options-v1");
+        match execution {
+            BuiltinExecution::TrueValue
+            | BuiltinExecution::FalseValue
+            | BuiltinExecution::NullValue => {
+                hasher.update(b"no-option-dependencies");
+            }
+            BuiltinExecution::NixVersionValue => {
+                hasher.update(b"nix-version");
+                TreeWalk::update_cache_identity_chunk(hasher, PINNED_NIX_VERSION)?;
+            }
+            BuiltinExecution::LangVersionValue => {
+                hasher.update(b"lang-version");
+                hasher.update(&PINNED_NIX_LANG_VERSION.to_le_bytes());
+            }
+            BuiltinExecution::CurrentSystemValue => {
+                hasher.update(b"current-system");
+                self.update_synthetic_impure_constant_cache_identity(
+                    hasher,
+                    b"current-system-value",
+                    self.current_system.as_deref(),
+                )?;
+            }
+            BuiltinExecution::CurrentTimeValue => {
+                hasher.update(b"current-time");
+                let visible = self.eval_mode != EvalMode::Pure;
+                if visible {
+                    hasher.update(b"impure-constant-visible");
+                } else {
+                    hasher.update(b"impure-constant-hidden");
+                }
+                if visible {
+                    match self.current_time {
+                        Some(current_time) => {
+                            hasher.update(b"current-time-value");
+                            hasher.update(&current_time.to_le_bytes());
+                        }
+                        None => {
+                            hasher.update(b"no-current-time-value");
+                            hasher.update(b"reject-unconfigured-impure-builtin-constants");
+                            hasher.update(&[u8::from(
+                                self.reject_unconfigured_impure_builtin_constants,
+                            )]);
+                        }
+                    }
+                } else {
+                    hasher.update(b"reject-unconfigured-impure-builtin-constants");
+                    hasher.update(&[u8::from(self.reject_unconfigured_impure_builtin_constants)]);
+                }
+            }
+            BuiltinExecution::StoreDirValue => {
+                hasher.update(b"store-dir");
+                TreeWalk::update_cache_identity_chunk(hasher, &self.store_dir)?;
+            }
+            BuiltinExecution::NixPathValue => {
+                hasher.update(b"nix-path");
+                hasher.update(b"reject-ambient-search-path");
+                hasher.update(&[u8::from(self.reject_ambient_search_path)]);
+                if self.reject_ambient_search_path {
+                    return Some(());
+                }
+                let visible = self.eval_mode != EvalMode::Pure;
+                if visible {
+                    hasher.update(b"nix-path-visible");
+                } else {
+                    hasher.update(b"nix-path-hidden");
+                }
+                if !visible {
+                    return Some(());
+                }
+                let nix_path_len = u64::try_from(self.nix_path.len()).ok()?;
+                hasher.update(&nix_path_len.to_le_bytes());
+                for entry in &self.nix_path {
+                    hasher.update(b"entry-prefix");
+                    TreeWalk::update_cache_identity_chunk(hasher, entry.prefix())?;
+                    hasher.update(b"entry-path");
+                    TreeWalk::update_cache_identity_chunk(hasher, entry.path())?;
+                }
+            }
+            _ => {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    fn update_synthetic_impure_constant_cache_identity(
+        &self,
+        hasher: &mut blake3::Hasher,
+        value_label: &'static [u8],
+        value: Option<&[u8]>,
+    ) -> Option<()> {
+        let visible = self.eval_mode != EvalMode::Pure;
+        if visible {
+            hasher.update(b"impure-constant-visible");
+        } else {
+            hasher.update(b"impure-constant-hidden");
+        }
+        if visible {
+            match value {
+                Some(value) => {
+                    hasher.update(value_label);
+                    TreeWalk::update_cache_identity_chunk(hasher, value)?;
+                }
+                None => {
+                    hasher.update(b"no-impure-constant-value");
+                    hasher.update(b"reject-unconfigured-impure-builtin-constants");
+                    hasher.update(&[u8::from(self.reject_unconfigured_impure_builtin_constants)]);
+                }
+            }
+        } else {
+            hasher.update(b"reject-unconfigured-impure-builtin-constants");
+            hasher.update(&[u8::from(self.reject_unconfigured_impure_builtin_constants)]);
+        }
+        Some(())
     }
 }
 

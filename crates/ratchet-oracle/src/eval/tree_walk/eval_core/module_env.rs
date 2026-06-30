@@ -6,32 +6,58 @@ impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        Self::update_cache_module_source_identity(&mut hasher, module, true)?;
+        module
+            .force_cache_options
+            .update_cache_identity(&mut hasher)?;
+        Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    pub(super) fn cache_synthetic_builtin_module_identity_hash(
+        module: &TreeWalkModule,
+        execution: BuiltinExecution,
+    ) -> Option<DurableBlake3Hash> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        Self::update_cache_module_source_identity(&mut hasher, module, false)?;
+        module
+            .force_cache_options
+            .update_synthetic_builtin_cache_identity(&mut hasher, execution)?;
+        Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    fn update_cache_module_source_identity(
+        hasher: &mut blake3::Hasher,
+        module: &TreeWalkModule,
+        include_path_literal_base: bool,
+    ) -> Option<()> {
         match &module.source {
             Some(source) => {
                 hasher.update(b"source-v1");
-                Self::update_cache_identity_chunk(&mut hasher, &source.name)?;
-                Self::update_cache_identity_chunk(&mut hasher, &source.bytes)?;
+                Self::update_cache_identity_chunk(hasher, &source.name)?;
+                Self::update_cache_identity_chunk(hasher, &source.bytes)?;
             }
             None => {
                 hasher.update(b"lowered-ir-v1");
                 let ir_hash = lowered_ir_fingerprint(&module.ir).ok()?;
                 let ir_hash_bytes = ir_hash.as_bytes();
-                Self::update_cache_identity_chunk(&mut hasher, &ir_hash_bytes)?;
+                Self::update_cache_identity_chunk(hasher, &ir_hash_bytes)?;
             }
         }
-        match &module.path_literal_base {
-            Some(path_literal_base) => {
-                hasher.update(b"path-literal-base");
-                Self::update_cache_identity_chunk(&mut hasher, path_literal_base)?;
+        if include_path_literal_base {
+            match &module.path_literal_base {
+                Some(path_literal_base) => {
+                    hasher.update(b"path-literal-base");
+                    Self::update_cache_identity_chunk(hasher, path_literal_base)?;
+                }
+                None => {
+                    hasher.update(b"no-path-literal-base");
+                }
             }
-            None => {
-                hasher.update(b"no-path-literal-base");
-            }
-        };
-        module
-            .force_cache_options
-            .update_cache_identity(&mut hasher)?;
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        } else {
+            hasher.update(b"path-literal-base-ignored");
+        }
+        Some(())
     }
 
     pub(super) fn update_cache_identity_chunk(
