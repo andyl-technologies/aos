@@ -12,12 +12,20 @@
 //!
 //! ```text
 //! nix eval --json \
-//!   --pure-eval \                                  # blocks impurity
 //!   --option restrict-eval true \                  # read only the eval root + store
 //!   --option allow-import-from-derivation false \  # no IFD ⇒ no build sneaks in
 //!   -I <root> \
 //!   -f <root>/entry.nix manifest
 //! ```
+//!
+//! Note: this uses `restrict-eval` but NOT `--pure-eval`. Pure-eval forbids
+//! importing any absolute path or `<search-path>`, so it cannot even load the
+//! in-image base-lib by store path. `restrict-eval` permits store paths and the
+//! `-I` roots while still blocking arbitrary filesystem access; paired with
+//! `allow-import-from-derivation = false` and the `aos-eval.service` cgroup
+//! limits (`MemoryMax` / `RuntimeMaxSec`), it is the correct sandbox. The
+//! manifest is build-graph-free by construction (frozen `pkgs`, no builder
+//! functions — see `lib/build/freeze-pkgs.nix`), so no impurity can sneak in.
 //!
 //! `entry.nix` is regenerated each iteration from the current working set, with
 //! the verified `host.nix` injected as an operator-provenance module (the
@@ -83,7 +91,7 @@ impl StockNixEvaluator {
             \x20   configModules = {modules};\n\
             \x20 }};\n\
              in {{\n\
-            \x20 manifest = system.config.system.build.manifest;\n\
+            \x20 manifest = system.config.system.build.configManifest;\n\
              }}\n",
             base = nix_path(attempt.base_lib),
             host = nix_path(attempt.host_nix),
@@ -109,7 +117,11 @@ impl NixEvaluator for StockNixEvaluator {
         let mut cmd = Command::new("nix");
         cmd.arg("eval")
             .arg("--json")
-            .arg("--pure-eval")
+            // `restrict-eval` WITHOUT `--pure-eval`: pure-eval forbids importing
+            // the base-lib by absolute store path, which this evaluator must do.
+            // restrict-eval still confines reads to the store + `-I` roots, and
+            // the manifest is build-graph-free (frozen pkgs), so no impurity is
+            // reachable. See the module-level docs.
             .args(["--option", "restrict-eval", "true"])
             .args(["--option", "allow-import-from-derivation", "false"])
             .arg("-I")
@@ -271,7 +283,7 @@ mod tests {
             text.contains("import /nix/store/hash-firewall-config/module.nix"),
             "{text}"
         );
-        assert!(text.contains("manifest = system.config.system.build.manifest"));
+        assert!(text.contains("manifest = system.config.system.build.configManifest"));
     }
 
     #[test]
