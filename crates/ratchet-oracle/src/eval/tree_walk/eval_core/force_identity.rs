@@ -8,6 +8,11 @@ enum CapturedFreeVariableDependency {
         frame_index: usize,
         slot: u32,
     },
+    StaticHasAttr {
+        frame_index: usize,
+        slot: u32,
+        path: u32,
+    },
     StaticSelect {
         frame_index: usize,
         slot: u32,
@@ -50,6 +55,19 @@ impl TreeWalk {
                 CapturedFreeVariableDependency::Slot { frame_index, slot } => {
                     let value = frames.get(frame_index)?.get(slot).ok()?;
                     self.force_cache_free_var_value_hash(value)?
+                }
+                CapturedFreeVariableDependency::StaticHasAttr {
+                    frame_index,
+                    slot,
+                    path,
+                } => {
+                    let receiver = frames.get(frame_index)?.get(slot).ok()?;
+                    self.force_cache_static_has_attr_value_hash(
+                        body.module(),
+                        receiver,
+                        IrAttrPathId::new(path),
+                    )
+                    .or_else(|| self.force_cache_free_var_value_hash(receiver))?
                 }
                 CapturedFreeVariableDependency::StaticSelect {
                     frame_index,
@@ -128,12 +146,14 @@ impl TreeWalk {
         }
 
         let mut current = receiver;
+        let mut seen_thunks = BTreeSet::new();
         let mut position_identities = BTreeSet::new();
         for (index, segment) in segments.iter().copied().enumerate() {
             let IrAttrPathSegment::Static(symbol) = segment else {
                 return None;
             };
-            let current_value = self.force_cache_cached_non_thunk_value(current)?;
+            let current_value = self
+                .force_cache_cached_or_capture_alias_non_thunk_value(current, &mut seen_thunks)?;
             if current_value.tag() != ValueTag::Attrs {
                 return None;
             }
@@ -170,6 +190,55 @@ impl TreeWalk {
         None
     }
 
+    fn force_cache_static_has_attr_value_hash(
+        &self,
+        module_id: EvalModuleId,
+        receiver: Value,
+        path: IrAttrPathId,
+    ) -> Option<ValueHash> {
+        let module = self.modules.get(module_id.index())?;
+        let segments = module.ir.attr_paths.get(path.index())?;
+        if segments.is_empty() {
+            return None;
+        }
+
+        let mut current = receiver;
+        let mut seen_thunks = BTreeSet::new();
+        for (index, segment) in segments.iter().copied().enumerate() {
+            let IrAttrPathSegment::Static(symbol) = segment else {
+                return None;
+            };
+            let current_value = self
+                .force_cache_cached_or_capture_alias_non_thunk_value(current, &mut seen_thunks)?;
+            if current_value.tag() != ValueTag::Attrs {
+                return Self::force_cache_static_has_attr_result_hash(false);
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(current_value).ok()?;
+                attrs.get(symbol)
+            };
+            let Some(value) = selected else {
+                return Self::force_cache_static_has_attr_result_hash(false);
+            };
+            if index + 1 == segments.len() {
+                return Self::force_cache_static_has_attr_result_hash(true);
+            }
+            current = value;
+        }
+
+        None
+    }
+
+    fn force_cache_static_has_attr_result_hash(present: bool) -> Option<ValueHash> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"static-has-attr");
+        hasher.update(&[u8::from(present)]);
+        Some(ValueHash::from_canonical_value_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
+    }
+
     fn force_cache_attr_position_identity_hash(
         &self,
         position: AttrPosition,
@@ -195,13 +264,39 @@ impl TreeWalk {
         Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
-    fn force_cache_cached_non_thunk_value(&self, value: Value) -> Option<Value> {
+    fn force_cache_cached_or_capture_alias_non_thunk_value(
+        &self,
+        value: Value,
+        seen_thunks: &mut BTreeSet<u64>,
+    ) -> Option<Value> {
         if value.tag() != ValueTag::Thunk {
             return Some(value);
         }
-        let thunk = self.heap.get_thunk(value).ok()?;
-        let cached = thunk.cell().cached_value().ok()??;
-        (!cached.is_thunk()).then_some(cached)
+        let thunk_key = value.payload_bits();
+        if !seen_thunks.insert(thunk_key) {
+            return None;
+        }
+        let result = (|| {
+            let thunk = self.heap.get_thunk(value).ok()?;
+            match thunk.cell().cached_value().ok()? {
+                Some(cached) => {
+                    if cached.is_thunk() {
+                        self.force_cache_cached_or_capture_alias_non_thunk_value(
+                            cached,
+                            seen_thunks,
+                        )
+                    } else {
+                        Some(cached)
+                    }
+                }
+                None => {
+                    let target = self.force_cache_suspended_capture_alias_target(thunk)?;
+                    self.force_cache_cached_or_capture_alias_non_thunk_value(target, seen_thunks)
+                }
+            }
+        })();
+        seen_thunks.remove(&thunk_key);
+        result
     }
 
     pub(super) fn force_cache_free_var_value_hash_without_suspended_aliases(
@@ -653,6 +748,26 @@ impl TreeWalk {
                             .map(|child| (child, nested_frame_count)),
                     );
                 }
+                IrData::HasAttr { receiver, path, .. } => {
+                    if let Some(dependency) = Self::captured_static_has_attr_dependency(
+                        ir,
+                        receiver,
+                        path,
+                        captured_frame_count,
+                        nested_frame_count,
+                    ) {
+                        dependencies.insert(dependency);
+                        continue;
+                    }
+
+                    let mut children = Vec::new();
+                    Self::push_ir_children(ir, node, &mut children).then_some(())?;
+                    stack.extend(
+                        children
+                            .into_iter()
+                            .map(|child| (child, nested_frame_count)),
+                    );
+                }
                 IrData::Let { bindings, body, .. } => {
                     let nested_frame_count = nested_frame_count.checked_add(1)?;
                     stack.push((body, nested_frame_count));
@@ -686,7 +801,6 @@ impl TreeWalk {
                 | IrData::Bindings(_)
                 | IrData::Binary { .. }
                 | IrData::Unary { .. }
-                | IrData::HasAttr { .. }
                 | IrData::PrimOp { .. }
                 | IrData::DialectNode { .. }
                 | IrData::DialectScopeVar { .. }
@@ -704,6 +818,34 @@ impl TreeWalk {
             }
         }
         Some(dependencies)
+    }
+
+    fn captured_static_has_attr_dependency(
+        ir: &Ir,
+        receiver: IrId,
+        path: IrAttrPathId,
+        captured_frame_count: usize,
+        nested_frame_count: usize,
+    ) -> Option<CapturedFreeVariableDependency> {
+        let segments = ir.attr_paths.get(path.index())?;
+        if segments.is_empty()
+            || !segments
+                .iter()
+                .all(|segment| matches!(segment, IrAttrPathSegment::Static(_)))
+        {
+            return None;
+        }
+        let (frame_index, slot) = Self::captured_frame_slot_for_node(
+            ir,
+            receiver,
+            captured_frame_count,
+            nested_frame_count,
+        )?;
+        Some(CapturedFreeVariableDependency::StaticHasAttr {
+            frame_index,
+            slot,
+            path: path.as_u32(),
+        })
     }
 
     fn captured_static_select_dependency(
@@ -742,6 +884,14 @@ impl TreeWalk {
     ) -> Option<(usize, u32)> {
         let node = ir.arena.node(id)?;
         match node.data {
+            IrData::Node(child) if node.kind == IrKind::ThunkAlloc => {
+                Self::captured_frame_slot_for_node(
+                    ir,
+                    child,
+                    captured_frame_count,
+                    nested_frame_count,
+                )
+            }
             IrData::Local { slot } => {
                 if nested_frame_count > 0 {
                     return None;

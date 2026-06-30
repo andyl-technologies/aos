@@ -867,6 +867,16 @@ alone (`M-1`/`Q-A`).
       whole-slot hash when projection cannot be resolved without adding demand.
       This lets derivation side-record keys ignore unselected imported attrset
       siblings while preserving positioned-source identity.
+      Static `hasAttr` paths over captured lexical slots now use a
+      domain-separated key-presence hash when the receiver path can be resolved
+      through already materialized attrsets, or through safe suspended capture
+      aliases to already materialized attrsets, without forcing binding values.
+      This lets `x ? name` force-cache subjects ignore changed lazy binding
+      payloads while still missing when key presence changes; unresolved
+      computed receivers, dynamic paths, and unresolved nested intermediates fall
+      back to the prior whole-slot hash/skip behavior. The current `hasAttr`
+      canaries cover force-cache subject/payload behavior; derivation
+      side-record-specific reuse remains under the separate side-record gates.
       Strings and paths are hashed in one durable force-capture domain with typed
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
@@ -882,7 +892,8 @@ alone (`M-1`/`Q-A`).
       nested-frame-depth-adjusted free-variable scans, so inner locals/upvalues
       are ignored while outer captured slots remain hashed. This deliberately skips dynamic `with`
       scopes, scoped-import globals, arbitrary non-literal lazy-element lists,
-      arbitrary non-literal lazy-binding attrsets,
+      arbitrary non-literal lazy-binding attrsets except for static `hasAttr`
+      key-presence projections,
       position-bearing attrsets whose retained module ids cannot be resolved to
       loaded module identities, lambdas, primops,
       suspended computed/non-replayable thunk-cell captures including computed
@@ -912,7 +923,10 @@ alone (`M-1`/`Q-A`).
       positioned attrset source-salted
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
-      and lazy-binding attrset subject-skip canaries, direct and first-class
+      and non-presence-projected lazy-binding attrset subject-skip canaries,
+      captured static `hasAttr` key-presence hit/miss plus alias, dynamic,
+      unresolved, nested skip/no-force canaries,
+      direct and first-class
       captured explicit-list `findFile` hit canaries, first-class captured
       unary `getEnv`/`import`/`readDir`/`readFile`/`readFileType` argument hit
       canary, first-class captured `pathExists` and `hashFile` argument hit/miss
