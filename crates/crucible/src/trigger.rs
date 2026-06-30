@@ -14,15 +14,16 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::model::{
-    AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash, DeviceId, EventLogOffset,
-    Fault, FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId,
-    MarkerId, MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
-    NodeLifecycle, Plan, PlanEntry, Predicate, RegexProgram, SimDuration, TimerId, VirtualTime,
-    WhiteBoxPolicy, World, WorldStaticTopology,
+    AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash, ControlFaultAction, Decision,
+    DeviceId, EventKey, EventLogOffset, Fault, FaultId, FaultPlanEntry, FaultTag, FramePredicate,
+    Icount, IoEventKind, LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp,
+    NetworkFault, NinePFault, NodeFault, NodeId, NodeLifecycle, Plan, PlanEntry, Predicate,
+    RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerQuiescence,
+    SchedulerQuiescence, scheduled_event_resolve_class,
 };
 
 pub use crate::model::EventId;
@@ -663,6 +664,8 @@ pub struct ConditionEventLogPrefix {
     point: EventEvaluationPoint,
     event_log_offset: EventLogOffset,
     observable_events: Vec<ObservableEvent>,
+    ordering_facts: Vec<ObservedOrderingFact>,
+    fault_facts: Vec<ObservedFaultFact>,
 }
 
 impl ConditionEventLogPrefix {
@@ -673,6 +676,8 @@ impl ConditionEventLogPrefix {
             point: EventEvaluationPoint::genesis(),
             event_log_offset: EventLogOffset::default(),
             observable_events: Vec::new(),
+            ordering_facts: Vec::new(),
+            fault_facts: Vec::new(),
         }
     }
 
@@ -702,6 +707,8 @@ impl ConditionEventLogPrefix {
         };
         let point = EventEvaluationPoint::event_log_entry(last);
         let mut observable_events = Vec::new();
+        let mut ordering_facts = Vec::new();
+        let mut fault_facts = Vec::new();
         for (offset, entry) in entries.iter().enumerate() {
             let expected = u64::try_from(offset).map_err(|_| {
                 ConditionEvaluationError::NonPrefixEventLogSequence {
@@ -727,12 +734,12 @@ impl ConditionEventLogPrefix {
                     event_at: entry.at(),
                 });
             }
-            if let SchedulerEventLogPayload::Observable(payload) = entry.payload() {
-                observable_events.push(ObservableEvent {
-                    at: entry.at(),
-                    payload: payload.clone(),
-                });
-            }
+            push_observed_state_facts(
+                entry,
+                &mut observable_events,
+                &mut ordering_facts,
+                &mut fault_facts,
+            );
         }
         Ok(Self {
             point,
@@ -747,6 +754,8 @@ impl ConditionEventLogPrefix {
                 })?,
             ),
             observable_events,
+            ordering_facts,
+            fault_facts,
         })
     }
 
@@ -771,6 +780,355 @@ impl ConditionEventLogPrefix {
     #[must_use]
     pub fn observable_events(&self) -> &[ObservableEvent] {
         &self.observable_events
+    }
+
+    /// Returns cross-node ordering facts visible at [`Self::point`].
+    #[must_use]
+    pub fn ordering_facts(&self) -> &[ObservedOrderingFact] {
+        &self.ordering_facts
+    }
+
+    /// Returns fault activation, outcome, and heal facts visible at [`Self::point`].
+    #[must_use]
+    pub fn fault_facts(&self) -> &[ObservedFaultFact] {
+        &self.fault_facts
+    }
+
+    /// Returns a read-only observed-state view materialized from this checked prefix.
+    #[must_use]
+    pub fn observed_state(&self) -> ObservedState<'_> {
+        ObservedState {
+            point: self.point,
+            event_log_offset: self.event_log_offset,
+            observable_events: &self.observable_events,
+            ordering_facts: &self.ordering_facts,
+            fault_facts: &self.fault_facts,
+        }
+    }
+}
+
+/// Read-only observable run state at one deterministic evaluation point.
+///
+/// The view is derived only from a checked scheduler event-log prefix. It
+/// exposes black-box observable events plus explicit ordering and fault facts;
+/// raw scheduler entries, RNG draws, app-random draws, host-worker state, and
+/// wall-clock data are not part of this API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObservedState<'log> {
+    point: EventEvaluationPoint,
+    event_log_offset: EventLogOffset,
+    observable_events: &'log [ObservableEvent],
+    ordering_facts: &'log [ObservedOrderingFact],
+    fault_facts: &'log [ObservedFaultFact],
+}
+
+impl<'log> ObservedState<'log> {
+    /// Returns the deterministic evaluation point for this view.
+    #[must_use]
+    pub fn point(self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Returns the virtual time where this view is evaluated.
+    #[must_use]
+    pub fn at(self) -> VirtualTime {
+        self.point.at()
+    }
+
+    /// Returns the event-log prefix identity backing this view.
+    #[must_use]
+    pub fn event_log_offset(self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns black-box observable events in deterministic log order.
+    #[must_use]
+    pub fn observable_events(self) -> &'log [ObservableEvent] {
+        self.observable_events
+    }
+
+    /// Returns scheduler ordering facts in deterministic log order.
+    #[must_use]
+    pub fn ordering_facts(self) -> &'log [ObservedOrderingFact] {
+        self.ordering_facts
+    }
+
+    /// Returns fault activation, outcome, and heal facts in deterministic log order.
+    #[must_use]
+    pub fn fault_facts(self) -> &'log [ObservedFaultFact] {
+        self.fault_facts
+    }
+}
+
+/// Cross-node ordering information exposed to property predicates.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ObservedOrderingFact {
+    /// A scheduled event was resolved at this prefix position.
+    ResolvedHappening {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Deterministic scheduler key for the resolved event.
+        key: ScheduledEventKey,
+        /// Resolve class without payload-specific data.
+        class: ScheduledEventResolveClass,
+    },
+    /// A total delivery order was chosen for one virtual time.
+    DeliveryOrder {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Ordered legacy event keys recorded by the delivery decision.
+        order: Vec<EventKey>,
+    },
+}
+
+/// Fault information exposed to property predicates.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ObservedFaultFact {
+    /// A scheduled fault activation entered the event log.
+    ScheduledActivation {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Fault whose activation was resolved.
+        fault: FaultId,
+    },
+    /// A scheduled probabilistic fault choice entered the event log.
+    ScheduledProbabilisticChoice {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Fault whose probabilistic choice was resolved.
+        fault: FaultId,
+    },
+    /// A probabilistic fault outcome was decided.
+    ProbabilisticOutcome {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Fault whose outcome was decided.
+        fault: FaultId,
+        /// Whether the probabilistic fault fired.
+        fired: bool,
+    },
+    /// A control-plane full-taxonomy fault was injected.
+    ControlInjected {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Monotone control operation sequence.
+        control_sequence: u64,
+        /// Stable fault tag.
+        tag: FaultTag,
+        /// Fault taxonomy value activated under `tag`.
+        fault: Fault,
+    },
+    /// A control-plane full-taxonomy fault was healed.
+    ControlHealed {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Monotone control operation sequence.
+        control_sequence: u64,
+        /// Stable fault tag.
+        tag: FaultTag,
+    },
+    /// A trigger-owned membership fault was injected.
+    TriggerInjected {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Monotone trigger action sequence.
+        trigger_sequence: u64,
+        /// Trigger event that produced the action.
+        event: EventId,
+        /// Stable fault tag.
+        tag: FaultTag,
+        /// Membership fault activated under `tag`.
+        fault: MembershipFault,
+    },
+    /// A trigger-owned membership fault was healed.
+    TriggerHealed {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Monotone trigger action sequence.
+        trigger_sequence: u64,
+        /// Trigger event that produced the action.
+        event: EventId,
+        /// Stable fault tag.
+        tag: FaultTag,
+    },
+}
+
+fn push_observed_state_facts(
+    entry: &SchedulerEventLogEntry,
+    observable_events: &mut Vec<ObservableEvent>,
+    ordering_facts: &mut Vec<ObservedOrderingFact>,
+    fault_facts: &mut Vec<ObservedFaultFact>,
+) {
+    match entry.payload() {
+        SchedulerEventLogPayload::Observable(payload) => {
+            observable_events.push(ObservableEvent {
+                at: entry.at(),
+                payload: payload.clone(),
+            });
+        }
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            push_resolved_happening_observed_facts(
+                entry.sequence(),
+                entry.at(),
+                event,
+                ordering_facts,
+                fault_facts,
+            );
+        }
+        SchedulerEventLogPayload::Decision(Decision::DeliveryOrder(order)) => {
+            ordering_facts.push(ObservedOrderingFact::DeliveryOrder {
+                sequence: entry.sequence(),
+                at: entry.at(),
+                order: order.order.clone(),
+            });
+        }
+        SchedulerEventLogPayload::Decision(Decision::FaultFires(fault)) => {
+            fault_facts.push(ObservedFaultFact::ProbabilisticOutcome {
+                sequence: entry.sequence(),
+                at: entry.at(),
+                fault: fault.fault.clone(),
+                fired: fault.fired,
+            });
+        }
+        SchedulerEventLogPayload::Decision(Decision::ControlFault(control)) => {
+            push_control_fault_fact(
+                entry.sequence(),
+                entry.at(),
+                control.sequence,
+                &control.action,
+                fault_facts,
+            );
+        }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            push_trigger_fault_fact(entry.sequence(), entry.at(), application, fault_facts);
+        }
+        SchedulerEventLogPayload::Decision(
+            Decision::RngDraw(_)
+            | Decision::Override(_)
+            | Decision::Preemption(_)
+            | Decision::AppRandom(_),
+        )
+        | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::TriggerFired(_) => {}
+    }
+}
+
+fn push_resolved_happening_observed_facts(
+    sequence: u64,
+    at: VirtualTime,
+    event: &ScheduledEvent,
+    ordering_facts: &mut Vec<ObservedOrderingFact>,
+    fault_facts: &mut Vec<ObservedFaultFact>,
+) {
+    ordering_facts.push(ObservedOrderingFact::ResolvedHappening {
+        sequence,
+        at,
+        key: event.key.clone(),
+        class: scheduled_event_resolve_class(event),
+    });
+    match &event.payload {
+        ScheduledEventPayload::FaultActivation(fault) => {
+            fault_facts.push(ObservedFaultFact::ScheduledActivation {
+                sequence,
+                at,
+                fault: fault.clone(),
+            });
+        }
+        ScheduledEventPayload::ProbabilisticFault(choice) => {
+            fault_facts.push(ObservedFaultFact::ScheduledProbabilisticChoice {
+                sequence,
+                at,
+                fault: choice.fault.clone(),
+            });
+        }
+        ScheduledEventPayload::BackendInput(_)
+        | ScheduledEventPayload::IoCompletion(_)
+        | ScheduledEventPayload::Control(_) => {}
+    }
+}
+
+fn push_control_fault_fact(
+    sequence: u64,
+    at: VirtualTime,
+    control_sequence: u64,
+    action: &ControlFaultAction,
+    fault_facts: &mut Vec<ObservedFaultFact>,
+) {
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            fault_facts.push(ObservedFaultFact::ControlInjected {
+                sequence,
+                at,
+                control_sequence,
+                tag: tag.clone(),
+                fault: fault.clone(),
+            });
+        }
+        ControlFaultAction::Heal { tag } => {
+            fault_facts.push(ObservedFaultFact::ControlHealed {
+                sequence,
+                at,
+                control_sequence,
+                tag: tag.clone(),
+            });
+        }
+    }
+}
+
+fn push_trigger_fault_fact(
+    sequence: u64,
+    at: VirtualTime,
+    application: &crate::scheduler::TriggerActionApplication,
+    fault_facts: &mut Vec<ObservedFaultFact>,
+) {
+    match &application.action {
+        Action::InjectFault { tag, fault } => {
+            fault_facts.push(ObservedFaultFact::TriggerInjected {
+                sequence,
+                at,
+                trigger_sequence: application.sequence,
+                event: application.event.clone(),
+                tag: tag.clone(),
+                fault: fault.clone(),
+            });
+        }
+        Action::HealFault { tag } => {
+            fault_facts.push(ObservedFaultFact::TriggerHealed {
+                sequence,
+                at,
+                trigger_sequence: application.sequence,
+                event: application.event.clone(),
+                tag: tag.clone(),
+            });
+        }
+        Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. }
+        | Action::Group(_) => {}
     }
 }
 
@@ -1099,6 +1457,8 @@ pub struct ConditionEvaluation<O> {
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: Vec<ObservableEvent>,
+    ordering_facts: Vec<ObservedOrderingFact>,
+    fault_facts: Vec<ObservedFaultFact>,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     once_latches: Vec<Condition>,
@@ -1117,6 +1477,8 @@ impl<O> ConditionEvaluation<O> {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             observable_events: prefix.observable_events,
+            ordering_facts: prefix.ordering_facts,
+            fault_facts: prefix.fault_facts,
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -1135,6 +1497,18 @@ impl<O> ConditionEvaluation<O> {
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
         self.event_log_offset
+    }
+
+    /// Returns the read-only observed-state view for this evaluation pass.
+    #[must_use]
+    pub fn observed_state(&self) -> ObservedState<'_> {
+        ObservedState {
+            point: self.point,
+            event_log_offset: self.event_log_offset,
+            observable_events: &self.observable_events,
+            ordering_facts: &self.ordering_facts,
+            fault_facts: &self.fault_facts,
+        }
     }
 
     /// Adds event firing history visible to `After` predicates.
@@ -1291,6 +1665,12 @@ impl<O> ConditionEvaluationPass<O> {
     #[must_use]
     pub fn evaluator(&self) -> &ConditionEvaluation<O> {
         &self.evaluation
+    }
+
+    /// Returns the read-only observed-state view for this pass.
+    #[must_use]
+    pub fn observed_state(&self) -> ObservedState<'_> {
+        self.evaluation.observed_state()
     }
 
     /// Evaluates an assertion predicate in this deterministic pass.

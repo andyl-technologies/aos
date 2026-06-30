@@ -843,10 +843,22 @@ verdict; it only shapes the next schedule the search tries.
   defaults omitted ordinary Reachable dispositions to `warn`, keeps the
   reachable/unreachable expectation itself explicit, and rejects host-wall-clock
   or nondeterministic property parameters during TOML scenario validation.
-- [ ] **T-ASRT-4** Implement observed-state materialization from the event-log
+- [x] **T-ASRT-4** Implement observed-state materialization from the event-log
   prefix `[start, t]`, exposing only the black-box surface + ordering/fault facts;
   forbid host-clock/scheduling/unordered-iteration inputs. — satisfies [ASRT-6],
   [ASRT-7]; spec §18.3.
+  Completed by `checks.crucible.phase4.observedStateMaterialization`:
+  `ConditionEventLogPrefix` now materializes a read-only `ObservedState` view
+  from the same checked dense scheduler event-log prefix used by trigger and
+  condition evaluation. This completes the materialized-view layer that T-ASRT-5
+  will use for host-side assertion evaluation: the view exposes black-box
+  `ObservableEvent`s, deterministic scheduler ordering facts, and fault
+  activation/outcome/heal facts, while raw RNG draws, app-random draws,
+  overrides, preemption decisions, host-worker state, raw scheduler entries, and
+  wall-clock sources are excluded. The gate verifies prefix cutoff at the
+  evaluation point, invalid-hash/non-dense/future-entry rejection,
+  evaluation-pass access to the observed view, and static absence of host time or
+  unordered map/set inputs in the observed-state fold.
 - [ ] **T-ASRT-5** Implement host-side assertions over observable state as the
   default, zero-guest-cooperation source; verify all five quantifiers work in
   black-box mode on an unmodified guest. — satisfies [ASRT-8], [ASRT-9],

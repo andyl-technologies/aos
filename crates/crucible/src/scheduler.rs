@@ -236,6 +236,15 @@ impl SchedulerEventLogEntry {
         self.content_hash = content_hash;
         self
     }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn with_payload_for_test(
+        sequence: u64,
+        at: VirtualTime,
+        payload: SchedulerEventLogPayload,
+    ) -> Self {
+        scheduler_event_log_entry(sequence, at, payload)
+    }
 }
 
 /// Determinism class for a scheduler event-log entry.

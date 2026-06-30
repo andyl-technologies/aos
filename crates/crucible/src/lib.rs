@@ -143,8 +143,8 @@ pub use trigger::{
     ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
     EventEvaluationKind, EventEvaluationPoint, EventFiring, EventFirings, EventGraph,
     EventGraphBuilder, EventGraphError, EventGraphEventBuilder, EventGraphState, FirePolicy,
-    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ResolvedCodePoint,
-    ResolvedMemPlace,
+    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
+    ObservedOrderingFact, ObservedState, ResolvedCodePoint, ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]
@@ -154,7 +154,8 @@ pub mod test_support {
 
     use crate::{
         ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, ObservableEvent,
-        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
+        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+        VirtualTime,
     };
 
     /// Builds a scheduler observable event-log entry for integration tests.
@@ -174,6 +175,16 @@ pub mod test_support {
         kind: SchedulerEvaluationBoundaryKind,
     ) -> SchedulerEventLogEntry {
         SchedulerEventLogEntry::evaluation_boundary(sequence, at, kind)
+    }
+
+    /// Builds a scheduler event-log entry carrying a typed payload for integration tests.
+    #[must_use]
+    pub fn condition_payload_entry_for_test(
+        sequence: u64,
+        at: VirtualTime,
+        payload: SchedulerEventLogPayload,
+    ) -> SchedulerEventLogEntry {
+        SchedulerEventLogEntry::with_payload_for_test(sequence, at, payload)
     }
 
     /// Returns a test entry with an intentionally replaced content hash.
