@@ -22,7 +22,7 @@ fn test_value_hash(label: &[u8]) -> ValueHash {
 fn attach_dirty_memo_read_supplier(
     runtime: &Arc<Mutex<EvalCacheRuntime>>,
     dependent_identity: CacheExprIdentity,
-    dependent_free_var_hashes: &[DurableBlake3Hash],
+    dependent_free_var_hashes: &[ValueHash],
     supplier_label: &'static [u8],
 ) {
     let mut runtime = runtime.lock().expect("cache lock is valid");
@@ -30,7 +30,7 @@ fn attach_dirty_memo_read_supplier(
     let supplier = cache
         .get_or_insert_expression_node(
             test_cache_identity(supplier_label, 9000),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(test_value_hash(supplier_label)),
         )
         .expect("supplier node inserts");
@@ -52,7 +52,7 @@ fn attach_dirty_memo_read_supplier(
 fn assert_no_persistent_materialized_value(
     persist_root: &std::path::Path,
     identity: CacheExprIdentity,
-    free_var_value_hashes: &[DurableBlake3Hash],
+    free_var_value_hashes: &[ValueHash],
     context: &str,
 ) {
     let persist = PersistCache::open(persist_root).expect("persistent cache opens");
@@ -70,7 +70,7 @@ fn assert_no_persistent_materialized_value(
 fn assert_persistent_materialized_value(
     persist_root: &std::path::Path,
     identity: CacheExprIdentity,
-    free_var_value_hashes: &[DurableBlake3Hash],
+    free_var_value_hashes: &[ValueHash],
     context: &str,
 ) {
     let persist = PersistCache::open(persist_root).expect("persistent cache opens");
@@ -409,7 +409,7 @@ fn derivation_strict_errors_preserve_prior_final_aterm_memo_read_edges() {
                     DurableBlake3Hash::for_bytes(b"stale-derivation-aterm-memo-read"),
                     IrId::new(4096),
                 ),
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 None,
             )
             .expect("stale node allocation succeeds")

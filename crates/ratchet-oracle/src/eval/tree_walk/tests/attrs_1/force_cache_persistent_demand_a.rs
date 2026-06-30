@@ -41,8 +41,7 @@ fn synthetic_builtin_attr_cold_force_records_demand_without_materializing() {
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let forced = first
         .force_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentSystem force succeeds");
@@ -162,8 +161,7 @@ fn public_eval_advances_persistent_force_demand_run_boundary() {
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
 
     let mut options = TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
         .expect("currentSystem is valid");
@@ -369,8 +367,7 @@ fn synthetic_builtin_attr_hits_persistent_current_system_with_empty_trace() {
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     PersistCache::open(&persist_root)
         .expect("persistent cache opens")
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
@@ -511,8 +508,7 @@ fn disabled_eval_cache_skips_persistent_current_system_hit() {
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let payload = CachedExpressionValue::context_free_string(b"stale-disabled-hit".to_vec());
     let value_hash = payload.value_hash().expect("seed payload hashes");
     let trace_payload = persistent_empty_trace_payload();

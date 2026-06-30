@@ -27,14 +27,14 @@ impl PersistNodeMetadataKey {
     /// order used for the in-process demand-cache key.
     pub fn for_expression<I>(identity: CacheExprIdentity, free_var_value_hashes: I) -> Self
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let mut hasher = blake3::Hasher::new();
         hasher.update(PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION);
         hasher.update(&identity.source_hash().as_bytes());
         hasher.update(&identity.node().as_u32().to_le_bytes());
         for value_hash in free_var_value_hashes {
-            update_persist_index_chunk(&mut hasher, &value_hash.as_bytes());
+            update_persist_index_chunk(&mut hasher, &value_hash.as_durable_hash().as_bytes());
         }
         Self {
             hash: DurableBlake3Hash::from_hasher(hasher),

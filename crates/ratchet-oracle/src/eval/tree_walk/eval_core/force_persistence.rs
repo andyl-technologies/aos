@@ -607,7 +607,7 @@ impl TreeWalk {
         free_var_value_hashes: I,
     ) -> Option<DemandNodeId>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Ok(mut cache) = self.eval_cache.lock() else {
             tracing::warn!(

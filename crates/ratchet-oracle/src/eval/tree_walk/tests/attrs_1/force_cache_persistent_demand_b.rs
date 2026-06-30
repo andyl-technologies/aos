@@ -10,8 +10,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-node"),
         IrId::new(7),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
     let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
@@ -22,7 +21,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         runtime
             .observe_inline_expression_payload(
                 identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 stale_payload.clone(),
             )
             .expect("stale runtime payload is seeded");
@@ -70,10 +69,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         let mut runtime = cache.lock().expect("cache lock is valid");
         assert!(
             runtime
-                .lookup_inline_expression_payload(
-                    identity,
-                    std::iter::empty::<DurableBlake3Hash>(),
-                )
+                .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>(),)
                 .expect("runtime lookup succeeds")
                 .is_none(),
             "rejected observation invalidates the stale runtime payload"
@@ -121,12 +117,9 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-impure-child"),
         IrId::new(10),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
-    let child_key = PersistNodeMetadataKey::for_expression(
-        child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
+    let child_key =
+        PersistNodeMetadataKey::for_expression(child_identity, std::iter::empty::<ValueHash>());
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_payload =
         CachedExpressionValue::immediate(Value::int(7)).expect("child payload builds");
@@ -136,13 +129,13 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         let child_node = runtime
             .get_or_insert_expression_node(
                 child_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(child_value_hash),
             )
             .expect("child node inserts")
             .expect("cache is enabled");
         let parent_node = runtime
-            .get_or_insert_expression_node(identity, std::iter::empty::<DurableBlake3Hash>(), None)
+            .get_or_insert_expression_node(identity, std::iter::empty::<ValueHash>(), None)
             .expect("parent node inserts")
             .expect("cache is enabled");
         runtime
@@ -248,8 +241,7 @@ fn force_observation_with_unproven_memo_supplier_clears_persistent_value_link() 
         DurableBlake3Hash::for_bytes(b"persistent-force-unproven-child"),
         IrId::new(12),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_payload =
         CachedExpressionValue::immediate(Value::int(7)).expect("child payload builds");
@@ -259,13 +251,13 @@ fn force_observation_with_unproven_memo_supplier_clears_persistent_value_link() 
         let child_node = runtime
             .get_or_insert_expression_node(
                 child_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(child_value_hash),
             )
             .expect("child node inserts")
             .expect("cache is enabled");
         let parent_node = runtime
-            .get_or_insert_expression_node(identity, std::iter::empty::<DurableBlake3Hash>(), None)
+            .get_or_insert_expression_node(identity, std::iter::empty::<ValueHash>(), None)
             .expect("parent node inserts")
             .expect("cache is enabled");
         runtime
@@ -330,8 +322,7 @@ fn large_force_payload_measurement_skips_unprofitable_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-large-skip"),
         IrId::new(10),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
     options.set_persist_cache_root(&persist_root);
@@ -402,8 +393,7 @@ fn force_work_measurement_materializes_large_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-large-work"),
         IrId::new(10),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
     options.set_persist_cache_root(&persist_root);
@@ -517,8 +507,7 @@ fn unprofitable_force_observation_skips_persistent_value_link_with_prior_demand(
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     PersistCache::open(&persist_root)
         .expect("persistent cache opens")
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
@@ -580,8 +569,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         DurableBlake3Hash::for_bytes(b"persistent-force-unsupported"),
         IrId::new(11),
     );
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
     let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
@@ -628,10 +616,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         let mut runtime = cache.lock().expect("cache lock is valid");
         assert!(
             runtime
-                .lookup_inline_expression_payload(
-                    identity,
-                    std::iter::empty::<DurableBlake3Hash>(),
-                )
+                .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>(),)
                 .expect("runtime lookup succeeds")
                 .is_none(),
             "the runtime starts without a node for the durable-only stale link"

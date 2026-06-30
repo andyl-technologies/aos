@@ -13,7 +13,7 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
     let previous = cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("previous pure result observes");
@@ -21,7 +21,7 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
     let consumer = cache
         .observe_inline_expression_result(
             consumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(4),
         )
         .expect("consumer pure result observes")
@@ -34,7 +34,7 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
     let grandconsumer = cache
         .observe_inline_expression_result(
             grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(5),
         )
         .expect("grandconsumer pure result observes")
@@ -50,7 +50,7 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
     let observation = cache
         .observe_inline_expression_result_with_impure_inputs(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(4),
             &source,
         )
@@ -88,21 +88,15 @@ fn uncacheable_trace_invalidates_existing_reusable_inline_payload() {
     assert!(!cache.inline_values.contains_key(&consumer));
     assert!(!cache.inline_values.contains_key(&grandconsumer));
     let value = cache
-        .lookup_inline_expression_result(
-            expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(expression_identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
     assert!(value.is_none());
     let consumer_value = cache
-        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<ValueHash>())
         .expect("consumer lookup succeeds");
     assert!(consumer_value.is_none());
     let grandconsumer_value = cache
-        .lookup_inline_expression_result(
-            grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(grandconsumer_identity, std::iter::empty::<ValueHash>())
         .expect("grandconsumer lookup succeeds");
     assert!(grandconsumer_value.is_none());
 }
@@ -119,7 +113,7 @@ fn inline_expression_result_with_incomplete_trace_skips_payload() {
     let observation = cache
         .observe_inline_expression_result_with_impure_inputs(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
             &source,
         )
@@ -131,7 +125,7 @@ fn inline_expression_result_with_incomplete_trace_skips_payload() {
     );
     assert!(cache.is_empty());
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
     assert!(value.is_none());
 }
@@ -147,7 +141,7 @@ fn incomplete_trace_invalidates_existing_reusable_inline_payload() {
     let previous = cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("previous pure result observes");
@@ -155,7 +149,7 @@ fn incomplete_trace_invalidates_existing_reusable_inline_payload() {
     let consumer = cache
         .observe_inline_expression_result(
             consumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(4),
         )
         .expect("consumer pure result observes")
@@ -168,7 +162,7 @@ fn incomplete_trace_invalidates_existing_reusable_inline_payload() {
     let grandconsumer = cache
         .observe_inline_expression_result(
             grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(5),
         )
         .expect("grandconsumer pure result observes")
@@ -181,7 +175,7 @@ fn incomplete_trace_invalidates_existing_reusable_inline_payload() {
     let observation = cache
         .observe_inline_expression_result_with_impure_inputs(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(4),
             &source,
         )
@@ -219,21 +213,15 @@ fn incomplete_trace_invalidates_existing_reusable_inline_payload() {
     assert!(!cache.inline_values.contains_key(&consumer));
     assert!(!cache.inline_values.contains_key(&grandconsumer));
     let value = cache
-        .lookup_inline_expression_result(
-            expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(expression_identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
     assert!(value.is_none());
     let consumer_value = cache
-        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<ValueHash>())
         .expect("consumer lookup succeeds");
     assert!(consumer_value.is_none());
     let grandconsumer_value = cache
-        .lookup_inline_expression_result(
-            grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(grandconsumer_identity, std::iter::empty::<ValueHash>())
         .expect("grandconsumer lookup succeeds");
     assert!(grandconsumer_value.is_none());
 }
@@ -249,7 +237,7 @@ fn unsupported_trace_backed_value_invalidates_existing_reusable_inline_payload()
     let previous = cache
         .observe_inline_expression_result_with_impure_inputs(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
             &source,
         )
@@ -271,7 +259,7 @@ fn unsupported_trace_backed_value_invalidates_existing_reusable_inline_payload()
     let error = cache
         .observe_inline_expression_result_with_impure_inputs(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             heap_value,
             &source,
         )
@@ -312,7 +300,7 @@ fn unsupported_trace_backed_value_invalidates_existing_reusable_inline_payload()
         "failed trace-backed replacement should remove the stale reverse edge"
     );
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
     assert!(value.is_none());
 }
@@ -328,7 +316,7 @@ fn enabled_eval_cache_runtime_observes_inline_expression_trace_results() {
     let observation = runtime
         .observe_inline_expression_result_with_impure_inputs(
             identity(b"source", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::bool(true),
             &source,
         )
@@ -351,7 +339,7 @@ fn disabled_eval_cache_runtime_inline_expression_trace_result_is_noop() {
     let observation = runtime
         .observe_inline_expression_result_with_impure_inputs(
             identity(b"source", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::bool(true),
             &source,
         )
@@ -369,7 +357,7 @@ fn disabled_eval_cache_runtime_revalidating_lookup_is_noop() {
     let value = runtime
         .lookup_inline_expression_result_with_impure_inputs(
             identity(b"source", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             &mut revalidator,
         )
         .expect("disabled lookup succeeds");

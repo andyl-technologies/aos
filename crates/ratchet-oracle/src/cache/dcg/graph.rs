@@ -95,7 +95,7 @@ impl DemandGraph {
         value_hash: Option<ValueHash>,
     ) -> Result<DemandNodeId, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;

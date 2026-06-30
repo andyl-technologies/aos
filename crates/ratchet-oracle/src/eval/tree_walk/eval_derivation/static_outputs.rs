@@ -51,7 +51,7 @@ impl TreeWalk {
         CachedDerivationOutputPaths,
         bool,
         CacheExprIdentity,
-        Vec<DurableBlake3Hash>,
+        Vec<ValueHash>,
         Option<DemandNodeId>,
         bool,
     )> {
@@ -134,7 +134,7 @@ impl TreeWalk {
     fn lookup_persist_static_derivation_output_paths(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         pre_output_aterm: &[u8],
     ) -> Option<CachedDerivationOutputPaths> {
         if !self.options.eval_cache_enabled() {
@@ -202,7 +202,7 @@ impl TreeWalk {
     fn observe_persist_static_derivation_output_paths_runtime_hit(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         pre_output_aterm: &[u8],
         output_paths: CachedDerivationOutputPaths,
     ) -> PersistSideRecordRuntimeObservation {
@@ -407,7 +407,7 @@ impl TreeWalk {
     fn materialize_persist_static_derivation_output_paths(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         pre_output_aterm: &[u8],
         output_paths: CachedDerivationOutputPaths,
     ) {
@@ -468,7 +468,7 @@ impl TreeWalk {
     pub(super) fn clear_persist_static_derivation_output_paths(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
     ) {
         if !self.options.eval_cache_enabled() {
             return;

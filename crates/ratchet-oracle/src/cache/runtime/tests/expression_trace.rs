@@ -12,7 +12,7 @@ fn eval_cache_expression_node_can_observe_impure_edges() {
     let dependent = cache
         .get_or_insert_expression_node(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
         )
         .expect("expression node inserts");
@@ -44,7 +44,7 @@ fn eval_cache_expression_trace_adapter_wires_cacheable_inputs() {
     let observation = cache
         .observe_expression_impure_inputs(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
             &source,
         )
@@ -76,13 +76,13 @@ fn eval_cache_expression_trace_adapter_preserves_memo_read_edges() {
     };
     let mut graph = DemandGraph::new();
     let expression_identity = identity(b"source", 7);
-    let free_var = durable_hash(b"free-var");
+    let free_var = value_hash(b"free-var");
     let node = graph
         .get_or_insert_expression_node(expression_identity, [free_var], Some(value_hash(b"value")))
         .expect("expression node inserts");
     let memo_dependency = graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [value_hash(b"memo")])
                 .expect("memo key builds"),
             Some(value_hash(b"memo")),
         )
@@ -132,7 +132,7 @@ fn eval_cache_expression_trace_adapter_skips_node_for_uncacheable_trace() {
     let observation = cache
         .observe_expression_impure_inputs(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
             &source,
         )
@@ -165,13 +165,13 @@ fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents()
     };
     let mut graph = DemandGraph::new();
     let expression_identity = identity(b"source", 7);
-    let free_var = durable_hash(b"free-var");
+    let free_var = value_hash(b"free-var");
     let node = graph
         .get_or_insert_expression_node(expression_identity, [free_var], Some(value_hash(b"value")))
         .expect("expression node inserts");
     let memo_dependency = graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [value_hash(b"memo")])
                 .expect("memo key builds"),
             Some(value_hash(b"memo")),
         )
@@ -181,7 +181,7 @@ fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents()
         .expect("memo edge records");
     let consumer = graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [value_hash(b"consumer")])
                 .expect("consumer key builds"),
             Some(value_hash(b"consumer")),
         )
@@ -193,7 +193,7 @@ fn eval_cache_uncacheable_trace_dirties_existing_node_and_memo_read_dependents()
         .get_or_insert_node(
             DemandCacheKey::for_free_vars(
                 identity(b"grandconsumer", 2),
-                [durable_hash(b"grandconsumer")],
+                [value_hash(b"grandconsumer")],
             )
             .expect("grandconsumer key builds"),
             Some(value_hash(b"grandconsumer")),
@@ -298,13 +298,13 @@ fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() 
     };
     let mut graph = DemandGraph::new();
     let expression_identity = identity(b"source", 7);
-    let free_var = durable_hash(b"free-var");
+    let free_var = value_hash(b"free-var");
     let node = graph
         .get_or_insert_expression_node(expression_identity, [free_var], Some(value_hash(b"value")))
         .expect("expression node inserts");
     let memo_dependency = graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"memo", 1), [durable_hash(b"memo")])
+            DemandCacheKey::for_free_vars(identity(b"memo", 1), [value_hash(b"memo")])
                 .expect("memo key builds"),
             Some(value_hash(b"memo")),
         )
@@ -314,7 +314,7 @@ fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() 
         .expect("memo edge records");
     let consumer = graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [durable_hash(b"consumer")])
+            DemandCacheKey::for_free_vars(identity(b"consumer", 1), [value_hash(b"consumer")])
                 .expect("consumer key builds"),
             Some(value_hash(b"consumer")),
         )
@@ -326,7 +326,7 @@ fn eval_cache_incomplete_trace_dirties_existing_node_and_preserves_memo_edges() 
         .get_or_insert_node(
             DemandCacheKey::for_free_vars(
                 identity(b"grandconsumer", 2),
-                [durable_hash(b"grandconsumer")],
+                [value_hash(b"grandconsumer")],
             )
             .expect("grandconsumer key builds"),
             Some(value_hash(b"grandconsumer")),
@@ -407,7 +407,7 @@ fn eval_cache_expression_trace_adapter_marks_incomplete_trace_not_memoizable() {
     let observation = cache
         .observe_expression_impure_inputs(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
             &source,
         )
@@ -433,7 +433,7 @@ fn disabled_eval_cache_runtime_expression_trace_is_noop() {
     let observation = runtime
         .observe_expression_impure_inputs(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
             &source,
         )
@@ -454,7 +454,7 @@ fn enabled_eval_cache_runtime_expression_trace_delegates() {
     let observation = runtime
         .observe_expression_impure_inputs(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"value")),
             &source,
         )

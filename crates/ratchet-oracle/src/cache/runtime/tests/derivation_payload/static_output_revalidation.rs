@@ -17,7 +17,7 @@ fn static_derivation_output_path_revalidating_hit_misses_changed_dirty_node() {
     let observed = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
             output_paths,
         )
@@ -30,7 +30,7 @@ fn static_derivation_output_path_revalidating_hit_misses_changed_dirty_node() {
     let hit = cache
         .lookup_static_derivation_output_paths_hit_revalidating(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             changed,
         )
         .expect("revalidating changed static output path lookup succeeds");
@@ -75,7 +75,7 @@ fn static_derivation_output_path_observation_reconsiders_full_payload() {
     let first_reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             first,
         )
@@ -83,7 +83,7 @@ fn static_derivation_output_path_observation_reconsiders_full_payload() {
     let changed_path_reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             changed_path,
         )
@@ -91,7 +91,7 @@ fn static_derivation_output_path_observation_reconsiders_full_payload() {
     let changed_hash_reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             changed_hash.clone(),
         )
@@ -99,7 +99,7 @@ fn static_derivation_output_path_observation_reconsiders_full_payload() {
     let same_reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             changed_hash.clone(),
         )
@@ -107,7 +107,7 @@ fn static_derivation_output_path_observation_reconsiders_full_payload() {
     let lookup = cache
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("static output lookup succeeds");

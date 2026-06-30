@@ -172,7 +172,7 @@ impl SharedDemandGraph {
         value_hash: Option<ValueHash>,
     ) -> Result<DemandNodeId, SharedDemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         self.get_or_insert_expression_node_with_status(identity, free_var_value_hashes, value_hash)
             .map(DemandNodeAdmission::node)
@@ -196,7 +196,7 @@ impl SharedDemandGraph {
         value_hash: Option<ValueHash>,
     ) -> Result<DemandNodeAdmission, SharedDemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -239,7 +239,7 @@ impl From<DemandGraphError> for SharedDemandGraphError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::IrId;
+    use crate::{cache::DurableBlake3Hash, compile::IrId};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -256,7 +256,7 @@ mod tests {
     }
 
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
-        DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
+        DemandCacheKey::for_free_vars(identity(label, node), [value_hash(label)])
             .expect("key builds")
     }
 

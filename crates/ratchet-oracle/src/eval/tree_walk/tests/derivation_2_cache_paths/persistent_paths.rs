@@ -54,7 +54,7 @@ fn derivation_frame_close_dirty_supplier_clears_persistent_side_records() {
         let supplier = cache
             .get_or_insert_expression_node(
                 test_cache_identity(b"frame-close-dirty-supplier", 9100),
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(test_value_hash(b"frame-close-dirty-supplier")),
             )
             .expect("dirty supplier node inserts");

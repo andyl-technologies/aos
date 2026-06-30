@@ -187,7 +187,7 @@ impl TreeWalk {
     fn lookup_persist_derivation_aterm_path(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         aterm: &[u8],
     ) -> Option<CachedDerivationAtermPath> {
         if !self.options.eval_cache_enabled() {
@@ -252,7 +252,7 @@ impl TreeWalk {
     fn observe_persist_derivation_aterm_path_runtime_hit(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         aterm: &[u8],
         path: &[u8],
         hash_derivation_modulo: Option<NixSha256Digest>,
@@ -373,7 +373,7 @@ impl TreeWalk {
     fn materialize_persist_derivation_aterm_path(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
         aterm: &[u8],
         drv_path: &[u8],
         hash_derivation_modulo: Option<NixSha256Digest>,
@@ -454,7 +454,7 @@ impl TreeWalk {
     pub(super) fn clear_persist_derivation_aterm_path(
         &mut self,
         identity: CacheExprIdentity,
-        free_var_value_hashes: &[DurableBlake3Hash],
+        free_var_value_hashes: &[ValueHash],
     ) {
         if !self.options.eval_cache_enabled() {
             return;

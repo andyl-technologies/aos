@@ -729,7 +729,7 @@ impl TreeWalk {
         builtin: Builtin,
         index: usize,
         arg: &EvalPrimOpArg,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         if builtin.execution() == BuiltinExecution::FindFile && index == 0 {
             if let Some(hash) = self.force_cache_builtin_nix_path_arg_hash(arg.value()) {
                 return Some(hash);
@@ -753,7 +753,7 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         builtin: Builtin,
-    ) -> Option<Vec<DurableBlake3Hash>> {
+    ) -> Option<Vec<ValueHash>> {
         let arity = builtin.first_class_arity()?;
         let mut argument_ids = Vec::new();
         let mut current = id;
@@ -805,7 +805,7 @@ impl TreeWalk {
         Some(hashes)
     }
 
-    fn force_cache_builtin_nix_path_arg_hash(&self, value: Value) -> Option<DurableBlake3Hash> {
+    fn force_cache_builtin_nix_path_arg_hash(&self, value: Value) -> Option<ValueHash> {
         let thunk = self.heap.get_thunk(value).ok()?;
         if !self.thunk_is_builtin_nix_path(thunk) {
             return None;
@@ -813,7 +813,7 @@ impl TreeWalk {
         self.force_cache_visible_nix_path_arg_hash()
     }
 
-    fn force_cache_visible_nix_path_arg_hash(&self) -> Option<DurableBlake3Hash> {
+    fn force_cache_visible_nix_path_arg_hash(&self) -> Option<ValueHash> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"synthetic-builtin-nix-path-v1");
@@ -825,7 +825,9 @@ impl TreeWalk {
             hasher.update(b"entry-path");
             Self::update_cache_identity_chunk(&mut hasher, entry.path())?;
         }
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        Some(ValueHash::from_canonical_value_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
     }
 
     fn thunk_is_builtin_nix_path(&self, thunk: &EvalThunk) -> bool {

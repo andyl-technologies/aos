@@ -375,7 +375,7 @@ impl EvalHeap {
     pub(crate) fn cached_captured_value_hash(
         &self,
         value: Value,
-    ) -> Result<Option<DurableBlake3Hash>, EvalHeapError> {
+    ) -> Result<Option<ValueHash>, EvalHeapError> {
         Ok(self.record_for_value(value)?.captured_value_hash.get())
     }
 
@@ -391,7 +391,7 @@ impl EvalHeap {
     pub(crate) fn cache_captured_value_hash(
         &self,
         value: Value,
-        hash: DurableBlake3Hash,
+        hash: ValueHash,
     ) -> Result<(), EvalHeapError> {
         self.record_for_value(value)?
             .captured_value_hash

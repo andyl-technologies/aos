@@ -10,17 +10,13 @@ fn disabled_eval_cache_runtime_skips_derivation_aterm_path_lookup_and_observatio
     let observation = runtime
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
         .expect("disabled observation succeeds");
     let lookup = runtime
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            aterm,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], aterm)
         .expect("disabled lookup succeeds");
 
     assert!(observation.is_none());
@@ -43,7 +39,7 @@ fn disabled_eval_cache_runtime_skips_static_derivation_output_path_lookup_and_ob
     let observation = runtime
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -51,7 +47,7 @@ fn disabled_eval_cache_runtime_skips_static_derivation_output_path_lookup_and_ob
     let lookup = runtime
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("disabled static output lookup succeeds");
@@ -70,18 +66,14 @@ fn enabled_eval_cache_runtime_delegates_derivation_aterm_path_roundtrip() {
     let observation = runtime
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
         .expect("enabled observation succeeds")
         .expect("enabled runtime observes derivation ATerm path");
     let lookup = runtime
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            aterm,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], aterm)
         .expect("enabled lookup succeeds");
 
     assert_eq!(observation.decision(), CutoffDecision::Propagate);
@@ -103,7 +95,7 @@ fn enabled_eval_cache_runtime_delegates_static_derivation_output_path_roundtrip(
     let observation = runtime
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -112,7 +104,7 @@ fn enabled_eval_cache_runtime_delegates_static_derivation_output_path_roundtrip(
     let lookup = runtime
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("enabled static output lookup succeeds");
@@ -128,7 +120,7 @@ fn disabled_eval_cache_runtime_skips_derivation_aterm_observation() {
     let observation = runtime
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             b"Derive([],[],[],\":\",\":\",[],[])",
         )
         .expect("disabled observation succeeds");
@@ -145,7 +137,7 @@ fn enabled_eval_cache_runtime_delegates_derivation_aterm_observation() {
     let first = runtime
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
         )
         .expect("enabled observation succeeds")
@@ -153,7 +145,7 @@ fn enabled_eval_cache_runtime_delegates_derivation_aterm_observation() {
     let same = runtime
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
         )
         .expect("enabled observation succeeds")

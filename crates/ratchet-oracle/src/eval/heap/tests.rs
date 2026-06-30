@@ -117,7 +117,9 @@ fn hash_consed_heap_records_share_cached_captured_value_hashes() {
     let list = heap
         .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
         .expect("list allocates");
-    let hash = DurableBlake3Hash::for_bytes(b"captured string");
+    let hash = ValueHash::from_canonical_value_hash(crate::cache::DurableBlake3Hash::for_bytes(
+        b"captured string",
+    ));
 
     assert!(first.raw_eq(second));
     assert_eq!(heap.cached_captured_value_hash(first), Ok(None));
@@ -217,7 +219,9 @@ fn captured_value_hash_cache_rejects_unsupported_values() {
     let thunk = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("thunk allocates");
-    let hash = DurableBlake3Hash::for_bytes(b"captured");
+    let hash = ValueHash::from_canonical_value_hash(crate::cache::DurableBlake3Hash::for_bytes(
+        b"captured",
+    ));
     let expected_int = EvalHeapError::Value(ValueError::Type {
         expected: "string, path, list, or attrs",
         actual: ValueTag::Int,
@@ -284,7 +288,9 @@ fn captured_value_hash_cache_validates_heap_ownership_and_record_type() {
         .alloc_string(NixString::from_bytes(b"foreign".to_vec()))
         .expect("foreign string allocates");
     let foreign_ptr = foreign.as_string_ptr().expect("foreign pointer");
-    let hash = DurableBlake3Hash::for_bytes(b"captured");
+    let hash = ValueHash::from_canonical_value_hash(crate::cache::DurableBlake3Hash::for_bytes(
+        b"captured",
+    ));
     let mismatch = EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::List, list_ptr);
     let unknown = EvalHeapError::unknown(ValueTag::String, foreign_ptr);
 

@@ -192,7 +192,7 @@ impl EvalCacheRuntime {
         source: &S,
     ) -> Result<Option<ExpressionTraceObservation>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         S: ImpureInputTraceSource + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {
@@ -223,7 +223,7 @@ impl EvalCacheRuntime {
         cheap_value_hash: bool,
     ) -> Result<Option<MemoizationObservation>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -248,7 +248,7 @@ impl EvalCacheRuntime {
         free_var_value_hashes: I,
     ) -> Result<Option<MemoizationDemand>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache() else {
             return Ok(None);
@@ -273,7 +273,7 @@ impl EvalCacheRuntime {
         free_var_value_hashes: I,
     ) -> Result<Option<Value>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -298,7 +298,7 @@ impl EvalCacheRuntime {
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -324,7 +324,7 @@ impl EvalCacheRuntime {
         revalidator: &mut R,
     ) -> Result<Option<Value>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {
@@ -355,7 +355,7 @@ impl EvalCacheRuntime {
         aterm: &[u8],
     ) -> Result<Option<Vec<u8>>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -370,7 +370,7 @@ impl EvalCacheRuntime {
         aterm: &[u8],
     ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -396,7 +396,7 @@ impl EvalCacheRuntime {
         pre_output_aterm: &[u8],
     ) -> Result<Option<CachedDerivationOutputPaths>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -415,7 +415,7 @@ impl EvalCacheRuntime {
         pre_output_aterm: &[u8],
     ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -445,7 +445,7 @@ impl EvalCacheRuntime {
         revalidator: &mut R,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {
@@ -465,7 +465,7 @@ impl EvalCacheRuntime {
         revalidator: &mut R,
     ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {
@@ -485,7 +485,7 @@ impl EvalCacheRuntime {
         value_hash: Option<ValueHash>,
     ) -> Result<Option<DemandNodeId>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -552,7 +552,7 @@ impl EvalCacheRuntime {
         value: Value,
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -579,7 +579,7 @@ impl EvalCacheRuntime {
         value: CachedExpressionValue,
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -606,7 +606,7 @@ impl EvalCacheRuntime {
         aterm: &[u8],
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -634,7 +634,7 @@ impl EvalCacheRuntime {
         drv_path: &[u8],
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         self.observe_derivation_aterm_expression_path_with_hash(
             identity,
@@ -654,7 +654,7 @@ impl EvalCacheRuntime {
         hash_derivation_modulo: Option<NixSha256Digest>,
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -688,7 +688,7 @@ impl EvalCacheRuntime {
         output_paths: CachedDerivationOutputPaths,
     ) -> Result<Option<Reconsideration>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -719,7 +719,7 @@ impl EvalCacheRuntime {
         free_var_value_hashes: I,
     ) -> Result<Option<bool>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let Some(cache) = self.cache_mut() else {
             return Ok(None);
@@ -748,7 +748,7 @@ impl EvalCacheRuntime {
         source: &S,
     ) -> Result<Option<ExpressionTraceObservation>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         S: ImpureInputTraceSource + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {
@@ -783,7 +783,7 @@ impl EvalCacheRuntime {
         source: &S,
     ) -> Result<Option<ExpressionTraceObservation>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         S: ImpureInputTraceSource + ?Sized,
     {
         let Some(cache) = self.cache_mut() else {

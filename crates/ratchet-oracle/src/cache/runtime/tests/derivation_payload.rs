@@ -16,30 +16,26 @@ fn eval_cache_observes_derivation_aterm_expression() {
     let first = cache
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
         )
         .expect("first derivation ATerm observes");
     let same = cache
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
         )
         .expect("same derivation ATerm observes");
     let changed_reconsideration = cache
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             changed,
         )
         .expect("changed derivation ATerm observes");
     let node = cache
-        .get_or_insert_expression_node(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            None,
-        )
+        .get_or_insert_expression_node(identity(b"derivation", 7), [value_hash(b"free-var")], None)
         .expect("existing expression node returns");
 
     assert_eq!(first.decision(), CutoffDecision::Propagate);
@@ -63,17 +59,13 @@ fn eval_cache_looks_up_clean_derivation_aterm_path() {
     let reconsideration = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
         .expect("derivation ATerm path observes");
     let lookup = cache
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            aterm,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], aterm)
         .expect("derivation ATerm path lookup succeeds");
 
     assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
@@ -88,14 +80,14 @@ fn eval_cache_derivation_aterm_path_hits_return_supplier_node_for_memo_read_edge
     let parent = cache
         .get_or_insert_expression_node(
             identity(b"parent", 8),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             None,
         )
         .expect("parent node allocates");
     let reconsideration = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -103,7 +95,7 @@ fn eval_cache_derivation_aterm_path_hits_return_supplier_node_for_memo_read_edge
     let hit = cache
         .lookup_derivation_aterm_path_hit(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
         )
         .expect("derivation ATerm path hit lookup succeeds")
@@ -187,7 +179,7 @@ fn eval_cache_looks_up_clean_static_derivation_output_paths() {
     let reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -195,7 +187,7 @@ fn eval_cache_looks_up_clean_static_derivation_output_paths() {
     let lookup = cache
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("static derivation output path lookup succeeds");
@@ -220,7 +212,7 @@ fn node_noncacheable_trace_removes_derivation_side_records() {
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -236,7 +228,7 @@ fn node_noncacheable_trace_removes_derivation_side_records() {
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 8),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -273,7 +265,7 @@ fn node_noncacheable_trace_removes_derivation_side_records() {
         cache
             .lookup_derivation_aterm_path(
                 identity(b"derivation", 7),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 aterm
             )
             .expect("derivation lookup succeeds")
@@ -283,7 +275,7 @@ fn node_noncacheable_trace_removes_derivation_side_records() {
         cache
             .lookup_static_derivation_output_paths(
                 identity(b"derivation-outputs", 8),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 pre_output_aterm,
             )
             .expect("static output lookup succeeds")
@@ -301,7 +293,7 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
     let root = cache
         .get_or_insert_expression_node(
             identity(b"root", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"root")),
         )
         .expect("root node inserts");
@@ -310,7 +302,7 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation-dependent", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -330,7 +322,7 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             identity(b"static-dependent", 8),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -362,7 +354,7 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
         cache
             .lookup_derivation_aterm_path(
                 identity(b"derivation-dependent", 7),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 aterm,
             )
             .expect("derivation lookup succeeds")
@@ -372,7 +364,7 @@ fn node_noncacheable_trace_removes_dependent_derivation_side_records() {
         cache
             .lookup_static_derivation_output_paths(
                 identity(b"static-dependent", 8),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 pre_output_aterm,
             )
             .expect("static output lookup succeeds")
@@ -386,7 +378,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_re
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"dirty-supplier", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"dirty-supplier")),
         )
         .expect("supplier inserts");
@@ -398,7 +390,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_re
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             identity(b"dirty-dependent-derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -414,7 +406,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_re
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             identity(b"dirty-dependent-static", 8),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -445,7 +437,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_re
         cache
             .lookup_derivation_aterm_path(
                 identity(b"dirty-dependent-derivation", 7),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 aterm,
             )
             .expect("derivation lookup succeeds")
@@ -455,7 +447,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_removes_derivation_side_re
         cache
             .lookup_static_derivation_output_paths(
                 identity(b"dirty-dependent-static", 8),
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 pre_output_aterm,
             )
             .expect("static output lookup succeeds")
@@ -469,14 +461,14 @@ fn replace_memo_read_dependencies_with_transitive_dirty_supplier_purges_side_rec
     let root = cache
         .get_or_insert_expression_node(
             identity(b"transitive-dirty-root", 5),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"transitive-dirty-root")),
         )
         .expect("root inserts");
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"transitive-clean-supplier", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"transitive-clean-supplier")),
         )
         .expect("supplier inserts");
@@ -489,7 +481,7 @@ fn replace_memo_read_dependencies_with_transitive_dirty_supplier_purges_side_rec
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             identity(b"transitive-dirty-dependent-derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -505,7 +497,7 @@ fn replace_memo_read_dependencies_with_transitive_dirty_supplier_purges_side_rec
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             identity(b"transitive-dirty-dependent-static", 8),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -552,7 +544,7 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"dirty-side-record-supplier", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"dirty-side-record-supplier")),
         )
         .expect("supplier inserts");
@@ -563,7 +555,7 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
     let derivation = cache
         .get_or_insert_expression_node(
             derivation_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"old-derivation")),
         )
         .expect("derivation node inserts");
@@ -574,7 +566,7 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
     let static_outputs = cache
         .get_or_insert_expression_node(
             static_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"old-static")),
         )
         .expect("static output node inserts");
@@ -594,7 +586,7 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
     cache
         .observe_derivation_aterm_expression_path(
             derivation_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -602,7 +594,7 @@ fn dirty_memo_read_supplier_prevents_new_derivation_side_records() {
     cache
         .observe_static_derivation_output_paths(
             static_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -628,7 +620,7 @@ fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"dirty-lookup-supplier", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"dirty-lookup-supplier")),
         )
         .expect("supplier inserts");
@@ -637,7 +629,7 @@ fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             derivation_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -658,7 +650,7 @@ fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             static_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -674,7 +666,7 @@ fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
 
     assert!(
         cache
-            .lookup_derivation_aterm_path(derivation_identity, [durable_hash(b"free-var")], aterm)
+            .lookup_derivation_aterm_path(derivation_identity, [value_hash(b"free-var")], aterm)
             .expect("derivation lookup succeeds")
             .is_none()
     );
@@ -692,7 +684,7 @@ fn clean_derivation_side_records_with_dirty_memo_supplier_miss_and_purge() {
         cache
             .lookup_static_derivation_output_paths(
                 static_identity,
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 pre_output_aterm,
             )
             .expect("static output lookup succeeds")
@@ -715,21 +707,21 @@ fn clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_
     let root = cache
         .get_or_insert_expression_node(
             identity(b"dirty-transitive-lookup-root", 5),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"dirty-transitive-lookup-root")),
         )
         .expect("root inserts");
     let derivation_supplier = cache
         .get_or_insert_expression_node(
             identity(b"clean-lookup-derivation-supplier", 6),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"clean-lookup-derivation-supplier")),
         )
         .expect("derivation supplier inserts");
     let static_supplier = cache
         .get_or_insert_expression_node(
             identity(b"clean-lookup-static-supplier", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"clean-lookup-static-supplier")),
         )
         .expect("static supplier inserts");
@@ -744,7 +736,7 @@ fn clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_
     let derivation = cache
         .observe_derivation_aterm_expression_path(
             derivation_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -765,7 +757,7 @@ fn clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_
     let static_outputs = cache
         .observe_static_derivation_output_paths(
             static_identity,
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths,
         )
@@ -790,7 +782,7 @@ fn clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_
 
     assert!(
         cache
-            .lookup_derivation_aterm_path(derivation_identity, [durable_hash(b"free-var")], aterm)
+            .lookup_derivation_aterm_path(derivation_identity, [value_hash(b"free-var")], aterm)
             .expect("derivation lookup succeeds")
             .is_none()
     );
@@ -808,7 +800,7 @@ fn clean_derivation_side_records_with_transitively_dirty_memo_supplier_miss_and_
         cache
             .lookup_static_derivation_output_paths(
                 static_identity,
-                [durable_hash(b"free-var")],
+                [value_hash(b"free-var")],
                 pre_output_aterm,
             )
             .expect("static output lookup succeeds")
@@ -839,14 +831,14 @@ fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges()
     let parent = cache
         .get_or_insert_expression_node(
             identity(b"parent-static", 8),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             None,
         )
         .expect("parent node allocates");
     let reconsideration = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -854,7 +846,7 @@ fn eval_cache_static_output_path_hits_return_supplier_node_for_memo_read_edges()
     let hit = cache
         .lookup_static_derivation_output_paths_hit(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("static output path hit lookup succeeds")
@@ -914,17 +906,13 @@ fn derivation_aterm_path_lookup_misses_without_path_record() {
     cache
         .observe_derivation_aterm_expression(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
         )
         .expect("derivation ATerm observes");
 
     let lookup = cache
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            aterm,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], aterm)
         .expect("derivation ATerm path lookup succeeds");
 
     assert!(lookup.is_none());
@@ -938,7 +926,7 @@ fn derivation_aterm_path_lookup_misses_for_changed_or_dirty_nodes() {
     cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -947,26 +935,18 @@ fn derivation_aterm_path_lookup_misses_for_changed_or_dirty_nodes() {
     let changed_lookup = cache
         .lookup_derivation_aterm_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             changed,
         )
         .expect("changed derivation ATerm lookup succeeds");
     assert!(changed_lookup.is_none());
 
     let node = cache
-        .get_or_insert_expression_node(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            None,
-        )
+        .get_or_insert_expression_node(identity(b"derivation", 7), [value_hash(b"free-var")], None)
         .expect("existing derivation node returns");
     cache.graph.mark_dirty(node).expect("node dirties");
     let dirty_lookup = cache
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            prior,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], prior)
         .expect("dirty derivation ATerm lookup succeeds");
 
     assert!(dirty_lookup.is_none());
@@ -980,7 +960,7 @@ fn derivation_aterm_path_revalidating_hit_cleans_matching_dirty_node() {
     let observed = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             drv_path,
         )
@@ -993,7 +973,7 @@ fn derivation_aterm_path_revalidating_hit_cleans_matching_dirty_node() {
     let hit = cache
         .lookup_derivation_aterm_path_hit_revalidating(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
         )
         .expect("revalidating derivation ATerm path lookup succeeds")
@@ -1025,7 +1005,7 @@ fn derivation_aterm_path_revalidating_hit_misses_changed_dirty_node() {
     let observed = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -1038,7 +1018,7 @@ fn derivation_aterm_path_revalidating_hit_misses_changed_dirty_node() {
     let hit = cache
         .lookup_derivation_aterm_path_hit_revalidating(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             changed,
         )
         .expect("revalidating changed derivation ATerm path lookup succeeds");
@@ -1062,7 +1042,7 @@ fn derivation_aterm_path_observation_reconsiders_full_payload() {
     let first = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
         )
@@ -1070,7 +1050,7 @@ fn derivation_aterm_path_observation_reconsiders_full_payload() {
     let changed_path = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x.drv",
         )
@@ -1078,17 +1058,13 @@ fn derivation_aterm_path_observation_reconsiders_full_payload() {
     let same = cache
         .observe_derivation_aterm_expression_path(
             identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             aterm,
             b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x.drv",
         )
         .expect("same derivation ATerm path observes");
     let lookup = cache
-        .lookup_derivation_aterm_path(
-            identity(b"derivation", 7),
-            [durable_hash(b"free-var")],
-            aterm,
-        )
+        .lookup_derivation_aterm_path(identity(b"derivation", 7), [value_hash(b"free-var")], aterm)
         .expect("derivation ATerm path lookup succeeds");
 
     assert_eq!(first.decision(), CutoffDecision::Propagate);
@@ -1115,7 +1091,7 @@ fn static_derivation_output_path_lookup_misses_for_changed_or_dirty_nodes() {
     cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
             output_paths,
         )
@@ -1124,7 +1100,7 @@ fn static_derivation_output_path_lookup_misses_for_changed_or_dirty_nodes() {
     let changed_lookup = cache
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             changed,
         )
         .expect("changed static derivation output path lookup succeeds");
@@ -1133,7 +1109,7 @@ fn static_derivation_output_path_lookup_misses_for_changed_or_dirty_nodes() {
     let node = cache
         .get_or_insert_expression_node(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             None,
         )
         .expect("existing static derivation output node returns");
@@ -1141,7 +1117,7 @@ fn static_derivation_output_path_lookup_misses_for_changed_or_dirty_nodes() {
     let dirty_lookup = cache
         .lookup_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             prior,
         )
         .expect("dirty static derivation output path lookup succeeds");
@@ -1163,7 +1139,7 @@ fn static_derivation_output_path_revalidating_hit_cleans_matching_dirty_node() {
     let observed = cache
         .observe_static_derivation_output_paths(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
             output_paths.clone(),
         )
@@ -1176,7 +1152,7 @@ fn static_derivation_output_path_revalidating_hit_cleans_matching_dirty_node() {
     let hit = cache
         .lookup_static_derivation_output_paths_hit_revalidating(
             identity(b"derivation-outputs", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             pre_output_aterm,
         )
         .expect("revalidating static output path lookup succeeds")

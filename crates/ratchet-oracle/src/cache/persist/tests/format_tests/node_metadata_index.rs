@@ -12,8 +12,8 @@ fn node_metadata_index_keys_cover_expression_identity_and_free_vars() {
     let source_changed =
         CacheExprIdentity::new(DurableBlake3Hash::for_bytes(b"other source"), IrId::new(7));
     let node_changed = CacheExprIdentity::new(source, IrId::new(8));
-    let left = DurableBlake3Hash::for_bytes(b"left");
-    let right = DurableBlake3Hash::for_bytes(b"right");
+    let left = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"left"));
+    let right = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"right"));
 
     let key = PersistNodeMetadataKey::for_expression(identity, [left, right]);
     let same_key = PersistNodeMetadataKey::for_expression(same, [left, right]);
@@ -45,7 +45,7 @@ fn node_metadata_index_keys_cover_impure_input_identities() {
     let other_key = PersistNodeMetadataKey::for_impure_input(other_identity);
     let expression_key = PersistNodeMetadataKey::for_expression(
         CacheExprIdentity::new(identity, crate::compile::IrId::new(0)),
-        [identity],
+        [ValueHash::from_canonical_value_hash(identity)],
     );
 
     assert_eq!(key, same_key);

@@ -50,14 +50,14 @@ fn expression_nodes_are_interned_by_identity_and_free_vars() {
     let first = graph
         .get_or_insert_expression_node(
             identity,
-            [durable_hash(b"left"), durable_hash(b"right")],
+            [value_hash(b"left"), value_hash(b"right")],
             Some(value_hash(b"first")),
         )
         .expect("first expression node inserts");
     let second = graph
         .get_or_insert_expression_node(
             identity,
-            [durable_hash(b"left"), durable_hash(b"right")],
+            [value_hash(b"left"), value_hash(b"right")],
             Some(value_hash(b"second")),
         )
         .expect("existing expression node returns");
@@ -76,21 +76,21 @@ fn expression_identity_changes_node_key() {
     let base = graph
         .get_or_insert_expression_node(
             identity(b"source", 7),
-            [durable_hash(b"value")],
+            [value_hash(b"value")],
             Some(value_hash(b"base")),
         )
         .expect("base expression node inserts");
     let source_changed = graph
         .get_or_insert_expression_node(
             identity(b"other-source", 7),
-            [durable_hash(b"value")],
+            [value_hash(b"value")],
             Some(value_hash(b"source")),
         )
         .expect("source-changed expression node inserts");
     let node_changed = graph
         .get_or_insert_expression_node(
             identity(b"source", 8),
-            [durable_hash(b"value")],
+            [value_hash(b"value")],
             Some(value_hash(b"node")),
         )
         .expect("node-changed expression node inserts");
@@ -108,14 +108,14 @@ fn expression_free_var_order_changes_node_key() {
     let left_then_right = graph
         .get_or_insert_expression_node(
             identity,
-            [durable_hash(b"left"), durable_hash(b"right")],
+            [value_hash(b"left"), value_hash(b"right")],
             Some(value_hash(b"left-right")),
         )
         .expect("left-right expression node inserts");
     let right_then_left = graph
         .get_or_insert_expression_node(
             identity,
-            [durable_hash(b"right"), durable_hash(b"left")],
+            [value_hash(b"right"), value_hash(b"left")],
             Some(value_hash(b"right-left")),
         )
         .expect("right-left expression node inserts");

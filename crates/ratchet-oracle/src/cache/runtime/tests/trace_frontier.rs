@@ -92,7 +92,7 @@ fn enabled_eval_cache_runtime_delegates_trace_edges() {
         .expect("cache is enabled")
         .get_or_insert_expression_node(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(value_hash(b"dependent")),
         )
         .expect("dependent inserts");
@@ -161,7 +161,7 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
     let observed = cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("inline payload observes");
@@ -178,7 +178,7 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
     let consumer = cache
         .observe_inline_expression_result(
             consumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(4),
         )
         .expect("consumer payload observes")
@@ -191,7 +191,7 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
     let grandconsumer = cache
         .observe_inline_expression_result(
             grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(5),
         )
         .expect("grandconsumer payload observes")
@@ -240,21 +240,15 @@ fn eval_cache_node_uncacheable_trace_invalidates_side_payload_and_memo_dependent
         NodeFreshness::Dirty
     );
     let value = cache
-        .lookup_inline_expression_result(
-            expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(expression_identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
     assert!(value.is_none());
     let consumer_value = cache
-        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(consumer_identity, std::iter::empty::<ValueHash>())
         .expect("consumer lookup succeeds");
     assert!(consumer_value.is_none());
     let grandconsumer_value = cache
-        .lookup_inline_expression_result(
-            grandconsumer_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(grandconsumer_identity, std::iter::empty::<ValueHash>())
         .expect("grandconsumer lookup succeeds");
     assert!(grandconsumer_value.is_none());
 }
@@ -265,7 +259,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_invalidates_inline_payload
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"supplier", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"supplier")),
         )
         .expect("supplier inserts");
@@ -273,7 +267,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_invalidates_inline_payload
     let parent = cache
         .observe_inline_expression_result(
             parent_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("parent payload observes")
@@ -306,10 +300,7 @@ fn replace_memo_read_dependencies_with_dirty_supplier_invalidates_inline_payload
     );
     assert!(
         cache
-            .lookup_inline_expression_result(
-                parent_identity,
-                std::iter::empty::<DurableBlake3Hash>()
-            )
+            .lookup_inline_expression_result(parent_identity, std::iter::empty::<ValueHash>())
             .expect("parent lookup succeeds")
             .is_none()
     );

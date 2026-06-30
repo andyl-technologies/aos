@@ -684,14 +684,14 @@ mod tests {
     }
 
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {
-        DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)])
+        DemandCacheKey::for_free_vars(identity(label, node), [value_hash(label)])
             .expect("key builds")
     }
 
     #[test]
     fn memoization_demand_admits_conditional_subject_on_second_cheap_demand() {
         let identity = identity(b"source", 1);
-        let free_vars = [durable_hash(b"captured")];
+        let free_vars = [value_hash(b"captured")];
         let mut cache = EvalCache::new();
 
         let first = cache
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn memoization_demand_keeps_conditional_subject_bypassed_when_hash_is_expensive() {
         let identity = identity(b"source", 2);
-        let free_vars = [durable_hash(b"captured")];
+        let free_vars = [value_hash(b"captured")];
         let mut cache = EvalCache::new();
 
         cache
@@ -745,7 +745,7 @@ mod tests {
         let derivation = cache
             .record_memoization_demand(
                 identity(b"drv", 3),
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 MemoizationSubject::DerivationStrict,
                 false,
             )
@@ -756,7 +756,7 @@ mod tests {
         let trivial = cache
             .record_memoization_demand(
                 identity(b"trivial", 4),
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 MemoizationSubject::Trivial,
                 true,
             )
@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn disabled_runtime_memoization_demand_is_noop() {
         let identity = identity(b"source", 5);
-        let free_vars = [durable_hash(b"captured")];
+        let free_vars = [value_hash(b"captured")];
         let mut runtime = EvalCacheRuntime::disabled();
 
         assert_eq!(

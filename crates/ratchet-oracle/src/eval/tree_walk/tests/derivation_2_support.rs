@@ -1,7 +1,7 @@
 //! Shared helpers for derivation cache-path evaluator tests.
 
 use super::*;
-use crate::cache::{CacheExprIdentity, DurableBlake3Hash};
+use crate::cache::{CacheExprIdentity, ValueHash};
 
 #[derive(Debug)]
 pub(super) struct DerivationCacheRun {
@@ -53,7 +53,7 @@ pub(super) fn derivation_aterm_cache_subject(
     ir: &Ir,
     options: TreeWalkOptions,
     cache: Arc<Mutex<EvalCacheRuntime>>,
-) -> (CacheExprIdentity, Vec<DurableBlake3Hash>) {
+) -> (CacheExprIdentity, Vec<ValueHash>) {
     TreeWalk::with_options_and_eval_cache(ir, options, cache)
         .derivation_aterm_cache_subject_for_current_node(ir.root)
         .expect("root derivation ATerm subject builds")
@@ -63,7 +63,7 @@ pub(super) fn static_derivation_outputs_cache_subject(
     ir: &Ir,
     options: TreeWalkOptions,
     cache: Arc<Mutex<EvalCacheRuntime>>,
-) -> (CacheExprIdentity, Vec<DurableBlake3Hash>) {
+) -> (CacheExprIdentity, Vec<ValueHash>) {
     TreeWalk::with_options_and_eval_cache(ir, options, cache)
         .static_derivation_outputs_cache_subject_for_current_node(ir.root)
         .expect("root static derivation output subject builds")

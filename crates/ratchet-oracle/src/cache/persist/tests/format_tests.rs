@@ -35,8 +35,12 @@ fn test_node_trace_dependency_keys() -> [PersistNodeMetadataKey; 3] {
                 crate::compile::IrId::new(7),
             ),
             [
-                DurableBlake3Hash::for_bytes(b"left free var"),
-                DurableBlake3Hash::for_bytes(b"right free var"),
+                ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(
+                    b"left free var",
+                )),
+                ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(
+                    b"right free var",
+                )),
             ],
         ),
         PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(

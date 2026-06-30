@@ -22,7 +22,7 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
         runtime
             .observe_inline_expression_payload(
                 child_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
             )
             .expect("child payload observes")
@@ -109,7 +109,7 @@ fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
         let stale_node = runtime
             .observe_inline_expression_payload(
                 stale_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
             )
             .expect("stale child payload observes")
@@ -118,7 +118,7 @@ fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
         let fresh_node = runtime
             .observe_inline_expression_payload(
                 fresh_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(2)).expect("fresh int payload builds"),
             )
             .expect("fresh child payload observes")
@@ -209,7 +209,7 @@ fn source_backed_parent_force_without_hits_clears_prior_memo_read_edges() {
         runtime
             .observe_inline_expression_payload(
                 stale_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
             )
             .expect("stale child payload observes")
@@ -395,10 +395,8 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
     let child_payload =
         CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
     let child_value_hash = child_payload.value_hash().expect("child payload hashes");
-    let child_persist_key = PersistNodeMetadataKey::for_expression(
-        child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
+    let child_persist_key =
+        PersistNodeMetadataKey::for_expression(child_identity, std::iter::empty::<ValueHash>());
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     persist
         .materialize_cached_expression_node_value_indexed(
@@ -451,7 +449,7 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
 
     let child_key = crate::cache::DemandCacheKey::for_free_vars(
         child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
+        std::iter::empty::<ValueHash>(),
     )
     .expect("child runtime key builds");
     let runtime = cache.lock().expect("cache lock is valid");
@@ -498,10 +496,8 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
     let child_payload =
         CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds");
     let child_value_hash = child_payload.value_hash().expect("child payload hashes");
-    let child_persist_key = PersistNodeMetadataKey::for_expression(
-        child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
+    let child_persist_key =
+        PersistNodeMetadataKey::for_expression(child_identity, std::iter::empty::<ValueHash>());
     let persist = PersistCache::open(&persist_root).expect("persistent cache opens");
     persist
         .materialize_cached_expression_node_value_indexed(
@@ -528,7 +524,7 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
         let supplier = cache
             .get_or_insert_expression_node(
                 supplier_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(crate::cache::ValueHash::from_canonical_value_hash(
                     DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier-value"),
                 )),
@@ -540,7 +536,7 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
         let child = cache
             .get_or_insert_expression_node(
                 child_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(child_value_hash),
             )
             .expect("child runtime node inserts");
@@ -602,14 +598,10 @@ fn persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key()
     let supplier_value_hash = supplier_payload
         .value_hash()
         .expect("supplier payload hashes");
-    let child_persist_key = PersistNodeMetadataKey::for_expression(
-        child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
-    let supplier_persist_key = PersistNodeMetadataKey::for_expression(
-        supplier_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
+    let child_persist_key =
+        PersistNodeMetadataKey::for_expression(child_identity, std::iter::empty::<ValueHash>());
+    let supplier_persist_key =
+        PersistNodeMetadataKey::for_expression(supplier_identity, std::iter::empty::<ValueHash>());
     let child_trace = persistent_empty_trace_payload()
         .with_memo_read_dependency_records([(supplier_persist_key, supplier_value_hash)])
         .expect("child trace dependency encodes");
@@ -645,7 +637,7 @@ fn persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key()
         let supplier = cache
             .get_or_insert_expression_node(
                 supplier_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 Some(supplier_value_hash),
             )
             .expect("supplier runtime node inserts");
@@ -707,14 +699,10 @@ fn persistent_force_cache_hit_rejects_unresolved_supplier_without_runtime_payloa
     let supplier_value_hash = supplier_payload
         .value_hash()
         .expect("supplier payload hashes");
-    let child_persist_key = PersistNodeMetadataKey::for_expression(
-        child_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
-    let supplier_persist_key = PersistNodeMetadataKey::for_expression(
-        supplier_identity,
-        std::iter::empty::<DurableBlake3Hash>(),
-    );
+    let child_persist_key =
+        PersistNodeMetadataKey::for_expression(child_identity, std::iter::empty::<ValueHash>());
+    let supplier_persist_key =
+        PersistNodeMetadataKey::for_expression(supplier_identity, std::iter::empty::<ValueHash>());
     let child_trace = persistent_empty_trace_payload()
         .with_memo_read_dependency_records([(supplier_persist_key, supplier_value_hash)])
         .expect("child trace dependency encodes");

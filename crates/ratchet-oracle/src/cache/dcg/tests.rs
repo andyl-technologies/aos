@@ -35,7 +35,7 @@ fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
 }
 
 fn key(node: u32, label: &[u8]) -> DemandCacheKey {
-    DemandCacheKey::for_free_vars(identity(label, node), [durable_hash(label)]).expect("key builds")
+    DemandCacheKey::for_free_vars(identity(label, node), [value_hash(label)]).expect("key builds")
 }
 
 fn read_file_input(path: &[u8], contents: &[u8]) -> CacheableInputFingerprint {

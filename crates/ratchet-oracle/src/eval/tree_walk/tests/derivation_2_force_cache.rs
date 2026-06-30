@@ -6,8 +6,8 @@ use super::derivation_2_support::{
 };
 use super::*;
 use crate::cache::{
-    CacheExprIdentity, DemandCacheKey, DurableBlake3Hash, NodeFreshness, PersistCache,
-    PersistNodeMetadataKey, ValueHash,
+    CacheExprIdentity, DemandCacheKey, NodeFreshness, PersistCache, PersistNodeMetadataKey,
+    ValueHash,
 };
 
 #[test]
@@ -631,7 +631,7 @@ fn assert_persistent_force_cache_trace_log_contains(
 fn assert_no_live_persistent_side_record(
     persist_root: &std::path::Path,
     identity: CacheExprIdentity,
-    free_var_value_hashes: &[DurableBlake3Hash],
+    free_var_value_hashes: &[ValueHash],
     context: &str,
 ) {
     if !persist_root.exists() {

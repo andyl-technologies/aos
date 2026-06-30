@@ -10,7 +10,10 @@ use std::hash::{Hash, Hasher};
 use thiserror::Error;
 use xxhash_rust::xxh3::Xxh3;
 
-use super::hashing::{DurableBlake3Hash, HotXxh3Hash};
+use super::{
+    ValueHash,
+    hashing::{DurableBlake3Hash, HotXxh3Hash},
+};
 use crate::compile::IrId;
 
 const KEY_DOMAIN_VERSION: &[u8] = b"aos-nix-demand-cache-key-v1";
@@ -106,11 +109,11 @@ impl DemandCacheKey {
         free_var_value_hashes: I,
     ) -> Result<Self, CacheKeyError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let hashes = free_var_value_hashes
             .into_iter()
-            .map(DurableBlake3Hash::as_bytes);
+            .map(|hash| hash.as_durable_hash().as_bytes());
         combine_value_hash_chunks(identity, hashes)
     }
 
@@ -193,25 +196,27 @@ mod tests {
         CacheExprIdentity::new(source(b"source"), IrId::new(node))
     }
 
-    fn value_hash(bytes: &[u8]) -> DurableBlake3Hash {
-        DurableBlake3Hash::for_bytes(bytes)
+    fn value_hash(bytes: &[u8]) -> ValueHash {
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
     #[test]
     fn impure_input_keys_are_domain_separated_from_expression_keys() {
-        let hash = value_hash(b"same durable bytes");
+        let hash = source(b"same durable bytes");
         let input_key = DemandCacheKey::for_impure_input(hash);
-        let expression_key =
-            DemandCacheKey::for_free_vars(CacheExprIdentity::new(hash, IrId::new(0)), [hash])
-                .expect("expression key builds");
+        let expression_key = DemandCacheKey::for_free_vars(
+            CacheExprIdentity::new(hash, IrId::new(0)),
+            [ValueHash::from_canonical_value_hash(hash)],
+        )
+        .expect("expression key builds");
 
         assert_ne!(input_key, expression_key);
     }
 
     #[test]
     fn impure_input_identity_changes_key() {
-        let first = DemandCacheKey::for_impure_input(value_hash(b"input one"));
-        let second = DemandCacheKey::for_impure_input(value_hash(b"input two"));
+        let first = DemandCacheKey::for_impure_input(source(b"input one"));
+        let second = DemandCacheKey::for_impure_input(source(b"input two"));
 
         assert_ne!(first, second);
     }
@@ -282,9 +287,8 @@ mod tests {
     #[test]
     fn durable_confirmation_keeps_hot_hash_collisions_distinct() {
         let hot = HotXxh3Hash::from_xxh3(0xfeed_face_cafe_beef);
-        let first = DemandCacheKey::from_raw_parts_for_test(hot, value_hash(b"first confirmation"));
-        let second =
-            DemandCacheKey::from_raw_parts_for_test(hot, value_hash(b"second confirmation"));
+        let first = DemandCacheKey::from_raw_parts_for_test(hot, source(b"first confirmation"));
+        let second = DemandCacheKey::from_raw_parts_for_test(hot, source(b"second confirmation"));
 
         assert_ne!(first, second);
 

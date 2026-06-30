@@ -8,18 +8,10 @@ fn eval_cache_observes_inline_expression_results() {
     let identity = identity(b"source", 7);
 
     let first = cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("first result observes");
     let second = cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("second result observes");
 
     assert_eq!(first.decision(), crate::cache::CutoffDecision::Propagate);
@@ -34,14 +26,10 @@ fn eval_cache_looks_up_clean_inline_expression_results() {
     let identity = identity(b"source", 7);
 
     cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("result observes");
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds")
         .expect("memoized inline result is present");
 
@@ -56,24 +44,17 @@ fn eval_cache_payload_hits_return_supplier_node_for_memo_read_edges() {
     let child_observation = cache
         .observe_inline_expression_payload(
             child_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::immediate(Value::int(3)).expect("int payload builds"),
         )
         .expect("child payload observes");
     let child_node = child_observation.node();
     let parent_node = cache
-        .get_or_insert_expression_node(
-            parent_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            None,
-        )
+        .get_or_insert_expression_node(parent_identity, std::iter::empty::<ValueHash>(), None)
         .expect("parent node inserts");
 
     let hit = cache
-        .lookup_inline_expression_payload_hit(
-            child_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_payload_hit(child_identity, std::iter::empty::<ValueHash>())
         .expect("payload hit lookup succeeds")
         .expect("child payload hit is present");
     cache
@@ -107,7 +88,7 @@ fn clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
     let supplier = cache
         .graph
         .get_or_insert_node(
-            DemandCacheKey::for_free_vars(identity(b"supplier", 1), [durable_hash(b"supplier")])
+            DemandCacheKey::for_free_vars(identity(b"supplier", 1), [value_hash(b"supplier")])
                 .expect("supplier key builds"),
             Some(value_hash(b"supplier")),
         )
@@ -116,7 +97,7 @@ fn clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
     let observation = cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("dependent payload observes");
@@ -136,10 +117,7 @@ fn clean_inline_payload_with_dirty_memo_supplier_misses_and_purges_record() {
     );
 
     let value = cache
-        .lookup_inline_expression_result(
-            expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(expression_identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
 
     assert!(value.is_none());
@@ -160,14 +138,14 @@ fn clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_
     let root = cache
         .get_or_insert_expression_node(
             identity(b"dirty-root", 1),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"dirty-root")),
         )
         .expect("root inserts");
     let supplier = cache
         .get_or_insert_expression_node(
             identity(b"clean-supplier", 2),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"clean-supplier")),
         )
         .expect("supplier inserts");
@@ -178,7 +156,7 @@ fn clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_
     let observation = cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("dependent payload observes");
@@ -204,10 +182,7 @@ fn clean_inline_payload_with_transitively_dirty_memo_supplier_misses_and_purges_
     );
 
     let value = cache
-        .lookup_inline_expression_result(
-            expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(expression_identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
 
     assert!(value.is_none());
@@ -230,16 +205,16 @@ fn eval_cache_looks_up_context_free_string_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::context_free_string(b"cached string".to_vec()),
         )
         .expect("string payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized string payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert_eq!(
@@ -262,16 +237,16 @@ fn eval_cache_looks_up_context_string_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::context_string(b"cached string".to_vec(), context.clone()),
         )
         .expect("context string payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized context string payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
     let (bytes, cached_context) = payload
         .context_string_parts()
@@ -296,16 +271,16 @@ fn eval_cache_looks_up_path_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::path(b"/tmp/cached-path".to_vec()),
         )
         .expect("path payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized path payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert_eq!(payload.path_bytes(), Some(b"/tmp/cached-path".as_slice()));
@@ -326,7 +301,7 @@ fn eval_cache_looks_up_context_path_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::context_path(
                 b"/nix/store/context-path".to_vec(),
                 context.clone(),
@@ -334,11 +309,11 @@ fn eval_cache_looks_up_context_path_payloads() {
         )
         .expect("context path payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized context path payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
     let (bytes, cached_context) = payload
         .context_path_parts()
@@ -363,16 +338,16 @@ fn eval_cache_looks_up_empty_list_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::empty_list(),
         )
         .expect("empty list payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized empty list payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert!(payload.is_empty_list());
@@ -395,7 +370,7 @@ fn eval_cache_looks_up_strict_list_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::strict_list(vec![
                 CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
                 CachedExpressionValue::context_free_string(b"element".to_vec()),
@@ -403,11 +378,11 @@ fn eval_cache_looks_up_strict_list_payloads() {
         )
         .expect("strict list payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized strict list payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert_eq!(payload.list_len(), Some(2));
@@ -431,16 +406,16 @@ fn eval_cache_looks_up_empty_attrs_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::empty_attrs(),
         )
         .expect("empty attrset payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized empty attrset payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert!(payload.is_empty_attrs());
@@ -464,7 +439,7 @@ fn eval_cache_looks_up_strict_attrs_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::strict_attrs(vec![
                 (
                     b"b".to_vec(),
@@ -479,11 +454,11 @@ fn eval_cache_looks_up_strict_attrs_payloads() {
         )
         .expect("strict attrset payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized strict attrset payload is present");
     let immediate = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("immediate lookup succeeds");
 
     assert_eq!(payload.attrs_len(), Some(2));
@@ -508,7 +483,7 @@ fn eval_cache_looks_up_source_ordered_attrs_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::source_ordered_attrs(vec![
                 (
                     b"c".to_vec(),
@@ -523,7 +498,7 @@ fn eval_cache_looks_up_source_ordered_attrs_payloads() {
         )
         .expect("source-order attrset payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized source-order attrset payload is present");
     let entries = payload
@@ -549,7 +524,7 @@ fn eval_cache_looks_up_positioned_attrs_payloads() {
     cache
         .observe_inline_expression_payload(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             CachedExpressionValue::positioned_attrs(vec![(
                 b"a".to_vec(),
                 Some(position),
@@ -559,7 +534,7 @@ fn eval_cache_looks_up_positioned_attrs_payloads() {
         )
         .expect("positioned attrset payload observes");
     let payload = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized positioned attrset payload is present");
     let entries = payload
@@ -774,14 +749,10 @@ fn inline_payload_records_replay_cached_value_hashes() {
     let value_hash = payload.value_hash().expect("payload hashes");
 
     cache
-        .observe_inline_expression_payload(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            payload,
-        )
+        .observe_inline_expression_payload(identity, std::iter::empty::<ValueHash>(), payload)
         .expect("payload observes");
     let replayed = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized payload is present");
 
@@ -806,14 +777,10 @@ fn inline_payload_records_replay_attr_position_source_value_hashes() {
     let value_hash = payload.value_hash().expect("payload hashes");
 
     cache
-        .observe_inline_expression_payload(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            payload,
-        )
+        .observe_inline_expression_payload(identity, std::iter::empty::<ValueHash>(), payload)
         .expect("payload observes");
     let replayed = cache
-        .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
         .expect("payload lookup succeeds")
         .expect("memoized payload is present");
 
@@ -862,13 +829,13 @@ fn eval_cache_lookup_requires_side_payload_record() {
     cache
         .get_or_insert_expression_node(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(ValueHash::from_inline_value(Value::int(3)).expect("inline value hashes")),
         )
         .expect("node inserts");
 
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
 
     assert!(value.is_none());
@@ -879,11 +846,7 @@ fn dirty_pure_inline_payload_lookup_reconsiders_same_hash_and_cuts_off() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);
     let observation = cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("result observes");
     cache
         .graph
@@ -891,7 +854,7 @@ fn dirty_pure_inline_payload_lookup_reconsiders_same_hash_and_cuts_off() {
         .expect("node can be marked dirty");
 
     let hit = cache
-        .lookup_inline_expression_payload_hit(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_payload_hit(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds")
         .expect("dirty pure payload cuts off");
 
@@ -928,14 +891,14 @@ fn dirty_pure_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
     let parent_observation = cache
         .observe_inline_expression_result(
             parent_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(10),
         )
         .expect("parent result observes");
     let child_observation = cache
         .observe_inline_expression_result(
             child_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("child result observes");
@@ -973,10 +936,7 @@ fn dirty_pure_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
     );
 
     let plain_hit = cache
-        .lookup_inline_expression_payload_hit(
-            parent_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_payload_hit(parent_identity, std::iter::empty::<ValueHash>())
         .expect("plain lookup succeeds");
     assert!(plain_hit.is_none());
     assert_eq!(
@@ -992,7 +952,7 @@ fn dirty_pure_inline_payload_with_clean_changed_memo_supplier_stays_miss() {
     let impure_aware_hit = cache
         .lookup_inline_expression_payload_hit_with_impure_inputs(
             parent_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             &mut revalidator,
         )
         .expect("impure-aware lookup succeeds");
@@ -1014,11 +974,7 @@ fn eval_cache_lookup_rejects_stale_inline_payload_records() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 7);
     let observation = cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("result observes");
     cache
         .graph
@@ -1029,7 +985,7 @@ fn eval_cache_lookup_rejects_stale_inline_payload_records() {
         .expect("node can be reconsidered independently");
 
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds");
 
     assert!(value.is_none());
@@ -1046,7 +1002,7 @@ fn pure_inline_observation_clears_prior_impure_edges() {
     let trace_observation = cache
         .observe_inline_expression_result_with_impure_inputs(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
             &source,
         )
@@ -1057,11 +1013,7 @@ fn pure_inline_observation_clears_prior_impure_edges() {
     let input_leaf = trace_observation.trace().leaves()[0].node();
 
     cache
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("pure result observes");
 
     let node_record = cache.graph().node(node).expect("node exists");
@@ -1089,7 +1041,7 @@ fn pure_inline_observation_clears_prior_impure_edges() {
         NodeFreshness::Clean
     );
     let value = cache
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds")
         .expect("pure payload still hits");
     assert_eq!(value.as_int(), Ok(3));
@@ -1106,14 +1058,14 @@ fn pure_inline_observation_preserves_memo_read_edges_while_clearing_impure_edges
     let memo_dependency = cache
         .get_or_insert_expression_node(
             identity(b"memo", 1),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Some(value_hash(b"memo")),
         )
         .expect("memo dependency inserts");
     let trace_observation = cache
         .observe_inline_expression_result_with_impure_inputs(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
             &source,
         )
@@ -1129,7 +1081,7 @@ fn pure_inline_observation_preserves_memo_read_edges_while_clearing_impure_edges
     cache
         .observe_inline_expression_result(
             expression_identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("pure result observes");
@@ -1172,19 +1124,11 @@ fn enabled_eval_cache_runtime_observes_inline_expression_results() {
     let identity = identity(b"source", 7);
 
     let first = runtime
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("first result observes")
         .expect("enabled runtime observes expression results");
     let second = runtime
-        .observe_inline_expression_result(
-            identity,
-            std::iter::empty::<DurableBlake3Hash>(),
-            Value::int(3),
-        )
+        .observe_inline_expression_result(identity, std::iter::empty::<ValueHash>(), Value::int(3))
         .expect("second result observes")
         .expect("enabled runtime observes expression results");
 
@@ -1202,13 +1146,13 @@ fn enabled_eval_cache_runtime_looks_up_inline_expression_results() {
     runtime
         .observe_inline_expression_result(
             identity,
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::bool(true),
         )
         .expect("result observes")
         .expect("enabled runtime observes expression results");
     let value = runtime
-        .lookup_inline_expression_result(identity, std::iter::empty::<DurableBlake3Hash>())
+        .lookup_inline_expression_result(identity, std::iter::empty::<ValueHash>())
         .expect("lookup succeeds")
         .expect("memoized inline result is present");
 
@@ -1222,7 +1166,7 @@ fn disabled_eval_cache_runtime_expression_result_observation_is_noop() {
     let observation = runtime
         .observe_inline_expression_result(
             identity(b"source", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
+            std::iter::empty::<ValueHash>(),
             Value::int(3),
         )
         .expect("disabled expression result observation succeeds");
@@ -1236,10 +1180,7 @@ fn disabled_eval_cache_runtime_expression_result_lookup_is_noop() {
     let mut runtime = EvalCacheRuntime::disabled();
 
     let value = runtime
-        .lookup_inline_expression_result(
-            identity(b"source", 7),
-            std::iter::empty::<DurableBlake3Hash>(),
-        )
+        .lookup_inline_expression_result(identity(b"source", 7), std::iter::empty::<ValueHash>())
         .expect("disabled lookup succeeds");
 
     assert!(value.is_none());
@@ -1252,7 +1193,7 @@ fn eval_cache_reconsiders_expression_node_from_inline_value() {
     let node = cache
         .get_or_insert_expression_node(
             identity(b"source", 7),
-            [durable_hash(b"free-var")],
+            [value_hash(b"free-var")],
             Some(ValueHash::from_inline_value(Value::int(1)).expect("inline value hashes")),
         )
         .expect("expression node inserts");

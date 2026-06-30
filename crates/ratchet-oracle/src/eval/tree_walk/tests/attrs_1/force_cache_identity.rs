@@ -544,7 +544,8 @@ fn observation_only_subject_allocates_active_node_without_lookup_replay() {
         DurableBlake3Hash::for_bytes(b"observation-only-active-node"),
         IrId::new(7),
     );
-    let free_var_hash = DurableBlake3Hash::for_bytes(b"free-var");
+    let free_var_hash =
+        ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"free-var"));
     let subject = ForceCacheSubject {
         lookup_identity: None,
         pure_observation_identity: None,
@@ -658,7 +659,7 @@ fn source_backed_admitted_force_error_preserves_prior_memo_read_edges() {
         runtime
             .observe_inline_expression_payload(
                 stale_identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(1)).expect("stale int payload builds"),
             )
             .expect("stale child payload observes")

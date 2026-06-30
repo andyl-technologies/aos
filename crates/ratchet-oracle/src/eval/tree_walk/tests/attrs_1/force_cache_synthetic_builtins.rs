@@ -42,8 +42,7 @@ fn disabled_eval_cache_skips_persistent_current_demand() {
             builtin,
         )
         .expect("synthetic currentSystem identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     PersistCache::open(&persist_root)
         .expect("persistent cache opens")
         .record_node_materialization_reuse(key, MaterializationReuse::from_previous_run(1))
@@ -137,8 +136,7 @@ fn observation_only_current_time_skips_persistent_current_demand() {
             builtin,
         )
         .expect("synthetic currentTime observation identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let forced = evaluator
         .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
         .expect("currentTime force succeeds");
@@ -197,8 +195,7 @@ fn observation_only_current_time_tombstones_stale_persistent_payload() {
             builtin,
         )
         .expect("synthetic currentTime observation identity builds");
-    let key =
-        PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<DurableBlake3Hash>());
+    let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
     let stale_payload = CachedExpressionValue::immediate(Value::int(123))
         .expect("stale scalar payload is cacheable");
     let stale_value_hash = stale_payload.value_hash().expect("stale payload hashes");
@@ -833,17 +830,14 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
         runtime
             .observe_inline_expression_payload(
                 identity,
-                std::iter::empty::<DurableBlake3Hash>(),
+                std::iter::empty::<ValueHash>(),
                 CachedExpressionValue::immediate(Value::int(123))
                     .expect("stale payload is cacheable"),
             )
             .expect("stale payload is seeded");
         assert!(
             runtime
-                .lookup_inline_expression_payload(
-                    identity,
-                    std::iter::empty::<DurableBlake3Hash>(),
-                )
+                .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>(),)
                 .expect("seeded payload lookup succeeds")
                 .is_some(),
             "stale payload should be present before forcing currentTime"
@@ -862,7 +856,7 @@ fn synthetic_builtin_attr_current_time_ignores_and_invalidates_stale_payload() {
     let mut runtime = cache.lock().expect("cache lock is valid");
     assert!(
         runtime
-            .lookup_inline_expression_payload(identity, std::iter::empty::<DurableBlake3Hash>())
+            .lookup_inline_expression_payload(identity, std::iter::empty::<ValueHash>())
             .expect("post-force lookup succeeds")
             .is_none(),
         "uncacheable currentTime observation should invalidate the stale payload"

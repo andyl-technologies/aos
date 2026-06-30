@@ -842,7 +842,7 @@ alone (`M-1`/`Q-A`).
 - [x] Current inline/string/path/replayable-composite captured-free-variable
       force-cache key substrate: tree-walk now builds one force-cache subject for
       each source-backed or lowered-IR-backed node thunk, including ordered
-      durable hashes for referenced captured lexical slots when every captured
+      `ValueHash` values for referenced captured lexical slots when every captured
       slot value is either an inline scalar supported by
       `ValueHash::from_inline_value`, a Nix string with or without context, a
       Nix path with or without context, a replayable Nix list, a replayable Nix
@@ -864,7 +864,7 @@ alone (`M-1`/`Q-A`).
       force-capture domain with a composite tag; positioned composites
       additionally salt the captured hash with the cache identity of every
       module referenced by retained binding positions. Lookup and observation feed
-      those hashes into the existing ordered/length-prefixed demand-key
+      those typed value hashes into the existing ordered/length-prefixed demand-key
       combiner, so repeated captured inline/string/path/replayable-composite
       thunks hit only when their free-variable value hashes match and miss when
       those captured values differ or their referenced position-source
@@ -881,7 +881,7 @@ alone (`M-1`/`Q-A`).
       nested `let` bodies, apply thunks
       and dynamic-path or unhashable-receiver select thunks, full
       strictness/escape free-variable analysis, remaining
-      heap/composite value hashes, persistence, and cached/uncached harness
+      composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
       hit/miss tests, repeated captured-slot deduplication, lowered
       lambda-argument coverage, cross-type string/path hash separation,
@@ -906,6 +906,24 @@ alone (`M-1`/`Q-A`).
       canaries, and representative
       captured unsupported free-variable skips
       (`C-1`/`C-2`).
+- [x] Current free-variable value-hash type boundary:
+      `DemandCacheKey::for_free_vars`, `PersistNodeMetadataKey::for_expression`,
+      `DemandGraph`/`SharedDemandGraph` expression-node helpers,
+      `EvalCache`/`EvalCacheRuntime` expression lookup, observation, and
+      materialization helpers, derivation side-record helpers,
+      `ForceCacheSubject`, tree-walk captured-free-variable hash production,
+      and heap `captured_value_hash` memoization now carry free-variable hashes
+      as `ValueHash`. Stable hot/persistent key construction unwraps with
+      `ValueHash::as_durable_hash()` only at the length-framed byte-combiner
+      boundary, while expression/source/input identities and final metadata/blob
+      index keys remain raw `DurableBlake3Hash` domains. This closes the current
+      free-variable constructor leak; it is not the full canonical value
+      serializer, the full strictness/escape free-variable set, persistent graph
+      integration, or the cached/uncached false-hit harness. Gates:
+      `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`, `cache::key`,
+      `cache::persist::tests::format_tests::node_metadata_index`, `eval::heap`,
+      captured free-variable tests, and derivation side-record cache-path tests
+      (`S-15`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's
       source span into the durable expression-identity hash before pairing that
@@ -915,7 +933,7 @@ alone (`M-1`/`Q-A`).
       identity shape toward the RFC `source content hash + IR node position` key
       while preserving the existing source-byte/lowered-IR fingerprint,
       path-literal-base, evaluator-option salt, synthetic builtin
-      symbol/execution behavior, and ordered free-variable hash behavior. Full cache-key integration still
+      symbol/execution behavior, and ordered free-variable value-hash behavior. Full cache-key integration still
       requires canonical strictness/escape free-variable sets, real durable value
       hashes for all admitted values, persistent key compatibility decisions,
       and the cached/uncached false-hit harness. The gate covers source-backed
@@ -1355,13 +1373,13 @@ alone (`M-1`/`Q-A`).
       is current heap-local consing, not generic post-force immutable-value
       hash-consing, maximal sharing across all values, O(1) equality for all
       values, durable value hashes, or field-load value-hash support.
-- [x] Current force-capture durable-hash field-load precursor: evaluator heap
-      records now carry an optional cached durable hash in the force-captured
+- [x] Current force-capture value-hash field-load precursor: evaluator heap
+      records now carry an optional cached `ValueHash` in the force-captured
       value domain, and the force-cache captured-free-variable key path consults
       and populates that field for heap strings, paths, replayable lists, and
       replayable attrsets after the existing canonical payload hash succeeds.
       Hash-consed heap records share the cached field, so repeated captures of
-      the same consed value avoid recomputing the BLAKE3 captured-value hash.
+      the same consed value avoid recomputing the captured `ValueHash`.
       This is limited to the current tree-walk heap records and force-cache
       subject keying; it is not generic post-force immutable-value hash-consing,
       O(1) equality, persisted value hashes, demand-graph value-hash production,
@@ -3936,8 +3954,8 @@ alone (`M-1`/`Q-A`).
       corrupt/wrong-store fixtures. This closes the current
       semantic constructor leak for `values/` blobs; it is not the full constructive
       value store, the full value-hash serializer, or the full internal-hash
-      leak invariant. Gate: `cargo check -p ratchet-oracle --tests`,
-      `cargo check -p aos-nix-harness --tests`, `blob_index`,
+      leak invariant. Gate: `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`,
+      `cargo check --manifest-path crates/Cargo.toml -p aos-nix-harness --tests`, `blob_index`,
       `cached_expression_materialization`, `blob_reachability`,
       `value_blob_repack` ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:

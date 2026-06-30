@@ -531,7 +531,7 @@ struct ForceCacheSubject {
     impure_observation_identity: Option<CacheExprIdentity>,
     metadata_identity: Option<CacheExprIdentity>,
     persistent_clear_identity: Option<CacheExprIdentity>,
-    free_var_value_hashes: Vec<DurableBlake3Hash>,
+    free_var_value_hashes: Vec<ValueHash>,
     replay_position_module: Option<EvalModuleId>,
     memoization_admission: ForceCacheMemoizationAdmission,
 }

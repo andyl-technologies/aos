@@ -25,7 +25,7 @@ impl EvalCache {
         aterm: &[u8],
     ) -> Result<Option<Vec<u8>>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         Ok(self
             .lookup_derivation_aterm_path_hit(identity, free_var_value_hashes, aterm)?
@@ -39,7 +39,7 @@ impl EvalCache {
         aterm: &[u8],
     ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -77,7 +77,7 @@ impl EvalCache {
         aterm: &[u8],
     ) -> Result<Option<CachedDerivationAtermPathHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -140,7 +140,7 @@ impl EvalCache {
         pre_output_aterm: &[u8],
     ) -> Result<Option<CachedDerivationOutputPaths>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         Ok(self
             .lookup_static_derivation_output_paths_hit(
@@ -158,7 +158,7 @@ impl EvalCache {
         pre_output_aterm: &[u8],
     ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -195,7 +195,7 @@ impl EvalCache {
         pre_output_aterm: &[u8],
     ) -> Result<Option<CachedStaticDerivationOutputPathsHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -253,7 +253,7 @@ impl EvalCache {
         aterm: &[u8],
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
         self.graph.reconsider_derivation_aterm_node(node, aterm)
@@ -280,7 +280,7 @@ impl EvalCache {
         drv_path: &[u8],
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         self.observe_derivation_aterm_expression_path_with_hash(
             identity,
@@ -300,7 +300,7 @@ impl EvalCache {
         hash_derivation_modulo: Option<NixSha256Digest>,
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
         let record = DerivationAtermPathRecord::new(aterm, drv_path, hash_derivation_modulo);
@@ -335,7 +335,7 @@ impl EvalCache {
         output_paths: CachedDerivationOutputPaths,
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let node = self.get_or_insert_expression_node(identity, free_var_value_hashes, None)?;
         let record = StaticDerivationOutputPathRecord::new(pre_output_aterm, output_paths);

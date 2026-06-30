@@ -7,14 +7,11 @@ impl TreeWalk {
         &self,
         body: EvalNodeRef,
         env: &EvalEnv,
-    ) -> Option<Vec<DurableBlake3Hash>> {
+    ) -> Option<Vec<ValueHash>> {
         self.inline_free_var_value_hashes_for_frames(body, env.frames())
     }
 
-    fn inline_free_var_value_hashes_for_current_node(
-        &self,
-        id: IrId,
-    ) -> Option<Vec<DurableBlake3Hash>> {
+    fn inline_free_var_value_hashes_for_current_node(&self, id: IrId) -> Option<Vec<ValueHash>> {
         self.inline_free_var_value_hashes_for_frames(
             EvalNodeRef::new(self.current_module, id),
             &self.env,
@@ -25,7 +22,7 @@ impl TreeWalk {
         &self,
         body: EvalNodeRef,
         frames: &[Rc<EvalFrame>],
-    ) -> Option<Vec<DurableBlake3Hash>> {
+    ) -> Option<Vec<ValueHash>> {
         if frames.is_empty() {
             return Some(Vec::new());
         }
@@ -45,7 +42,7 @@ impl TreeWalk {
     pub(in crate::eval::tree_walk) fn derivation_aterm_cache_subject_for_current_node(
         &self,
         id: IrId,
-    ) -> Option<(CacheExprIdentity, Vec<DurableBlake3Hash>)> {
+    ) -> Option<(CacheExprIdentity, Vec<ValueHash>)> {
         if !self.with_scopes.is_empty() || !self.scoped_globals.is_empty() {
             return None;
         }
@@ -57,7 +54,7 @@ impl TreeWalk {
     pub(in crate::eval::tree_walk) fn static_derivation_outputs_cache_subject_for_current_node(
         &self,
         id: IrId,
-    ) -> Option<(CacheExprIdentity, Vec<DurableBlake3Hash>)> {
+    ) -> Option<(CacheExprIdentity, Vec<ValueHash>)> {
         if !self.with_scopes.is_empty() || !self.scoped_globals.is_empty() {
             return None;
         }
@@ -82,7 +79,7 @@ impl TreeWalk {
     pub(in crate::eval::tree_walk) fn force_cache_free_var_value_hash(
         &self,
         value: Value,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         let mut seen_thunks = BTreeSet::new();
         self.force_cache_free_var_value_hash_with_seen(value, &mut seen_thunks, true)
     }
@@ -90,7 +87,7 @@ impl TreeWalk {
     pub(super) fn force_cache_free_var_value_hash_without_suspended_aliases(
         &self,
         value: Value,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         let mut seen_thunks = BTreeSet::new();
         self.force_cache_free_var_value_hash_with_seen(value, &mut seen_thunks, false)
     }
@@ -100,9 +97,9 @@ impl TreeWalk {
         value: Value,
         seen_thunks: &mut BTreeSet<u64>,
         allow_suspended_capture_aliases: bool,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         if let Ok(hash) = ValueHash::from_inline_value(value) {
-            return Some(hash.as_durable_hash());
+            return Some(hash);
         }
         if allow_suspended_capture_aliases
             && let Ok(Some(hash)) = self.heap.cached_captured_value_hash(value)
@@ -197,7 +194,7 @@ impl TreeWalk {
         &self,
         thunk: &EvalThunk,
         seen_thunks: &mut BTreeSet<u64>,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         let value = self.force_cache_suspended_capture_alias_target(thunk)?;
         self.force_cache_free_var_value_hash_with_seen(value, seen_thunks, true)
     }
@@ -205,7 +202,7 @@ impl TreeWalk {
     pub(super) fn force_cache_closed_hash_for_suspended_capture_alias_target(
         &self,
         value: Value,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         if !value.is_thunk() {
             return None;
         }
@@ -231,7 +228,7 @@ impl TreeWalk {
     fn force_cache_materialized_primop_arg_alias_target_hash(
         &self,
         value: Value,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         match value.tag() {
             ValueTag::String => {
                 let string = self.heap.get_string(value).ok()?;
@@ -280,11 +277,8 @@ impl TreeWalk {
         frames.get(frame_index)?.get(slot).ok()
     }
 
-    fn cache_force_capture_hash(
-        &self,
-        value: Value,
-        hash: DurableBlake3Hash,
-    ) -> Option<DurableBlake3Hash> {
+    fn cache_force_capture_hash(&self, value: Value, hash: DurableBlake3Hash) -> Option<ValueHash> {
+        let hash = ValueHash::from_canonical_value_hash(hash);
         self.heap.cache_captured_value_hash(value, hash).ok()?;
         Some(hash)
     }
@@ -292,11 +286,9 @@ impl TreeWalk {
     fn force_cache_free_var_payload_hash(
         &self,
         payload: &CachedExpressionValue,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<ValueHash> {
         if let Some(value) = payload.immediate_value() {
-            return ValueHash::from_inline_value(value)
-                .ok()
-                .map(|hash| hash.as_durable_hash());
+            return ValueHash::from_inline_value(value).ok();
         }
 
         let mut hasher = blake3::Hasher::new();
@@ -304,28 +296,38 @@ impl TreeWalk {
         if let Some(bytes) = payload.context_free_string_bytes() {
             hasher.update(b"string");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
-            return Some(DurableBlake3Hash::from_hasher(hasher));
+            return Some(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ));
         }
         if let Some((bytes, context)) = payload.context_string_parts() {
             hasher.update(b"string");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
             Self::update_force_capture_string_context(&mut hasher, context)?;
-            return Some(DurableBlake3Hash::from_hasher(hasher));
+            return Some(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ));
         }
         if let Some(bytes) = payload.path_bytes() {
             hasher.update(b"path");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
-            return Some(DurableBlake3Hash::from_hasher(hasher));
+            return Some(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ));
         }
         if let Some((bytes, context)) = payload.context_path_parts() {
             hasher.update(b"path");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
             Self::update_force_capture_string_context(&mut hasher, context)?;
-            return Some(DurableBlake3Hash::from_hasher(hasher));
+            return Some(ValueHash::from_canonical_value_hash(
+                DurableBlake3Hash::from_hasher(hasher),
+            ));
         }
 
         self.update_force_capture_composite_payload_hash(&mut hasher, payload)?;
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        Some(ValueHash::from_canonical_value_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
     }
 
     fn update_force_capture_composite_payload_hash(

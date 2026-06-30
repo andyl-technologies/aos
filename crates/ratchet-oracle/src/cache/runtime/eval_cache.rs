@@ -107,7 +107,7 @@ impl EvalCache {
         cheap_value_hash: bool,
     ) -> Result<MemoizationObservation, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -137,7 +137,7 @@ impl EvalCache {
         free_var_value_hashes: I,
     ) -> Result<Option<MemoizationDemand>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -192,7 +192,7 @@ impl EvalCache {
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         Ok(self
             .lookup_inline_expression_payload_hit(identity, free_var_value_hashes)?
@@ -205,7 +205,7 @@ impl EvalCache {
         free_var_value_hashes: I,
     ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -261,7 +261,7 @@ impl EvalCache {
         free_var_value_hashes: I,
     ) -> Result<Option<Value>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         Ok(self
             .lookup_inline_expression_payload(identity, free_var_value_hashes)?
@@ -298,7 +298,7 @@ impl EvalCache {
         revalidator: &mut R,
     ) -> Result<Option<CachedExpressionValue>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         Ok(self
@@ -317,7 +317,7 @@ impl EvalCache {
         revalidator: &mut R,
     ) -> Result<Option<CachedExpressionPayloadHit>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
@@ -404,7 +404,7 @@ impl EvalCache {
         revalidator: &mut R,
     ) -> Result<Option<Value>, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         R: ImpureInputRevalidator + ?Sized,
     {
         Ok(self
@@ -433,7 +433,7 @@ impl EvalCache {
         value_hash: Option<ValueHash>,
     ) -> Result<DemandNodeId, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
         let node = self.graph.get_or_insert_node(key, value_hash)?;
@@ -620,7 +620,7 @@ impl EvalCache {
         source: &T,
     ) -> Result<ExpressionTraceObservation, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         T: ImpureInputTraceSource + ?Sized,
     {
         let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
@@ -671,7 +671,7 @@ impl EvalCache {
         value: CachedExpressionValue,
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let record = InlineValueRecord::reusable_without_revalidation(value)
             .map_err(|source| DemandGraphError::ValueHash { source })?;
@@ -705,7 +705,7 @@ impl EvalCache {
         free_var_value_hashes: I,
     ) -> Result<bool, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes)
             .map_err(|source| DemandGraphError::CacheKey { source })?;
@@ -732,7 +732,7 @@ impl EvalCache {
         value: Value,
     ) -> Result<Reconsideration, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
     {
         let value = CachedExpressionValue::immediate(value)
             .map_err(|source| DemandGraphError::ValueHash { source })?;
@@ -768,7 +768,7 @@ impl EvalCache {
         source: &T,
     ) -> Result<ExpressionTraceObservation, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         T: ImpureInputTraceSource + ?Sized,
     {
         let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
@@ -859,7 +859,7 @@ impl EvalCache {
         source: &T,
     ) -> Result<ExpressionTraceObservation, DemandGraphError>
     where
-        I: IntoIterator<Item = DurableBlake3Hash>,
+        I: IntoIterator<Item = ValueHash>,
         T: ImpureInputTraceSource + ?Sized,
     {
         let (key, persist_key) = expression_cache_keys(identity, free_var_value_hashes)?;
@@ -1089,7 +1089,7 @@ fn expression_cache_keys<I>(
     free_var_value_hashes: I,
 ) -> Result<(DemandCacheKey, PersistNodeMetadataKey), DemandGraphError>
 where
-    I: IntoIterator<Item = DurableBlake3Hash>,
+    I: IntoIterator<Item = ValueHash>,
 {
     let free_var_value_hashes = free_var_value_hashes.into_iter().collect::<Vec<_>>();
     let key = DemandCacheKey::for_free_vars(identity, free_var_value_hashes.iter().copied())

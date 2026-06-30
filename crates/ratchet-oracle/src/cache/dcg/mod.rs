@@ -12,8 +12,7 @@ use thiserror::Error;
 
 use super::{
     CacheExprIdentity, CacheKeyError, CacheableInputFingerprint, CutoffDecision, DemandCacheKey,
-    DurableBlake3Hash, EarlyCutoff, ImpureInputFingerprint, UncacheableInput, ValueHash,
-    ValueHashError,
+    EarlyCutoff, ImpureInputFingerprint, UncacheableInput, ValueHash, ValueHashError,
 };
 use crate::value::Value;
 
