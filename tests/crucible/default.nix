@@ -563,6 +563,11 @@ in rec {
       attrPath = "checks.crucible.phase3.schedulerEmitStep";
       taskIds = ["T-SCHED-19"];
     };
+    schedulerQuantumPattern = import ./phase3-scheduler-quantum-pattern.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase3.schedulerQuantumPattern";
+      taskIds = ["T-PAT-2"];
+    };
     schedulerIcountCeiling = import ./phase3-scheduler-icount-ceiling.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase3.schedulerIcountCeiling";

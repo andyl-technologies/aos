@@ -1196,10 +1196,18 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     vector, plugin I/O wire, and engine ABI owner tests. RPC API coverage here is
     limited to frozen encoder/golden-vector ABI checks; full RPC reference-client
     decode coverage remains scoped to pending **T-API-13**.
-- [ ] **T-PAT-2** Ensure the scheduler is built to the §29.2 PICK/RUN/RESOLVE/
+- [x] **T-PAT-2** Ensure the scheduler is built to the §29.2 PICK/RUN/RESOLVE/
   EMIT/STEP quantum shape with a single ceiling per RUN and total-order
   RESOLVE. — satisfies [PAT-3]; realized by **T-SCHED-12**, **T-SCHED-13**,
   **T-SCHED-16** (spec 08 §8.9).
+  Completed by `checks.crucible.phase3.schedulerQuantumPattern`. The aggregate
+  gate ties [PAT-3] to the authoritative `drive_authoritative_quantum` path by
+  checking the boundary-admission, PICK, RUN, RESOLVE, EMIT, STEP order inside
+  that function and rerunning the focused quantum-loop, effective-horizon,
+  single-ceiling, RESOLVE, event-order, and EMIT/STEP Rust tests
+  `scheduler_quantum_loop`, `scheduler_effective_horizon`,
+  `scheduler_run_ceiling`, `scheduler_resolve`, `scheduler_event_order`, and
+  `scheduler_emit_step`.
 - [ ] **T-PAT-7** Ensure the block sub-node follows the §29.7 CoW-overlay shape
   (base never written; ordered, deterministic snapshot deltas). — satisfies
   [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).
