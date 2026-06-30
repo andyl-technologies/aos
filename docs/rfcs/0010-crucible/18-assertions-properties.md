@@ -1014,10 +1014,22 @@ verdict; it only shapes the next schedule the search tries.
   violation. The gate covers exact replay of the same violation, a deliberately
   altered replay log that localizes to the first changed icount, missing recorded
   violations, and replay evidence reduced from a different artifact schedule.
-- [ ] **T-ASRT-16** Wire `gate:e2e-determinism` and `gate:replay-oracle` to cover
+- [x] **T-ASRT-16** Wire `gate:e2e-determinism` and `gate:replay-oracle` to cover
   assertions: identical outcome sets online vs offline, idempotent re-grading of a
   recorded corpus, and bit-identical violation reproduction. — satisfies [ASRT-4],
   [ASRT-16], [ASRT-23]; spec §18.6, §18.10.
+	  Completed by `checks.crucible.phase4.gates.e2eDeterminism` and
+	  `checks.crucible.phase4.gates.replayOracle`: the e2e gate now compares
+	  assertion outcome sets and run verdicts between scheduler-backed online
+	  evaluation and offline retained-log grading, including passing and failing
+	  reports from the authoritative and concurrent drives. The replay-oracle gate
+	  idempotently re-grades a multi-run retained assertion corpus, re-grades it
+	  again after adding an assertion, derives replay logs from the artifact
+	  schedule, and runs artifact-bound violation reproduction through
+	  `check_assertion_violation_reproduction`. The gate metadata records assertion
+	  outcome equality, deterministic verdict composition, idempotent corpus
+	  re-grading, artifact-derived replay logs, and bit-identical violation
+	  reproduction.
 - [ ] **T-ASRT-17** Implement the predicate DSL: a set of named, TOML-authorable
   conditions (at least `no_crashed_nodes`, `quiescent`, `no_active_faults`,
   `node_alive:<n>`, `node_crashed:<n>`) that desugar to 17a leaf `Condition`s,

@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.replayOracle",
-  taskIds ? ["T-TRIG-20"],
+  taskIds ? ["T-TRIG-20" "T-ASRT-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,7 +12,9 @@
   };
 
   replayTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+  replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
+  assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
   e2eGate = builtins.readFile ./phase4-e2e-determinism.nix;
 
@@ -59,6 +61,16 @@
       {
         label = "T-TRIG-20 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
+      {
+        label = "T-ASRT-16 checked off";
+        needle = "- [x] **T-ASRT-16**";
+      }
+      {
+        label = "T-ASRT-16 completion note";
+        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" replayTest [
@@ -173,6 +185,36 @@
       {
         label = "no guest-side fallback oracle";
         needle = "struct NoGuestLeaves";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayGate [
+      {
+        label = "assertion replay-oracle coverage test";
+        needle = "gate_replay_oracle_covers_assertion_regrade_and_violation_reproduction";
+      }
+      {
+        label = "assertion retained corpus regrade";
+        needle = "gate:replay-oracle must idempotently re-grade a retained assertion corpus";
+      }
+      {
+        label = "artifact-bound assertion violation replay";
+        needle = "check_assertion_violation_reproduction(&artifact, &recorded_log, &replayed)";
+      }
+      {
+        label = "assertion retained corpus grows";
+        needle = "gate:replay-oracle must idempotently re-grade retained runs after assertion suites grow";
+      }
+      {
+        label = "artifact-derived assertion log";
+        needle = "assertion_replay_recorded_log_from_artifact(&artifact)";
+      }
+      {
+        label = "bit-identical artifact assertion log";
+        needle = "artifact-bound assertion replay must emit a bit-identical retained log";
+      }
+      {
+        label = "assertion replay schedule drift guard";
+        needle = "assertion replay log must be derived from the artifact schedule, not a cloned fixture";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -300,6 +342,7 @@ in
               --target-dir "$TMPDIR/crucible-event-graph-replay-oracle-target" \
               -p crucible \
               --test event_graph_replay_oracle \
+              --test gate_replay_oracle \
               -- --test-threads=1
           '';
         }
@@ -318,6 +361,10 @@ in
               echo "identical_trigger_actions=true"
               echo "online_offline_verdict_replay=true"
               echo "first_divergence_localized=true"
+              echo "assertion_corpus_regrade=idempotent"
+              echo "assertion_corpus_growth_regrade=idempotent"
+              echo "assertion_replay_log=artifact-derived"
+              echo "assertion_violation_reproduction=bit-identical"
             } > "$out/nix-support/metadata"
           '';
         }

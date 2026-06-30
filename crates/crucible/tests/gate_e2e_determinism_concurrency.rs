@@ -36,12 +36,17 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    BackendInput, ConcurrentQuantumLoop, ContentHash, ControlOperation, ControlOperationKind,
-    Decision, DeviceId, DeviceSchedulingSubNode, Icount, NetworkLookahead, NodeCounter, NodeId,
-    QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime,
+    AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BackendInput,
+    ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ConditionLeaf, ContentHash,
+    ControlOperation, ControlOperationKind, Decision, DeviceId, DeviceSchedulingSubNode,
+    HostAssertionEvaluator, HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionReport,
+    Icount, LintedHostAssertionOracle, NetworkLookahead, NodeCounter, NodeId, ObservedOrderingFact,
+    ObservedState, OfflineAssertionChecker, Predicate, Properties, Property, QuantumLoop,
+    QuantumRequest, RecordedAssertionLog, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerEventLogEntry, SchedulerLivenessScenario,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant, SingleScheduler, TriggerActionState,
+    VirtualTime, World,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
@@ -63,6 +68,23 @@ struct RunFingerprint {
     deliveries: Vec<(u64, Icount)>,
     /// The session-control sequences applied across the run, in order.
     control_sequences: Vec<u64>,
+}
+
+/// Assertion coverage derived from the scheduler event log of one full run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AssertionGateCoverage {
+    /// Online assertion report for the passing gate properties.
+    assertion_pass_online: HostAssertionReport,
+    /// Offline re-grade of the retained event log for the passing gate properties.
+    assertion_pass_offline: HostAssertionReport,
+    /// Final run verdict composed from the passing assertion report and trigger log.
+    assertion_pass_composed: ComposedRunVerdict,
+    /// Online assertion report for the failing gate properties.
+    assertion_fail_online: HostAssertionReport,
+    /// Offline re-grade of the retained event log for the failing gate properties.
+    assertion_fail_offline: HostAssertionReport,
+    /// Final run verdict composed from the failing assertion report and trigger log.
+    assertion_fail_composed: ComposedRunVerdict,
 }
 
 /// How a run drove the scheduler, used to prove the concurrent mode is live.
@@ -193,12 +215,16 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
 /// to it (rather than to another concurrent run) is what catches a systematic
 /// defect in the host-concurrent dispatch path — a bug present in both concurrent
 /// arms would otherwise cancel out.
-fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, RunStats) {
+fn drive_with_assertions(
+    mode: DriveMode,
+    control: Vec<ControlOperation>,
+) -> (RunFingerprint, RunStats, AssertionGateCoverage) {
     let seed = Seed::from_u64(0xe2e_d171);
     let mut scheduler = fresh_scheduler(seed);
     let mut decisions = Vec::new();
     let mut resolved = Vec::new();
     let mut deliveries = Vec::new();
+    let mut event_log_segments = Vec::new();
     let mut max_batch = 0usize;
     let mut quanta = 0u64;
     let mut pending_control = Some(control);
@@ -239,6 +265,7 @@ fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, Ru
             .iter()
             .any(|outcome| outcome.advanced_node.is_some());
         for outcome in outcomes {
+            event_log_segments.push(outcome.event_log_entries.clone());
             decisions.extend(outcome.decisions);
             for event in &outcome.resolved_events {
                 let vt = event.key.virtual_time().ticks;
@@ -262,6 +289,13 @@ fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, Ru
         .iter()
         .map(|application| application.operation.sequence)
         .collect();
+    let assertion_world = assertion_gate_world();
+    let passing_properties = assertion_gate_passing_properties(&assertion_world);
+    let failing_properties = assertion_gate_failing_properties(&assertion_world);
+    let (assertion_pass_online, assertion_pass_offline, assertion_pass_composed) =
+        assertion_gate_reports(&passing_properties, &event_log_segments);
+    let (assertion_fail_online, assertion_fail_offline, assertion_fail_composed) =
+        assertion_gate_reports(&failing_properties, &event_log_segments);
     (
         RunFingerprint {
             config_hash: scheduler.configuration().content_hash(),
@@ -271,7 +305,176 @@ fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, Ru
             control_sequences,
         },
         RunStats { quanta, max_batch },
+        AssertionGateCoverage {
+            assertion_pass_online,
+            assertion_pass_offline,
+            assertion_pass_composed,
+            assertion_fail_online,
+            assertion_fail_offline,
+            assertion_fail_composed,
+        },
     )
+}
+
+fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, RunStats) {
+    let (fingerprint, stats, _) = drive_with_assertions(mode, control);
+    (fingerprint, stats)
+}
+
+fn assertion_id(name: &str) -> AssertionId {
+    AssertionId::from_name(name)
+}
+
+fn assertion_gate_world() -> World {
+    World::from_nodes(Vec::new()).expect("assertion e2e world should build")
+}
+
+fn assertion_gate_passing_properties(world: &World) -> Properties {
+    Properties::from_assertions_for_world(
+        world,
+        vec![
+            AssertionDef {
+                id: assertion_id("e2e-saw-frame-delivery"),
+                message: String::from("frame delivery is observed"),
+                property: Property::Sometimes {
+                    predicate: Predicate::named("saw-frame-delivery"),
+                },
+            },
+            AssertionDef {
+                id: assertion_id("e2e-saw-delivery-order"),
+                message: String::from("delivery order decision is observed"),
+                property: Property::Sometimes {
+                    predicate: Predicate::named("saw-delivery-order"),
+                },
+            },
+        ],
+    )
+    .expect("e2e assertion gate properties should validate")
+}
+
+fn assertion_gate_failing_properties(world: &World) -> Properties {
+    Properties::from_assertions_for_world(
+        world,
+        vec![AssertionDef {
+            id: assertion_id("e2e-no-frame-delivery"),
+            message: String::from("frame deliveries are forbidden by this negative corpus"),
+            property: Property::Always {
+                predicate: Predicate::named("no-frame-delivery"),
+            },
+        }],
+    )
+    .expect("e2e assertion gate failure properties should validate")
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SchedulerFactOracle;
+
+impl HostAssertionPredicate for SchedulerFactOracle {
+    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+        let ConditionLeaf::Named { name, nodes } = leaf else {
+            return false;
+        };
+        if !nodes.is_empty() {
+            return false;
+        }
+
+        match name {
+            "saw-frame-delivery" => saw_frame_delivery(observed),
+            "saw-delivery-order" => observed
+                .ordering_facts()
+                .iter()
+                .any(|fact| matches!(fact, ObservedOrderingFact::DeliveryOrder { .. })),
+            "no-frame-delivery" => !saw_frame_delivery(observed),
+            _ => false,
+        }
+    }
+}
+
+fn saw_frame_delivery(observed: ObservedState<'_>) -> bool {
+    observed.ordering_facts().iter().any(|fact| {
+        matches!(
+            fact,
+            ObservedOrderingFact::ResolvedHappening {
+                class: ScheduledEventResolveClass::FrameDelivery,
+                ..
+            }
+        )
+    })
+}
+
+fn scheduler_fact_oracle() -> LintedHostAssertionOracle<SchedulerFactOracle> {
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(SchedulerFactOracle)
+}
+
+fn assertion_gate_online_report(
+    properties: &Properties,
+    event_log: &[SchedulerEventLogEntry],
+) -> HostAssertionReport {
+    let mut evaluator = HostAssertionEvaluator::new(properties);
+    let mut oracle = scheduler_fact_oracle();
+
+    for prefix_len in 1..event_log.len() {
+        let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+            event_log[..prefix_len].to_vec(),
+        )
+        .expect("online assertion prefix should be checkable");
+        evaluator.observe_prefix(&prefix, &mut oracle);
+    }
+    let terminal_prefix = if event_log.is_empty() {
+        ConditionEventLogPrefix::genesis()
+    } else {
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(event_log.to_vec())
+            .expect("terminal assertion prefix should be checkable")
+    };
+    evaluator.finalize_prefix(&terminal_prefix, &mut oracle)
+}
+
+fn assertion_gate_reports(
+    properties: &Properties,
+    event_log_segments: &[Vec<SchedulerEventLogEntry>],
+) -> (HostAssertionReport, HostAssertionReport, ComposedRunVerdict) {
+    let event_log = event_log_segments
+        .iter()
+        .flat_map(|segment| segment.iter().cloned())
+        .collect::<Vec<_>>();
+    let recorded_log = RecordedAssertionLog::from_segments(event_log_segments.iter().cloned())
+        .expect("assertion e2e retained event log should fold");
+    let online = assertion_gate_online_report(properties, &event_log);
+    let mut offline_oracle = scheduler_fact_oracle();
+    let offline = OfflineAssertionChecker::new()
+        .check_run_with_oracle(properties, &recorded_log, &mut offline_oracle)
+        .expect("assertion e2e offline report should grade");
+    let composed = TriggerActionState::compose_run_verdict_from_event_log(
+        &event_log,
+        online.verdict().clone(),
+    )
+    .expect("assertion verdict should compose with trigger event log");
+
+    (online, offline, composed)
+}
+
+fn assertion_outcome_signature(
+    report: &HostAssertionReport,
+) -> Vec<(
+    AssertionId,
+    AssertionQuantifierKind,
+    VirtualTime,
+    HostAssertionOutcomeKind,
+    String,
+)> {
+    report
+        .outcomes()
+        .iter()
+        .map(|outcome| {
+            (
+                outcome.assertion.clone(),
+                outcome.quantifier,
+                outcome.at,
+                outcome.kind,
+                outcome.reason.clone(),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -314,6 +517,64 @@ fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
         "concurrency must collapse independent RUNs into fewer rounds: {} !< {}",
         concurrent_stats.quanta,
         serial_stats.quanta
+    );
+}
+
+#[test]
+fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
+    let (_, _, authoritative) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
+    let (_, _, concurrent) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
+
+    assert_eq!(
+        authoritative.assertion_pass_online, authoritative.assertion_pass_offline,
+        "gate:e2e-determinism must compare identical assertion outcome sets online/offline"
+    );
+    assert_eq!(
+        concurrent.assertion_pass_online, concurrent.assertion_pass_offline,
+        "gate:e2e-determinism must compare identical assertion outcome sets online/offline"
+    );
+    assert_eq!(
+        authoritative.assertion_pass_online, concurrent.assertion_pass_online,
+        "authoritative and concurrent assertion outcome sets must match"
+    );
+    assert_eq!(
+        authoritative.assertion_pass_online.verdict(),
+        &AssertionRunVerdict::Passed
+    );
+    assert_eq!(
+        authoritative.assertion_pass_composed, concurrent.assertion_pass_composed,
+        "deterministic run-verdict composition must match for passing assertions"
+    );
+
+    assert_eq!(
+        authoritative.assertion_fail_online, authoritative.assertion_fail_offline,
+        "gate:e2e-determinism must compare identical failed assertion outcome sets online/offline"
+    );
+    assert_eq!(
+        concurrent.assertion_fail_online, concurrent.assertion_fail_offline,
+        "gate:e2e-determinism must compare identical failed assertion outcome sets online/offline"
+    );
+    assert_eq!(
+        assertion_outcome_signature(&authoritative.assertion_fail_online),
+        assertion_outcome_signature(&concurrent.assertion_fail_online),
+        "authoritative and concurrent failed assertion outcome sets must match"
+    );
+    assert_eq!(
+        authoritative.assertion_fail_online.verdict(),
+        concurrent.assertion_fail_online.verdict(),
+        "authoritative and concurrent failed assertion verdicts must match"
+    );
+    assert!(
+        authoritative.assertion_fail_online.verdict().is_failed(),
+        "negative assertion corpus must exercise failed verdict composition"
+    );
+    assert_eq!(
+        authoritative.assertion_fail_composed, concurrent.assertion_fail_composed,
+        "deterministic run-verdict composition must match for failed assertions"
+    );
+    assert!(
+        authoritative.assertion_fail_composed.is_failed(),
+        "failed assertion verdict must fail final run-verdict composition"
     );
 }
 

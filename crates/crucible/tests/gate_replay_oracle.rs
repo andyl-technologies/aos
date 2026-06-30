@@ -6,13 +6,18 @@ use std::error::Error;
 use std::io::{Error as IoError, ErrorKind};
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FrontierReductionPolicy,
-    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, MaterializedState,
-    MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioDef, Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SearchReplayOracleSamplingConfig, State, TemporalGraph, VirtualTime, WhiteBoxPolicy, World,
-    WorldNode, bake, instantiate, reduce, step,
+    AppRandomDecision, AssertionDef, AssertionId, AssertionQuantifierKind,
+    AssertionViolationArtifactReplay, AssertionViolationReplayError, Checkpoint, CheckpointKind,
+    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey,
+    FaultDecision, FaultId, FramePredicate, FrontierReductionPolicy, GenesisCheckpoint, Icount,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
+    NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties,
+    Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId,
+    ScenarioDef, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, check_assertion_violation_reproduction, instantiate,
+    reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -700,6 +705,81 @@ fn gate_replay_oracle_reproduction_artifact_round_trips() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn gate_replay_oracle_covers_assertion_regrade_and_violation_reproduction()
+-> Result<(), Box<dyn Error>> {
+    let world = assertion_replay_world()?;
+    let properties = assertion_replay_properties(&world)?;
+    let amended_properties = assertion_replay_amended_properties(&world)?;
+    let artifact =
+        assertion_replay_artifact(&world, &properties, AssertionReplayPayload::Forbidden)?;
+    let passing_artifact =
+        assertion_replay_artifact(&world, &properties, AssertionReplayPayload::Allowed)?;
+    let recorded_log = assertion_replay_recorded_log_from_artifact(&artifact)?;
+    let passing_log = assertion_replay_recorded_log_from_artifact(&passing_artifact)?;
+    let retained_corpus = vec![recorded_log.clone(), passing_log];
+    let checker = OfflineAssertionChecker::new();
+
+    let first = regrade_assertion_corpus(&checker, &properties, &retained_corpus)?;
+    let second = regrade_assertion_corpus(&checker, &properties, &retained_corpus)?;
+    assert_eq!(
+        first, second,
+        "gate:replay-oracle must idempotently re-grade a retained assertion corpus"
+    );
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].violations().len(), 1);
+    assert_eq!(first[1].violations().len(), 0);
+
+    let amended_first = regrade_assertion_corpus(&checker, &amended_properties, &retained_corpus)?;
+    let amended_second = regrade_assertion_corpus(&checker, &amended_properties, &retained_corpus)?;
+    assert_eq!(
+        amended_first, amended_second,
+        "gate:replay-oracle must idempotently re-grade retained runs after assertion suites grow"
+    );
+    assert_eq!(amended_first[0].violations().len(), 2);
+    assert_eq!(amended_first[1].violations().len(), 0);
+
+    let replayed_log = assertion_replay_recorded_log_from_artifact(&artifact)?;
+    assert_eq!(
+        recorded_log.entries(),
+        replayed_log.entries(),
+        "artifact-bound assertion replay must emit a bit-identical retained log"
+    );
+    let replayed = AssertionViolationArtifactReplay::from_artifact(&artifact, replayed_log)?;
+    let report = check_assertion_violation_reproduction(&artifact, &recorded_log, &replayed)?;
+    assert_eq!(
+        report.expected, report.reproduced,
+        "artifact-bound replay must reproduce the same assertion violation"
+    );
+    let violation = &report.reproduced.violations()[0];
+    assert_eq!(
+        violation.assertion,
+        assertion_id("replay-no-forbidden-frame")
+    );
+    assert_eq!(violation.quantifier, AssertionQuantifierKind::Always);
+    assert_eq!(violation.reproduction_artifact, artifact.id());
+
+    let drifted_artifact =
+        assertion_replay_artifact(&world, &properties, AssertionReplayPayload::Allowed)?;
+    let drifted_log = assertion_replay_recorded_log_from_artifact(&drifted_artifact)?;
+    assert_ne!(
+        recorded_log.entries(),
+        drifted_log.entries(),
+        "assertion replay log must be derived from the artifact schedule, not a cloned fixture"
+    );
+    let drifted_replay =
+        AssertionViolationArtifactReplay::from_artifact(&drifted_artifact, drifted_log)?;
+    let drift_error =
+        check_assertion_violation_reproduction(&artifact, &recorded_log, &drifted_replay)
+            .expect_err("schedule drift must not satisfy bit-identical assertion reproduction");
+    assert!(matches!(
+        drift_error,
+        AssertionViolationReplayError::ReplayArtifactMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
 -> Result<(), Box<dyn Error>> {
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
@@ -874,6 +954,171 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     }
 
     Ok(cases)
+}
+
+fn assertion_id(name: &str) -> AssertionId {
+    AssertionId::from_name(name)
+}
+
+fn assertion_replay_world() -> Result<World, EngineError> {
+    World::from_nodes(Vec::new())
+}
+
+fn assertion_replay_properties(world: &World) -> Result<Properties, EngineError> {
+    Properties::from_assertions_for_world(
+        world,
+        vec![AssertionDef {
+            id: assertion_id("replay-no-forbidden-frame"),
+            message: String::from("forbidden frame stays absent"),
+            property: Property::Always {
+                predicate: Predicate::not(Predicate::network_match(
+                    None,
+                    FramePredicate::contains(b"forbidden".to_vec()),
+                )),
+            },
+        }],
+    )
+}
+
+fn assertion_replay_amended_properties(world: &World) -> Result<Properties, EngineError> {
+    Properties::from_assertions_for_world(
+        world,
+        vec![
+            AssertionDef {
+                id: assertion_id("replay-no-forbidden-frame"),
+                message: String::from("forbidden frame stays absent"),
+                property: Property::Always {
+                    predicate: Predicate::not(Predicate::network_match(
+                        None,
+                        FramePredicate::contains(b"forbidden".to_vec()),
+                    )),
+                },
+            },
+            AssertionDef {
+                id: assertion_id("replay-eventually-allowed-frame"),
+                message: String::from("allowed frame is eventually retained"),
+                property: Property::Sometimes {
+                    predicate: Predicate::network_match(
+                        None,
+                        FramePredicate::contains(b"allowed".to_vec()),
+                    ),
+                },
+            },
+        ],
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssertionReplayPayload {
+    Forbidden,
+    Allowed,
+}
+
+impl AssertionReplayPayload {
+    fn schedule_value(self) -> u64 {
+        match self {
+            Self::Forbidden => 0xa510_0016,
+            Self::Allowed => 0xa510_0017,
+        }
+    }
+
+    fn frame(self) -> Vec<u8> {
+        match self {
+            Self::Forbidden => b"forbidden".to_vec(),
+            Self::Allowed => b"allowed".to_vec(),
+        }
+    }
+}
+
+fn assertion_replay_schedule(payload: AssertionReplayPayload) -> Schedule {
+    Schedule::empty().appended(Decision::RngDraw(RngDecision {
+        stream: RngStreamId::from_name("assertion/replay-oracle"),
+        value: payload.schedule_value(),
+    }))
+}
+
+fn assertion_replay_payload_from_schedule(
+    schedule: &Schedule,
+) -> Result<AssertionReplayPayload, Box<dyn Error>> {
+    let [Decision::RngDraw(draw)] = schedule.decisions() else {
+        return Err(Box::new(IoError::new(
+            ErrorKind::InvalidData,
+            "assertion replay artifact schedule must contain one rng draw",
+        )));
+    };
+    if draw.stream != RngStreamId::from_name("assertion/replay-oracle") {
+        return Err(Box::new(IoError::new(
+            ErrorKind::InvalidData,
+            "assertion replay artifact schedule uses the wrong stream",
+        )));
+    }
+    match draw.value {
+        0xa510_0016 => Ok(AssertionReplayPayload::Forbidden),
+        0xa510_0017 => Ok(AssertionReplayPayload::Allowed),
+        _ => Err(Box::new(IoError::new(
+            ErrorKind::InvalidData,
+            "assertion replay artifact schedule uses an unknown payload value",
+        ))),
+    }
+}
+
+fn assertion_replay_event_log_from_artifact(
+    artifact: &ReproductionArtifact,
+) -> Result<Vec<SchedulerEventLogEntry>, Box<dyn Error>> {
+    let _ = artifact.replay()?;
+    let payload = assertion_replay_payload_from_schedule(artifact.schedule())?;
+    let decision = artifact
+        .schedule()
+        .decisions()
+        .first()
+        .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "missing replay decision"))?
+        .clone();
+    let observed =
+        ObservableEvent::network_delivered(VirtualTime { ticks: 9 }, None, payload.frame());
+    Ok(vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(decision),
+        ),
+        crucible::test_support::condition_observation_entry_for_test(1, &observed),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            VirtualTime { ticks: 9 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ])
+}
+
+fn assertion_replay_recorded_log_from_artifact(
+    artifact: &ReproductionArtifact,
+) -> Result<RecordedAssertionLog, Box<dyn Error>> {
+    let event_log = assertion_replay_event_log_from_artifact(artifact)?;
+    Ok(RecordedAssertionLog::from_segments(vec![
+        event_log[..2].to_vec(),
+        event_log[2..].to_vec(),
+    ])?)
+}
+
+fn assertion_replay_artifact(
+    world: &World,
+    properties: &Properties,
+    payload: AssertionReplayPayload,
+) -> Result<ReproductionArtifact, EngineError> {
+    let scenario =
+        ScenarioDefForm::from_components(world, &Plan::empty(), properties, Seed::from_u64(0x16))?;
+    ReproductionArtifact::capture(&scenario, &assertion_replay_schedule(payload))
+}
+
+fn regrade_assertion_corpus(
+    checker: &OfflineAssertionChecker,
+    properties: &Properties,
+    corpus: &[RecordedAssertionLog],
+) -> Result<Vec<crucible::HostAssertionReport>, Box<dyn Error>> {
+    corpus
+        .iter()
+        .map(|recorded_log| Ok(checker.check_run(properties, recorded_log.entries())?))
+        .collect()
 }
 
 fn representative_replay_oracle_reproduction_artifact()
