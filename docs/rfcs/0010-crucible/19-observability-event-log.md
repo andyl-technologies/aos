@@ -896,10 +896,15 @@ log, so they cannot disagree about what happened.
   white-box named coverage markers project as observational `coverage` entries,
   checkpoint coverage fingerprints are derived from that coverage projection, and
   causal determinism comparison continues to exclude coverage-only differences.
-- [ ] **T-OBS-10** Make the log the debugging artifact and fork-point index of a
+- [x] **T-OBS-10** Make the log the debugging artifact and fork-point index of a
   reproduction artifact: replay reconstructs a byte-identical causal subsequence;
   shared-store artifacts reference log segments by content key. — satisfies
   [OBS-30]; spec §19.6.4; cross-ref 06, 23.
+  Completed by `checks.crucible.phase4.eventLogReproductionArtifact`: compact
+  event-log metadata records the fork-point index and causal-subsequence digest
+  for `(seed, scenario, schedule)` replay, replay verification rejects causal
+  drift without requiring the original full log, and persisted shared-store
+  reproduction artifacts carry event-log segment content keys.
 - [ ] **T-OBS-11** Implement live control-plane streaming as a cursor over the one
   log (causal + observational, `Command` correlation), a pure non-stalling
   observation. — satisfies [OBS-31]; spec §19.6.5; cross-ref 20, 21.

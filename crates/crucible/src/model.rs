@@ -471,6 +471,8 @@ pub struct DagStoreReproductionArtifact {
     pub genesis_snapshot: ContentHash,
     /// Store keys for the schedule-delta bytes needed to reconstruct the run.
     pub schedule_deltas: Vec<ContentHash>,
+    /// Store keys for retained event-log segments used as debugging/fork metadata.
+    pub event_log_segments: Vec<ContentHash>,
 }
 
 impl DagStoreReproductionArtifact {
@@ -481,11 +483,30 @@ impl DagStoreReproductionArtifact {
         genesis_snapshot: ContentHash,
         schedule_deltas: Vec<ContentHash>,
     ) -> Self {
+        Self::with_event_log_segments(scenario_def, genesis_snapshot, schedule_deltas, Vec::new())
+    }
+
+    /// Builds a store-key reproduction artifact with shared event-log segment refs.
+    #[must_use]
+    pub fn with_event_log_segments(
+        scenario_def: ContentHash,
+        genesis_snapshot: ContentHash,
+        schedule_deltas: Vec<ContentHash>,
+        event_log_segments: Vec<ContentHash>,
+    ) -> Self {
         Self {
             scenario_def,
             genesis_snapshot,
             schedule_deltas,
+            event_log_segments: sorted_unique_hashes(event_log_segments),
         }
+    }
+
+    /// Returns this artifact with shared-store event-log segment keys attached.
+    #[must_use]
+    pub fn with_event_log_segment_keys(mut self, event_log_segments: Vec<ContentHash>) -> Self {
+        self.event_log_segments = sorted_unique_hashes(event_log_segments);
+        self
     }
 
     /// Returns the deduplicated store-key closure named by the artifact.
@@ -493,6 +514,7 @@ impl DagStoreReproductionArtifact {
     pub fn store_keys(&self) -> BTreeSet<ContentHash> {
         let mut keys = BTreeSet::from([self.scenario_def, self.genesis_snapshot]);
         keys.extend(self.schedule_deltas.iter().copied());
+        keys.extend(self.event_log_segments.iter().copied());
         keys
     }
 }
@@ -2314,6 +2336,82 @@ impl ReproductionArtifact {
         }
         Ok(replay)
     }
+
+    /// Captures the event-log debug/fork metadata for this reproduction artifact.
+    ///
+    /// The returned value records the causal-subsequence digest and fork-point
+    /// index, not the full event log. Replaying the artifact can therefore
+    /// recompute the log and compare against this compact record.
+    #[must_use]
+    pub fn event_log_debug_artifact(
+        &self,
+        fork_point: EventLogOffset,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+    ) -> ReproductionEventLogArtifact {
+        self.event_log_debug_artifact_with_segments(fork_point, entries, Vec::new())
+    }
+
+    /// Captures event-log debug/fork metadata with shared-store segment keys.
+    ///
+    /// `shared_store_segments` are optional content-addressed event-log segment
+    /// keys. They let a shared store fetch retained log bytes, but replay
+    /// correctness still comes from recomputing the log from the embedded
+    /// scenario and schedule.
+    #[must_use]
+    pub fn event_log_debug_artifact_with_segments<I>(
+        &self,
+        fork_point: EventLogOffset,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+        shared_store_segments: I,
+    ) -> ReproductionEventLogArtifact
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let projection = crate::scheduler::event_log_causal_projection(entries);
+        ReproductionEventLogArtifact::from_causal_projection(
+            self.id,
+            fork_point,
+            projection.content_hash(),
+            projection.canonical_bytes().len(),
+            projection.len(),
+            shared_store_segments,
+        )
+    }
+
+    /// Replays the artifact and checks a reconstructed event log against metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if replaying this artifact's scenario/schedule or
+    /// reconstructing the replay log fails before comparison.
+    pub fn verify_event_log_replay_with<F>(
+        &self,
+        event_log: &ReproductionEventLogArtifact,
+        replay_log: F,
+    ) -> Result<ReproductionEventLogReplay, EngineError>
+    where
+        F: FnOnce(
+            &ReproductionArtifact,
+            &ReproductionReplay,
+        ) -> Result<Vec<crate::scheduler::SchedulerEventLogEntry>, EngineError>,
+    {
+        let reduction = self.replay()?;
+        let reproduced_entries = replay_log(self, &reduction)?;
+        let reproduced = crate::scheduler::event_log_causal_projection(&reproduced_entries);
+        Ok(ReproductionEventLogReplay {
+            reduction,
+            event_log_artifact: event_log.id(),
+            artifact_matches: event_log.reproduction_artifact == self.id,
+            fork_point: event_log.fork_point,
+            expected_causal_subsequence: event_log.causal_subsequence,
+            reproduced_causal_subsequence: reproduced.content_hash(),
+            expected_causal_bytes: event_log.causal_subsequence_bytes,
+            reproduced_causal_bytes: reproduced.canonical_bytes().len(),
+            expected_causal_events: event_log.causal_subsequence_events,
+            reproduced_causal_events: reproduced.len(),
+            shared_store_segments: event_log.shared_store_segments.clone(),
+        })
+    }
 }
 
 /// Successful replay-oracle verification of a reproduction artifact.
@@ -2327,6 +2425,109 @@ pub struct ReproductionReplay {
     pub schedule: ContentHash,
     /// The reduced state reached by replay.
     pub state: ContentHash,
+}
+
+/// Compact event-log debugging artifact attached to a reproduction artifact.
+///
+/// This record is the event-log fork-point index plus a digest of the original
+/// causal subsequence. It deliberately omits the full log bytes: replay
+/// recomputes the log from `(seed, scenario, schedule)` and compares the
+/// recomputed causal projection to this metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionEventLogArtifact {
+    id: ContentHash,
+    /// The reproduction artifact this log metadata belongs to.
+    pub reproduction_artifact: ContentHash,
+    /// Event-log offset used as the debugging fork-point index.
+    pub fork_point: EventLogOffset,
+    /// Content hash of the original run's canonical causal subsequence bytes.
+    pub causal_subsequence: ContentHash,
+    /// Byte length of the original run's canonical causal subsequence.
+    pub causal_subsequence_bytes: usize,
+    /// Number of causal entries retained by the original run's causal projection.
+    pub causal_subsequence_events: usize,
+    /// Shared-store event-log segment keys, when retained by content address.
+    pub shared_store_segments: Vec<ContentHash>,
+}
+
+impl ReproductionEventLogArtifact {
+    /// Builds event-log metadata from an already-computed causal projection.
+    #[must_use]
+    pub fn from_causal_projection<I>(
+        reproduction_artifact: ContentHash,
+        fork_point: EventLogOffset,
+        causal_subsequence: ContentHash,
+        causal_subsequence_bytes: usize,
+        causal_subsequence_events: usize,
+        shared_store_segments: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
+        let shared_store_segments =
+            sorted_unique_hashes(shared_store_segments.into_iter().collect());
+        let id = reproduction_event_log_artifact_id(
+            reproduction_artifact,
+            fork_point,
+            causal_subsequence,
+            causal_subsequence_bytes,
+            causal_subsequence_events,
+            &shared_store_segments,
+        );
+        Self {
+            id,
+            reproduction_artifact,
+            fork_point,
+            causal_subsequence,
+            causal_subsequence_bytes,
+            causal_subsequence_events,
+            shared_store_segments,
+        }
+    }
+
+    /// Returns the content address of this compact event-log metadata record.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.id
+    }
+}
+
+/// Result of checking a recomputed event log against reproduction metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReproductionEventLogReplay {
+    /// Reduction replay for the reproduction artifact's scenario/schedule.
+    pub reduction: ReproductionReplay,
+    /// Event-log metadata record used for the comparison.
+    pub event_log_artifact: ContentHash,
+    /// Whether the metadata belongs to the replayed reproduction artifact.
+    pub artifact_matches: bool,
+    /// Event-log offset used as the debugging fork-point index.
+    pub fork_point: EventLogOffset,
+    /// Expected causal-subsequence digest from the original run.
+    pub expected_causal_subsequence: ContentHash,
+    /// Causal-subsequence digest recomputed by replay.
+    pub reproduced_causal_subsequence: ContentHash,
+    /// Expected canonical causal-subsequence byte length.
+    pub expected_causal_bytes: usize,
+    /// Recomputed canonical causal-subsequence byte length.
+    pub reproduced_causal_bytes: usize,
+    /// Expected causal event count.
+    pub expected_causal_events: usize,
+    /// Recomputed causal event count.
+    pub reproduced_causal_events: usize,
+    /// Shared-store event-log segment keys named by the metadata.
+    pub shared_store_segments: Vec<ContentHash>,
+}
+
+impl ReproductionEventLogReplay {
+    /// Returns whether the recomputed replay log matches the original metadata.
+    #[must_use]
+    pub fn passes(&self) -> bool {
+        self.artifact_matches
+            && self.expected_causal_subsequence == self.reproduced_causal_subsequence
+            && self.expected_causal_bytes == self.reproduced_causal_bytes
+            && self.expected_causal_events == self.reproduced_causal_events
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -7381,6 +7582,8 @@ pub struct MaterializedState {
     pub decision_rng: DecisionRngState,
     /// Event-log prefix position at this checkpoint.
     pub event_log: EventLogOffset,
+    /// Event-log segment keys retained for shared-store debugging/fork fetches.
+    pub event_log_segments: Vec<ContentHash>,
 }
 
 impl MaterializedState {
@@ -7398,6 +7601,7 @@ impl MaterializedState {
             scheduler: SchedulerState::empty(),
             decision_rng: DecisionRngState::empty(),
             event_log: EventLogOffset::default(),
+            event_log_segments: Vec::new(),
         }
     }
 
@@ -7410,6 +7614,29 @@ impl MaterializedState {
         decision_rng: DecisionRngState,
         event_log: EventLogOffset,
     ) -> Self {
+        Self::from_components_with_event_log_segments(
+            vm_snapshots,
+            device_overlays,
+            scheduler,
+            decision_rng,
+            event_log,
+            event_log.appended_segment,
+        )
+    }
+
+    /// Builds a materialized state with explicit retained event-log segment keys.
+    #[must_use]
+    pub fn from_components_with_event_log_segments<I>(
+        vm_snapshots: BTreeMap<NodeId, VmSnapshotRef>,
+        device_overlays: BTreeMap<DeviceId, DeviceOverlayDelta>,
+        scheduler: SchedulerState,
+        decision_rng: DecisionRngState,
+        event_log: EventLogOffset,
+        event_log_segments: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = ContentHash>,
+    {
         let id = canonical::materialized_state_hash(
             &vm_snapshots,
             &device_overlays,
@@ -7417,6 +7644,10 @@ impl MaterializedState {
             &decision_rng,
             event_log,
         );
+        let mut event_log_segments = event_log_segments.into_iter().collect::<Vec<_>>();
+        if let Some(segment) = event_log.appended_segment {
+            event_log_segments.push(segment);
+        }
         Self {
             id,
             vm_snapshots,
@@ -7424,6 +7655,7 @@ impl MaterializedState {
             scheduler,
             decision_rng,
             event_log,
+            event_log_segments: sorted_unique_hashes(event_log_segments),
         }
     }
 
@@ -7468,8 +7700,17 @@ impl MaterializedState {
                 .values()
                 .map(DeviceOverlayDelta::cow_delta_ref),
         );
-        if let Some(event_log) = self.event_log.cow_delta_ref() {
-            refs.push(event_log);
+        if self.event_log_segments.is_empty() {
+            if let Some(event_log) = self.event_log.cow_delta_ref() {
+                refs.push(event_log);
+            }
+        } else {
+            refs.extend(
+                self.event_log_segments
+                    .iter()
+                    .copied()
+                    .map(|segment| CowDeltaRef::new(CowDeltaKind::EventLogSegment, segment)),
+            );
         }
         refs
     }
@@ -8997,6 +9238,7 @@ impl TemporalGraph {
         let mut cached_snapshots = BTreeMap::new();
         let mut cow_deltas = BTreeMap::new();
         let mut schedule_deltas = Vec::new();
+        let mut event_log_segments = Vec::new();
         for checkpoint in &chain {
             let checkpoint_key =
                 store
@@ -9012,6 +9254,7 @@ impl TemporalGraph {
                 checkpoint,
                 &mut cow_deltas,
                 &mut schedule_deltas,
+                &mut event_log_segments,
             )?;
 
             if let Some(snapshot) = self.cached_snapshots.get(&checkpoint.id) {
@@ -9028,6 +9271,7 @@ impl TemporalGraph {
                     snapshot,
                     &mut cow_deltas,
                     &mut schedule_deltas,
+                    &mut event_log_segments,
                 )?;
             }
         }
@@ -9040,7 +9284,8 @@ impl TemporalGraph {
                 scenario_def,
                 genesis_snapshot,
                 schedule_deltas,
-            ),
+            )
+            .with_event_log_segment_keys(event_log_segments),
         })
     }
 
@@ -18973,6 +19218,7 @@ fn persist_checkpoint_cow_deltas<S>(
     checkpoint: &Checkpoint,
     cow_deltas: &mut BTreeMap<CowDeltaRef, ContentHash>,
     schedule_deltas: &mut Vec<ContentHash>,
+    event_log_segments: &mut Vec<ContentHash>,
 ) -> Result<(), TemporalGraphStoreError>
 where
     S: DagStore + ?Sized,
@@ -19007,6 +19253,7 @@ where
                         },
                     });
                 }
+                event_log_segments.push(cow_ref.content);
                 cow_ref.content
             }
             CowDeltaKind::VmMemory | CowDeltaKind::DeviceOverlay => store
@@ -19081,6 +19328,55 @@ fn reproduction_artifact_canonical_bytes(
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
+}
+
+fn reproduction_event_log_artifact_id(
+    reproduction_artifact: ContentHash,
+    fork_point: EventLogOffset,
+    causal_subsequence: ContentHash,
+    causal_subsequence_bytes: usize,
+    causal_subsequence_events: usize,
+    shared_store_segments: &[ContentHash],
+) -> ContentHash {
+    let mut lines = vec![
+        format!(
+            "reproduction_artifact={}",
+            content_hash_hex(reproduction_artifact)
+        ),
+        format!("fork.prefix={}", content_hash_hex(fork_point.prefix)),
+        format!(
+            "fork.appended_segment={}",
+            fork_point
+                .appended_segment
+                .map(content_hash_hex)
+                .unwrap_or_else(|| String::from("none"))
+        ),
+        format!("fork.bytes={}", fork_point.bytes),
+        format!("fork.events={}", fork_point.events),
+        format!(
+            "causal_subsequence={}",
+            content_hash_hex(causal_subsequence)
+        ),
+        format!("causal_subsequence_bytes={causal_subsequence_bytes}"),
+        format!("causal_subsequence_events={causal_subsequence_events}"),
+        format!("shared_store_segments={}", shared_store_segments.len()),
+    ];
+    for segment in shared_store_segments {
+        lines.push(format!(
+            "shared_store_segment={}",
+            content_hash_hex(*segment)
+        ));
+    }
+    ContentHash::from_canonical_material(
+        "crucible.reproduction.event-log-artifact.v1",
+        &lines.join("\n"),
+    )
+}
+
+fn sorted_unique_hashes(mut hashes: Vec<ContentHash>) -> Vec<ContentHash> {
+    hashes.sort();
+    hashes.dedup();
+    hashes
 }
 
 fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
