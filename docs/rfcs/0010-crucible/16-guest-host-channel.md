@@ -692,10 +692,20 @@ the transport layer by construction.
   ABI, treats console/serial observation as an output-only sink, and regresses
   those guarantees against a content-addressed raw non-Linux AArch64 root image
   byte fixture with white-box guest software disabled.
-- [ ] **T-GHC-3** Implement the readiness heuristic (fixed icount /
+- [x] **T-GHC-3** Implement the readiness heuristic (fixed icount /
   first-network-idle / console marker), resolving to a deterministic icount and
   hashed into the scenario; reject non-deterministic heuristics at validation. —
   satisfies [GHC-5], [GHC-6]; spec §16.1.2.
+  Completed by `checks.crucible.phase4.guestHostReadiness`: `crucible` now
+  exposes a deterministic black-box `resolve_ready_point` API that resolves
+  fixed-icount, first-network-idle, and console-marker readiness to explicit
+  coherent virtual-time plus icount coordinates, uses the scenario's hashed
+  `ReadyPoint` material and per-node icount shift for conversion, treats
+  same-tick network activity as not yet idle, canonicalizes same-time console
+  chunks deterministically, rejects degenerate network-idle and console-marker
+  parameters during world validation, rejects network-idle nodes with no
+  incident links, and treats the optional `AgentSignal` policy as white-box-only
+  rather than black-box resolvable.
 - [ ] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
   plugin, serviced inline at the exact retirement icount, with payload via shared
   page or register ptr+len; forbid a virtio-serial/device data channel for the

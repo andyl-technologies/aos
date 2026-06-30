@@ -782,9 +782,15 @@ impl World {
     /// # Errors
     ///
     /// Returns [`EngineError::DuplicateWorldNodeId`] when a node id appears
-    /// more than once, or [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when
-    /// a node selects [`ReadyPoint::AgentSignal`] without enabling
-    /// [`WhiteBoxPolicy::Enabled`]. Returns
+    /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
+    /// node selects [`ReadyPoint::AgentSignal`] without enabling
+    /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::ReadyPointNetworkIdleWindowZero`] when a node selects an
+    /// empty network-idle window,
+    /// [`EngineError::ReadyPointNetworkIdleWithoutLinks`] when a node selects
+    /// network-idle readiness without any incident links,
+    /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
+    /// empty console marker. Returns
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
@@ -804,6 +810,12 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::ReadyPointNetworkIdleWindowZero`] when a node selects an
+    /// empty network-idle window,
+    /// [`EngineError::ReadyPointNetworkIdleWithoutLinks`] when a node selects
+    /// network-idle readiness without any incident links,
+    /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
+    /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
@@ -840,6 +852,12 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::ReadyPointNetworkIdleWindowZero`] when a node selects an
+    /// empty network-idle window,
+    /// [`EngineError::ReadyPointNetworkIdleWithoutLinks`] when a node selects
+    /// network-idle readiness without any incident links,
+    /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
+    /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
@@ -857,6 +875,12 @@ impl World {
     /// more than once, [`EngineError::WhiteBoxReadyPointWithoutOptIn`] when a
     /// node selects [`ReadyPoint::AgentSignal`] without enabling
     /// [`WhiteBoxPolicy::Enabled`],
+    /// [`EngineError::ReadyPointNetworkIdleWindowZero`] when a node selects an
+    /// empty network-idle window,
+    /// [`EngineError::ReadyPointNetworkIdleWithoutLinks`] when a node selects
+    /// network-idle readiness without any incident links,
+    /// [`EngineError::ReadyPointConsoleMarkerEmpty`] when a node selects an
+    /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
@@ -10443,6 +10467,21 @@ pub enum EngineError {
         /// The node whose ready-point configuration is invalid.
         node: NodeId,
     },
+    /// A network-idle ready point configured an empty idle window.
+    ReadyPointNetworkIdleWindowZero {
+        /// The node whose ready-point configuration is invalid.
+        node: NodeId,
+    },
+    /// A network-idle ready point has no incident world link to observe.
+    ReadyPointNetworkIdleWithoutLinks {
+        /// The node whose ready-point configuration is invalid.
+        node: NodeId,
+    },
+    /// A console-marker ready point configured an empty marker.
+    ReadyPointConsoleMarkerEmpty {
+        /// The node whose ready-point configuration is invalid.
+        node: NodeId,
+    },
     /// A world node has no vCPUs.
     WorldNodeSmpVcpuCountZero {
         /// The invalid node.
@@ -10747,6 +10786,15 @@ impl fmt::Display for EngineError {
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
+            }
+            Self::ReadyPointNetworkIdleWindowZero { .. } => {
+                f.write_str("network-idle ready point requires a nonzero idle window")
+            }
+            Self::ReadyPointNetworkIdleWithoutLinks { .. } => {
+                f.write_str("network-idle ready point requires at least one world link")
+            }
+            Self::ReadyPointConsoleMarkerEmpty { .. } => {
+                f.write_str("console-marker ready point requires a nonempty marker")
             }
             Self::WorldNodeSmpVcpuCountZero { .. } => {
                 f.write_str("world node fixed vCPU count must be at least one")
@@ -11863,6 +11911,22 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
                 node: node.id.clone(),
             });
         }
+        match &node.ready_point {
+            ReadyPoint::NetworkIdle { window } if window.nanos == 0 => {
+                return Err(EngineError::ReadyPointNetworkIdleWindowZero {
+                    node: node.id.clone(),
+                });
+            }
+            ReadyPoint::ConsoleMarker { marker } if marker.is_empty() => {
+                return Err(EngineError::ReadyPointConsoleMarkerEmpty {
+                    node: node.id.clone(),
+                });
+            }
+            ReadyPoint::FixedIcount { .. }
+            | ReadyPoint::NetworkIdle { .. }
+            | ReadyPoint::ConsoleMarker { .. }
+            | ReadyPoint::AgentSignal => {}
+        }
         if node.smp_vcpus == 0 {
             return Err(EngineError::WorldNodeSmpVcpuCountZero {
                 node: node.id.clone(),
@@ -11908,6 +11972,19 @@ fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), En
         validate_link_transport(link)?;
         if !seen.insert((left.clone(), right.clone())) {
             return Err(EngineError::DuplicateWorldLink { link: link.clone() });
+        }
+    }
+
+    for node in nodes {
+        if matches!(node.ready_point, ReadyPoint::NetworkIdle { .. })
+            && !links.iter().any(|link| {
+                let (left, right) = link.endpoints();
+                left == &node.id || right == &node.id
+            })
+        {
+            return Err(EngineError::ReadyPointNetworkIdleWithoutLinks {
+                node: node.id.clone(),
+            });
         }
     }
 
