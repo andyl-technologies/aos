@@ -71,6 +71,156 @@ fn derivation_strict_cached_aterm_path_reuse_preserves_deferred_surfaces() {
 }
 
 #[test]
+fn derivation_strict_records_precomputed_final_aterm_bytes() {
+    fn assert_single_precomputed_aterm(source: &str, case_label: &str) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options_and_eval_cache(
+            &ir,
+            enabled_eval_cache_options(),
+            Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+        );
+
+        evaluator.eval_root().expect("derivation evaluates");
+
+        let mut known_derivations = evaluator.known_derivations.iter();
+        let (drv_path, known) = known_derivations
+            .next()
+            .unwrap_or_else(|| panic!("{case_label}: expected one known derivation, got none"));
+        assert!(
+            known_derivations.next().is_none(),
+            "{case_label}: expected exactly one known derivation"
+        );
+        let cached_aterm = known
+            .aterm_bytes
+            .as_ref()
+            .unwrap_or_else(|| panic!("{case_label}: expected precomputed final ATerm bytes"));
+        let expected_aterm = match known.output_resolution {
+            DerivationOutputResolution::StaticPaths => {
+                evaluator.derivation_aterm_bytes(&known.derivation)
+            }
+            DerivationOutputResolution::FloatingCa(output) => {
+                evaluator.floating_ca_derivation_aterm_bytes(&known.derivation, output, None)
+            }
+            DerivationOutputResolution::Impure(output) => {
+                evaluator.impure_derivation_aterm_bytes(&known.derivation, output, None)
+            }
+            DerivationOutputResolution::DeferredPlaceholders => {
+                panic!("{case_label}: deferred-placeholder derivation should not store ATerm bytes")
+            }
+        };
+        assert_eq!(cached_aterm, &expected_aterm, "{case_label}");
+
+        let snapshot = evaluator
+            .derivation_snapshot()
+            .expect("derivation snapshot builds");
+        let [derivation] = snapshot.as_slice() else {
+            panic!("{case_label}: expected one snapshot derivation, got {snapshot:?}");
+        };
+        assert_eq!(
+            derivation.absolute_path(),
+            evaluator.store_path_absolute_display(drv_path),
+            "{case_label}"
+        );
+        assert_eq!(
+            derivation.aterm_bytes(),
+            Some(cached_aterm.as_slice()),
+            "{case_label}: derivation snapshots should reuse stored final ATerm bytes"
+        );
+    }
+
+    assert_single_precomputed_aterm(
+        r#"derivationStrict {
+            name = "static";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            env = "same";
+        }"#,
+        "static",
+    );
+    assert_single_precomputed_aterm(
+        r#"derivationStrict {
+            name = "floating";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        }"#,
+        "floating",
+    );
+    assert_single_precomputed_aterm(
+        r#"derivationStrict {
+            name = "impure";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __impure = true;
+        }"#,
+        "impure",
+    );
+
+    let deferred_source = r#"let
+        base = derivationStrict {
+            name = "base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        };
+    in derivationStrict {
+        name = "downstream";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        input = base.out;
+    }"#;
+    let ir = lower(deferred_source);
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(
+        &ir,
+        enabled_eval_cache_options(),
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+
+    evaluator
+        .eval_root()
+        .expect("deferred derivation graph evaluates");
+
+    let mut saw_base = false;
+    let mut saw_downstream = false;
+    for (drv_path, known) in &evaluator.known_derivations {
+        match drv_path.name().as_str() {
+            "base.drv" => {
+                saw_base = true;
+                assert!(
+                    matches!(
+                        known.output_resolution,
+                        DerivationOutputResolution::FloatingCa(_)
+                    ),
+                    "base should remain floating-CA"
+                );
+                assert!(
+                    known.aterm_bytes.is_some(),
+                    "floating-CA base derivation should store precomputed ATerm bytes"
+                );
+            }
+            "downstream.drv" => {
+                saw_downstream = true;
+                assert_eq!(
+                    known.output_resolution,
+                    DerivationOutputResolution::DeferredPlaceholders
+                );
+                assert!(
+                    known.aterm_bytes.is_none(),
+                    "deferred-placeholder derivation should use fallback serialization"
+                );
+            }
+            name => panic!("unexpected derivation name {name}"),
+        }
+    }
+    assert!(saw_base, "expected base derivation");
+    assert!(saw_downstream, "expected downstream derivation");
+}
+
+#[test]
 fn derivation_strict_aterm_observation_separates_captured_free_vars() {
     let source = r#"let
         mk = env: (derivationStrict {

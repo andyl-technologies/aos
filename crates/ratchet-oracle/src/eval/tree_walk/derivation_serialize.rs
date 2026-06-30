@@ -678,6 +678,9 @@ impl TreeWalk {
         drv_path: &nix_compat::store_path::StorePath<String>,
         known: &KnownDerivation,
     ) -> Result<Vec<u8>, TreeWalkError> {
+        if let Some(aterm_bytes) = &known.aterm_bytes {
+            return Ok(aterm_bytes.clone());
+        }
         match known.output_resolution {
             DerivationOutputResolution::StaticPaths => {
                 Ok(self.derivation_aterm_bytes(&known.derivation))
@@ -705,6 +708,7 @@ impl TreeWalk {
         derivation: &nix_compat::derivation::Derivation,
         hash_derivation_modulo: DerivationHashModulo,
         output_resolution: DerivationOutputResolution,
+        aterm_bytes: Option<Vec<u8>>,
     ) {
         let output_names = derivation.outputs.keys().cloned().collect();
         self.known_derivations.insert(
@@ -716,6 +720,7 @@ impl TreeWalk {
                 hash_derivation_modulo,
                 output_names,
                 output_resolution,
+                aterm_bytes,
             },
         );
     }

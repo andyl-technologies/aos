@@ -1303,6 +1303,22 @@ alone (`M-1`/`Q-A`).
       derivation ATerm path payload round-trip, fresh-runtime path/hash-reuse,
       and stale-ATerm mismatch, dirty-supplier, plus invalid-path fallback
       tests (`S-14`/`S-15`).
+- [x] Current derivationStrict final ATerm byte plumbing precursor:
+      when eligible static, floating-CA, and impure derivation path calculation
+      already has final ATerm bytes for final-path side-record lookup or miss
+      handling, tree-walk carries those bytes through
+      `DerivationAtermPathCacheResult`, stores them in `KnownDerivation`,
+      passes them to post-derivation ATerm side-record observation, and reuses
+      them for derivation snapshots instead of serializing the same final ATerm
+      again. Deferred-placeholder derivations and paths without precomputed
+      final bytes still use the existing `known_derivation_aterm_bytes`
+      fallback serialization. This removes duplicate serialization on the
+      current eligible `derivationStrict` surfaces only; it does not return
+      cached `.drv` paths without evaluating `derivationStrict`, widen
+      side-record eligibility, implement SHA-256/store-path early cutoff, or
+      prove full cached/uncached `.drv` parity. Gate:
+      `derivation_strict_records_precomputed_final_aterm_bytes` plus focused
+      derivation observation/path-cache suites (`S-14`/`S-15`).
 - [x] Current static derivation output-path reuse precursor:
       tree-walk `derivationStrict` records a crate-private side payload for
       static derivations keyed by a separate input-hash-substituted pre-output

@@ -612,7 +612,7 @@ impl TreeWalk {
 
         self.validate_derivation_strict_before_paths(id, span, &derivation)?;
         let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
-        let (known_hash, drv_path, output_resolution) =
+        let (known_hash, drv_path, output_resolution, aterm_bytes) =
             if let Some(output_resolution) = deferred_output_resolution {
                 match output_resolution {
                     DerivationOutputResolution::FloatingCa(floating_ca_output) => {
@@ -637,11 +637,12 @@ impl TreeWalk {
                             known_hash,
                             path_result.path,
                             DerivationOutputResolution::FloatingCa(floating_ca_output),
+                            path_result.aterm_bytes,
                         )
                     }
                     DerivationOutputResolution::Impure(impure_output) => {
                         let known_hash = Self::impure_derivation_hash_modulo();
-                        let drv_path = self.calculate_derivation_path_with_aterm_cache(
+                        let path_result = self.calculate_derivation_path_with_aterm_cache_result(
                             id,
                             span,
                             &name,
@@ -650,8 +651,9 @@ impl TreeWalk {
                         )?;
                         (
                             known_hash,
-                            drv_path,
+                            path_result.path,
                             DerivationOutputResolution::Impure(impure_output),
+                            path_result.aterm_bytes,
                         )
                     }
                     DerivationOutputResolution::StaticPaths
@@ -671,6 +673,7 @@ impl TreeWalk {
                     known_hash,
                     drv_path,
                     DerivationOutputResolution::DeferredPlaceholders,
+                    None,
                 )
             } else {
                 let known_hash = self.resolve_static_derivation_outputs_with_cache(
@@ -680,7 +683,7 @@ impl TreeWalk {
                     &mut derivation,
                     &input_hashes,
                 )?;
-                let drv_path = self.calculate_derivation_path_with_aterm_cache(
+                let path_result = self.calculate_derivation_path_with_aterm_cache_result(
                     id,
                     span,
                     &name,
@@ -689,8 +692,9 @@ impl TreeWalk {
                 )?;
                 (
                     known_hash,
-                    drv_path,
+                    path_result.path,
                     DerivationOutputResolution::StaticPaths,
+                    path_result.aterm_bytes,
                 )
             };
         self.remember_derivation(
@@ -700,6 +704,7 @@ impl TreeWalk {
             &derivation,
             known_hash,
             output_resolution,
+            aterm_bytes.clone(),
         );
         self.observe_derivation_aterm_expression(
             id,
@@ -708,6 +713,7 @@ impl TreeWalk {
             &derivation,
             known_hash,
             output_resolution,
+            aterm_bytes.as_deref(),
         );
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
     }

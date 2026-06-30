@@ -6,6 +6,7 @@ use crate::cache::{CachedDerivationAtermPath, PersistBlobKey};
 pub(super) struct DerivationAtermPathCacheResult {
     pub(super) path: nix_compat::store_path::StorePath<String>,
     pub(super) hash_derivation_modulo: Option<DerivationHashModulo>,
+    pub(super) aterm_bytes: Option<Vec<u8>>,
 }
 
 impl TreeWalk {
@@ -16,24 +17,6 @@ impl TreeWalk {
         let (identity, free_var_value_hashes) =
             self.derivation_aterm_cache_subject_for_current_node(id)?;
         self.active_memo_read_node_for_expression(identity, free_var_value_hashes.iter().copied())
-    }
-
-    pub(super) fn calculate_derivation_path_with_aterm_cache(
-        &mut self,
-        id: IrId,
-        span: Span,
-        name: &str,
-        derivation: &nix_compat::derivation::Derivation,
-        output_resolution: DerivationOutputResolution,
-    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        self.calculate_derivation_path_with_aterm_cache_result(
-            id,
-            span,
-            name,
-            derivation,
-            output_resolution,
-        )
-        .map(|result| result.path)
     }
 
     pub(super) fn calculate_derivation_path_with_aterm_cache_result(
@@ -58,17 +41,22 @@ impl TreeWalk {
                     .map(|path| DerivationAtermPathCacheResult {
                         path,
                         hash_derivation_modulo: None,
+                        aterm_bytes: None,
                     });
             }
         };
-        if let Some(result) = self.lookup_derivation_aterm_path_for_current_node(id, name, &aterm) {
+        if let Some(mut result) =
+            self.lookup_derivation_aterm_path_for_current_node(id, name, &aterm)
+        {
+            result.aterm_bytes = Some(aterm);
             return Ok(result);
         }
-        self.calculate_derivation_path_from_aterm(id, span, name, derivation, &aterm)
-            .map(|path| DerivationAtermPathCacheResult {
-                path,
-                hash_derivation_modulo: None,
-            })
+        let path = self.calculate_derivation_path_from_aterm(id, span, name, derivation, &aterm)?;
+        Ok(DerivationAtermPathCacheResult {
+            path,
+            hash_derivation_modulo: None,
+            aterm_bytes: Some(aterm),
+        })
     }
 
     fn lookup_derivation_aterm_path_for_current_node(
@@ -181,6 +169,7 @@ impl TreeWalk {
             path,
             hash_derivation_modulo: hash_derivation_modulo
                 .map(DerivationHashModulo::from_nix_sha256_digest),
+            aterm_bytes: None,
         })
     }
 
@@ -294,6 +283,7 @@ impl TreeWalk {
         derivation: &nix_compat::derivation::Derivation,
         known_hash: DerivationHashModulo,
         output_resolution: DerivationOutputResolution,
+        precomputed_aterm: Option<&[u8]>,
     ) {
         if !self.eval_cache_runtime_enabled() {
             return;
@@ -303,22 +293,28 @@ impl TreeWalk {
         else {
             return;
         };
-        let aterm = match self.derivation_aterm_bytes_for_observation(
-            id,
-            span,
-            drv_path,
-            derivation,
-            output_resolution,
-        ) {
-            Ok(aterm) => aterm,
-            Err(error) => {
-                tracing::warn!(
-                    target: "aos_nix::cache",
-                    error = %error,
-                    "tree-walk evaluator derivation ATerm cache observation failed to serialize"
-                );
-                return;
-            }
+        let computed_aterm;
+        let aterm = if let Some(aterm) = precomputed_aterm {
+            aterm
+        } else {
+            computed_aterm = match self.derivation_aterm_bytes_for_observation(
+                id,
+                span,
+                drv_path,
+                derivation,
+                output_resolution,
+            ) {
+                Ok(aterm) => aterm,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator derivation ATerm cache observation failed to serialize"
+                    );
+                    return;
+                }
+            };
+            computed_aterm.as_slice()
         };
         let drv_path_bytes = self.store_path_absolute_bytes(drv_path);
         let mut rejected = false;

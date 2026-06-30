@@ -847,6 +847,7 @@ struct KnownDerivation {
     hash_derivation_modulo: DerivationHashModulo,
     output_names: BTreeSet<String>,
     output_resolution: DerivationOutputResolution,
+    aterm_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
