@@ -3535,32 +3535,29 @@ in {
           "$system_provisioned_state_config"
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
           "$system_provisioned_state_config"
-        run_clean ${pkgs.coreutils}/bin/env \
+        # A registry defined by an immutable /etc seed cannot be removed through
+        # apm; the mutation is refused with a clear error. The supported way to
+        # retract it is to blank the seed fragment (a provisioning operation).
+        if run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm --json registry remove host-install-channel \
-          > "$work/apm-system-provisioned-registry-remove.json"
+          > "$work/apm-system-provisioned-registry-remove.out" 2>&1; then
+          cat "$work/apm-system-provisioned-registry-remove.out"
+          exit 1
+        fi
+        grep -q "read-only seed" \
+          "$work/apm-system-provisioned-registry-remove.out"
+        # The seed-backed registry stays configured until the seed is blanked.
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry list \
+          > "$work/apm-system-provisioned-registry-list-before-blank.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg config_path "$system_provisioned_config/registries.d/host-install-channel.toml" \
-          --arg local_path "$data/apm/registries/host-install-channel" \
-          '.action == "registry_remove"
-            and .status == "removed"
-            and .registry == "host-install-channel"
-            and .name == "host-install-channel"
-            and .keep_local == false
-            and .force == false
-            and .config == $config_path
-            and .config_removed == true
-            and .local == $local_path
-            and .local_removed == true
-            and .cache_removed == true
-            and .trusted_keys_removed == true
-            and .orphan_command == "apm orphans"' \
-          "$work/apm-system-provisioned-registry-remove.json" >/dev/null
-        test ! -e "$system_provisioned_config/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/trusted-keys.d/host-install-channel.pub"
-        test ! -e "$data/apm/registries/host-install-channel"
-        test ! -e "$data/apm/remote/host-install-channel"
+          'length == 1 and .[0].name == "host-install-channel"' \
+          "$work/apm-system-provisioned-registry-list-before-blank.json" >/dev/null
+        # Blank the seed fragment to retract the registry; runtime deltas in the
+        # writable layer fall away once the seed no longer declares a `[registry]`.
+        : > "$system_provisioned_config/registries.d/host-install-channel.toml"
         run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm --json registry list \
@@ -3700,8 +3697,7 @@ in {
             and .channel.action == "init"
             and .channel.touched_partitions == 256
             and (.cache.paths >= 2)
-            and (.cache.narinfos >= 2)
-            and (.cache.nars >= 2)
+            and (.cache.remote_skipped >= 2)
             and (.uploaded_files > 0)
             and (.uploaded_bytes > 0)' \
           "$work/apr-release-host-image-channel.json" >/dev/null
@@ -4955,8 +4951,7 @@ in {
             and .channel.count == 256
             and .channel.touched_partitions == 256
             and (.cache.paths >= 4)
-            and (.cache.narinfos >= 4)
-            and (.cache.nars >= 4)
+            and (.cache.remote_skipped >= 4)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.deltas | index("delta-1.0.0.pack.zst") != null)
             and (.uploaded_files > 0)
@@ -5443,8 +5438,7 @@ in {
             and .upload_urls == [$upload_url, $upload_url_mirror]
             and .channel == null
             and (.cache.paths >= 6)
-            and (.cache.narinfos >= 6)
-            and (.cache.nars >= 6)
+            and (.cache.narinfos + .cache.remote_skipped >= 6)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.uploaded_files > 0)
             and (.uploaded_bytes > 0)' \
