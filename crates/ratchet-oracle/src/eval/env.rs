@@ -214,6 +214,26 @@ impl EvalFrame {
         *target = value;
         Ok(())
     }
+
+    /// Returns a copied snapshot of every slot in this frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::BorrowConflict`] if the frame is already mutably
+    /// borrowed. Returns [`EvalEnvError::FrameSnapshotAllocationFailed`] if the
+    /// copied slot vector cannot reserve storage.
+    pub fn slot_values(&self) -> Result<Vec<Value>, EvalEnvError> {
+        let slots = self
+            .slots
+            .try_borrow()
+            .map_err(|_| EvalEnvError::BorrowConflict)?;
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(slots.len())
+            .map_err(|_| EvalEnvError::FrameSnapshotAllocationFailed { slots: slots.len() })?;
+        snapshot.extend_from_slice(&slots);
+        Ok(snapshot)
+    }
 }
 
 /// A lexical environment operation failed.
@@ -223,6 +243,12 @@ pub enum EvalEnvError {
     #[error("failed to reserve {slots} environment slots")]
     FrameAllocationFailed {
         /// The requested number of frame slots.
+        slots: usize,
+    },
+    /// A frame slot snapshot could not be allocated.
+    #[error("failed to reserve {slots} frame snapshot slots")]
+    FrameSnapshotAllocationFailed {
+        /// The requested number of copied frame slots.
         slots: usize,
     },
     /// A captured frame list could not be allocated.

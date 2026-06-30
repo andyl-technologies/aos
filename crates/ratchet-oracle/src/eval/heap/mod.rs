@@ -13,9 +13,9 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use super::env::{EvalEnv, EvalScopedGlobalEnv, EvalWithEnv};
+use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
-use super::thunk::ThunkCell;
+use super::thunk::{ForceError, ThunkCell};
 use crate::attrs::FlatAttrs;
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
@@ -31,7 +31,13 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 mod arena;
 mod lambda;
 mod primop;
+mod roots;
 mod thunk;
+
+pub use roots::{
+    CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
+    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
+};
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
 const PRIMOP_HANDLE_BYTES: usize = std::mem::size_of::<u64>() * 4;
@@ -262,6 +268,26 @@ pub enum EvalHeapError {
         existing: ValueHash,
         /// The hash the caller attempted to cache.
         attempted: ValueHash,
+    },
+    /// Lexical environment access failed during precise root scanning.
+    #[error("heap root scan environment error: {0}")]
+    Environment(#[from] EvalEnvError),
+    /// Thunk state access failed during precise root scanning.
+    #[error("heap root scan thunk error: {0}")]
+    Thunk(#[from] ForceError),
+    /// Precise root scanning overflowed a side table length.
+    #[error("heap root scan {table} length overflow")]
+    RootScanLengthOverflow {
+        /// The scanner side table being grown.
+        table: &'static str,
+    },
+    /// Precise root scanning could not reserve side table storage.
+    #[error("heap root scan failed to reserve {entries} {table} entries")]
+    RootScanAllocationFailed {
+        /// The scanner side table being grown.
+        table: &'static str,
+        /// The requested side table capacity.
+        entries: usize,
     },
 }
 

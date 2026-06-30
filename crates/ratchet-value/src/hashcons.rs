@@ -176,6 +176,25 @@ where
         self.buckets.get(key).map(HashConsBucket::as_slice)
     }
 
+    /// Iterates all committed values with their bucket key and bucket-local index.
+    ///
+    /// Outstanding reserved slots are not yielded because they do not yet hold
+    /// runtime values. The outer iteration order is an implementation detail of
+    /// the underlying hash table; callers that expose stable labels must sort by
+    /// the returned key and index.
+    pub fn committed_entries(&self) -> impl Iterator<Item = (&K, usize, &V)> {
+        self.buckets
+            .iter()
+            .flat_map(|(key, bucket)| {
+                bucket
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(move |entry| (key, entry))
+            })
+            .map(|(key, (index, value))| (key, index, value))
+    }
+
     /// Returns the first candidate whose predicate confirms equality.
     ///
     /// The predicate is where callers compare the candidate payload with the

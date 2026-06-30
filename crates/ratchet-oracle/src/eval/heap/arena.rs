@@ -901,7 +901,7 @@ impl EvalHeap {
         }
     }
 
-    fn record_or_unknown(
+    pub(super) fn record_or_unknown(
         &self,
         tag: ValueTag,
         ptr: NonNull<HeapObject>,

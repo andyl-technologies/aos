@@ -4958,6 +4958,21 @@ and helps the oracle directly.
       `unsafe extern "C"`/JIT-symbol ABI and multi-strategy GC swapping remain
       open in the row above.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
+- [x] Current `heap/roots.rs` tree-walk graph precursor:
+      `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for
+      value-stack slots, force continuations, primop arguments, permanent
+      interned/hash-cons roots, and future stack-map slots supplied by tests or
+      later safepoint builders; `EvalHeap` can build stable sorted interned root
+      sets and scan reachable typed records from a caller-supplied explicit root
+      set. The scan validates tag/side-table agreement before address
+      deduplication, ignores inline and external-runtime non-roots, grows scan
+      side tables with the reachable graph rather than total heap size, emits
+      shape-qualified attr edges, list edges, lambda/thunk captured-env edges,
+      primop-arg edges, and state-sensitive suspended/blackholed/forced thunk
+      edges. This is a copied-value graph report, not relocation-writeback
+      slots; production tree-walk safepoint enumeration, the moving Tier-B
+      collector, and Cranelift stack-map wiring remain open in the row above and
+      in [08](08-execution-tiers-and-cranelift.md).
 - [x] Current safe-crate prerequisite already in place: the monolithic
       `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`
       and checks/source scans show no Rust `unsafe` forms in the evaluator

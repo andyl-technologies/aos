@@ -3,6 +3,7 @@
 use super::super::ThunkState;
 use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
+use crate::eval::{EvalFrame, EvalWithScope};
 use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::SymbolTable;
@@ -1068,5 +1069,525 @@ fn rejects_wrong_value_tags_for_attrs_lookup() {
             expected: "attrs",
             actual: ValueTag::Int,
         })
+    );
+}
+
+fn object_for(scan: &PreciseHeapScan, value: Value) -> &HeapObjectScan {
+    scan.objects()
+        .iter()
+        .find(|object| object.value().raw_eq(value))
+        .expect("object is scanned")
+}
+
+#[test]
+fn precise_root_scan_filters_inline_values_and_walks_typed_fields() {
+    let mut symbols = SymbolTable::new();
+    let child_key = symbols.intern(b"child").expect("child symbol interns");
+    let inline_key = symbols.intern(b"inline").expect("inline symbol interns");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let leaf = heap
+        .alloc_string(NixString::from_bytes(b"leaf".to_vec()))
+        .expect("leaf string allocates");
+    let list = heap
+        .alloc_list(NixList::new(vec![Value::int(1), leaf]))
+        .expect("list allocates");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(inline_key, Value::bool(true)),
+            AttrEntry::new(child_key, list),
+        ],
+        &symbols,
+    )
+    .expect("attrs build");
+    let root = heap.alloc_attrs(17, attrs).expect("attrs allocate");
+    let mut roots = EvalRootSet::new();
+
+    assert!(
+        !roots
+            .try_push_value_stack(0, Value::int(99))
+            .expect("inline root ignored")
+    );
+    assert!(
+        !roots
+            .try_push_stack_map(1, 2, StackMapSlot::Stack { offset: -16 }, Value::null(),)
+            .expect("inline stack-map value ignored")
+    );
+    assert!(
+        roots
+            .try_push_value_stack(1, root)
+            .expect("heap root records")
+    );
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+
+    assert_eq!(scan.roots().len(), 1);
+    assert_eq!(scan.objects().len(), 3);
+    assert!(scan.objects()[0].value().raw_eq(root));
+    assert!(scan.objects()[1].value().raw_eq(list));
+    assert!(scan.objects()[2].value().raw_eq(leaf));
+
+    let root_edges = object_for(&scan, root).edges();
+    assert_eq!(root_edges.len(), 1);
+    assert_eq!(
+        root_edges[0].source(),
+        &HeapEdgeSource::AttrBinding {
+            shape: 17,
+            slot: 0,
+            key: child_key,
+        }
+    );
+    assert!(root_edges[0].value().raw_eq(list));
+
+    let list_edges = object_for(&scan, list).edges();
+    assert_eq!(list_edges.len(), 1);
+    assert_eq!(
+        list_edges[0].source(),
+        &HeapEdgeSource::ListElement { index: 1 }
+    );
+    assert!(list_edges[0].value().raw_eq(leaf));
+    assert!(object_for(&scan, leaf).edges().is_empty());
+}
+
+#[test]
+fn precise_root_scan_tracks_thunk_state_instead_of_stale_captures() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let captured = heap
+        .alloc_string(NixString::from_bytes(b"captured".to_vec()))
+        .expect("captured string allocates");
+    let forced = heap
+        .alloc_string(NixString::from_bytes(b"forced".to_vec()))
+        .expect("forced string allocates");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, captured).expect("slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("env captures");
+    let thunk = heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(9), env))
+        .expect("thunk allocates");
+    let mut roots = EvalRootSet::new();
+    assert!(
+        roots
+            .try_push_force_continuation(0, thunk)
+            .expect("thunk root records")
+    );
+
+    let suspended_scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let suspended_edges = object_for(&suspended_scan, thunk).edges();
+    assert_eq!(suspended_edges.len(), 1);
+    assert_eq!(
+        suspended_edges[0].source(),
+        &HeapEdgeSource::CapturedEnv {
+            owner: CapturedRootOwner::Thunk,
+            frame: 0,
+            slot: 0,
+        }
+    );
+    assert!(suspended_edges[0].value().raw_eq(captured));
+
+    let thunk_record = heap.clone_thunk(thunk).expect("thunk handle clones");
+    let claim = thunk_record.cell().begin_force().expect("claim succeeds");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new thunk should be claimable");
+    };
+    guard.finish(forced).expect("thunk publishes forced value");
+
+    let forced_scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let forced_edges = object_for(&forced_scan, thunk).edges();
+    assert_eq!(forced_edges.len(), 1);
+    assert_eq!(forced_edges[0].source(), &HeapEdgeSource::ThunkCachedResult);
+    assert!(forced_edges[0].value().raw_eq(forced));
+    assert!(object_for(&forced_scan, forced).edges().is_empty());
+    assert!(
+        forced_scan
+            .objects()
+            .iter()
+            .all(|object| !object.value().raw_eq(captured))
+    );
+}
+
+#[test]
+fn precise_root_scan_reports_lambda_captured_scopes() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let lexical = heap
+        .alloc_string(NixString::from_bytes(b"lexical".to_vec()))
+        .expect("lexical string allocates");
+    let with_scope = heap
+        .alloc_string(NixString::from_bytes(b"with".to_vec()))
+        .expect("with string allocates");
+    let scoped_global = heap
+        .alloc_string(NixString::from_bytes(b"global".to_vec()))
+        .expect("global string allocates");
+    let frame = EvalFrame::new(2).expect("frame allocates");
+    frame.set(0, lexical).expect("slot writes");
+    frame.set(1, Value::int(9)).expect("inline slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("env captures");
+    let with_env = EvalWithEnv::capture(&[EvalWithScope::new(
+        EvalModuleId::ROOT,
+        IrId::new(3),
+        with_scope,
+    )])
+    .expect("with env captures");
+    let scoped_globals =
+        EvalScopedGlobalEnv::capture(&[scoped_global]).expect("global env captures");
+    let lambda = heap
+        .alloc_lambda(EvalLambda::with_captures(
+            EvalModuleId::ROOT,
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            env,
+            with_env,
+            scoped_globals,
+        ))
+        .expect("lambda allocates");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, lambda)
+        .expect("lambda root records");
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, lambda).edges();
+
+    assert_eq!(edges.len(), 3);
+    assert!(
+        edges.iter().any(|edge| {
+            edge.source()
+                == &HeapEdgeSource::CapturedEnv {
+                    owner: CapturedRootOwner::Lambda,
+                    frame: 0,
+                    slot: 0,
+                }
+                && edge.value().raw_eq(lexical)
+        }),
+        "lexical heap slot is reported"
+    );
+    assert!(
+        edges.iter().any(|edge| {
+            edge.source()
+                == &HeapEdgeSource::CapturedWithScope {
+                    owner: CapturedRootOwner::Lambda,
+                    index: 0,
+                }
+                && edge.value().raw_eq(with_scope)
+        }),
+        "with-scope heap value is reported"
+    );
+    assert!(
+        edges.iter().any(|edge| {
+            edge.source()
+                == &HeapEdgeSource::CapturedScopedGlobal {
+                    owner: CapturedRootOwner::Lambda,
+                    index: 0,
+                }
+                && edge.value().raw_eq(scoped_global)
+        }),
+        "scoped-global heap value is reported"
+    );
+}
+
+#[test]
+fn precise_root_scan_reports_primop_heap_arguments() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let argument_value = heap
+        .alloc_string(NixString::from_bytes(b"arg".to_vec()))
+        .expect("argument string allocates");
+    let primop = heap
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![
+                EvalPrimOpArg::new(IrId::new(1), Span::new(0, 1), Value::int(1)),
+                EvalPrimOpArg::new(IrId::new(2), Span::new(1, 2), argument_value),
+            ],
+        ))
+        .expect("primop allocates");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_primop_argument(0, primop)
+        .expect("primop root records");
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, primop).edges();
+
+    assert_eq!(edges.len(), 1);
+    assert_eq!(
+        edges[0].source(),
+        &HeapEdgeSource::PrimopArgument { index: 1 }
+    );
+    assert!(edges[0].value().raw_eq(argument_value));
+}
+
+#[test]
+fn precise_root_scan_reports_suspended_thunk_capture_variants() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    let function_value = heap
+        .alloc_string(NixString::from_bytes(b"function".to_vec()))
+        .expect("function string allocates");
+    let argument_value = heap
+        .alloc_string(NixString::from_bytes(b"argument".to_vec()))
+        .expect("argument string allocates");
+    let first_argument_value = heap
+        .alloc_string(NixString::from_bytes(b"first".to_vec()))
+        .expect("first string allocates");
+    let second_argument_value = heap
+        .alloc_string(NixString::from_bytes(b"second".to_vec()))
+        .expect("second string allocates");
+    let receiver = heap
+        .alloc_string(NixString::from_bytes(b"receiver".to_vec()))
+        .expect("receiver string allocates");
+    let apply = heap
+        .alloc_thunk(EvalThunk::apply(
+            EvalModuleId::ROOT,
+            IrId::new(1),
+            Span::new(0, 1),
+            function_value,
+            EvalModuleId::ROOT,
+            IrId::new(2),
+            argument_value,
+        ))
+        .expect("apply thunk allocates");
+    let apply2 = heap
+        .alloc_thunk(EvalThunk::apply2(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            Span::new(1, 2),
+            function_value,
+            EvalModuleId::ROOT,
+            IrId::new(4),
+            Span::new(2, 3),
+            first_argument_value,
+            EvalModuleId::ROOT,
+            IrId::new(5),
+            second_argument_value,
+        ))
+        .expect("apply2 thunk allocates");
+    let select = heap
+        .alloc_thunk(EvalThunk::select(
+            EvalModuleId::ROOT,
+            IrId::new(6),
+            receiver,
+            IrAttrPathId::new(0),
+        ))
+        .expect("select thunk allocates");
+    let builtin_attr = heap
+        .alloc_thunk(EvalThunk::builtin_attr(symbol, builtin))
+        .expect("builtin attr thunk allocates");
+    let mut roots = EvalRootSet::new();
+    for (index, value) in [apply, apply2, select, builtin_attr]
+        .into_iter()
+        .enumerate()
+    {
+        roots
+            .try_push_value_stack(index, value)
+            .expect("thunk root records");
+    }
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let apply_edges = object_for(&scan, apply).edges();
+    assert_eq!(apply_edges.len(), 2);
+    assert!(
+        apply_edges
+            .iter()
+            .any(|edge| edge.source() == &HeapEdgeSource::ThunkApplyFunction
+                && edge.value().raw_eq(function_value))
+    );
+    assert!(
+        apply_edges
+            .iter()
+            .any(|edge| edge.source() == &HeapEdgeSource::ThunkApplyArgument
+                && edge.value().raw_eq(argument_value))
+    );
+
+    let apply2_edges = object_for(&scan, apply2).edges();
+    assert_eq!(apply2_edges.len(), 3);
+    assert!(
+        apply2_edges
+            .iter()
+            .any(|edge| edge.source() == &HeapEdgeSource::ThunkApply2Function
+                && edge.value().raw_eq(function_value))
+    );
+    assert!(apply2_edges.iter().any(|edge| edge.source()
+        == &HeapEdgeSource::ThunkApply2FirstArgument
+        && edge.value().raw_eq(first_argument_value)));
+    assert!(apply2_edges.iter().any(|edge| edge.source()
+        == &HeapEdgeSource::ThunkApply2SecondArgument
+        && edge.value().raw_eq(second_argument_value)));
+
+    let select_edges = object_for(&scan, select).edges();
+    assert_eq!(select_edges.len(), 1);
+    assert_eq!(
+        select_edges[0].source(),
+        &HeapEdgeSource::ThunkSelectReceiver
+    );
+    assert!(select_edges[0].value().raw_eq(receiver));
+    assert!(object_for(&scan, builtin_attr).edges().is_empty());
+}
+
+#[test]
+fn precise_root_scan_reports_blackholed_thunk_captures() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let captured = heap
+        .alloc_string(NixString::from_bytes(b"captured".to_vec()))
+        .expect("captured string allocates");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, captured).expect("slot writes");
+    let env = EvalEnv::capture(&[frame]).expect("env captures");
+    let thunk = heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(9), env))
+        .expect("thunk allocates");
+    let thunk_record = heap.clone_thunk(thunk).expect("thunk handle clones");
+    let claim = thunk_record.cell().begin_force().expect("claim succeeds");
+    let crate::eval::thunk::ForceClaim::Claimed(guard) = claim else {
+        panic!("new thunk should be claimable");
+    };
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_force_continuation(0, thunk)
+        .expect("thunk root records");
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let edges = object_for(&scan, thunk).edges();
+
+    assert_eq!(edges.len(), 1);
+    assert_eq!(
+        edges[0].source(),
+        &HeapEdgeSource::CapturedEnv {
+            owner: CapturedRootOwner::Thunk,
+            frame: 0,
+            slot: 0,
+        }
+    );
+    assert!(edges[0].value().raw_eq(captured));
+    guard.abort().expect("claim aborts");
+}
+
+#[test]
+fn precise_root_scan_ignores_external_heap_values_owned_elsewhere() {
+    let external =
+        Value::external(NonNull::<HeapObject>::dangling()).expect("external pointer builds");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let list = heap
+        .alloc_list(NixList::new(vec![external]))
+        .expect("list allocates");
+    let mut roots = EvalRootSet::new();
+
+    assert!(
+        !roots
+            .try_push_value_stack(0, external)
+            .expect("external root ignored")
+    );
+    roots
+        .try_push_value_stack(1, list)
+        .expect("list root records");
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+
+    assert_eq!(scan.roots().len(), 1);
+    assert_eq!(scan.objects().len(), 1);
+    assert!(object_for(&scan, list).edges().is_empty());
+}
+
+#[test]
+fn interned_root_set_enumerates_hash_consed_permanent_roots() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"interned".to_vec()))
+        .expect("string allocates");
+    let second_string = heap
+        .alloc_string(NixString::from_bytes(b"interned-second".to_vec()))
+        .expect("second string allocates");
+    let path = heap
+        .alloc_path(NixString::from_bytes(b"/tmp/interned".to_vec()))
+        .expect("path allocates");
+    let list = heap
+        .alloc_list(NixList::new(vec![string]))
+        .expect("list allocates");
+    let attrs = heap
+        .alloc_attrs(0, attrs_with_value(list))
+        .expect("attrs allocate");
+
+    let roots = heap.interned_root_set().expect("interned roots collect");
+    let repeated_roots = heap.interned_root_set().expect("interned roots repeat");
+    let sources: Vec<_> = roots.roots().iter().map(EvalRoot::source).collect();
+
+    assert_eq!(roots.roots(), repeated_roots.roots());
+    assert_eq!(roots.len(), 5);
+    assert!(sources.contains(&&EvalRootSource::Interned {
+        table: InternedRootTable::String,
+        index: 0,
+    }));
+    assert!(sources.contains(&&EvalRootSource::Interned {
+        table: InternedRootTable::String,
+        index: 1,
+    }));
+    assert!(sources.contains(&&EvalRootSource::Interned {
+        table: InternedRootTable::Path,
+        index: 0,
+    }));
+    assert!(sources.contains(&&EvalRootSource::Interned {
+        table: InternedRootTable::List,
+        index: 0,
+    }));
+    assert!(sources.contains(&&EvalRootSource::Interned {
+        table: InternedRootTable::Attrs,
+        index: 0,
+    }));
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(string))
+    );
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(second_string))
+    );
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(path))
+    );
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(list))
+    );
+    assert!(
+        scan.objects()
+            .iter()
+            .any(|object| object.value().raw_eq(attrs))
+    );
+}
+
+#[test]
+fn precise_root_scan_validates_duplicate_address_tags_before_deduping() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let list = heap
+        .alloc_list(NixList::new(vec![Value::int(1)]))
+        .expect("list allocates");
+    let ptr = list.as_list_ptr().expect("list pointer");
+    let mislabeled = Value::string(ptr).expect("same pointer can carry another heap tag");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, list)
+        .expect("list root records");
+    roots
+        .try_push_value_stack(1, mislabeled)
+        .expect("mislabeled root records");
+
+    let error = heap
+        .scan_precise_roots(&roots)
+        .expect_err("mislabeled duplicate is rejected");
+
+    assert_eq!(
+        error,
+        EvalHeapError::record_type_mismatch(ValueTag::String, ValueTag::List, ptr)
     );
 }

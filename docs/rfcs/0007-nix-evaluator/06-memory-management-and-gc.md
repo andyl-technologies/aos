@@ -869,6 +869,21 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 - [ ] Precise, generational, copying collector for the daemon: cache-resident copying nursery (work ∝ survivors), promotion policy, rarely-collected old generation (§4.1–§4.3) — **P3**, `S-8`; harness byte-green under Tier B, miri/ASan-clean.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
+- [x] Current tree-walk precise root/field-scan graph precursor:
+      `ratchet-oracle::eval::heap::roots` provides explicit
+      `EvalRootSet` descriptors for value-stack slots, force continuations,
+      primop arguments, permanent interned/hash-cons roots, and future
+      stack-map slots supplied by tests or future safepoint builders;
+      `EvalHeap::scan_precise_roots` validates evaluator-owned heap tags
+      against the typed side table before deduplication, filters inline and
+      external-runtime values out of roots/edges, uses stable sorted labels for
+      interned roots, and scans lists, shape-qualified attr bindings,
+      lambda/thunk captured environments, primop arguments, suspended thunk
+      captures, blackholed thunk captures, and forced-thunk cached results. This
+      is a copied-value graph report, not relocation-writeback slots, and the
+      production tree-walk safepoint root builder, real Tier-B collector, and
+      Cranelift stack-map emission/consumption remain open in the row above and
+      in [08](08-execution-tiers-and-cranelift.md).
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
