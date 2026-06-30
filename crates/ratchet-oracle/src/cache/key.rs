@@ -181,6 +181,8 @@ fn write_len_prefixed_blake3(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn source(bytes: &[u8]) -> DurableBlake3Hash {
@@ -275,5 +277,23 @@ mod tests {
             .expect("key builds");
 
         assert_ne!(ab_c, a_bc);
+    }
+
+    #[test]
+    fn durable_confirmation_keeps_hot_hash_collisions_distinct() {
+        let hot = HotXxh3Hash::from_xxh3(0xfeed_face_cafe_beef);
+        let first = DemandCacheKey::from_raw_parts_for_test(hot, value_hash(b"first confirmation"));
+        let second =
+            DemandCacheKey::from_raw_parts_for_test(hot, value_hash(b"second confirmation"));
+
+        assert_ne!(first, second);
+
+        let mut map = HashMap::new();
+        assert_eq!(map.insert(first, "first"), None);
+        assert_eq!(map.insert(second, "second"), None);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&first), Some(&"first"));
+        assert_eq!(map.get(&second), Some(&"second"));
     }
 }

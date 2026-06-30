@@ -607,8 +607,12 @@ alone (`M-1`/`Q-A`).
       plus opaque `DemandCacheKey` compute one order-sensitive hot xxh3 probe
       and one BLAKE3 confirmation digest over domain/version prefixes,
       expression identity bytes, and caller-supplied free-variable value hashes
-      encoded as length-prefixed chunks. This checks the C-1 combiner rule only,
-      not canonical free-variable set/order production, real durable value-hash
+      encoded as length-prefixed chunks. Tests pin stability, source/node
+      identity changes, order sensitivity, multiplicity, length-prefix
+      ambiguity, key-level hash-map separation under matching hot probes, and
+      demand-graph separation under matching hot probes. This checks the C-1
+      combiner rule and in-process collision-confirmation rule only, not
+      canonical free-variable set/order production, real durable value-hash
       production, or differential harness coverage.
 - [x] Current expression-node allocation/keying substrate:
       `DemandGraph::get_or_insert_expression_node` and
