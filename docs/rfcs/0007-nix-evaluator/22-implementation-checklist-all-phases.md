@@ -651,8 +651,9 @@ alone (`M-1`/`Q-A`).
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
-      explicit option and impure-input keys, synthetic apply/select
-      thunks, canonical free-variable hashes, general memo lookup,
+      explicit option and impure-input keys, synthetic apply thunks and
+      remaining dynamic/unhashable select thunks, canonical free-variable
+      hashes, general memo lookup,
       remaining suspended non-literal/non-replayable captured thunk-cell free
       variables, arbitrary lazy-element list and lazy-binding attrset payloads,
       multi-module or non-own-module
@@ -686,8 +687,9 @@ alone (`M-1`/`Q-A`).
       lowered-IR-backed node-thunk subset, captured dynamic/scoped-global
       thunks, ambient/synthetic builtin values outside the admitted constant subset,
       search-path/global/builtin/primop/application/dialect nodes pending
-      explicit option and impure-input keys, synthetic apply/select
-      thunks, canonical free-variable hashes, remaining suspended
+      explicit option and impure-input keys, synthetic apply thunks and
+      remaining dynamic/unhashable select thunks, canonical free-variable
+      hashes, remaining suspended
       non-literal/non-replayable captured thunk-cell free variables, arbitrary
       non-literal lazy-element lists and lazy-binding attrsets, broader
       multi-module/non-own
@@ -803,7 +805,8 @@ alone (`M-1`/`Q-A`).
       synthetic builtin-attr `currentTime` payloads are cleared and tombstoned
       without recording demand. This
       deliberately skips the recursive `builtins` attrset, `nixPath`,
-      derivation, first-class primops, synthetic apply/select thunks,
+      derivation, first-class primops, synthetic apply thunks,
+      remaining dynamic/unhashable select thunks,
       broader persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
       hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
@@ -824,7 +827,8 @@ alone (`M-1`/`Q-A`).
       tables, path bases, evaluator options, node spans, or synthetic force-site
       spans differ. It is a
       source-independent identity substrate only; broader source-less raw eval
-      surfaces, synthetic apply/select thunks, remaining composite payloads, persistence,
+      surfaces, synthetic apply thunks, remaining dynamic/unhashable select
+      thunk surfaces, remaining composite payloads, persistence,
       fine-grained option dependency tracking, and cached/uncached harness proof
       remain open. The gate covers lowered-IR fingerprint tests plus
       source-less hit/miss, source/source-less domain separation,
@@ -844,6 +848,11 @@ alone (`M-1`/`Q-A`).
       a suspended closed literal thunk whose static payload is one of those
       replayable values, or a suspended captured local/upvalue alias thunk whose
       referenced captured payload is one of those replayable values.
+      Static synthetic select thunks with static attr paths and hashable
+      receiver values now use a domain-separated select-site/path identity plus
+      the receiver's force-captured value hash; matching receivers hit, changed
+      receivers miss, changed paths or select sites do not false-hit, and
+      dynamic paths or unhashable receivers skip subject construction.
       Strings and paths are hashed in one durable force-capture domain with typed
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
@@ -862,8 +871,9 @@ alone (`M-1`/`Q-A`).
       loaded module identities, lambdas, primops,
       suspended computed/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, recursive captured alias
-      cycles, captured bodies with nested lexical-frame introducers, apply/select
-      thunks, full strictness/escape free-variable analysis, remaining
+      cycles, captured bodies with nested lexical-frame introducers, apply thunks
+      and dynamic-path or unhashable-receiver select thunks, full
+      strictness/escape free-variable analysis, remaining
       heap/composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
       hit/miss tests, repeated captured-slot deduplication, lowered
@@ -875,8 +885,10 @@ alone (`M-1`/`Q-A`).
       suspended computed capture subject-skip canary, dynamic `with`/scoped-import
       global subject-skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
-      subject-skip canaries, synthetic apply/apply2/select thunk subject-skip
-      canaries, captured root/imported positioned attrset source-salted
+      subject-skip canaries, synthetic apply/apply2 subject-skip canaries,
+      synthetic static-select receiver/path/site hit/miss and
+      dynamic-path/unhashable-receiver skip canaries, captured root/imported
+      positioned attrset source-salted
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
       and lazy-binding attrset subject-skip canaries, direct and first-class

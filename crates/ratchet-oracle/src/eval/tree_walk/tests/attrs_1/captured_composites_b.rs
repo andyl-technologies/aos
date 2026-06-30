@@ -217,8 +217,29 @@ fn synthetic_apply2_thunks_do_not_build_force_cache_subjects() {
     );
 }
 
+fn static_selects_for_symbol(ir: &Ir, name: &[u8]) -> Vec<(IrId, IrAttrPathId)> {
+    ir.arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            let IrData::Select { path, .. } = node.data else {
+                return None;
+            };
+            let segments = ir.attr_paths.get(path.index())?;
+            if segments.len() != 1 {
+                return None;
+            }
+            let IrAttrPathSegment::Static(symbol) = segments[0] else {
+                return None;
+            };
+            (ir.symbols.resolve(symbol) == Some(name)).then_some((IrId::new(index as u32), path))
+        })
+        .collect()
+}
+
 #[test]
-fn synthetic_select_thunks_do_not_build_force_cache_subjects() {
+fn synthetic_select_thunks_with_hashable_receivers_build_force_cache_subjects() {
     let source = "{ a = 1; }.a";
     let ir = lower(source);
     let path = {
@@ -262,8 +283,8 @@ fn synthetic_select_thunks_do_not_build_force_cache_subjects() {
             .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
     };
     assert!(
-        subject.is_none(),
-        "synthetic select thunks must not be hashed into demand keys"
+        subject.is_some(),
+        "synthetic select thunks over hashable receivers should build demand keys"
     );
 
     let forced = evaluator
@@ -273,8 +294,320 @@ fn synthetic_select_thunks_do_not_build_force_cache_subjects() {
     assert_eq!(forced.as_int(), Ok(7));
     let runtime = cache.lock().expect("cache lock is valid");
     assert!(
+        !runtime.cache().expect("cache is enabled").is_empty(),
+        "synthetic select thunk subjects should allocate expression nodes"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_hit_when_receiver_hashes_match() {
+    let source = "{ a = 1; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "synthetic-select-force-cache-hit.nix",
+            source,
+            cache.clone(),
+        );
+        let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(7))], &evaluator.symbols)
+            .expect("receiver attrs build");
+        let receiver = evaluator
+            .heap
+            .alloc_attrs(0, attrs)
+            .expect("receiver attrs allocate");
+        let thunk_value = evaluator
+            .alloc_select_thunk(
+                ir.root,
+                Span::new(0, source.len() as u32),
+                ir.root,
+                receiver,
+                path,
+            )
+            .expect("select thunk allocates");
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+            .expect("synthetic select thunk force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching selected receiver hashes should share one demand node"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_include_path_and_site_in_cache_key() {
+    let source = "let r = { a = 1; b = 2; }; in { left = r.a; middle = r.b; right = r.a; }";
+    let ir = lower(source);
+    let select_a = static_selects_for_symbol(&ir, b"a");
+    let select_b = static_selects_for_symbol(&ir, b"b");
+    let [(first_a, path_a), (second_a, _)] = select_a.as_slice() else {
+        panic!("expected two static .a select sites");
+    };
+    let [(_, path_b)] = select_b.as_slice() else {
+        panic!("expected one static .b select site");
+    };
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (select, path, expected, message) in [
+        (*first_a, *path_a, 7, "first selected path should be cold"),
+        (
+            *first_a,
+            *path_b,
+            8,
+            "changed selected path at the same site must not hit",
+        ),
+        (
+            *second_a,
+            *path_a,
+            7,
+            "changed select site for the same path must not hit",
+        ),
+    ] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "synthetic-select-path-site-force-cache.nix",
+            source,
+            cache.clone(),
+        );
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(a, Value::int(7)),
+                AttrEntry::new(b, Value::int(8)),
+            ],
+            &evaluator.symbols,
+        )
+        .expect("receiver attrs build");
+        let receiver = evaluator
+            .heap
+            .alloc_attrs(0, attrs)
+            .expect("receiver attrs allocate");
+        let thunk_value = evaluator
+            .alloc_select_thunk(
+                select,
+                Span::new(0, source.len() as u32),
+                select,
+                receiver,
+                path,
+            )
+            .expect("select thunk allocates");
+        let forced = evaluator
+            .force_admitted_value(select, Span::new(0, source.len() as u32), thunk_value)
+            .expect("synthetic select thunk force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(expected));
+        assert_eq!(evaluator.stats().cache_hits(), 0, "{message}");
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        3,
+        "select path and site should both separate otherwise matching receiver keys"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_include_receiver_hashes_in_cache_key() {
+    let source = "{ a = 1; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for selected in [7, 8] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "synthetic-select-force-cache-miss.nix",
+            source,
+            cache.clone(),
+        );
+        let attrs = FlatAttrs::new(
+            vec![AttrEntry::new(a, Value::int(selected))],
+            &evaluator.symbols,
+        )
+        .expect("receiver attrs build");
+        let receiver = evaluator
+            .heap
+            .alloc_attrs(0, attrs)
+            .expect("receiver attrs allocate");
+        let thunk_value = evaluator
+            .alloc_select_thunk(
+                ir.root,
+                Span::new(0, source.len() as u32),
+                ir.root,
+                receiver,
+                path,
+            )
+            .expect("select thunk allocates");
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+            .expect("synthetic select thunk force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(selected));
+        assert_eq!(
+            evaluator.stats().cache_hits(),
+            0,
+            "changed receiver hashes must not false-hit a stale selected value"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        2,
+        "different selected receiver hashes should create distinct demand nodes"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_with_dynamic_paths_do_not_build_force_cache_subjects() {
+    let source = r#"let key = "a"; in { a = 1; }.${key}"#;
+    let ir = lower(source);
+    let (select, path) = ir
+        .arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .find_map(|(index, node)| {
+            let IrData::Select { path, .. } = node.data else {
+                return None;
+            };
+            let segments = ir.attr_paths.get(path.index())?;
+            segments
+                .iter()
+                .any(|segment| matches!(segment, IrAttrPathSegment::Dynamic(_)))
+                .then_some((IrId::new(index as u32), path))
+        })
+        .expect("lowered source should contain a dynamic select path");
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-select-dynamic-path.nix",
+        source,
+        cache.clone(),
+    );
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, Value::int(7))], &evaluator.symbols)
+        .expect("receiver attrs build");
+    let receiver = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("receiver attrs allocate");
+    let thunk_value = evaluator
+        .alloc_select_thunk(
+            select,
+            Span::new(0, source.len() as u32),
+            select,
+            receiver,
+            path,
+        )
+        .expect("select thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic select thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Select { .. }));
+        evaluator.force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, select), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic select thunks with dynamic paths must not build demand keys"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
         runtime.cache().expect("cache is enabled").is_empty(),
-        "synthetic select thunk subjects should skip expression node allocation"
+        "dynamic select paths should skip expression node allocation"
+    );
+}
+
+#[test]
+fn synthetic_select_thunks_with_unhashable_receivers_do_not_build_force_cache_subjects() {
+    let source = "{ a = 1; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-select-unhashable-receiver.nix",
+        source,
+        cache.clone(),
+    );
+    let receiver = evaluator
+        .alloc_apply_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            Span::new(0, source.len() as u32),
+            Value::int(1),
+            ir.root,
+            Value::int(2),
+        )
+        .expect("unhashable receiver thunk allocates");
+    let thunk_value = evaluator
+        .alloc_select_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            receiver,
+            path,
+        )
+        .expect("select thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic select thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Select { .. }));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic select thunks over unhashable receivers must not build demand keys"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "unhashable select receivers should skip expression node allocation"
     );
 }
 

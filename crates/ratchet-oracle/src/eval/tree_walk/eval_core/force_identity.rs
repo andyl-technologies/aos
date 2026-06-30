@@ -785,6 +785,40 @@ impl TreeWalk {
         ))
     }
 
+    pub(in crate::eval::tree_walk) fn cache_synthetic_select_identity(
+        &self,
+        select: EvalNodeRef,
+        path: IrAttrPathId,
+    ) -> Option<CacheExprIdentity> {
+        let module = self.modules.get(select.module().index())?;
+        let module_hash = Self::cache_module_identity_hash(module)?;
+        let select_node = module.ir.arena.node(select.id())?;
+        let segments = module.ir.attr_paths.get(path.index())?;
+        if segments.is_empty() {
+            return None;
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_SYNTHETIC_SELECT_IDENTITY_DOMAIN_VERSION);
+        hasher.update(&module_hash.as_bytes());
+        hasher.update(&select.id().as_u32().to_le_bytes());
+        hasher.update(&select_node.span.start.to_le_bytes());
+        hasher.update(&select_node.span.end.to_le_bytes());
+        let len = u64::try_from(segments.len()).ok()?;
+        hasher.update(&len.to_le_bytes());
+        for segment in segments.iter().copied() {
+            let IrAttrPathSegment::Static(symbol) = segment else {
+                return None;
+            };
+            let name = module.ir.symbols.resolve(symbol)?;
+            Self::update_cache_identity_chunk(&mut hasher, name)?;
+        }
+        Some(CacheExprIdentity::new(
+            DurableBlake3Hash::from_hasher(hasher),
+            select.id(),
+        ))
+    }
+
     fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {
         let IrData::PrimOp { symbol, .. } = node.data else {
             return false;

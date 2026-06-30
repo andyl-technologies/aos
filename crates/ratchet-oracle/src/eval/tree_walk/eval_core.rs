@@ -13,6 +13,8 @@ const FORCE_FIRST_CLASS_PRIMOP_CALL_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-first-class-primop-call-identity-v1";
 const FORCE_SYNTHETIC_BUILTIN_ATTR_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-force-synthetic-builtin-attr-identity-v1";
+const FORCE_SYNTHETIC_SELECT_IDENTITY_DOMAIN_VERSION: &[u8] =
+    b"aos-nix-force-synthetic-select-identity-v1";
 const DERIVATION_ATERM_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] =
     b"aos-nix-derivation-aterm-expression-identity-v1";
 const FORCE_CACHE_PAYLOAD_MAX_DEPTH: usize = 64;
@@ -582,9 +584,12 @@ impl TreeWalk {
             EvalThunkKind::BuiltinAttr { symbol, builtin } => {
                 self.force_cache_subject_for_builtin_attr(site, *symbol, *builtin)
             }
-            EvalThunkKind::Apply { .. }
-            | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            EvalThunkKind::Select {
+                select,
+                receiver,
+                path,
+            } => self.force_cache_subject_for_select(*select, *receiver, *path),
+            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
         }
     }
 
@@ -633,6 +638,26 @@ impl TreeWalk {
             }
             _ => None,
         }
+    }
+
+    fn force_cache_subject_for_select(
+        &self,
+        select: EvalNodeRef,
+        receiver: Value,
+        path: IrAttrPathId,
+    ) -> Option<ForceCacheSubject> {
+        let identity = self.cache_synthetic_select_identity(select, path)?;
+        let receiver_hash = self.force_cache_free_var_value_hash(receiver)?;
+        Some(ForceCacheSubject {
+            lookup_identity: Some(identity),
+            pure_observation_identity: Some(identity),
+            impure_observation_identity: None,
+            metadata_identity: Some(identity),
+            persistent_clear_identity: Some(identity),
+            free_var_value_hashes: vec![receiver_hash],
+            replay_position_module: None,
+            memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+        })
     }
 
     fn force_cache_subject_for_builtin_attr(
