@@ -3874,8 +3874,10 @@ fn world_edge_removed_by_network_faults(
     edge: &WorldLookaheadEdge,
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
 ) -> bool {
-    let link = scheduler_link_id_for_nodes(&edge.from, &edge.to);
-    let Some(partition) = network.get(&link).and_then(|faults| faults.partition) else {
+    let Some(partition) = scheduler_link_ids_for_nodes(&edge.from, &edge.to)
+        .into_iter()
+        .find_map(|link| network.get(&link).and_then(|faults| faults.partition))
+    else {
         return false;
     };
     if edge.from <= edge.to {
@@ -3895,13 +3897,34 @@ fn network_direction_is_partitioned(
     }
 }
 
-fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> LinkId {
+fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
     let (endpoint_a, endpoint_b) = if left <= right {
         (left, right)
     } else {
         (right, left)
     };
-    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
+    [
+        LinkId::from_name(format!(
+            "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+            endpoint_a.name.len(),
+            endpoint_a.name,
+            endpoint_b.name.len(),
+            endpoint_b.name
+        )),
+        LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name)),
+    ]
+}
+
+fn combined_network_faults_for_link(
+    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
+    link_id: &LinkId,
+    endpoint_a: &NodeId,
+    endpoint_b: &NodeId,
+) -> CombinedNetworkFaults {
+    std::iter::once(link_id.clone())
+        .chain(scheduler_link_ids_for_nodes(endpoint_a, endpoint_b))
+        .find_map(|candidate| network.get(&candidate).cloned())
+        .unwrap_or_default()
 }
 
 fn apply_trigger_action(
@@ -5210,7 +5233,12 @@ impl SingleScheduler {
         restored_edges: Vec<SchedulerLookaheadEdge>,
     ) -> Result<NetworkFaultApplication, SchedulerError> {
         let combined = self.trigger_actions.combined_faults();
-        let faults = combined.network.get(link_id).cloned().unwrap_or_default();
+        let faults = combined_network_faults_for_link(
+            &combined.network,
+            link_id,
+            &endpoint_a.node,
+            &endpoint_b.node,
+        );
         let has_restored_edges = !restored_edges.is_empty();
         let application = if has_restored_edges {
             heal_combined_network_faults_to_scheduler(

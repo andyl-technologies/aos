@@ -47,6 +47,7 @@ const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_TOPOLOGY_SIZE: u32 = 256;
 const FAMILY_FAULT_STEP_TICKS: u64 = 20;
 const FAMILY_FAULT_HEAL_DELAY_TICKS: u64 = 5;
+const RANDOM_FAULT_CONFIG_RNG_DOMAIN: &str = "crucible.model.random-fault-config.v1";
 const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
@@ -5042,7 +5043,10 @@ impl MembershipFault {
             } => {
                 let canonical = canonical_partition_fault(endpoint_a, endpoint_b, *direction);
                 Some(Fault::Network(NetworkFault::Partition {
-                    link: link_id_for_endpoint_pair(&canonical.endpoint_a, &canonical.endpoint_b),
+                    link: link_id_for_canonical_endpoint_pair(
+                        &canonical.endpoint_a,
+                        &canonical.endpoint_b,
+                    ),
                     direction: canonical.direction,
                 }))
             }
@@ -5177,6 +5181,264 @@ impl FaultPlan {
     pub fn entries(&self) -> &[FaultPlanEntry] {
         &self.entries
     }
+}
+
+/// Configuration for deterministic random [`FaultPlan`] generation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RandomFaultConfig {
+    /// Number of fault-generation slots to draw before deterministic pruning.
+    pub fault_slots: u32,
+    /// Total virtual-time span that generated finite faults must fit inside.
+    pub duration: FaultDuration,
+    /// Integer relative weights used for weighted fault-kind selection.
+    pub weights: FaultWeights,
+    /// Inclusive severity bounds used when drawing kind-specific parameters.
+    pub bounds: SeverityBounds,
+    /// Integer caps enforced by deterministic generation-order pruning.
+    pub caps: FaultCaps,
+    /// Root seed for the generator's single deterministic RNG stream.
+    pub seed: Seed,
+}
+
+impl RandomFaultConfig {
+    /// Generates a validated, canonically ordered fault plan for `world`.
+    ///
+    /// The same configuration and world always produce a byte-identical
+    /// [`FaultPlan`]. Generated entries are finite [`FaultPlanEntry::At`] faults
+    /// and are validated through [`FaultPlan::from_entries_for_world`] before
+    /// returning, so unsupported targets cannot escape this API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RandomFaultConfigInvalid`] when the configuration
+    /// has no legal target/kind space or its bounds are inconsistent, or any
+    /// [`FaultPlan`] validation error if the generated entries do not layer over
+    /// `world`.
+    pub fn generate_for_world(&self, world: &World) -> Result<FaultPlan, EngineError> {
+        validate_random_fault_config(self)?;
+        if self.fault_slots == 0 || self.caps.max_concurrent_faults == 0 {
+            return Ok(FaultPlan::empty());
+        }
+
+        let nodes = random_fault_nodes(world);
+        let links = random_fault_links(world);
+        let kinds =
+            eligible_random_fault_kinds(&self.weights, !nodes.is_empty(), !links.is_empty());
+        if kinds.is_empty() {
+            return Err(EngineError::RandomFaultConfigInvalid {
+                reason: "no weighted random fault kind has a valid target in the world",
+            });
+        }
+
+        let mut stream = self.seed.decision_rng().fork_in_domain(
+            RANDOM_FAULT_CONFIG_RNG_DOMAIN,
+            &random_fault_config_material(self, world),
+        );
+        let mut generated = Vec::with_capacity(self.fault_slots as usize);
+        for slot in 0..self.fault_slots {
+            let start = draw_random_fault_start(&mut stream, self)?;
+            let active_duration = draw_random_fault_duration(&mut stream, self, start)?;
+            let kind = draw_random_fault_kind(&mut stream, &kinds)?;
+            let fault = draw_random_fault(&mut stream, self, kind, &nodes, &links)?;
+            generated.push(RandomFaultCandidate {
+                order: slot,
+                start,
+                end: start.saturating_add(active_duration.nanos()),
+                kind,
+                entry: FaultPlanEntry::At {
+                    at: VirtualTime { ticks: start },
+                    duration: active_duration,
+                    tag: FaultTag::from_name(format!("random-fault-{slot:016}")),
+                    fault,
+                },
+            });
+        }
+
+        let entries = prune_random_fault_candidates(generated, self.caps)
+            .into_iter()
+            .map(|candidate| candidate.entry)
+            .collect();
+        FaultPlan::from_entries_for_world(world, entries)
+    }
+}
+
+/// Integer relative weights for each generated fault kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FaultWeights {
+    /// Weight for network partition faults.
+    pub partition: u32,
+    /// Weight for network message-loss faults.
+    pub message_loss: u32,
+    /// Weight for network reorder-window faults.
+    pub reorder: u32,
+    /// Weight for network duplicate-delivery faults.
+    pub duplicate: u32,
+    /// Weight for network corruption faults.
+    pub corruption: u32,
+    /// Weight for network bandwidth-limit faults.
+    pub bandwidth_limit: u32,
+    /// Weight for network latency-bump faults.
+    pub latency_bump: u32,
+    /// Weight for node crash faults.
+    pub crash: u32,
+    /// Weight for node slowdown faults.
+    pub slow: u32,
+    /// Weight for node clock-skew faults.
+    pub clock_skew: u32,
+    /// Weight reserved for block latency faults once world device targets exist.
+    pub block_latency: u32,
+    /// Weight reserved for block failure faults once world device targets exist.
+    pub block_failure: u32,
+    /// Weight reserved for block reorder faults once world device targets exist.
+    pub block_reorder: u32,
+    /// Weight reserved for 9p latency faults once world device targets exist.
+    pub ninep_latency: u32,
+    /// Weight reserved for 9p failure faults once world device targets exist.
+    pub ninep_failure: u32,
+}
+
+impl Default for FaultWeights {
+    fn default() -> Self {
+        Self {
+            partition: 1,
+            message_loss: 1,
+            reorder: 1,
+            duplicate: 1,
+            corruption: 1,
+            bandwidth_limit: 1,
+            latency_bump: 1,
+            crash: 1,
+            slow: 1,
+            clock_skew: 1,
+            block_latency: 0,
+            block_failure: 0,
+            block_reorder: 0,
+            ninep_latency: 0,
+            ninep_failure: 0,
+        }
+    }
+}
+
+/// Inclusive severity bounds for generated fault parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SeverityBounds {
+    /// Minimum finite active duration for generated faults.
+    pub min_duration: FaultDuration,
+    /// Maximum finite active duration for generated faults.
+    pub max_duration: FaultDuration,
+    /// Minimum basis-point rate for probabilistic generated faults.
+    pub min_rate: FaultRateBasisPoints,
+    /// Maximum basis-point rate for probabilistic generated faults.
+    pub max_rate: FaultRateBasisPoints,
+    /// Minimum latency-like duration for generated latency faults.
+    pub min_latency: FaultDuration,
+    /// Maximum latency-like duration for generated latency faults.
+    pub max_latency: FaultDuration,
+    /// Minimum reorder window for generated reorder faults.
+    pub min_reorder_window: FaultDuration,
+    /// Maximum reorder window for generated reorder faults.
+    pub max_reorder_window: FaultDuration,
+    /// Minimum duplicate gap for generated duplicate faults.
+    pub min_duplicate_gap: FaultDuration,
+    /// Maximum duplicate gap for generated duplicate faults.
+    pub max_duplicate_gap: FaultDuration,
+    /// Minimum generated bandwidth limit.
+    pub min_bandwidth: FaultBandwidthBitsPerSecond,
+    /// Maximum generated bandwidth limit.
+    pub max_bandwidth: FaultBandwidthBitsPerSecond,
+    /// Minimum generated slowdown factor.
+    pub min_slowdown: FaultSlowdownFactorBasisPoints,
+    /// Maximum generated slowdown factor.
+    pub max_slowdown: FaultSlowdownFactorBasisPoints,
+    /// Minimum generated guest-visible clock skew.
+    pub min_clock_skew: SimOffset,
+    /// Maximum generated guest-visible clock skew.
+    pub max_clock_skew: SimOffset,
+    /// Minimum generated bit-flip count.
+    pub min_corruption_bits: u32,
+    /// Maximum generated bit-flip count.
+    pub max_corruption_bits: u32,
+    /// Minimum generated truncation byte count.
+    pub min_truncation_bytes: u64,
+    /// Maximum generated truncation byte count.
+    pub max_truncation_bytes: u64,
+}
+
+impl Default for SeverityBounds {
+    fn default() -> Self {
+        Self {
+            min_duration: FaultDuration::from_nanos(1),
+            max_duration: FaultDuration::from_nanos(100),
+            min_rate: FaultRateBasisPoints { basis_points: 1 },
+            max_rate: FaultRateBasisPoints {
+                basis_points: MAX_FAULT_RATE_BASIS_POINTS as u16,
+            },
+            min_latency: FaultDuration::from_nanos(1),
+            max_latency: FaultDuration::from_nanos(100),
+            min_reorder_window: FaultDuration::from_nanos(1),
+            max_reorder_window: FaultDuration::from_nanos(100),
+            min_duplicate_gap: FaultDuration::from_nanos(1),
+            max_duplicate_gap: FaultDuration::from_nanos(100),
+            min_bandwidth: FaultBandwidthBitsPerSecond { bits_per_second: 1 },
+            max_bandwidth: FaultBandwidthBitsPerSecond {
+                bits_per_second: 1_000_000,
+            },
+            min_slowdown: FaultSlowdownFactorBasisPoints::ONE,
+            max_slowdown: FaultSlowdownFactorBasisPoints {
+                basis_points: 20_000,
+            },
+            min_clock_skew: SimOffset { nanos: -100 },
+            max_clock_skew: SimOffset { nanos: 100 },
+            min_corruption_bits: 1,
+            max_corruption_bits: 16,
+            min_truncation_bytes: 1,
+            max_truncation_bytes: 4096,
+        }
+    }
+}
+
+/// Integer caps applied to generated fault campaigns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FaultCaps {
+    /// Maximum simultaneously active generated faults retained after pruning.
+    pub max_concurrent_faults: u32,
+    /// Maximum retained network partition faults.
+    pub max_partitions: u32,
+    /// Maximum retained node crash faults.
+    pub max_crashes: u32,
+}
+
+impl Default for FaultCaps {
+    fn default() -> Self {
+        Self {
+            max_concurrent_faults: u32::MAX,
+            max_partitions: u32::MAX,
+            max_crashes: u32::MAX,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RandomFaultCandidate {
+    order: u32,
+    start: u64,
+    end: u64,
+    kind: RandomFaultKind,
+    entry: FaultPlanEntry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RandomFaultKind {
+    Partition,
+    MessageLoss,
+    Reorder,
+    Duplicate,
+    Corruption,
+    BandwidthLimit,
+    LatencyBump,
+    Crash,
+    Slow,
+    ClockSkew,
 }
 
 /// A declarative fault plan layered over a static [`World`].
@@ -9643,6 +9905,11 @@ pub enum EngineError {
         /// The invalid errno code.
         code: i32,
     },
+    /// A random fault generator configuration has no deterministic legal campaign.
+    RandomFaultConfigInvalid {
+        /// Stable reason for the configuration rejection.
+        reason: &'static str,
+    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -9937,6 +10204,9 @@ impl fmt::Display for EngineError {
             }
             Self::NinePErrnoMustBePositive { .. } => {
                 f.write_str("9p errno must be a positive integer")
+            }
+            Self::RandomFaultConfigInvalid { reason } => {
+                write!(f, "random fault configuration is invalid: {reason}")
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
@@ -11325,23 +11595,582 @@ fn world_node_id_set(world: &World) -> BTreeSet<&NodeId> {
 }
 
 fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
-    world
-        .links
-        .iter()
-        .map(|link| {
-            let (left, right) = link.endpoints();
-            link_id_for_endpoint_pair(left, right)
-        })
+    let mut links = BTreeSet::new();
+    for link in &world.links {
+        links.insert(random_fault_link_id(link));
+        links.insert(legacy_link_id_for_world_link(link));
+    }
+    links
+}
+
+fn link_id_for_canonical_endpoint_pair(endpoint_a: &NodeId, endpoint_b: &NodeId) -> LinkId {
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.name.len(),
+        endpoint_a.name,
+        endpoint_b.name.len(),
+        endpoint_b.name
+    ))
+}
+
+fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
+    let (endpoint_a, endpoint_b) = link.endpoints();
+    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
+}
+
+fn validate_random_fault_config(config: &RandomFaultConfig) -> Result<(), EngineError> {
+    let bounds = config.bounds;
+    if config.fault_slots == 0 {
+        return Ok(());
+    }
+    if random_fault_has_device_weights(config.weights) {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "block and 9p random fault weights require world device targets",
+        });
+    }
+    if config.duration.nanos() == 0 {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "run duration must be nonzero when fault slots are requested",
+        });
+    }
+    if bounds.min_duration.nanos() == 0 {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated fault duration must be nonzero",
+        });
+    }
+    if bounds.min_duration > bounds.max_duration {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated fault duration exceeds maximum",
+        });
+    }
+    if bounds.min_duration > config.duration {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated fault duration exceeds run duration",
+        });
+    }
+    if bounds.min_rate > bounds.max_rate {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated fault rate exceeds maximum",
+        });
+    }
+    if bounds.min_latency > bounds.max_latency {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated latency exceeds maximum",
+        });
+    }
+    if bounds.min_reorder_window > bounds.max_reorder_window {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated reorder window exceeds maximum",
+        });
+    }
+    if bounds.min_duplicate_gap > bounds.max_duplicate_gap {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated duplicate gap exceeds maximum",
+        });
+    }
+    if bounds.min_bandwidth > bounds.max_bandwidth {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated bandwidth exceeds maximum",
+        });
+    }
+    if bounds.min_slowdown > bounds.max_slowdown {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated slowdown exceeds maximum",
+        });
+    }
+    if bounds.min_clock_skew > bounds.max_clock_skew {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated clock skew exceeds maximum",
+        });
+    }
+    if bounds.min_corruption_bits > bounds.max_corruption_bits {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated corruption bit count exceeds maximum",
+        });
+    }
+    if bounds.min_truncation_bytes > bounds.max_truncation_bytes {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "minimum generated truncation byte count exceeds maximum",
+        });
+    }
+    Ok(())
+}
+
+fn random_fault_has_device_weights(weights: FaultWeights) -> bool {
+    weights.block_latency != 0
+        || weights.block_failure != 0
+        || weights.block_reorder != 0
+        || weights.ninep_latency != 0
+        || weights.ninep_failure != 0
+}
+
+fn random_fault_nodes(world: &World) -> Vec<NodeId> {
+    world_participants(world)
+}
+
+fn random_fault_links(world: &World) -> Vec<LinkId> {
+    canonical_world_links(world.links())
+        .into_iter()
+        .map(|link| random_fault_link_id(&link))
         .collect()
 }
 
-fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
-    let (endpoint_a, endpoint_b) = if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
+fn random_fault_link_id(link: &LinkDef) -> LinkId {
+    LinkId::from_name(world_link_stream_name(link))
+}
+
+fn eligible_random_fault_kinds(
+    weights: &FaultWeights,
+    has_nodes: bool,
+    has_links: bool,
+) -> Vec<(RandomFaultKind, u32)> {
+    let mut kinds = Vec::new();
+    if has_links {
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::Partition, weights.partition);
+        push_weighted_random_fault_kind(
+            &mut kinds,
+            RandomFaultKind::MessageLoss,
+            weights.message_loss,
+        );
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::Reorder, weights.reorder);
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::Duplicate, weights.duplicate);
+        push_weighted_random_fault_kind(
+            &mut kinds,
+            RandomFaultKind::Corruption,
+            weights.corruption,
+        );
+        push_weighted_random_fault_kind(
+            &mut kinds,
+            RandomFaultKind::BandwidthLimit,
+            weights.bandwidth_limit,
+        );
+        push_weighted_random_fault_kind(
+            &mut kinds,
+            RandomFaultKind::LatencyBump,
+            weights.latency_bump,
+        );
+    }
+    if has_nodes {
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::Crash, weights.crash);
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::Slow, weights.slow);
+        push_weighted_random_fault_kind(&mut kinds, RandomFaultKind::ClockSkew, weights.clock_skew);
+    }
+    kinds
+}
+
+fn push_weighted_random_fault_kind(
+    kinds: &mut Vec<(RandomFaultKind, u32)>,
+    kind: RandomFaultKind,
+    weight: u32,
+) {
+    if weight != 0 {
+        kinds.push((kind, weight));
+    }
+}
+
+fn draw_random_fault_start(
+    stream: &mut DecisionStream,
+    config: &RandomFaultConfig,
+) -> Result<u64, EngineError> {
+    let max_start = config
+        .duration
+        .nanos()
+        .saturating_sub(config.bounds.min_duration.nanos());
+    draw_u64_inclusive(stream, 0, max_start)
+}
+
+fn draw_random_fault_duration(
+    stream: &mut DecisionStream,
+    config: &RandomFaultConfig,
+    start: u64,
+) -> Result<FaultDuration, EngineError> {
+    let remaining = config.duration.nanos().saturating_sub(start);
+    let max_duration = config.bounds.max_duration.nanos().min(remaining);
+    draw_fault_duration_inclusive(stream, config.bounds.min_duration.nanos(), max_duration)
+}
+
+fn draw_random_fault_kind(
+    stream: &mut DecisionStream,
+    kinds: &[(RandomFaultKind, u32)],
+) -> Result<RandomFaultKind, EngineError> {
+    let total = kinds
+        .iter()
+        .try_fold(0_u64, |sum, (_kind, weight)| {
+            sum.checked_add(u64::from(*weight))
+        })
+        .ok_or(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault weights overflowed",
+        })?;
+    let mut draw = draw_bounded_u64(stream, total)?;
+    for (kind, weight) in kinds {
+        let weight = u64::from(*weight);
+        if draw < weight {
+            return Ok(*kind);
+        }
+        draw -= weight;
+    }
+    Err(EngineError::RandomFaultConfigInvalid {
+        reason: "random fault weighted draw had no selected kind",
+    })
+}
+
+fn draw_random_fault(
+    stream: &mut DecisionStream,
+    config: &RandomFaultConfig,
+    kind: RandomFaultKind,
+    nodes: &[NodeId],
+    links: &[LinkId],
+) -> Result<Fault, EngineError> {
+    match kind {
+        RandomFaultKind::Partition => Ok(Fault::Network(NetworkFault::Partition {
+            link: draw_link_target(stream, links)?,
+            direction: draw_partition_direction(stream)?,
+        })),
+        RandomFaultKind::MessageLoss => Ok(Fault::Network(NetworkFault::Loss {
+            link: draw_link_target(stream, links)?,
+            rate: draw_fault_rate(stream, config.bounds)?,
+        })),
+        RandomFaultKind::Reorder => Ok(Fault::Network(NetworkFault::Reorder {
+            link: draw_link_target(stream, links)?,
+            window: draw_fault_duration_inclusive(
+                stream,
+                config.bounds.min_reorder_window.nanos(),
+                config.bounds.max_reorder_window.nanos(),
+            )?,
+        })),
+        RandomFaultKind::Duplicate => Ok(Fault::Network(NetworkFault::Duplicate {
+            link: draw_link_target(stream, links)?,
+            rate: draw_fault_rate(stream, config.bounds)?,
+            gap: draw_fault_duration_inclusive(
+                stream,
+                config.bounds.min_duplicate_gap.nanos(),
+                config.bounds.max_duplicate_gap.nanos(),
+            )?,
+        })),
+        RandomFaultKind::Corruption => Ok(Fault::Network(NetworkFault::Corruption {
+            link: draw_link_target(stream, links)?,
+            kind: draw_network_corruption_fault(stream, config.bounds)?,
+        })),
+        RandomFaultKind::BandwidthLimit => Ok(Fault::Network(NetworkFault::Bandwidth {
+            link: draw_link_target(stream, links)?,
+            limit: draw_bandwidth_limit(stream, config.bounds)?,
+        })),
+        RandomFaultKind::LatencyBump => Ok(Fault::Network(NetworkFault::LatencyBump {
+            link: draw_link_target(stream, links)?,
+            extra: draw_fault_duration_inclusive(
+                stream,
+                config.bounds.min_latency.nanos(),
+                config.bounds.max_latency.nanos(),
+            )?,
+        })),
+        RandomFaultKind::Crash => Ok(Fault::Node(NodeFault::Crash {
+            node: draw_node_target(stream, nodes)?,
+            restart: draw_restart_policy(stream)?,
+        })),
+        RandomFaultKind::Slow => Ok(Fault::Node(NodeFault::Slow {
+            node: draw_node_target(stream, nodes)?,
+            factor: draw_slowdown_factor(stream, config.bounds)?,
+        })),
+        RandomFaultKind::ClockSkew => Ok(Fault::Node(NodeFault::ClockSkew {
+            node: draw_node_target(stream, nodes)?,
+            offset: draw_clock_skew(stream, config.bounds)?,
+        })),
+    }
+}
+
+fn draw_node_target(stream: &mut DecisionStream, nodes: &[NodeId]) -> Result<NodeId, EngineError> {
+    let index = draw_index(stream, nodes.len())?;
+    Ok(nodes[index].clone())
+}
+
+fn draw_link_target(stream: &mut DecisionStream, links: &[LinkId]) -> Result<LinkId, EngineError> {
+    let index = draw_index(stream, links.len())?;
+    Ok(links[index].clone())
+}
+
+fn draw_index(stream: &mut DecisionStream, len: usize) -> Result<usize, EngineError> {
+    if len == 0 {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault target set is empty",
+        });
+    }
+    Ok(draw_bounded_u64(stream, len as u64)? as usize)
+}
+
+fn draw_partition_direction(
+    stream: &mut DecisionStream,
+) -> Result<PartitionDirection, EngineError> {
+    match draw_bounded_u64(stream, 3)? {
+        0 => Ok(PartitionDirection::Bidirectional),
+        1 => Ok(PartitionDirection::EndpointAToEndpointB),
+        _ => Ok(PartitionDirection::EndpointBToEndpointA),
+    }
+}
+
+fn draw_restart_policy(stream: &mut DecisionStream) -> Result<RestartPolicy, EngineError> {
+    match draw_bounded_u64(stream, 3)? {
+        0 => Ok(RestartPolicy::FromReadyPoint),
+        1 => Ok(RestartPolicy::FromLastCheckpoint),
+        _ => Ok(RestartPolicy::StayDown),
+    }
+}
+
+fn draw_network_corruption_fault(
+    stream: &mut DecisionStream,
+    bounds: SeverityBounds,
+) -> Result<NetworkCorruptionFault, EngineError> {
+    let rate = draw_fault_rate(stream, bounds)?;
+    match draw_bounded_u64(stream, 3)? {
+        0 => Ok(NetworkCorruptionFault::BitFlip {
+            rate,
+            max_bits: draw_u32_inclusive(
+                stream,
+                bounds.min_corruption_bits,
+                bounds.max_corruption_bits,
+            )?,
+        }),
+        1 => Ok(NetworkCorruptionFault::FieldMutation { rate }),
+        _ => Ok(NetworkCorruptionFault::Truncation {
+            rate,
+            max_bytes: draw_u64_inclusive(
+                stream,
+                bounds.min_truncation_bytes,
+                bounds.max_truncation_bytes,
+            )?,
+        }),
+    }
+}
+
+fn draw_fault_rate(
+    stream: &mut DecisionStream,
+    bounds: SeverityBounds,
+) -> Result<FaultRateBasisPoints, EngineError> {
+    FaultRateBasisPoints::from_basis_points(draw_u32_inclusive(
+        stream,
+        u32::from(bounds.min_rate.basis_points()),
+        u32::from(bounds.max_rate.basis_points()),
+    )?)
+}
+
+fn draw_bandwidth_limit(
+    stream: &mut DecisionStream,
+    bounds: SeverityBounds,
+) -> Result<FaultBandwidthBitsPerSecond, EngineError> {
+    FaultBandwidthBitsPerSecond::new(draw_u64_inclusive(
+        stream,
+        bounds.min_bandwidth.bits_per_second(),
+        bounds.max_bandwidth.bits_per_second(),
+    )?)
+}
+
+fn draw_slowdown_factor(
+    stream: &mut DecisionStream,
+    bounds: SeverityBounds,
+) -> Result<FaultSlowdownFactorBasisPoints, EngineError> {
+    FaultSlowdownFactorBasisPoints::from_basis_points(draw_u32_inclusive(
+        stream,
+        bounds.min_slowdown.basis_points(),
+        bounds.max_slowdown.basis_points(),
+    )?)
+}
+
+fn draw_clock_skew(
+    stream: &mut DecisionStream,
+    bounds: SeverityBounds,
+) -> Result<SimOffset, EngineError> {
+    Ok(SimOffset {
+        nanos: draw_i64_inclusive(
+            stream,
+            bounds.min_clock_skew.nanos,
+            bounds.max_clock_skew.nanos,
+        )?,
+    })
+}
+
+fn draw_fault_duration_inclusive(
+    stream: &mut DecisionStream,
+    min: u64,
+    max: u64,
+) -> Result<FaultDuration, EngineError> {
+    Ok(FaultDuration::from_nanos(draw_u64_inclusive(
+        stream, min, max,
+    )?))
+}
+
+fn draw_u32_inclusive(stream: &mut DecisionStream, min: u32, max: u32) -> Result<u32, EngineError> {
+    Ok(draw_u64_inclusive(stream, u64::from(min), u64::from(max))? as u32)
+}
+
+fn draw_u64_inclusive(stream: &mut DecisionStream, min: u64, max: u64) -> Result<u64, EngineError> {
+    if min > max {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault integer draw range is empty",
+        });
+    }
+    let span = max
+        .checked_sub(min)
+        .and_then(|delta| delta.checked_add(1))
+        .ok_or(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault integer draw range overflows",
+        })?;
+    Ok(min + draw_bounded_u64(stream, span)?)
+}
+
+fn draw_i64_inclusive(stream: &mut DecisionStream, min: i64, max: i64) -> Result<i64, EngineError> {
+    if min > max {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault signed draw range is empty",
+        });
+    }
+    let span = i128::from(max) - i128::from(min) + 1;
+    if span <= 0 || span > i128::from(u64::MAX) {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault signed draw range overflows",
+        });
+    }
+    Ok((i128::from(min) + i128::from(draw_bounded_u64(stream, span as u64)?)) as i64)
+}
+
+fn draw_bounded_u64(stream: &mut DecisionStream, upper_exclusive: u64) -> Result<u64, EngineError> {
+    if upper_exclusive == 0 {
+        return Err(EngineError::RandomFaultConfigInvalid {
+            reason: "random fault bounded draw upper bound is zero",
+        });
+    }
+    Ok(stream.next_u64() % upper_exclusive)
+}
+
+fn prune_random_fault_candidates(
+    candidates: Vec<RandomFaultCandidate>,
+    caps: FaultCaps,
+) -> Vec<RandomFaultCandidate> {
+    let mut kept = Vec::new();
+    let mut partitions = 0_u32;
+    let mut crashes = 0_u32;
+
+    for candidate in candidates {
+        if candidate.kind.is_partition() && partitions >= caps.max_partitions {
+            continue;
+        }
+        if candidate.kind.is_crash() && crashes >= caps.max_crashes {
+            continue;
+        }
+        if random_fault_candidate_exceeds_concurrency(&kept, &candidate, caps.max_concurrent_faults)
+        {
+            continue;
+        }
+        if candidate.kind.is_partition() {
+            partitions = partitions.saturating_add(1);
+        }
+        if candidate.kind.is_crash() {
+            crashes = crashes.saturating_add(1);
+        }
+        kept.push(candidate);
+    }
+    kept
+}
+
+fn random_fault_candidate_exceeds_concurrency(
+    kept: &[RandomFaultCandidate],
+    candidate: &RandomFaultCandidate,
+    cap: u32,
+) -> bool {
+    if cap == u32::MAX {
+        return false;
+    }
+    let cap = cap as usize;
+    let mut points = vec![candidate.start];
+    for retained in kept {
+        if random_fault_intervals_overlap(retained, candidate)
+            && candidate.start <= retained.start
+            && retained.start < candidate.end
+        {
+            points.push(retained.start);
+        }
+    }
+    points.into_iter().any(|point| {
+        let active_retained = kept
+            .iter()
+            .filter(|retained| retained.start <= point && point < retained.end)
+            .count();
+        active_retained.saturating_add(1) > cap
+    })
+}
+
+fn random_fault_intervals_overlap(
+    left: &RandomFaultCandidate,
+    right: &RandomFaultCandidate,
+) -> bool {
+    left.start < right.end && right.start < left.end
+}
+
+impl RandomFaultKind {
+    fn is_partition(self) -> bool {
+        matches!(self, Self::Partition)
+    }
+
+    fn is_crash(self) -> bool {
+        matches!(self, Self::Crash)
+    }
+}
+
+fn random_fault_config_material(config: &RandomFaultConfig, world: &World) -> String {
+    format!(
+        "world_ref={}\nfault_slots={}\nduration_nanos={}\n{}\n{}\n{}",
+        content_hash_hex(canonical_world_identity(world)),
+        config.fault_slots,
+        config.duration.nanos(),
+        random_fault_weights_material(config.weights),
+        random_fault_bounds_material(config.bounds),
+        seed_material(config.seed)
+    )
+}
+
+fn random_fault_weights_material(weights: FaultWeights) -> String {
+    format!(
+        "weights.partition={}\nweights.message_loss={}\nweights.reorder={}\nweights.duplicate={}\nweights.corruption={}\nweights.bandwidth_limit={}\nweights.latency_bump={}\nweights.crash={}\nweights.slow={}\nweights.clock_skew={}\nweights.block_latency={}\nweights.block_failure={}\nweights.block_reorder={}\nweights.ninep_latency={}\nweights.ninep_failure={}",
+        weights.partition,
+        weights.message_loss,
+        weights.reorder,
+        weights.duplicate,
+        weights.corruption,
+        weights.bandwidth_limit,
+        weights.latency_bump,
+        weights.crash,
+        weights.slow,
+        weights.clock_skew,
+        weights.block_latency,
+        weights.block_failure,
+        weights.block_reorder,
+        weights.ninep_latency,
+        weights.ninep_failure
+    )
+}
+
+fn random_fault_bounds_material(bounds: SeverityBounds) -> String {
+    format!(
+        "bounds.min_duration_nanos={}\nbounds.max_duration_nanos={}\nbounds.min_rate_basis_points={}\nbounds.max_rate_basis_points={}\nbounds.min_latency_nanos={}\nbounds.max_latency_nanos={}\nbounds.min_reorder_window_nanos={}\nbounds.max_reorder_window_nanos={}\nbounds.min_duplicate_gap_nanos={}\nbounds.max_duplicate_gap_nanos={}\nbounds.min_bandwidth_bits_per_second={}\nbounds.max_bandwidth_bits_per_second={}\nbounds.min_slowdown_basis_points={}\nbounds.max_slowdown_basis_points={}\nbounds.min_clock_skew_nanos={}\nbounds.max_clock_skew_nanos={}\nbounds.min_corruption_bits={}\nbounds.max_corruption_bits={}\nbounds.min_truncation_bytes={}\nbounds.max_truncation_bytes={}",
+        bounds.min_duration.nanos(),
+        bounds.max_duration.nanos(),
+        bounds.min_rate.basis_points(),
+        bounds.max_rate.basis_points(),
+        bounds.min_latency.nanos(),
+        bounds.max_latency.nanos(),
+        bounds.min_reorder_window.nanos(),
+        bounds.max_reorder_window.nanos(),
+        bounds.min_duplicate_gap.nanos(),
+        bounds.max_duplicate_gap.nanos(),
+        bounds.min_bandwidth.bits_per_second(),
+        bounds.max_bandwidth.bits_per_second(),
+        bounds.min_slowdown.basis_points(),
+        bounds.max_slowdown.basis_points(),
+        bounds.min_clock_skew.nanos,
+        bounds.max_clock_skew.nanos,
+        bounds.min_corruption_bits,
+        bounds.max_corruption_bits,
+        bounds.min_truncation_bytes,
+        bounds.max_truncation_bytes
+    )
 }
 
 fn validate_plan_heal(

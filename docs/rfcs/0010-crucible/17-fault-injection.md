@@ -1138,12 +1138,22 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   membership faults. The table is hashed into `MaterializedState` with explicit
   `BTreeMap` iteration and field writers, so resumed/forked runs preserve the
   same combined active network, node, block, and 9p lookup table.
-- [ ] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
+- [x] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
   generation (kind via integer weights, target/start/duration/severity within
   bounds, caps enforced by deterministic pruning), pure from the seed, lowering
   rates to basis points and canonically ordering before hashing; a discovered
   failure pins a concrete content-addressed def. — satisfies [FAULT-29],
   [FAULT-30]; spec §17.7; forward-ref 22.
+  Completed by `checks.crucible.phase4.randomFaultConfig`: the model layer now
+  exposes `RandomFaultConfig`, `FaultWeights`, `SeverityBounds`, and `FaultCaps`
+  and generates a validated canonical `FaultPlan` from one seeded RNG fork. The
+  generator draws start time, duration, weighted kind, target, and integer
+  severity parameters, lowers rates through `FaultRateBasisPoints`, and prunes
+  max-concurrent, partition, and crash caps deterministically in generation
+  order. Generated plans validate through the existing `FaultPlan`/`Plan`
+  content-addressing path so a random failure can be pinned as a concrete
+  `ScenarioDef`; nonzero block/9p weights are retained in the config but
+  rejected until `World` carries a device namespace to target.
 - [ ] **T-FAULT-15** Wire the fault determinism gate: a Plan of every fault kind
   run twice yields identical activation icounts, identical effects, and an
   identical decision-RNG draw sequence; a divergence localizes to the first

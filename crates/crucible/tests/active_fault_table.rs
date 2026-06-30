@@ -491,7 +491,18 @@ fn rate(basis_points: u32) -> FaultRateBasisPoints {
 }
 
 fn link_id(left: &str, right: &str) -> LinkId {
-    LinkId::from_name(format!("{left}--{right}"))
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.len(),
+        endpoint_a,
+        endpoint_b.len(),
+        endpoint_b
+    ))
 }
 
 fn network_edge(
