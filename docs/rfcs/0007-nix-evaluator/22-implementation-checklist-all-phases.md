@@ -1833,10 +1833,10 @@ alone (`M-1`/`Q-A`).
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
       offsets plus lengths, and keeps buffered relocation staging for compacted
-      temporary packs. Owned direct payload reads, metadata-only payload-window
-      validation, record scans, payload verification, and payload comparisons
-      now route through the scoped mmap row below. This is ordinary `std::fs`
-      append plus buffered validation only;
+      temporary packs. Length reads, owned direct payload reads, metadata-only
+      payload-window validation, record scans, payload verification, and
+      payload comparisons now route through the scoped mmap row below. This is
+      ordinary `std::fs` append plus buffered validation only;
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:
@@ -1894,6 +1894,9 @@ alone (`M-1`/`Q-A`).
       descriptor plus descriptor identity check, while safe `ratchet-cache`
       pack initialization, append, and tail-trim paths acquire the
       corresponding exclusive descriptor lock.
+      `ratchet-oracle::cache::PersistBlobPack::len` opens, leases, maps,
+      validates the header, and returns the mapped file length through the
+      scoped adapter.
       `ratchet-oracle::cache::PersistBlobPack::with_blob` and
       `with_mapped_blob` open, lease, map, verify, and visit payload bytes inside
       a callback so borrowed mmap bytes never escape `ratchet-oracle`'s safe
@@ -1937,8 +1940,8 @@ alone (`M-1`/`Q-A`).
       wrappers. Focused cached-expression payload, lower-level blob-pack,
       lower-level blob-index, direct artifact-read, artifact-hydration, and
       indexed parse-cache hit tests require lower-level
-      `PersistBlobPack::records`/`verify_blob`/`payload_matches` plus indexed
-      value/file reads, cache-level direct raw `read_blob`/`with_blob`,
+      `PersistBlobPack::len`/`records`/`verify_blob`/`payload_matches` plus
+      indexed value/file reads, cache-level direct raw `read_blob`/`with_blob`,
       decoded cached-expression value visits, node-linked decoded
       cached-expression value visits, trace-revalidated decoded cached-expression
       value/dependency visits, decoded parse-artifact bundle visits, raw file/parse artifact
@@ -1963,6 +1966,8 @@ alone (`M-1`/`Q-A`).
       `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`,
       `cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
+      `blob_pack_len_uses_scoped_mapped_pack`,
+      `blob_pack_len_rejects_corrupt_header_through_scoped_mapping`,
       `blob_pack_records_scans_verified_records_in_pack_order`,
       `blob_pack_borrowed_read_uses_scoped_mapped_payload`,
       `blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload`,

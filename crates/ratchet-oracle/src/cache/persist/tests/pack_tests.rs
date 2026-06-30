@@ -162,6 +162,65 @@ fn blob_pack_open_rejects_corrupt_header_without_rewriting() {
 }
 
 #[test]
+fn blob_pack_len_uses_scoped_mapped_pack() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
+    assert_eq!(
+        pack.len().expect("empty pack length reads"),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "pack length should validate through the scoped mapping"
+    );
+
+    let payload = b"payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    pack.append_blob(hash, payload).expect("blob appends");
+
+    assert_eq!(
+        pack.len().expect("appended pack length reads"),
+        PERSIST_BLOB_PACK_HEADER_LEN as u64
+            + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+            + payload.len() as u64
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        2,
+        "subsequent length reads should keep using the scoped mapping"
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
+fn blob_pack_len_rejects_corrupt_header_through_scoped_mapping() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    fs::write(&path, b"bad").expect("corrupt pack writes");
+
+    let error = pack.len().expect_err("corrupt header length errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::Format {
+            source: PersistPackFormatError::ShortPackHeader { actual: 3, .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        0,
+        "failed mapped length validation should not count as a successful mapped read"
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_appends_and_reads_verified_payloads() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");

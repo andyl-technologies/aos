@@ -188,7 +188,7 @@ fn cache_blob_pack_tail_trim_reclaims_unindexed_tail_record() {
     let trim = cache
         .trim_blob_pack_tail(PersistBlobStore::Values)
         .expect("value pack tail trims");
-    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 3);
 
     assert_eq!(trim.live_entries(), 1);
     assert_eq!(trim.bytes_before(), bytes_before);
@@ -397,7 +397,7 @@ fn cache_blob_pack_tail_trim_preserves_file_artifact_index_tail_root() {
     let trim = cache
         .trim_blob_pack_tail(PersistBlobStore::Files)
         .expect("file pack tail trim preserves artifact root");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 3);
 
     assert_eq!(trim.live_entries(), 1);
     assert_eq!(trim.bytes_before(), bytes_before);
@@ -446,7 +446,7 @@ fn cache_blob_pack_tail_trim_preserves_parse_artifact_index_tail_root() {
     let trim = cache
         .trim_blob_pack_tail(PersistBlobStore::Files)
         .expect("file pack tail trim preserves parse artifact root");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 3);
 
     assert_eq!(trim.live_entries(), 1);
     assert_eq!(trim.bytes_before(), bytes_before);

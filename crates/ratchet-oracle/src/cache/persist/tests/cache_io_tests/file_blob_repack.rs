@@ -65,7 +65,7 @@ fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
     let plan = cache
         .repack_file_blob_pack()
         .expect("file blob pack repacks");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 7);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 8);
 
     assert!(plan.reclaimable_bytes() > 0);
     assert_eq!(plan.bytes_before(), bytes_before);
@@ -434,7 +434,7 @@ fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
     let plan = cache
         .plan_blob_pack_liveness(PersistBlobStore::Files)
         .expect("file liveness plan builds");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 3);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 4);
 
     assert_eq!(
         cache
@@ -660,7 +660,7 @@ fn cache_blob_pack_repack_plan_includes_file_artifact_and_pending_roots() {
     let plan = cache
         .plan_blob_pack_repack(PersistBlobStore::Files)
         .expect("file repack plan builds");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 4);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 5);
 
     let indexed_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + indexed_payload.len() as u64;
     let file_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + file_payload.len() as u64;

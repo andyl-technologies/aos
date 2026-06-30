@@ -453,10 +453,9 @@ impl PersistBlobPack {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, or if its header is malformed.
+    /// leased, mapped, or if its header is malformed.
     pub fn len(&self) -> Result<u64, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader.len().map_err(engine_read_error_to_persist)
+        self.mapped_len_unlocked()
     }
 
     /// Returns whether the packfile has no blob records.
@@ -464,7 +463,7 @@ impl PersistBlobPack {
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, or if its header is malformed.
+    /// leased, mapped, or if its header is malformed.
     pub fn is_empty(&self) -> Result<bool, PersistBlobPackError> {
         Ok(self.len()? == BLOB_PACK_HEADER_LEN as u64)
     }
@@ -709,6 +708,25 @@ impl PersistBlobPack {
         self.mapped_read_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(engine_payload_window_to_persist(window))
+    }
+
+    fn mapped_len_unlocked(&self) -> Result<u64, PersistBlobPackError> {
+        let file = fs::File::open(&self.path).map_err(|source| PersistBlobPackError::Open {
+            path: self.path.clone(),
+            source,
+        })?;
+        let lease = BlobPackFileReadLease::new(&file)
+            .map_err(|source| engine_read_lease_error_to_persist(&self.path, source))?;
+        let pack = MappedBlobPack::map_file_with_lease(&file, &lease)
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        let pack_len = pack.len();
+        let len = u64::try_from(pack_len).map_err(|_| PersistBlobPackError::PayloadTooLarge {
+            payload_len: pack_len as u128,
+        })?;
+        #[cfg(test)]
+        self.mapped_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(len)
     }
 
     /// Maps and verifies a blob payload while returning only owned window metadata.
