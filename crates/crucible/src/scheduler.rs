@@ -26,18 +26,19 @@ use crate::node_fault::{
 };
 use crate::trigger::{
     Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
-    EventFirings, EventGraph, EventGraphState, LogLevel, ObservableEvent, ObservableEventPayload,
+    EventFirings, EventGraph, EventGraphState, HostAssertionReport, LogLevel, ObservableEvent,
+    ObservableEventPayload,
 };
 use crate::{
-    AssertionId, BackendError, BackendInput, CombinedFaults, CombinedNetworkFaults,
-    CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction,
-    ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision,
-    EventId, EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints,
-    FaultTag, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
-    PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId,
-    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldLookaheadEdge, WorldStaticTopology, step,
+    AssertionId, AssertionQuantifierKind, BackendError, BackendInput, CombinedFaults,
+    CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash,
+    ControlFaultAction, ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState,
+    DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault, FaultId,
+    FaultRateBasisPoints, FaultTag, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId,
+    NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy,
+    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
+    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -246,6 +247,8 @@ pub enum EventAttributeValue {
     Bool(bool),
     /// Unsigned integer attribute.
     U64(u64),
+    /// Wide unsigned integer attribute.
+    U128(u128),
     /// Stable string attribute.
     String(String),
     /// Raw byte attribute.
@@ -335,6 +338,15 @@ impl EventPayload {
     pub fn u64(&self, name: &str) -> Option<u64> {
         match self.attribute(name) {
             Some(EventAttributeValue::U64(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Returns a wide unsigned integer attribute by name.
+    #[must_use]
+    pub fn u128(&self, name: &str) -> Option<u128> {
+        match self.attribute(name) {
+            Some(EventAttributeValue::U128(value)) => Some(*value),
             _ => None,
         }
     }
@@ -1178,6 +1190,116 @@ pub fn coverage_fingerprint_from_event_log(entries: &[SchedulerEventLogEntry]) -
     event_log_coverage_projection(entries).content_hash()
 }
 
+/// One event-log entry retained by the assertion-proximity projection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventLogAssertionProximityProjectionEntry {
+    /// Index of the entry in the original unified event log before filtering.
+    pub raw_index: usize,
+    /// Icount-stamped location where the proximity observation occurred.
+    pub at: EventLogIcountStamp,
+    /// Closed source that emitted the proximity entry.
+    pub source: EventSource,
+    /// Assertion whose predicate produced this distance.
+    pub assertion: AssertionId,
+    /// Assertion quantifier that owns the steering obligation.
+    pub quantifier: AssertionQuantifierKind,
+    /// Non-negative structural distance; zero means satisfied.
+    pub distance: u128,
+    /// Optional node associated with the distance.
+    pub node: Option<NodeId>,
+}
+
+/// Assertion-proximity projection used by guided-search steering feedback.
+///
+/// The projection keeps every `assertion_proximity` entry in event-log order for
+/// consumers that need stream context. Its content hash is derived from the
+/// minimum distance per `(assertion, quantifier, node)` tuple, making it the
+/// deterministic per-checkpoint steering fingerprint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogAssertionProximityProjection {
+    entries: Vec<EventLogAssertionProximityProjectionEntry>,
+    content_hash: ContentHash,
+}
+
+impl EventLogAssertionProximityProjection {
+    /// Returns assertion-proximity entries in original event-log order.
+    #[must_use]
+    pub fn entries(&self) -> &[EventLogAssertionProximityProjectionEntry] {
+        &self.entries
+    }
+
+    /// Returns the deterministic assertion-proximity fingerprint.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the number of proximity entries retained by the projection.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the projection contains no proximity entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Builds the assertion-proximity projection for `entries`.
+#[must_use]
+pub fn event_log_assertion_proximity_projection(
+    entries: &[SchedulerEventLogEntry],
+) -> EventLogAssertionProximityProjection {
+    let entries = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(raw_index, entry)| event_log_assertion_proximity_entry(raw_index, entry))
+        .collect::<Vec<_>>();
+    let mut minimums = BTreeMap::new();
+    for entry in &entries {
+        let key = (
+            entry.assertion.clone(),
+            entry.quantifier,
+            entry.node.clone(),
+        );
+        match minimums.get(&key) {
+            Some(current) if assertion_proximity_entry_is_better(entry, current) => {
+                minimums.insert(key, entry.clone());
+            }
+            None => {
+                minimums.insert(key, entry.clone());
+            }
+            Some(_) => {}
+        }
+    }
+    let content_hash = if minimums.is_empty() {
+        ContentHash::default()
+    } else {
+        ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.assertion-proximity-projection.v1",
+            &minimums
+                .values()
+                .map(event_log_assertion_proximity_minimum_material)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    EventLogAssertionProximityProjection {
+        entries,
+        content_hash,
+    }
+}
+
+/// Returns the checkpoint assertion-proximity fingerprint derived from `entries`.
+#[must_use]
+pub fn assertion_proximity_fingerprint_from_event_log(
+    entries: &[SchedulerEventLogEntry],
+) -> ContentHash {
+    event_log_assertion_proximity_projection(entries).content_hash()
+}
+
 fn event_log_coverage_entry(
     raw_index: usize,
     entry: &SchedulerEventLogEntry,
@@ -1215,6 +1337,63 @@ fn event_log_coverage_entry(
         source: entry.source().clone(),
         observation,
     })
+}
+
+fn event_log_assertion_proximity_entry(
+    raw_index: usize,
+    entry: &SchedulerEventLogEntry,
+) -> Option<EventLogAssertionProximityProjectionEntry> {
+    let SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionProximity {
+        assertion,
+        quantifier,
+        distance,
+        node,
+    }) = entry.payload()
+    else {
+        return None;
+    };
+    Some(EventLogAssertionProximityProjectionEntry {
+        raw_index,
+        at: entry.time().icount.clone(),
+        source: entry.source().clone(),
+        assertion: assertion.clone(),
+        quantifier: *quantifier,
+        distance: *distance,
+        node: node.clone(),
+    })
+}
+
+fn assertion_proximity_entry_is_better(
+    candidate: &EventLogAssertionProximityProjectionEntry,
+    current: &EventLogAssertionProximityProjectionEntry,
+) -> bool {
+    candidate
+        .distance
+        .cmp(&current.distance)
+        .then_with(|| candidate.at.icount.retired.cmp(&current.at.icount.retired))
+        .then_with(|| candidate.raw_index.cmp(&current.raw_index))
+        .is_lt()
+}
+
+fn event_log_assertion_proximity_minimum_material(
+    entry: &EventLogAssertionProximityProjectionEntry,
+) -> String {
+    let node_material = match &entry.node {
+        Some(node) => format!(
+            "node=some\nnode_len={}\nnode={}",
+            node.name.len(),
+            node.name
+        ),
+        None => String::from("node=none"),
+    };
+    format!(
+        "assertion_len={}\nassertion={}\nquantifier={}\ndistance={}\n{}",
+        entry.assertion.name.len(),
+        entry.assertion.name,
+        assertion_quantifier_kind_label(entry.quantifier),
+        entry.distance,
+        node_material,
+    )
 }
 
 fn event_log_coverage_observation_material(entry: &EventLogCoverageProjectionEntry) -> String {
@@ -5091,6 +5270,34 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
             );
             EventPayload::new("coverage", attributes)
         }
+        ObservableEventPayload::AssertionProximity {
+            assertion,
+            quantifier,
+            distance,
+            node,
+        } => {
+            attributes.insert(
+                String::from("id"),
+                EventAttributeValue::String(assertion.name.clone()),
+            );
+            attributes.insert(
+                String::from("quantifier"),
+                EventAttributeValue::String(
+                    assertion_quantifier_kind_label(*quantifier).to_owned(),
+                ),
+            );
+            attributes.insert(
+                String::from("distance"),
+                EventAttributeValue::U128(*distance),
+            );
+            if let Some(node) = node {
+                attributes.insert(
+                    String::from("node"),
+                    EventAttributeValue::Node(node.clone()),
+                );
+            }
+            EventPayload::new("assertion_proximity", attributes)
+        }
         ObservableEventPayload::MemorySample {
             sample_icount,
             node,
@@ -5413,6 +5620,7 @@ fn observable_payload_icount(
             icount: *retired_icount,
         },
         ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. } => boundary_icount(at),
     }
@@ -5510,6 +5718,7 @@ fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource
         }
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::CoverageBlock { .. }
+        | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. } => EventSource::Engine,
     }
@@ -5534,6 +5743,7 @@ fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
     match observable {
         ObservableEventPayload::CoverageBlock { .. } => EventLevel::Trace,
         ObservableEventPayload::MemorySample { .. } => EventLevel::Debug,
+        ObservableEventPayload::AssertionProximity { .. } => EventLevel::Debug,
         ObservableEventPayload::ConsoleOutput { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::IoCompletion { .. }
@@ -5606,6 +5816,20 @@ fn event_level_label(level: EventLevel) -> &'static str {
     }
 }
 
+fn assertion_quantifier_kind_label(kind: AssertionQuantifierKind) -> &'static str {
+    match kind {
+        AssertionQuantifierKind::Always => "always",
+        AssertionQuantifierKind::Sometimes => "sometimes",
+        AssertionQuantifierKind::Eventually => "eventually",
+        AssertionQuantifierKind::AfterQuiescence => "after-quiescence",
+        AssertionQuantifierKind::Reachable => "reachable",
+        AssertionQuantifierKind::GuestAlways => "guest-always",
+        AssertionQuantifierKind::GuestSometimes => "guest-sometimes",
+        AssertionQuantifierKind::GuestReachable => "guest-reachable",
+        AssertionQuantifierKind::GuestUnreachable => "guest-unreachable",
+    }
+}
+
 fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
     match class {
         SchedulerEventLogClass::Causal => "causal",
@@ -5636,6 +5860,7 @@ fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> 
     match value {
         EventAttributeValue::Bool(value) => format!("{prefix}.type=bool\n{prefix}.value={value}"),
         EventAttributeValue::U64(value) => format!("{prefix}.type=u64\n{prefix}.value={value}"),
+        EventAttributeValue::U128(value) => format!("{prefix}.type=u128\n{prefix}.value={value}"),
         EventAttributeValue::String(value) => format!(
             "{prefix}.type=string\n{prefix}.len={}\n{prefix}.value={value}",
             value.len()
@@ -7533,6 +7758,33 @@ impl SingleScheduler {
             ));
         }
         self.event_log.append_entries(entries)
+    }
+
+    /// Appends assertion-proximity steering feedback to the scheduler event log.
+    ///
+    /// `report` remains a transient assertion-layer view. The persisted steering
+    /// facts are appended as typed observational `assertion_proximity` entries in
+    /// the unified log, so downstream projections read one log instead of a
+    /// parallel proximity record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
+    /// appending the event-log segment would overflow the scheduler offsets, or
+    /// when the resulting condition prefix is invalid.
+    pub fn append_assertion_proximity_events(
+        &mut self,
+        report: &HostAssertionReport,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.append_observable_events(report.proximities().iter().map(|proximity| {
+            ObservableEvent::assertion_proximity(
+                proximity.at,
+                proximity.assertion.clone(),
+                proximity.quantifier,
+                proximity.distance,
+                None,
+            )
+        }))
     }
 
     /// Appends a deterministic trigger/assertion evaluation boundary.

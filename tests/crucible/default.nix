@@ -985,6 +985,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventKindCatalogFreeze";
       taskIds = ["T-OBS-13"];
     };
+    eventLogAssertionProximity = import ./phase4-event-log-assertion-proximity.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogAssertionProximity";
+      taskIds = ["T-OBS-14"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

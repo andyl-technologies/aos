@@ -350,6 +350,26 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds an assertion-proximity steering observation.
+    #[must_use]
+    pub fn assertion_proximity(
+        at: VirtualTime,
+        assertion: AssertionId,
+        quantifier: AssertionQuantifierKind,
+        distance: u128,
+        node: Option<NodeId>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionProximity {
+                assertion,
+                quantifier,
+                distance,
+                node,
+            },
+        }
+    }
+
     /// Builds a deterministic memory/register sample observation.
     #[must_use]
     pub fn memory_sample(
@@ -515,6 +535,17 @@ pub enum ObservableEventPayload {
         node: NodeId,
         /// Stable marker identity carried by the doorbell payload.
         marker: MarkerId,
+    },
+    /// An assertion-proximity distance became visible as steering-only feedback.
+    AssertionProximity {
+        /// Assertion whose predicate produced this distance.
+        assertion: AssertionId,
+        /// Assertion quantifier that owns the steering obligation.
+        quantifier: AssertionQuantifierKind,
+        /// Non-negative structural distance; zero means satisfied.
+        distance: u128,
+        /// Optional node associated with the distance.
+        node: Option<NodeId>,
     },
     /// A deterministic guest memory or register sample became visible.
     MemorySample {
@@ -3931,7 +3962,8 @@ fn observable_event_violation_site(
         | ObservableEventPayload::NodeState { node, .. } => Some((None, Some(node.clone()))),
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
-        | ObservableEventPayload::AssertionEvaluated { .. } => None,
+        | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::AssertionProximity { .. } => None,
     }
 }
 
@@ -4339,7 +4371,8 @@ fn guest_marker_event_matches_policies(
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
-        | ObservableEventPayload::AssertionEvaluated { .. } => false,
+        | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::AssertionProximity { .. } => false,
     }
 }
 
@@ -4625,6 +4658,10 @@ fn external_event_attribute_value_material(prefix: &str, value: &EventAttributeV
         EventAttributeValue::U64(value) => {
             lines.push(format!("{prefix}.type=u64"));
             lines.push(format!("{prefix}.u64={value}"));
+        }
+        EventAttributeValue::U128(value) => {
+            lines.push(format!("{prefix}.type=u128"));
+            lines.push(format!("{prefix}.u128={value}"));
         }
         EventAttributeValue::String(value) => {
             lines.push(format!("{prefix}.type=string"));
@@ -4956,6 +4993,24 @@ fn external_observable_event_payload_material(observable: &ObservableEventPayloa
                     &detail.value,
                 ));
             }
+        }
+        ObservableEventPayload::AssertionProximity {
+            assertion,
+            quantifier,
+            distance,
+            node,
+        } => {
+            lines.push(String::from("observable=assertion-proximity"));
+            lines.push(external_assertion_id_material(
+                "observable.assertion",
+                assertion,
+            ));
+            lines.push(format!(
+                "observable.quantifier={}",
+                external_assertion_quantifier_label(*quantifier)
+            ));
+            lines.push(format!("observable.distance={distance}"));
+            lines.push(external_optional_node_id_material("observable.node", node));
         }
         ObservableEventPayload::GuestMarker {
             retired_icount,
@@ -5300,6 +5355,16 @@ fn external_optional_link_material(prefix: &str, link: &Option<LinkId>) -> Strin
         Some(link) => format!(
             "{prefix}.present=true\n{}",
             external_link_id_material(prefix, link)
+        ),
+        None => format!("{prefix}.present=false"),
+    }
+}
+
+fn external_optional_node_id_material(prefix: &str, node: &Option<NodeId>) -> String {
+    match node {
+        Some(node) => format!(
+            "{prefix}.present=true\n{}",
+            external_node_id_material(prefix, node)
         ),
         None => format!("{prefix}.present=false"),
     }
@@ -6540,7 +6605,8 @@ where
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
-        | ObservableEventPayload::AssertionEvaluated { .. } => false,
+        | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::AssertionProximity { .. } => false,
     }
 }
 

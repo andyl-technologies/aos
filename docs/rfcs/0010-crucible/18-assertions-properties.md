@@ -1063,5 +1063,5 @@ verdict; it only shapes the next schedule the search tries.
   emitted only for unsatisfied `Sometimes`, armed unsatisfied `Eventually`, and
   expected-reachable properties that never reached. The regression tests compare
   online and offline reports and check that proximity does not affect assertion
-  verdicts or fingerprints; event-log `assertion_proximity` emission remains the
-  separate observational task in T-OBS-14.
+  verdicts or fingerprints; T-OBS-14 records those report projections as
+  observational `assertion_proximity` entries in the unified event log.
