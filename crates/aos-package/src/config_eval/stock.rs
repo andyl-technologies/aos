@@ -123,12 +123,23 @@ impl NixEvaluator for StockNixEvaluator {
             // the manifest is build-graph-free (frozen pkgs), so no impurity is
             // reachable. See the module-level docs.
             .args(["--option", "restrict-eval", "true"])
-            .args(["--option", "allow-import-from-derivation", "false"])
-            .arg("-I")
-            .arg(&self.root)
-            .arg("-f")
-            .arg(&entry)
-            .arg("manifest");
+            .args(["--option", "allow-import-from-derivation", "false"]);
+
+        // Every path `entry.nix` imports must be an allowed restrict-eval root,
+        // otherwise the import faults with "access to path … is forbidden in
+        // restricted mode". The eval root holds `entry.nix`; the base-lib, the
+        // verified `host.nix`, and each provider's config-output are imported by
+        // store path and so must each be added as an `-I` root.
+        cmd.arg("-I").arg(&self.root);
+        cmd.arg("-I").arg(attempt.base_lib);
+        cmd.arg("-I").arg(attempt.host_nix);
+        for member in attempt.working_set {
+            if let Some(config_output) = member.config_output.as_deref() {
+                cmd.arg("-I").arg(config_output);
+            }
+        }
+
+        cmd.arg("-f").arg(&entry).arg("manifest");
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
