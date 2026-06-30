@@ -149,11 +149,23 @@
         label = "protocol literal bytes";
         needle = "protocol_golden_vectors_freeze_literal_frame_bytes";
       }
+      {
+        label = "doorbell frame golden vectors";
+        needle = "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes";
+      }
+      {
+        label = "doorbell frame golden corpus";
+        needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
+      }
     ]
     ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
         label = "protocol golden vector corpus still covered";
         needle = "golden_vectors_match_canonical_codec_bytes";
+      }
+      {
+        label = "doorbell frame golden vector corpus still covered";
+        needle = "doorbell_frame_golden_vectors_match_canonical_codec_bytes";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs" pluginGateTest [

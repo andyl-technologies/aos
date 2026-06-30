@@ -347,6 +347,15 @@ Above the per-arch doorbell sits one architecture-independent binary protocol.
 This is the only format the host marker decoder understands, and it is the format
 the guest emitter (§16.6) produces. It is deliberately small and rigid.
 
+The shared ABI owner is `crucible-protocol::doorbell_frame`: the
+`WhiteboxDoorbellFrame` codec encodes and decodes the canonical frame, the
+`GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS` corpus freezes byte-exact examples,
+and `WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE` requires regenerating every
+frame vector whenever `WHITEBOX_DOORBELL_PROTOCOL_VERSION` changes. The QEMU
+plugin re-exports that protocol surface and routes app-random doorbells through
+the shared decoder, so the host-side trap path and protocol conformance gates
+observe one frame definition.
+
 - **[GHC-19]** The doorbell frame MUST be a fixed-layout binary record:
   ```text
    offset  size  field
@@ -767,10 +776,17 @@ the transport layer by construction.
   unchecked, mismatched, x86 port collision, and aarch64 reserved-immediate
   collision records as setup errors, and preserves the disabled plan that installs
   no trap so the doorbell remains inert when the channel is off.
-- [ ] **T-GHC-7** Implement the binary, versioned, length-prefixed doorbell frame
+- [x] **T-GHC-7** Implement the binary, versioned, length-prefixed doorbell frame
   format (magic/version/kind/len/payload, little-endian, length-prefixed strings),
   with golden vectors and a versioning rule. — satisfies [GHC-12], [GHC-19],
   [GHC-20], [GHC-21]; spec §16.5.
+  Completed by `checks.crucible.phase4.guestHostDoorbellFrame`: `crucible-protocol`
+  now owns the fixed little-endian `WhiteboxDoorbellFrame` header/body codec,
+  exports byte-exact golden frame vectors plus a regeneration rule tied to the
+  protocol version, and feeds those vectors through the ABI-conformance and
+  golden-vector tests; the QEMU plugin re-exports the same frame ABI, decodes
+  generic marker traps before recording their kind/body bytes, and maps shared
+  decode failures into its observational app-random diagnostics.
 - [ ] **T-GHC-8** Implement the closed, versioned marker-kind vocabulary
   (assert always/sometimes/reachable + dual; lifecycle setup_complete/test_done;
   event; coverage) and its mapping to event-log/assertion semantics, including the
