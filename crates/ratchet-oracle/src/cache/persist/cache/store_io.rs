@@ -472,13 +472,37 @@ impl PersistCache {
         key: PersistBlobKey,
         location: PersistBlobLocation,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
+        self.with_blob(key, location, clone_mapped_blob_payload)?
+    }
+
+    /// Visits a blob through a scoped mapped payload from the packfile selected by `key`.
+    ///
+    /// The callback receives verified borrowed bytes from the selected mapped
+    /// packfile while the selected store's advisory read lock and same-root read
+    /// lock are held. The borrowed slice cannot escape this method.
+    /// Callbacks must not re-enter cache operations that need the same store
+    /// lock, because those operations wait for this method to return.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected advisory read lock
+    /// cannot be acquired, if the same-root blob-pack read lock is poisoned, if
+    /// the selected packfile cannot be opened or mapped, if `location` is
+    /// invalid, or if record/payload hashes do not match `key.hash()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics. A panic may poison the same-root read lock that
+    /// is held while the callback runs.
+    pub fn with_blob<R>(
+        &self,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, PersistBlobPackError> {
         let (advisory_guard, _read_guard) = self.lock_blob_pack_read(key.store())?;
-        self.blob_pack(key.store()).with_mapped_blob(
-            &advisory_guard,
-            location,
-            key.hash(),
-            clone_mapped_blob_payload,
-        )?
+        self.blob_pack(key.store())
+            .with_mapped_blob(&advisory_guard, location, key.hash(), visit)
     }
 
     /// Appends a durable file-artifact mapping entry to the sidecar index.

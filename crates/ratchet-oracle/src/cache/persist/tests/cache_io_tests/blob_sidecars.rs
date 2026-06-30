@@ -79,6 +79,51 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
 }
 
 #[test]
+fn cache_blob_indexed_borrowed_read_uses_scoped_mapped_payload() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"borrowed indexed payload";
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
+    let missing_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"missing payload"),
+    );
+    cache
+        .append_blob_indexed(key, payload)
+        .expect("indexed blob appends");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    let observed_len = cache
+        .with_blob_indexed(key, |mapped| {
+            assert_eq!(mapped, payload);
+            mapped.len()
+        })
+        .expect("borrowed indexed blob read succeeds")
+        .expect("indexed blob exists");
+
+    assert_eq!(observed_len, payload.len());
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(
+        cache
+            .with_blob_indexed(missing_key, |_| panic!(
+                "indexed miss should not visit payload"
+            ))
+            .expect("indexed miss succeeds"),
+        None
+    );
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        1,
+        "indexed misses should not map the selected pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_indexed_read_waits_for_store_lock() {
     assert_blob_indexed_read_waits_for_store_lock(
         PersistBlobStore::Values,

@@ -89,13 +89,40 @@ impl PersistCache {
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
-        let Some(payload) = self.read_blob_indexed_mapped_with(key, clone_mapped_blob_payload)?
-        else {
+        let Some(payload) = self.with_blob_indexed(key, clone_mapped_blob_payload)? else {
             return Ok(None);
         };
         payload
             .map(Some)
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
+    }
+
+    /// Visits a blob through the sidecar index selected by `key`.
+    ///
+    /// Missing index entries return `Ok(None)`. Present entries are mapped and
+    /// verified while the selected store's advisory read lock and same-root read
+    /// lock are held. The callback receives borrowed packfile bytes that cannot
+    /// escape this method. Callbacks must not re-enter cache operations that
+    /// need the same store lock, because those operations wait for this method
+    /// to return.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedReadError`] if the selected advisory lock
+    /// cannot be acquired, the same-root store lock is poisoned, if the selected
+    /// index cannot be read/decoded, or if the indexed pack location cannot be
+    /// mapped and verified.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics on an indexed hit. A panic may poison the
+    /// same-root read lock that is held while the callback runs.
+    pub fn with_blob_indexed<R>(
+        &self,
+        key: PersistBlobKey,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<Option<R>, PersistBlobIndexedReadError> {
+        self.read_blob_indexed_mapped_with(key, visit)
     }
 
     fn read_blob_indexed_mapped_with<R>(

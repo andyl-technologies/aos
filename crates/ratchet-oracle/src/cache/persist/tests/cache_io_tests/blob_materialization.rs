@@ -64,6 +64,31 @@ fn cache_materialization_decision_appends_when_requested() {
 }
 
 #[test]
+fn cache_raw_blob_borrowed_read_uses_scoped_mapped_payload() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"borrowed raw payload";
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
+    let location = cache.append_blob(key, payload).expect("raw blob appends");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    let observed_len = cache
+        .with_blob(key, location, |mapped| {
+            assert_eq!(mapped, payload);
+            mapped.len()
+        })
+        .expect("borrowed raw blob reads");
+
+    assert_eq!(observed_len, payload.len());
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_append_blob_acquires_advisory_store_lock_before_same_process_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
