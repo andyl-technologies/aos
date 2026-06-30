@@ -360,33 +360,50 @@ impl TreeWalk {
         Some(())
     }
 
-    pub(super) fn captured_free_variable_slots(
+    pub(in crate::eval::tree_walk) fn captured_free_variable_slots(
         ir: &Ir,
         root: IrId,
         captured_frame_count: usize,
     ) -> Option<BTreeSet<(usize, u32)>> {
         let mut visited = BTreeSet::new();
         let mut slots = BTreeSet::new();
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if !visited.insert(id.as_u32()) {
+        let mut stack = vec![(root, 0usize)];
+        while let Some((id, nested_frame_count)) = stack.pop() {
+            if !visited.insert((id.as_u32(), nested_frame_count)) {
                 continue;
             }
             let node = ir.arena.node(id)?;
             match node.data {
                 IrData::Local { slot } => {
+                    if nested_frame_count > 0 {
+                        continue;
+                    }
                     let frame_index = captured_frame_count.checked_sub(1)?;
                     slots.insert((frame_index, slot));
                 }
                 IrData::Upval { depth, slot } => {
                     let depth = depth as usize;
-                    if depth >= captured_frame_count {
+                    if depth < nested_frame_count {
+                        continue;
+                    }
+                    let captured_depth = depth - nested_frame_count;
+                    if captured_depth >= captured_frame_count {
                         return None;
                     }
-                    slots.insert((captured_frame_count - 1 - depth, slot));
+                    slots.insert((captured_frame_count - 1 - captured_depth, slot));
                 }
-                IrData::Let { .. }
-                | IrData::Lambda { .. }
+                IrData::Let { bindings, body, .. } => {
+                    let nested_frame_count = nested_frame_count.checked_add(1)?;
+                    stack.push((body, nested_frame_count));
+                    Self::push_static_binding_values_with_scope(
+                        ir,
+                        bindings,
+                        nested_frame_count,
+                        &mut stack,
+                    )
+                    .then_some(())?;
+                }
+                IrData::Lambda { .. }
                 | IrData::FormalSet { .. }
                 | IrData::Formal { .. }
                 | IrData::AttrSet {
@@ -415,7 +432,13 @@ impl TreeWalk {
                 | IrData::AttrSet {
                     recursive: false, ..
                 } => {
-                    Self::push_ir_children(ir, node, &mut stack).then_some(())?;
+                    let mut children = Vec::new();
+                    Self::push_ir_children(ir, node, &mut children).then_some(())?;
+                    stack.extend(
+                        children
+                            .into_iter()
+                            .map(|child| (child, nested_frame_count)),
+                    );
                 }
             }
         }
@@ -607,6 +630,7 @@ impl TreeWalk {
                 | IrKind::Uri
                 | IrKind::Path
                 | IrKind::LocalVar
+                | IrKind::UpvalVar
                 | IrKind::List
                 | IrKind::AttrSet
                 | IrKind::Let
@@ -991,6 +1015,28 @@ impl TreeWalk {
             if let IrAttrPathSegment::Dynamic(segment) = binding.key {
                 stack.push(segment);
             }
+        }
+        true
+    }
+
+    fn push_static_binding_values_with_scope(
+        ir: &Ir,
+        bindings: IrBindingSlice,
+        nested_frame_count: usize,
+        stack: &mut Vec<(IrId, usize)>,
+    ) -> bool {
+        let start = bindings.start as usize;
+        let Some(end) = start.checked_add(bindings.len()) else {
+            return false;
+        };
+        let Some(bindings) = ir.bindings.get(start..end) else {
+            return false;
+        };
+        for binding in bindings {
+            if !matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                return false;
+            }
+            stack.push((binding.value, nested_frame_count));
         }
         true
     }

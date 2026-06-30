@@ -864,14 +864,17 @@ alone (`M-1`/`Q-A`).
       combiner, so repeated captured inline/string/path/replayable-composite
       thunks hit only when their free-variable value hashes match and miss when
       those captured values differ or their referenced position-source
-      identities differ. This deliberately skips dynamic `with`
+      identities differ. Static-key nested `let` bodies are admitted with
+      nested-frame-depth-adjusted free-variable scans, so inner locals/upvalues
+      are ignored while outer captured slots remain hashed. This deliberately skips dynamic `with`
       scopes, scoped-import globals, arbitrary non-literal lazy-element lists,
       arbitrary non-literal lazy-binding attrsets,
       position-bearing attrsets whose retained module ids cannot be resolved to
       loaded module identities, lambdas, primops,
       suspended computed/non-replayable thunk-cell captures including computed
       values not already forced in the captured slot, recursive captured alias
-      cycles, captured bodies with nested lexical-frame introducers, apply thunks
+      cycles, lambda/formal/recursive-attrset frame introducers and dynamic-key
+      nested `let` bodies, apply thunks
       and dynamic-path or unhashable-receiver select thunks, full
       strictness/escape free-variable analysis, remaining
       heap/composite value hashes, persistence, and cached/uncached harness
@@ -883,7 +886,8 @@ alone (`M-1`/`Q-A`).
       replayable-attrset thunk-cell hash tests, direct suspended computed and
       recursive alias thunk-cell skip tests, caller-level
       suspended computed capture subject-skip canary, dynamic `with`/scoped-import
-      global subject-skip canaries, lambda/recursive-attrset nested
+      global subject-skip canaries, captured static nested-let outer-capture
+      hit/miss and dynamic-key skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2 subject-skip canaries,
       synthetic static-select receiver/path/site hit/miss and

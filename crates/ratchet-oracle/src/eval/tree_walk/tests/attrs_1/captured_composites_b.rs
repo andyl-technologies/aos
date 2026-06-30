@@ -681,6 +681,242 @@ fn captured_suspended_computed_thunks_do_not_build_force_cache_subjects() {
 }
 
 #[test]
+fn captured_nested_let_body_thunks_use_outer_free_variable_hashes() {
+    let source = "let x = 1; in { a = let y = x + 2; in y + 3; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for expected_hit in [false, true] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-nested-let-body.nix",
+            source,
+            cache.clone(),
+        );
+        let root = evaluator.eval_root().expect("attrset evaluates");
+        let thunk_value = {
+            let attrs = evaluator
+                .heap()
+                .get_attrs(root)
+                .expect("attrset is heap-owned");
+            attrs.get(a).expect("a exists")
+        };
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("a is a node thunk");
+            let body = thunk.body().expect("a has a lowered nested let body");
+            let node = ir.arena.node(body).expect("nested let body exists");
+            assert!(
+                matches!(node.data, IrData::Let { .. }),
+                "fixture must exercise a nested let body"
+            );
+            let env = thunk.env().expect("a captures the outer let frame");
+            let slots = TreeWalk::captured_free_variable_slots(&ir, body, env.frames().len())
+                .expect("nested let free-variable slots collect");
+            assert_eq!(
+                slots.len(),
+                1,
+                "nested let slot scan should retain exactly the outer x capture"
+            );
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("nested let body subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "nested let subject should include exactly the outer x capture"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+            .expect("nested let body force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(6));
+        assert_eq!(evaluator.stats().cache_hits() > 0, expected_hit);
+    }
+}
+
+#[test]
+fn captured_nested_let_body_thunks_miss_when_outer_free_variables_change() {
+    let source = "let f = x: { a = let y = x + 2; in y + 3; }; in { first = f 1; second = f 5; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let first = symbol_for(&ir, b"first");
+    let second = symbol_for(&ir, b"second");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-nested-let-body-changed-capture.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let (first_thunk, second_thunk) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        (
+            attrs.get(first).expect("first exists"),
+            attrs.get(second).expect("second exists"),
+        )
+    };
+
+    let first_attrs_value = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), first_thunk)
+        .expect("first function result force succeeds");
+    let second_attrs_value = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), second_thunk)
+        .expect("second function result force succeeds");
+    let (first_a, second_a) = {
+        let first_attrs = evaluator
+            .heap()
+            .get_attrs(first_attrs_value)
+            .expect("first function result is an attrset");
+        let first_a = first_attrs.get(a).expect("first a exists");
+        let second_attrs = evaluator
+            .heap()
+            .get_attrs(second_attrs_value)
+            .expect("second function result is an attrset");
+        let second_a = second_attrs.get(a).expect("second a exists");
+        (first_a, second_a)
+    };
+    let first_subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(first_a)
+            .expect("first a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("first nested let body subject builds")
+    };
+    let second_subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(second_a)
+            .expect("second a is a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("second nested let body subject builds")
+    };
+    assert_eq!(
+        first_subject.free_var_value_hashes.len(),
+        1,
+        "first nested let subject should include exactly the outer x capture"
+    );
+    assert_eq!(
+        second_subject.free_var_value_hashes.len(),
+        1,
+        "second nested let subject should include exactly the outer x capture"
+    );
+    assert_ne!(
+        first_subject.free_var_value_hashes, second_subject.free_var_value_hashes,
+        "changed outer captures must produce distinct nested-let demand keys"
+    );
+
+    let first_forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), first_a)
+        .expect("first nested let body force succeeds");
+    let second_forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), second_a)
+        .expect("second nested let body force succeeds");
+
+    assert_eq!(first_forced.as_int(), Ok(6));
+    assert_eq!(
+        second_forced.as_int(),
+        Ok(10),
+        "changed lambda captures must not replay the first nested-let payload"
+    );
+    assert_eq!(
+        evaluator.stats().cache_hits(),
+        0,
+        "distinct nested-let capture hashes must miss in one shared runtime"
+    );
+}
+
+#[test]
+fn captured_nested_let_body_thunks_with_dynamic_binding_keys_do_not_build_force_cache_subjects() {
+    let source = "let x = 1; in { a = let y = x + 2; in y + 3; }";
+    let mut ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let y = symbol_for(&ir, b"y");
+    let dynamic_key = ir.root;
+    let nested_bindings = ir
+        .arena
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            let IrData::Let { bindings, .. } = node.data else {
+                return None;
+            };
+            ir.bindings
+                .get(bindings.start as usize..bindings.start as usize + bindings.len())?
+                .iter()
+                .any(|binding| matches!(binding.key, IrAttrPathSegment::Static(symbol) if symbol == y))
+                .then_some(bindings)
+        })
+        .expect("lowered source should contain a nested let binding for y");
+    let binding = ir
+        .bindings
+        .get_mut(nested_bindings.start as usize)
+        .expect("nested let binding exists");
+    binding.key = IrAttrPathSegment::Dynamic(dynamic_key);
+
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-nested-let-body-dynamic-key.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let body = thunk.body().expect("a has a lowered nested let body");
+        let node = ir.arena.node(body).expect("nested let body exists");
+        let IrData::Let { bindings, .. } = node.data else {
+            panic!("fixture must exercise a nested let body");
+        };
+        assert!(
+            ir.bindings
+                .get(bindings.start as usize..bindings.start as usize + bindings.len())
+                .expect("nested let bindings exist")
+                .iter()
+                .any(|binding| matches!(binding.key, IrAttrPathSegment::Dynamic(_))),
+            "fixture must exercise a lowered nested let with a dynamic binding key"
+        );
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "lowered nested lets with dynamic binding keys must not build demand keys"
+    );
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "dynamic-key nested let subjects should skip expression node allocation"
+    );
+}
+
+#[test]
 fn dynamic_with_scoped_thunks_do_not_build_force_cache_subjects() {
     let source = "with { x = 1; }; { a = x + 2; }";
     let ir = lower(source);
