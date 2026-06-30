@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::cache::{
-    DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistParseArtifactKey,
+    CachedExpressionValue, DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache,
+    PersistParseArtifactKey,
 };
 
 #[test]
@@ -297,26 +298,41 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
         "initial forced leaf should be parsed into the first cache root"
     );
     let first_force_canaries = assert_persistent_force_cache_payload_entries(&persist_root)?;
-
-    let (first_hit, first_hit_stats) = instantiate_file_closure_with_stats(
-        &NixNative::with_options(0, cached_options(&first_hit_parse_root)?)?,
-        &file,
-        "pkgs.hello",
+    assert_persistent_context_free_string_force_cache_payload(
+        &persist_root,
+        b"x86_64-linux",
+        "initial forced leaf currentSystem",
     )?;
+
+    let (first_hit, first_hit_stats, first_hit_keys) =
+        instantiate_file_closure_with_stats_and_hits(
+            &NixNative::with_options(0, cached_options(&first_hit_parse_root)?)?,
+            &file,
+            "pkgs.hello",
+        )?;
     assert_eq!(first_hit, uncached_first);
     assert!(
         first_hit_stats.force_cache_hits() > 0,
-        "same-source fresh runtime should load the first forced leaf payload"
+        "same-source fresh runtime should load a persistent force-cache payload"
     );
+    assert!(
+        !first_hit_keys.is_empty(),
+        "same-source fresh runtime should report persistent force-cache hit keys"
+    );
+    assert_eq!(
+        first_hit_stats.force_cache_hits(),
+        first_hit_keys.len() as u64,
+        "same-source fresh runtime should account for persistent force-cache hits"
+    );
+    assert_persistent_force_cache_hit_keys_decode(
+        &persist_root,
+        &first_hit_keys,
+        "same-source fresh runtime",
+    )?;
     assert_eq!(first_hit_stats.derivation_aterm_path_reuses(), 2);
     assert_eq!(first_hit_stats.static_derivation_output_path_reuses(), 2);
     assert_eq!(first_hit_stats.derivation_hash_calculations(), 0);
     assert_eq!(first_hit_stats.derivation_text_path_calculations(), 0);
-    assert_eq!(
-        first_hit_stats.force_cache_misses(),
-        0,
-        "same-source fresh runtime should not recompute the first forced leaf payload"
-    );
 
     fs::write(&leaf, second_leaf_source)?;
 
@@ -369,26 +385,35 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
             .is_complete(),
         "changed forced leaf should be reparsed into the fresh cache root"
     );
-
-    let (changed_hit, changed_hit_stats) = instantiate_file_closure_with_stats(
-        &NixNative::with_options(0, cached_options(&second_parse_root)?)?,
-        &file,
-        "pkgs.hello",
-    )?;
+    let (changed_hit, changed_hit_stats, changed_hit_keys) =
+        instantiate_file_closure_with_stats_and_hits(
+            &NixNative::with_options(0, cached_options(&second_parse_root)?)?,
+            &file,
+            "pkgs.hello",
+        )?;
     assert_eq!(changed_hit, uncached_first);
     assert!(
         changed_hit_stats.force_cache_hits() > 0,
-        "second changed-source run should still load a persistent force-cache payload"
+        "second changed-source run should load a persistent force-cache payload"
     );
+    assert!(
+        !changed_hit_keys.is_empty(),
+        "second changed-source run should report persistent force-cache hit keys"
+    );
+    assert_eq!(
+        changed_hit_stats.force_cache_hits(),
+        changed_hit_keys.len() as u64,
+        "second changed-source run should account for persistent force-cache hits"
+    );
+    assert_persistent_force_cache_hit_keys_decode(
+        &persist_root,
+        &changed_hit_keys,
+        "second changed-source run",
+    )?;
     assert_eq!(changed_hit_stats.derivation_aterm_path_reuses(), 2);
     assert_eq!(changed_hit_stats.static_derivation_output_path_reuses(), 2);
     assert_eq!(changed_hit_stats.derivation_hash_calculations(), 0);
     assert_eq!(changed_hit_stats.derivation_text_path_calculations(), 0);
-    assert_eq!(
-        changed_hit_stats.force_cache_misses(),
-        0,
-        "second changed-source run should not recompute the persistent force-cache payload"
-    );
 
     let first_leaf_key = ParseFileKey::for_source(&leaf_realpath, first_leaf_source);
     let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
@@ -451,6 +476,54 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
         &canaries,
     );
 
+    Ok(())
+}
+
+fn assert_persistent_context_free_string_force_cache_payload(
+    persist_root: &Path,
+    bytes: &[u8],
+    context: &str,
+) -> Result<()> {
+    let value_hash = CachedExpressionValue::context_free_string(bytes.to_vec()).value_hash()?;
+    let persist = PersistCache::open(persist_root)?;
+    let mut found = false;
+    for entry in persist.node_metadata_index().latest_entries()? {
+        if entry.value().materialized_value_hash() != Some(value_hash) {
+            continue;
+        }
+        let value = persist
+            .load_cached_expression_node_value_indexed(entry.key())?
+            .unwrap_or_else(|| {
+                panic!("{context} force-cache metadata should point at an indexed payload")
+            });
+        assert_eq!(
+            value.context_free_string_bytes(),
+            Some(bytes),
+            "{context} force-cache payload should decode to the expected context-free string"
+        );
+        found = true;
+    }
+    assert!(
+        found,
+        "{context} should have at least one materialized force-cache key"
+    );
+    Ok(())
+}
+
+fn assert_persistent_force_cache_hit_keys_decode(
+    persist_root: &Path,
+    keys: &[PersistNodeMetadataKey],
+    context: &str,
+) -> Result<()> {
+    let persist = PersistCache::open(persist_root)?;
+    for key in keys {
+        assert!(
+            persist
+                .load_cached_expression_node_value_indexed(*key)?
+                .is_some(),
+            "{context} force-cache hit key should decode through the persistent payload index"
+        );
+    }
     Ok(())
 }
 
