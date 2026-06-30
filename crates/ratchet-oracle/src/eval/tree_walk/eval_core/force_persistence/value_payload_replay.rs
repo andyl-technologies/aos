@@ -1,6 +1,7 @@
 //! Cached force-payload replay helpers.
 
 use super::*;
+use crate::cache::AttrPositionSourceHash;
 
 impl TreeWalk {
     pub(super) fn value_for_cached_expression_payload_for_subject(
@@ -52,8 +53,13 @@ impl TreeWalk {
         Some(Some((source, target)))
     }
 
-    fn cache_module_identity_hash_for_id(&self, module: EvalModuleId) -> Option<DurableBlake3Hash> {
-        Self::cache_module_identity_hash(self.modules.get(module.index())?)
+    fn cache_module_identity_hash_for_id(
+        &self,
+        module: EvalModuleId,
+    ) -> Option<AttrPositionSourceHash> {
+        Some(AttrPositionSourceHash::from_durable_hash(
+            Self::cache_module_identity_hash(self.modules.get(module.index())?)?,
+        ))
     }
 
     fn remap_cached_attr_position(

@@ -8,6 +8,7 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! CacheExprSourceHash -> expression/artifact identity source components
+//! AttrPositionSourceHash -> positioned-payload source provenance
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -118,6 +119,34 @@ impl CacheExprSourceHash {
     ///
     /// This constructor is for explicit low-level persistence-format
     /// boundaries and test fixtures that already own the identity preimage.
+    pub const fn from_persisted_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for positioned cached-payload source provenance.
+///
+/// This type marks the module/source identity attached to persistent
+/// position-bearing attrset payloads so they can replay binding positions only
+/// for an evaluator that proves the same source identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AttrPositionSourceHash(DurableBlake3Hash);
+
+impl AttrPositionSourceHash {
+    /// Wraps a digest computed from a tree-walk module source identity.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Wraps persisted or synthetic positioned-payload source identity bytes.
+    ///
+    /// This constructor is for explicit persistence-format boundaries and test
+    /// fixtures that already own the source-provenance preimage.
     pub const fn from_persisted_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
     }

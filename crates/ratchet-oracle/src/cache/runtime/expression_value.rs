@@ -24,7 +24,7 @@ const EMPTY_ATTRS_VALUE_HASH: ValueHash =
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedExpressionValue {
     pub(super) payload: InlineValuePayload,
-    pub(super) attr_position_source_hash: Option<DurableBlake3Hash>,
+    pub(super) attr_position_source_hash: Option<AttrPositionSourceHash>,
     value_hash: ValueHash,
 }
 
@@ -257,7 +257,10 @@ impl CachedExpressionValue {
         }
     }
 
-    pub(crate) fn with_attr_position_source_hash(mut self, source_hash: DurableBlake3Hash) -> Self {
+    pub(crate) fn with_attr_position_source_hash(
+        mut self,
+        source_hash: AttrPositionSourceHash,
+    ) -> Self {
         if self.retains_attr_positions() {
             self.attr_position_source_hash = Some(source_hash);
             self.value_hash = Self::value_hash_for_attr_position_source(&self.payload, source_hash);
@@ -265,7 +268,7 @@ impl CachedExpressionValue {
         self
     }
 
-    pub(crate) const fn attr_position_source_hash(&self) -> Option<DurableBlake3Hash> {
+    pub(crate) const fn attr_position_source_hash(&self) -> Option<AttrPositionSourceHash> {
         self.attr_position_source_hash
     }
 
@@ -312,7 +315,7 @@ impl CachedExpressionValue {
         };
         let mut out = Vec::new();
         append_payload_bytes(&mut out, ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG)?;
-        append_payload_bytes(&mut out, &source_hash.as_bytes())?;
+        append_payload_bytes(&mut out, &source_hash.as_durable_hash().as_bytes())?;
         append_payload_u128(&mut out, encoded.len() as u128)?;
         out.try_reserve_exact(encoded.len()).map_err(|_| {
             CachedExpressionValuePayloadError::PayloadAllocationFailed { len: encoded.len() }
@@ -336,7 +339,9 @@ impl CachedExpressionValue {
                 ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG,
                 "attr-position source envelope",
             )?;
-            let source_hash = DurableBlake3Hash::from_bytes(cursor.take_digest()?);
+            let source_hash = AttrPositionSourceHash::from_persisted_hash(
+                DurableBlake3Hash::from_bytes(cursor.take_digest()?),
+            );
             let len = cursor.take_len()?;
             let payload_bytes = cursor.take_bytes(len)?;
             let payload = InlineValuePayload::decode_persistent_payload(payload_bytes)?;
@@ -625,7 +630,7 @@ impl CachedExpressionValue {
 
     pub(super) fn from_payload_with_attr_position_source_hash(
         payload: InlineValuePayload,
-        source_hash: DurableBlake3Hash,
+        source_hash: AttrPositionSourceHash,
     ) -> Self {
         let value_hash = Self::value_hash_for_attr_position_source(&payload, source_hash);
         Self {
@@ -637,11 +642,11 @@ impl CachedExpressionValue {
 
     fn value_hash_for_attr_position_source(
         payload: &InlineValuePayload,
-        source_hash: DurableBlake3Hash,
+        source_hash: AttrPositionSourceHash,
     ) -> ValueHash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(ATTR_POSITION_SOURCE_PAYLOAD_ENVELOPE_TAG);
-        hasher.update(&source_hash.as_bytes());
+        hasher.update(&source_hash.as_durable_hash().as_bytes());
         hasher.update(&payload.persistent_payload_len().to_le_bytes());
         payload.update_persistent_payload_preimage(&mut hasher);
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))

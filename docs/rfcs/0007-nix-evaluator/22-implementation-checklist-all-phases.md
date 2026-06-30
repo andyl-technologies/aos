@@ -1897,6 +1897,21 @@ alone (`M-1`/`Q-A`).
       `cache::runtime`, `format_tests`, `node_metadata`, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
       coverage.
+- [x] Current positioned-payload source provenance hash boundary:
+      `AttrPositionSourceHash` now marks the module/source identity attached to
+      persistent position-bearing attrset payload envelopes. Tree-walk replay
+      preparation wraps the module identity hash only when a payload retains
+      binding positions, cached payload records keep that typed provenance
+      through in-memory observation and replay, persistent payload decoding
+      wraps envelope bytes at the format boundary, and payload value-hash and
+      wire encoders unwrap only when framing the stable
+      `attrs-position-source-v1` byte preimage. This type-enforces the current
+      position-bearing payload replay-provenance corridor only; positioned
+      capture value-hash salting, remaining generic durable hash plumbing, and
+      the full differential leak-invariant harness remain open (`S-15`). Gate:
+      `cache::runtime`, positioned payload force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4409,6 +4424,21 @@ alone (`M-1`/`Q-A`).
       open. Gate: `cache::key`, `cache::dcg`, `cache::runtime`, `format_tests`,
       `node_metadata`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
       test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current positioned-payload source provenance hash boundary:
+      `AttrPositionSourceHash` now marks the module/source identity attached to
+      persistent position-bearing attrset payload envelopes. Tree-walk replay
+      preparation wraps the module identity hash only when a payload retains
+      binding positions, cached payload records keep that typed provenance
+      through in-memory observation and replay, persistent payload decoding
+      wraps envelope bytes at the format boundary, and payload value-hash and
+      wire encoders unwrap only when framing the stable
+      `attrs-position-source-v1` byte preimage. This type-enforces the current
+      position-bearing payload replay-provenance corridor only; positioned
+      capture value-hash salting, remaining generic durable hash plumbing, and
+      the full internal-hash leak invariant remain open. Gate:
+      `cache::runtime`, positioned payload force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

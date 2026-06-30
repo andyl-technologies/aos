@@ -16,12 +16,12 @@ use super::cutoff::{
     PATH_VALUE_HASH_DOMAIN_VERSION,
 };
 use super::{
-    CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey, DemandDependencyGroup,
-    DemandGraph, DemandGraphError, DemandNodeId, DirtyFrontier, DurableBlake3Hash,
-    ImpureInputFingerprint, ImpureInputIdentity, ImpureTraceObservation, ImpureTraceStatus,
-    MemoizationDecision, MemoizationDemand, MemoizationSubject, NixSha256Digest, NodeFreshness,
-    PersistNodeMetadataKey, RecomputeReadyDirty, Reconsideration, UncacheableInput, ValueHash,
-    ValueHashError,
+    AttrPositionSourceHash, CacheExprIdentity, CacheableInputFingerprint, DemandCacheKey,
+    DemandDependencyGroup, DemandGraph, DemandGraphError, DemandNodeId, DirtyFrontier,
+    DurableBlake3Hash, ImpureInputFingerprint, ImpureInputIdentity, ImpureTraceObservation,
+    ImpureTraceStatus, MemoizationDecision, MemoizationDemand, MemoizationSubject, NixSha256Digest,
+    NodeFreshness, PersistNodeMetadataKey, RecomputeReadyDirty, Reconsideration, UncacheableInput,
+    ValueHash, ValueHashError,
 };
 use crate::attrs::AttrPosition;
 use crate::string::{ContextElement, ContextKind, NixStringError, StringContext};
@@ -440,7 +440,7 @@ pub enum CachedExpressionValuePayloadError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InlineValueRecord {
     payload: InlineValuePayload,
-    attr_position_source_hash: Option<DurableBlake3Hash>,
+    attr_position_source_hash: Option<AttrPositionSourceHash>,
     value_hash: ValueHash,
     reusable_without_revalidation: bool,
     revalidation_inputs: Option<Vec<CacheableInputFingerprint>>,
@@ -521,9 +521,9 @@ mod tests {
     use super::*;
     use crate::attrs::AttrPosition;
     use crate::cache::{
-        CacheExprSourceHash, CutoffDecision, DemandCacheKey, ImpureTraceStatus,
-        MemoizationDecision, MemoizationDemand, MemoizationSubject, NodeFreshness,
-        UncacheableInput,
+        AttrPositionSourceHash, CacheExprSourceHash, CutoffDecision, DemandCacheKey,
+        ImpureTraceStatus, MemoizationDecision, MemoizationDemand, MemoizationSubject,
+        NodeFreshness, UncacheableInput,
     };
     use crate::compile::IrId;
     use crate::string::{ContextElement, StringContext};

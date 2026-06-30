@@ -672,7 +672,9 @@ fn attr_position_source_envelope_reports_persistent_payload_length() {
         CachedExpressionValue::immediate(Value::int(1)).expect("int payload builds"),
     )])
     .expect("positioned attrs payload builds")
-    .with_attr_position_source_hash(DurableBlake3Hash::for_bytes(b"source"));
+    .with_attr_position_source_hash(AttrPositionSourceHash::from_persisted_hash(
+        DurableBlake3Hash::for_bytes(b"source"),
+    ));
     let encoded = payload
         .encode_persistent_payload()
         .expect("position-source payload encodes");
@@ -694,7 +696,8 @@ fn attr_position_source_envelope_reports_persistent_payload_length() {
 
 #[test]
 fn attr_position_source_envelope_decode_preserves_cached_value_hash() {
-    let source_hash = DurableBlake3Hash::for_bytes(b"source");
+    let source_hash =
+        AttrPositionSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(b"source"));
     let payload = CachedExpressionValue::positioned_attrs(vec![(
         b"a".to_vec(),
         Some(AttrPosition::new(0, Span::new(4, 5))),
@@ -766,7 +769,8 @@ fn inline_payload_records_replay_cached_value_hashes() {
 fn inline_payload_records_replay_attr_position_source_value_hashes() {
     let mut cache = EvalCache::new();
     let identity = identity(b"source", 8);
-    let source_hash = DurableBlake3Hash::for_bytes(b"source");
+    let source_hash =
+        AttrPositionSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(b"source"));
     let payload = CachedExpressionValue::positioned_attrs(vec![(
         b"a".to_vec(),
         Some(AttrPosition::new(0, Span::new(4, 5))),
