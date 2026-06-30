@@ -1896,14 +1896,19 @@ alone (`M-1`/`Q-A`).
       maps, verifies, and decodes a payload inside a callback so borrowed mmap
       bytes never escape `ratchet-oracle`'s safe API.
       `PersistCache::read_blob_indexed` clones owned bytes through that scoped
-      mapped callback, and `load_cached_expression_value_indexed`,
-      `hydrate_file_artifact_bundle_from_index`, and
-      `hydrate_parse_artifact_bundle_from_index` decode through the same path
-      under the existing shared value/files and mapping advisory locks. Focused
-      cached-expression payload and lower-level blob-index tests require indexed
-      value/file reads to enter the scoped mapped adapter, hold the selected store
-      advisory lock, and reject corrupt value-pack payloads. Direct raw
-      `read_blob`, entry-shaped artifact hydration, pack scans,
+      mapped callback; `load_cached_expression_value_indexed`,
+      direct/keyed/entry-shaped file-artifact hydration, and
+      direct/keyed/entry-shaped parse-artifact hydration decode through the same
+      path under the existing shared value/files store advisory locks. Indexed
+      file/parse artifact lookup hydration also holds the matching
+      artifact-mapping advisory lock across sidecar lookup and mapped `files/`
+      decode. Focused cached-expression payload, lower-level blob-index, and
+      artifact-hydration tests require indexed value/file reads plus
+      direct/keyed/entry-shaped/indexed artifact hydration to enter the scoped
+      mapped adapter, hold the selected store advisory lock, reject corrupt
+      value-pack payloads, and fail key mismatches before taking the files store
+      lock. Direct raw `read_blob`,
+      `read_file_artifact`, `read_parse_artifact`, pack scans,
       repack/GC/maintenance, and public borrowed parse/value cache results
       remain buffered or owned. This is scoped cooperating-writer mmap
       integration only; public borrowed payload APIs, LMDB/redb offset indexes,
@@ -1912,8 +1917,13 @@ alone (`M-1`/`Q-A`).
       open (`C-13`/`R-14`). Gates include
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
-      `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`
-      and `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`.
+      `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`,
+      `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`,
+      `cache_file_artifact_hydrates_parse_entry_from_materialized_bundle`,
+      `cache_file_artifact_hydrates_parse_entry_after_key_match`,
+      `cache_parse_artifact_hydrates_parse_entry_after_key_match`,
+      `cache_file_artifact_hydrates_parse_entry_from_index_entry`, and
+      `cache_parse_artifact_hydrates_parse_entry_from_index_entry`.
 - [x] Current `ratchet-cache` blob-pack tail-trim primitive:
       `blob_pack::BlobPackAppender::trim_tail` validates the current pack
       header, rejects offsets before the fixed header or beyond the current
@@ -3336,35 +3346,35 @@ alone (`M-1`/`Q-A`).
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
       through the `files/` pack under the shared `files` store advisory lock
       plus same-root file-store lock. This is a typed buffered read helper only;
-      parse-artifact payload decoding, automatic cache-hit selection, mmap
-      reads, GC/repack, and harness proof remain open (`C-13`).
+      parse-artifact payload decoding, automatic cache-hit selection,
+      mmap-backed raw reads, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current explicit file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
-      artifact value under the shared `files` store advisory lock plus same-root
-      file-store lock, decodes the `ParseArtifactBundle` payload, validates
-      bundled metadata/schema/counts and `resolved.bin`/`symbols.bin`/`ir.bin`
-      decoder shape through `ParseArtifactBundle::validate_meta`, and writes it
-      into a caller-supplied `ParseCacheEntry` only after validation succeeds.
-      This is explicit validated hydration only; automatic cache-hit selection,
-      source/key equality proof, mmap reads, full artifact semantic validation
-      beyond existing decoders, GC/repack, and harness proof remain open
+      artifact value through the scoped mapped files-pack adapter under the
+      shared `files` store advisory lock plus same-root file-store lock, decodes
+      the `ParseArtifactBundle` payload, validates bundled metadata/schema/counts
+      and `resolved.bin`/`symbols.bin`/`ir.bin` decoder shape through
+      `ParseArtifactBundle::validate_meta`, and writes it into a caller-supplied
+      `ParseCacheEntry` only after validation succeeds. This is explicit
+      validated hydration only; automatic cache-hit selection, source/key
+      equality proof, public borrowed artifact APIs, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`).
 - [x] Current keyed file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_for_key` derives the expected
       `PersistFileArtifactKey` from the requested `ParseFileKey`/`ParseCacheKey`,
       rejects mismatches before reading the `files/` pack, and otherwise
-      delegates to validated bundle hydration. This is explicit keyed hydration
-      only; automatic cache-hit selection, full artifact semantic validation
-      beyond existing decoders, mmap reads, GC/repack, and harness proof remain open
+      delegates to scoped mapped validated bundle hydration. This is explicit
+      keyed hydration only; automatic cache-hit selection, full artifact
+      semantic validation beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`).
 - [x] Current indexed file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_from_entry` consumes a
       complete `PersistFileArtifactIndexEntry`, verifies its key against the
       requested `ParseFileKey`/`ParseCacheKey`, and delegates matching entries
-      to validated bundle hydration. This is explicit entry-shaped hydration
-      only; automatic cache-hit selection, full artifact
-      semantic validation beyond existing decoders, mmap reads, GC/repack, and
-      harness proof remain open
+      to scoped mapped validated bundle hydration. This is explicit entry-shaped
+      hydration only; automatic cache-hit selection, full artifact semantic
+      validation beyond existing decoders, GC/repack, and harness proof remain open
       (`C-13`).
 - [x] Current indexed file-artifact lookup hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle_from_index` derives the
