@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer1Injection",
   taskIds ? ["T-DET-14"],
+  dependencies ? [],
 }: let
   icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
   lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
@@ -185,7 +186,7 @@
     ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
       {
         label = "implemented canonical layer1 injection gate status";
-        needle = "name: \"gate:layer1-injection\",\n        phase: GatePhase::Phase3,\n        owner: \"crucible-device\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:layer1-injection\",\n        phase: GatePhase::Phase2,\n        owner: \"crucible-device\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
@@ -218,7 +219,11 @@
         needle = "layer1Injection = import ./phase1-layer1-injection.nix";
       }
       {
-        label = "phase3 gate uses layer1 injection check";
+        label = "phase2 gate uses layer1 injection check";
+        needle = "attrPath = \"checks.crucible.phase2.gates.layer1Injection\"";
+      }
+      {
+        label = "phase3 gate reuses layer1 injection check";
         needle = "attrPath = \"checks.crucible.phase3.gates.layer1Injection\"";
       }
       {
@@ -238,7 +243,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

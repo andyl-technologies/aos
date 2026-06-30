@@ -83,13 +83,18 @@
     }
     {
       phase = "phase2";
-      attr = "qemuInert";
-      gate = "gate:qemu-inert";
+      attr = "layer1Injection";
+      gate = "gate:layer1-injection";
     }
     {
       phase = "phase2";
       attr = "patchMicrotests";
       gate = "gate:patch-microtests";
+    }
+    {
+      phase = "phase2";
+      attr = "qemuInert";
+      gate = "gate:qemu-inert";
     }
     {
       phase = "phase2";

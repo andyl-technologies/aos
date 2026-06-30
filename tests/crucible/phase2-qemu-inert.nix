@@ -4,6 +4,7 @@
   attrPath ? "checks.crucible.phase2.gates.qemuInert",
   taskIds ? ["T-HARN-21" "T-PATCH-3"],
   patchMicrotests ? import ./phase2-patch-microtests.nix {inherit pkgs lib;},
+  dependencies ? [],
 }: let
   referenceQemu = pkgs.qemu-crucible-reference;
   patchedQemu = pkgs.qemu-crucible;
@@ -244,7 +245,7 @@ in
       pkgs.socat
       referenceQemu
       patchedQemu
-    ];
+    ] ++ dependencies;
 
     INITRAMFS = "${initramfs}/initrd.img";
     KERNEL = builtins.toString pkgs.linux;

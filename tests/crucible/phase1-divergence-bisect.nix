@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.gates.divergenceBisect",
   taskIds ? ["T-HARN-9" "T-HARN-10" "T-HARN-13" "T-DET-20" "T-EXEC-12"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -368,7 +369,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

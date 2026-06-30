@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
+  dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
   qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
@@ -258,7 +259,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

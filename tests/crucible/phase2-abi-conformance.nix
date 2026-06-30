@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.abiConformance",
   taskIds ? ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -333,7 +334,7 @@ in
       buildDeps = [
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {
