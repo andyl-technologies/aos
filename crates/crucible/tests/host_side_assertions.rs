@@ -406,17 +406,17 @@ fn host_side_assertions_report_failures_and_warnings_without_guest_cooperation()
     assert_outcome(
         report.outcomes(),
         "eventually-never-triggered",
-        HostAssertionOutcomeKind::Warning,
+        HostAssertionOutcomeKind::NeverTriggered,
     );
     assert_outcome(
         report.outcomes(),
         "reachable-warn",
-        HostAssertionOutcomeKind::Warning,
+        HostAssertionOutcomeKind::NeverReachedWarn,
     );
     assert_outcome(
         report.outcomes(),
         "reachable-fail",
-        HostAssertionOutcomeKind::Violated,
+        HostAssertionOutcomeKind::NeverReachedFail,
     );
     assert_outcome(
         report.outcomes(),
