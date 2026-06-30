@@ -313,6 +313,17 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             event.at().ticks,
             name.name
         ),
+        ObservableEventPayload::AssertionProximity {
+            assertion,
+            quantifier,
+            distance,
+            node,
+        } => format!(
+            "observable:assertion-proximity:at={}:assertion={}:quantifier={quantifier:?}:distance={distance}:node={}",
+            event.at().ticks,
+            assertion.name,
+            node.as_ref().map(|node| node.name.as_str()).unwrap_or("-"),
+        ),
         ObservableEventPayload::AssertionEvaluated {
             name,
             flavor,

@@ -108,7 +108,7 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     );
 
     assert!(
-        evaluator(20, vec![wrong_link, wrong_time, matching])
+        evaluator(20, vec![wrong_time, wrong_link, matching])
             .evaluate_assertion_condition(&condition)
     );
     let future = ObservableEvent::network_delivered(

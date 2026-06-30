@@ -160,19 +160,21 @@ pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
 pub use trigger::{
     Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationBisectionRequest, AssertionViolationDivergence,
-    AssertionViolationReplayError, AssertionViolationReplayReport, BlackBoxHostOracle, Condition,
-    ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass, ConditionEvaluator,
-    ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event, EventEvaluationKind,
-    EventEvaluationPoint, EventFiring, EventFirings, EventGraph, EventGraphBuilder,
-    EventGraphError, EventGraphEventBuilder, EventGraphState, ExternalFormalTraceExport,
-    ExternalFormalTraceExporter, FirePolicy, GuestAssertionDetail, GuestAssertionKind,
-    GuestAssertionMarker, HostAssertionEvaluator, HostAssertionHarnessLint,
-    HostAssertionHarnessLintError, HostAssertionHarnessLintViolation, HostAssertionLifecycle,
-    HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate,
-    HostAssertionProximity, HostAssertionReport, HostAssertionViolation, LintedHostAssertionOracle,
-    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
-    ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
-    PropertyLifecycleState, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    AssertionViolationReplayError, AssertionViolationReplayReport,
+    BLACK_BOX_OBSERVATION_KIND_COUNT, BLACK_BOX_OBSERVATION_KINDS, BlackBoxHostOracle,
+    BlackBoxObservationKind, Condition, ConditionEvaluation, ConditionEvaluationError,
+    ConditionEvaluationPass, ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf,
+    ConditionLeafOracle, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring,
+    EventFirings, EventGraph, EventGraphBuilder, EventGraphError, EventGraphEventBuilder,
+    EventGraphState, ExternalFormalTraceExport, ExternalFormalTraceExporter, FirePolicy,
+    GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator,
+    HostAssertionHarnessLint, HostAssertionHarnessLintError, HostAssertionHarnessLintViolation,
+    HostAssertionLifecycle, HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind,
+    HostAssertionPredicate, HostAssertionProximity, HostAssertionReport, HostAssertionViolation,
+    LintedHostAssertionOracle, LogLevel, LoweredPlanEventGraph, ObservableEvent,
+    ObservableEventPayload, ObservedFaultFact, ObservedOrderingFact, ObservedState,
+    OfflineAssertionCheckError, OfflineAssertionChecker, PropertyLifecycleState,
+    RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
     check_assertion_violation_reproduction, check_assertion_violation_reproduction_with_oracles,
     lint_host_assertion_harness_source,
 };
@@ -184,8 +186,9 @@ pub mod test_support {
 
     use crate::{
         ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, HostAssertionPredicate,
-        LintedHostAssertionOracle, ObservableEvent, SchedulerEvaluationBoundaryKind,
-        SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
+        Icount, LintedHostAssertionOracle, NodeId, ObservableEvent,
+        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+        VirtualTime,
     };
 
     /// Wraps a host assertion predicate for tests that inspect evaluator behavior.
@@ -238,6 +241,18 @@ pub mod test_support {
         entry.with_content_hash_for_test(content_hash)
     }
 
+    /// Replaces an entry's icount stamp while keeping its content hash consistent.
+    #[must_use]
+    pub fn condition_entry_with_icount_stamp_for_test(
+        entry: SchedulerEventLogEntry,
+        node: Option<NodeId>,
+        icount: Icount,
+    ) -> SchedulerEventLogEntry {
+        let mut time = entry.time().clone();
+        time.icount = crate::scheduler::EventLogIcountStamp { node, icount };
+        entry.with_time_for_test(time)
+    }
+
     /// Builds a checked condition prefix from scheduler entries for integration tests.
     ///
     /// # Errors
@@ -275,12 +290,14 @@ pub mod test_support {
         ticks: u64,
         events: Vec<ObservableEvent>,
     ) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
-        let mut entries = events
+        let mut indexed_events = events.iter().enumerate().collect::<Vec<_>>();
+        indexed_events.sort_by_key(|(index, event)| (event.at().ticks, *index));
+        let mut entries = indexed_events
             .iter()
             .enumerate()
-            .map(|(index, event)| {
+            .map(|(sequence, (_, event))| {
                 condition_observation_entry_for_test(
-                    u64::try_from(index).expect("test observable event index should fit in u64"),
+                    u64::try_from(sequence).expect("test observable event index should fit in u64"),
                     event,
                 )
             })
