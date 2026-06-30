@@ -545,6 +545,49 @@ impl PersistCache {
             .map_err(|source| PersistParseBytesIndexedLoadError::Load { source })
     }
 
+    /// Visits an indexed parse-cache hit for caller-supplied source bytes.
+    ///
+    /// This is the callback-shaped variant of
+    /// [`Self::load_parse_cache_bytes_from_index`]. It hydrates the normal
+    /// parse-cache entry from the persistent parse-artifact index, reads the hit
+    /// through [`ParseCache::load_cached_bytes`], and passes the resulting
+    /// [`CachedParse`] to `visit`. Missing parse-artifact index entries or
+    /// incomplete readbacks return `Ok(None)` without calling `visit`.
+    ///
+    /// The callback runs after the indexed artifact lookup and scoped mapped
+    /// hydration locks have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseBytesIndexedLoadError`] if the parse-artifact
+    /// index cannot be read, a matching indexed artifact cannot be hydrated, or
+    /// the hydrated parse-cache entry cannot be read back as a [`CachedParse`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics.
+    pub fn with_parse_cache_bytes_from_index<R>(
+        &self,
+        parse_cache: &ParseCache,
+        source: &[u8],
+        visit: impl FnOnce(&CachedParse) -> R,
+    ) -> Result<Option<R>, PersistParseBytesIndexedLoadError> {
+        if self
+            .hydrate_parse_cache_entry_from_parse_index(parse_cache, source)
+            .map_err(|source| PersistParseBytesIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(cached) = parse_cache
+            .load_cached_bytes(source)
+            .map_err(|source| PersistParseBytesIndexedLoadError::Load { source })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(visit(&cached)))
+    }
+
     /// Derives parse identities from source bytes and hydrates the parse cache.
     ///
     /// This source-shaped adapter derives `ParseFileKey` from `realpath` and
@@ -609,6 +652,53 @@ impl PersistCache {
         parse_cache
             .load_cached_bytes(source)
             .map_err(|source| PersistParseSourceIndexedLoadError::Load { source })
+    }
+
+    /// Visits an indexed parse-cache hit for caller-supplied source bytes.
+    ///
+    /// This is the callback-shaped variant of
+    /// [`Self::load_parse_cache_source_from_index`]. It derives both identities
+    /// from the same canonical `realpath` and `source` bytes, hydrates the
+    /// normal parse-cache entry from the persistent file-artifact index, reads
+    /// the hit through [`ParseCache::load_cached_bytes`], and passes the
+    /// resulting [`CachedParse`] to `visit`. Missing file-artifact index entries
+    /// or incomplete readbacks return `Ok(None)` without calling `visit`.
+    ///
+    /// `realpath` must already be the canonical path used for file-artifact
+    /// identity; this helper does not canonicalize or read source files. The
+    /// callback runs after the indexed artifact lookup and scoped mapped
+    /// hydration locks have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseSourceIndexedLoadError`] if the file-artifact index
+    /// cannot be read, a matching indexed artifact cannot be hydrated, or the
+    /// hydrated parse-cache entry cannot be read back as a [`CachedParse`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics.
+    pub fn with_parse_cache_source_from_index<R>(
+        &self,
+        parse_cache: &ParseCache,
+        realpath: impl AsRef<Path>,
+        source: &[u8],
+        visit: impl FnOnce(&CachedParse) -> R,
+    ) -> Result<Option<R>, PersistParseSourceIndexedLoadError> {
+        if self
+            .hydrate_parse_cache_entry_from_source_index(parse_cache, realpath, source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(cached) = parse_cache
+            .load_cached_bytes(source)
+            .map_err(|source| PersistParseSourceIndexedLoadError::Load { source })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(visit(&cached)))
     }
 
     /// Canonicalizes a source path and hydrates the matching parse-cache entry.
@@ -691,6 +781,64 @@ impl PersistCache {
         parse_cache
             .load_cached_bytes(&source)
             .map_err(|source| PersistParseFileIndexedLoadError::Load { source })
+    }
+
+    /// Canonicalizes a source path and visits an indexed parse-cache hit.
+    ///
+    /// This is the callback-shaped variant of
+    /// [`Self::load_parse_cache_file_from_index`]. It canonicalizes `path`,
+    /// reads the canonical source bytes, hydrates the normal parse-cache entry
+    /// from the persistent file-artifact index, reads the hit through
+    /// [`ParseCache::load_cached_bytes`], and passes the resulting
+    /// [`CachedParse`] to `visit`. Missing file-artifact index entries or
+    /// incomplete readbacks return `Ok(None)` without calling `visit`.
+    ///
+    /// The callback runs after the indexed artifact lookup and scoped mapped
+    /// hydration locks have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseFileIndexedLoadError`] if `path` cannot be
+    /// canonicalized, the canonical source file cannot be read, the
+    /// file-artifact index cannot be read, a matching indexed artifact cannot
+    /// be hydrated, or the hydrated parse-cache entry cannot be read back as a
+    /// [`CachedParse`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics.
+    pub fn with_parse_cache_file_from_index<R>(
+        &self,
+        parse_cache: &ParseCache,
+        path: impl AsRef<Path>,
+        visit: impl FnOnce(&CachedParse) -> R,
+    ) -> Result<Option<R>, PersistParseFileIndexedLoadError> {
+        let requested = path.as_ref();
+        let realpath = fs::canonicalize(requested).map_err(|source| {
+            PersistParseFileIndexedLoadError::CanonicalizeSource {
+                path: requested.to_path_buf(),
+                source,
+            }
+        })?;
+        let source =
+            fs::read(&realpath).map_err(|source| PersistParseFileIndexedLoadError::ReadSource {
+                path: realpath.clone(),
+                source,
+            })?;
+        if self
+            .hydrate_parse_cache_entry_from_source_index(parse_cache, &realpath, &source)
+            .map_err(|source| PersistParseFileIndexedLoadError::Hydrate { source })?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(cached) = parse_cache
+            .load_cached_bytes(&source)
+            .map_err(|source| PersistParseFileIndexedLoadError::Load { source })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(visit(&cached)))
     }
 }
 

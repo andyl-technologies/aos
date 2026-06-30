@@ -234,6 +234,91 @@ fn cache_file_index_load_returns_cached_parse_from_requested_path() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn cache_file_index_borrowed_load_visits_cached_parse_after_hydration() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let src_dir = root.join("src");
+    fs::create_dir_all(&src_dir).expect("source dir creates");
+    let source_path = src_dir.join("expr.nix");
+    let source = b"let x = 1; in x";
+    let changed_source = b"let x = 2; in x";
+    fs::write(&source_path, source).expect("source writes");
+    let realpath = fs::canonicalize(&source_path).expect("source canonicalizes");
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some(realpath.to_string_lossy().into_owned()))
+        .expect("source parses");
+    let file_key = ParseFileKey::for_source(&realpath, source);
+    let materialized = persist
+        .materialize_parse_artifact_entry_indexed(
+            &file_key,
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    let artifact_key = expected_entry.key();
+    let files_store_lock_path = persist
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Files);
+    let file_artifact_lock_path = persist.layout().file_artifact_lock_path();
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
+    let visited_key = persist
+        .with_parse_cache_file_from_index(&parse_cache, &source_path, |cached| {
+            assert!(cached.hit);
+            assert!(cached.stored);
+            assert_eq!(cached.key, parsed.key);
+            assert_eq!(cached.entry, parse_cache.entry_for_source(source));
+            assert_eq!(cached.resolved.arena.nodes(), parsed.resolved.arena.nodes());
+            let files_store_guard =
+                AdvisoryFileLock::try_lock(&files_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("file-index visitor runs after the files-store lock is released");
+            drop(files_store_guard);
+            let file_artifact_guard = AdvisoryFileLock::try_lock(
+                &file_artifact_lock_path,
+                AdvisoryFileLockMode::Exclusive,
+            )
+            .expect("file-index visitor runs after the file-artifact lock is released");
+            drop(file_artifact_guard);
+            assert_eq!(
+                persist
+                    .lookup_file_artifact(artifact_key)
+                    .expect("file-artifact lookup re-enters from visitor"),
+                Some(expected_entry.value())
+            );
+            cached.key
+        })
+        .expect("borrowed file-indexed cache load succeeds")
+        .expect("indexed file hit exists");
+
+    assert_eq!(visited_key, parsed.key);
+    assert_eq!(
+        persist.file_pack().mapped_read_count_for_tests(),
+        1,
+        "borrowed file-indexed loads should hydrate through the scoped mapped files pack"
+    );
+    fs::write(&source_path, changed_source).expect("changed source writes");
+    assert_eq!(
+        persist
+            .with_parse_cache_file_from_index(&parse_cache, &source_path, |_| {
+                panic!("file-indexed misses must not call visitors")
+            })
+            .expect("borrowed file-indexed miss succeeds"),
+        None
+    );
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn cache_file_index_load_canonicalizes_requested_path() {

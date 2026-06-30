@@ -309,6 +309,83 @@ fn cache_parse_index_load_returns_cached_parse() {
 }
 
 #[test]
+fn cache_parse_index_borrowed_load_visits_cached_parse_after_hydration() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let changed_source = b"let x = 2; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let materialized = persist
+        .materialize_parse_cache_entry_indexed(
+            parsed.key,
+            &parsed.entry,
+            MaterializationDecision::Materialize,
+        )
+        .expect("entry materializes");
+    let expected_entry = materialized
+        .index_entry()
+        .expect("entry should materialize");
+    let artifact_key = expected_entry.key();
+    let files_store_lock_path = persist
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Files);
+    let parse_artifact_lock_path = persist.layout().parse_artifact_lock_path();
+    fs::remove_dir_all(parsed.entry.dir()).expect("parse-cache entry removes");
+
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
+    let visited_key = persist
+        .with_parse_cache_bytes_from_index(&parse_cache, source, |cached| {
+            assert!(cached.hit);
+            assert!(cached.stored);
+            assert_eq!(cached.key, parsed.key);
+            assert_eq!(cached.entry, parse_cache.entry_for_source(source));
+            assert_eq!(cached.resolved.arena.nodes(), parsed.resolved.arena.nodes());
+            let files_store_guard =
+                AdvisoryFileLock::try_lock(&files_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("parse-index visitor runs after the files-store lock is released");
+            drop(files_store_guard);
+            let parse_artifact_guard = AdvisoryFileLock::try_lock(
+                &parse_artifact_lock_path,
+                AdvisoryFileLockMode::Exclusive,
+            )
+            .expect("parse-index visitor runs after the parse-artifact lock is released");
+            drop(parse_artifact_guard);
+            assert_eq!(
+                persist
+                    .lookup_parse_artifact(artifact_key)
+                    .expect("parse-artifact lookup re-enters from visitor"),
+                Some(expected_entry.value())
+            );
+            cached.key
+        })
+        .expect("borrowed parse-indexed cache load succeeds")
+        .expect("indexed parse hit exists");
+
+    assert_eq!(visited_key, parsed.key);
+    assert_eq!(
+        persist.file_pack().mapped_read_count_for_tests(),
+        1,
+        "borrowed parse-indexed loads should hydrate through the scoped mapped files pack"
+    );
+    assert_eq!(
+        persist
+            .with_parse_cache_bytes_from_index(&parse_cache, changed_source, |_| {
+                panic!("parse-indexed misses must not call visitors")
+            })
+            .expect("borrowed parse-indexed miss succeeds"),
+        None
+    );
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_parse_index_misses_when_source_bytes_change() {
     use crate::cache::parse::ParseCache;
 

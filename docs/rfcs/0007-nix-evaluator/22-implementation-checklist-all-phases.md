@@ -1919,14 +1919,20 @@ alone (`M-1`/`Q-A`).
       path under the existing shared value/files store advisory locks. Indexed
       file/parse artifact lookup hydration also holds the matching
       artifact-mapping advisory lock across sidecar lookup and mapped `files/`
-      decode. Focused cached-expression payload, lower-level blob-index, direct
-      artifact-read, and artifact-hydration tests require indexed value/file
-      reads, cache-level direct raw `read_blob`/`with_blob`,
+      decode. `PersistCache::with_parse_cache_bytes_from_index`,
+      `with_parse_cache_source_from_index`, and
+      `with_parse_cache_file_from_index` visit hydrated `CachedParse` hits after
+      indexed artifact lookup, scoped mapped hydration, and files/artifact locks
+      are released, while their load counterparts remain owned `CachedParse`
+      wrappers. Focused cached-expression payload, lower-level blob-index, direct
+      artifact-read, artifact-hydration, and indexed parse-cache hit tests
+      require indexed value/file reads, cache-level direct raw `read_blob`/`with_blob`,
       decoded cached-expression value visits, node-linked decoded
       cached-expression value visits, trace-revalidated decoded cached-expression
       value/dependency visits, decoded parse-artifact bundle visits, raw file/parse artifact
-      reads, and direct/keyed/entry-shaped/indexed artifact hydration to enter the
-      scoped mapped adapter, hold the selected store advisory lock, reject
+      reads, direct/keyed/entry-shaped/indexed artifact hydration, and indexed
+      parse-cache hit visits to enter the scoped mapped adapter, hold or release
+      the relevant store/artifact advisory locks at the public API boundary, reject
       corrupt value-pack payloads, and fail key mismatches before taking the
       files store lock. Blob-index rebuild, liveness, reachability, and
       repack-planning scan adapters also use scoped mapped metadata scans under
@@ -1935,11 +1941,10 @@ alone (`M-1`/`Q-A`).
       scoped mapped payload checks under the selected store advisory lock, and
       value/file repack apply copies relocated live records through scoped mapped
       payload checks under that same selected store advisory lock. Lower-level
-      `PersistBlobPack::read_blob` and indexed parse-cache hit results remain
-      buffered or owned. This
+      `PersistBlobPack::read_blob` remains buffered. This
       is scoped cooperating-writer mmap integration
-      only; public borrowed indexed parse-cache hit APIs, LMDB/redb offset indexes, out-of-core
-      rematerialization, cross-machine CAS-grade leases, and
+      only; LMDB/redb offset indexes, out-of-core rematerialization,
+      cross-machine CAS-grade leases, and
       cached/uncached harness proof remain open
       (`C-13`/`R-14`). Gates include
       `cache_cached_expression_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`,
@@ -1947,6 +1952,9 @@ alone (`M-1`/`Q-A`).
       `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`,
       `cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
+      `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`,
+      `cache_source_index_borrowed_load_visits_cached_parse_after_hydration`,
+      `cache_file_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_raw_blob_borrowed_read_uses_scoped_mapped_payload`,
       `cache_blob_indexed_borrowed_read_uses_scoped_mapped_payload`,
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
@@ -3473,46 +3481,51 @@ alone (`M-1`/`Q-A`).
       cooperating writers and maintenance cannot expose a split sidecar/pack
       view. This is explicit cache-level lookup hydration only; automatic
       parse-cache integration, durable hit selection, source/key equality
-      proof, public borrowed indexed parse-cache hit APIs, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain
-      open (`C-13`).
+      proof, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`).
 - [x] Current source-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_source_index` derives both
       `ParseFileKey` and `ParseCacheKey` from one caller-supplied realpath/source
       byte pair, uses the normal `ParseCache` entry path for that source, and
       delegates matching durable file-artifact mappings to validated indexed
       hydration. This is explicit source-shaped hydration only; canonical path
-      resolution, automatic parse-cache integration, durable hit selection,
-      public borrowed indexed parse-cache hit APIs, full artifact semantic validation beyond
-      existing decoders, GC/repack, and harness proof remain open (`C-13`).
+      resolution, automatic parse-cache integration, durable hit selection, full
+      artifact semantic validation beyond existing decoders, GC/repack, and
+      harness proof remain open (`C-13`).
 - [x] Current source-derived indexed parse-cache load adapter:
       `PersistCache::load_parse_cache_source_from_index` derives both source
       identities from one caller-supplied canonical realpath/source byte pair,
       hydrates the matching durable file-artifact entry into the normal
       `ParseCache` layout, then returns it through
-      `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
-      caller-driven durable hit loading only; canonical path resolution,
-      automatic evaluator/import selection, public borrowed parse-cache APIs,
-      full artifact semantic validation beyond existing decoders, GC/repack,
-      and harness proof remain open (`C-13`/`R-10`).
+      `ParseCache::load_cached_bytes` as a `CachedParse` hit;
+      `PersistCache::with_parse_cache_source_from_index` visits that hydrated
+      hit after indexed artifact lookup, scoped mapped hydration, and
+      files/file-artifact locks are released. This is explicit caller-driven
+      durable hit loading only; canonical path resolution, automatic
+      evaluator/import selection, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open
+      (`C-13`/`R-10`). Gate:
+      `cache_source_index_borrowed_load_visits_cached_parse_after_hydration`.
 - [x] Current file-derived indexed parse-cache hydration adapter:
       `PersistCache::hydrate_parse_cache_entry_from_file_index` canonicalizes a
       requested filesystem path, reads the canonical source bytes, derives the
       same source-shaped identities, and hydrates the normal `ParseCache` entry
       when the durable file-artifact index has a match. This is explicit
       file-shaped hydration only; automatic parse-cache/evaluator integration,
-      durable hit selection, public borrowed indexed parse-cache hit APIs, full artifact
-      semantic validation beyond existing decoders, GC/repack, and harness proof
-      remain open (`C-13`).
+      durable hit selection, full artifact semantic validation beyond existing
+      decoders, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current file-derived indexed parse-cache load adapter:
       `PersistCache::load_parse_cache_file_from_index` canonicalizes and reads a
       requested source file, hydrates the matching durable file-artifact entry
       into the normal `ParseCache` layout, then returns it through
-      `ParseCache::load_cached_bytes` as a `CachedParse` hit. This is explicit
-      caller-driven durable hit loading only; automatic evaluator/import
-      selection, public borrowed parse-cache APIs, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain
-      open (`C-13`/`R-10`).
+      `ParseCache::load_cached_bytes` as a `CachedParse` hit;
+      `PersistCache::with_parse_cache_file_from_index` visits that hydrated hit
+      after indexed artifact lookup, scoped mapped hydration, and
+      files/file-artifact locks are released. This is explicit caller-driven
+      durable hit loading only; automatic evaluator/import selection, full
+      artifact semantic validation beyond existing decoders, GC/repack, and
+      harness proof remain open (`C-13`/`R-10`). Gate:
+      `cache_file_index_borrowed_load_visits_cached_parse_after_hydration`.
 - [x] Current parse-keyed persistent parse-artifact index substrate:
       `PersistLayout::parse_artifact_index_path` adds
       `nodes/parse-artifacts.index`; `PersistParseArtifactKey` encodes the
@@ -3520,7 +3533,10 @@ alone (`M-1`/`Q-A`).
       `PersistCache::materialize_parse_cache_entry_indexed`,
       `PersistCache::hydrate_parse_cache_entry_from_parse_index`, and
       `PersistCache::load_parse_cache_bytes_from_index` materialize and hydrate
-      caller-supplied source bytes through this parse-artifact index.
+      caller-supplied source bytes through this parse-artifact index;
+      `PersistCache::with_parse_cache_bytes_from_index` visits hydrated
+      parse-keyed hits after indexed artifact lookup, scoped mapped hydration,
+      and files/parse-artifact locks are released.
       Materialization rejects entries whose normal parse-cache directory key
       does not match the supplied `ParseCacheKey`, and hydration validates
       bundled metadata/schema/counts plus `resolved.bin`/`symbols.bin`/`ir.bin`
@@ -3529,9 +3545,9 @@ alone (`M-1`/`Q-A`).
       parse-artifact mapping advisory locks plus the same-root locks. This is cache API
       substrate only; evaluator integration is covered by the raw native
       expression row below. Source equality proof beyond the parse-cache entry
-      directory key, public borrowed parse-cache APIs, full artifact semantic
-      validation beyond existing decoders, GC/repack, and harness proof remain open
-      (`C-13`/`C-14`/`R-10`).
+      directory key, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open (`C-13`/`C-14`/`R-10`). Gate:
+      `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`.
 - [x] Current ordinary filesystem import durable parse-cache hit selection:
       `TreeWalkOptions::set_persist_cache_root` configures an optional
       persistent cache root, and unscoped filesystem imports with a configured
@@ -3542,9 +3558,9 @@ alone (`M-1`/`Q-A`).
       the persistent root is unavailable, misses, or has stale/corrupt indexed
       artifacts. The persistent root opens lazily on the first eligible import;
       scoped imports and text-store imports still bypass this path. This is
-      evaluator import hit selection only; public borrowed parse-cache APIs,
-      full artifact semantic validation beyond existing decoders, GC/repack,
-      and harness proof remain open (`C-13`/`R-10`).
+      evaluator import hit selection only; borrowed-hit integration in the
+      evaluator import path, full artifact semantic validation beyond existing
+      decoders, GC/repack, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current ordinary filesystem import durable parse-cache writeback:
       unscoped filesystem imports with configured `parse_cache_root` and
       `persist_cache_root` now materialize successfully stored
@@ -3565,9 +3581,9 @@ alone (`M-1`/`Q-A`).
       `ParseCache::load_or_parse_bytes`, then writes successfully stored
       fallback parses to the persistent file-artifact index. Raw
       `eval_expr`/`instantiate_expr` sources do not synthesize file-artifact
-      keys. This is native file-root lookup/writeback only; public borrowed
-      parse-cache APIs, full artifact semantic validation beyond existing
-      decoders, GC/repack, and harness proof remain open
+      keys. This is native file-root lookup/writeback only; borrowed-hit
+      integration in native lowering, full artifact semantic validation beyond
+      existing decoders, GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current file-backed native root cache-off/cached closure parity canary:
       `native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure`
@@ -3592,9 +3608,9 @@ alone (`M-1`/`Q-A`).
       `eval_expr`/`instantiate_expr` sources use parse-keyed persistent
       artifacts and still do not synthesize file-artifact keys. This is raw
       native expression lookup/writeback only; source equality proof beyond
-      the parse-cache entry directory key, public borrowed parse-cache APIs,
-      full artifact semantic validation beyond existing decoders, GC/repack,
-      and harness proof remain open
+      the parse-cache entry directory key, borrowed-hit integration in native
+      lowering, full artifact semantic validation beyond existing decoders,
+      GC/repack, and harness proof remain open
       (`C-13`/`C-14`/`R-10`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
