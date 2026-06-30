@@ -98,6 +98,41 @@ each other. Each manifest-path builder (`runCommand`×12, `writeTextFile`×6,
 (the manifest never forces them). Run the cached-`frozen-pkgs.json` harness, fix
 the reported builder, re-run, until `configManifest` serialises clean.
 
+### Three artifact classes (learned from the grind)
+
+Converting builders surfaced that they are not uniform — each manifest-path
+builder falls into one of three classes, and only one is a "freeze":
+
+1. **Image-fixed** — depends on *image* config, not `host.nix` (e.g. `dbus-conf`,
+   the activate script, `packageSeedBundle`). → config-artifacts channel
+   (freeze). **4 converted + validated.**
+2. **Config-dependent** — depends on `host.nix` (e.g. `etcBasedir`, which
+   materialises octal-mode `/etc`). Must NOT be frozen — a frozen path would go
+   stale the moment `host.nix` changes `/etc`. The manifest already carries these
+   as **data** (octal `/etc` entries record `e.source`), so the artifact is
+   redundant for stage-2 and must not be referenced there.
+3. **Toplevel-only** — `kernel`, `initrd`, `toplevel`, `etcBasedir` (for the
+   gen-0 composefs). The manifest never needs them.
+
+### The eager-eval / mixed-module problem (the real Layer-2 blocker)
+
+The frozen eval forces `etcBasedir` even though `configManifest` does not
+reference it — because **AOS's module system is eager**: evaluating
+`config.system.build.configManifest` forces the whole `system.build` submodule,
+which forces every sibling (`etcBasedir`, `kernel`, `initrd`, `toplevel`, …). So
+the eval-only path cannot just "convert the builders" — it must **not define the
+toplevel-only builders at all** in the stage-2 module set.
+
+But `modules/base/build.nix` is a **mixed module**: it defines both
+`configManifest` (config) and `toplevel`/`kernel`/`initrd`/`etcBasedir`
+(toplevel). So base-lib's eval-only module set requires **splitting the mixed
+modules** into a config-producing half (in base-lib) and a toplevel-producing
+half (not in base-lib). This is the render/assemble split at the *module* level
+— the substantial remaining design work, larger than the per-builder
+conversions. Until it lands, the frozen-eval harness over-forces the toplevel
+builders; the image-fixed conversions are still correct and byte-identical, but
+full convergence needs the module split first.
+
 ## Layer 2 — original design notes
 
 Some config modules **build a derivation at eval time** for a `/etc` artifact or
