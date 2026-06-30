@@ -1816,6 +1816,7 @@ impl Error for AssertionViolationReplayError {
 pub struct HostAssertionReport {
     outcomes: Vec<HostAssertionOutcome>,
     violations: Vec<HostAssertionViolation>,
+    proximities: Vec<HostAssertionProximity>,
     verdict: AssertionRunVerdict,
 }
 
@@ -1832,11 +1833,42 @@ impl HostAssertionReport {
         &self.violations
     }
 
+    /// Returns steering-only assertion proximity projections in canonical order.
+    ///
+    /// These distances are pure projections of the retained event log. They do
+    /// not contribute to assertion outcomes, run verdicts, or reproduction
+    /// fingerprints.
+    #[must_use]
+    pub fn proximities(&self) -> &[HostAssertionProximity] {
+        &self.proximities
+    }
+
     /// Returns the assertion-layer pass/fail verdict.
     #[must_use]
     pub fn verdict(&self) -> &AssertionRunVerdict {
         &self.verdict
     }
+}
+
+/// Steering-only distance-to-satisfaction for one unsatisfied assertion.
+///
+/// A proximity record is produced only for unsatisfied liveness/existential
+/// properties whose predicates have a useful guidance signal: unsatisfied
+/// `Sometimes`, armed-but-undischarged `Eventually`, and expected-reachable
+/// properties that were never reached. The distance is the minimum value observed
+/// along the checked event-log trajectory.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HostAssertionProximity {
+    /// Assertion whose predicate produced this distance.
+    pub assertion: AssertionId,
+    /// Assertion quantifier that owns the steering obligation.
+    pub quantifier: AssertionQuantifierKind,
+    /// Non-negative structural distance; zero means the predicate was satisfied.
+    pub distance: u128,
+    /// Evaluation time where the minimum distance was observed.
+    pub at: VirtualTime,
+    /// Event-log prefix that produced the minimum distance.
+    pub event_log_offset: EventLogOffset,
 }
 
 /// Replays an assertion violation artifact and verifies bit-identical violations.
@@ -2605,9 +2637,16 @@ impl HostAssertionEvaluator {
         let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
         let violations =
             host_assertion_violations_from_outcomes(&outcomes, prefix, reproduction_artifact);
+        let mut proximities = self
+            .states
+            .iter()
+            .filter_map(HostAssertionState::proximity)
+            .collect::<Vec<_>>();
+        sort_host_assertion_proximities(&mut proximities);
         HostAssertionReport {
             outcomes,
             violations,
+            proximities,
             verdict: AssertionRunVerdict::failed(failures),
         }
     }
@@ -2622,6 +2661,7 @@ struct HostAssertionState {
     eventually_triggered: bool,
     eventually_satisfied_at: Option<VirtualTime>,
     pending_eventually: Vec<EventuallyObligation>,
+    proximity: Option<HostAssertionProximityMinimum>,
 }
 
 #[derive(Clone, Debug)]
@@ -2738,6 +2778,7 @@ impl HostAssertionState {
             eventually_triggered: false,
             eventually_satisfied_at: None,
             pending_eventually: Vec::new(),
+            proximity: None,
         }
     }
 
@@ -2791,6 +2832,40 @@ impl HostAssertionState {
         });
         self.outcome()
     }
+
+    fn observe_proximity(&mut self, prefix: &ConditionEventLogPrefix, distance: u128) {
+        let candidate = HostAssertionProximityMinimum {
+            distance,
+            at: prefix.point().at(),
+            event_log_offset: prefix.event_log_offset(),
+        };
+        let should_replace = match self.proximity.as_ref() {
+            Some(current) => candidate.is_better_than(current),
+            None => true,
+        };
+        if should_replace {
+            self.proximity = Some(candidate);
+        }
+    }
+
+    fn proximity(&self) -> Option<HostAssertionProximity> {
+        let terminal = self.terminal.as_ref()?;
+        if !property_proximity_is_reportable(
+            &self.assertion.property,
+            terminal.kind,
+            self.eventually_triggered,
+        ) {
+            return None;
+        }
+        let minimum = self.proximity.as_ref()?;
+        Some(HostAssertionProximity {
+            assertion: self.assertion.id.clone(),
+            quantifier: property_quantifier_kind(&self.assertion.property),
+            distance: minimum.distance,
+            at: minimum.at,
+            event_log_offset: minimum.event_log_offset,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2800,6 +2875,32 @@ struct HostAssertionTerminal {
     at: VirtualTime,
     reason: String,
     evidence: Option<HostAssertionViolationEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HostAssertionProximityMinimum {
+    distance: u128,
+    at: VirtualTime,
+    event_log_offset: EventLogOffset,
+}
+
+impl HostAssertionProximityMinimum {
+    fn is_better_than(&self, current: &Self) -> bool {
+        self.distance
+            .cmp(&current.distance)
+            .then_with(|| self.at.ticks.cmp(&current.at.ticks))
+            .then_with(|| {
+                self.event_log_offset
+                    .events
+                    .cmp(&current.event_log_offset.events)
+            })
+            .then_with(|| {
+                self.event_log_offset
+                    .bytes
+                    .cmp(&current.event_log_offset.bytes)
+            })
+            .is_lt()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2851,8 +2952,25 @@ where
         Property::Sometimes { predicate } => {
             state.evaluated = true;
             state.lifecycle = PropertyLifecycleState::Passing;
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
-            {
+            let mut leaf_cache = HostConditionEvaluationCache::new();
+            let satisfied = host_condition_is_true_with_cache(
+                prefix,
+                &predicate,
+                oracle,
+                once_latches,
+                &mut leaf_cache,
+                white_box_policies,
+            );
+            let distance = host_condition_distance_to_satisfaction(
+                prefix,
+                &predicate,
+                oracle,
+                once_latches,
+                &mut leaf_cache,
+                white_box_policies,
+            );
+            state.observe_proximity(prefix, distance);
+            if satisfied {
                 state.terminal(
                     HostAssertionOutcomeKind::Satisfied,
                     at,
@@ -2956,7 +3074,7 @@ where
         });
     }
 
-    if !state.pending_eventually.is_empty()
+    let property_satisfied = !state.pending_eventually.is_empty()
         && host_condition_is_true_with_cache(
             prefix,
             property,
@@ -2964,8 +3082,19 @@ where
             once_latches,
             leaf_cache,
             white_box_policies,
-        )
-    {
+        );
+    if !state.pending_eventually.is_empty() {
+        let distance = host_condition_distance_to_satisfaction(
+            prefix,
+            property,
+            oracle,
+            once_latches,
+            leaf_cache,
+            white_box_policies,
+        );
+        state.observe_proximity(prefix, distance);
+    }
+    if property_satisfied {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
         state.lifecycle = PropertyLifecycleState::Satisfied;
@@ -3014,12 +3143,29 @@ where
     };
     let at = prefix.point().at();
     state.lifecycle = PropertyLifecycleState::Failing;
-    if host_condition_is_true(prefix, &property, oracle, once_latches, white_box_policies) {
+    let mut leaf_cache = HostConditionEvaluationCache::new();
+    if host_condition_is_true_with_cache(
+        prefix,
+        &property,
+        oracle,
+        once_latches,
+        &mut leaf_cache,
+        white_box_policies,
+    ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
         state.lifecycle = PropertyLifecycleState::Satisfied;
         return None;
     }
+    let distance = host_condition_distance_to_satisfaction(
+        prefix,
+        &property,
+        oracle,
+        once_latches,
+        &mut leaf_cache,
+        white_box_policies,
+    );
+    state.observe_proximity(prefix, distance);
 
     let Some(expired) = state
         .pending_eventually
@@ -3059,8 +3205,26 @@ where
 {
     state.evaluated = true;
     state.lifecycle = PropertyLifecycleState::Passing;
-    let reached =
-        host_condition_is_true(prefix, predicate, oracle, once_latches, white_box_policies);
+    let mut leaf_cache = HostConditionEvaluationCache::new();
+    let reached = host_condition_is_true_with_cache(
+        prefix,
+        predicate,
+        oracle,
+        once_latches,
+        &mut leaf_cache,
+        white_box_policies,
+    );
+    if matches!(expectation, ReachabilityExpectation::Reachable { .. }) {
+        let distance = host_condition_distance_to_satisfaction(
+            prefix,
+            predicate,
+            oracle,
+            once_latches,
+            &mut leaf_cache,
+            white_box_policies,
+        );
+        state.observe_proximity(prefix, distance);
+    }
     match (expectation, reached) {
         (ReachabilityExpectation::Reachable { .. }, true) => state.terminal(
             HostAssertionOutcomeKind::Satisfied,
@@ -5185,6 +5349,26 @@ fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
     });
 }
 
+fn sort_host_assertion_proximities(proximities: &mut [HostAssertionProximity]) {
+    proximities.sort_by(|left, right| {
+        left.assertion
+            .cmp(&right.assertion)
+            .then_with(|| left.quantifier.cmp(&right.quantifier))
+            .then_with(|| left.distance.cmp(&right.distance))
+            .then_with(|| left.at.cmp(&right.at))
+            .then_with(|| {
+                left.event_log_offset
+                    .events
+                    .cmp(&right.event_log_offset.events)
+            })
+            .then_with(|| {
+                left.event_log_offset
+                    .bytes
+                    .cmp(&right.event_log_offset.bytes)
+            })
+    });
+}
+
 fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> PropertyLifecycleState {
     match kind {
         HostAssertionOutcomeKind::Passed
@@ -5339,6 +5523,186 @@ where
         white_box_policies,
     };
     evaluate_condition(&mut evaluator, condition)
+}
+
+const ASSERTION_PROXIMITY_UNIT: u128 = 1;
+const ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC: u128 = u128::MAX;
+
+fn property_proximity_is_reportable(
+    property: &Property,
+    terminal_kind: HostAssertionOutcomeKind,
+    eventually_triggered: bool,
+) -> bool {
+    match property {
+        Property::Sometimes { .. } => terminal_kind == HostAssertionOutcomeKind::Violated,
+        Property::Eventually { .. } => {
+            eventually_triggered && terminal_kind == HostAssertionOutcomeKind::Violated
+        }
+        Property::Reachable {
+            expectation: ReachabilityExpectation::Reachable { .. },
+            ..
+        } => matches!(
+            terminal_kind,
+            HostAssertionOutcomeKind::NeverReachedWarn | HostAssertionOutcomeKind::NeverReachedFail
+        ),
+        Property::Always { .. }
+        | Property::AfterQuiescence { .. }
+        | Property::Reachable {
+            expectation: ReachabilityExpectation::Unreachable,
+            ..
+        } => false,
+    }
+}
+
+fn host_condition_distance_to_satisfaction<O>(
+    prefix: &ConditionEventLogPrefix,
+    condition: &Condition,
+    oracle: &mut O,
+    once_latches: &[Condition],
+    leaf_cache: &mut HostConditionEvaluationCache,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+) -> u128
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let mut local_once_latches = once_latches.to_vec();
+    let mut evaluator = HostConditionEvaluation {
+        observed: prefix.observed_state(),
+        oracle,
+        once_latches: &mut local_once_latches,
+        leaf_cache,
+        white_box_policies,
+    };
+    condition_distance_to_satisfaction(&mut evaluator, condition)
+}
+
+fn condition_distance_to_satisfaction<E>(evaluator: &mut E, condition: &Condition) -> u128
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    match condition {
+        Condition::MemoryPredicate {
+            node,
+            place,
+            cmp,
+            value,
+        } => memory_predicate_distance_to_satisfaction(evaluator, node, place, *cmp, *value),
+        Condition::AllOf { predicates } => predicates.iter().fold(0_u128, |sum, predicate| {
+            sum.saturating_add(condition_distance_to_satisfaction(evaluator, predicate))
+        }),
+        Condition::AnyOf { predicates } => predicates
+            .iter()
+            .map(|predicate| condition_distance_to_satisfaction(evaluator, predicate))
+            .min()
+            .unwrap_or(ASSERTION_PROXIMITY_UNIT),
+        Condition::Once { predicate } => {
+            if evaluator.once_condition_is_latched(predicate) {
+                0
+            } else {
+                condition_distance_to_satisfaction(evaluator, predicate)
+            }
+        }
+        Condition::At { .. }
+        | Condition::After { .. }
+        | Condition::Timer { .. }
+        | Condition::NetworkMatch { .. }
+        | Condition::ConsoleMatch { .. }
+        | Condition::CoveragePoint { .. }
+        | Condition::IoPattern { .. }
+        | Condition::NodeState { .. }
+        | Condition::AssertionState { .. }
+        | Condition::Quiescent
+        | Condition::FaultActive { .. }
+        | Condition::Named { .. }
+        | Condition::GuestMarker { .. }
+        | Condition::Not { .. } => boolean_condition_distance(evaluator, condition),
+    }
+}
+
+fn boolean_condition_distance<E>(evaluator: &mut E, condition: &Condition) -> u128
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    if evaluate_condition(evaluator, condition) {
+        0
+    } else {
+        ASSERTION_PROXIMITY_UNIT
+    }
+}
+
+fn memory_predicate_distance_to_satisfaction<E>(
+    evaluator: &mut E,
+    expected_node: &NodeId,
+    place: &MemPlace,
+    cmp: MemoryCmp,
+    expected_value: u64,
+) -> u128
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    let Some(resolved) = evaluator.resolve_mem_place(expected_node, place) else {
+        return ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC;
+    };
+    evaluator
+        .observable_events()
+        .iter()
+        .filter(|event| event.at() == evaluator.evaluation_point().at())
+        .filter_map(|event| {
+            let ObservableEventPayload::MemorySample {
+                sample_icount: _,
+                node,
+                place,
+                value,
+            } = event.payload()
+            else {
+                return None;
+            };
+            (node == expected_node && place == &resolved)
+                .then(|| memory_cmp_distance_to_satisfaction(cmp, *value, expected_value))
+        })
+        .min()
+        .unwrap_or(ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC)
+}
+
+fn memory_cmp_distance_to_satisfaction(cmp: MemoryCmp, actual: u64, expected: u64) -> u128 {
+    match cmp {
+        MemoryCmp::Eq => u128::from(actual.max(expected) - actual.min(expected)),
+        MemoryCmp::Ne => {
+            if actual != expected {
+                0
+            } else {
+                ASSERTION_PROXIMITY_UNIT
+            }
+        }
+        MemoryCmp::Lt => {
+            if actual < expected {
+                0
+            } else {
+                u128::from(actual) - u128::from(expected) + 1
+            }
+        }
+        MemoryCmp::Le => {
+            if actual <= expected {
+                0
+            } else {
+                u128::from(actual) - u128::from(expected)
+            }
+        }
+        MemoryCmp::Gt => {
+            if actual > expected {
+                0
+            } else {
+                u128::from(expected) - u128::from(actual) + 1
+            }
+        }
+        MemoryCmp::Ge => {
+            if actual >= expected {
+                0
+            } else {
+                u128::from(expected) - u128::from(actual)
+            }
+        }
+    }
 }
 
 fn push_observed_state_facts(

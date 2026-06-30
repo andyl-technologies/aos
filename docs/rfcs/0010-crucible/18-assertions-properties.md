@@ -1044,7 +1044,7 @@ verdict; it only shapes the next schedule the search tries.
   `World`/`Plan`, and `FaultActive` evaluates recorded injected/healed fault
   facts. Unknown named predicates remain preserved host predicates, so the DSL is
   additive to existing host closures.
-- [ ] **T-ASRT-18** Implement the OPTIONAL assertion-proximity gradient: a
+- [x] **T-ASRT-18** Implement the OPTIONAL assertion-proximity gradient: a
   deterministic, non-negative, monotone distance-to-satisfaction (0 iff satisfied)
   defined structurally over the 17a `Condition` tree (numeric leaf → threshold gap,
   `And` → sum, `Or`/`AnyOf` → min, boolean-only → `{0, UNIT}`), folded as the
@@ -1053,3 +1053,15 @@ verdict; it only shapes the next schedule the search tries.
   verdict or fingerprint, consumed only by file-22 guided search and recorded as the
   observational projection of [OBS-37]. — satisfies [ASRT-33]; spec §18.13;
   cross-ref 19 [OBS-37], 22.
+  Completed by `checks.crucible.phase4.assertionProximityGradient`,
+  `checks.crucible.phase1.gates.singleVmFingerprint`, and
+  `checks.crucible.phase4.gates.replayOracle`: `HostAssertionReport::proximities`
+  now exposes `HostAssertionProximity` records as report-only steering projections.
+  Distances are computed structurally over the retained log (`MemoryPredicate`
+  threshold gaps, `AllOf` sums, `AnyOf` minimum, boolean unit distances), folded to
+  the minimum checked prefix including armed `Eventually` deadline prefixes, and
+  emitted only for unsatisfied `Sometimes`, armed unsatisfied `Eventually`, and
+  expected-reachable properties that never reached. The regression tests compare
+  online and offline reports and check that proximity does not affect assertion
+  verdicts or fingerprints; event-log `assertion_proximity` emission remains the
+  separate observational task in T-OBS-14.

@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.replayOracle",
-  taskIds ? ["T-TRIG-20" "T-ASRT-16"],
+  taskIds ? ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,6 +13,7 @@
 
   replayTest = builtins.readFile ../../crates/crucible/tests/event_graph_replay_oracle.rs;
   replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
+  assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -71,6 +72,14 @@
       {
         label = "T-ASRT-16 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
+      }
+      {
+        label = "T-ASRT-18 checked off";
+        needle = "- [x] **T-ASRT-18**";
+      }
+      {
+        label = "T-ASRT-18 replay completion note";
+        needle = "`checks.crucible.phase4.gates.replayOracle`";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" replayTest [
@@ -217,6 +226,20 @@
         needle = "assertion replay log must be derived from the artifact schedule, not a cloned fixture";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/assertion_proximity_gradient.rs" assertionProximityTest [
+      {
+        label = "assertion proximity online/offline equality";
+        needle = "assert_eq!(offline, online)";
+      }
+      {
+        label = "assertion proximity dedicated test";
+        needle = "proximity_gradient_folds_minimum_threshold_gap_for_unsatisfied_sometimes";
+      }
+      {
+        label = "assertion proximity verdict non-effect";
+        needle = "proximity_gradient_tracks_armed_eventually_without_changing_verdict";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase4 replay-oracle gate import";
@@ -341,6 +364,8 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-event-graph-replay-oracle-target" \
               -p crucible \
+              --features test-double \
+              --test assertion_proximity_gradient \
               --test event_graph_replay_oracle \
               --test gate_replay_oracle \
               -- --test-threads=1
@@ -365,6 +390,7 @@ in
               echo "assertion_corpus_growth_regrade=idempotent"
               echo "assertion_replay_log=artifact-derived"
               echo "assertion_violation_reproduction=bit-identical"
+              echo "assertion_proximity_replay=online-offline-identical"
             } > "$out/nix-support/metadata"
           '';
         }

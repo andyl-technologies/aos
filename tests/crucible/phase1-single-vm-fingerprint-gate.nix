@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
+  taskIds ? ["T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -16,7 +16,9 @@
 
   phase0S1 = builtins.readFile ./phase0-s1.nix;
   crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  crucibleTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   crucibleModelGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
+  assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
   harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
@@ -31,6 +33,7 @@
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  assertionProperties = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -526,6 +529,10 @@
         needle = "\"T-HARN-6\"";
       }
       {
+        label = "phase1 gate lists T-ASRT-18";
+        needle = "\"T-ASRT-18\"";
+      }
+      {
         label = "phase1 gate lists T-DET-9";
         needle = "\"T-DET-9\"";
       }
@@ -546,6 +553,40 @@
       {
         label = "phase2 single-VM fingerprint red placeholder";
         needle = "single-VM fingerprint gate is intentionally pending";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionProperties [
+      {
+        label = "T-ASRT-18 checklist complete";
+        needle = "- [x] **T-ASRT-18**";
+      }
+      {
+        label = "T-ASRT-18 names single-VM fingerprint gate";
+        needle = "`checks.crucible.phase1.gates.singleVmFingerprint`";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/trigger.rs" crucibleTrigger [
+      {
+        label = "proximity report type";
+        needle = "pub struct HostAssertionProximity";
+      }
+      {
+        label = "proximity is report projection";
+        needle = "proximities: Vec<HostAssertionProximity>";
+      }
+      {
+        label = "verdict construction ignores proximity";
+        needle = "verdict: AssertionRunVerdict::failed(failures)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/assertion_proximity_gradient.rs" assertionProximityTest [
+      {
+        label = "proximity verdict non-effect";
+        needle = "proximity_gradient_tracks_armed_eventually_without_changing_verdict";
+      }
+      {
+        label = "proximity omitted after satisfaction";
+        needle = "proximity_gradient_omits_satisfied_and_never_triggered_obligations";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
@@ -657,6 +698,7 @@ in
               --target-dir "$TMPDIR/crucible-model-single-vm-fingerprint-target" \
               -p crucible \
               --features test-double \
+              --test assertion_proximity_gradient \
               --test gate_single_vm_fingerprint \
               -- --test-threads=1
           '';
@@ -733,6 +775,7 @@ in
             observation_mode=plugin-read-only
             register_fingerprint=architectural-register-file
             memory_fingerprint=guest-ram-hash
+            assertion_proximity_fingerprint=report-only-no-verdict-effect
             rolling_fingerprint=extended-hash-over-samples
             register_read_failures=0
             ram_bytes=nonzero

@@ -217,7 +217,7 @@ in {
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
-        taskIds = ["T-PLAN-3" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
+        taskIds = ["T-PLAN-3" "T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
       };
       divergenceBisect = import ./phase1-divergence-bisect.nix {
         inherit pkgs lib;
@@ -757,11 +757,16 @@ in {
       attrPath = "checks.crucible.phase4.assertionViolationReproduction";
       taskIds = ["T-ASRT-15"];
     };
+    assertionProximityGradient = import ./phase4-assertion-proximity-gradient.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.assertionProximityGradient";
+      taskIds = ["T-ASRT-18"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase4.gates.replayOracle";
-        taskIds = ["T-TRIG-20" "T-ASRT-16"];
+        taskIds = ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"];
       };
       e2eDeterminism = import ./phase4-e2e-determinism.nix {
         inherit pkgs lib;
