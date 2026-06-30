@@ -218,13 +218,36 @@ impl TreeWalk {
         }
         let target = self.force_cache_suspended_capture_alias_target(thunk)?;
         if !target.is_thunk() {
-            return None;
+            return self.force_cache_materialized_primop_arg_alias_target_hash(target);
         }
         let target_thunk = self.heap.get_thunk(target).ok()?;
         if target_thunk.cell().cached_value().ok()?.is_some() {
-            return None;
+            let payload = self.force_cache_payload_for_suspended_closed_thunk(target_thunk, 0)?;
+            return self.force_cache_free_var_payload_hash(&payload);
         }
         self.force_cache_free_var_value_hash_with_seen(target, &mut seen_thunks, false)
+    }
+
+    fn force_cache_materialized_primop_arg_alias_target_hash(
+        &self,
+        value: Value,
+    ) -> Option<DurableBlake3Hash> {
+        match value.tag() {
+            ValueTag::String => {
+                let string = self.heap.get_string(value).ok()?;
+                if string.has_context() {
+                    return None;
+                }
+            }
+            ValueTag::Path => {
+                let path = self.heap.get_path(value).ok()?;
+                if path.has_context() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+        self.force_cache_free_var_value_hash_with_seen(value, &mut BTreeSet::new(), false)
     }
 
     fn force_cache_suspended_capture_alias_target(&self, thunk: &EvalThunk) -> Option<Value> {

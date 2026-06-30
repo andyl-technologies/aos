@@ -897,7 +897,7 @@ alone (`M-1`/`Q-A`).
       lazy-binding attrset admission canaries, captured computed lazy-element list
       and lazy-binding attrset subject-skip canaries, direct and first-class
       captured explicit-list `findFile` hit canaries, first-class captured
-      unary `import`/`readDir`/`readFile`/`readFileType` argument hit
+      unary `getEnv`/`import`/`readDir`/`readFile`/`readFileType` argument hit
       canary, first-class captured `pathExists` and `hashFile` argument hit/miss
       canaries, and representative
       captured unsupported free-variable skips
@@ -3664,15 +3664,17 @@ alone (`M-1`/`Q-A`).
       alias admission. Saturated first-class `import`, `getEnv`, `hashFile`,
       `pathExists`, `readDir`, `readFile`, and `readFileType` child calls now
       admit one suspended captured local/upvalue alias in a path/string argument
-      position when the aliased target is an unfulfilled suspended closed thunk
-      that hashes through the existing closed literal/replayable payload path.
-      This covers captured-path
-      `pathExists` and captured algorithm/path `hashFile` in-memory
+      position when the aliased target is a closed target thunk, fulfilled or
+      not, that hashes through the existing closed literal/replayable payload
+      path or a direct already materialized context-free string/path value. This
+      covers captured-name `getEnv`, captured-path `pathExists`, and captured
+      algorithm/path `hashFile` in-memory
       demand/materialize/replay behavior, plus stale trace miss/recompute for
       changed paths, while still skipping alias chains, dynamic `with` scopes,
       scoped globals, fulfilled text-store outputs, computed/non-replayable
       targets, and text-store replay shapes outside the cacheable trace
       contract. The gate is
+      `first_class_unary_import_and_file_builtins_with_captured_args_hit_child_calls`,
       `first_class_path_exists_with_captured_path_hits_child_call`,
       `first_class_hash_file_with_captured_algorithm_and_path_hits_child_call`,
       and the existing persistent text-store `readFile`/`hashFile` canaries.

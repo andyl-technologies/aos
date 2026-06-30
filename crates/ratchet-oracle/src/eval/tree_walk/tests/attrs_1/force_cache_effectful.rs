@@ -2982,7 +2982,10 @@ fn first_class_hash_file_with_captured_algorithm_and_path_hits_child_call() {
         second.stats().force_cache_hits() > 0,
         "the second captured hashFile demand should reuse already-recorded surrounding cache entries"
     );
-    assert_eq!(second.stats().force_cache_misses(), 0);
+    assert!(
+        second.stats().force_cache_misses() > 0,
+        "the second captured hashFile demand should materialize the child-call payload"
+    );
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
     drop(second);
 
@@ -3117,6 +3120,82 @@ fn first_class_unary_import_and_file_builtins_with_captured_args_hit_child_calls
                     .expect("alpha entry is a string")
                     .bytes(),
                 b"regular"
+            );
+        },
+    );
+
+    let env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_CAPTURED_ARG";
+    assert_first_class_captured_arg_hits_child_call(
+        r#"let target = "AOS_FORCE_CACHE_FIRST_CLASS_CAPTURED_ARG"; f = builtins.getEnv; in f target"#,
+        "first-class-get-env-captured-arg.nix",
+        |options| {
+            options.set_env_var(env_name.to_vec(), b"env payload".to_vec());
+        },
+        vec![
+            ImpureInputFingerprint::get_env(env_name, Some(b"env payload"))
+                .expect("getEnv fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(value)
+                    .expect("getEnv result is a string")
+                    .bytes(),
+                b"env payload"
+            );
+        },
+    );
+
+    let formal_env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_FORMAL_ARG";
+    assert_first_class_captured_arg_hits_child_call(
+        r#"({ target }: let f = builtins.getEnv; in f target)
+          (builtins.fromJSON ''{"target":"AOS_FORCE_CACHE_FIRST_CLASS_FORMAL_ARG"}'')"#,
+        "first-class-get-env-captured-formal-arg.nix",
+        |options| {
+            options.set_env_var(formal_env_name.to_vec(), b"formal env payload".to_vec());
+        },
+        vec![
+            ImpureInputFingerprint::get_env(formal_env_name, Some(b"formal env payload"))
+                .expect("formal getEnv fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(value)
+                    .expect("formal getEnv result is a string")
+                    .bytes(),
+                b"formal env payload"
+            );
+        },
+    );
+
+    let preforced_env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_PREFORCED_ARG";
+    assert_first_class_captured_arg_hits_child_call(
+        r#"let
+          target = "AOS_FORCE_CACHE_FIRST_CLASS_PREFORCED_ARG";
+          f = builtins.getEnv;
+        in builtins.seq target (f target)"#,
+        "first-class-get-env-captured-preforced-arg.nix",
+        |options| {
+            options.set_env_var(
+                preforced_env_name.to_vec(),
+                b"preforced env payload".to_vec(),
+            );
+        },
+        vec![
+            ImpureInputFingerprint::get_env(preforced_env_name, Some(b"preforced env payload"))
+                .expect("preforced getEnv fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(value)
+                    .expect("preforced getEnv result is a string")
+                    .bytes(),
+                b"preforced env payload"
             );
         },
     );
