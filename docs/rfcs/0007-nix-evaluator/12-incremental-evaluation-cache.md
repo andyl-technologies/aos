@@ -1129,6 +1129,20 @@ harness, never cut for scope.
       surfaces, and the full differential leak-invariant harness remain open
       (`S-15`). Gate: `source_path_sha_helpers_return_nix_sha256_digests` plus
       existing fetchurl/source/fetch store-path and mismatch tests.
+- [x] Current placeholder/input-hash SHA-256 type boundary:
+      `builtins.placeholder`, derivation output placeholders, and deferred
+      downstream output placeholders now compute Nix-observed SHA-256 through
+      `NixSha256Digest` before slash-prefixed Nix-base32 rendering, and
+      derivation input-hash replacement maps now key by `NixSha256Digest`
+      until the ATerm writers unwrap through named SHA accessors for lower-hex
+      serialization. This type-enforces the selected placeholder and
+      derivation input-hash replacement corridor only; other non-hash Nix byte
+      surfaces and the full differential leak-invariant harness remain open
+      (`S-15`). Gate: `placeholder_primop_matches_cpp_nix_hash_scheme`,
+      `derivation_strict_unions_input_hash_replacement_outputs`, and
+      exact ATerm byte fixtures
+      `derivation_strict_input_hash_replacements_serialize_exact_aterm_order`
+      and `floating_ca_input_hash_replacements_serialize_exact_aterm_order`.
 - [x] Current hash builtin/conversion Nix digest type boundary:
       `NixHashDigest` carries a `HashStringAlgorithm` with validated digest
       bytes for `hashString`, `hashFile`, and `convertHash` decode/encode

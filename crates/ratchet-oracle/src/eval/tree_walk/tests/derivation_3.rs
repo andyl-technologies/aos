@@ -4,6 +4,62 @@ use super::*;
 
 #[test]
 fn derivation_strict_unions_input_hash_replacement_outputs() {
+    let (derivation, input_hashes, shared_hash) = input_hash_replacement_fixture();
+
+    let replacements = TreeWalk::input_hash_replacements(&derivation, &input_hashes);
+    assert_eq!(replacements.len(), 1);
+    assert_eq!(
+        replacements.get(&NixSha256Digest::from_bytes(shared_hash)),
+        Some(&BTreeSet::from(["dev".to_owned(), "out".to_owned()]))
+    );
+}
+
+#[test]
+fn derivation_strict_input_hash_replacements_serialize_exact_aterm_order() {
+    let (derivation, input_hashes) = distinct_input_hash_serialization_fixture();
+    let ir = lower("null");
+    let eval = TreeWalk::new(&ir);
+
+    let aterm = eval.derivation_aterm_bytes_with_input_hashes(&derivation, &input_hashes);
+    let low_hex = "11".repeat(32);
+    let high_hex = "22".repeat(32);
+    let expected = format!(
+        "Derive([],[(\"{low_hex}\",[\"dev\"]),(\"{high_hex}\",[\"out\"])],[],\":\",\":\",[],[])"
+    )
+    .into_bytes();
+
+    assert_eq!(aterm, expected);
+}
+
+#[test]
+fn floating_ca_input_hash_replacements_serialize_exact_aterm_order() {
+    let (mut derivation, input_hashes) = distinct_input_hash_serialization_fixture();
+    derivation
+        .outputs
+        .insert("out".to_owned(), nix_compat::derivation::Output::default());
+    let output = FloatingCaOutput {
+        method: FloatingCaMethod::Recursive,
+        hash_algo: nix_compat::nixhash::HashAlgo::Sha256,
+    };
+    let ir = lower("null");
+    let eval = TreeWalk::new(&ir);
+
+    let aterm = eval.floating_ca_derivation_aterm_bytes(&derivation, output, Some(&input_hashes));
+    let low_hex = "11".repeat(32);
+    let high_hex = "22".repeat(32);
+    let expected = format!(
+        "Derive([(\"out\",\"\",\"r:sha256\",\"\")],[(\"{low_hex}\",[\"dev\"]),(\"{high_hex}\",[\"out\"])],[],\":\",\":\",[],[])"
+    )
+    .into_bytes();
+
+    assert_eq!(aterm, expected);
+}
+
+fn input_hash_replacement_fixture() -> (
+    nix_compat::derivation::Derivation,
+    BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+    [u8; 32],
+) {
     let first = nix_compat::store_path::StorePath::<String>::from_bytes(
         b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-first.drv",
     )
@@ -33,12 +89,39 @@ fn derivation_strict_unions_input_hash_replacement_outputs() {
     input_hashes.insert(first, DerivationHashModulo::from_sha256_bytes(shared_hash));
     input_hashes.insert(second, DerivationHashModulo::from_sha256_bytes(shared_hash));
 
-    let replacements = TreeWalk::input_hash_replacements(&derivation, &input_hashes);
-    assert_eq!(replacements.len(), 1);
-    assert_eq!(
-        replacements.get(&shared_hash),
-        Some(&BTreeSet::from(["dev".to_owned(), "out".to_owned()]))
-    );
+    (derivation, input_hashes, shared_hash)
+}
+
+fn distinct_input_hash_serialization_fixture() -> (
+    nix_compat::derivation::Derivation,
+    BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
+) {
+    let first = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-first.drv",
+    )
+    .expect("first store path parses");
+    let second = nix_compat::store_path::StorePath::<String>::from_bytes(
+        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-second.drv",
+    )
+    .expect("second store path parses");
+
+    let mut derivation = nix_compat::derivation::Derivation {
+        system: ":".to_owned(),
+        builder: ":".to_owned(),
+        ..nix_compat::derivation::Derivation::default()
+    };
+    derivation
+        .input_derivations
+        .insert(first.clone(), BTreeSet::from(["out".to_owned()]));
+    derivation
+        .input_derivations
+        .insert(second.clone(), BTreeSet::from(["dev".to_owned()]));
+
+    let mut input_hashes = BTreeMap::new();
+    input_hashes.insert(first, DerivationHashModulo::from_sha256_bytes([0x22; 32]));
+    input_hashes.insert(second, DerivationHashModulo::from_sha256_bytes([0x11; 32]));
+
+    (derivation, input_hashes)
 }
 
 #[test]

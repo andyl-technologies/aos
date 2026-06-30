@@ -87,8 +87,16 @@ impl TreeWalk {
         span: Span,
         input: &[u8],
     ) -> Result<Vec<u8>, TreeWalkError> {
-        let digest = Sha256::digest(input);
-        let encoded = Self::encode_nix_base32(id, span, &digest)?;
+        let digest = Self::nix_sha256_digest(input);
+        Self::slash_prefixed_nix_base32_sha256_digest(id, span, digest)
+    }
+
+    pub(super) fn slash_prefixed_nix_base32_sha256_digest(
+        id: IrId,
+        span: Span,
+        digest: NixSha256Digest,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let encoded = Self::encode_nix_base32(id, span, digest.as_bytes())?;
         let len = encoded.len().checked_add(1).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ByteAllocationFailed {

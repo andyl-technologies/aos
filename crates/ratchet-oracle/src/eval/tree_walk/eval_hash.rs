@@ -447,23 +447,8 @@ impl TreeWalk {
         input.extend_from_slice(PLACEHOLDER_HASH_PREFIX);
         input.extend_from_slice(&output);
 
-        let digest = Sha256::digest(&input).to_vec();
-        let encoded = Self::encode_nix_base32(id, span, &digest)?;
-        let len = encoded.len().checked_add(1).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::ByteAllocationFailed {
-                    id,
-                    len: usize::MAX,
-                },
-                span,
-            )
-        })?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(len).map_err(|_| {
-            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
-        })?;
-        bytes.push(b'/');
-        bytes.extend_from_slice(&encoded);
+        let digest = Self::nix_sha256_digest(&input);
+        let bytes = Self::slash_prefixed_nix_base32_sha256_digest(id, span, digest)?;
 
         self.heap
             .alloc_string(NixString::from_bytes(bytes))

@@ -164,7 +164,7 @@ impl TreeWalk {
                     }
                     out.push(b'(');
                     out.push(b'"');
-                    Self::write_lower_hex(out, hash);
+                    Self::write_lower_hex(out, hash.as_bytes());
                     out.push(b'"');
                     out.push(b',');
                     Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));

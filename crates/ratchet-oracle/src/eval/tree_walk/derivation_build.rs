@@ -683,14 +683,14 @@ impl TreeWalk {
     pub(super) fn input_hash_replacements(
         derivation: &nix_compat::derivation::Derivation,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, DerivationHashModulo>,
-    ) -> BTreeMap<[u8; 32], BTreeSet<String>> {
-        let mut replacements: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
+    ) -> BTreeMap<NixSha256Digest, BTreeSet<String>> {
+        let mut replacements: BTreeMap<NixSha256Digest, BTreeSet<String>> = BTreeMap::new();
         for (drv_path, outputs) in &derivation.input_derivations {
             let Some(hash) = input_hashes.get(drv_path) else {
                 continue;
             };
             replacements
-                .entry(hash.nix_sha256_digest().into_bytes())
+                .entry(hash.nix_sha256_digest())
                 .or_default()
                 .extend(outputs.iter().cloned());
         }
@@ -759,7 +759,7 @@ impl TreeWalk {
 
     pub(super) fn write_derivation_input_hashes(
         out: &mut Vec<u8>,
-        input_hashes: &BTreeMap<[u8; 32], BTreeSet<String>>,
+        input_hashes: &BTreeMap<NixSha256Digest, BTreeSet<String>>,
     ) {
         out.push(b'[');
         for (index, (hash, output_names)) in input_hashes.iter().enumerate() {
@@ -768,7 +768,7 @@ impl TreeWalk {
             }
             out.push(b'(');
             out.push(b'"');
-            Self::write_lower_hex(out, hash);
+            Self::write_lower_hex(out, hash.as_bytes());
             out.push(b'"');
             out.push(b',');
             Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
