@@ -896,7 +896,10 @@ alone (`M-1`/`Q-A`).
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
       and lazy-binding attrset subject-skip canaries, direct and first-class
-      captured explicit-list `findFile` hit canaries, and representative
+      captured explicit-list `findFile` hit canaries, first-class captured
+      unary `import`/`readDir`/`readFile`/`readFileType` argument hit
+      canary, first-class captured `pathExists` and `hashFile` argument hit/miss
+      canaries, and representative
       captured unsupported free-variable skips
       (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and

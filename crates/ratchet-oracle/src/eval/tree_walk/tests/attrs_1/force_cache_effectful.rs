@@ -481,7 +481,7 @@ fn find_file_first_class_nix_path_calls_hit_and_miss_on_option_change() {
     let second_root = root.join("second");
     let second_candidate = second_root.join("subdir");
     let source = "{ a = (let f = builtins.findFile builtins.nixPath; in f \"pkg/subdir\"); }";
-    let ir = lower(source);
+    let ir = lower(&source);
     let a = symbol_for(&ir, b"a");
     let apply_id = first_class_find_file_apply_id(&ir);
     let builtin = lookup_builtin(b"findFile").expect("findFile builtin is registered");
@@ -1211,12 +1211,12 @@ fn find_file_first_class_explicit_list_with_captured_entries_hits_child_call() {
     );
     assert_eq!(
         second.stats().force_cache_hits(),
-        0,
-        "the second captured first-class explicit-list demand should materialize the child-call payload"
+        1,
+        "the second captured first-class explicit-list demand should reuse already-recorded surrounding cache entries"
     );
     assert!(
         second.stats().force_cache_misses() > 0,
-        "the second captured first-class explicit-list demand should record a child-call miss"
+        "the second captured first-class explicit-list demand should still materialize the child-call payload"
     );
     assert_eq!(second.impure_input_trace(), expected_trace.as_slice());
     drop(second);
@@ -1298,6 +1298,132 @@ fn first_class_primop_persist_key_for_current_node(
         identity,
         value_hashes.iter().copied(),
     ))
+}
+
+fn assert_first_class_captured_arg_hits_child_call<C, A>(
+    body: &str,
+    source_name: &str,
+    configure_options: C,
+    expected_trace: Vec<ImpureInputFingerprint>,
+    assert_value: A,
+) where
+    C: Fn(&mut TreeWalkOptions),
+    A: Fn(&Ir, &mut TreeWalk, Value),
+{
+    let source = format!("{{ a = {body}; }}");
+    let ir = lower(&source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for pass in 0..3 {
+        let mut options = TreeWalkOptions::new();
+        configure_options(&mut options);
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            options,
+            source_name,
+            source.as_str(),
+            cache.clone(),
+        );
+        let value = force_attr_a(&mut evaluator, &ir, a);
+        assert_value(&ir, &mut evaluator, value);
+        assert_eq!(
+            evaluator.impure_input_trace(),
+            expected_trace.as_slice(),
+            "first-class impure child-call trace should revalidate on every run"
+        );
+        if pass == 0 {
+            assert_eq!(
+                evaluator.stats().force_cache_hits(),
+                0,
+                "first run should compute the first-class child call cold"
+            );
+            assert!(
+                evaluator.stats().force_cache_misses() > 0,
+                "first run should record a cold first-class child-call miss"
+            );
+        } else if pass == 2 {
+            assert!(
+                evaluator.stats().thunks_forced() > 0,
+                "the enclosing attr thunk must still evaluate when the child call hits"
+            );
+            assert_single_force_cache_impure_edge_owner_matches_trace(&cache, &expected_trace);
+            assert!(
+                evaluator.stats().force_cache_hits() > 0,
+                "warm matching first-class child call should hit"
+            );
+            assert_eq!(
+                evaluator.stats().force_cache_misses(),
+                0,
+                "fully warmed first-class child call should not miss"
+            );
+        }
+    }
+}
+
+fn assert_single_force_cache_impure_edge_owner_matches_trace(
+    runtime: &Arc<Mutex<EvalCacheRuntime>>,
+    expected_trace: &[ImpureInputFingerprint],
+) {
+    assert!(
+        !expected_trace.is_empty(),
+        "edge-exactness assertions require at least one input leaf"
+    );
+    let runtime = runtime.lock().expect("cache lock is valid");
+    let cache = runtime.cache().expect("cache is enabled");
+    let graph = cache.graph();
+    let expected_leaf_nodes = expected_trace
+        .iter()
+        .map(|fingerprint| {
+            let fingerprint = fingerprint
+                .as_cacheable()
+                .expect("expected trace is cacheable");
+            let key = DemandCacheKey::for_impure_input(fingerprint.identity().hash());
+            graph.node_id_for_key(key).unwrap_or_else(|| {
+                panic!(
+                    "cache graph contains no leaf node for {:?} input",
+                    fingerprint.kind()
+                )
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        expected_leaf_nodes.len(),
+        expected_trace.len(),
+        "each observed input fingerprint should map to one distinct graph leaf"
+    );
+
+    let impure_edge_owners = (0..cache.len())
+        .filter_map(|index| {
+            let raw = u32::try_from(index).expect("test graph has u32-addressable nodes");
+            let node = DemandNodeId::new(raw);
+            let dependencies = graph
+                .node(node)
+                .expect("node exists")
+                .dependencies_in_group(DemandDependencyGroup::ImpureInput)?;
+            (!dependencies.is_empty()).then(|| (node, dependencies.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        impure_edge_owners.len(),
+        1,
+        "a single first-class child-call node should own the impure-input edge group"
+    );
+    let (owner, dependencies) = &impure_edge_owners[0];
+    assert_eq!(
+        dependencies, &expected_leaf_nodes,
+        "the first-class child call should depend on exactly the observed input leaves"
+    );
+    for dependency in dependencies {
+        assert!(
+            graph
+                .node(*dependency)
+                .expect("dependency exists")
+                .dependents()
+                .contains(owner),
+            "input leaf should record the first-class child call as a reverse dependent"
+        );
+    }
 }
 
 fn runtime_contains_node_key(runtime: &Arc<Mutex<EvalCacheRuntime>>, key: DemandCacheKey) -> bool {
@@ -2886,6 +3012,114 @@ fn first_class_hash_file_with_captured_algorithm_and_path_hits_child_call() {
     );
     assert_eq!(third.stats().force_cache_misses(), 0);
     assert_eq!(third.impure_input_trace(), expected_trace.as_slice());
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn first_class_unary_import_and_file_builtins_with_captured_args_hit_child_calls() {
+    let root = unique_temp_dir("force-cache-first-class-unary-captured-args");
+    fs::write(root.join("dep.nix"), b"7").expect("import source writes");
+    fs::write(root.join("target"), b"read file payload").expect("target writes");
+    fs::create_dir(root.join("dir")).expect("readDir directory creates");
+    fs::write(root.join("dir").join("alpha"), b"entry").expect("readDir entry writes");
+    let root = fs::canonicalize(&root).expect("root canonicalizes");
+    let dep_path = path_bytes(&root.join("dep.nix"));
+    let target_path = path_bytes(&root.join("target"));
+    let dir_path = path_bytes(&root.join("dir"));
+
+    assert_first_class_captured_arg_hits_child_call(
+        "let target = ./dep.nix; f = import; in f target",
+        "first-class-import-captured-arg.nix",
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base is absolute");
+        },
+        vec![ImpureInputFingerprint::import(&dep_path, b"7").expect("import fingerprint builds")],
+        |_, _, value| assert_eq!(value.as_int(), Ok(7)),
+    );
+
+    assert_first_class_captured_arg_hits_child_call(
+        "let target = ./target; f = builtins.readFile; in f target",
+        "first-class-read-file-captured-arg.nix",
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base is absolute");
+        },
+        vec![
+            ImpureInputFingerprint::read_file(&target_path, b"read file payload")
+                .expect("readFile fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(value)
+                    .expect("readFile result is a string")
+                    .bytes(),
+                b"read file payload"
+            );
+        },
+    );
+
+    assert_first_class_captured_arg_hits_child_call(
+        "let target = ./target; f = builtins.readFileType; in f target",
+        "first-class-read-file-type-captured-arg.nix",
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base is absolute");
+        },
+        vec![
+            ImpureInputFingerprint::read_file_type(&target_path, FileTypeForInput::Regular)
+                .expect("readFileType fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(value)
+                    .expect("readFileType result is a string")
+                    .bytes(),
+                b"regular"
+            );
+        },
+    );
+
+    assert_first_class_captured_arg_hits_child_call(
+        "let target = ./dir; f = builtins.readDir; in f target",
+        "first-class-read-dir-captured-arg.nix",
+        |options| {
+            options
+                .set_path_literal_base(path_bytes(&root))
+                .expect("path base is absolute");
+        },
+        vec![
+            ImpureInputFingerprint::read_dir(
+                &dir_path,
+                [DirEntryInput::new(b"alpha", FileTypeForInput::Regular)],
+            )
+            .expect("readDir fingerprint builds"),
+        ],
+        |_, evaluator, value| {
+            let alpha = evaluator.symbols.intern(b"alpha").expect("alpha interns");
+            let attrs = evaluator
+                .heap()
+                .get_attrs(value)
+                .expect("readDir result is an attrset");
+            let alpha_value = attrs.get(alpha).expect("alpha entry exists");
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_string(alpha_value)
+                    .expect("alpha entry is a string")
+                    .bytes(),
+                b"regular"
+            );
+        },
+    );
 
     fs::remove_dir_all(root).expect("temp tree removed");
 }
