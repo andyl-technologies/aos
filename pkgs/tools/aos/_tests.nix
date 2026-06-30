@@ -2648,7 +2648,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           '.package.name == "hostcollabbulk"
             and .versions[0].version == "1.0.0"
-            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+            and .versions[0].platforms."x86_64-linux".closure_size > 1000000' \
           "$work/apr-show-host-collab-a-after-pull.json" >/dev/null
         run_clean ${self}/bin/apr --json packages \
           --registry host-collab > "$work/apr-packages-host-collab-after-pull.json"
@@ -3036,7 +3036,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           '.package.name == "hostmergebulk"
             and .versions[0].version == "1.0.0"
-            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+            and .versions[0].platforms."x86_64-linux".closure_size > 1000000' \
           "$work/apr-show-host-merge-squash.json" >/dev/null
 
         run_clean ${self}/bin/apr branch create feature/hostmerge-conflict \
