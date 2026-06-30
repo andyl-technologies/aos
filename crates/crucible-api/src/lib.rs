@@ -8,15 +8,17 @@
 //!
 //! Module map: [`rpc_abi`] owns the versioned RPC boundary constants and frozen
 //! golden vectors; [`control_responsive`] owns the quantum-counted
-//! acknowledgement contract used by `gate:control-responsive`. Later modules
-//! will split by lifecycle, query, and temporal-graph surfaces as those APIs
-//! land.
+//! acknowledgement contract used by `gate:control-responsive`;
+//! [`event_log_stream`] owns the cursor-backed live event-log subscription
+//! facade. Later modules will split by lifecycle, query, and temporal-graph
+//! surfaces as those APIs land.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod control_responsive;
+pub mod event_log_stream;
 pub mod rpc_abi;
 
 pub use control_responsive::{
@@ -24,6 +26,11 @@ pub use control_responsive::{
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
     ControlResponsiveReport, ControlResponsiveSessionProbe, ControlResponsivenessError,
     ControlSessionState, validate_control_responsiveness,
+};
+pub use event_log_stream::{
+    ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
+    SESSION_EVENT_LOG_REPLAY_BATCH_SIZE, SessionEventLogFrame, SessionEventLogHub,
+    SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use rpc_abi::{
     GOLDEN_RPC_VECTORS, GOLDEN_VECTOR_RPC_PROTOCOL_VERSION, GOLDEN_VECTOR_RPC_REGENERATION_RULE,

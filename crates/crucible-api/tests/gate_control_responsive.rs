@@ -2,18 +2,22 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration,
     ControlOperationKind as SchedulerControlOperationKind, Decision, DeliveryOrderDecision,
-    EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef,
-    SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed, TemporalGraph, VirtualTime, step,
+    EventClass, EventDiagnosticPayload, EventKey, EventLevel, GenesisCheckpoint, NodeId,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
+    TemporalGraph, VirtualTime, step,
 };
 use crucible_api::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, ControlAcknowledgementStatus,
-    ControlOperationAcknowledgement, ControlOperationKind, ControlResponsiveSessionProbe,
-    ControlResponsivenessError, ControlSessionState, validate_control_responsiveness,
+    ControlOperationAcknowledgement, ControlOperationKind, ControlPlaneEventLog,
+    ControlResponsiveSessionProbe, ControlResponsivenessError, ControlSessionState, EventLogCursor,
+    validate_control_responsiveness,
 };
 use crucible_session::{Engine, SessionActor, SessionCommand, SessionError, SessionRunReport};
 use tokio::sync::mpsc;
@@ -121,6 +125,62 @@ fn gate_control_responsive_requires_required_operations_to_apply() {
             status: ControlAcknowledgementStatus::Rejected,
         }
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn gate_control_plane_event_log_stream_api_subscribes_without_mutation() {
+    let scenario = generated_scenario(43);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let observed_control = Arc::new(Mutex::new(Vec::new()));
+    let engine = Engine::new(
+        config,
+        graph,
+        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
+    );
+    let (sender, receiver) = mpsc::channel(4);
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+    let before_subscribe = live.read();
+    let api_event_log = ControlPlaneEventLog::new(actor.event_log());
+    let future_cursor = EventLogCursor::new(before_subscribe.event_log_len.saturating_add(10_000));
+
+    let mut stream = api_event_log.subscribe(future_cursor);
+    let after_subscribe = live.read();
+
+    assert_eq!(stream.cursor(), api_event_log.current_cursor());
+    assert_eq!(stream.cursor(), EventLogCursor::default());
+    assert_eq!(after_subscribe, before_subscribe);
+
+    let actor_task = tokio::spawn(async move { actor.run().await });
+    send_command(&sender, SessionCommand::Start).await;
+    send_command(&sender, SessionCommand::Continue).await;
+    wait_until_running(&live).await;
+
+    let mut saw_causal = false;
+    let mut saw_observational = false;
+    for _ in 0..128 {
+        let frame = stream
+            .recv()
+            .await
+            .unwrap_or_else(|error| panic!("API event-log stream should not lag: {error}"))
+            .unwrap_or_else(|| panic!("API event-log stream should stay open while actor runs"));
+        saw_causal |= frame.entry.class() == EventClass::Causal;
+        saw_observational |= frame.entry.class() == EventClass::Observational;
+        if saw_causal && saw_observational {
+            break;
+        }
+    }
+
+    assert!(saw_causal);
+    assert!(saw_observational);
+
+    send_command(&sender, SessionCommand::Stop).await;
+    match actor_task.await {
+        Ok(Ok(_report)) => {}
+        Ok(Err(error)) => panic!("actor should stop cleanly: {error}"),
+        Err(error) => panic!("actor task should join cleanly: {error}"),
+    }
 }
 
 fn applied_acknowledgements() -> [ControlOperationAcknowledgement; 5] {
@@ -247,9 +307,20 @@ async fn send_command(sender: &mpsc::Sender<SessionCommand>, command: SessionCom
     }
 }
 
+async fn wait_until_running(live: &crucible_session::LiveSnapshot) {
+    for _ in 0..128 {
+        if live.read().state_kind == crucible_session::LiveStateKind::Running {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("session should enter Running within bounded actor yields");
+}
+
 #[derive(Default)]
 struct SimDoubleQuantumLoop {
     quanta: u64,
+    event_log_events: u64,
     observed_control: Arc<Mutex<Vec<SchedulerControlOperationKind>>>,
 }
 
@@ -257,6 +328,7 @@ impl SimDoubleQuantumLoop {
     fn new(observed_control: Arc<Mutex<Vec<SchedulerControlOperationKind>>>) -> Self {
         Self {
             quanta: 0,
+            event_log_events: 0,
             observed_control,
         }
     }
@@ -276,21 +348,47 @@ impl QuantumLoop for SimDoubleQuantumLoop {
                     .iter()
                     .map(|operation| operation.kind.clone()),
             );
+        let event_log_entries = self.event_log_entries();
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: vec![decision],
-            event_log_entries: vec![crucible::SchedulerEventLogEntry::evaluation_boundary(
-                self.quanta - 1,
+            event_log_entries,
+            event_log_segment_bytes: vec![b'x'],
+            event_log_segment_text: String::from("x"),
+            event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
+            event_log_offset: crucible::EventLogOffset::new(
+                Default::default(),
+                0,
+                self.event_log_events,
+            ),
+        })
+    }
+}
+
+impl SimDoubleQuantumLoop {
+    fn event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+        let base = self.event_log_events;
+        let entries = vec![
+            crucible::test_support::condition_payload_entry_for_test(
+                base,
+                VirtualTime { ticks: self.quanta },
+                SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                    "api.event-log.stream",
+                    EventLevel::Debug,
+                    BTreeMap::new(),
+                )),
+            ),
+            crucible::test_support::condition_boundary_entry_for_test(
+                base.saturating_add(1),
                 VirtualTime { ticks: self.quanta },
                 crucible::SchedulerEvaluationBoundaryKind::Quantum,
-            )],
-            event_log_segment_bytes: vec![b'x'],
-            event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
-            event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
-        })
+            ),
+        ];
+        self.event_log_events = self.event_log_events.saturating_add(2);
+        entries
     }
 }
 

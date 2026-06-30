@@ -970,6 +970,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogReproductionArtifact";
       taskIds = ["T-OBS-10"];
     };
+    eventLogControlPlaneStreaming = import ./phase4-event-log-control-plane-streaming.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogControlPlaneStreaming";
+      taskIds = ["T-OBS-11"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

@@ -15,17 +15,24 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crucible::{
     Configuration, ControlOperation, ControlOperationKind, EngineError, Fault, FaultTag,
-    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError, TemporalGraph,
-    VirtualTime, instantiate,
+    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError,
+    SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
 };
 use thiserror::Error;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
+
+/// Number of live event-log frames retained by the broadcast tail.
+pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
+
+/// Maximum number of retained event-log frames cloned by one stream receive.
+pub const SESSION_EVENT_LOG_REPLAY_BATCH_SIZE: usize = 64;
 
 /// Drives the engine quantum loop from the L4 session boundary.
 ///
@@ -367,6 +374,221 @@ fn u64_to_usize(value: u64) -> usize {
     }
 }
 
+/// Cursor into a session event-log stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventLogCursor {
+    /// Next dense event-log sequence number to deliver.
+    pub next_sequence: u64,
+}
+
+impl EventLogCursor {
+    /// Builds a cursor at `next_sequence`.
+    #[must_use]
+    pub const fn new(next_sequence: u64) -> Self {
+        Self { next_sequence }
+    }
+}
+
+/// One event-log entry delivered to a control-plane subscriber.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEventLogFrame {
+    /// Cursor position of this entry.
+    pub cursor: EventLogCursor,
+    /// Cursor position immediately after this entry.
+    pub next_cursor: EventLogCursor,
+    /// Full causal or observational event-log entry.
+    pub entry: SchedulerEventLogEntry,
+}
+
+impl SessionEventLogFrame {
+    fn new(entry: SchedulerEventLogEntry) -> Self {
+        let sequence = entry.sequence();
+        Self {
+            cursor: EventLogCursor::new(sequence),
+            next_cursor: EventLogCursor::new(sequence.saturating_add(1)),
+            entry,
+        }
+    }
+}
+
+/// Error returned while reading a live event-log stream.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SessionEventLogStreamError {
+    /// The subscriber lagged behind the bounded live tail.
+    #[error("session event-log stream skipped {skipped} frames")]
+    Lagged {
+        /// Number of skipped broadcast frames reported by the live tail.
+        skipped: u64,
+    },
+}
+
+/// Session-owned event-log hub used by the control plane.
+#[derive(Clone, Debug)]
+pub struct SessionEventLog {
+    inner: Arc<SessionEventLogInner>,
+}
+
+#[derive(Debug)]
+struct SessionEventLogInner {
+    entries: Mutex<Vec<SchedulerEventLogEntry>>,
+    tail: broadcast::Sender<SessionEventLogFrame>,
+}
+
+impl SessionEventLog {
+    /// Builds an empty event-log hub.
+    #[must_use]
+    pub fn new() -> Self {
+        let (tail, _) = broadcast::channel(SESSION_EVENT_LOG_BROADCAST_CAPACITY);
+        Self {
+            inner: Arc::new(SessionEventLogInner {
+                entries: Mutex::new(Vec::new()),
+                tail,
+            }),
+        }
+    }
+
+    /// Returns the number of retained event-log entries.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        usize_to_u64(self.lock_entries().len())
+    }
+
+    /// Returns whether no event-log entries are retained.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock_entries().is_empty()
+    }
+
+    /// Returns a cursor positioned at the retained log tail.
+    #[must_use]
+    pub fn current_cursor(&self) -> EventLogCursor {
+        let entries = self.lock_entries();
+        Self::current_cursor_for(&entries)
+    }
+
+    /// Subscribes to entries from `cursor` onward.
+    ///
+    /// The returned stream first drains a cursor snapshot from the retained log,
+    /// then continues with the live broadcast tail. Subscribing does not enqueue
+    /// a session command and does not await the scheduler.
+    #[must_use]
+    pub fn subscribe(&self, cursor: EventLogCursor) -> SessionEventLogStream {
+        let current_tail = self.current_cursor();
+        let next_cursor = EventLogCursor::new(cursor.next_sequence.min(current_tail.next_sequence));
+        let receiver = self.inner.tail.subscribe();
+        SessionEventLogStream {
+            hub: self.clone(),
+            next_cursor,
+            replay_exhausted: false,
+            backlog: VecDeque::new(),
+            receiver,
+        }
+    }
+
+    fn append_entries(&self, entries: &[SchedulerEventLogEntry]) {
+        if entries.is_empty() {
+            return;
+        }
+
+        let frames = entries
+            .iter()
+            .cloned()
+            .map(SessionEventLogFrame::new)
+            .collect::<Vec<_>>();
+        self.lock_entries().extend(entries.iter().cloned());
+        for frame in frames {
+            let _ = self.inner.tail.send(frame);
+        }
+    }
+
+    fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
+        match self.inner.entries.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn current_cursor_for(entries: &[SchedulerEventLogEntry]) -> EventLogCursor {
+        entries
+            .last()
+            .map(|entry| EventLogCursor::new(entry.sequence().saturating_add(1)))
+            .unwrap_or_default()
+    }
+
+    fn replay_batch_from(&self, cursor: EventLogCursor) -> VecDeque<SessionEventLogFrame> {
+        let entries = self.lock_entries();
+        let start = entries.partition_point(|entry| entry.sequence() < cursor.next_sequence);
+        entries
+            .iter()
+            .skip(start)
+            .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
+            .cloned()
+            .map(SessionEventLogFrame::new)
+            .collect()
+    }
+}
+
+impl Default for SessionEventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Cursor-backed event-log stream for one subscriber.
+#[derive(Debug)]
+pub struct SessionEventLogStream {
+    hub: SessionEventLog,
+    next_cursor: EventLogCursor,
+    replay_exhausted: bool,
+    backlog: VecDeque<SessionEventLogFrame>,
+    receiver: broadcast::Receiver<SessionEventLogFrame>,
+}
+
+impl SessionEventLogStream {
+    /// Returns the next cursor position expected by this stream.
+    #[must_use]
+    pub const fn cursor(&self) -> EventLogCursor {
+        self.next_cursor
+    }
+
+    /// Receives the next event-log frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStreamError::Lagged`] when this subscriber falls
+    /// behind the bounded live broadcast tail.
+    pub async fn recv(
+        &mut self,
+    ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
+        loop {
+            if self.backlog.is_empty() && !self.replay_exhausted {
+                self.backlog = self.hub.replay_batch_from(self.next_cursor);
+                self.replay_exhausted = self.backlog.is_empty();
+            }
+
+            if let Some(frame) = self.backlog.pop_front() {
+                if frame.cursor.next_sequence < self.next_cursor.next_sequence {
+                    continue;
+                }
+                self.next_cursor = frame.next_cursor;
+                return Ok(Some(frame));
+            }
+
+            match self.receiver.recv().await {
+                Ok(frame) if frame.cursor.next_sequence < self.next_cursor.next_sequence => {}
+                Ok(frame) => {
+                    self.next_cursor = frame.next_cursor;
+                    return Ok(Some(frame));
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(None),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    return Err(SessionEventLogStreamError::Lagged { skipped });
+                }
+            }
+        }
+    }
+}
+
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
@@ -383,6 +605,7 @@ pub struct Engine<L> {
     event_log_len: usize,
     quanta: u64,
     pending_control: Vec<ControlOperation>,
+    pending_event_log_entries: Vec<SchedulerEventLogEntry>,
     next_control_sequence: u64,
 }
 
@@ -401,6 +624,7 @@ impl<L> Engine<L> {
             event_log_len: 0,
             quanta: 0,
             pending_control: Vec::new(),
+            pending_event_log_entries: Vec::new(),
             next_control_sequence: 0,
         }
     }
@@ -483,6 +707,10 @@ impl<L> Engine<L> {
 
     fn pending_control_len(&self) -> usize {
         self.pending_control.len()
+    }
+
+    fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+        std::mem::take(&mut self.pending_event_log_entries)
     }
 }
 
@@ -735,6 +963,8 @@ impl<L: QuantumLoop> Engine<L> {
         self.frontier = outcome.frontier;
         self.event_log_len = u64_to_usize(outcome.event_log_offset.events);
         self.quanta = self.quanta.saturating_add(1);
+        self.pending_event_log_entries
+            .extend(outcome.event_log_entries.iter().cloned());
 
         Ok(outcome)
     }
@@ -811,6 +1041,7 @@ pub struct SessionActor<L> {
     mailbox: mpsc::Receiver<SessionCommand>,
     deferred: VecDeque<SessionCommand>,
     live: Arc<LiveSnapshot>,
+    event_log: SessionEventLog,
     commands_applied: u64,
     yielded_after_quanta: u64,
     control_acknowledgements: u64,
@@ -826,6 +1057,7 @@ impl<L> SessionActor<L> {
             mailbox,
             deferred: VecDeque::new(),
             live,
+            event_log: SessionEventLog::new(),
             commands_applied: 0,
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
@@ -842,6 +1074,18 @@ impl<L> SessionActor<L> {
     #[must_use]
     pub fn live_snapshot(&self) -> Arc<LiveSnapshot> {
         Arc::clone(&self.live)
+    }
+
+    /// Returns a cloneable event-log hub for cursor subscribers.
+    #[must_use]
+    pub fn event_log(&self) -> SessionEventLog {
+        self.event_log.clone()
+    }
+
+    /// Subscribes to session event-log entries from `cursor` onward.
+    #[must_use]
+    pub fn event_log_stream(&self, cursor: EventLogCursor) -> SessionEventLogStream {
+        self.event_log.subscribe(cursor)
     }
 
     /// Queues a command to be applied before the next running quantum.
@@ -909,6 +1153,8 @@ impl<L: QuantumLoop> SessionActor<L> {
 
                 let pending_control = self.engine.pending_control_len() as u64;
                 self.engine.step_quantum()?;
+                let entries = self.engine.drain_event_log_entries();
+                self.event_log.append_entries(&entries);
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -950,6 +1196,8 @@ impl<L: QuantumLoop> SessionActor<L> {
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
         self.engine.apply_command(command)?;
+        let entries = self.engine.drain_event_log_entries();
+        self.event_log.append_entries(&entries);
         if control_acknowledged && !quantum_ack {
             self.control_acknowledgements = self.control_acknowledgements.saturating_add(1);
         }
@@ -1487,6 +1735,7 @@ mod tests {
                 decisions: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
             })
@@ -1512,6 +1761,7 @@ mod tests {
                 decisions: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: Default::default(),
             })
@@ -1538,6 +1788,7 @@ mod tests {
                 decisions: Vec::new(),
                 event_log_entries: Vec::new(),
                 event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, 1),
             })
@@ -1571,6 +1822,7 @@ mod tests {
                 decisions: Vec::new(),
                 event_log_entries: entries,
                 event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
                 event_log_segment_hash: None,
                 event_log_offset: offset,
             })
@@ -1593,6 +1845,7 @@ mod tests {
                 decisions: vec![decision],
                 event_log_entries: vec![test_event_log_entry(self.quanta - 1)],
                 event_log_segment_bytes: vec![b'x'],
+                event_log_segment_text: String::from("x"),
                 event_log_segment_hash: Some(crucible::ContentHash::from_bytes(b"x")),
                 event_log_offset: crucible::EventLogOffset::new(Default::default(), 0, self.quanta),
             })
@@ -1629,7 +1882,7 @@ mod tests {
     }
 
     fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
-        crucible::SchedulerEventLogEntry::evaluation_boundary(
+        crucible::test_support::condition_boundary_entry_for_test(
             sequence,
             VirtualTime { ticks: sequence },
             crucible::SchedulerEvaluationBoundaryKind::Quantum,

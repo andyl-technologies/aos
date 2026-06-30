@@ -905,9 +905,16 @@ log, so they cannot disagree about what happened.
   for `(seed, scenario, schedule)` replay, replay verification rejects causal
   drift without requiring the original full log, and persisted shared-store
   reproduction artifacts carry event-log segment content keys.
-- [ ] **T-OBS-11** Implement live control-plane streaming as a cursor over the one
+- [x] **T-OBS-11** Implement live control-plane streaming as a cursor over the one
   log (causal + observational, `Command` correlation), a pure non-stalling
   observation. — satisfies [OBS-31]; spec §19.6.5; cross-ref 20, 21.
+  Completed by `checks.crucible.phase4.eventLogControlPlaneStreaming`: live
+  control-plane cursor subscribers receive causal and observational entries,
+  including `Command`-sourced control correlations, from the one session-owned
+  event log; subscribing and dropping a subscriber are API/session observations
+  that do not enqueue commands, advance the scheduler, or mutate the live
+  snapshot. Future cursors clamp to the live tail, and retained replay is served
+  in bounded batches before the stream follows the broadcast tail.
 - [ ] **T-OBS-12** Implement the `tracing` bridge as observational, opt-in, off by
   default, off all ordering-significant paths, with the causal subsequence
   identical under no/capturing/filtering subscribers. — satisfies [OBS-32],
