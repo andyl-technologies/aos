@@ -360,6 +360,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
             },
         )]),
         active_fault_tags: BTreeMap::new(),
+        active_fault_table: crucible::ActiveFaultTable::default(),
     };
     let decision_rng = DecisionRngState {
         positions: BTreeMap::from([(stream, RngStreamPosition::new(11))]),

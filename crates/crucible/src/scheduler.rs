@@ -302,12 +302,7 @@ impl TriggerActionState {
     /// Combines every active full-taxonomy fault currently owned by triggers.
     #[must_use]
     pub fn combined_faults(&self) -> CombinedFaults {
-        let faults = self
-            .active_taxonomy_faults
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        CombinedFaults::from_faults(&faults)
+        CombinedFaults::from_membership_faults(self.active_faults.values())
     }
 
     /// Composes trigger pass/fail state with the final assertion-layer verdict.
@@ -5046,6 +5041,7 @@ impl SingleScheduler {
         let mut state = SchedulerState::empty();
         state.event_sequences = self.event_sequences.clone();
         state.active_fault_tags = self.trigger_actions.active_faults.clone();
+        state.recompute_active_fault_table();
         state
     }
 

@@ -227,6 +227,7 @@ pub struct MaterializedState {
         timers: TimerRegistry,                               // armed timers, fire icounts (08, 09)
         active_faults: BTreeMap<FaultTag, FaultState>,       // in-effect faults + heal points (17)
         active_fault_tags: BTreeMap<FaultTag, MembershipFault>, // heal tags + current binding (17)
+        active_fault_table: ActiveFaultTable,                // directed edge/node/device lookup table (17)
     },
 
     /// The harness decision-RNG state: the position of every seeded per-entity

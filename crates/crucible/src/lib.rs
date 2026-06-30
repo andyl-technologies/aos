@@ -51,8 +51,9 @@ pub use device::{
 };
 pub use device_subnode::{DeviceDelivery, DeviceSchedulingSubNode};
 pub use model::{
-    AppRandomDecision, AssertionDef, AssertionId, AssertionPhase, BlockFault, Checkpoint,
-    CheckpointKind, CheckpointMeta, ChoiceTag, ClockDriftRate, CodePoint, CombinedBlockFaults,
+    ActiveFaultTable, ActiveNetworkEdgeDirection, ActiveNetworkEdgeKey, AppRandomDecision,
+    AssertionDef, AssertionId, AssertionPhase, BlockFault, Checkpoint, CheckpointKind,
+    CheckpointMeta, ChoiceTag, ClockDriftRate, CodePoint, CombinedBlockFaults,
     CombinedDuplicateFault, CombinedFaults, CombinedIoCorruptionFault,
     CombinedNetworkCorruptionFault, CombinedNetworkFaults, CombinedNinePFailureFault,
     CombinedNinePFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration,
