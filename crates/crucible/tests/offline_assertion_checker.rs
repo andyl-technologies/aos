@@ -316,7 +316,7 @@ fn offline_assertion_checker_requires_offsets_for_custom_host_oracle() {
 
     assert!(matches!(
         error,
-        OfflineAssertionCheckError::MissingEventLogOffset { prefix_len: 2 }
+        OfflineAssertionCheckError::MissingEventLogOffset { prefix_len: 4 }
     ));
 }
 
@@ -402,7 +402,7 @@ fn offline_assertion_checker_implementation_reads_log_without_guest_reexecution(
         "ConditionEventLogPrefix",
         "HostAssertionEvaluator::new",
         "finalize_prefix",
-        "is_recorded_evaluation_boundary",
+        "for index in 0..event_log.len()",
     ] {
         assert!(
             checker_block.contains(required),

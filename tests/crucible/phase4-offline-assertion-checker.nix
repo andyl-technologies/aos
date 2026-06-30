@@ -104,8 +104,8 @@
         needle = "condition_prefix_from_recorded_entries";
       }
       {
-        label = "evaluation boundary fold";
-        needle = "is_recorded_evaluation_boundary";
+        label = "every retained prefix fold";
+        needle = "for index in 0..event_log.len()";
       }
       {
         label = "online evaluator reuse";
