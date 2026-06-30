@@ -7,7 +7,7 @@
 
 use thiserror::Error;
 
-use super::hashing::DurableBlake3Hash;
+use super::hashing::{DurableBlake3Hash, ImpureInputObservationHash};
 use crate::string::{ContextKind, StringContext};
 use crate::value::{Value, ValueError, ValueTag};
 
@@ -205,8 +205,8 @@ impl ValueHash {
     ///
     /// This constructor is for demand-graph leaf nodes whose "value" is an
     /// observed filesystem or environment result, not a canonical Nix value.
-    pub const fn from_impure_input_observation_hash(hash: DurableBlake3Hash) -> Self {
-        Self(hash)
+    pub const fn from_impure_input_observation_hash(hash: ImpureInputObservationHash) -> Self {
+        Self(hash.as_durable_hash())
     }
 }
 
@@ -296,7 +296,9 @@ mod tests {
     }
 
     fn input_hash(bytes: &[u8]) -> ValueHash {
-        ValueHash::from_impure_input_observation_hash(DurableBlake3Hash::for_bytes(bytes))
+        ValueHash::from_impure_input_observation_hash(
+            ImpureInputObservationHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes)),
+        )
     }
 
     fn inline_hash(value: Value) -> ValueHash {

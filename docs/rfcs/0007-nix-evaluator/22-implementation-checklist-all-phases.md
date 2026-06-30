@@ -1848,6 +1848,22 @@ alone (`M-1`/`Q-A`).
       differential leak-invariant harness remain open (`S-15`). Gate:
       `cache::parse`, `format_tests`, and `ratchet-oracle`/`aos-nix`
       test-target compile coverage.
+- [x] Current impure-input observation hash boundary:
+      `ImpureInputObservationHash` now marks observed filesystem/environment
+      result hashes for cacheable impure inputs. Operation-specific
+      `ImpureInputFingerprint` constructors compute this type,
+      `CacheableInputFingerprint` stores and returns it, and
+      `ValueHash::from_impure_input_observation_hash` requires it before early
+      cutoff or demand-graph consumers can treat an observation as a value leaf.
+      Persistent node-trace payload encoding unwraps only at the wire-format
+      byte boundary, while `CacheableInputFingerprint::from_observation_hash`
+      remains the explicit persisted-parts boundary for decoded traces and
+      format fixtures. This type-enforces the current observation-hash corridor
+      only; impure-input identity hashes and the full differential
+      leak-invariant harness remain open (`S-15`). Gate:
+      `cache::input`, `cache::cutoff`, `cache::dcg::tests::impure_input`,
+      `format_tests`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+      test-target compile coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4311,6 +4327,22 @@ alone (`M-1`/`Q-A`).
       internal-hash leak invariant remain open. Gate:
       `cache::parse`, `format_tests`, and `ratchet-oracle`/`aos-nix`
       test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current impure-input observation hash boundary:
+      `ImpureInputObservationHash` now marks observed filesystem/environment
+      result hashes for cacheable impure inputs. Operation-specific
+      `ImpureInputFingerprint` constructors compute this type,
+      `CacheableInputFingerprint` stores and returns it, and
+      `ValueHash::from_impure_input_observation_hash` requires it before early
+      cutoff or demand-graph consumers can treat an observation as a value leaf.
+      Persistent node-trace payload encoding unwraps only at the wire-format
+      byte boundary, while `CacheableInputFingerprint::from_observation_hash`
+      remains the explicit persisted-parts boundary for decoded traces and
+      format fixtures. This type-enforces the current observation-hash corridor
+      only; impure-input identity hashes and the full internal-hash leak
+      invariant remain open. Gate: `cache::input`, `cache::cutoff`,
+      `cache::dcg::tests::impure_input`, `format_tests`, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

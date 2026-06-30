@@ -74,7 +74,7 @@ pub(crate) fn persistent_force_cache_surface_canaries(
             ));
             canaries.extend(durable_hash_surface_canaries(
                 "force trace observation BLAKE3",
-                input.observation_hash(),
+                input.observation_hash().as_durable_hash(),
             ));
         }
     }
@@ -161,7 +161,7 @@ fn add_impure_trace_surface_canaries(
         ));
         canaries.extend(durable_hash_surface_canaries(
             "force trace observation BLAKE3",
-            input.observation_hash(),
+            input.observation_hash().as_durable_hash(),
         ));
     }
 }

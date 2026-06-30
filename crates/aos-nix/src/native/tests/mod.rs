@@ -626,7 +626,7 @@ fn persistent_force_cache_surface_canaries(persist_root: &Path) -> Result<Vec<(S
                 ));
                 canaries.extend(durable_hash_surface_canaries(
                     "forced expression trace observation BLAKE3",
-                    input.observation_hash(),
+                    input.observation_hash().as_durable_hash(),
                 ));
             }
         }

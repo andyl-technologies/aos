@@ -8,6 +8,7 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
+//! ImpureInputObservationHash -> observed filesystem/environment input results
 //! LoweredIrFingerprint -> lowered-IR artifact/source-less module identities
 //! ParseCacheSourceHash -> parse-cache source-byte artifact keys
 //! ParseFileContentHash -> parse-file realpath/content memo keys
@@ -93,6 +94,34 @@ impl DurableBlake3Hash {
 impl fmt::Display for DurableBlake3Hash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
+    }
+}
+
+/// A durable BLAKE3 hash for an observed impure input result.
+///
+/// This type separates filesystem/environment observation hashes from impure
+/// input identity hashes, canonical Nix value hashes, parse-cache keys,
+/// persisted blob addresses, and Nix-observed hash surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImpureInputObservationHash(DurableBlake3Hash);
+
+impl ImpureInputObservationHash {
+    /// Wraps a digest computed in an impure-input observation domain.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Wraps persisted impure-input observation hash bytes.
+    ///
+    /// This constructor is for explicit persistence-format boundaries that
+    /// already validated the input kind, mode, and identity subject separately.
+    pub const fn from_persisted_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
     }
 }
 

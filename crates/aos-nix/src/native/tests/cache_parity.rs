@@ -1493,7 +1493,7 @@ fn extend_impure_input_canaries(
     ));
     canaries.extend(durable_hash_surface_canaries(
         &format!("{label} observation BLAKE3"),
-        cacheable.observation_hash(),
+        cacheable.observation_hash().as_durable_hash(),
     ));
 }
 

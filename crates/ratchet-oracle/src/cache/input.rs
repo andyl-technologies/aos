@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use thiserror::Error;
 
-use super::DurableBlake3Hash;
+use super::{DurableBlake3Hash, ImpureInputObservationHash};
 
 const IDENTITY_DOMAIN: &[u8] = b"aos-nix-input-identity-v1";
 const IMPORT_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-import-observation-v1";
@@ -43,7 +43,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::Import,
             ImpureInputMode::Default,
             path,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -60,7 +60,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::ReadFile,
             ImpureInputMode::Default,
             path,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -77,7 +77,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::HashFile,
             ImpureInputMode::Default,
             path,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -111,7 +111,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::ReadDir,
             ImpureInputMode::Default,
             path,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -131,7 +131,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::ReadFileType,
             ImpureInputMode::Default,
             path,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -158,7 +158,7 @@ impl ImpureInputFingerprint {
             ImpureInputKind::GetEnv,
             ImpureInputMode::Default,
             name,
-            hasher.finalize(),
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
         )
     }
 
@@ -190,7 +190,12 @@ impl ImpureInputFingerprint {
     ) -> Result<Self, InputFingerprintError> {
         let mut hasher = InputHasher::new(PATH_EXISTS_OBSERVATION_DOMAIN);
         hasher.update_tag(u8::from(exists));
-        Self::cacheable(ImpureInputKind::PathExists, mode, path, hasher.finalize())
+        Self::cacheable(
+            ImpureInputKind::PathExists,
+            mode,
+            path,
+            ImpureInputObservationHash::from_durable_hash(hasher.finalize()),
+        )
     }
 
     /// Creates the uncacheable fingerprint for `builtins.currentTime`.
@@ -210,7 +215,7 @@ impl ImpureInputFingerprint {
         kind: ImpureInputKind,
         mode: ImpureInputMode,
         subject: &[u8],
-        observation_hash: DurableBlake3Hash,
+        observation_hash: ImpureInputObservationHash,
     ) -> Result<Self, InputFingerprintError> {
         Ok(Self::Cacheable(CacheableInputFingerprint::new(
             kind,
@@ -225,7 +230,7 @@ impl ImpureInputFingerprint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheableInputFingerprint {
     identity: ImpureInputIdentity,
-    observation_hash: DurableBlake3Hash,
+    observation_hash: ImpureInputObservationHash,
 }
 
 impl CacheableInputFingerprint {
@@ -233,7 +238,7 @@ impl CacheableInputFingerprint {
         kind: ImpureInputKind,
         mode: ImpureInputMode,
         subject: &[u8],
-        observation_hash: DurableBlake3Hash,
+        observation_hash: ImpureInputObservationHash,
     ) -> Result<Self, InputFingerprintError> {
         validate_input_mode(kind, mode)?;
         Ok(Self {
@@ -261,7 +266,12 @@ impl CacheableInputFingerprint {
         subject: &[u8],
         observation_hash: DurableBlake3Hash,
     ) -> Result<Self, InputFingerprintError> {
-        Self::new(kind, mode, subject, observation_hash)
+        Self::new(
+            kind,
+            mode,
+            subject,
+            ImpureInputObservationHash::from_persisted_hash(observation_hash),
+        )
     }
 
     /// Returns the typed input identity.
@@ -274,8 +284,8 @@ impl CacheableInputFingerprint {
         self.identity.kind()
     }
 
-    /// Returns the durable hash of the observed input result.
-    pub const fn observation_hash(&self) -> DurableBlake3Hash {
+    /// Returns the typed durable hash of the observed input result.
+    pub const fn observation_hash(&self) -> ImpureInputObservationHash {
         self.observation_hash
     }
 }

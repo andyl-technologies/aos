@@ -266,7 +266,7 @@ impl PersistNodeTracePayload {
             bytes.push(node_trace_input_kind_tag(identity.kind()));
             bytes.push(node_trace_input_mode_tag(identity.mode()));
             bytes.extend_from_slice(&subject_len.to_le_bytes());
-            bytes.extend_from_slice(&input.observation_hash().as_bytes());
+            bytes.extend_from_slice(&input.observation_hash().as_durable_hash().as_bytes());
             bytes.extend_from_slice(subject);
         }
 
