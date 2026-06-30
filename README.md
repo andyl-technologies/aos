@@ -1,39 +1,133 @@
-# AOS
+# AOS — Andyl OS
 
-AOS is a Linux distribution tailored for headless environments like servers and IoT devices. AOS is bootstrapped with an x86 ELF [`hex0` seed] and built with [Nix]. From `hex0` a "Nix stdenv" like to [the one] found in Nixpkgs is setup after several stages similar to the [Guix full-source bootstrap].
+AOS is a Linux distribution tailored for headless environments like servers and IoT devices. AOS has a clear and reproducible [provenance] thanks to its build process conducted with [Nix] and bootstrapped entirely from source.
 
-In other words, the only dependencies for AOS are an x86 machine and a Nix interpreter. In particular, AOS does not depend on Nixpkgs, and its flake inputs are empty.
+## Purpose
 
-Instead, AOS provides its own package registry and [UEFI]-compatible disk images. AOS does not run a nix-daemon: only packages built ahead of time and published on the registry can be installed.
+We wanted a lightweight operating system that runs on any host with a single image that brings together all the great features of NixOS under a familiar package management system that users of `apt` or `yum` would be delighted to use.
 
-The absence of a nix-daemon reduces the attack surface and guarantees that packages can never be built locally. The binary-only approach is modeled after Debian's `apt` user experience, with additional benefits from the `/nix/store` such as system and per-user [profiles].
+## Components
 
-Instead of using host/machine-specific configurations (as in the `nixosConfigurations` [flake output]), AOS system profiles are meant to be installed on more than one machine. AOS system profiles are defined in the `systems` directory using Nix similarly to NixOS.
+- Universal image for cloud and metal
+- [Host provisionning] via cloud-init (Ignition)
+- Runtime managed by systemd
+- [Package management] built with Nix
 
-A single AOS golden image (built from an AOS system profile) can be re-used across many clouds and bare-metal. The generic system is specialized using [Ignition] from CoreOS. Ignition can read instance userdata for most cloud providers and:
+## Install
 
-- Re-partitions disks and create filesystems on the first boot;
-- Manage host-specific state such as `/etc/hostname` or the SSH host key;
-- Enable one or more AOS roles that bundled in the system profile.
+<details>
+<summary>Bare-metal</summary>
 
-An AOS role is an [Ignition configuration] created from Nix, shipped under `/etc/aos/ignition-roles/`, and merged from the top-level Ignition configuration in the instance userdata. AOS roles delay part of the configuration from build-time to system activation time (at boot and when a new system profile is installed). Therefore AOS bends the Ignition execution model by executing Ignition more than once and adding support for the `file://` scheme to point to a config under `/etc/aos/ignition-roles`. AOS restricts the usage of Ignition to its idempotent subset.
+Requirements:
 
-AOS is currently in an alpha stage / technical preview state. AOS was developed to answer the pain points we ran into trying to run NixOS and Kubernetes at scale across many points of presence.
+- x86-64 with UEFI enabled (CSM disabled);
+- A boot drive with 50GB of capacity or more;
+- A thumb drive or (virtual) CD to hold the "cloud-init" instance metadata/userdata;
+  - The commands below assume a thumb drive adapt them to your situation.
+- Your favorite Linux live CD with the following utilities installed:
+  - any kind of HTTP client (`curl`, `wget`…);
+  - `coreutils` (for `dd` & `base64`);
+  - `xorriso` (might be packaged under `libisoburn`);
+  - `sed`;
+- Your SSH public key.
 
-More documentation to come along the way.
+Boot your live CD then download the [AOS image] to flash it onto your boot drive:
 
-## Acknowledgements
+```bash
+printf "boot drive = %s\n" "${BOOT_DRIVE:?"Please set BOOT_DRIVE to the path of the block device for AOS"}"
+printf "image path = %s\n" "${AOS_IMAGE:?"Please set AOS_IMAGE to the path where the AOS disk image was downloaded}"
+dd if="$AOS_IMAGE" of="$BOOT_DRIVE" bs=128k conv=fsync status=progress
+```
 
-AOS would not be possible without the incredible work from those incredible open source projects and their communities: Nix, NixOS, Nixpkgs ❄️, full-source bootstrap towers 🚀, CoreOS ⚛️…
+Next, build `aos-metadata.iso` with a [minimal `config.json`] for Ignition set with your SSH public key and the expected path of your boot drive block device:
 
-AOS is developed hand-in-hand with LLMs agents 🤖.
+```bash
+printf "boot drive = %s\n" "${BOOT_DRIVE:?"Please set BOOT_DRIVE to the path of the block device for AOS"}"
+printf "ignition config path = %s\n" "${CONFIG_PATH:?"Please set CONFIG_PATH to the path of the ignition config.json"}"
+printf "ssh public key = %s\n" "${SSH_PUBLIC_KEY:?"Please set SSH_PUBLIC_KEY (e.g. \`from ssh-add -L | cut -d' ' -f2)'"}"
+printf "aos-metadata iso path = %s\n" "${ISO_OUT:="./aos-metadata.iso"}"
 
-[`hex0` seed]: https://github.com/oriansj/bootstrap-seeds/blob/cedec6b8066d1db229b6c77d42d120a23c6980ed/POSIX/x86/hex0-seed
-[Nix]: https://nix.dev/manual/nix/stable/
-[the one]: https://nixos.org/manual/nixpkgs/unstable/#chap-stdenv
-[Guix full-source bootstrap]: https://guix.gnu.org/en/blog/2023/the-full-source-bootstrap-building-from-source-all-the-way-down/
-[UEFI]: https://en.wikipedia.org/wiki/UEFI
-[profiles]: https://nix.dev/manual/nix/2.28/package-management/profiles.html?highlight=prof#profiles
-[flake output]: https://nix.dev/manual/nix/2.28/command-ref/new-cli/nix3-flake-check.html#evaluation-checks
-[Ignition]: https://coreos.github.io/ignition/
-[Ignition configuration]: https://coreos.github.io/ignition/configuration-v3_5/
+(
+    set -e
+
+    staging="$(mktemp --tmpdir -d aos-metadata-staging.XXXXXXXXXX)"
+    trap "rm -rf $staging" EXIT
+
+    sed \
+        -e "s/REPLACE_ME_RUN_ssh-add_-L_pipe_base64_-w0/$SSH_PUBLIC_KEY/" \
+        -e "s#/dev/vda#$BOOT_DRIVE#" \
+        <"$CONFIG_PATH" \
+        >"$staging/config.json"
+
+    xorriso \
+        -as mkisofs \
+        -volid aos-metadata \
+        -output "$ISO_OUT" \
+        -r $staging/
+)
+```
+
+You may be able to use the ISO directly or you can write it to a thumb drive:
+
+```bash
+printf "metadata drive = %s\n" "${METADATA_DRIVE:?"Please set METADATA_DRIVE to the path of the block device for aos-metadata"}"
+
+dd \
+    if="${ISO_OUT:?"Please set ISO_OUT with the file produced at the previous step"}" \
+    of="$METADATA_DRIVE" \
+    bs=128k \
+    conv=fsync
+```
+
+Once your drives are ready, reboot the machine from the boot drive and into AOS.
+
+</details>
+
+<details>
+<summary>Vultr (Cloud/VPS)</summary>
+
+Pre-requisites:
+
+Download the [minimal `config.json`] for Ignition and set your SSH public key in it, for example:
+
+```bash
+printf "ignition config path = %s\n" "${CONFIG_PATH:?"Please set CONFIG_PATH to the path of the ignition config.json"}"
+printf "ssh public key = %s\n" "${SSH_PUBLIC_KEY:?"Please set SSH_PUBLIC_KEY (e.g. \`from ssh-add -L | cut -d' ' -f2)'"}"
+perl -i -pe "s/REPLACE_ME_RUN_ssh-add_-L_pipe_base64_-w0/$SSH_PUBLIC_KEY/" "$CONFIG_PATH"
+```
+
+Installation:
+
+- Login to console.vultr.com;
+- Expand *Storage* on the left and select *Snapshots*:
+- Click on *Create Snapshot* and select:
+  - [ ] *Remote Snapshot*;
+  - [ ] *Remote URL*: copy/paste the link to the [AOS image];
+  - [ ] *Mark this snapshot as UEFI*;
+  - [ ] Hit *Upload Snapshot*.
+- Back to the left hand side menu expand *Compute* and select *Instances*:
+- Click *Deploy Server* or *Create Instance* and select:
+  - [ ] Figure out an instance type with 50GB of storage or more;
+    - Shared CPU instances are gonna be the cheapest.
+  - [ ] Click *Configure Software* at the bottom once your form is ready;
+    - [ ] Select *Snapshot* as your image and use the uploaded snapshot;
+    - [ ] Enable *Cloud-Init User Data* and paste the content from `$CONFIG_PATH`;
+    - [ ] Hit *Deploy*;
+      - This should redirect you to the *Instance* page/table.
+- You can access the server's console or lookup its IP from its detail page.
+
+</details>
+
+
+## Packages
+
+## Develop
+
+
+
+[AOS image]: 
+[minimal `config.json`]: ./docs/users/install/minimal-config.json
+
+[provenance]: ./docs/users/build_assurance.md
+
+<!-- vim: set spell spelllang=en wrap: -->
