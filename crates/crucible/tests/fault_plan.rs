@@ -42,7 +42,27 @@ fn sim_duration(nanos: u64) -> SimDuration {
 }
 
 fn link_id(left: &str, right: &str) -> LinkId {
-    LinkId::from_name(format!("{left}--{right}"))
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.len(),
+        endpoint_a,
+        endpoint_b.len(),
+        endpoint_b
+    ))
+}
+
+fn legacy_link_id(left: &str, right: &str) -> LinkId {
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!("{endpoint_a}--{endpoint_b}"))
 }
 
 fn device(name: &str) -> DeviceId {
@@ -513,6 +533,53 @@ fn lowered_network_loss_fault_plan_applies_to_live_netlink() {
         outcome.deliveries.is_empty(),
         "the trigger-owned loss fault should affect live link delivery"
     );
+}
+
+#[test]
+fn canonical_network_fault_plan_applies_through_legacy_live_link_id() {
+    let world = world();
+    let plan = Plan::from_fault_plan_for_world(
+        &world,
+        FaultPlan::from_entries(vec![FaultPlanEntry::PermanentAt {
+            at: time(0),
+            tag: tag("loss"),
+            fault: Fault::Network(NetworkFault::Loss {
+                link: link_id("db-0", "db-1"),
+                rate: FaultRateBasisPoints::from_basis_points(10_000)
+                    .expect("loss rate should be in range"),
+            }),
+        }]),
+    )
+    .expect("fault plan should validate");
+    let lowered = plan
+        .lower_to_event_graph_for_world(&world)
+        .expect("fault plan should lower");
+    let mut scheduler = SingleScheduler::new(scenario("canonical-fault-legacy-link", &world))
+        .expect("scheduler should build");
+    let mut state = EventGraphState::new();
+
+    scheduler
+        .append_evaluation_boundary(time(0), SchedulerEvaluationBoundaryKind::Quantum)
+        .expect("evaluation boundary should append");
+    let firings = scheduler.evaluate_event_graph(lowered.event_graph(), &mut state, NoLeaves);
+    scheduler
+        .apply_trigger_firings(&firings)
+        .expect("loss fault firing should apply");
+
+    let mut link = NetLink::new(0, 1, 10, 1, LinkFaults::none()).expect("link should build");
+    let application = scheduler
+        .apply_trigger_network_faults_to_link(
+            2,
+            &legacy_link_id("db-0", "db-1"),
+            scheduler_node("db-0"),
+            scheduler_node("db-1"),
+            &mut link,
+            NetworkLinkDirection::EndpointAToEndpointB,
+            Vec::new(),
+        )
+        .expect("canonical trigger fault should apply through legacy live link id");
+
+    assert!(application.link_faults.loss.fires(0));
 }
 
 #[test]

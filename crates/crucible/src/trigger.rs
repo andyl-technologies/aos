@@ -2650,18 +2650,34 @@ impl EventGraphTopology {
                 .participants
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            links: world
-                .links()
-                .iter()
-                .map(link_id_for_world_link)
-                .collect::<BTreeSet<_>>(),
+            links: event_graph_link_ids(world.links()),
         }
     }
 }
 
-fn link_id_for_world_link(link: &LinkDef) -> LinkId {
-    let (left, right) = link.endpoints();
-    link_id_for_endpoint_pair(left, right)
+fn event_graph_link_ids(links: &[LinkDef]) -> BTreeSet<LinkId> {
+    let mut ids = BTreeSet::new();
+    for link in links {
+        ids.insert(canonical_link_id_for_world_link(link));
+        ids.insert(legacy_link_id_for_world_link(link));
+    }
+    ids
+}
+
+fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
+    let (endpoint_a, endpoint_b) = link.endpoints();
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.name.len(),
+        endpoint_a.name,
+        endpoint_b.name.len(),
+        endpoint_b.name
+    ))
+}
+
+fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
+    let (endpoint_a, endpoint_b) = link.endpoints();
+    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
 fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
@@ -2670,7 +2686,13 @@ fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
     } else {
         (right, left)
     };
-    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.name.len(),
+        endpoint_a.name,
+        endpoint_b.name.len(),
+        endpoint_b.name
+    ))
 }
 
 fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {

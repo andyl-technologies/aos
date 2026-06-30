@@ -22,6 +22,21 @@ fn link(name: &str) -> LinkId {
     LinkId::from_name(name)
 }
 
+fn canonical_link(left: &str, right: &str) -> LinkId {
+    let (endpoint_a, endpoint_b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.len(),
+        endpoint_a,
+        endpoint_b.len(),
+        endpoint_b
+    ))
+}
+
 fn tag(name: &str) -> FaultTag {
     FaultTag::from_name(name)
 }
@@ -213,7 +228,7 @@ fn validator_rejects_injected_faults_with_unknown_nodes_or_links() {
         missing_fault_link,
         Err(EventGraphError::UnknownLinkReference {
             event: event_id("partition-without-link"),
-            link: link("db-0--db-1"),
+            link: canonical_link("db-0", "db-1"),
         })
     );
 }
