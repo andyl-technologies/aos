@@ -1465,14 +1465,20 @@ harness, never cut for scope.
       legs and the changed-source cached miss/fresh-hit legs reuse both
       static-output side records and final ATerm path side records for the two
       derivations, and perform zero derivation hash and final text-path
-      calculations. The canaries also scan uncached/cached first and changed
-      closures for the exercised first/changed raw-wrapper parse-cache BLAKE3,
-      leaf parse-cache BLAKE3, and file-content BLAKE3 renderings in hex, raw
-      bytes, and Nix base32.
+      calculations. The ordinary comment-only leaf changed-source cached leg
+      also requires the same two side-record reuses and zero derivation
+      hash/text-path work, while the unused leaf-package edit pins the current
+      partial dirty frontier with one static-output side-record reuse, one final
+      ATerm path side-record reuse, two derivation-hash calculations, and one
+      final text-path calculation before producing the same closure bytes. The
+      canaries scan uncached/cached first and changed closures for the exercised
+      first/changed raw-wrapper parse-cache BLAKE3, leaf parse-cache BLAKE3,
+      and file-content BLAKE3 renderings in hex, raw bytes, and Nix base32.
       This samples one raw-root comment/whitespace edit, one ordinary
       comment/whitespace leaf edit, one forced comment/whitespace leaf edit,
-      and one unused leaf-package edit, not bounded recomputation measurement,
-      full AOS closure coverage, the full leak invariant, or future
+      and one unused leaf-package edit plus selected derivation side-record
+      shortcut counters, not full bounded recomputation measurement, full AOS
+      closure coverage, the full leak invariant, or future
       value-memoization safety net.
       ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P1/P2, `S-14`;
       gate: focused native source-edit cache-parity tests.

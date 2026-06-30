@@ -606,9 +606,17 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
             .expect("persistent parse hit observations lock")
             .push(hit);
     });
-    let cached_second = cached_second_native.instantiate_closure(&file, "pkgs.hello")?;
+    let (cached_second, cached_second_stats) =
+        instantiate_file_closure_with_stats(&cached_second_native, &file, "pkgs.hello")?;
 
     assert_eq!(cached_second, uncached_first);
+    assert_eq!(cached_second_stats.derivation_aterm_path_reuses(), 2);
+    assert_eq!(
+        cached_second_stats.static_derivation_output_path_reuses(),
+        2
+    );
+    assert_eq!(cached_second_stats.derivation_hash_calculations(), 0);
+    assert_eq!(cached_second_stats.derivation_text_path_calculations(), 0);
     assert_eq!(
         observed_hits
             .lock()
@@ -763,9 +771,17 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
             .expect("persistent parse hit observations lock")
             .push(hit);
     });
-    let cached_second = cached_second_native.instantiate_closure(&file, "pkgs.hello")?;
+    let (cached_second, cached_second_stats) =
+        instantiate_file_closure_with_stats(&cached_second_native, &file, "pkgs.hello")?;
 
     assert_eq!(cached_second, uncached_first);
+    assert_eq!(cached_second_stats.derivation_aterm_path_reuses(), 1);
+    assert_eq!(
+        cached_second_stats.static_derivation_output_path_reuses(),
+        1
+    );
+    assert_eq!(cached_second_stats.derivation_hash_calculations(), 2);
+    assert_eq!(cached_second_stats.derivation_text_path_calculations(), 1);
     assert_eq!(
         observed_hits
             .lock()
