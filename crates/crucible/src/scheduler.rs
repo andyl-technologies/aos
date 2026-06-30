@@ -30,12 +30,12 @@ use crate::{
     AssertionId, BackendError, BackendInput, CombinedFaults, CombinedNetworkFaults,
     CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction,
     ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision,
-    EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints, FaultTag,
-    Icount, LinkId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
-    PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulerState, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
-    WorldStaticTopology, step,
+    EventId, EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints,
+    FaultTag, Icount, LinkId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
+    PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId,
+    RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, Shift,
+    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -138,13 +138,103 @@ pub struct SchedulerConcurrentRunCandidate {
     pub max_advance_icount: u64,
 }
 
+/// Per-node retired-instruction stamp attached to an event-log time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventLogIcountStamp {
+    /// Node whose retired-instruction counter was sampled, when node-local.
+    pub node: Option<NodeId>,
+    /// Retired-instruction count at the event boundary.
+    pub icount: Icount,
+}
+
+/// Virtual-time coordinate enriched with a deterministic icount stamp.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventLogTime {
+    /// Scheduler virtual time at which the entry occurred.
+    pub virtual_time: VirtualTime,
+    /// Retired-instruction coordinate at the same boundary.
+    pub icount: EventLogIcountStamp,
+}
+
+impl EventLogTime {
+    /// Builds a time coordinate using virtual time as the scheduler-boundary icount.
+    #[must_use]
+    pub const fn from_virtual_time(virtual_time: VirtualTime) -> Self {
+        Self {
+            virtual_time,
+            icount: EventLogIcountStamp {
+                node: None,
+                icount: Icount {
+                    retired: virtual_time.ticks,
+                },
+            },
+        }
+    }
+
+    /// Adds a per-node icount stamp to this coordinate.
+    #[must_use]
+    pub fn with_icount(mut self, node: NodeId, icount: Icount) -> Self {
+        self.icount = EventLogIcountStamp {
+            node: Some(node),
+            icount,
+        };
+        self
+    }
+}
+
+/// Closed origin set for unified event-log entries.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EventSource {
+    /// A scenario-defined temporal event or fault.
+    Scenario {
+        /// Stable event-graph id that produced the entry.
+        event: EventId,
+    },
+    /// The scheduler, temporal graph, fault subsystem, or assertion engine.
+    Engine,
+    /// A VM node or deterministic I/O sub-node.
+    Node {
+        /// Scenario node that originated the entry.
+        node: NodeId,
+    },
+    /// Guest-observed marker or black-box guest signal.
+    Guest {
+        /// Scenario node whose guest produced the entry.
+        node: NodeId,
+    },
+    /// A control-plane command and its client correlation id.
+    Command {
+        /// Session-local command correlation id.
+        command_id: u64,
+    },
+}
+
+/// Display verbosity for an event-log entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventLevel {
+    /// Highest-frequency internal state.
+    Trace,
+    /// Routine diagnostic detail.
+    Debug,
+    /// User-meaningful state change.
+    Info,
+    /// Unusual but non-fatal condition.
+    Warn,
+    /// Failure or assertion violation.
+    Error,
+}
+
 /// One scheduler-emitted entry in the unified event log.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerEventLogEntry {
     /// Dense per-run sequence number assigned by the scheduler append path.
     sequence: u64,
-    /// Virtual-time coordinate at which the entry occurred.
-    at: VirtualTime,
+    /// Virtual-time coordinate, optionally enriched with per-node icount.
+    at: EventLogTime,
+    /// Closed source that identifies where the entry originated.
+    source: EventSource,
+    /// Display verbosity, orthogonal to determinism class.
+    level: EventLevel,
     /// Causal-vs-observational class recorded by the typed append path.
     class: SchedulerEventLogClass,
     /// Typed payload carried by the event-log entry.
@@ -156,6 +246,9 @@ pub struct SchedulerEventLogEntry {
 
 /// Compatibility name for entries in the unified event log.
 pub type LogEntry = SchedulerEventLogEntry;
+
+/// Compatibility name for the causal-vs-observational event class.
+pub type EventClass = SchedulerEventLogClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct SchedulerEventLogEntryProvenance;
@@ -200,7 +293,25 @@ impl SchedulerEventLogEntry {
     /// Returns the virtual-time coordinate at which the entry occurred.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
-        self.at
+        self.at.virtual_time
+    }
+
+    /// Returns the full event-log time coordinate.
+    #[must_use]
+    pub fn time(&self) -> &EventLogTime {
+        &self.at
+    }
+
+    /// Returns the closed event source.
+    #[must_use]
+    pub fn source(&self) -> &EventSource {
+        &self.source
+    }
+
+    /// Returns the display verbosity level.
+    #[must_use]
+    pub fn level(&self) -> EventLevel {
+        self.level
     }
 
     /// Returns the causal-vs-observational class recorded for this entry.
@@ -230,7 +341,14 @@ impl SchedulerEventLogEntry {
         self.content_hash
             == ContentHash::from_canonical_material(
                 "crucible.scheduler.event-log.entry.v1",
-                &scheduler_event_log_entry_material(self.sequence, self.at, &self.payload),
+                &scheduler_event_log_entry_material(
+                    self.sequence,
+                    &self.at,
+                    &self.source,
+                    self.level,
+                    self.class,
+                    &self.payload,
+                ),
             )
     }
 
@@ -3747,13 +3865,18 @@ fn scheduler_event_log_entry_with_class(
     class: SchedulerEventLogClass,
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
+    let time = scheduler_event_log_time(at, &payload);
+    let source = scheduler_event_log_payload_source(&payload);
+    let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
         "crucible.scheduler.event-log.entry.v1",
-        &scheduler_event_log_entry_material(sequence, at, &payload),
+        &scheduler_event_log_entry_material(sequence, &time, &source, level, class, &payload),
     );
     SchedulerEventLogEntry {
         sequence,
-        at,
+        at: time,
+        source,
+        level,
         class,
         payload,
         content_hash,
@@ -3763,52 +3886,341 @@ fn scheduler_event_log_entry_with_class(
 
 fn scheduler_event_log_entry_material(
     sequence: u64,
-    at: VirtualTime,
+    at: &EventLogTime,
+    source: &EventSource,
+    level: EventLevel,
+    class: SchedulerEventLogClass,
     payload: &SchedulerEventLogPayload,
 ) -> String {
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
-    lines.push(format!("at_ticks={}", at.ticks));
+    lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
+    lines.push(format!("at_icount_retired={}", at.icount.icount.retired));
+    match &at.icount.node {
+        Some(node) => {
+            lines.push(String::from("at_icount_node=some"));
+            lines.push(format!("at_icount_node_len={}", node.name.len()));
+            lines.push(format!("at_icount_node_name={}", node.name));
+        }
+        None => lines.push(String::from("at_icount_node=none")),
+    }
+    lines.push(scheduler_event_log_source_material("source", source));
+    lines.push(format!("level={}", event_level_label(level)));
+    lines.push(format!("class={}", event_class_label(class)));
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
-            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=resolved-happening"));
             lines.push(scheduled_event_material(event));
         }
         SchedulerEventLogPayload::Decision(decision) => {
-            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=decision"));
             lines.push(scheduler_decision_material(decision));
         }
         SchedulerEventLogPayload::Observable(observable) => {
-            lines.push(String::from("class=observational"));
             lines.push(String::from("payload=observable"));
             lines.push(format!("observable={observable:?}"));
         }
         SchedulerEventLogPayload::EvaluationBoundary(kind) => {
-            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=evaluation-boundary"));
             lines.push(format!("kind={kind:?}"));
         }
         SchedulerEventLogPayload::TriggerFired(firing) => {
-            lines.push(String::from("class=causal"));
             lines.push(String::from("payload=trigger_fired"));
             lines.push(trigger_firing_material(firing));
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
-            lines.push(format!(
-                "class={}",
-                if application.is_observational() {
-                    "observational"
-                } else {
-                    "causal"
-                }
-            ));
             lines.push(String::from("payload=trigger_action_applied"));
             lines.push(trigger_action_application_material(application));
         }
     }
     lines.join("\n")
+}
+
+fn scheduler_event_log_time(at: VirtualTime, payload: &SchedulerEventLogPayload) -> EventLogTime {
+    EventLogTime {
+        virtual_time: at,
+        icount: scheduler_event_log_payload_icount(at, payload),
+    }
+}
+
+fn scheduler_event_log_payload_icount(
+    at: VirtualTime,
+    payload: &SchedulerEventLogPayload,
+) -> EventLogIcountStamp {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            scheduled_event_payload_icount(at, &event.payload)
+        }
+        SchedulerEventLogPayload::Decision(decision) => decision_icount(at, decision),
+        SchedulerEventLogPayload::Observable(observable) => {
+            observable_payload_icount(at, observable)
+        }
+        SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::TriggerActionApplied(_) => boundary_icount(at),
+    }
+}
+
+fn scheduled_event_payload_icount(
+    at: VirtualTime,
+    payload: &ScheduledEventPayload,
+) -> EventLogIcountStamp {
+    match payload {
+        ScheduledEventPayload::BackendInput(input) => node_boundary_icount(at, &input.node),
+        ScheduledEventPayload::IoCompletion(completion) => EventLogIcountStamp {
+            node: Some(completion.target.clone()),
+            icount: completion.delivery_icount,
+        },
+        ScheduledEventPayload::FaultActivation(_)
+        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::Control(_) => boundary_icount(at),
+    }
+}
+
+fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp {
+    match decision {
+        Decision::Preemption(preemption) => EventLogIcountStamp {
+            node: Some(preemption.node.clone()),
+            icount: preemption.at,
+        },
+        Decision::AppRandom(random) => node_boundary_icount(at, &random.node),
+        Decision::DeliveryOrder(_)
+        | Decision::FaultFires(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_)
+        | Decision::ControlFault(_) => boundary_icount(at),
+    }
+}
+
+fn observable_payload_icount(
+    at: VirtualTime,
+    observable: &ObservableEventPayload,
+) -> EventLogIcountStamp {
+    match observable {
+        ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::IoCompletion { node, .. }
+        | ObservableEventPayload::NodeState { node, .. } => node_boundary_icount(at, node),
+        ObservableEventPayload::CoverageBlock {
+            execution_icount,
+            node,
+            ..
+        } => EventLogIcountStamp {
+            node: Some(node.clone()),
+            icount: *execution_icount,
+        },
+        ObservableEventPayload::MemorySample {
+            sample_icount,
+            node,
+            ..
+        } => EventLogIcountStamp {
+            node: Some(node.clone()),
+            icount: *sample_icount,
+        },
+        ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node,
+            ..
+        }
+        | ObservableEventPayload::GuestAssertionMarker {
+            retired_icount,
+            node,
+            ..
+        } => EventLogIcountStamp {
+            node: Some(node.clone()),
+            icount: *retired_icount,
+        },
+        ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. } => boundary_icount(at),
+    }
+}
+
+fn boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
+    EventLogIcountStamp {
+        node: None,
+        icount: Icount { retired: at.ticks },
+    }
+}
+
+fn node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
+    EventLogIcountStamp {
+        node: Some(node.clone()),
+        icount: Icount { retired: at.ticks },
+    }
+}
+
+fn scheduler_event_log_payload_source(payload: &SchedulerEventLogPayload) -> EventSource {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => scheduled_event_source(event),
+        SchedulerEventLogPayload::Decision(decision) => decision_source(decision),
+        SchedulerEventLogPayload::Observable(observable) => observable_payload_source(observable),
+        SchedulerEventLogPayload::EvaluationBoundary(_) => EventSource::Engine,
+        SchedulerEventLogPayload::TriggerFired(firing) => EventSource::Scenario {
+            event: firing.event().clone(),
+        },
+        SchedulerEventLogPayload::TriggerActionApplied(application) => EventSource::Scenario {
+            event: application.event.clone(),
+        },
+    }
+}
+
+fn scheduled_event_source(event: &ScheduledEvent) -> EventSource {
+    match &event.payload {
+        ScheduledEventPayload::Control(operation) => EventSource::Command {
+            command_id: operation.sequence,
+        },
+        payload => scheduled_event_payload_source(payload),
+    }
+}
+
+fn scheduled_event_payload_source(payload: &ScheduledEventPayload) -> EventSource {
+    match payload {
+        ScheduledEventPayload::BackendInput(input) => EventSource::Node {
+            node: input.node.clone(),
+        },
+        ScheduledEventPayload::IoCompletion(completion) => EventSource::Node {
+            node: completion.target.clone(),
+        },
+        ScheduledEventPayload::FaultActivation(fault) => EventSource::Scenario {
+            event: EventId::from_name(fault.name.clone()),
+        },
+        ScheduledEventPayload::ProbabilisticFault(choice) => EventSource::Scenario {
+            event: EventId::from_name(choice.fault.name.clone()),
+        },
+        ScheduledEventPayload::Control(operation) => EventSource::Command {
+            command_id: operation.sequence,
+        },
+    }
+}
+
+fn decision_source(decision: &Decision) -> EventSource {
+    match decision {
+        Decision::Preemption(preemption) => EventSource::Node {
+            node: preemption.node.clone(),
+        },
+        Decision::AppRandom(random) => EventSource::Guest {
+            node: random.node.clone(),
+        },
+        Decision::ControlFault(control) => EventSource::Command {
+            command_id: control.sequence,
+        },
+        Decision::DeliveryOrder(_)
+        | Decision::FaultFires(_)
+        | Decision::RngDraw(_)
+        | Decision::Override(_) => EventSource::Engine,
+    }
+}
+
+fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
+    match observable {
+        ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::CoverageBlock { node, .. }
+        | ObservableEventPayload::MemorySample { node, .. }
+        | ObservableEventPayload::IoCompletion { node, .. }
+        | ObservableEventPayload::NodeState { node, .. } => {
+            EventSource::Node { node: node.clone() }
+        }
+        ObservableEventPayload::GuestMarker { node, .. }
+        | ObservableEventPayload::GuestAssertionMarker { node, .. } => {
+            EventSource::Guest { node: node.clone() }
+        }
+        ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. } => EventSource::Engine,
+    }
+}
+
+fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPayload) -> EventLevel {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(_) => EventLevel::Info,
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(_)) => EventLevel::Trace,
+        SchedulerEventLogPayload::Decision(_) => EventLevel::Debug,
+        SchedulerEventLogPayload::Observable(observable) => observable_payload_level(observable),
+        SchedulerEventLogPayload::EvaluationBoundary(_) => EventLevel::Trace,
+        SchedulerEventLogPayload::TriggerFired(_) => EventLevel::Debug,
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            trigger_action_application_level(application)
+        }
+    }
+}
+
+fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
+    match observable {
+        ObservableEventPayload::CoverageBlock { .. } => EventLevel::Trace,
+        ObservableEventPayload::MemorySample { .. } => EventLevel::Debug,
+        ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::IoCompletion { .. }
+        | ObservableEventPayload::NodeState { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
+    }
+}
+
+fn trigger_action_application_level(application: &TriggerActionApplication) -> EventLevel {
+    match &application.action {
+        Action::Log { level, .. } => event_level_from_trigger_log(*level),
+        Action::Fail { .. } => EventLevel::Error,
+        Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Group(_) => EventLevel::Info,
+    }
+}
+
+fn event_level_from_trigger_log(level: LogLevel) -> EventLevel {
+    match level {
+        LogLevel::Debug => EventLevel::Debug,
+        LogLevel::Info => EventLevel::Info,
+        LogLevel::Warn => EventLevel::Warn,
+        LogLevel::Error => EventLevel::Error,
+    }
+}
+
+fn scheduler_event_log_source_material(prefix: &str, source: &EventSource) -> String {
+    match source {
+        EventSource::Scenario { event } => format!(
+            "{prefix}=scenario\n{prefix}.event_len={}\n{prefix}.event={}",
+            event.name.len(),
+            event.name
+        ),
+        EventSource::Engine => format!("{prefix}=engine"),
+        EventSource::Node { node } => format!(
+            "{prefix}=node\n{prefix}.node_len={}\n{prefix}.node={}",
+            node.name.len(),
+            node.name
+        ),
+        EventSource::Guest { node } => format!(
+            "{prefix}=guest\n{prefix}.node_len={}\n{prefix}.node={}",
+            node.name.len(),
+            node.name
+        ),
+        EventSource::Command { command_id } => {
+            format!("{prefix}=command\n{prefix}.command_id={command_id}")
+        }
+    }
+}
+
+fn event_level_label(level: EventLevel) -> &'static str {
+    match level {
+        EventLevel::Trace => "trace",
+        EventLevel::Debug => "debug",
+        EventLevel::Info => "info",
+        EventLevel::Warn => "warn",
+        EventLevel::Error => "error",
+    }
+}
+
+fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
+    match class {
+        SchedulerEventLogClass::Causal => "causal",
+        SchedulerEventLogClass::Observational => "observational",
+    }
 }
 
 fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> SchedulerEventLogClass {
@@ -4358,10 +4770,36 @@ pub(crate) fn scheduler_event_log_segment_bytes(
     lines.push(format!("previous_prefix={}", previous_prefix.to_hex()));
     lines.push(format!("entries={}", entries.len()));
     for entry in entries {
-        let entry_material =
-            scheduler_event_log_entry_material(entry.sequence, entry.at, &entry.payload);
+        let entry_material = scheduler_event_log_entry_material(
+            entry.sequence,
+            &entry.at,
+            &entry.source,
+            entry.level,
+            entry.class,
+            &entry.payload,
+        );
         lines.push(format!("entry.sequence={}", entry.sequence));
-        lines.push(format!("entry.at_ticks={}", entry.at.ticks));
+        lines.push(format!(
+            "entry.at_virtual_time_ticks={}",
+            entry.at.virtual_time.ticks
+        ));
+        lines.push(format!(
+            "entry.at_icount_retired={}",
+            entry.at.icount.icount.retired
+        ));
+        match &entry.at.icount.node {
+            Some(node) => {
+                lines.push(String::from("entry.at_icount_node=some"));
+                lines.push(format!("entry.at_icount_node_name={}", node.name));
+            }
+            None => lines.push(String::from("entry.at_icount_node=none")),
+        }
+        lines.push(scheduler_event_log_source_material(
+            "entry.source",
+            &entry.source,
+        ));
+        lines.push(format!("entry.level={}", event_level_label(entry.level)));
+        lines.push(format!("entry.class={}", event_class_label(entry.class)));
         lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
         lines.push(format!("entry.bytes={}", entry_material.len()));
         lines.push(String::from("entry.material_begin"));
