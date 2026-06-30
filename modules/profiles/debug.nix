@@ -55,15 +55,30 @@ in {
       # Hardcoded to root: every agetty unit below autologins root,
       # and these values hold identically in the stage-1 initrd,
       # which has no NSS to resolve a passwd lookup through.
-      autologinShell = pkgs.writeShellScriptBin "autologin-shell" ''
-        export USER=root
-        export LOGNAME=root
-        export HOME=/root
-        export SHELL=${pkgs.bash}/bin/bash
-        cd "$HOME" 2>/dev/null || true
-        exec ${pkgs.bash}/bin/bash -l
-      '';
+      #
+      # RFC-0011 Layer 2: this shim is an image-fixed artifact (pure function
+      # of pkgs, not host.nix). Reference the resolved artifact so the on-host
+      # eval-only evaluator uses the stage-1-frozen store path instead of
+      # rebuilding it (`pkgs.writeShellScriptBin` is absent from the stage-2
+      # frozen pkgs). On a normal build `frozenArtifacts` is empty, so this
+      # resolves to the same derivation as before (byte-identical).
+      autologinShell = config.aos.config.artifacts.autologin-shell;
     in {
+      # Register the autologin shim as an image-fixed config artifact, guarded
+      # so the stage-2 frozen pkgs never evaluates the builder.
+      aos.config._artifactSources.autologin-shell =
+        if config.aos.config.frozenArtifacts ? "autologin-shell"
+        then null
+        else
+          pkgs.writeShellScriptBin "autologin-shell" ''
+            export USER=root
+            export LOGNAME=root
+            export HOME=/root
+            export SHELL=${pkgs.bash}/bin/bash
+            cd "$HOME" 2>/dev/null || true
+            exec ${pkgs.bash}/bin/bash -l
+          '';
+
       # Mask the sulogin-based recovery units in the initrd. The debug
       # shells below already run an always-on autologin root shell on
       # every console (tty0/ttyS0). When a first-boot failure (e.g.

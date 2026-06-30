@@ -10,14 +10,13 @@
   ...
 }: let
   cfg = config.aos.security.ebpfLsm;
-  prepareBpffs = pkgs.writeShellScriptBin "aos-prepare-ebpf-lsm-bpffs" ''
-    set -eu
-    ${pkgs.coreutils}/bin/mkdir -p /sys/fs/bpf
-    if ! ${pkgs.util-linux}/bin/mountpoint -q /sys/fs/bpf; then
-      ${pkgs.util-linux}/bin/mount -t bpf bpf /sys/fs/bpf
-    fi
-    ${pkgs.coreutils}/bin/mkdir -p /sys/fs/bpf/aos/lsm
-  '';
+  # RFC-0011 Layer 2: the bpffs-prep script is an image-fixed artifact (a pure
+  # function of pkgs, not host.nix). Reference the resolved artifact so the
+  # on-host eval-only evaluator uses the stage-1-frozen store path instead of
+  # rebuilding it; `pkgs.writeShellScriptBin` is absent from the stage-2 frozen
+  # pkgs. On a normal build `frozenArtifacts` is empty, so this resolves to the
+  # same derivation as before (byte-identical).
+  prepareBpffs = config.aos.config.artifacts.ebpf-lsm-prepare-bpffs;
 in {
   options.aos.security.ebpfLsm = {
     enable = lib.mkOption {
@@ -31,6 +30,23 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Register the bpffs-prep script as an image-fixed config artifact
+    # (RFC-0011 Layer 2). Guarded so the stage-2 frozen pkgs (which lacks
+    # `writeShellScriptBin`) never evaluates the builder; the resolved
+    # `artifacts.ebpf-lsm-prepare-bpffs` reads the frozen path in that case.
+    aos.config._artifactSources.ebpf-lsm-prepare-bpffs =
+      if config.aos.config.frozenArtifacts ? "ebpf-lsm-prepare-bpffs"
+      then null
+      else
+        pkgs.writeShellScriptBin "aos-prepare-ebpf-lsm-bpffs" ''
+          set -eu
+          ${pkgs.coreutils}/bin/mkdir -p /sys/fs/bpf
+          if ! ${pkgs.util-linux}/bin/mountpoint -q /sys/fs/bpf; then
+            ${pkgs.util-linux}/bin/mount -t bpf bpf /sys/fs/bpf
+          fi
+          ${pkgs.coreutils}/bin/mkdir -p /sys/fs/bpf/aos/lsm
+        '';
+
     # The policy package rides in via aos's runtimeDeps (AOS_EBPF_LSM_POLICY),
     # so it need not be on PATH.
     systemd.services.aos-ebpf-lsm-policies = {

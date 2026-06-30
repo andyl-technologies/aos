@@ -203,17 +203,31 @@ in {
         config = let
           safe = "etc-" + lib.replaceStrings ["/"] ["-"] name;
           basename = baseNameOf name;
-          # AOS's writeTextFile produces a directory output (stdenv/
-          # setup.sh pre-creates $out as a dir, then cp puts the file
-          # inside). Use destination="/<basename>" and reference the
-          # inner path.
-          textDrv = pkgs.writeTextFile {
-            name = safe;
-            text = config.text;
-            destination = "/${basename}";
-          };
         in {
-          source = lib.mkIf (config.text != null) "${textDrv}/${basename}";
+          # When `text` is set, derive `source` from it via writeTextFile.
+          # AOS's writeTextFile produces a directory output (stdenv/setup.sh
+          # pre-creates $out as a dir, then cp puts the file inside), so use
+          # destination="/<basename>" and reference the inner path.
+          #
+          # The mkIf condition and the `text == null` guard are deliberately
+          # redundant: `collectDefsAtPath` forces every mkIf def's value to WHNF
+          # during option collection — even for the FALSE branch (it can't drop
+          # the dead branch without forcing the condition early, which would
+          # create fixpoint cycles). So a bare `mkIf (text != null) "${textDrv}…"`
+          # would build `writeTextFile` for EVERY entry, including the many
+          # store-sourced ones whose `text` is null. That faults under the
+          # RFC-0011 on-host eval-only `pkgs` (no builder functions). The inner
+          # guard keeps the dead-branch value a plain string so WHNF never
+          # constructs the derivation; the live branch is byte-identical.
+          source = lib.mkIf (config.text != null) (
+            if config.text == null
+            then "/var/empty"
+            else "${pkgs.writeTextFile {
+              name = safe;
+              text = config.text;
+              destination = "/${basename}";
+            }}/${basename}"
+          );
         };
       }));
       description = ''
@@ -568,17 +582,48 @@ in {
       # materializes — mirrored here as pure data.
       unitTextEntries = lib.concatLists (lib.mapAttrsToList (unitName: u:
         if u.enable && u.text != null
-        then [(lib.nameValuePair "systemd/system/${unitName}" {kind = "text"; text = u.text; mode = "0644";})]
+        then [
+          (lib.nameValuePair "systemd/system/${unitName}" {
+            kind = "text";
+            text = u.text;
+            mode = "0644";
+          })
+        ]
         else if !u.enable
-        then [(lib.nameValuePair "systemd/system/${unitName}" {kind = "symlink"; target = "/dev/null";})]
+        then [
+          (lib.nameValuePair "systemd/system/${unitName}" {
+            kind = "symlink";
+            target = "/dev/null";
+          })
+        ]
         else [])
       unitBodies);
 
       installSymlinks = lib.concatLists (lib.mapAttrsToList (unitName: u:
-        builtins.map (a: lib.nameValuePair "systemd/system/${a}" {kind = "symlink"; target = unitName;}) u.aliases
-        ++ builtins.map (w: lib.nameValuePair "systemd/system/${w}.wants/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.wantedBy
-        ++ builtins.map (r: lib.nameValuePair "systemd/system/${r}.requires/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.requiredBy
-        ++ builtins.map (h: lib.nameValuePair "systemd/system/${h}.upholds/${unitName}" {kind = "symlink"; target = "../${unitName}";}) u.upheldBy)
+        builtins.map (a:
+          lib.nameValuePair "systemd/system/${a}" {
+            kind = "symlink";
+            target = unitName;
+          })
+        u.aliases
+        ++ builtins.map (w:
+          lib.nameValuePair "systemd/system/${w}.wants/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.wantedBy
+        ++ builtins.map (r:
+          lib.nameValuePair "systemd/system/${r}.requires/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.requiredBy
+        ++ builtins.map (h:
+          lib.nameValuePair "systemd/system/${h}.upholds/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.upheldBy)
       unitBodies);
 
       etc =
@@ -591,7 +636,7 @@ in {
         name = uname;
         uid = u.uid;
         group = u.group;
-        gid = (config.aos.users.groups.${u.group}.gid or null);
+        gid = config.aos.users.groups.${u.group}.gid or null;
         home = u.home;
         shell = u.shell;
         system = u.uid < 1000;

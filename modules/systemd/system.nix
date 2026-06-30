@@ -362,21 +362,19 @@ in {
         })
       allJobScripts);
 
-    system.build.systemdUnitBodies = let
-      allJobScripts =
-        lib.concatLists (lib.mapAttrsToList (_: svc: svc.jobScripts) config.systemd.services);
-      paths = builtins.map (j: j.path) allJobScripts;
-      placeholders = builtins.map (j: j.placeholder) allJobScripts;
-      # Pure string substitution: each build-side job-script store path is
-      # globally unique to its unit, so a flat replace cannot cross-bind.
-      toManifestText = txt:
-        if txt == null
-        then null
-        else builtins.replaceStrings paths placeholders txt;
-    in
+    # RFC-0011 F2-A inversion: `config.systemd.units.<u>.text` now carries the
+    # `#aos-jobscript:<key>#` placeholders natively (the `Exec*=` directives
+    # embed the placeholder, not the build-side store path — see
+    # `lib/modules/systemd/unit-options.nix`). So the manifest body is just
+    # `u.text` verbatim: no `replaceStrings` over job-script paths, and crucially
+    # nothing here forces a job-script derivation. That is what lets the on-host
+    # eval-only evaluator compute these bodies under a `pkgs` with no builder
+    # functions (RFC-0011 stage-2). The build-side `systemdSystemUnits`
+    # derivation restores the real paths in `makeUnit`, so it stays
+    # byte-for-byte identical.
+    system.build.systemdUnitBodies =
       lib.mapAttrs (_unitName: u: {
-        text = toManifestText u.text;
-        inherit (u) enable;
+        inherit (u) text enable;
         aliases = u.aliases or [];
         wantedBy = u.wantedBy or [];
         requiredBy = u.requiredBy or [];

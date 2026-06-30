@@ -1,7 +1,18 @@
 # RFC-0011 — the eval-only core (design + validated mechanism)
 
-Status: **partially implemented + validated**. The primary mechanism is built
-and proven on the builder; the remaining layers are scoped below as a roadmap.
+Status: **the manifest is computable on-host, end-to-end, and validated**. A
+full frozen-pkgs evaluation of the server `configManifest` runs under a `pkgs`
+that has **no builder functions** and produces a manifest **byte-identical** to
+the real-pkgs build-time manifest — while the build-side `system.build.toplevel`
+stays **byte-for-byte identical** (same `.drv` hash). The remaining steps
+(assemble `base-lib`, fix `stock.rs`, enable `evalAtBoot`, boot + fleet
+validate) are integration, scoped in the roadmap below.
+
+The earlier draft of this document predicted that an "eager-eval / mixed-module"
+blocker would force a large render/assemble split of the mixed modules at the
+*module* level. That turned out to be **unnecessary** — the real cause was two
+laziness defects in the module engine plus a job-script representation issue,
+all fixable far more surgically (see "What actually unblocked it" below).
 
 ## The problem
 
@@ -86,52 +97,96 @@ When `frozenArtifacts` is empty (every normal build) this resolves to the exact
 same derivation → byte-identical. When the on-host evaluator injects the frozen
 path, the `else` thunk is never evaluated, so the missing builder never errors.
 
-### Scope of the remaining grind
+### How few builders are actually on the manifest path
 
-The frozen-eval loop converges by repeating the pattern. The surface is a *web*
-of interdependent image-fixed artifacts, not just a flat file list — e.g.
-`modules/packages.nix` alone has `packageSeedBundle` (`runCommand`),
-`packageAttestationCatalog`, and per-package `metaFile` builders that reference
-each other. Each manifest-path builder (`runCommand`×12, `writeTextFile`×6,
-`mkDerivation`×6, `writeShellScriptBin`×5 [some already F2-A job-scripts],
-`dbus-conf`×3) is converted the same way; toplevel-only builders are left alone
-(the manifest never forces them). Run the cached-`frozen-pkgs.json` harness, fix
-the reported builder, re-run, until `configManifest` serialises clean.
+The fear was a *web* of interdependent image-fixed builders to convert one by
+one. In practice, once the three engine/representation fixes above were in
+place, a diagnostic frozen eval (frozen pkgs whose builder functions return a
+recognizable `/STUB/<name>` sentinel) completed the whole manifest and showed
+that **only three** builder outputs actually land on the server manifest path:
 
-### Three artifact classes (learned from the grind)
+- `aos-prepare-ebpf-lsm-bpffs` (`modules/security/ebpf-lsm.nix`, `ExecStartPre`),
+- `autologin-shell` (`modules/profiles/debug.nix`, agetty `--login-program`),
+- `pam-limits` (`modules/base/pam.nix`, `pam_limits.so conf=`).
 
-Converting builders surfaced that they are not uniform — each manifest-path
-builder falls into one of three classes, and only one is a "freeze":
+Every other builder in the module tree is toplevel-only and is never forced by
+`configManifest`. The diagnostic-stub technique (run the eval, grep the manifest
+JSON for `/STUB/`, the hits are exactly the builders to convert) is the fast way
+to enumerate the manifest-path builders for any variant — far cheaper than a
+slow per-builder eval loop.
+
+### Three artifact classes
+
+Each manifest-path builder falls into one of three classes:
 
 1. **Image-fixed** — depends on *image* config, not `host.nix` (e.g. `dbus-conf`,
-   the activate script, `packageSeedBundle`). → config-artifacts channel
-   (freeze). **4 converted + validated.**
+   the activate script, `packageSeedBundle`, `aos-prepare-ebpf-lsm-bpffs`,
+   `autologin-shell`). → config-artifacts channel (freeze), byte-identical.
+   **Converted + validated.**
 2. **Config-dependent** — depends on `host.nix` (e.g. `etcBasedir`, which
    materialises octal-mode `/etc`). Must NOT be frozen — a frozen path would go
    stale the moment `host.nix` changes `/etc`. The manifest already carries these
    as **data** (octal `/etc` entries record `e.source`), so the artifact is
-   redundant for stage-2 and must not be referenced there.
-3. **Toplevel-only** — `kernel`, `initrd`, `toplevel`, `etcBasedir` (for the
-   gen-0 composefs). The manifest never needs them.
+   redundant for stage-2 and must not be referenced there. `pam-limits` is the
+   one currently treated as image-fixed-frozen (keyed by content hash); a
+   `host.nix` limits override produces a new hash with no frozen artifact and
+   fails loudly rather than serving stale limits — full config-dependence
+   (rendering `limits.conf` as `/etc` data) is a tracked follow-up.
+3. **Toplevel-only** — `kernel`, `initrd`, `toplevel`, `etcBasedir`/`etcDump`/
+   `etcMetadataImage`, the per-unit `makeUnit` derivations, `systemdSystemUnits`.
+   The manifest never needs them, and with the engine fixes above it never
+   forces them.
 
-### The eager-eval / mixed-module problem (the real Layer-2 blocker)
+### What actually unblocked it (no module split needed)
 
-The frozen eval forces `etcBasedir` even though `configManifest` does not
-reference it — because **AOS's module system is eager**: evaluating
-`config.system.build.configManifest` forces the whole `system.build` submodule,
-which forces every sibling (`etcBasedir`, `kernel`, `initrd`, `toplevel`, …). So
-the eval-only path cannot just "convert the builders" — it must **not define the
-toplevel-only builders at all** in the stage-2 module set.
+The frozen eval was forcing toplevel-only builders (`etcBasedir`, the per-unit
+`makeUnit` derivations, …) even though `configManifest` does not reference them.
+The cause was **not** that the engine is irreducibly eager — it was two specific
+laziness defects plus one representation issue. Fixing them made forcing
+`configManifest` touch only the data the manifest actually references, so a
+mixed module like `build.nix` can keep defining both `configManifest` and
+`toplevel` side by side.
 
-But `modules/base/build.nix` is a **mixed module**: it defines both
-`configManifest` (config) and `toplevel`/`kernel`/`initrd`/`etcBasedir`
-(toplevel). So base-lib's eval-only module set requires **splitting the mixed
-modules** into a config-producing half (in base-lib) and a toplevel-producing
-half (not in base-lib). This is the render/assemble split at the *module* level
-— the substantial remaining design work, larger than the per-builder
-conversions. Until it lands, the frozen-eval harness over-forces the toplevel
-builders; the image-fixed conversions are still correct and byte-identical, but
-full convergence needs the module split first.
+1. **`config` folded in `allConfigMerged` (lib/modules.nix).** In the common
+   (non-freeform, non-strict) case the engine built `config` as `deepMerge
+   allConfigMerged finalConfig`. `allConfigMerged` is a structural merge of the
+   *raw* module configs via `resolveIfs`, whose only effect on the result is to
+   surface config at *undeclared* paths — which a well-formed module set never
+   has. But building it forces every config leaf to WHNF (to resolve mkIf
+   markers), including `system.build.etcBasedir = pkgs.runCommand …`. Fix:
+   `config = finalConfig` in that case (each declared option already resolves
+   its own mkIf/mkMerge via `collectDefsAtPath`). Result is identical for any
+   all-declared config, and forcing one option no longer force-walks its
+   siblings.
+
+2. **mkIf-false defs forced in the `environment.etc` submodule
+   (modules/base/build.nix).** `collectDefsAtPath` unwraps every mkIf def —
+   *including condition-false ones* — and forces its `_value` to WHNF to check
+   for nesting (it can't drop the dead branch without forcing the condition
+   early, which creates fixpoint cycles). The submodule's `source = mkIf (text
+   != null) "${textDrv}/…"` therefore built `writeTextFile` for every entry,
+   even the many store-sourced ones whose `text` is null. Fix: an inner `text
+   == null` guard so the dead branch is a plain string and WHNF never
+   constructs the derivation. Byte-identical on the live branch.
+
+3. **Job-script paths baked into eval-time unit text (F2-A inversion).** The
+   `Exec*=` directives embedded the build-side job-script store path
+   (`js.path = "${drv}/…"`), forcing the `writeTextFile` whenever a unit body
+   was rendered — and the manifest reads every unit body. Fix: `Exec*=` now
+   carries the drv-free `#aos-jobscript:<key>#` placeholder, and the *build-side*
+   `makeUnit` substitutes placeholder→path when it materializes the unit file.
+   So the eval-time unit text is drv-free (manifest renders it without forcing
+   any job-script drv) while `systemd.build.systemdSystemUnits` stays
+   byte-identical (`makeUnit` restores the real paths). A supporting fix: the
+   `jobScripts` option is typed `listOf attrs` (freeform) rather than
+   `listOf (attrsOf (either str package))`, whose per-field `package` check
+   called `isDerivation` and forced `.drv` whenever the manifest read the
+   string fields (`key`/`body`/`mode`).
+
+With (1)–(3) plus the image-fixed builder conversions below, a strict
+frozen-pkgs eval of the server `configManifest` completes and is byte-identical
+to the real-pkgs manifest; the toplevel `.drv` is unchanged. The mixed modules
+need no split.
 
 ## Layer 2 — original design notes
 
@@ -181,10 +236,19 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
 
 1. ✅ Boot-path cutover: Ignition gated (byte-identical), new-path system builds.
 2. ✅ Layer 1 frozen-pkgs: built + validated.
-3. ⏭ Layer 2: convert the ~15 manifest-path config-path builders (render-text or
-   frozen-artifact). Loop the frozen eval until `configManifest` converges.
+3. ✅ Layer 2: the manifest computes under strict frozen pkgs (no builder
+   functions) and is **byte-identical** to the real-pkgs manifest. Required the
+   three engine/representation fixes ("What actually unblocked it") plus the
+   three image-fixed builder conversions; toplevel `.drv` unchanged. Validated
+   on the builder, and green across `eval`, `rfc-0011-characterization` (golden
+   byte-diff), `module-enforcement`, `module-args`, `systemd-lib`,
+   `systemd-generate`, `config-eval`, `config-parity`, `package-expose`,
+   `package-preset`, `systemd-credentials`, `systemd-verity`, `lint`.
 4. ⏭ Build base-lib; fix `stock.rs` (sandbox + `configManifest`); prove a real
-   on-host eval converges to a valid manifest under the sandbox.
+   on-host eval converges to a valid manifest under the sandbox. The hard part
+   (a build-graph-free manifest eval) is done — this is packaging the frozen
+   inputs into a stage-1 derivation and pointing the Rust evaluator at it with
+   `restrict-eval` (not `--pure-eval`).
 5. ⏭ Enable `aos.config.evalAtBoot` on `server-rfc0011`; boot + fleet validate
    (the metadata agent fetches `host.nix`, repart provisions, stage-2 eval +
    activate apply the config generation).

@@ -219,14 +219,33 @@ in rec {
   # AOS modules disable an upstream unit without deleting its file.
   makeUnit = name: unit:
     if unit.enable
-    then
+    then let
+      # RFC-0011 F2-A inversion: `unit.text` carries `#aos-jobscript:<key>#`
+      # placeholders (so the eval-only manifest can render the body without
+      # forcing any job-script derivation). Restore the build-side store paths
+      # here, on the *build* side, so the materialized unit file boots gen-0.
+      # `replaceStrings` forces each `j.path` (hence its `writeTextFile` drv) —
+      # legitimate: this derivation is toplevel-only and is never forced by the
+      # on-host eval-only manifest path. Non-service units carry no job scripts
+      # (`jobScripts` defaults to `[]`), so this is the identity there. The
+      # result is byte-for-byte identical to embedding `j.path` directly.
+      jobScripts = unit.jobScripts or [];
+      resolvedText =
+        if unit.text == null
+        then ""
+        else
+          builtins.replaceStrings
+          (builtins.map (j: j.placeholder) jobScripts)
+          (builtins.map (j: j.path) jobScripts)
+          unit.text;
+    in
       pkgs.runCommand "unit-${mkPathSafeName name}" {
         preferLocalBuild = true;
         allowSubstitutes = false;
         # unit.text can be null for disabled units; passAsFile with a null
         # variable is a no-op in Nix, so guard with optionalString to avoid
         # the mv call failing on a missing $textPath.
-        text = optionalString (unit.text != null) unit.text;
+        text = resolvedText;
         passAsFile = ["text"];
       } ''
         name=${shellEscape name}
@@ -507,7 +526,9 @@ in rec {
         user = "user";
         nspawn = "nspawn";
       }
-      .${type};
+      .${
+        type
+      };
   in
     pkgs.runCommand "${type}-units" {
       preferLocalBuild = true;
@@ -1011,6 +1032,11 @@ in rec {
       enable
       overrideStrategy
       ;
+    # RFC-0011 F2-A: carry the service's job-script records onto the rendered
+    # unit so `makeUnit` can substitute each `#aos-jobscript:<key>#` placeholder
+    # in `text` back to its build-side `path`. `text` keeps placeholders so the
+    # eval-only manifest renders the body without forcing any job-script drv.
+    inherit (def) jobScripts;
     text = commonUnitText def (
       ''
         [Service]

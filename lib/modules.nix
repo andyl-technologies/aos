@@ -870,16 +870,23 @@
       # --- Phase 6: freeform / strict enforcement ---
       #
       # Opt-in per evaluation. When both `_module.freeformType` and
-      # `_module.strict` are at their defaults (null / false), this
-      # phase reduces to the pre-freeform `deepMerge allConfigMerged
-      # finalConfig` path — no config walk runs, no values at
-      # undeclared paths are forced. Existing callers (the main system
-      # eval, every stock module) rely on that laziness to keep broken-
-      # config paths inspectable without firing throws wired into
-      # unrelated options (see `lib/testing/module-enforcement.nix`'s
-      # Option B semantics — forcing `system.build.toplevel` triggers
-      # assertion enforcement, but forcing any other config path must
-      # not).
+      # `_module.strict` are at their defaults (null / false), `config` is
+      # exactly `finalConfig` — the per-option merge of every DECLARED option
+      # (each option resolves its own mkIf/mkMerge via `collectDefsAtPath`).
+      #
+      # We deliberately do NOT fold in `allConfigMerged` here. That value is a
+      # structural `deepMerge` of the raw module configs (via `resolveIfs`),
+      # and its only effect on the result is to surface config set at
+      # *undeclared* paths — which a well-formed module set never has. But
+      # building it forces every config leaf to WHNF (to resolve mkIf markers),
+      # including toplevel-only builders like `system.build.etcBasedir =
+      # pkgs.runCommand …`. Forcing one declared option (e.g.
+      # `system.build.configManifest`) would then force every sibling builder —
+      # fatal under the RFC-0011 on-host eval-only `pkgs`, which has no builder
+      # functions. Using `finalConfig` keeps the result lazy per-option (so
+      # broken-config paths stay inspectable, and the eval-only manifest never
+      # touches the build graph) while remaining identical for any config whose
+      # paths are all declared.
       #
       # When strict-mode or a freeformType is set, the walk runs and
       # collects every path in the raw module configs that has no
@@ -891,7 +898,7 @@
 
       configWithFreeform =
         if freeformType == null && !isStrict
-        then deepMerge allConfigMerged finalConfig
+        then finalConfig
         else let
           declaredLeafSet = optionMap;
 
@@ -1020,16 +1027,15 @@
       # never forcing any `config` value. `contributable` defaults `false`
       # (owner-only) for every option that does not opt in. `lib.optionSurface`
       # / `lib.contributableSurface` are the public accessors.
-      _optionDecls =
-        builtins.map (
-          key: let
-            decl = optionMap.${key};
-          in {
-            path = decl.path;
-            pathStr = key;
-            contributable = decl.option.contributable or false;
-          }
-        ) (builtins.attrNames optionMap);
+      _optionDecls = builtins.map (
+        key: let
+          decl = optionMap.${key};
+        in {
+          path = decl.path;
+          pathStr = key;
+          contributable = decl.option.contributable or false;
+        }
+      ) (builtins.attrNames optionMap);
 
       # Assertions and warnings from modules
       assertions = configWithFreeform.assertions or [];
