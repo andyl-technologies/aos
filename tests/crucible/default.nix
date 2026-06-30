@@ -965,6 +965,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogCoverage";
       taskIds = ["T-OBS-9"];
     };
+    eventLogReproductionArtifact = import ./phase4-event-log-reproduction-artifact.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogReproductionArtifact";
+      taskIds = ["T-OBS-10"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
