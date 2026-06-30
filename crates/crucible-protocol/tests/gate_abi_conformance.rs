@@ -9,8 +9,10 @@ use crucible_protocol::{
     CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzCase,
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
     ControlTag, GOLDEN_CONTROL_VECTORS, GOLDEN_VECTOR_PROTOCOL_VERSION,
-    GOLDEN_VECTOR_REGENERATION_RULE, HostMsg, PluginMsg, control_decode_host_msg,
-    control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
+    GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, HostMsg, PluginMsg,
+    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+    WhiteboxDoorbellFrame, control_decode_host_msg, control_decode_plugin_msg,
+    control_encode_host_msg, control_encode_plugin_msg, encode_whitebox_doorbell_frame,
     run_control_codec_fuzz_target,
 };
 
@@ -20,6 +22,7 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_decode_encode_roundtrip();
     assert_abi_version_field();
     assert_version_bump_regenerates_vectors();
+    assert_doorbell_frame_golden_vectors();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
 }
@@ -90,6 +93,45 @@ fn assert_version_bump_regenerates_vectors() {
     );
     assert_vector_bytes("setup-ack", &[0, 0, 0, 2, 0x02, 0]);
     assert_vector_bytes("quit", &[0, 0, 0, 1, 0x12]);
+}
+
+#[test]
+fn protocol_doorbell_frame_golden_vectors_match_live_codec_bytes() {
+    assert_doorbell_frame_golden_vectors();
+}
+
+fn assert_doorbell_frame_golden_vectors() {
+    assert!(
+        WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE.contains("WHITEBOX_DOORBELL_PROTOCOL_VERSION")
+    );
+    assert_eq!(
+        GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS.map(|vector| vector.name),
+        ["marker-kind-1-empty", "random-request-kind-5"],
+    );
+    for vector in GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS {
+        assert_eq!(vector.protocol_version, WHITEBOX_DOORBELL_PROTOCOL_VERSION);
+        assert_eq!(
+            encode_whitebox_doorbell_frame(vector.kind, vector.payload),
+            Ok(vector.frame.to_vec()),
+        );
+        let decoded = match WhiteboxDoorbellFrame::decode(vector.frame) {
+            Ok(frame) => frame,
+            Err(error) => panic!("doorbell golden vector should decode: {error}"),
+        };
+        assert_eq!(decoded.kind(), vector.kind);
+        assert_eq!(decoded.payload(), vector.payload);
+    }
+    assert_doorbell_vector_bytes(
+        "marker-kind-1-empty",
+        &[0x43, 0x52, 0x42, 0x4c, 2, 0, 1, 0, 0, 0, 0, 0],
+    );
+    assert_doorbell_vector_bytes(
+        "random-request-kind-5",
+        &[
+            0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
+            0x6e, 0x67,
+        ],
+    );
 }
 
 #[test]
@@ -228,4 +270,14 @@ fn vector_by_name(name: &str) -> ControlGoldenVector {
         }
     }
     panic!("missing protocol golden vector {name}");
+}
+
+fn assert_doorbell_vector_bytes(name: &str, expected: &[u8]) {
+    for vector in GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS {
+        if vector.name == name {
+            assert_eq!(vector.frame, expected);
+            return;
+        }
+    }
+    panic!("missing doorbell frame golden vector {name}");
 }

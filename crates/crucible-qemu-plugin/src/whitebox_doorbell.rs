@@ -7,13 +7,17 @@
 //! routes any host-to-guest reply through an explicit delivery-icount gate.
 
 pub use crucible_protocol::{
-    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
-    WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
+    GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, WHITEBOX_DOORBELL_AARCH64_ABI,
+    WHITEBOX_DOORBELL_AARCH64_HLT_BYTES, WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+    WHITEBOX_DOORBELL_ABIS, WHITEBOX_DOORBELL_FRAME_HEADER_LEN, WHITEBOX_DOORBELL_FRAME_MAGIC,
+    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
     WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
-    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
-    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
-    whitebox_doorbell_abi_for_architecture,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellFrameDecodeError, WhiteboxDoorbellFrameEncodeError,
+    WhiteboxDoorbellFrameGoldenVector, WhiteboxDoorbellInstruction, WhiteboxDoorbellTrapAbi,
+    encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame,
+    encode_x86_64_out_dx_eax_instruction, whitebox_doorbell_abi_for_architecture,
 };
 use crucible_shmem::MAX_FRAME_DATA;
 use thiserror::Error;
@@ -38,12 +42,6 @@ pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL
 pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_read_memory_vaddr";
 /// QEMU capability label for writing white-box replies into guest memory.
 pub const QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL: &str = "qemu_plugin_guest_memory_write";
-/// Fixed little-endian doorbell frame magic (`CRBL`).
-pub const WHITEBOX_DOORBELL_FRAME_MAGIC: u32 = 0x4c42_5243;
-/// Doorbell protocol version after adding the `random_request` kind.
-pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;
-/// Fixed byte length of the architecture-independent doorbell frame header.
-pub const WHITEBOX_DOORBELL_FRAME_HEADER_LEN: usize = 12;
 /// Closed marker-kind value for app-controlled randomness requests.
 pub const WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST: u16 = 5;
 /// Maximum random-request reply width in bytes.
@@ -150,14 +148,16 @@ impl PluginWhiteboxDoorbell {
     /// Services one synchronous doorbell trap.
     ///
     /// The returned marker is stamped with `event.current_icount()`, and the
-    /// guest bytes are obtained through [`GuestMemoryReader::read_guest_memory`]
-    /// before the marker is recorded.
+    /// guest bytes are obtained through [`GuestMemoryReader::read_guest_memory`],
+    /// decoded as a [`WhiteboxDoorbellFrame`], and recorded as the decoded
+    /// marker kind plus body bytes.
     ///
     /// # Errors
     ///
     /// Returns [`WhiteboxDoorbellError`] when white-box mode is disabled, the
     /// payload range is too large, the guest-memory API fails or returns a
-    /// different byte count, or the marker sink rejects the observational entry.
+    /// different byte count, the frame is malformed, or the marker sink rejects
+    /// the observational entry.
     pub fn service_trap<R, S>(
         &self,
         reader: &mut R,
@@ -189,12 +189,19 @@ impl PluginWhiteboxDoorbell {
                 actual_len: payload.len(),
             });
         }
+        let frame = WhiteboxDoorbellFrame::decode(&payload).map_err(|source| {
+            WhiteboxDoorbellError::DoorbellFrameDecode {
+                marker_icount: event.current_icount(),
+                source,
+            }
+        })?;
 
         let marker = WhiteboxMarker {
             marker_icount: event.current_icount(),
             vcpu_index: event.vcpu_index(),
             payload_range: event.payload_range(),
-            payload,
+            kind: frame.kind(),
+            payload: frame.payload().to_vec(),
         };
         sink.record_whitebox_marker(&marker).map_err(|source| {
             WhiteboxDoorbellError::MarkerSink {
@@ -416,7 +423,11 @@ where
         read_doorbell_payload(doorbell, reader, event).map_err(AppRandomDoorbellError::Doorbell)?;
     let frame = match WhiteboxDoorbellFrame::decode(&payload) {
         Ok(frame) => frame,
-        Err(diagnostic) => return Ok(AppRandomDoorbellOutcome::Dropped { diagnostic }),
+        Err(error) => {
+            return Ok(AppRandomDoorbellOutcome::Dropped {
+                diagnostic: AppRandomDecodeDiagnostic::from(error),
+            });
+        }
     };
     let request = match AppRandomDoorbellRequest::from_frame(node_name, event, frame) {
         Ok(request) => request,
@@ -484,81 +495,6 @@ where
         });
     }
     Ok(payload)
-}
-
-/// A decoded architecture-independent doorbell frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WhiteboxDoorbellFrame {
-    kind: u16,
-    payload: Vec<u8>,
-}
-
-impl WhiteboxDoorbellFrame {
-    /// Decodes one fixed-header little-endian doorbell frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppRandomDecodeDiagnostic`] when the frame has a bad magic,
-    /// unsupported version, unknown payload length, or truncated header.
-    pub fn decode(bytes: &[u8]) -> Result<Self, AppRandomDecodeDiagnostic> {
-        if bytes.len() < WHITEBOX_DOORBELL_FRAME_HEADER_LEN {
-            return Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::TruncatedFrame {
-                    len: bytes.len(),
-                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
-                },
-            ));
-        }
-
-        let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        if magic != WHITEBOX_DOORBELL_FRAME_MAGIC {
-            return Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::BadMagic {
-                    expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
-                    actual: magic,
-                },
-            ));
-        }
-
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != WHITEBOX_DOORBELL_PROTOCOL_VERSION {
-            return Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::UnsupportedVersion {
-                    expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-                    actual: version,
-                },
-            ));
-        }
-
-        let kind = u16::from_le_bytes([bytes[6], bytes[7]]);
-        let payload_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-        let actual_payload_len = bytes.len() - WHITEBOX_DOORBELL_FRAME_HEADER_LEN;
-        if payload_len != actual_payload_len {
-            return Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::PayloadLengthMismatch {
-                    declared_len: payload_len,
-                    actual_len: actual_payload_len,
-                },
-            ));
-        }
-
-        Ok(Self {
-            kind,
-            payload: bytes[WHITEBOX_DOORBELL_FRAME_HEADER_LEN..].to_vec(),
-        })
-    }
-
-    /// Returns the closed marker kind carried by the frame.
-    #[must_use]
-    pub const fn kind(&self) -> u16 {
-        self.kind
-    }
-
-    /// Returns the kind-specific payload bytes.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
 }
 
 /// One decoded app-controlled randomness request.
@@ -835,6 +771,30 @@ impl AppRandomDecodeDiagnostic {
     #[must_use]
     pub const fn kind(&self) -> &AppRandomDecodeDiagnosticKind {
         &self.kind
+    }
+}
+
+impl From<WhiteboxDoorbellFrameDecodeError> for AppRandomDecodeDiagnostic {
+    fn from(error: WhiteboxDoorbellFrameDecodeError) -> Self {
+        let kind = match error {
+            WhiteboxDoorbellFrameDecodeError::TruncatedFrame { len, minimum_len } => {
+                AppRandomDecodeDiagnosticKind::TruncatedFrame { len, minimum_len }
+            }
+            WhiteboxDoorbellFrameDecodeError::BadMagic { expected, actual } => {
+                AppRandomDecodeDiagnosticKind::BadMagic { expected, actual }
+            }
+            WhiteboxDoorbellFrameDecodeError::UnsupportedVersion { expected, actual } => {
+                AppRandomDecodeDiagnosticKind::UnsupportedVersion { expected, actual }
+            }
+            WhiteboxDoorbellFrameDecodeError::PayloadLengthMismatch {
+                declared_len,
+                actual_len,
+            } => AppRandomDecodeDiagnosticKind::PayloadLengthMismatch {
+                declared_len,
+                actual_len,
+            },
+        };
+        Self::new(kind)
     }
 }
 
@@ -1416,6 +1376,7 @@ pub struct WhiteboxMarker {
     marker_icount: u64,
     vcpu_index: u32,
     payload_range: GuestMemoryRange,
+    kind: u16,
     payload: Vec<u8>,
 }
 
@@ -1438,7 +1399,13 @@ impl WhiteboxMarker {
         self.payload_range
     }
 
-    /// Returns the raw doorbell bytes read through QEMU's guest-memory API.
+    /// Returns the decoded doorbell marker kind.
+    #[must_use]
+    pub const fn kind(&self) -> u16 {
+        self.kind
+    }
+
+    /// Returns the decoded kind-specific doorbell body bytes.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
@@ -1713,6 +1680,14 @@ pub enum WhiteboxDoorbellError {
         requested_len: usize,
         /// The returned byte count.
         actual_len: usize,
+    },
+    /// The guest bytes did not decode as a white-box doorbell frame.
+    #[error("white-box marker at icount {marker_icount} carried a malformed frame: {source}")]
+    DoorbellFrameDecode {
+        /// The marker icount.
+        marker_icount: u64,
+        /// The frame decode failure.
+        source: WhiteboxDoorbellFrameDecodeError,
     },
     /// Recording the observational marker failed.
     #[error("white-box marker at icount {marker_icount} could not be recorded: {source}")]
@@ -2033,9 +2008,10 @@ mod tests {
             WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
             128,
         );
-        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 4);
+        let frame = doorbell_frame(1, b"mark");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, frame.len());
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 777, range);
-        let mut reader = RecordingGuestMemoryReader::with_payload(b"mark".to_vec());
+        let mut reader = RecordingGuestMemoryReader::with_payload(frame);
         let mut sink = RecordingMarkerSink::default();
 
         let marker =
@@ -2048,8 +2024,35 @@ mod tests {
         assert_eq!(marker.marker_icount(), 777);
         assert_eq!(marker.vcpu_index(), 2);
         assert_eq!(marker.payload_range(), range);
+        assert_eq!(marker.kind(), 1);
         assert_eq!(marker.payload(), b"mark");
         assert_eq!(sink.markers, vec![marker]);
+    }
+
+    #[test]
+    fn whitebox_doorbell_rejects_malformed_frame_without_marker() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 4);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 777, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(b"mark".to_vec());
+        let mut sink = RecordingMarkerSink::default();
+
+        assert_eq!(
+            handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event),
+            Err(WhiteboxDoorbellError::DoorbellFrameDecode {
+                marker_icount: 777,
+                source: WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+                    len: 4,
+                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+                },
+            })
+        );
+        assert_eq!(reader.calls, vec![(2, 777, range)]);
+        assert!(sink.markers.is_empty());
     }
 
     #[test]
@@ -2383,34 +2386,28 @@ mod tests {
     fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
         assert_eq!(
             WhiteboxDoorbellFrame::decode(&[1, 2, 3]),
-            Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::TruncatedFrame {
-                    len: 3,
-                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
-                },
-            ))
+            Err(WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+                len: 3,
+                minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+            })
         );
 
         let bad_magic = doorbell_frame_with_header(0, WHITEBOX_DOORBELL_PROTOCOL_VERSION, 5, &[]);
         assert_eq!(
             WhiteboxDoorbellFrame::decode(&bad_magic),
-            Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::BadMagic {
-                    expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
-                    actual: 0,
-                },
-            ))
+            Err(WhiteboxDoorbellFrameDecodeError::BadMagic {
+                expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
+                actual: 0,
+            })
         );
 
         let bad_version = doorbell_frame_with_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 1, 5, &[]);
         assert_eq!(
             WhiteboxDoorbellFrame::decode(&bad_version),
-            Err(AppRandomDecodeDiagnostic::new(
-                AppRandomDecodeDiagnosticKind::UnsupportedVersion {
-                    expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-                    actual: 1,
-                },
-            ))
+            Err(WhiteboxDoorbellFrameDecodeError::UnsupportedVersion {
+                expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                actual: 1,
+            })
         );
 
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
@@ -2575,12 +2572,10 @@ mod tests {
     }
 
     fn doorbell_frame(kind: u16, body: &[u8]) -> Vec<u8> {
-        doorbell_frame_with_header(
-            WHITEBOX_DOORBELL_FRAME_MAGIC,
-            WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-            kind,
-            body,
-        )
+        match encode_whitebox_doorbell_frame(kind, body) {
+            Ok(frame) => frame,
+            Err(error) => panic!("test doorbell frame should encode: {error}"),
+        }
     }
 
     fn doorbell_frame_with_header(magic: u32, version: u16, kind: u16, body: &[u8]) -> Vec<u8> {

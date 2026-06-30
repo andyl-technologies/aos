@@ -13,6 +13,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -169,10 +170,6 @@
         needle = "WHITEBOX_DOORBELL_PROTOCOL_VERSION";
       }
       {
-        label = "frame decoder";
-        needle = "pub fn decode(bytes: &[u8])";
-      }
-      {
         label = "random request width bound";
         needle = "width_bytes == 0 || width_bytes > WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES";
       }
@@ -247,6 +244,16 @@
       {
         label = "zero request exact test";
         needle = "whitebox_app_random_zero_requests_leave_no_decisions_or_replies";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
+      {
+        label = "shared frame decoder";
+        needle = "pub fn decode(bytes: &[u8])";
+      }
+      {
+        label = "shared protocol version constant";
+        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

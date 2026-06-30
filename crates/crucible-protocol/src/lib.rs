@@ -11,6 +11,7 @@
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
+//! `doorbell_frame` owns the shared white-box doorbell marker frame ABI;
 //! `golden_vectors` owns the frozen ABI-conformance corpus, and `codec_fuzz`
 //! owns the structure-aware fuzz target and regression corpus.
 //!
@@ -34,6 +35,7 @@
 
 mod codec_fuzz;
 mod doorbell_abi;
+mod doorbell_frame;
 mod golden_vectors;
 
 use std::io::{ErrorKind, Read, Write};
@@ -52,6 +54,13 @@ pub use doorbell_abi::{
     WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
     WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
     whitebox_doorbell_abi_for_architecture,
+};
+pub use doorbell_frame::{
+    GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+    WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
+    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector,
+    encode_whitebox_doorbell_frame,
 };
 pub use golden_vectors::{
     ControlGoldenVector, ControlGoldenVectorMessage, GOLDEN_CONTROL_VECTORS,
