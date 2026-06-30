@@ -93,7 +93,7 @@ fn blob_record_header_round_trips() {
     assert_eq!(header.payload_len(), 987);
     assert_eq!(
         header.key(PersistBlobStore::Values),
-        PersistBlobKey::for_value(hash)
+        PersistBlobKey::new(PersistBlobStore::Values, hash)
     );
 }
 
@@ -221,7 +221,7 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
     assert_eq!(window.location(), location);
     assert_eq!(
         window.key(PersistBlobStore::Values),
-        PersistBlobKey::for_value(hash)
+        PersistBlobKey::new(PersistBlobStore::Values, hash)
     );
     assert_eq!(window.payload_start(), payload_start);
     assert_eq!(window.payload_end(), payload_end);
@@ -368,7 +368,7 @@ fn blob_pack_records_scans_verified_records_in_pack_order() {
     assert_eq!(records[0].location(), first);
     assert_eq!(
         records[0].key(PersistBlobStore::Values),
-        PersistBlobKey::for_value(first_hash)
+        PersistBlobKey::new(PersistBlobStore::Values, first_hash)
     );
     assert_eq!(records[1].hash(), second_hash);
     assert_eq!(records[1].location(), second);

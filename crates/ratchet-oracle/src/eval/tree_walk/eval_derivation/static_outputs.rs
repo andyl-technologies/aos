@@ -157,7 +157,7 @@ impl TreeWalk {
             }
         };
         let payload_bytes = match persist_cache
-            .read_blob_indexed(PersistBlobKey::for_value(value_hash.as_durable_hash()))
+            .read_blob_indexed(PersistBlobKey::for_value(value_hash))
         {
             Ok(Some(payload_bytes)) => payload_bytes,
             Ok(None) => return None,
@@ -443,7 +443,7 @@ impl TreeWalk {
             }
         };
         if let Err(error) = persist_cache.materialize_blob_indexed(
-            PersistBlobKey::for_value(value_hash.as_durable_hash()),
+            PersistBlobKey::for_value(value_hash),
             &payload_bytes,
             MaterializationDecision::Materialize,
         ) {

@@ -215,7 +215,10 @@ fn cache_blob_pack_repack_adapter_repacks_value_and_file_packs() {
     let unrooted_value_payload = b"unrooted value before aggregate repack";
     cache
         .append_blob(
-            PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload)),
+            PersistBlobKey::new(
+                PersistBlobStore::Values,
+                DurableBlake3Hash::for_bytes(unrooted_value_payload),
+            ),
             unrooted_value_payload,
         )
         .expect("unrooted value appends");
@@ -317,7 +320,10 @@ fn cache_blob_pack_repack_adapter_reports_file_pack_error_after_value_repack() {
     let unrooted_value_payload = b"unrooted value before aggregate failure";
     cache
         .append_blob(
-            PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload)),
+            PersistBlobKey::new(
+                PersistBlobStore::Values,
+                DurableBlake3Hash::for_bytes(unrooted_value_payload),
+            ),
             unrooted_value_payload,
         )
         .expect("unrooted value appends");

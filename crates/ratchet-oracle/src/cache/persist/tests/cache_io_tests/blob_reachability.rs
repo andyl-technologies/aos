@@ -107,7 +107,10 @@ fn cache_value_blob_reachability_plan_classifies_value_records() {
         panic!("indexed payload should materialize");
     };
     let unindexed_payload = b"unindexed value payload";
-    let unindexed_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unindexed_payload));
+    let unindexed_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unindexed_payload),
+    );
     let unindexed_location = cache
         .append_blob(unindexed_key, unindexed_payload)
         .expect("unindexed value appends");
@@ -185,7 +188,10 @@ fn cache_value_blob_reachability_plan_rejects_corrupt_unindexed_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"corrupt unindexed value";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let location = cache
         .append_blob(key, payload)
         .expect("unindexed value appends");
@@ -218,12 +224,17 @@ fn cache_value_blob_reachability_plan_rejects_mismatched_value_index_root() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let actual_payload = b"actual indexed payload";
-    let actual_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(actual_payload));
+    let actual_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(actual_payload),
+    );
     let actual_location = cache
         .append_blob(actual_key, actual_payload)
         .expect("actual value appends");
-    let expected_key =
-        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"expected indexed payload"));
+    let expected_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"expected indexed payload"),
+    );
     cache
         .value_index()
         .append_entry(PersistBlobIndexEntry::new(expected_key, actual_location))
@@ -639,7 +650,10 @@ fn cache_file_blob_reachability_plan_rejects_mismatched_file_index_root() {
 fn cache_file_blob_reachability_plan_rejects_wrong_store_file_index_root() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"value payload"),
+    );
     cache
         .file_index()
         .append_entry(PersistBlobIndexEntry::new(

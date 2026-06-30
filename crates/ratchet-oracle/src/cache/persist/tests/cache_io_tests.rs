@@ -807,13 +807,14 @@ fn cache_cached_expression_payload_load_rejects_noncanonical_indexed_bytes() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = noncanonical_context_string_payload();
     let payload_hash = DurableBlake3Hash::for_bytes(&payload);
-    let key = PersistBlobKey::for_value(payload_hash);
+    let value_hash = ValueHash::from_canonical_value_hash(payload_hash);
+    let key = PersistBlobKey::for_value(value_hash);
     cache
         .append_blob_indexed(key, &payload)
         .expect("manual non-canonical blob indexes");
 
     let error = cache
-        .load_cached_expression_value_indexed(ValueHash::from_canonical_value_hash(payload_hash))
+        .load_cached_expression_value_indexed(value_hash)
         .expect_err("non-canonical indexed payload errors");
 
     assert!(matches!(
@@ -910,7 +911,10 @@ fn cache_cached_expression_node_payload_materialization_signals_drive_writes() {
 fn cache_materialization_decision_propagates_append_errors() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let error = cache
         .materialize_blob(key, b"payload", MaterializationDecision::Materialize)
@@ -929,7 +933,10 @@ fn cache_indexed_materialization_signals_append_when_threshold_passes() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
 
     let result = cache
         .materialize_blob_indexed_with_signals(
@@ -964,7 +971,10 @@ fn cache_indexed_materialization_signals_append_when_threshold_passes() {
 fn cache_materialization_signals_can_skip_without_hashing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let result = cache
         .materialize_blob_with_signals(key, b"payload", profitable_materialization_signals(false))
@@ -987,7 +997,10 @@ fn cache_materialization_signals_append_when_threshold_passes() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
 
     let result = cache
         .materialize_blob_with_signals(key, payload, profitable_materialization_signals(true))

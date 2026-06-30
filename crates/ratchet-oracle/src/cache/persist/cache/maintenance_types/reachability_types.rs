@@ -35,7 +35,7 @@ impl PersistNodeValueRoot {
 
     /// Returns the typed value-blob lookup key for this root.
     pub const fn blob_key(self) -> PersistBlobKey {
-        PersistBlobKey::for_value(self.value_hash.as_durable_hash())
+        PersistBlobKey::for_value(self.value_hash)
     }
 
     /// Returns the verified value-pack location for this root.
@@ -74,7 +74,7 @@ impl PersistMissingNodeValueRoot {
 
     /// Returns the typed value-blob lookup key for the missing root.
     pub const fn blob_key(self) -> PersistBlobKey {
-        PersistBlobKey::for_value(self.value_hash.as_durable_hash())
+        PersistBlobKey::for_value(self.value_hash)
     }
 }
 

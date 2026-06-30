@@ -7,7 +7,10 @@ fn cache_indexed_materialization_replaces_stale_index_location() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let stale_location = PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0);
     cache
         .value_index()
@@ -45,9 +48,15 @@ fn cache_indexed_materialization_repairs_wrong_record_pointer_before_compaction(
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let other_payload = b"other payload";
-    let other_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(other_payload));
+    let other_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(other_payload),
+    );
     let stale_location = cache
         .append_blob(other_key, other_payload)
         .expect("other blob appends");
@@ -182,7 +191,10 @@ fn cache_blob_pack_liveness_plan_classifies_value_records() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let duplicate_payload = b"duplicate live payload";
-    let duplicate_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(duplicate_payload));
+    let duplicate_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(duplicate_payload),
+    );
     let stale_duplicate_location = cache
         .append_blob(duplicate_key, duplicate_payload)
         .expect("stale duplicate appends");
@@ -190,12 +202,18 @@ fn cache_blob_pack_liveness_plan_classifies_value_records() {
         .append_blob_indexed(duplicate_key, duplicate_payload)
         .expect("live duplicate appends and indexes");
     let live_payload = b"later live payload";
-    let live_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(live_payload));
+    let live_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(live_payload),
+    );
     let live_entry = cache
         .append_blob_indexed(live_key, live_payload)
         .expect("later live blob appends and indexes");
     let tail_payload = b"unrooted tail payload";
-    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(tail_payload),
+    );
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unrooted tail appends");
@@ -263,27 +281,42 @@ fn cache_blob_pack_repack_plan_maps_value_live_records_to_compacted_offsets() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let prefix_payload = b"unrooted value prefix";
-    let prefix_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(prefix_payload),
+    );
     let prefix_location = cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted prefix appends");
     let first_payload = b"first live value";
-    let first_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(first_payload));
+    let first_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(first_payload),
+    );
     let first_entry = cache
         .append_blob_indexed(first_key, first_payload)
         .expect("first live value appends and indexes");
     let middle_payload = b"unrooted value middle";
-    let middle_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(middle_payload));
+    let middle_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(middle_payload),
+    );
     let middle_location = cache
         .append_blob(middle_key, middle_payload)
         .expect("unrooted middle appends");
     let second_payload = b"second live value";
-    let second_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(second_payload));
+    let second_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(second_payload),
+    );
     let second_entry = cache
         .append_blob_indexed(second_key, second_payload)
         .expect("second live value appends and indexes");
     let tail_payload = b"unrooted value tail";
-    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(tail_payload),
+    );
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unrooted tail appends");
@@ -363,7 +396,10 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let prefix_payload = b"unrooted value prefix";
-    let prefix_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(prefix_payload),
+    );
     cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted prefix appends");
@@ -381,7 +417,10 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
         panic!("node value should materialize");
     };
     let middle_payload = b"unrooted value middle";
-    let middle_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(middle_payload));
+    let middle_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(middle_payload),
+    );
     cache
         .append_blob(middle_key, middle_payload)
         .expect("unrooted middle appends");
@@ -400,7 +439,10 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
         panic!("indexed value should materialize");
     };
     let tail_payload = b"unrooted value tail";
-    let tail_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(tail_payload),
+    );
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unrooted tail appends");
@@ -434,7 +476,7 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     assert!(
         cache
             .read_blob(
-                PersistBlobKey::for_value(node_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(node_value_hash),
                 node_old_location,
             )
             .is_err(),
@@ -443,7 +485,7 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     assert!(
         cache
             .read_blob(
-                PersistBlobKey::for_value(indexed_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(indexed_value_hash),
                 indexed_old_location,
             )
             .is_err(),
@@ -451,15 +493,13 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     );
     assert_eq!(
         cache
-            .lookup_blob_location(PersistBlobKey::for_value(node_value_hash.as_durable_hash()))
+            .lookup_blob_location(PersistBlobKey::for_value(node_value_hash))
             .expect("node value index lookup succeeds"),
         Some(node_new_location)
     );
     assert_eq!(
         cache
-            .lookup_blob_location(PersistBlobKey::for_value(
-                indexed_value_hash.as_durable_hash()
-            ))
+            .lookup_blob_location(PersistBlobKey::for_value(indexed_value_hash))
             .expect("indexed value lookup succeeds"),
         Some(indexed_new_location)
     );
@@ -487,7 +527,10 @@ fn cache_value_blob_pack_repack_rejects_source_path_as_stage_pack() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"source path as repack stage";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let entry = cache
         .append_blob_indexed(key, payload)
         .expect("indexed value blob appends");
@@ -524,12 +567,18 @@ fn cache_value_blob_pack_repack_reclaims_all_unrooted_values() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let first_payload = b"first unrooted value";
-    let first_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(first_payload));
+    let first_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(first_payload),
+    );
     cache
         .append_blob(first_key, first_payload)
         .expect("first unrooted value appends");
     let second_payload = b"second unrooted value";
-    let second_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(second_payload));
+    let second_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(second_payload),
+    );
     cache
         .append_blob(second_key, second_payload)
         .expect("second unrooted value appends");

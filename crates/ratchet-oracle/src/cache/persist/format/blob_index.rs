@@ -48,8 +48,8 @@ impl PersistBlobKey {
     }
 
     /// Creates a persistent value-blob key for `hash`.
-    pub const fn for_value(hash: DurableBlake3Hash) -> Self {
-        Self::new(PersistBlobStore::Values, hash)
+    pub const fn for_value(hash: ValueHash) -> Self {
+        Self::new(PersistBlobStore::Values, hash.as_durable_hash())
     }
 
     /// Creates a persistent file-blob key for `hash`.

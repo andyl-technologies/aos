@@ -168,7 +168,10 @@ fn opened_cache_layout_uses_canonical_paths_after_symlink_retarget() {
     );
 
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     first_cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect("first target materializes");

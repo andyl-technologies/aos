@@ -161,7 +161,10 @@ fn cache_blob_pack_tail_trim_reclaims_unindexed_tail_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"live payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let live = cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect("indexed materialization succeeds");
@@ -169,7 +172,10 @@ fn cache_blob_pack_tail_trim_reclaims_unindexed_tail_record() {
         panic!("payload should materialize");
     };
     let unindexed_payload = b"unindexed tail payload";
-    let unindexed_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unindexed_payload));
+    let unindexed_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unindexed_payload),
+    );
     let unindexed_location = cache
         .append_blob(unindexed_key, unindexed_payload)
         .expect("unindexed tail appends");
@@ -218,12 +224,18 @@ fn cache_blob_pack_tail_trim_preserves_unindexed_prefix_before_live_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let unindexed_payload = b"unindexed prefix payload";
-    let unindexed_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unindexed_payload));
+    let unindexed_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unindexed_payload),
+    );
     let unindexed_location = cache
         .append_blob(unindexed_key, unindexed_payload)
         .expect("unindexed prefix appends");
     let payload = b"live payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect("indexed materialization succeeds");
@@ -263,9 +275,15 @@ fn cache_blob_pack_tail_trim_rejects_stale_latest_index_without_truncating() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let other_payload = b"other payload";
-    let other_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(other_payload));
+    let other_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(other_payload),
+    );
     let wrong_location = cache
         .append_blob(other_key, other_payload)
         .expect("other blob appends");
@@ -309,7 +327,10 @@ fn cache_blob_pack_tail_trim_reclaims_empty_root_tail() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"unindexed only payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let location = cache
         .append_blob(key, payload)
         .expect("unindexed value appends");

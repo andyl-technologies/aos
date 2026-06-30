@@ -49,7 +49,7 @@ impl PersistCache {
             let Some(value_hash) = entry.value().materialized_value_hash() else {
                 continue;
             };
-            let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+            let blob_key = PersistBlobKey::for_value(value_hash);
             let Some(location) = value_locations.get(&blob_key.index_bytes()).copied() else {
                 missing_roots.push(PersistMissingNodeValueRoot::new(entry.key(), value_hash));
                 continue;
@@ -122,7 +122,7 @@ impl PersistCache {
             let Some(value_hash) = entry.value().materialized_value_hash() else {
                 continue;
             };
-            let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+            let blob_key = PersistBlobKey::for_value(value_hash);
             let Some(location) = value_locations.get(&blob_key.index_bytes()).copied() else {
                 missing_node_roots.push(PersistMissingNodeValueRoot::new(entry.key(), value_hash));
                 continue;

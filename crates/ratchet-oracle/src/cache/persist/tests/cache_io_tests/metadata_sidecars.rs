@@ -7,7 +7,10 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
 
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"value payload"),
+    );
     let value_latest = PersistBlobLocation::new(222, 34);
     cache
         .value_index()

@@ -80,7 +80,7 @@ fn blob_index_paths_are_store_separated() {
 #[test]
 fn blob_index_keys_are_domain_separated_by_store() {
     let hash = DurableBlake3Hash::for_bytes(b"same bytes");
-    let value_key = PersistBlobKey::for_value(hash).index_bytes();
+    let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash).index_bytes();
     let file_key = PersistBlobKey::for_file(hash).index_bytes();
 
     assert_ne!(value_key, file_key);
@@ -95,9 +95,9 @@ fn blob_index_keys_are_stable_content_addresses() {
     let first = DurableBlake3Hash::for_bytes(b"first payload");
     let first_again = DurableBlake3Hash::for_bytes(b"first payload");
     let second = DurableBlake3Hash::for_bytes(b"second payload");
-    let first_key = PersistBlobKey::for_value(first);
-    let first_key_again = PersistBlobKey::for_value(first_again);
-    let second_key = PersistBlobKey::for_value(second);
+    let first_key = PersistBlobKey::new(PersistBlobStore::Values, first);
+    let first_key_again = PersistBlobKey::new(PersistBlobStore::Values, first_again);
+    let second_key = PersistBlobKey::new(PersistBlobStore::Values, second);
 
     assert_eq!(first_key.store(), PersistBlobStore::Values);
     assert_eq!(first_key.hash(), first);
@@ -229,7 +229,10 @@ fn blob_index_appends_and_finds_latest_matching_entry() {
     let root = temp_root();
     let index_path = root.join("values").join("index.blob");
     let index = PersistBlobIndex::open(&index_path).expect("index opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"payload"),
+    );
     let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
     let first = PersistBlobLocation::new(123, 456);
     let other = PersistBlobLocation::new(789, 10);
@@ -269,7 +272,10 @@ fn blob_index_compacts_to_latest_entries() {
     let root = temp_root();
     let index_path = root.join("values").join("index.blob");
     let index = PersistBlobIndex::open(&index_path).expect("index opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"payload"),
+    );
     let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
     let first = PersistBlobLocation::new(123, 456);
     let other = PersistBlobLocation::new(789, 10);
@@ -343,7 +349,10 @@ fn blob_index_open_rejects_truncated_records() {
 fn blob_index_lookup_rejects_malformed_records() {
     let root = temp_root();
     let index_path = root.join("values").join("index.blob");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"payload"),
+    );
     let location = PersistBlobLocation::new(123, 456);
     let mut encoded = PersistBlobIndexEntry::new(key, location).encode_index_entry();
     encoded[0] = 99;
@@ -368,7 +377,10 @@ fn blob_index_lookup_rejects_malformed_records() {
 fn blob_index_compaction_rejects_malformed_records() {
     let root = temp_root();
     let index_path = root.join("values").join("index.blob");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"payload"),
+    );
     let location = PersistBlobLocation::new(123, 456);
     let mut encoded = PersistBlobIndexEntry::new(key, location).encode_index_entry();
     encoded[0] = 99;

@@ -7,7 +7,10 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"indexed payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let same_hash_file_key = PersistBlobKey::for_file(key.hash());
 
     let entry = cache
@@ -71,7 +74,7 @@ fn assert_blob_indexed_read_waits_for_store_lock(store: PersistBlobStore, payloa
     let layout = cache.layout().clone();
     let hash = DurableBlake3Hash::for_bytes(payload);
     let key = match store {
-        PersistBlobStore::Values => PersistBlobKey::for_value(hash),
+        PersistBlobStore::Values => PersistBlobKey::new(PersistBlobStore::Values, hash),
         PersistBlobStore::Files => PersistBlobKey::for_file(hash),
     };
     cache
@@ -118,7 +121,10 @@ fn assert_blob_indexed_read_waits_for_store_lock(store: PersistBlobStore, payloa
 fn cache_blob_indexed_read_returns_none_on_miss() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"missing"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"missing"),
+    );
 
     assert_eq!(
         cache
@@ -138,7 +144,10 @@ fn cache_blob_indexed_read_returns_none_on_miss() {
 fn cache_blob_indexed_append_rejects_hash_mismatch_before_index_write() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let error = cache
         .append_blob_indexed(key, b"payload")
@@ -170,7 +179,10 @@ fn cache_blob_indexed_append_rejects_hash_mismatch_before_index_write() {
 fn cache_blob_io_rejects_payload_hash_mismatch() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let error = cache
         .append_blob(key, b"payload")
@@ -436,7 +448,10 @@ fn cache_file_artifact_index_reports_poisoned_same_root_lock() {
 fn cache_fixed_record_indexes_compact_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"value payload"),
+    );
     let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
     let value_first = PersistBlobLocation::new(111, 12);
     let value_latest = PersistBlobLocation::new(222, 34);

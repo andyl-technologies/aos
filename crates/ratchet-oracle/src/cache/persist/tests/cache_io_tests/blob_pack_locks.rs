@@ -137,7 +137,10 @@ fn cache_read_blob_acquires_advisory_store_lock_before_same_process_lock() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let payload = b"raw value blob payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let location = cache.append_blob(key, payload).expect("value blob appends");
     let guard = cache
         .lock_blob_materialization_for_tests(PersistBlobStore::Values)
@@ -182,7 +185,10 @@ fn cache_read_blob_reports_poisoned_same_root_lock() {
     });
     assert!(poisoner.join().is_err());
 
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"value payload"),
+    );
     let error = cache
         .read_blob(key, PersistBlobLocation::new(0, 0))
         .expect_err("poisoned same-root value lock should reject raw blob reads");
@@ -202,7 +208,10 @@ fn cache_read_blob_maps_advisory_store_lock_error() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"value payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"value payload"),
+    );
 
     fs::remove_dir_all(layout.locks_dir()).expect("locks directory removes");
     fs::write(layout.locks_dir(), b"not a directory").expect("locks path becomes a file");
@@ -417,12 +426,18 @@ fn cache_value_blob_pack_repack_acquires_advisory_store_lock_before_same_process
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let unrooted_payload = b"unrooted value before repack";
-    let unrooted_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unrooted_payload),
+    );
     let unrooted_location = cache
         .append_blob(unrooted_key, unrooted_payload)
         .expect("unrooted value appends");
     let payload = b"indexed value after unrooted prefix";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     cache
         .append_blob_indexed(key, payload)
         .expect("indexed value appends");

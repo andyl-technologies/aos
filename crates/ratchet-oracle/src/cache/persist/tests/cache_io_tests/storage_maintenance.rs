@@ -26,7 +26,10 @@ fn cache_automatic_storage_maintenance_repairs_indexes_before_repacking() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"recoverable unindexed value";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     cache
         .append_blob(key, payload)
         .expect("recoverable raw value blob appends");
@@ -79,7 +82,10 @@ fn cache_automatic_storage_maintenance_repacks_after_reclaim_threshold() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"duplicate indexed value";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     cache
         .append_blob_indexed(key, payload)
         .expect("first value blob appends");
@@ -138,7 +144,10 @@ fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails(
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let value_payload = b"value live payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_payload),
+    );
     cache
         .value_index()
         .append_entry(PersistBlobIndexEntry::new(
@@ -157,8 +166,10 @@ fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails(
         panic!("value blob should materialize");
     };
     let value_tail_payload = b"value tail";
-    let value_tail_key =
-        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_tail_payload));
+    let value_tail_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_tail_payload),
+    );
     let value_tail_location = cache
         .append_blob(value_tail_key, value_tail_payload)
         .expect("value tail appends");
@@ -348,7 +359,10 @@ fn cache_storage_maintenance_value_rebuild_failure_keeps_sidecar_compaction() {
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let value_payload = b"corrupt value payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_payload),
+    );
     let value_location = cache
         .append_blob_indexed(value_key, value_payload)
         .expect("value blob appends")
@@ -453,7 +467,10 @@ fn cache_storage_maintenance_file_trim_failure_keeps_blob_index_rebuilds() {
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let value_payload = b"value live payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_payload),
+    );
     let value_location = cache
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
@@ -535,14 +552,16 @@ fn cache_storage_repack_compacts_sidecars_and_repacks_blob_packs() {
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let unrooted_value_payload = b"unrooted value before storage repack";
-    let unrooted_value_key =
-        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload));
+    let unrooted_value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unrooted_value_payload),
+    );
     let unrooted_value_location = cache
         .append_blob(unrooted_value_key, unrooted_value_payload)
         .expect("unrooted value appends");
     let value_payload = CachedExpressionValue::immediate(Value::int(101)).expect("payload builds");
     let value_hash = value_payload.value_hash().expect("payload hashes");
-    let value_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let value_key = PersistBlobKey::for_value(value_hash);
     let value_materialized = cache
         .materialize_cached_expression_value_indexed(
             &value_payload,
@@ -665,13 +684,16 @@ fn cache_storage_repack_file_failure_keeps_sidecar_compaction_and_value_repack()
     let unrooted_value_payload = b"unrooted value before storage repack failure";
     cache
         .append_blob(
-            PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(unrooted_value_payload)),
+            PersistBlobKey::new(
+                PersistBlobStore::Values,
+                DurableBlake3Hash::for_bytes(unrooted_value_payload),
+            ),
             unrooted_value_payload,
         )
         .expect("unrooted value appends");
     let value_payload = CachedExpressionValue::immediate(Value::int(102)).expect("payload builds");
     let value_hash = value_payload.value_hash().expect("payload hashes");
-    let value_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let value_key = PersistBlobKey::for_value(value_hash);
     let value_materialized = cache
         .materialize_cached_expression_value_indexed(
             &value_payload,

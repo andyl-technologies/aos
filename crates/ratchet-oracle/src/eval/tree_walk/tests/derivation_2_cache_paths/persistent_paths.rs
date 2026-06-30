@@ -227,7 +227,7 @@ fn persistent_static_derivation_output_paths_miss_for_aterm_mismatch_preserves_d
         let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
         persist_cache
             .materialize_blob_indexed(
-                PersistBlobKey::for_value(stale_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(stale_value_hash),
                 &stale_payload_bytes,
                 MaterializationDecision::Materialize,
             )
@@ -307,7 +307,7 @@ fn persistent_static_derivation_output_paths_miss_for_invalid_path_preserves_drv
         let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
         persist_cache
             .materialize_blob_indexed(
-                PersistBlobKey::for_value(invalid_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(invalid_value_hash),
                 &invalid_payload_bytes,
                 MaterializationDecision::Materialize,
             )
@@ -562,7 +562,7 @@ fn persistent_derivation_aterm_path_miss_for_aterm_mismatch_preserves_drv_surfac
         let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
         persist_cache
             .materialize_blob_indexed(
-                PersistBlobKey::for_value(stale_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(stale_value_hash),
                 &stale_payload_bytes,
                 MaterializationDecision::Materialize,
             )
@@ -637,7 +637,7 @@ fn persistent_derivation_aterm_path_miss_for_invalid_path_preserves_drv_surface(
         let persist_cache = PersistCache::open(&persist_root).expect("persistent cache opens");
         persist_cache
             .materialize_blob_indexed(
-                PersistBlobKey::for_value(invalid_value_hash.as_durable_hash()),
+                PersistBlobKey::for_value(invalid_value_hash),
                 &invalid_payload_bytes,
                 MaterializationDecision::Materialize,
             )

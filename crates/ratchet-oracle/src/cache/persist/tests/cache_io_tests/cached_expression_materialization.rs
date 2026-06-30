@@ -38,7 +38,7 @@ fn cache_cached_expression_payload_materializes_and_loads_by_value_hash() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -81,7 +81,7 @@ fn cache_cached_expression_payload_load_uses_scoped_mapped_value_pack() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
     cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
         .expect("payload materializes");
@@ -242,7 +242,7 @@ fn cache_empty_list_payload_materializes_and_loads_by_value_hash() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = CachedExpressionValue::empty_list();
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -285,7 +285,7 @@ fn cache_strict_list_payload_materializes_and_loads_by_value_hash() {
         ]),
     ]);
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -317,7 +317,7 @@ fn cache_empty_attrs_payload_materializes_and_loads_by_value_hash() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = CachedExpressionValue::empty_attrs();
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -362,7 +362,7 @@ fn cache_strict_attrs_payload_materializes_and_loads_by_value_hash() {
     ])
     .expect("strict attrset payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -410,7 +410,7 @@ fn cache_positioned_attrs_payload_materializes_and_loads_by_value_hash() {
     ])
     .expect("positioned attrset payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
-    let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+    let key = PersistBlobKey::for_value(value_hash);
 
     let result = cache
         .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
@@ -625,10 +625,7 @@ fn cache_node_value_root_plan_resolves_latest_metadata_links() {
     let resolved = plan.resolved_roots()[0];
     assert_eq!(resolved.node_key(), node_key);
     assert_eq!(resolved.value_hash(), value_hash);
-    assert_eq!(
-        resolved.blob_key(),
-        PersistBlobKey::for_value(value_hash.as_durable_hash())
-    );
+    assert_eq!(resolved.blob_key(), PersistBlobKey::for_value(value_hash));
     assert_eq!(resolved.location(), location);
     assert_eq!(plan.missing_roots().len(), 1);
     let missing = plan.missing_roots()[0];
@@ -636,7 +633,7 @@ fn cache_node_value_root_plan_resolves_latest_metadata_links() {
     assert_eq!(missing.value_hash(), missing_value_hash);
     assert_eq!(
         missing.blob_key(),
-        PersistBlobKey::for_value(missing_value_hash.as_durable_hash())
+        PersistBlobKey::for_value(missing_value_hash)
     );
     assert!(
         plan.missing_roots()

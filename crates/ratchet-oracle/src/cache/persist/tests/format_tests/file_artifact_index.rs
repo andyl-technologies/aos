@@ -110,7 +110,7 @@ fn file_artifact_index_values_reject_invalid_prefixes() {
     let location = PersistBlobLocation::new(123, 456);
     let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN];
     encoded[..PERSIST_BLOB_INDEX_KEY_LEN]
-        .copy_from_slice(&PersistBlobKey::for_value(blob_hash).index_bytes());
+        .copy_from_slice(&PersistBlobKey::new(PersistBlobStore::Values, blob_hash).index_bytes());
     encoded[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&location.encode_index_value());
 
     let error = PersistFileArtifactIndexValue::decode_index_value(&encoded)

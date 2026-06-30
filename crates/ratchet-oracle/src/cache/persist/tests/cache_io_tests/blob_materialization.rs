@@ -6,7 +6,10 @@ use super::*;
 fn cache_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let result = cache
         .materialize_blob(key, b"payload", MaterializationDecision::KeepInMemory)
@@ -29,7 +32,10 @@ fn cache_materialization_decision_appends_when_requested() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
 
     let result = cache
         .materialize_blob(key, payload, MaterializationDecision::Materialize)
@@ -66,7 +72,10 @@ fn cache_append_blob_acquires_advisory_store_lock_before_same_process_lock() {
         .lock_blob_materialization_for_tests(PersistBlobStore::Values)
         .expect("value store lock acquires");
     let payload = b"raw advisory payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let worker_cache = cache.clone();
     let (tx, rx) = mpsc::channel();
 
@@ -101,7 +110,10 @@ fn cache_append_blob_acquires_advisory_store_lock_before_same_process_lock() {
 fn cache_indexed_materialization_decision_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"other payload"),
+    );
 
     let result = cache
         .materialize_blob_indexed(key, b"payload", MaterializationDecision::KeepInMemory)
@@ -130,7 +142,10 @@ fn cache_indexed_materialization_decision_appends_and_indexes_when_requested() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
 
     let result = cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
@@ -166,7 +181,10 @@ fn cache_indexed_materialization_reuses_verified_existing_blob() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let first = cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect("first indexed materialization succeeds");
@@ -206,7 +224,10 @@ fn cache_indexed_materialization_single_flights_cloned_cache_handles() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = Arc::new(b"payload".to_vec());
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload.as_slice()));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload.as_slice()),
+    );
     let workers = 16;
     let barrier = Arc::new(Barrier::new(workers));
     let mut handles = Vec::new();
@@ -285,7 +306,10 @@ fn cache_indexed_materialization_reports_poisoned_shared_clone_lock() {
     assert!(poisoner.join().is_err());
 
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let error = cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect_err("poisoned shared value lock should reject materialization");
@@ -319,7 +343,10 @@ fn cache_indexed_materialization_single_flights_independently_opened_cache_handl
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = Arc::new(b"payload".to_vec());
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload.as_slice()));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload.as_slice()),
+    );
     let workers = 16;
     let barrier = Arc::new(Barrier::new(workers));
     let mut handles = Vec::new();
@@ -393,7 +420,10 @@ fn cache_indexed_materialization_acquires_advisory_store_lock_before_same_proces
         .lock_blob_materialization_for_tests(PersistBlobStore::Values)
         .expect("value store lock acquires");
     let payload = b"advisory indexed payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let worker_cache = cache.clone();
     let (tx, rx) = mpsc::channel();
 
@@ -445,7 +475,10 @@ fn cache_indexed_materialization_reports_poisoned_same_root_lock() {
     assert!(poisoner.join().is_err());
 
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let error = cache
         .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
         .expect_err("poisoned shared value lock should reject materialization");
@@ -488,7 +521,10 @@ fn cache_append_blob_indexed_reports_poisoned_same_root_lock() {
     assert!(poisoner.join().is_err());
 
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let error = cache
         .append_blob_indexed(key, payload)
         .expect_err("poisoned shared value lock should reject indexed append");
@@ -531,7 +567,10 @@ fn cache_append_blob_reports_poisoned_same_root_lock() {
     assert!(poisoner.join().is_err());
 
     let payload = b"payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let error = cache
         .append_blob(key, payload)
         .expect_err("poisoned shared value lock should reject raw append");

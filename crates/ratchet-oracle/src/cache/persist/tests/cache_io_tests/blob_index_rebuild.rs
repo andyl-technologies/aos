@@ -8,7 +8,7 @@ fn cache_blob_io_is_routed_by_key_store() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"shared payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
-    let value_key = PersistBlobKey::for_value(hash);
+    let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
     let file_key = PersistBlobKey::for_file(hash);
 
     let value_location = cache
@@ -66,7 +66,7 @@ fn cache_blob_pack_index_entries_are_store_typed() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let value_payload = b"value payload";
     let value_hash = DurableBlake3Hash::for_bytes(value_payload);
-    let value_key = PersistBlobKey::for_value(value_hash);
+    let value_key = PersistBlobKey::new(PersistBlobStore::Values, value_hash);
     let value_location = cache
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
@@ -98,7 +98,10 @@ fn cache_blob_pack_index_entries_rejects_corrupt_pack() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"value payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let location = cache.append_blob(key, payload).expect("value blob appends");
     let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
     let mut file = OpenOptions::new()
@@ -135,12 +138,18 @@ fn cache_latest_blob_pack_index_entries_compacts_physical_duplicates() {
     );
 
     let duplicate_payload = b"duplicate payload";
-    let duplicate_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(duplicate_payload));
+    let duplicate_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(duplicate_payload),
+    );
     let first_duplicate = cache
         .append_blob(duplicate_key, duplicate_payload)
         .expect("first duplicate appends");
     let other_payload = b"other payload";
-    let other_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(other_payload));
+    let other_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(other_payload),
+    );
     let other_location = cache
         .append_blob(other_key, other_payload)
         .expect("other blob appends");
@@ -181,7 +190,7 @@ fn cache_latest_blob_pack_index_entries_keep_store_namespaces_separate() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"shared payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
-    let value_key = PersistBlobKey::for_value(hash);
+    let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
     let file_key = PersistBlobKey::for_file(hash);
     let value_location = cache
         .append_blob(value_key, payload)
@@ -212,13 +221,19 @@ fn cache_blob_index_rebuild_plan_reports_missing_stale_and_dangling_entries() {
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let exact_payload = b"exact indexed payload";
-    let exact_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(exact_payload));
+    let exact_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(exact_payload),
+    );
     let exact_entry = cache
         .append_blob_indexed(exact_key, exact_payload)
         .expect("exact indexed payload appends");
 
     let stale_payload = b"stale duplicate payload";
-    let stale_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(stale_payload));
+    let stale_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(stale_payload),
+    );
     let stale_current = cache
         .append_blob(stale_key, stale_payload)
         .expect("first stale blob appends");
@@ -231,12 +246,18 @@ fn cache_blob_index_rebuild_plan_reports_missing_stale_and_dangling_entries() {
         .expect("latest stale blob appends");
 
     let missing_payload = b"missing sidecar payload";
-    let missing_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(missing_payload));
+    let missing_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(missing_payload),
+    );
     let missing_location = cache
         .append_blob(missing_key, missing_payload)
         .expect("missing-index blob appends");
 
-    let dangling_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"dangling"));
+    let dangling_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"dangling"),
+    );
     let dangling_entry = PersistBlobIndexEntry::new(dangling_key, PersistBlobLocation::new(999, 8));
     cache
         .value_index()
@@ -291,7 +312,7 @@ fn cache_blob_index_rebuild_plan_keeps_store_namespaces_separate() {
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"shared namespace payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
-    let value_key = PersistBlobKey::for_value(hash);
+    let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
     let file_key = PersistBlobKey::for_file(hash);
     let value_entry = cache
         .append_blob_indexed(value_key, payload)
@@ -327,7 +348,10 @@ fn cache_blob_index_rebuild_plan_ignores_duplicate_sidecar_history_for_lookup_re
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"sidecar duplicate payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let planned_location = cache
         .append_blob(key, payload)
         .expect("planned blob appends");
@@ -369,7 +393,10 @@ fn cache_blob_index_rebuild_plan_classifies_wrong_store_sidecar_entry_as_danglin
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"value payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let value_location = cache
         .append_blob(value_key, payload)
         .expect("value blob appends");
@@ -405,7 +432,10 @@ fn cache_blob_index_rebuild_plan_rejects_corrupt_pack() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"planned corrupt payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let location = cache.append_blob(key, payload).expect("value blob appends");
     let payload_offset = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
     let mut file = OpenOptions::new()
@@ -460,13 +490,19 @@ fn cache_blob_index_rebuild_from_pack_repairs_missing_stale_and_dangling_entries
     let cache = PersistCache::open(&root).expect("cache opens");
 
     let exact_payload = b"rebuild exact indexed payload";
-    let exact_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(exact_payload));
+    let exact_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(exact_payload),
+    );
     let exact_entry = cache
         .append_blob_indexed(exact_key, exact_payload)
         .expect("exact indexed payload appends");
 
     let stale_payload = b"rebuild stale duplicate payload";
-    let stale_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(stale_payload));
+    let stale_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(stale_payload),
+    );
     let stale_current = cache
         .append_blob(stale_key, stale_payload)
         .expect("first stale blob appends");
@@ -479,12 +515,18 @@ fn cache_blob_index_rebuild_from_pack_repairs_missing_stale_and_dangling_entries
         .expect("latest stale blob appends");
 
     let missing_payload = b"rebuild missing sidecar payload";
-    let missing_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(missing_payload));
+    let missing_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(missing_payload),
+    );
     let missing_location = cache
         .append_blob(missing_key, missing_payload)
         .expect("missing-index blob appends");
 
-    let dangling_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"rebuild dangling"));
+    let dangling_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(b"rebuild dangling"),
+    );
     cache
         .value_index()
         .append_entry(PersistBlobIndexEntry::new(
@@ -545,7 +587,10 @@ fn cache_blob_index_rebuild_from_pack_canonicalizes_duplicate_sidecar_history() 
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"rebuild duplicate sidecar payload";
-    let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
     let planned_location = cache
         .append_blob(key, payload)
         .expect("planned blob appends");
@@ -596,7 +641,10 @@ fn cache_blob_index_rebuild_from_pack_repairs_file_store_sidecar() {
         .append_blob(file_key, payload)
         .expect("file blob appends");
     let wrong_store_entry = PersistBlobIndexEntry::new(
-        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"wrong store")),
+        PersistBlobKey::new(
+            PersistBlobStore::Values,
+            DurableBlake3Hash::for_bytes(b"wrong store"),
+        ),
         PersistBlobLocation::new(777, 5),
     );
     cache
@@ -648,12 +696,18 @@ fn cache_blob_index_rebuild_from_pack_rejects_corrupt_pack_without_rewriting_sid
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let indexed_payload = b"surviving indexed payload";
-    let indexed_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(indexed_payload),
+    );
     let indexed_entry = cache
         .append_blob_indexed(indexed_key, indexed_payload)
         .expect("indexed payload appends");
     let corrupt_payload = b"corrupt rebuild payload";
-    let corrupt_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(corrupt_payload));
+    let corrupt_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(corrupt_payload),
+    );
     let corrupt_location = cache
         .append_blob(corrupt_key, corrupt_payload)
         .expect("corrupt-target blob appends");
@@ -702,7 +756,10 @@ fn cache_blob_indexes_rebuild_from_packs_repairs_value_and_file_sidecars() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let value_payload = b"all rebuild value payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_payload),
+    );
     let value_location = cache
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
@@ -746,7 +803,10 @@ fn cache_blob_indexes_rebuild_from_packs_keeps_value_rebuild_when_file_rebuild_f
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let value_payload = b"boundary value payload";
-    let value_key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(value_payload));
+    let value_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(value_payload),
+    );
     let value_location = cache
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
@@ -756,7 +816,10 @@ fn cache_blob_indexes_rebuild_from_packs_keeps_value_rebuild_when_file_rebuild_f
         .append_blob(file_key, file_payload)
         .expect("file blob appends");
     let file_sentinel_entry = PersistBlobIndexEntry::new(
-        PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"file sentinel")),
+        PersistBlobKey::new(
+            PersistBlobStore::Values,
+            DurableBlake3Hash::for_bytes(b"file sentinel"),
+        ),
         PersistBlobLocation::new(888, 6),
     );
     cache

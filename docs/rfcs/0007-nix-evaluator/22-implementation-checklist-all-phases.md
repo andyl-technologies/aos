@@ -3923,6 +3923,23 @@ alone (`M-1`/`Q-A`).
       syscall-level cache-off no-read proof, or the full cached-vs-uncached CI
       safety net
       ([12](12-incremental-evaluation-cache.md) §6.3/§8.3).
+- [x] Current persistent value-blob key hash boundary:
+      `PersistBlobKey::for_value` now requires `ValueHash`, so indexed
+      cached-expression materialization/load, node-value linking,
+      reachability planning, and derivation side-record value-blob reads/writes
+      keep semantic value hashes typed until the blob-index byte boundary. Raw
+      `DurableBlake3Hash` remains available for value-blob keys only through
+      explicit low-level `PersistBlobKey::new(PersistBlobStore::Values, ...)`,
+      `PersistBlobPackRecord::key(PersistBlobStore::Values)`, and
+      `decode_index_bytes` disk-format/pack-scan paths, used by generic raw
+      blob IO/materialization/layout tests, pack/index format tests, and
+      corrupt/wrong-store fixtures. This closes the current
+      semantic constructor leak for `values/` blobs; it is not the full constructive
+      value store, the full value-hash serializer, or the full internal-hash
+      leak invariant. Gate: `cargo check -p ratchet-oracle --tests`,
+      `cargo check -p aos-nix-harness --tests`, `blob_index`,
+      `cached_expression_materialization`, `blob_reachability`,
+      `value_blob_repack` ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

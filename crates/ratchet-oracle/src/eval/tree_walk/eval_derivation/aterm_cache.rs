@@ -209,20 +209,19 @@ impl TreeWalk {
                 return None;
             }
         };
-        let payload_bytes = match persist_cache
-            .read_blob_indexed(PersistBlobKey::for_value(value_hash.as_durable_hash()))
-        {
-            Ok(Some(payload_bytes)) => payload_bytes,
-            Ok(None) => return None,
-            Err(error) => {
-                tracing::warn!(
-                    target: "aos_nix::cache",
-                    error = %error,
-                    "tree-walk evaluator persistent derivation ATerm path payload read failed"
-                );
-                return None;
-            }
-        };
+        let payload_bytes =
+            match persist_cache.read_blob_indexed(PersistBlobKey::for_value(value_hash)) {
+                Ok(Some(payload_bytes)) => payload_bytes,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "tree-walk evaluator persistent derivation ATerm path payload read failed"
+                    );
+                    return None;
+                }
+            };
         let payload = match CachedDerivationAtermPath::decode_persistent_payload(&payload_bytes) {
             Ok(payload) => payload,
             Err(error) => {
@@ -430,7 +429,7 @@ impl TreeWalk {
             }
         };
         if let Err(error) = persist_cache.materialize_blob_indexed(
-            PersistBlobKey::for_value(value_hash.as_durable_hash()),
+            PersistBlobKey::for_value(value_hash),
             &payload_bytes,
             MaterializationDecision::Materialize,
         ) {

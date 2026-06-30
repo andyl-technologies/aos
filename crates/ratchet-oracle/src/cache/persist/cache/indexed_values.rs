@@ -186,7 +186,7 @@ impl PersistCache {
         let payload = value
             .encode_persistent_payload()
             .map_err(|source| PersistCachedExpressionValueIndexedWriteError::Encode { source })?;
-        let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        let key = PersistBlobKey::for_value(value_hash);
         self.materialize_blob_indexed(key, &payload, MaterializationDecision::Materialize)
             .map_err(|source| PersistCachedExpressionValueIndexedWriteError::Write { source })
     }
@@ -228,7 +228,7 @@ impl PersistCache {
         &self,
         value_hash: ValueHash,
     ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
-        let key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        let key = PersistBlobKey::for_value(value_hash);
         let Some(value) = self
             .read_blob_indexed_mapped_with(key, CachedExpressionValue::decode_persistent_payload)
             .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Read { source })?
@@ -284,7 +284,7 @@ impl PersistCache {
         let payload = value.encode_persistent_payload().map_err(|source| {
             PersistCachedExpressionNodeValueIndexedWriteError::Encode { source }
         })?;
-        let blob_key = PersistBlobKey::for_value(value_hash.as_durable_hash());
+        let blob_key = PersistBlobKey::for_value(value_hash);
         let materialization = self
             .materialize_blob_indexed(blob_key, &payload, MaterializationDecision::Materialize)
             .map_err(
