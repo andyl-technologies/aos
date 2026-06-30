@@ -7031,7 +7031,12 @@ in {
           "$work/apm-held-host-install-after-reinstall.json" >/dev/null
         assert_default_profile_absent
 
-        if ! find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+        # The consumer NAR download cache lives directly under <cache>/apm as
+        # <hash>.nar.zst; producer static caches under <cache>/apm/registry-static
+        # are a separate artifact that `apm clean` does not manage. Scope the
+        # download-cache assertions to maxdepth 1 so they only cover what clean
+        # is responsible for.
+        if ! find "$cache/apm" -maxdepth 1 -name '*.nar.zst' | grep -q .; then
           find "$cache/apm" -maxdepth 2 -print 2>/dev/null || true
           exit 1
         fi
@@ -7044,7 +7049,7 @@ in {
             and .freed_bytes > 0
             and (.freed | length > 0)' \
           "$work/apm-clean-host-install-cache.json" >/dev/null
-        if find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+        if find "$cache/apm" -maxdepth 1 -name '*.nar.zst' | grep -q .; then
           find "$cache/apm" -maxdepth 2 -print
           exit 1
         fi
