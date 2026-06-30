@@ -12,6 +12,8 @@
 //! orchestration, setup descriptor passing, and control/data split contract.
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI;
+//! `doorbell_marker` owns the closed white-box marker-kind vocabulary and body
+//! codecs;
 //! `golden_vectors` owns the frozen ABI-conformance corpus, and `codec_fuzz`
 //! owns the structure-aware fuzz target and regression corpus.
 //!
@@ -36,6 +38,7 @@
 mod codec_fuzz;
 mod doorbell_abi;
 mod doorbell_frame;
+mod doorbell_marker;
 mod golden_vectors;
 
 use std::io::{ErrorKind, Read, Write};
@@ -61,6 +64,20 @@ pub use doorbell_frame::{
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
     WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector,
     encode_whitebox_doorbell_frame,
+};
+pub use doorbell_marker::{
+    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
+    WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
+    WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
+    WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE, WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE,
+    WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
+    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody,
+    WhiteboxDoorbellMarkerKind, WhiteboxEventMarkerBody, WhiteboxLifecycleMarkerEvent,
+    WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
+    WhiteboxMarkerPayloadEncodeError, WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody,
+    decode_whitebox_marker_payload, encode_whitebox_marker_frame,
+    encode_whitebox_marker_payload_body,
 };
 pub use golden_vectors::{
     ControlGoldenVector, ControlGoldenVectorMessage, GOLDEN_CONTROL_VECTORS,

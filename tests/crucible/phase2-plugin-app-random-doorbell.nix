@@ -14,6 +14,7 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
+  protocolDoorbellMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
@@ -171,15 +172,15 @@
       }
       {
         label = "random request width bound";
-        needle = "width_bytes == 0 || width_bytes > WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES";
+        needle = "WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES";
       }
       {
-        label = "little endian request id";
-        needle = "u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])";
+        label = "shared marker decoder";
+        needle = "decode_whitebox_marker_payload(&frame)";
       }
       {
-        label = "length-prefixed stream tag";
-        needle = "let stream_tag_len = u16::from_le_bytes([payload[5], payload[6]]) as usize;";
+        label = "shared random request payload";
+        needle = "WhiteboxMarkerPayload::RandomRequest";
       }
       {
         label = "utf8 stream tag validation";
@@ -254,6 +255,28 @@
       {
         label = "shared protocol version constant";
         needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;";
+      }
+    ]
+    ++ failuresFor "crates/crucible-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [
+      {
+        label = "protocol random request width bound";
+        needle = "WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES";
+      }
+      {
+        label = "protocol little endian request id";
+        needle = "request_id = reader.read_u32_le(\"request_id\")?;";
+      }
+      {
+        label = "protocol length-prefixed stream tag";
+        needle = "let stream_tag = reader.read_lp_string(\"stream_tag\")?;";
+      }
+      {
+        label = "protocol invalid random width diagnostic";
+        needle = "InvalidRandomWidth";
+      }
+      {
+        label = "protocol utf8 diagnostic";
+        needle = "InvalidUtf8";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -1300,6 +1300,91 @@ impl GuestAssertionMarker {
     }
 }
 
+/// Converts a decoded white-box doorbell marker payload into engine event-log semantics.
+///
+/// Assertion payloads become [`ObservableEvent::guest_assertion_marker`] events,
+/// so the existing host assertion finalizer consumes the shared marker fields.
+/// Coverage payloads become named coverage-marker observations. Diagnostic
+/// event and lifecycle payloads become observational guest-marker identities, so
+/// they do not masquerade as black-box node lifecycle observations. The in-band
+/// random-request kind returns [`None`] because it is handled by the app-random
+/// decision path instead of the observational marker path.
+#[cfg(feature = "test-double")]
+#[must_use]
+pub fn observable_event_from_whitebox_marker_payload(
+    retired_icount: Icount,
+    node: NodeId,
+    payload: &crucible_protocol::WhiteboxMarkerPayload,
+) -> Option<ObservableEvent> {
+    match payload {
+        crucible_protocol::WhiteboxMarkerPayload::Assertion(assertion) => {
+            Some(ObservableEvent::guest_assertion_marker(
+                retired_icount,
+                node,
+                guest_assertion_marker_from_whitebox_body(assertion),
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::Lifecycle(event) => {
+            Some(ObservableEvent::guest_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(format!("lifecycle.{}", event.semantic_label())),
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::Event(event) => {
+            Some(ObservableEvent::guest_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(event.name.clone()),
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::Coverage(coverage) => {
+            Some(ObservableEvent::coverage_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(coverage.point.clone()),
+            ))
+        }
+        crucible_protocol::WhiteboxMarkerPayload::RandomRequest(_) => None,
+    }
+}
+
+#[cfg(feature = "test-double")]
+fn guest_assertion_marker_from_whitebox_body(
+    body: &crucible_protocol::WhiteboxAssertionMarkerBody,
+) -> GuestAssertionMarker {
+    GuestAssertionMarker::new(
+        AssertionId::from_name(body.id.clone()),
+        body.message.clone(),
+        guest_assertion_kind_from_whitebox_flavor(body.flavor),
+        body.condition,
+        body.must_hit,
+        body.details
+            .iter()
+            .map(|detail| GuestAssertionDetail::new(detail.key.clone(), detail.value.clone()))
+            .collect(),
+        body.location.clone(),
+    )
+}
+
+#[cfg(feature = "test-double")]
+fn guest_assertion_kind_from_whitebox_flavor(
+    flavor: crucible_protocol::WhiteboxAssertionMarkerFlavor,
+) -> GuestAssertionKind {
+    match flavor {
+        crucible_protocol::WhiteboxAssertionMarkerFlavor::Always => GuestAssertionKind::Always,
+        crucible_protocol::WhiteboxAssertionMarkerFlavor::Sometimes => {
+            GuestAssertionKind::Sometimes
+        }
+        crucible_protocol::WhiteboxAssertionMarkerFlavor::Reachable => {
+            GuestAssertionKind::Reachable
+        }
+        crucible_protocol::WhiteboxAssertionMarkerFlavor::Unreachable => {
+            GuestAssertionKind::Unreachable
+        }
+    }
+}
+
 /// One leaf predicate request made by the shared condition evaluator.
 ///
 /// The shared evaluator centralizes leaf dispatch so assertions and triggers

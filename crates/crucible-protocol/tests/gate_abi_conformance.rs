@@ -9,11 +9,15 @@ use crucible_protocol::{
     CODEC_FUZZ_REGRESSION_CORPUS, CONTROL_PROTOCOL_VERSION, ControlCodecFuzzCase,
     ControlCodecFuzzOutcome, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
     ControlTag, GOLDEN_CONTROL_VECTORS, GOLDEN_VECTOR_PROTOCOL_VERSION,
-    GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, HostMsg, PluginMsg,
-    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
-    WhiteboxDoorbellFrame, control_decode_host_msg, control_decode_plugin_msg,
-    control_encode_host_msg, control_encode_plugin_msg, encode_whitebox_doorbell_frame,
-    run_control_codec_fuzz_target,
+    GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
+    GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg,
+    WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
+    WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayloadDecodeError,
+    control_decode_host_msg, control_decode_plugin_msg, control_encode_host_msg,
+    control_encode_plugin_msg, decode_whitebox_marker_payload, encode_whitebox_doorbell_frame,
+    encode_whitebox_marker_frame, run_control_codec_fuzz_target,
 };
 
 #[test]
@@ -23,6 +27,9 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_abi_version_field();
     assert_version_bump_regenerates_vectors();
     assert_doorbell_frame_golden_vectors();
+    assert_doorbell_marker_payload_golden_vectors();
+    assert_doorbell_marker_kind_vocabulary();
+    assert_doorbell_marker_subvocabularies();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
 }
@@ -132,6 +139,126 @@ fn assert_doorbell_frame_golden_vectors() {
             0x6e, 0x67,
         ],
     );
+}
+
+#[test]
+fn protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes() {
+    assert_doorbell_marker_payload_golden_vectors();
+}
+
+fn assert_doorbell_marker_payload_golden_vectors() {
+    assert_eq!(
+        GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS.map(|vector| vector.name),
+        [
+            "assert-always",
+            "lifecycle-setup-complete",
+            "event-note",
+            "coverage-hot-path",
+            "random-request",
+        ],
+    );
+    for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
+        assert_eq!(vector.protocol_version, WHITEBOX_DOORBELL_PROTOCOL_VERSION);
+        let frame = match WhiteboxDoorbellFrame::decode(vector.frame) {
+            Ok(frame) => frame,
+            Err(error) => panic!("marker golden vector should decode as doorbell frame: {error}"),
+        };
+        assert_eq!(frame.kind(), vector.kind);
+        assert_eq!(frame.payload(), vector.payload);
+        let payload = match decode_whitebox_marker_payload(&frame) {
+            Ok(payload) => payload,
+            Err(error) => panic!("marker golden vector should decode as marker payload: {error}"),
+        };
+        assert_eq!(
+            encode_whitebox_marker_frame(&payload),
+            Ok(vector.frame.to_vec()),
+        );
+    }
+    let unknown = match WhiteboxDoorbellFrame::new(0xffff, &[]) {
+        Ok(frame) => frame,
+        Err(error) => panic!("unknown-kind frame should build for decoder test: {error}"),
+    };
+    assert_eq!(
+        decode_whitebox_marker_payload(&unknown),
+        Err(WhiteboxMarkerPayloadDecodeError::UnknownKind { kind: 0xffff }),
+    );
+}
+
+#[test]
+fn protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned() {
+    assert_doorbell_marker_kind_vocabulary();
+}
+
+fn assert_doorbell_marker_kind_vocabulary() {
+    assert_eq!(
+        WhiteboxDoorbellMarkerKind::ALL.map(|kind| (kind.wire_value(), kind.semantic_label())),
+        [
+            (1, "guest_assertion_marker"),
+            (2, "guest_lifecycle_marker"),
+            (3, "guest_event_marker"),
+            (4, "guest_coverage_marker"),
+            (5, "app_random_request"),
+        ],
+    );
+    assert_eq!(
+        WhiteboxDoorbellMarkerKind::ALL.len(),
+        WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
+    );
+    for kind in WhiteboxDoorbellMarkerKind::ALL {
+        assert_eq!(
+            WhiteboxDoorbellMarkerKind::from_wire_value(kind.wire_value()),
+            Some(kind),
+        );
+    }
+    assert_eq!(WhiteboxDoorbellMarkerKind::from_wire_value(6), None);
+    assert!(WhiteboxDoorbellMarkerKind::Assertion.is_observational());
+    assert!(!WhiteboxDoorbellMarkerKind::RandomRequest.is_observational());
+}
+
+#[test]
+fn protocol_doorbell_marker_subvocabularies_are_closed_and_versioned() {
+    assert_doorbell_marker_subvocabularies();
+}
+
+fn assert_doorbell_marker_subvocabularies() {
+    assert_eq!(
+        WhiteboxAssertionMarkerFlavor::ALL
+            .map(|flavor| { (flavor.wire_value(), flavor.semantic_label()) }),
+        [
+            (0, "always"),
+            (1, "sometimes"),
+            (2, "reachable"),
+            (3, "unreachable"),
+        ],
+    );
+    assert_eq!(
+        WhiteboxAssertionMarkerFlavor::ALL.len(),
+        WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT,
+    );
+    for flavor in WhiteboxAssertionMarkerFlavor::ALL {
+        assert_eq!(
+            WhiteboxAssertionMarkerFlavor::from_wire_value(flavor.wire_value()),
+            Some(flavor),
+        );
+    }
+    assert_eq!(WhiteboxAssertionMarkerFlavor::from_wire_value(4), None);
+
+    assert_eq!(
+        WhiteboxLifecycleMarkerEvent::ALL
+            .map(|event| { (event.wire_value(), event.semantic_label()) }),
+        [(1, "setup_complete"), (2, "test_done")],
+    );
+    assert_eq!(
+        WhiteboxLifecycleMarkerEvent::ALL.len(),
+        WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    );
+    for event in WhiteboxLifecycleMarkerEvent::ALL {
+        assert_eq!(
+            WhiteboxLifecycleMarkerEvent::from_wire_value(event.wire_value()),
+            Some(event),
+        );
+    }
+    assert_eq!(WhiteboxLifecycleMarkerEvent::from_wire_value(3), None);
 }
 
 #[test]

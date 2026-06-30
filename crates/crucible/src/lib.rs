@@ -157,6 +157,8 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
+#[cfg(feature = "test-double")]
+pub use trigger::observable_event_from_whitebox_marker_payload;
 pub use trigger::{
     Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationBisectionRequest, AssertionViolationDivergence,
