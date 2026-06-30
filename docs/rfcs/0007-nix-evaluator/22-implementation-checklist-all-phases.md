@@ -4025,11 +4025,12 @@ alone (`M-1`/`Q-A`).
       `--attr`, `--smoke`, `--all`, and `--systems`, creates an empty per-attr
       native cache root for the cold-cache leg, clears `native_cache_root` for
       the cache-off leg, rejects direct `.drv` pair mode and `--oracle-stats`,
-      renders machine-readable JSON with per-comparison roots/divergences and
-      per-attr cold roots in accepted byte-mode full-closure fixtures, removes
-      successful cold roots, retains failing cold roots, and reports a
-      reproduction command carrying `--cache-validation` on failures. This is a
-      runnable command-level validation hook only; the local
+      renders machine-readable JSON with per-comparison roots/divergences,
+      top-level/per-attr comparison-failure counts, and per-attr cold roots in
+      accepted byte-mode full-closure fixtures, removes successful cold roots,
+      retains failing cold roots, and reports a reproduction command carrying
+      `--cache-validation` on failures. This is a runnable command-level
+      validation hook only; the local
       `just cache-validation-smoke` recipe runs the `--smoke` zlib witness via
       `nix run . -- nix-diff --smoke --cache-validation --mode=byte -- default.nix`;
       scheduled CI wiring, full AOS package-set closure coverage on Linux,
@@ -4041,6 +4042,7 @@ alone (`M-1`/`Q-A`).
       `nix_diff_cache_validation_rejects_incompatible_modes`,
       `cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache`,
       `cache_validation_json_renders_full_closure_matrix_failures`,
+      `cache_validation_json_counts_failed_comparisons_without_divergences`,
       `cache_validation_reproduction_args_insert_flag_before_file_separator`,
       and
       `cache_validation_full_closure_cleanup_removes_only_successful_cold_roots`

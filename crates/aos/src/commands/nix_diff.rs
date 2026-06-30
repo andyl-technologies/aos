@@ -728,10 +728,15 @@ impl CacheValidationAttrReport {
         ]
     }
 
-    fn has_failure(&self) -> bool {
+    fn failure_count(&self) -> usize {
         self.comparisons()
             .iter()
-            .any(|comparison| comparison.failure.is_some())
+            .filter(|comparison| comparison.failure.is_some())
+            .count()
+    }
+
+    fn has_failure(&self) -> bool {
+        self.failure_count() > 0
     }
 }
 
@@ -1961,6 +1966,10 @@ fn cache_validation_json(
     failure: Option<&NixDiffReportedFailure>,
 ) -> serde_json::Value {
     let failed_attrs = reports.iter().filter(|report| report.has_failure()).count();
+    let comparison_failures: usize = reports
+        .iter()
+        .map(CacheValidationAttrReport::failure_count)
+        .sum();
     let divergence_count: usize = reports
         .iter()
         .flat_map(CacheValidationAttrReport::comparisons)
@@ -1976,6 +1985,7 @@ fn cache_validation_json(
         "error": failure.map(ToString::to_string),
         "attrs_checked": reports.len(),
         "attrs_failed": failed_attrs,
+        "comparison_failures": comparison_failures,
         "divergence_count": divergence_count,
         "reports": reports.iter()
             .map(|report| cache_validation_attr_json(report, eval_config, mode))
@@ -1994,6 +2004,7 @@ fn cache_validation_attr_json(
         "cold_cache_root": report.cold_cache_root.to_string_lossy(),
         "cold_cache_root_retained": report.has_failure(),
         "matched": !report.has_failure(),
+        "comparison_failures": report.failure_count(),
         "reproduce": cache_validation_reproduction_command(
             eval_config,
             &report.file,
@@ -2791,6 +2802,50 @@ mod tests {
         }
     }
 
+    struct ErrorClosureEval {
+        name: &'static str,
+        message: &'static str,
+        instantiate_closure_calls: AtomicUsize,
+    }
+
+    impl ErrorClosureEval {
+        fn new(name: &'static str, message: &'static str) -> Self {
+            Self {
+                name,
+                message,
+                instantiate_closure_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn instantiate_closure_calls(&self) -> usize {
+            self.instantiate_closure_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl NixEval for ErrorClosureEval {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            Err(anyhow::anyhow!(self.message))
+        }
+
+        fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+            Err(anyhow::anyhow!(self.message))
+        }
+
+        fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+            self.instantiate_closure_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!(self.message))
+        }
+
+        fn eval_expr(&self, _expr: &str) -> Result<String> {
+            Err(anyhow::anyhow!(self.message))
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
     fn repro_config() -> NixEvalConfig {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
@@ -3204,8 +3259,10 @@ mod tests {
         assert_eq!(value["matched"], false);
         assert_eq!(value["attrs_checked"], 1);
         assert_eq!(value["attrs_failed"], 1);
+        assert_eq!(value["comparison_failures"], 2);
         assert_eq!(value["divergence_count"], 2);
         assert_eq!(value["reports"][0]["attr"], "pkgs.hello");
+        assert_eq!(value["reports"][0]["comparison_failures"], 2);
         assert_eq!(
             value["reports"][0]["cold_cache_root"],
             "/tmp/aos-cold-cache"
@@ -3236,6 +3293,54 @@ mod tests {
         assert_eq!(
             value["reports"][0]["comparisons"][2]["divergences"][0]["kind"],
             "bytes"
+        );
+    }
+
+    #[test]
+    fn cache_validation_json_counts_failed_comparisons_without_divergences() {
+        let oracle = ErrorClosureEval::new("oracle", "same hard failure");
+        let cache_off = ErrorClosureEval::new("cache-off", "same hard failure");
+        let cold_cache = ErrorClosureEval::new("cold-cache", "same hard failure");
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/aos-cold-cache-error"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Byte,
+        );
+        let reports = vec![report];
+        let failure = cache_validation_failure(&reports);
+
+        let value = cache_validation_json(
+            &reports,
+            &repro_config(),
+            Path::new("default.nix"),
+            DiffMode::Byte,
+            failure.as_ref(),
+        );
+
+        assert_eq!(oracle.instantiate_closure_calls(), 1);
+        assert_eq!(cache_off.instantiate_closure_calls(), 1);
+        assert_eq!(cold_cache.instantiate_closure_calls(), 1);
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["attrs_failed"], 1);
+        assert_eq!(value["comparison_failures"], 3);
+        assert_eq!(value["divergence_count"], 0);
+        assert_eq!(value["reports"][0]["comparison_failures"], 3);
+        assert_eq!(value["reports"][0]["cold_cache_root_retained"], true);
+        assert!(
+            value["reports"][0]["comparisons"]
+                .as_array()
+                .is_some_and(|comparisons| comparisons.iter().all(|comparison| {
+                    comparison["matched"] == false
+                        && comparison["error"]
+                            == "drv diff produced no derivation output to compare"
+                        && comparison["divergences"]
+                            .as_array()
+                            .is_some_and(Vec::is_empty)
+                }))
         );
     }
 
