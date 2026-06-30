@@ -1,10 +1,11 @@
 //! Mock-backend end-to-end determinism gate support.
 //!
-//! The final `gate:e2e-determinism` acceptance target needs real VM artifacts,
-//! CLI plumbing, and machine-independent replay. This module owns the earlier
-//! harness-level mock backend: a self-contained multi-node, fault-injected
-//! reproduction artifact is replayed under adversarial host profiles and reduced
-//! to a canonical log plus final fingerprint.
+//! This module owns the shared mock backend used by the phase4 scheduler gate
+//! and the CLI-owned phase7 acceptance target: a self-contained multi-node,
+//! fault-injected reproduction artifact is replayed under adversarial host
+//! profiles and reduced to a canonical log plus final fingerprint. Later
+//! artifact-format, CLI produce/reproduce, and AOS VM/fleet tasks replace this
+//! mock artifact route with real VM artifacts.
 
 use std::error::Error;
 use std::fmt;

@@ -811,13 +811,10 @@ in {
         taskIds = ["T-PLAN-3" "T-PERF-1"];
         reason = "performance benchmark gate is intentionally pending";
       };
-      e2eDeterminism = redGate {
+      e2eDeterminism = import ./phase7-e2e-determinism.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-        gateName = "gate:e2e-determinism";
-        owner = "crucible-harness";
-        phase = "phase7";
         taskIds = ["T-PLAN-3" "T-HARN-23"];
-        reason = "acceptance end-to-end determinism gate is intentionally pending";
       };
       fleetEquivalence = redGate {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";

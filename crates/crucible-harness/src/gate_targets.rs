@@ -250,7 +250,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-cli",
         test_target: "gate_e2e_determinism",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
 ];
 
