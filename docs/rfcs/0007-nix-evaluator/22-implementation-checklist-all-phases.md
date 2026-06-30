@@ -4003,19 +4003,23 @@ alone (`M-1`/`Q-A`).
       `cache_validation_json_renders_matrix_failures`, and
       `cache_validation_cleanup_removes_only_successful_cold_roots`
       ([12](12-incremental-evaluation-cache.md) §8.3).
-- [x] Current cache-validation byte-closure matrix unit witness:
-      `cache_validation_attr_report` is covered in `DiffMode::Byte` with
-      in-memory `.drv` closures for all three matrix sides, proving the
-      cache-validation command path can consume full closure bytes without
-      falling back to path-only instantiation. The witness also injects a
-      cold-cache-only ATerm byte drift under an unchanged root path and requires
-      both oracle-vs-cold-cache and cache-off-vs-cold-cache matrix comparisons
-      to fail while oracle-vs-cache-off remains clean. This is local unit
-      coverage of the full-closure safety-net path only; scheduled CI wiring,
-      full AOS package-set closure coverage on Linux, syscall-level cache-off
-      no-read proof, and future value-memoization safety remain open. Gates:
-      `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`
-      and `cache_validation_byte_mode_detects_cold_closure_byte_drift`
+- [x] Current cache-validation full-closure matrix unit witness:
+      `cache_validation_attr_report` is covered in `DiffMode::Byte` and
+      `DiffMode::Structural` with in-memory `.drv` closures for all three matrix
+      sides, proving the cache-validation command path can consume full closure
+      bytes without falling back to path-only instantiation in either accepted
+      full-closure mode. The witnesses also inject cold-cache-only byte drift
+      plus structural-mode byte-and-field drift under an unchanged root path and
+      require both oracle-vs-cold-cache and cache-off-vs-cold-cache matrix
+      comparisons to fail while oracle-vs-cache-off remains clean. This is
+      local unit coverage of the full-closure safety-net path only; scheduled
+      CI wiring, full AOS package-set closure coverage on Linux, syscall-level
+      cache-off no-read proof, and future value-memoization safety remain open.
+      Gates:
+      `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`,
+      `cache_validation_byte_mode_detects_cold_closure_byte_drift`,
+      `cache_validation_structural_mode_uses_in_memory_closures_without_path_fallback`,
+      and `cache_validation_structural_mode_detects_cold_closure_structural_drift`
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation full-closure mode guard:
       `aos nix-diff --cache-validation` rejects `--mode=path` before probing

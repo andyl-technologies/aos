@@ -3023,6 +3023,108 @@ mod tests {
     }
 
     #[test]
+    fn cache_validation_structural_mode_uses_in_memory_closures_without_path_fallback() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let cache_off = FixedClosureEval::new("cache-off", root, "same");
+        let cold_cache = FixedClosureEval::new("cold-cache", root, "same");
+
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Structural,
+        );
+
+        assert!(!report.has_failure());
+        assert_eq!(oracle.instantiate_calls(), 0);
+        assert_eq!(cache_off.instantiate_calls(), 0);
+        assert_eq!(cold_cache.instantiate_calls(), 0);
+        assert_eq!(oracle.instantiate_closure_calls(), 1);
+        assert_eq!(cache_off.instantiate_closure_calls(), 1);
+        assert_eq!(cold_cache.instantiate_closure_calls(), 1);
+        assert!(report.comparisons().iter().all(|comparison| {
+            comparison
+                .report
+                .as_ref()
+                .is_some_and(|report| report.mode == DiffMode::Structural)
+        }));
+    }
+
+    #[test]
+    fn cache_validation_structural_mode_detects_cold_closure_structural_drift() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-same.drv";
+        let oracle = FixedClosureEval::new("oracle", root, "same");
+        let cache_off = FixedClosureEval::new("cache-off", root, "same");
+        let cold_cache = FixedClosureEval::new("cold-cache", root, "cold");
+
+        let report = cache_validation_attr_report(
+            &oracle,
+            &cache_off,
+            &cold_cache,
+            PathBuf::from("/tmp/cold-cache"),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            DiffMode::Structural,
+        );
+
+        assert!(report.has_failure());
+        assert!(report.oracle_vs_cache_off.failure.is_none());
+        assert!(report.oracle_vs_cold_cache.failure.is_some());
+        assert!(report.cache_off_vs_cold_cache.failure.is_some());
+        assert_eq!(oracle.instantiate_calls(), 0);
+        assert_eq!(cache_off.instantiate_calls(), 0);
+        assert_eq!(cold_cache.instantiate_calls(), 0);
+        assert_eq!(oracle.instantiate_closure_calls(), 1);
+        assert_eq!(cache_off.instantiate_closure_calls(), 1);
+        assert_eq!(cold_cache.instantiate_closure_calls(), 1);
+
+        let reports = vec![report];
+        let failure =
+            cache_validation_failure(&reports).expect("structural drift fails validation");
+        assert_eq!(
+            failure.to_string(),
+            "drv diff failed for 1 attribute(s) with 4 divergence(s)"
+        );
+        let comparison_kinds = reports[0]
+            .comparisons()
+            .iter()
+            .map(|comparison| {
+                comparison
+                    .report
+                    .as_ref()
+                    .map(|report| {
+                        report
+                            .divergences
+                            .iter()
+                            .map(diff_json)
+                            .map(|value| value["kind"].clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(comparison_kinds[0], Vec::<serde_json::Value>::new());
+        assert_eq!(
+            comparison_kinds[1],
+            [
+                serde_json::Value::String("bytes".to_string()),
+                serde_json::Value::String("structural".to_string())
+            ]
+        );
+        assert_eq!(
+            comparison_kinds[2],
+            [
+                serde_json::Value::String("bytes".to_string()),
+                serde_json::Value::String("structural".to_string())
+            ]
+        );
+    }
+
+    #[test]
     fn cache_validation_json_renders_matrix_failures() {
         let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
         let cache_off = FixedEval::new("cache-off", "/nix/store/oracle.drv");
