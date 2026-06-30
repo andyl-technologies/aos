@@ -500,19 +500,28 @@ in {
     # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
     # binary); this does not create a cycle since `pkgs.aos` is a Rust
     # binary that does not depend on the toplevel.
-    system.build.activateScript = pkgs.runCommand "aos-activate" {} ''
-      # AOS stdenv pre-creates $out as a directory; this output is a
-      # single executable file, so drop the dir and write to $out.
-      rmdir "$out"
-      ${pkgs.sed}/bin/sed \
-        -e "s|@bash@|${pkgs.bash}|g" \
-        -e "s|@coreutils@|${pkgs.coreutils}|g" \
-        -e "s|@util-linux@|${pkgs.util-linux}|g" \
-        -e "s|@ignition@|${pkgs.ignition}|g" \
-        -e "s|@apm@|${pkgs.aos}|g" \
-        ${./activate.sh.in} > "$out"
-      chmod +x "$out"
-    '';
+    # RFC-0011 Layer 2: the activate script is an image-fixed artifact (it just
+    # substitutes pkgs store paths into activate.sh.in). Reference the resolved
+    # artifact; register the source guarded on frozenArtifacts so the stage-2
+    # frozen pkgs (no `runCommand`) never evaluates it.
+    system.build.activateScript = config.aos.config.artifacts.aos-activate;
+    aos.config._artifactSources.aos-activate =
+      if config.aos.config.frozenArtifacts ? "aos-activate"
+      then null
+      else
+        pkgs.runCommand "aos-activate" {} ''
+          # AOS stdenv pre-creates $out as a directory; this output is a
+          # single executable file, so drop the dir and write to $out.
+          rmdir "$out"
+          ${pkgs.sed}/bin/sed \
+            -e "s|@bash@|${pkgs.bash}|g" \
+            -e "s|@coreutils@|${pkgs.coreutils}|g" \
+            -e "s|@util-linux@|${pkgs.util-linux}|g" \
+            -e "s|@ignition@|${pkgs.ignition}|g" \
+            -e "s|@apm@|${pkgs.aos}|g" \
+            ${./activate.sh.in} > "$out"
+          chmod +x "$out"
+        '';
 
     # --- RFC-0011 aos.config-manifest/v1 (pure data) -------------------
     #
