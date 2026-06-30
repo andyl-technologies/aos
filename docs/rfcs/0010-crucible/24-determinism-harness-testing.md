@@ -1008,9 +1008,9 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
-  fingerprints, observer output, and empty evidence; real-host reproduction
-  verification and AOS VM/fleet checks remain owned by T-HARN-25 and the
-  packaging tasks.
+  fingerprints, observer output, and empty evidence; shared artifact
+  machine-profile reproduction is completed by T-HARN-25, while real AOS
+  VM/fleet checks remain owned by the packaging tasks.
 - [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
@@ -1024,8 +1024,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   closes the package-owned final acceptance target for the shared mock artifact
   route without adding new CLI subcommand semantics. The versioned shared
   artifact format and CLI produce/replay seam are completed by T-HARN-24; the
-  real-host reproduction check and AOS VM/fleet wiring remain T-HARN-25 and
-  packaging work.
+  shared mock artifact machine-profile verifier is completed by T-HARN-25, and
+  real AOS VM/fleet wiring remains packaging work.
 - [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
@@ -1039,13 +1039,28 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   representative mock e2e producer that carries its ScenarioDef material. The
   `crucible` CLI now validates artifacts through `replay <artifact>` and has a
   failure-artifact writer that emits the artifact plus parseable replay/debug
-  command lines. This completes the mock format and CLI validation seam;
-  T-HARN-25 remains responsible for real different-host byte-identical
-  verification, BLAKE3/DagStore-backed durable identities, and identity-mismatch
-  replay failure.
-- [ ] **T-HARN-25** Implement machine-independent reproduction verification
+  command lines. This completes the mock format and CLI validation seam.
+  T-HARN-25 adds the shared mock machine-profile verifier and identity-mismatch
+  replay failure; BLAKE3/DagStore-backed durable identities and real AOS fleet
+  reproduction remain packaging work.
+- [x] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
+  Completed by `checks.crucible.phase7.machineIndependentReproduction`:
+  `crucible_harness::reproduction` now verifies versioned artifacts by decoding
+  canonical `(seed, ScenarioDef reference, Schedule)` bytes, checking the pinned
+  engine/artifact/QEMU/plugin identity, loading recorded producer canonical-log
+  and final-fingerprint evidence, the source producer artifact digest, and
+  recorded decision payloads from content-addressed artifact components,
+  recomputing the producer artifact digest from the decoded ScenarioDef payload
+  plus recorded decisions/backend identity, replaying through the host-adversary
+  fixture on a baseline and at least one different machine profile,
+  reconstructing the canonical mock e2e log from the versioned artifact, and
+  requiring every replay to match the producer evidence byte-for-byte. The
+  `crucible` CLI now rejects replay artifacts whose pinned identity differs
+  from the selected local replay identity with exit code 3, including QEMU build
+  identity drift. This closes the shared mock artifact machine-profile route;
+  physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
 - [ ] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.

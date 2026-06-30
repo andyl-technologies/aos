@@ -64,8 +64,8 @@
         needle = "Completed by `checks.crucible.phase7.reproductionArtifactFormat`";
       }
       {
-        label = "T-HARN-25 remains future work";
-        needle = "T-HARN-25 remains responsible for real different-host";
+        label = "T-HARN-25 handoff note";
+        needle = "T-HARN-25 adds the shared mock machine-profile verifier";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -330,7 +330,8 @@ in
             pinned_identities=engine,artifact-abi,qemu-build,plugin-abi
             cli_replay=validates-artifact-format
             cli_failure_artifact=emits-replay-and-debug-commands
-            real_host_reproduction=deferred-to-T-HARN-25
+            machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
+            real_host_reproduction=deferred-to-packaging-and-fleet-gates
             RESULT
           '';
         }

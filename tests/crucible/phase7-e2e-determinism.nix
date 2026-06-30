@@ -249,7 +249,8 @@ in
             adversarial_profiles=canonical-host-adversary-matrix
             cross_machine_reproduction=different-machine-profile-replay
             shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
-            real_host_reproduction=deferred-to-T-HARN-25
+            machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
+            real_host_reproduction=deferred-to-packaging-and-fleet-gates
             cli_target=implemented_shared_mock_artifact
             RESULT
           '';
