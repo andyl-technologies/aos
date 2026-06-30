@@ -1658,8 +1658,6 @@ in {
         test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         if run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
-          --store-path "$resume_store" \
-          --name hostresume \
           --key "$work/resume-release-key" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
           --upload-url "file://$work/resume-upload" \
@@ -1671,8 +1669,6 @@ in {
           "$work/apr-release-host-resume-without-flag.json"
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
-          --store-path "$resume_store" \
-          --name hostresume \
           --key "$work/resume-release-key" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
           --upload-url "file://$work/resume-upload" \
