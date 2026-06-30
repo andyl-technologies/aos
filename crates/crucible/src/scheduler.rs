@@ -427,12 +427,7 @@ impl SchedulerEventLogEntry {
         at: VirtualTime,
         payload: ObservableEventPayload,
     ) -> Self {
-        scheduler_event_log_entry_with_class(
-            sequence,
-            at,
-            SchedulerEventLogClass::Observational,
-            SchedulerEventLogPayload::Observable(payload),
-        )
+        scheduler_event_log_entry(sequence, at, SchedulerEventLogPayload::Observable(payload))
     }
 
     /// Builds a deterministic condition-evaluation boundary entry.
@@ -442,10 +437,9 @@ impl SchedulerEventLogEntry {
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
     ) -> Self {
-        scheduler_event_log_entry_with_class(
+        scheduler_event_log_entry(
             sequence,
             at,
-            SchedulerEventLogClass::Causal,
             SchedulerEventLogPayload::EvaluationBoundary(kind),
         )
     }
@@ -507,7 +501,7 @@ impl SchedulerEventLogEntry {
     /// Returns whether this entry's content hash matches its canonical material.
     #[must_use]
     pub fn has_valid_content_hash(&self) -> bool {
-        if self.class != scheduler_event_log_payload_class(&self.payload) {
+        if !self.class_matches_catalog() {
             return false;
         }
         self.content_hash
@@ -523,6 +517,15 @@ impl SchedulerEventLogEntry {
                     &self.payload,
                 ),
             )
+    }
+
+    /// Returns whether the recorded class matches the event-kind catalog.
+    #[must_use]
+    pub fn class_matches_catalog(&self) -> bool {
+        match event_kind_catalog_class(&self.event_payload) {
+            Some(class) => self.class == class,
+            None => false,
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -597,8 +600,9 @@ impl EventLog {
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when an entry sequence is
-    /// not dense from the current log offset, segment byte counts, event counts,
-    /// or the derived condition prefix overflow or become invalid.
+    /// not dense from the current log offset, the recorded class does not match
+    /// the event-kind catalog, segment byte counts, event counts, or the derived
+    /// condition prefix overflow or become invalid.
     pub fn append_entries(
         &mut self,
         entries: Vec<LogEntry>,
@@ -619,6 +623,26 @@ impl EventLog {
                     message: format!(
                         "event-log entry sequence {} does not match expected dense sequence {expected}",
                         entry.sequence()
+                    ),
+                });
+            }
+            if !entry.class_matches_catalog() {
+                let Some(expected) = event_kind_catalog_class(entry.event_payload()) else {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "event-log entry {} payload kind {} is not in the event-kind catalog",
+                            entry.sequence(),
+                            entry.event_payload().kind()
+                        ),
+                    });
+                };
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "event-log entry {} class {} does not match catalog class {} for payload kind {}",
+                        entry.sequence(),
+                        event_class_label(entry.class()),
+                        event_class_label(expected),
+                        entry.event_payload().kind()
                     ),
                 });
             }
@@ -4059,24 +4083,21 @@ fn scheduler_event_log_entry(
     at: VirtualTime,
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
-    scheduler_event_log_entry_with_class(
-        sequence,
-        at,
-        scheduler_event_log_payload_class(&payload),
-        payload,
-    )
+    let event_payload = event_payload_from_scheduler_payload(&payload);
+    let class = event_kind_catalog_class_for_entry_construction(&event_payload);
+    scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
 }
 
 fn scheduler_event_log_entry_with_class(
     sequence: u64,
     at: VirtualTime,
     class: SchedulerEventLogClass,
+    event_payload: EventPayload,
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let time = scheduler_event_log_time(at, &payload);
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
-    let event_payload = event_payload_from_scheduler_payload(&payload);
     let content_hash = ContentHash::from_canonical_material(
         "crucible.scheduler.event-log.entry.v1",
         &scheduler_event_log_entry_material(
@@ -4486,7 +4507,7 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
                 String::from("payload"),
                 EventAttributeValue::Bytes(payload.clone()),
             );
-            EventPayload::new("io_completion", attributes)
+            EventPayload::new("observed_io_completion", attributes)
         }
         ObservableEventPayload::NodeState { node, state } => {
             attributes.insert(
@@ -4996,22 +5017,43 @@ fn trigger_action_kind_label(action: &Action) -> &'static str {
     }
 }
 
-fn scheduler_event_log_payload_class(payload: &SchedulerEventLogPayload) -> SchedulerEventLogClass {
-    match payload {
-        SchedulerEventLogPayload::ResolvedHappening(_)
-        | SchedulerEventLogPayload::Decision(_)
-        | SchedulerEventLogPayload::EvaluationBoundary(_)
-        | SchedulerEventLogPayload::TriggerFired(_) => SchedulerEventLogClass::Causal,
-        SchedulerEventLogPayload::TriggerActionApplied(application) => {
-            if application.is_observational() {
-                SchedulerEventLogClass::Observational
-            } else {
-                SchedulerEventLogClass::Causal
-            }
-        }
-        SchedulerEventLogPayload::Observable(_) | SchedulerEventLogPayload::Diagnostic(_) => {
-            SchedulerEventLogClass::Observational
-        }
+fn event_kind_catalog_class_for_entry_construction(
+    payload: &EventPayload,
+) -> SchedulerEventLogClass {
+    match event_kind_catalog_class(payload) {
+        Some(class) => class,
+        None => SchedulerEventLogClass::Observational,
+    }
+}
+
+fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogClass> {
+    match payload.kind() {
+        "backend_input"
+        | "io_completion"
+        | "fault_activation"
+        | "probabilistic_fault"
+        | "control"
+        | "delivery_order"
+        | "fault_fires"
+        | "rng_draw"
+        | "override"
+        | "preemption"
+        | "app_random"
+        | "control_fault"
+        | "evaluation_boundary"
+        | "trigger_fired"
+        | "trigger_action_applied" => Some(SchedulerEventLogClass::Causal),
+        "network_delivered"
+        | "console_output"
+        | "coverage"
+        | "memory_sample"
+        | "observed_io_completion"
+        | "node_state"
+        | "assertion_state_changed"
+        | "guest_marker"
+        | "guest_assertion_marker"
+        | "diagnostic" => Some(SchedulerEventLogClass::Observational),
+        _ => None,
     }
 }
 
@@ -10055,7 +10097,7 @@ impl From<TimeConversionError> for SchedulerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ScenarioDef, step};
+    use crate::{RngDecision, ScenarioDef, step};
 
     #[test]
     fn quantum_loop_trait_is_object_safe() {
@@ -10097,6 +10139,81 @@ mod tests {
             outcome.as_ref().map(|outcome| &outcome.configuration),
             Ok(&config)
         );
+    }
+
+    #[test]
+    fn event_log_append_rejects_class_catalog_mismatch() {
+        let mut entry = scheduler_event_log_entry(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("class-catalog-mismatch"),
+                value: 17,
+            })),
+        );
+        entry.class = SchedulerEventLogClass::Observational;
+
+        let error = EventLog::new()
+            .append_entries(vec![entry])
+            .expect_err("append must reject class/catalog mismatches");
+
+        assert!(matches!(
+            error,
+            SchedulerError::BoundaryViolation { message }
+                if message.contains("class observational does not match catalog class causal")
+                    && message.contains("payload kind rng_draw")
+        ));
+    }
+
+    #[test]
+    fn event_log_append_rejects_typed_kind_catalog_drift() {
+        let mut entry = scheduler_event_log_entry(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("typed-kind-catalog-drift"),
+                value: 23,
+            })),
+        );
+        entry.event_payload =
+            EventPayload::new("diagnostic", entry.event_payload.attributes().clone());
+
+        let error = EventLog::new()
+            .append_entries(vec![entry])
+            .expect_err("append must reject typed payload kind/catalog drift");
+
+        assert!(matches!(
+            error,
+            SchedulerError::BoundaryViolation { message }
+                if message.contains("class causal does not match catalog class observational")
+                    && message.contains("payload kind diagnostic")
+        ));
+    }
+
+    #[test]
+    fn event_log_append_rejects_unknown_typed_kind() {
+        let mut entry = scheduler_event_log_entry(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("unknown-typed-kind"),
+                value: 31,
+            })),
+        );
+        entry.event_payload = EventPayload::new(
+            "unregistered_kind",
+            entry.event_payload.attributes().clone(),
+        );
+
+        let error = EventLog::new()
+            .append_entries(vec![entry])
+            .expect_err("append must reject unknown typed payload kinds");
+
+        assert!(matches!(
+            error,
+            SchedulerError::BoundaryViolation { message }
+                if message.contains("payload kind unregistered_kind is not in the event-kind catalog")
+        ));
     }
 
     #[test]

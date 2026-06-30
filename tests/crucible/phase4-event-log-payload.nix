@@ -135,8 +135,8 @@
         needle = "entry.payload.kind";
       }
       {
-        label = "diagnostic observational class";
-        needle = "SchedulerEventLogPayload::Observable(_) | SchedulerEventLogPayload::Diagnostic(_) =>";
+        label = "diagnostic observational catalog class";
+        needle = "\"diagnostic\" => Some(SchedulerEventLogClass::Observational)";
       }
       {
         label = "diagnostic observational class value";
