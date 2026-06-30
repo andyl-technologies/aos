@@ -1138,13 +1138,13 @@ impl GuestMemoryRange {
 pub struct WhiteboxDoorbellTrapEvent {
     vcpu_index: u32,
     current_icount: u64,
-    payload_range: GuestMemoryRange,
+    payload_source: WhiteboxDoorbellPayloadSource,
 }
 
 impl WhiteboxDoorbellTrapEvent {
-    /// Builds a doorbell trap event from QEMU callback metadata.
+    /// Builds a doorbell trap event whose payload lives in a configured shared page.
     #[must_use]
-    pub const fn new(
+    pub const fn from_shared_page(
         vcpu_index: u32,
         current_icount: u64,
         payload_range: GuestMemoryRange,
@@ -1152,7 +1152,25 @@ impl WhiteboxDoorbellTrapEvent {
         Self {
             vcpu_index,
             current_icount,
-            payload_range,
+            payload_source: WhiteboxDoorbellPayloadSource::SharedPage {
+                range: payload_range,
+            },
+        }
+    }
+
+    /// Builds a doorbell trap event whose payload pointer and length came from registers.
+    #[must_use]
+    pub const fn from_register_pointer_length(
+        vcpu_index: u32,
+        current_icount: u64,
+        payload_range: GuestMemoryRange,
+    ) -> Self {
+        Self {
+            vcpu_index,
+            current_icount,
+            payload_source: WhiteboxDoorbellPayloadSource::RegisterPointerLength {
+                range: payload_range,
+            },
         }
     }
 
@@ -1168,10 +1186,41 @@ impl WhiteboxDoorbellTrapEvent {
         self.current_icount
     }
 
+    /// Returns how the callback obtained the guest-memory payload range.
+    #[must_use]
+    pub const fn payload_source(self) -> WhiteboxDoorbellPayloadSource {
+        self.payload_source
+    }
+
     /// Returns the guest-memory payload range to read at this trap.
     #[must_use]
     pub const fn payload_range(self) -> GuestMemoryRange {
-        self.payload_range
+        self.payload_source.range()
+    }
+}
+
+/// The allowed guest-memory source for a white-box doorbell payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhiteboxDoorbellPayloadSource {
+    /// Payload bytes were written by the guest into a configured shared page.
+    SharedPage {
+        /// Guest-memory range read at the doorbell trap.
+        range: GuestMemoryRange,
+    },
+    /// Payload bytes are addressed by a pointer and length captured from registers.
+    RegisterPointerLength {
+        /// Guest-memory range read at the doorbell trap.
+        range: GuestMemoryRange,
+    },
+}
+
+impl WhiteboxDoorbellPayloadSource {
+    /// Returns the guest-memory range read at the doorbell trap.
+    #[must_use]
+    pub const fn range(self) -> GuestMemoryRange {
+        match self {
+            Self::SharedPage { range } | Self::RegisterPointerLength { range } => range,
+        }
     }
 }
 
@@ -1579,7 +1628,7 @@ mod tests {
             128,
         );
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 4);
-        let event = WhiteboxDoorbellTrapEvent::new(2, 777, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 777, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(b"mark".to_vec());
         let mut sink = RecordingMarkerSink::default();
 
@@ -1598,6 +1647,31 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_doorbell_payload_source_is_shared_page_or_register_pointer_length() {
+        let shared_range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 8);
+        let register_range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 16);
+
+        let shared = WhiteboxDoorbellTrapEvent::from_shared_page(0, 12, shared_range);
+        let register =
+            WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 34, register_range);
+
+        assert_eq!(
+            shared.payload_source(),
+            WhiteboxDoorbellPayloadSource::SharedPage {
+                range: shared_range,
+            }
+        );
+        assert_eq!(shared.payload_range(), shared_range);
+        assert_eq!(
+            register.payload_source(),
+            WhiteboxDoorbellPayloadSource::RegisterPointerLength {
+                range: register_range,
+            }
+        );
+        assert_eq!(register.payload_range(), register_range);
+    }
+
+    #[test]
     fn whitebox_doorbell_rejects_oversized_payload_before_guest_memory_read() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -1605,7 +1679,7 @@ mod tests {
             3,
         );
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 4);
-        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(b"mark".to_vec());
         let mut sink = RecordingMarkerSink::default();
 
@@ -1628,7 +1702,7 @@ mod tests {
             128,
         );
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 4);
-        let event = WhiteboxDoorbellTrapEvent::new(1, 44, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 44, range);
         let mut reader = RecordingGuestMemoryReader::failing("translation failed");
         let mut sink = RecordingMarkerSink::default();
 
@@ -1651,7 +1725,7 @@ mod tests {
             128,
         );
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 4);
-        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(b"mark".to_vec());
         let mut sink = RecordingMarkerSink::default();
 
@@ -1806,7 +1880,7 @@ mod tests {
         let capability = guest_input_capability(&doorbell);
         let payload = random_request_frame(7, 2, "workload");
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
-        let event = WhiteboxDoorbellTrapEvent::new(1, 99, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 99, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(payload);
         let record = AppRandomDecisionRecord::new("node-a", "workload", 7, 16, 0xbeef);
         let mut decisions = RecordingAppRandomSource::with_record(record.clone());
@@ -1863,7 +1937,7 @@ mod tests {
         let capability = guest_input_capability(&doorbell);
         let payload = random_request_frame(1, 9, "wide");
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
-        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(payload);
         let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
             "node-a", "wide", 0, 72, 0,
@@ -1933,7 +2007,7 @@ mod tests {
             ))
         );
 
-        let event = WhiteboxDoorbellTrapEvent::new(
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             0,
             10,
             GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 32),
@@ -1980,7 +2054,7 @@ mod tests {
         let capability = guest_input_capability(&doorbell);
         let payload = random_request_frame(3, 1, "byte");
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
-        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(payload);
         let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
             "node-a", "byte", 3, 8, 0x1ff,
@@ -2016,7 +2090,7 @@ mod tests {
         let capability = guest_input_capability(&doorbell);
         let payload = random_request_frame(11, 1, "byte");
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
-        let event = WhiteboxDoorbellTrapEvent::new(0, 10, range);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
         let mut reader = RecordingGuestMemoryReader::with_payload(payload);
         let mut decisions = RecordingAppRandomSource::with_record(AppRandomDecisionRecord::new(
             "node-a", "byte", 12, 8, 0xff,
