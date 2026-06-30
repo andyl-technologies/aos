@@ -3998,7 +3998,12 @@ alone (`M-1`/`Q-A`).
       drives the same public config path over directory-only cache roots,
       cache-root symlinks, and stale metadata-shaped cache directories, requiring
       byte-identical native closures and unchanged directory, symlink, target,
-      and metadata-shaped tree snapshots. All disabled `AOS_NIX_CACHE=0`
+      and metadata-shaped tree snapshots.
+      `aos_nix_cache_zero_ignores_inaccessible_cache_root` places a configured
+      cache root behind a non-searchable parent and requires the cache-off path
+      to produce baseline closure bytes with zero cache stats while preserving
+      the inaccessible cache-root tree after access is restored. All disabled
+      `AOS_NIX_CACHE=0`
       eval/closure legs now also require zero aggregate evaluator cache hit/miss
       counters, zero force-cache hit/miss counters, zero force-cache
       memoization-decision counters, zero force-cache materialization
@@ -4008,7 +4013,8 @@ alone (`M-1`/`Q-A`).
       `eval_expr`, raw-expression `.drv`, and file-backed native `.drv` closure
       boundaries; it is not the full periodic
       cache-off/cold cached CI harness, syscall-level no-read proof, complete
-      cache metadata/symlink/directory-only proof, or future value-memoization safety net
+      cache metadata/symlink/directory/inaccessible-state proof, or future
+      value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current `nix-diff` cache-validation command precursor:
       `aos nix-diff --cache-validation` evaluates each selected attr once

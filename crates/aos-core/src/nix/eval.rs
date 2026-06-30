@@ -2427,6 +2427,8 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
+    #[cfg(all(feature = "native-eval", unix))]
+    use std::os::unix::fs::PermissionsExt;
     #[cfg(feature = "native-eval")]
     use std::sync::{Arc, Mutex};
     #[cfg(feature = "native-eval")]
@@ -2448,6 +2450,38 @@ mod tests {
             (key.to_string_lossy() == name)
                 .then(|| value.map(|value| value.to_string_lossy().into_owned().into_bytes()))?
         })
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    struct PermissionRestoreGuard {
+        path: PathBuf,
+        permissions: Option<fs::Permissions>,
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    impl PermissionRestoreGuard {
+        fn new(path: &Path) -> Result<Self> {
+            Ok(Self {
+                path: path.to_path_buf(),
+                permissions: Some(fs::metadata(path)?.permissions()),
+            })
+        }
+
+        fn restore(mut self) -> Result<()> {
+            if let Some(permissions) = self.permissions.take() {
+                fs::set_permissions(&self.path, permissions)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    impl Drop for PermissionRestoreGuard {
+        fn drop(&mut self) {
+            if let Some(permissions) = self.permissions.take() {
+                let _ = fs::set_permissions(&self.path, permissions);
+            }
+        }
     }
 
     #[cfg(feature = "native-eval")]
@@ -3698,6 +3732,98 @@ mod tests {
             snapshot_cache_root_tree(&stale_metadata_root)?,
             stale_metadata_before,
             "AOS_NIX_CACHE=0 should not mutate stale metadata-shaped cache roots"
+        );
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-eval", unix))]
+    #[test]
+    fn aos_nix_cache_zero_ignores_inaccessible_cache_root() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let source = r#"derivationStrict {
+             name = "cache-zero-inaccessible-root";
+             system = builtins.currentSystem;
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ builtins.currentSystem ];
+           }"#;
+
+        let mut baseline_config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        baseline_config.set_eval_mode(NixEvalMode::Impure);
+        baseline_config.set_current_system("x86_64-linux")?;
+        baseline_config.clear_native_cache_root();
+        let baseline_evaluator = NativeOnlyEval::new(0, baseline_config)?;
+        let baseline = baseline_evaluator.native.instantiate_expr_closure(source)?;
+
+        let blocked_parent = root.path().join("blocked-cache-parent");
+        let cache_root = blocked_parent.join("cache");
+        fs::create_dir_all(cache_root.join("parse/entry"))?;
+        fs::create_dir_all(cache_root.join("persist/nodes"))?;
+        fs::write(cache_root.join("sentinel"), b"must remain untouched")?;
+        let cache_before = snapshot_cache_root_tree(&cache_root)?;
+        let restore_permissions = PermissionRestoreGuard::new(&blocked_parent)?;
+        let mut blocked_permissions = fs::metadata(&blocked_parent)?.permissions();
+        blocked_permissions.set_mode(0o000);
+        fs::set_permissions(&blocked_parent, blocked_permissions)?;
+        match fs::read_dir(&cache_root) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => anyhow::bail!(
+                "inaccessible cache-root preflight expected PermissionDenied, got {error}"
+            ),
+            Ok(_) => anyhow::bail!("inaccessible cache-root preflight left cache root readable"),
+        }
+
+        let disabled_result = (|| -> Result<(NativeDrvClosure, aos_nix::eval::EvalStats)> {
+            let mut disabled_config = NixEvalConfig::with_store_dirs(
+                store.to_string_lossy().into_owned(),
+                state.to_string_lossy().into_owned(),
+                log.to_string_lossy().into_owned(),
+            )?;
+            disabled_config.set_eval_mode(NixEvalMode::Impure);
+            disabled_config.set_current_system("x86_64-linux")?;
+            disabled_config.set_native_cache_root(&cache_root)?;
+            disabled_config.set_aos_nix_cache_env_var("0".to_owned());
+            anyhow::ensure!(
+                disabled_config.native_cache_root().is_none(),
+                "AOS_NIX_CACHE=0 should clear inaccessible native cache root"
+            );
+            let disabled_options = tree_walk_options_from_config(&disabled_config)?;
+            anyhow::ensure!(
+                disabled_options.parse_cache_root().is_none(),
+                "AOS_NIX_CACHE=0 should clear parse cache root"
+            );
+            anyhow::ensure!(
+                disabled_options.persist_cache_root().is_none(),
+                "AOS_NIX_CACHE=0 should clear persist cache root"
+            );
+            anyhow::ensure!(
+                !disabled_options.eval_cache_enabled(),
+                "AOS_NIX_CACHE=0 should disable eval cache"
+            );
+            let disabled_evaluator = NativeOnlyEval::new(0, disabled_config)?;
+            disabled_evaluator
+                .native
+                .instantiate_expr_closure_with_stats(source)
+        })();
+
+        restore_permissions.restore()?;
+        let (disabled, disabled_stats) = disabled_result?;
+        assert_no_incremental_cache_stats(
+            &disabled_stats,
+            "AOS_NIX_CACHE=0 raw expression closure over inaccessible cache root",
+        );
+
+        assert_eq!(disabled, baseline);
+        assert_eq!(
+            snapshot_cache_root_tree(&cache_root)?,
+            cache_before,
+            "AOS_NIX_CACHE=0 should not require access to or mutate inaccessible cache roots"
         );
         Ok(())
     }
