@@ -830,10 +830,19 @@ verdict; it only shapes the next schedule the search tries.
   horizon-advance, and fingerprint APIs for each scenario form, and includes
   payload/horizon negative controls proving the fingerprint witness would move
   for real node execution changes.
-- [ ] **T-ASRT-3** Implement per-quantifier configuration (stable id, message,
+- [x] **T-ASRT-3** Implement per-quantifier configuration (stable id, message,
   Eventually deadline in virtual time, Reachable never-reached disposition) and
   reject non-deterministic / wall-clock-relative parameters at scenario
   validation. — satisfies [ASRT-5]; spec §18.2.1.
+  Completed by `checks.crucible.phase4.propertyConfiguration`: assertion
+  canonical material includes stable length-prefixed ids and messages,
+  Eventually stores only virtual-time `deadline_ticks`, and Reachable carries the
+  ordinary warn/fail never-reached disposition or the explicit unreachable dual.
+  The gate round-trips these configurations through canonical TOML and compact
+  binary, proves ids/messages/deadlines/dispositions move the properties hash,
+  defaults omitted ordinary Reachable dispositions to `warn`, keeps the
+  reachable/unreachable expectation itself explicit, and rejects host-wall-clock
+  or nondeterministic property parameters during TOML scenario validation.
 - [ ] **T-ASRT-4** Implement observed-state materialization from the event-log
   prefix `[start, t]`, exposing only the black-box surface + ordering/fault facts;
   forbid host-clock/scheduling/unordered-iteration inputs. — satisfies [ASRT-6],
