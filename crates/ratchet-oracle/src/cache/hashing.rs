@@ -9,6 +9,7 @@
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! CacheExprSourceHash -> expression/artifact identity source components
 //! AttrPositionSourceHash -> positioned-payload source provenance
+//! ForceCapturePositionSourceHash -> positioned captured-value source salts
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -153,6 +154,25 @@ impl AttrPositionSourceHash {
 
     /// Returns the underlying durable BLAKE3 digest.
     pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for positioned captured-value source salting.
+///
+/// This type marks module/source identity hashes only while they salt the
+/// force-captured value hash of position-bearing composite payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ForceCapturePositionSourceHash(DurableBlake3Hash);
+
+impl ForceCapturePositionSourceHash {
+    /// Wraps a digest computed from a tree-walk module source identity.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
         self.0
     }
 }

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::cache::CacheExprSourceHash;
+use crate::cache::hashing::ForceCapturePositionSourceHash;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturedFreeVariableDependency {
@@ -766,12 +767,20 @@ impl TreeWalk {
         hasher.update(&len.to_le_bytes());
         for module_id in modules {
             hasher.update(&module_id.to_le_bytes());
-            let module_index = usize::try_from(module_id).ok()?;
-            let module = self.modules.get(module_index)?;
-            let module_hash = Self::cache_module_identity_hash(module)?;
-            hasher.update(&module_hash.as_bytes());
+            let module_hash = self.force_capture_position_source_hash_for_module(module_id)?;
+            hasher.update(&module_hash.as_durable_hash().as_bytes());
         }
         Some(())
+    }
+
+    fn force_capture_position_source_hash_for_module(
+        &self,
+        module_id: u32,
+    ) -> Option<ForceCapturePositionSourceHash> {
+        let module_index = usize::try_from(module_id).ok()?;
+        Some(ForceCapturePositionSourceHash::from_durable_hash(
+            Self::cache_module_identity_hash(self.modules.get(module_index)?)?,
+        ))
     }
 
     fn update_force_capture_string_context(

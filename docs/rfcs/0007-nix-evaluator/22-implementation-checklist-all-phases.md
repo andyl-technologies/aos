@@ -1912,6 +1912,19 @@ alone (`M-1`/`Q-A`).
       `cache::runtime`, positioned payload force-cache tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
       coverage.
+- [x] Current positioned-capture source salt hash boundary:
+      `ForceCapturePositionSourceHash` now marks the module/source identity
+      hashes salted into `FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION` for
+      position-bearing captured composite payloads. Captured composite hashing
+      wraps each retained binding-position module identity before salting the
+      force-captured value-hash preimage, and unwraps only when appending the
+      stable capture-preimage bytes. This type-enforces the current positioned
+      capture salt corridor only; broader capture value-hash typing, remaining
+      generic durable hash plumbing, and the full differential leak-invariant
+      harness remain open (`S-15`). Gate: `materialized_captures`, captured
+      positioned-composite force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4438,6 +4451,19 @@ alone (`M-1`/`Q-A`).
       capture value-hash salting, remaining generic durable hash plumbing, and
       the full internal-hash leak invariant remain open. Gate:
       `cache::runtime`, positioned payload force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current positioned-capture source salt hash boundary:
+      `ForceCapturePositionSourceHash` now marks the module/source identity
+      hashes salted into `FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION` for
+      position-bearing captured composite payloads. Captured composite hashing
+      wraps each retained binding-position module identity before salting the
+      force-captured value-hash preimage, and unwraps only when appending the
+      stable capture-preimage bytes. This type-enforces the current positioned
+      capture salt corridor only; broader capture value-hash typing, remaining
+      generic durable hash plumbing, and the full internal-hash leak invariant
+      remain open. Gate: `materialized_captures`, captured
+      positioned-composite force-cache tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
