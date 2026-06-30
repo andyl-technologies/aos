@@ -313,6 +313,29 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             node.name,
             marker.name
         ),
+        ObservableEventPayload::GuestAssertionMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            let details = marker
+                .details
+                .iter()
+                .map(|detail| format!("{}={}", detail.key, detail.value))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "observable:guest-assertion-marker:at={}:retired_icount={}:node={}:id={}:kind={:?}:condition={}:must_hit={}:details={details}:location={}",
+                event.at().ticks,
+                retired_icount.retired,
+                node.name,
+                marker.id.name,
+                marker.kind,
+                marker.condition,
+                marker.must_hit,
+                marker.location
+            )
+        }
     }
 }
 

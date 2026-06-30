@@ -955,10 +955,20 @@ verdict; it only shapes the next schedule the search tries.
   and offline checks reuse the same evaluator path. The gate covers compound and
   Eventually duplicate-leaf caching, stable-id order, and identical
   custom-oracle call order plus reports across online/offline replay.
-- [ ] **T-ASRT-12** Implement the property lifecycle
+- [x] **T-ASRT-12** Implement the property lifecycle
   (declared/passing/satisfied/failing/violated) and the single unified outcome
   set with the full disposition taxonomy and run verdict. — satisfies [ASRT-21],
   [ASRT-22], [ASRT-23]; spec §18.8.
+  Completed by `checks.crucible.phase4.assertionLifecycle`:
+  terminal outcome taxonomy now distinguishes safety-style `Passed` from
+  existential/liveness `Satisfied`, every outcome carries its terminal
+  `PropertyLifecycleState`, and `HostAssertionEvaluator::lifecycle_states`
+  exposes deterministic in-flight lifecycle snapshots for host and guest marker
+  assertions in the same unified engine. The gate covers declared, passing,
+  failing, satisfied, and violated transitions, complete outcome-set emission for
+  every declared property, never-evaluated/never-triggered/never-reached edge
+  dispositions, and fail-only run verdict derivation from violated plus
+  fail-disposition outcomes.
 - [ ] **T-ASRT-13** Enforce determinism and non-perturbation of evaluation:
   deterministic merge, no banned nondeterminism, read-only observed-state view,
   side-effect-free, fingerprint-neutral. — satisfies [ASRT-24], [ASRT-25],

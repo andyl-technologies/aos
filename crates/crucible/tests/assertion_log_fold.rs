@@ -151,7 +151,7 @@ fn online_and_offline_fold_report_distinct_never_outcomes_identically() {
     ));
     assert_eq!(
         outcome(offline.outcomes(), "always-passed").kind,
-        HostAssertionOutcomeKind::Satisfied
+        HostAssertionOutcomeKind::Passed
     );
     assert_eq!(
         outcome(offline.outcomes(), "eventually-never-triggered").kind,
