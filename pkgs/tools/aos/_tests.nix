@@ -7,6 +7,21 @@
   self,
   pkgs,
 }: let
+  repoSrc = builtins.path {
+    path = ../../..;
+    name = "aos-cache-validation-smoke-src";
+    filter = path: type: let
+      base = baseNameOf path;
+    in
+      base != ".aos-benchmarks"
+      && base != ".claude"
+      && base != ".codex"
+      && base != ".git"
+      && base != ".jj"
+      && base != "result"
+      && base != "target";
+  };
+
   # Shared preamble for server tests: bring up loopback, create mock Nix DB,
   # write server config, start aos serve in background.
   serverPreamble = ''
@@ -108,6 +123,53 @@ in {
       echo "==> aos fmt --check passed"
     '';
   };
+
+  cache-validation-smoke = pkgs.runCommand "aos-cache-validation-smoke" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-cache-validation-smoke"
+    nix_conf="$work/nix-conf"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-diff \
+      --smoke \
+      --cache-validation \
+      --mode=byte \
+      -- \
+      ${repoSrc}/default.nix
+
+    echo "PASS" > "$out/result"
+  '';
 
   host-apr-apm-command-surface = let
     hostAprApmCommandSurfaceDeps = [

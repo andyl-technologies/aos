@@ -4039,6 +4039,20 @@ alone (`M-1`/`Q-A`).
       and
       `cache_validation_full_closure_cleanup_removes_only_successful_cold_roots`
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current cache-validation Linux check-graph precursor:
+      `pkgs.aos` integration checks now expose
+      `checks.integration.aos-cache-validation-smoke` (and flake checks expose
+      it as `integration-aos-cache-validation-smoke`). The check provisions a
+      throwaway local Nix store/state/log tree and native cache root under
+      `$TMPDIR`, initializes that store with AOS-built `nix-store --init`, and
+      runs the installed AOS-built CLI wrapper as
+      `aos --eval-system=<check-system> nix-diff --smoke --cache-validation --mode=byte -- <repo>/default.nix`.
+      This wires the zlib witness into the Linux check graph only; scheduled CI
+      execution, full AOS package-set closure coverage on Linux, syscall-level
+      cache-off no-read proof, and full future value-memoization safety remain
+      open. Gate: `checks.integration.aos-cache-validation-smoke` / flake
+      `integration-aos-cache-validation-smoke`
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation full-closure matrix unit witness:
       `cache_validation_attr_report` is covered in `DiffMode::Byte` and
       `DiffMode::Structural` with in-memory `.drv` closures for all three matrix
