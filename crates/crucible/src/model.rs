@@ -4329,7 +4329,7 @@ impl NinePFault {
 }
 
 /// The deterministic, target-grouped combination of active fault taxonomy values.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedFaults {
     /// Combined network-link faults keyed by declared link.
     pub network: BTreeMap<LinkId, CombinedNetworkFaults>,
@@ -4363,6 +4363,18 @@ impl CombinedFaults {
         combined.finish()
     }
 
+    /// Combines active membership faults that have a scheduler-table projection.
+    #[must_use]
+    pub fn from_membership_faults<'a>(
+        faults: impl IntoIterator<Item = &'a MembershipFault>,
+    ) -> Self {
+        let faults = faults
+            .into_iter()
+            .filter_map(MembershipFault::table_fault)
+            .collect::<Vec<_>>();
+        Self::from_faults(&faults)
+    }
+
     fn finish(mut self) -> Self {
         for effects in self.network.values_mut() {
             effects.finish();
@@ -4377,8 +4389,111 @@ impl CombinedFaults {
     }
 }
 
+/// Direction key for a materialized network active-fault table entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ActiveNetworkEdgeDirection {
+    /// The directed edge carries traffic from endpoint A to endpoint B.
+    EndpointAToEndpointB,
+    /// The directed edge carries traffic from endpoint B to endpoint A.
+    EndpointBToEndpointA,
+}
+
+/// Stable directed-edge key for materialized network active faults.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActiveNetworkEdgeKey {
+    /// Declared logical link identity.
+    pub link: LinkId,
+    /// Direction through the declared logical link.
+    pub direction: ActiveNetworkEdgeDirection,
+}
+
+impl ActiveNetworkEdgeKey {
+    /// Builds a directed network active-fault key.
+    #[must_use]
+    pub fn new(link: LinkId, direction: ActiveNetworkEdgeDirection) -> Self {
+        Self { link, direction }
+    }
+}
+
+/// Materialized active-fault lookup table captured by the scheduler.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ActiveFaultTable {
+    /// Link-, node-, block-, and 9p-keyed combined taxonomy faults.
+    pub combined: CombinedFaults,
+    /// Directed network lookup table keyed by logical link and direction.
+    pub network_edges: BTreeMap<ActiveNetworkEdgeKey, CombinedNetworkFaults>,
+    /// Active legacy membership faults that do not have a pure taxonomy projection.
+    pub legacy_membership: BTreeMap<FaultTag, MembershipFault>,
+}
+
+impl ActiveFaultTable {
+    /// Builds the active table from currently active tagged membership faults.
+    #[must_use]
+    pub fn from_active_faults(active_faults: &BTreeMap<FaultTag, MembershipFault>) -> Self {
+        let combined = CombinedFaults::from_membership_faults(active_faults.values());
+        let network_edges = directed_network_fault_table(&combined.network);
+        let legacy_membership = active_faults
+            .iter()
+            .filter(|(_tag, fault)| fault.table_fault().is_none())
+            .map(|(tag, fault)| (tag.clone(), fault.clone()))
+            .collect();
+        Self {
+            combined,
+            network_edges,
+            legacy_membership,
+        }
+    }
+}
+
+fn directed_network_fault_table(
+    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
+) -> BTreeMap<ActiveNetworkEdgeKey, CombinedNetworkFaults> {
+    let mut table = BTreeMap::new();
+    for (link, faults) in network {
+        table.insert(
+            ActiveNetworkEdgeKey::new(
+                link.clone(),
+                ActiveNetworkEdgeDirection::EndpointAToEndpointB,
+            ),
+            directed_network_faults(faults, ActiveNetworkEdgeDirection::EndpointAToEndpointB),
+        );
+        table.insert(
+            ActiveNetworkEdgeKey::new(
+                link.clone(),
+                ActiveNetworkEdgeDirection::EndpointBToEndpointA,
+            ),
+            directed_network_faults(faults, ActiveNetworkEdgeDirection::EndpointBToEndpointA),
+        );
+    }
+    table
+}
+
+fn directed_network_faults(
+    faults: &CombinedNetworkFaults,
+    direction: ActiveNetworkEdgeDirection,
+) -> CombinedNetworkFaults {
+    let mut directed = faults.clone();
+    directed.partition = faults.partition.and_then(|partition| {
+        let covered = match direction {
+            ActiveNetworkEdgeDirection::EndpointAToEndpointB => partition.endpoint_a_to_endpoint_b,
+            ActiveNetworkEdgeDirection::EndpointBToEndpointA => partition.endpoint_b_to_endpoint_a,
+        };
+        covered.then(|| match direction {
+            ActiveNetworkEdgeDirection::EndpointAToEndpointB => CombinedPartitionFault {
+                endpoint_a_to_endpoint_b: true,
+                endpoint_b_to_endpoint_a: false,
+            },
+            ActiveNetworkEdgeDirection::EndpointBToEndpointA => CombinedPartitionFault {
+                endpoint_a_to_endpoint_b: false,
+                endpoint_b_to_endpoint_a: true,
+            },
+        })
+    });
+    directed
+}
+
 /// Combined network-link effects for one link.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedNetworkFaults {
     /// Directed partition coverage; absent when no partition is active.
     pub partition: Option<CombinedPartitionFault>,
@@ -4409,7 +4524,7 @@ impl CombinedNetworkFaults {
 }
 
 /// Directed partition coverage for one link.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedPartitionFault {
     /// Whether endpoint A to endpoint B is suppressed.
     pub endpoint_a_to_endpoint_b: bool,
@@ -4435,7 +4550,7 @@ impl CombinedPartitionFault {
 }
 
 /// The effective duplicate rule for one link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CombinedDuplicateFault {
     /// Highest active duplicate rate.
     pub rate: FaultRateBasisPoints,
@@ -4444,7 +4559,7 @@ pub struct CombinedDuplicateFault {
 }
 
 /// The effective corruption rule for one link.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CombinedNetworkCorruptionFault {
     /// Highest active corruption rate.
     pub rate: FaultRateBasisPoints,
@@ -4453,7 +4568,7 @@ pub struct CombinedNetworkCorruptionFault {
 }
 
 /// The effective bit-flip corruption rule for one I/O device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CombinedIoCorruptionFault {
     /// Highest active corruption rate.
     pub rate: FaultRateBasisPoints,
@@ -4462,7 +4577,7 @@ pub struct CombinedIoCorruptionFault {
 }
 
 /// Combined node/runtime effects for one node.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedNodeFaults {
     /// Most conservative restart policy when any crash fault names the node.
     pub crash_restart: Option<RestartPolicy>,
@@ -4481,7 +4596,7 @@ impl CombinedNodeFaults {
 }
 
 /// Combined block-device effects for one block device.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedBlockFaults {
     /// Total fixed latency from all active block latency faults.
     pub latency_extra: FaultDuration,
@@ -4509,7 +4624,7 @@ impl CombinedBlockFaults {
 }
 
 /// Combined 9p-device effects for one 9p device.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CombinedNinePFaults {
     /// Total fixed latency from all active 9p latency faults.
     pub latency_extra: FaultDuration,
@@ -4528,7 +4643,7 @@ pub struct CombinedNinePFaults {
 }
 
 /// One 9p failure choice kept with its errno payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CombinedNinePFailureFault {
     /// Failure probability in basis points.
     pub rate: FaultRateBasisPoints,
@@ -4908,6 +5023,56 @@ impl MembershipFault {
             | Self::Partition { .. }
             | Self::Isolate { .. }
             | Self::NotYetJoined { .. } => None,
+        }
+    }
+
+    /// Returns the full-taxonomy value used by the active-fault table.
+    #[must_use]
+    pub fn table_fault(&self) -> Option<Fault> {
+        match self {
+            Self::Taxonomy { fault } => Some(fault.clone()),
+            Self::Crash { node, restart } => Some(Fault::Node(NodeFault::Crash {
+                node: node.clone(),
+                restart: *restart,
+            })),
+            Self::Partition {
+                endpoint_a,
+                endpoint_b,
+                direction,
+            } => {
+                let canonical = canonical_partition_fault(endpoint_a, endpoint_b, *direction);
+                Some(Fault::Network(NetworkFault::Partition {
+                    link: link_id_for_endpoint_pair(&canonical.endpoint_a, &canonical.endpoint_b),
+                    direction: canonical.direction,
+                }))
+            }
+            Self::Isolate { .. } | Self::NotYetJoined { .. } => None,
+        }
+    }
+}
+
+struct CanonicalPartitionFault {
+    endpoint_a: NodeId,
+    endpoint_b: NodeId,
+    direction: PartitionDirection,
+}
+
+fn canonical_partition_fault(
+    endpoint_a: &NodeId,
+    endpoint_b: &NodeId,
+    direction: PartitionDirection,
+) -> CanonicalPartitionFault {
+    if endpoint_a <= endpoint_b {
+        CanonicalPartitionFault {
+            endpoint_a: endpoint_a.clone(),
+            endpoint_b: endpoint_b.clone(),
+            direction,
+        }
+    } else {
+        CanonicalPartitionFault {
+            endpoint_a: endpoint_b.clone(),
+            endpoint_b: endpoint_a.clone(),
+            direction: inverted_partition_direction(direction),
         }
     }
 }
@@ -6571,6 +6736,8 @@ pub struct SchedulerState {
     pub active_faults: BTreeMap<FaultId, FaultState>,
     /// Active injected faults keyed by their stable heal tag.
     pub active_fault_tags: BTreeMap<FaultTag, MembershipFault>,
+    /// Deterministic scheduler lookup table reduced from active faults.
+    pub active_fault_table: ActiveFaultTable,
 }
 
 impl SchedulerState {
@@ -6584,6 +6751,7 @@ impl SchedulerState {
             timers: TimerRegistry::empty(),
             active_faults: BTreeMap::new(),
             active_fault_tags: BTreeMap::new(),
+            active_fault_table: ActiveFaultTable::default(),
         }
     }
 
@@ -6611,11 +6779,18 @@ impl SchedulerState {
             ControlFaultAction::Inject { tag, fault } => {
                 self.active_fault_tags
                     .insert(tag.clone(), MembershipFault::taxonomy(fault.clone()));
+                self.recompute_active_fault_table();
             }
             ControlFaultAction::Heal { tag } => {
                 self.active_fault_tags.remove(tag);
+                self.recompute_active_fault_table();
             }
         }
+    }
+
+    /// Recomputes the deterministic active-fault table from active tags.
+    pub fn recompute_active_fault_table(&mut self) {
+        self.active_fault_table = ActiveFaultTable::from_active_faults(&self.active_fault_tags);
     }
 }
 
@@ -11456,18 +11631,11 @@ fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
             endpoint_b,
             direction,
         } => {
-            if endpoint_a <= endpoint_b {
-                MembershipFault::Partition {
-                    endpoint_a: endpoint_a.clone(),
-                    endpoint_b: endpoint_b.clone(),
-                    direction: *direction,
-                }
-            } else {
-                MembershipFault::Partition {
-                    endpoint_a: endpoint_b.clone(),
-                    endpoint_b: endpoint_a.clone(),
-                    direction: inverted_partition_direction(*direction),
-                }
+            let canonical = canonical_partition_fault(endpoint_a, endpoint_b, *direction);
+            MembershipFault::Partition {
+                endpoint_a: canonical.endpoint_a,
+                endpoint_b: canonical.endpoint_b,
+                direction: canonical.direction,
             }
         }
         MembershipFault::Isolate { node } => MembershipFault::Isolate { node: node.clone() },

@@ -1125,10 +1125,19 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   trigger/fault-plan active tags, while fat checkpoint materialization derives
   imperative tags from recorded `Decision::ControlFault` schedule prefixes so
   resumed checkpoints carry the same healable tags.
-- [ ] **T-FAULT-13** Implement the scheduler's deterministic active-fault table
+- [x] **T-FAULT-13** Implement the scheduler's deterministic active-fault table
   (edge/node-keyed, combined per §17.3.3, recomputed with lookahead at the quantum
   boundary on activation/heal, in `MaterializedState`, no unordered iteration). —
   satisfies [FAULT-28]; spec §17.6.4; cross-ref 08 §8.11, 07 §3.
+  Completed by `checks.crucible.phase4.activeFaultTable`: `SchedulerState` now
+  carries a materialized `ActiveFaultTable` with directed network-edge keys plus
+  combined node, block, and 9p device maps. It is recomputed from active tag
+  bindings for recorded `Decision::ControlFault` schedule replay and captured
+  directly from `SingleScheduler`'s trigger-owned active projection for
+  declarative trigger/fault-plan activations, including legacy crash/partition
+  membership faults. The table is hashed into `MaterializedState` with explicit
+  `BTreeMap` iteration and field writers, so resumed/forked runs preserve the
+  same combined active network, node, block, and 9p lookup table.
 - [ ] **T-FAULT-14** Implement `RandomFaultConfig` weighted reproducible
   generation (kind via integer weights, target/start/duration/severity within
   bounds, caps enforced by deterministic pruning), pure from the seed, lowering

@@ -628,8 +628,17 @@ fn legacy_inject_with_same_tag_clears_active_taxonomy_fault() {
 
     let actions = scheduler.trigger_actions();
     assert!(
-        actions.combined_faults().node.is_empty(),
+        actions.active_taxonomy_faults.is_empty(),
         "replacing a taxonomy fault with a legacy fault under the same tag should clear taxonomy state"
+    );
+    assert_eq!(
+        actions
+            .combined_faults()
+            .node
+            .get(&node("db-0"))
+            .and_then(|faults| faults.crash_restart),
+        Some(RestartPolicy::StayDown),
+        "legacy crash replacement should remain visible to the active fault table"
     );
     assert!(matches!(
         actions.active_faults.get(&tag("shared")),
