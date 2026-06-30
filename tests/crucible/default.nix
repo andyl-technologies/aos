@@ -945,6 +945,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogContentAddress";
       taskIds = ["T-OBS-5"];
     };
+    eventLogDeterminism = import ./phase4-event-log-determinism.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogDeterminism";
+      taskIds = ["T-OBS-6"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

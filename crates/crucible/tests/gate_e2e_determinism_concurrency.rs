@@ -39,14 +39,16 @@ use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BackendInput,
     ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ConditionLeaf, ContentHash,
     ControlOperation, ControlOperationKind, Decision, DeviceId, DeviceSchedulingSubNode,
-    HostAssertionEvaluator, HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionReport,
-    Icount, LintedHostAssertionOracle, NetworkLookahead, NodeCounter, NodeId, ObservedOrderingFact,
-    ObservedState, OfflineAssertionChecker, Predicate, Properties, Property, QuantumLoop,
-    QuantumRequest, RecordedAssertionLog, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    ScheduledEventResolveClass, SchedulerEventLogEntry, SchedulerLivenessScenario,
-    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant, SingleScheduler, TriggerActionState,
-    VirtualTime, World,
+    EventDiagnosticPayload, EventLevel, HostAssertionEvaluator, HostAssertionOutcomeKind,
+    HostAssertionPredicate, HostAssertionReport, Icount, LintedHostAssertionOracle,
+    NetworkLookahead, NodeCounter, NodeId, ObservedOrderingFact, ObservedState,
+    OfflineAssertionChecker, Predicate, Properties, Property, QuantumLoop, QuantumRequest,
+    RecordedAssertionLog, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerLookaheadEdge,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SimDuration, SimInstant, SingleScheduler, TriggerActionState, VirtualTime, World,
+    compare_event_log_determinism,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
@@ -218,7 +220,12 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
 fn drive_with_assertions(
     mode: DriveMode,
     control: Vec<ControlOperation>,
-) -> (RunFingerprint, RunStats, AssertionGateCoverage) {
+) -> (
+    RunFingerprint,
+    RunStats,
+    AssertionGateCoverage,
+    Vec<SchedulerEventLogEntry>,
+) {
     let seed = Seed::from_u64(0xe2e_d171);
     let mut scheduler = fresh_scheduler(seed);
     let mut decisions = Vec::new();
@@ -296,6 +303,10 @@ fn drive_with_assertions(
         assertion_gate_reports(&passing_properties, &event_log_segments);
     let (assertion_fail_online, assertion_fail_offline, assertion_fail_composed) =
         assertion_gate_reports(&failing_properties, &event_log_segments);
+    let event_log = event_log_segments
+        .iter()
+        .flat_map(|segment| segment.iter().cloned())
+        .collect::<Vec<_>>();
     (
         RunFingerprint {
             config_hash: scheduler.configuration().content_hash(),
@@ -313,11 +324,12 @@ fn drive_with_assertions(
             assertion_fail_offline,
             assertion_fail_composed,
         },
+        event_log,
     )
 }
 
 fn drive(mode: DriveMode, control: Vec<ControlOperation>) -> (RunFingerprint, RunStats) {
-    let (fingerprint, stats, _) = drive_with_assertions(mode, control);
+    let (fingerprint, stats, _, _) = drive_with_assertions(mode, control);
     (fingerprint, stats)
 }
 
@@ -521,9 +533,90 @@ fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
 }
 
 #[test]
+fn gate_e2e_determinism_uses_causal_event_log_projection() {
+    let expected_log = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            VirtualTime { ticks: 8 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            VirtualTime { ticks: 16 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let reproduced_log = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 8 },
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "gate:e2e-determinism.observation",
+                EventLevel::Debug,
+                std::collections::BTreeMap::new(),
+            )),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            VirtualTime { ticks: 8 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            VirtualTime { ticks: 16 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log);
+
+    assert!(comparison.passes());
+    assert_eq!(
+        comparison.expected().canonical_bytes(),
+        comparison.reproduced().canonical_bytes(),
+        "gate:e2e-determinism compares renumbered causal event-log bytes"
+    );
+}
+
+#[test]
+fn gate_e2e_determinism_compares_actual_causal_event_log_projection() {
+    let (_, _, _, first_log) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
+    let (_, _, _, second_log) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
+    let comparison = compare_event_log_determinism(&first_log, &second_log);
+
+    assert!(
+        !comparison.expected().is_empty(),
+        "the e2e workload must produce causal event-log entries"
+    );
+    assert!(comparison.passes());
+    assert_eq!(
+        comparison.expected().canonical_bytes(),
+        comparison.reproduced().canonical_bytes(),
+        "gate:e2e-determinism compares actual e2e causal event-log bytes"
+    );
+}
+
+#[test]
+fn gate_e2e_determinism_compares_actual_concurrent_causal_event_log_projection() {
+    let (_, _, _, first_log) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
+    let (_, _, _, second_log) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
+    let comparison = compare_event_log_determinism(&first_log, &second_log);
+
+    assert!(
+        !comparison.expected().is_empty(),
+        "the concurrent e2e workload must produce causal event-log entries"
+    );
+    assert!(comparison.passes());
+    assert_eq!(
+        comparison.expected().canonical_bytes(),
+        comparison.reproduced().canonical_bytes(),
+        "gate:e2e-determinism compares actual concurrent causal event-log bytes"
+    );
+}
+
+#[test]
 fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
-    let (_, _, authoritative) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
-    let (_, _, concurrent) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
+    let (_, _, authoritative, _) = drive_with_assertions(DriveMode::Authoritative, Vec::new());
+    let (_, _, concurrent, _) = drive_with_assertions(DriveMode::Concurrent, Vec::new());
 
     assert_eq!(
         authoritative.assertion_pass_online, authoritative.assertion_pass_offline,

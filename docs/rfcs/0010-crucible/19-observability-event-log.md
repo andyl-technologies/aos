@@ -859,11 +859,16 @@ log, so they cannot disagree about what happened.
   deduplicates identical segment bytes across shared stores and cloned forks,
   and preserves checkpoint `event_log_offset` references through runtime
   materialization.
-- [ ] **T-OBS-6** Implement the determinism comparison: causal-subsequence
+- [x] **T-OBS-6** Implement the determinism comparison: causal-subsequence
   projection, independent renumbering past observational interleaving, byte-for-byte
   equality wired to `gate:replay-oracle`/`gate:e2e-determinism`, and consistency
   with the fat-checkpoint oracle and log offset. — satisfies [OBS-21], [OBS-22],
   [OBS-23], [OBS-24], [OBS-25]; spec §19.5; cross-ref 07 §6, 24.
+  Completed by `checks.crucible.phase4.eventLogDeterminism`: `EventLog` now exposes
+  a canonical renumbered causal subsequence projection, the replay-oracle and
+  e2e-determinism gates compare its byte-identical binary serialization while
+  excluding observational interleaving, and fat-checkpoint replay explicitly
+  rejects inconsistent retained `event_log_offset` state.
 - [ ] **T-OBS-7** Wire assertion checking as a live-or-offline fold over the one
   log (assertion_evaluated/state_changed + watched transitions), folding white-box
   observational markers under the same Always/Sometimes/Reachable semantics. —

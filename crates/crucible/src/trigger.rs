@@ -28,8 +28,8 @@ use crate::scheduler::{
     EventLevel, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
-    TriggerActionApplication, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
-    scheduler_event_log_segment_bytes,
+    TriggerActionApplication, compare_event_log_determinism, scheduled_event_resolve_class,
+    scheduler_event_log_empty_prefix, scheduler_event_log_segment_bytes,
 };
 
 pub use crate::model::EventId;
@@ -3753,36 +3753,22 @@ fn event_log_causal_projection_prefixes_match(
     let Some(reproduced_entries) = reproduced.get(..causal_prefix_len) else {
         return false;
     };
-    expected_entries
+    let expected_entries = expected_entries
         .iter()
-        .zip(reproduced_entries)
-        .all(|(expected, reproduced)| {
-            causal_event_log_entries_match(expected.entry, reproduced.entry)
-        })
+        .map(|entry| entry.entry.clone())
+        .collect::<Vec<_>>();
+    let reproduced_entries = reproduced_entries
+        .iter()
+        .map(|entry| entry.entry.clone())
+        .collect::<Vec<_>>();
+    compare_event_log_determinism(&expected_entries, &reproduced_entries).passes()
 }
 
 fn event_log_causal_projections_match(
     expected: &[SchedulerEventLogEntry],
     reproduced: &[SchedulerEventLogEntry],
 ) -> bool {
-    let expected = event_log_causal_projection(expected);
-    let reproduced = event_log_causal_projection(reproduced);
-    if expected.len() != reproduced.len() {
-        return false;
-    }
-    event_log_causal_projection_prefixes_match(&expected, &reproduced, expected.len())
-}
-
-fn causal_event_log_entries_match(
-    expected: &SchedulerEventLogEntry,
-    reproduced: &SchedulerEventLogEntry,
-) -> bool {
-    expected.class() == SchedulerEventLogClass::Causal
-        && reproduced.class() == SchedulerEventLogClass::Causal
-        && expected.at() == reproduced.at()
-        && expected.source() == reproduced.source()
-        && expected.event_payload() == reproduced.event_payload()
-        && expected.payload() == reproduced.payload()
+    compare_event_log_determinism(expected, reproduced).passes()
 }
 
 fn assertion_replay_report_for_prefix(
