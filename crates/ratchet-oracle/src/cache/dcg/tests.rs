@@ -1,8 +1,9 @@
 //! Demand graph tests.
 
 use super::*;
+use crate::cache::hashing::{DemandKeyConfirmationHash, DemandKeyHotHash};
 use crate::cache::{
-    CacheExprIdentity, CacheExprSourceHash, DurableBlake3Hash, HotXxh3Hash, ImpureInputFingerprint,
+    CacheExprIdentity, CacheExprSourceHash, DurableBlake3Hash, ImpureInputFingerprint,
     UncacheableInput,
 };
 use crate::compile::IrId;
@@ -29,6 +30,14 @@ fn derivation_aterm_hash(aterm: &[u8]) -> ValueHash {
 
 fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
     DurableBlake3Hash::for_bytes(bytes)
+}
+
+fn demand_hot(raw: u64) -> DemandKeyHotHash {
+    DemandKeyHotHash::from_xxh3(raw)
+}
+
+fn demand_confirmation(bytes: &[u8]) -> DemandKeyConfirmationHash {
+    DemandKeyConfirmationHash::from_precomputed_hash(durable_hash(bytes))
 }
 
 fn expr_source_hash(bytes: &[u8]) -> CacheExprSourceHash {

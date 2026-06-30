@@ -1000,6 +1000,19 @@ alone (`M-1`/`Q-A`).
       `cache::persist::tests::format_tests::node_metadata_index`, `eval::heap`,
       captured free-variable tests, and derivation side-record cache-path tests
       (`S-15`).
+- [x] Current demand-cache key hash boundary:
+      `DemandKeyHotHash` marks the in-process xxh3 probe for `DemandCacheKey`,
+      and `DemandKeyConfirmationHash` marks the BLAKE3 confirmation digest that
+      keeps same-hot-hash collisions distinct. `DemandCacheKey::for_free_vars`
+      and `DemandCacheKey::for_impure_input` construct both halves from their
+      domain-separated preimages before demand-graph insertion, while the
+      raw-parts test helper now accepts only these typed key-hash wrappers.
+      This type-enforces the current demand-key hot/confirmation corridor only;
+      it does not make demand keys durable addresses, implement the full
+      persistent graph, or prove the full internal-hash leak invariant. Gates:
+      `cache::key`, `cache::dcg` key-collision tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      (`S-15`).
 - [x] Current nested-let free-variable narrowing precursor: the tree-walk
       force-cache free-variable collector now validates nested `let` binding
       keys as static as before, then computes a same-frame reachable binding
@@ -1988,6 +2001,19 @@ alone (`M-1`/`Q-A`).
       force-cache tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
       coverage.
+- [x] Current demand-cache key hash boundary:
+      `DemandKeyHotHash` marks the in-process xxh3 probe for `DemandCacheKey`,
+      and `DemandKeyConfirmationHash` marks the BLAKE3 confirmation digest that
+      keeps same-hot-hash collisions distinct. `DemandCacheKey::for_free_vars`
+      and `DemandCacheKey::for_impure_input` construct both halves from their
+      domain-separated preimages before demand-graph insertion, while the
+      raw-parts test helper now accepts only these typed key-hash wrappers.
+      This type-enforces the current demand-key hot/confirmation corridor only;
+      it does not make demand keys durable addresses, implement the full
+      persistent graph, or prove the full differential leak-invariant harness.
+      Gate: `cache::key`, `cache::dcg` key-collision tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      (`S-15`).
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4595,6 +4621,19 @@ alone (`M-1`/`Q-A`).
       and payload rehydration tests, positioned-payload tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2).
+- [x] Current demand-cache key hash boundary:
+      `DemandKeyHotHash` marks the in-process xxh3 probe for `DemandCacheKey`,
+      and `DemandKeyConfirmationHash` marks the BLAKE3 confirmation digest that
+      keeps same-hot-hash collisions distinct. `DemandCacheKey::for_free_vars`
+      and `DemandCacheKey::for_impure_input` construct both halves from their
+      domain-separated preimages before demand-graph insertion, while the
+      raw-parts test helper now accepts only these typed key-hash wrappers.
+      This type-enforces the current demand-key hot/confirmation corridor only;
+      it does not make demand keys durable addresses, implement the full
+      persistent graph, or prove the full internal-hash leak invariant. Gate:
+      `cache::key`, `cache::dcg` key-collision tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §3.2/§5.2).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

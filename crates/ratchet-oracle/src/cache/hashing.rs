@@ -7,6 +7,8 @@
 //!
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
+//! DemandKeyHotHash -> demand-cache hot xxh3 probes
+//! DemandKeyConfirmationHash -> demand-cache BLAKE3 confirmations
 //! CacheExprSourceHash -> expression/artifact identity source components
 //! AttrPositionSourceHash -> positioned-payload source provenance
 //! ForceCapturePositionSourceHash -> positioned captured-value source salts
@@ -57,6 +59,21 @@ impl HotXxh3Hash {
     }
 }
 
+/// An in-process xxh3 probe for demand-cache keys.
+///
+/// This type marks the hot, non-authoritative half of a
+/// [`crate::cache::DemandCacheKey`]. It remains in process and is always paired
+/// with a BLAKE3 confirmation before a demand-graph entry can be reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::cache) struct DemandKeyHotHash(HotXxh3Hash);
+
+impl DemandKeyHotHash {
+    /// Wraps an xxh3 result computed in the demand-cache key domain.
+    pub(in crate::cache) const fn from_xxh3(raw: u64) -> Self {
+        Self(HotXxh3Hash::from_xxh3(raw))
+    }
+}
+
 /// A BLAKE3 digest used for evaluator cache content addresses and confirmations.
 ///
 /// This type is for internal evaluator caches only. Some values become durable
@@ -102,6 +119,27 @@ impl DurableBlake3Hash {
 impl fmt::Display for DurableBlake3Hash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
+    }
+}
+
+/// A BLAKE3 confirmation digest for demand-cache keys.
+///
+/// This type marks the collision-confirmation half of a
+/// [`crate::cache::DemandCacheKey`]. It is not a persisted value/blob address;
+/// it only confirms equality for keys that share the same hot xxh3 probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::cache) struct DemandKeyConfirmationHash(DurableBlake3Hash);
+
+impl DemandKeyConfirmationHash {
+    /// Finalizes a BLAKE3 hasher in a demand-cache key confirmation domain.
+    pub(in crate::cache) fn from_hasher(hasher: blake3::Hasher) -> Self {
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Wraps a precomputed demand-key confirmation digest for tests.
+    #[cfg(test)]
+    pub(in crate::cache) const fn from_precomputed_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
     }
 }
 
@@ -457,6 +495,32 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn demand_key_hot_hash_wraps_xxh3_probes() {
+        let first = DemandKeyHotHash::from_xxh3(7);
+        let second = DemandKeyHotHash::from_xxh3(7);
+        let other = DemandKeyHotHash::from_xxh3(8);
+
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn demand_key_confirmation_hash_wraps_blake3_confirmations() {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"confirmation");
+        let from_hasher = DemandKeyConfirmationHash::from_hasher(hasher);
+        let precomputed = DemandKeyConfirmationHash::from_precomputed_hash(
+            DurableBlake3Hash::for_bytes(b"confirmation"),
+        );
+        let other = DemandKeyConfirmationHash::from_precomputed_hash(DurableBlake3Hash::for_bytes(
+            b"other",
+        ));
+
+        assert_eq!(from_hasher, precomputed);
+        assert_ne!(from_hasher, other);
     }
 
     #[test]

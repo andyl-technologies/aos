@@ -12,7 +12,9 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::{
     ValueHash,
-    hashing::{CacheExprSourceHash, DurableBlake3Hash, HotXxh3Hash, ImpureInputIdentityHash},
+    hashing::{
+        CacheExprSourceHash, DemandKeyConfirmationHash, DemandKeyHotHash, ImpureInputIdentityHash,
+    },
 };
 use crate::compile::IrId;
 
@@ -64,8 +66,8 @@ impl CacheExprIdentity {
 /// accelerator, not an authority for cache reuse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DemandCacheKey {
-    hot: HotXxh3Hash,
-    confirmation: DurableBlake3Hash,
+    hot: DemandKeyHotHash,
+    confirmation: DemandKeyConfirmationHash,
 }
 
 impl Hash for DemandCacheKey {
@@ -89,8 +91,8 @@ impl DemandCacheKey {
         confirmation.update(IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION);
         confirmation.update(&identity_hash.as_bytes());
         Self {
-            hot: HotXxh3Hash::from_xxh3(hasher.finish()),
-            confirmation: DurableBlake3Hash::from_hasher(confirmation),
+            hot: DemandKeyHotHash::from_xxh3(hasher.finish()),
+            confirmation: DemandKeyConfirmationHash::from_hasher(confirmation),
         }
     }
 
@@ -119,9 +121,9 @@ impl DemandCacheKey {
     }
 
     #[cfg(test)]
-    pub(crate) const fn from_raw_parts_for_test(
-        hot: HotXxh3Hash,
-        confirmation: DurableBlake3Hash,
+    pub(in crate::cache) const fn from_raw_parts_for_test(
+        hot: DemandKeyHotHash,
+        confirmation: DemandKeyConfirmationHash,
     ) -> Self {
         Self { hot, confirmation }
     }
@@ -159,8 +161,8 @@ where
         write_len_prefixed_blake3(&mut confirmation, chunk)?;
     }
     Ok(DemandCacheKey {
-        hot: HotXxh3Hash::from_xxh3(hot.finish()),
-        confirmation: DurableBlake3Hash::from_hasher(confirmation),
+        hot: DemandKeyHotHash::from_xxh3(hot.finish()),
+        confirmation: DemandKeyConfirmationHash::from_hasher(confirmation),
     })
 }
 
@@ -188,9 +190,18 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::cache::DurableBlake3Hash;
 
     fn source(bytes: &[u8]) -> DurableBlake3Hash {
         DurableBlake3Hash::for_bytes(bytes)
+    }
+
+    fn demand_hot(raw: u64) -> DemandKeyHotHash {
+        DemandKeyHotHash::from_xxh3(raw)
+    }
+
+    fn demand_confirmation(bytes: &[u8]) -> DemandKeyConfirmationHash {
+        DemandKeyConfirmationHash::from_precomputed_hash(source(bytes))
     }
 
     fn expr_source(bytes: &[u8]) -> CacheExprSourceHash {
@@ -296,9 +307,15 @@ mod tests {
 
     #[test]
     fn durable_confirmation_keeps_hot_hash_collisions_distinct() {
-        let hot = HotXxh3Hash::from_xxh3(0xfeed_face_cafe_beef);
-        let first = DemandCacheKey::from_raw_parts_for_test(hot, source(b"first confirmation"));
-        let second = DemandCacheKey::from_raw_parts_for_test(hot, source(b"second confirmation"));
+        let hot = demand_hot(0xfeed_face_cafe_beef);
+        let first = DemandCacheKey::from_raw_parts_for_test(
+            hot,
+            demand_confirmation(b"first confirmation"),
+        );
+        let second = DemandCacheKey::from_raw_parts_for_test(
+            hot,
+            demand_confirmation(b"second confirmation"),
+        );
 
         assert_ne!(first, second);
 

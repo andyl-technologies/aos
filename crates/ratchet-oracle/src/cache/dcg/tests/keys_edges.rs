@@ -25,11 +25,11 @@ fn node_keys_are_interned() {
 #[test]
 fn matching_hot_hashes_still_confirm_full_demand_keys() {
     let mut graph = DemandGraph::new();
-    let hot = HotXxh3Hash::from_xxh3(7);
+    let hot = demand_hot(7);
     let first_key =
-        DemandCacheKey::from_raw_parts_for_test(hot, durable_hash(b"first-confirmation"));
+        DemandCacheKey::from_raw_parts_for_test(hot, demand_confirmation(b"first-confirmation"));
     let second_key =
-        DemandCacheKey::from_raw_parts_for_test(hot, durable_hash(b"second-confirmation"));
+        DemandCacheKey::from_raw_parts_for_test(hot, demand_confirmation(b"second-confirmation"));
     let first = graph
         .get_or_insert_node(first_key, Some(value_hash(b"first")))
         .expect("first node inserts");
