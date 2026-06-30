@@ -157,6 +157,22 @@
         label = "doorbell frame golden corpus";
         needle = "GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS";
       }
+      {
+        label = "doorbell marker golden vectors";
+        needle = "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes";
+      }
+      {
+        label = "doorbell marker closed vocabulary";
+        needle = "protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned";
+      }
+      {
+        label = "doorbell marker closed subvocabularies";
+        needle = "protocol_doorbell_marker_subvocabularies_are_closed_and_versioned";
+      }
+      {
+        label = "doorbell marker golden corpus";
+        needle = "GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS";
+      }
     ]
     ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
@@ -166,6 +182,10 @@
       {
         label = "doorbell frame golden vector corpus still covered";
         needle = "doorbell_frame_golden_vectors_match_canonical_codec_bytes";
+      }
+      {
+        label = "doorbell marker golden vector corpus still covered";
+        needle = "marker_payload_golden_vectors_match_canonical_codec_bytes";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/tests/gate_abi_conformance.rs" pluginGateTest [
@@ -190,6 +210,14 @@
       {
         label = "engine plugin I/O wire aggregate";
         needle = "PluginIoWireAbi";
+      }
+      {
+        label = "engine marker payload semantic mapping";
+        needle = "whitebox_marker_payloads_map_to_engine_event_semantics";
+      }
+      {
+        label = "engine marker assertion bridge";
+        needle = "observable_event_from_whitebox_marker_payload";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [

@@ -474,6 +474,14 @@ Illustrative kind table (closed, versioned set; numbers are sketches):
   produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).
 ```
 
+Implementation note: `crucible-protocol::doorbell_marker` owns the closed marker
+vocabulary, body codec, typed decode diagnostics, and byte-exact marker golden
+vectors. The QEMU plugin decodes every generic marker trap through that shared
+codec before recording it, rejects `random_request` on the observational marker
+path, and maps decoded assertion payloads into `GuestAssertionMarker` events so
+the existing guest assertion event-log/finalize machinery in `crucible` consumes
+the shared wire fields.
+
 ### 16.5.2 Markers are observational, not part of the determinism comparison
 
 Markers describe the run; they are not an *input* to it. A marker is emitted by
@@ -787,11 +795,20 @@ the transport layer by construction.
   golden-vector tests; the QEMU plugin re-exports the same frame ABI, decodes
   generic marker traps before recording their kind/body bytes, and maps shared
   decode failures into its observational app-random diagnostics.
-- [ ] **T-GHC-8** Implement the closed, versioned marker-kind vocabulary
+- [x] **T-GHC-8** Implement the closed, versioned marker-kind vocabulary
   (assert always/sometimes/reachable + dual; lifecycle setup_complete/test_done;
   event; coverage) and its mapping to event-log/assertion semantics, including the
   assertion-marker payload fields (id/kind/`must_hit`/details/location) that drive
   finalize. — satisfies [GHC-22], [GHC-23], [GHC-25], [GHC-36]; spec §16.5.1.
+  Completed by `checks.crucible.phase4.guestHostMarkerVocabulary`:
+  `crucible-protocol` now owns the closed marker-kind vocabulary, assertion,
+  lifecycle, event, coverage, and app-random body codecs, typed decode errors, and
+  marker payload golden vectors; `crucible` maps decoded assertion payloads into
+  `GuestAssertionMarker` events for the existing finalize machinery; the QEMU
+  plugin validates generic white-box marker traps through that shared codec,
+  records decoded observational marker payloads, and rejects `random_request` on
+  the observational marker path while preserving the existing app-random servicing
+  path.
 - [ ] **T-GHC-9** Record every marker as an observational, icount-stamped
   event-log entry excluded from the determinism comparison; prove markers do not
   move the fingerprint. — satisfies [GHC-24], [GHC-30]; spec §16.5.2, §16.7.

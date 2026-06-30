@@ -6,9 +6,12 @@ use std::io::{Cursor, ErrorKind, Write};
 
 use crucible_protocol::{
     ControlDirection, ControlTag, FRAME_LENGTH_PREFIX_SIZE, FrameDecodeError, FrameIoError,
-    HostMsg, MAX_FRAME_SIZE, PluginMsg, TAG_HELLO, TAG_SETUP_ACK, control_decode_host_msg,
+    HostMsg, MAX_FRAME_SIZE, PluginMsg, TAG_HELLO, TAG_SETUP_ACK, WhiteboxDoorbellFrame,
+    WhiteboxDoorbellMarkerKind, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
+    WhiteboxMarkerPayloadEncodeError, WhiteboxRandomRequestBody, control_decode_host_msg,
     control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
-    read_control_frame, write_control_frame,
+    decode_whitebox_marker_payload, encode_whitebox_doorbell_frame,
+    encode_whitebox_marker_payload_body, read_control_frame, write_control_frame,
 };
 
 #[test]
@@ -115,6 +118,66 @@ fn decoder_reports_direction_and_payload_shape_errors() {
 }
 
 #[test]
+fn marker_payload_decoder_reports_typed_shape_errors() {
+    let bad_flavor = marker_frame(WhiteboxDoorbellMarkerKind::Assertion, &[9, 1, 1]);
+    assert_eq!(
+        decode_whitebox_marker_payload(&bad_flavor),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidAssertionFlavor { flavor: 9 })
+    );
+
+    let bad_bool = marker_frame(WhiteboxDoorbellMarkerKind::Assertion, &[0, 2, 1]);
+    assert_eq!(
+        decode_whitebox_marker_payload(&bad_bool),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidBool {
+            kind: WhiteboxDoorbellMarkerKind::Assertion,
+            field: "condition",
+            value: 2,
+        })
+    );
+
+    let bad_random_width = marker_frame(
+        WhiteboxDoorbellMarkerKind::RandomRequest,
+        &[1, 0, 0, 0, 9, 0, 0],
+    );
+    assert_eq!(
+        decode_whitebox_marker_payload(&bad_random_width),
+        Err(WhiteboxMarkerPayloadDecodeError::InvalidRandomWidth {
+            width_bytes: 9,
+            max_width_bytes: 8,
+        })
+    );
+
+    let short_stream_tag = marker_frame(
+        WhiteboxDoorbellMarkerKind::RandomRequest,
+        &[1, 0, 0, 0, 4, 3, 0, b'r'],
+    );
+    assert_eq!(
+        decode_whitebox_marker_payload(&short_stream_tag),
+        Err(
+            WhiteboxMarkerPayloadDecodeError::LengthPrefixExceedsPayload {
+                kind: WhiteboxDoorbellMarkerKind::RandomRequest,
+                field: "stream_tag",
+                declared_len: 3,
+                remaining_len: 1,
+            }
+        )
+    );
+
+    let invalid_width_payload = WhiteboxMarkerPayload::RandomRequest(WhiteboxRandomRequestBody {
+        request_id: 7,
+        width_bytes: 0,
+        stream_tag: String::from("rng"),
+    });
+    assert_eq!(
+        encode_whitebox_marker_payload_body(&invalid_width_payload),
+        Err(WhiteboxMarkerPayloadEncodeError::InvalidRandomWidth {
+            width_bytes: 0,
+            max_width_bytes: 8,
+        })
+    );
+}
+
+#[test]
 fn frame_stream_helpers_reject_truncated_reads_as_io_errors() {
     let mut truncated_prefix = Cursor::new(vec![0, 0]);
     assert_eq!(
@@ -199,6 +262,17 @@ where
     match read_control_frame(reader) {
         Ok(frame) => frame,
         Err(error) => panic!("frame read should succeed: {error}"),
+    }
+}
+
+fn marker_frame(kind: WhiteboxDoorbellMarkerKind, payload: &[u8]) -> WhiteboxDoorbellFrame {
+    let frame = match encode_whitebox_doorbell_frame(kind.wire_value(), payload) {
+        Ok(frame) => frame,
+        Err(error) => panic!("marker test frame should encode: {error}"),
+    };
+    match WhiteboxDoorbellFrame::decode(&frame) {
+        Ok(frame) => frame,
+        Err(error) => panic!("marker test frame should decode: {error}"),
     }
 }
 

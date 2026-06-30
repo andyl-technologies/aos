@@ -6,10 +6,11 @@ use crucible_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlDirection, ControlGoldenVector, ControlGoldenVectorMessage,
     ControlTag, FRAME_LENGTH_PREFIX_SIZE, FRAME_TAG_SIZE, GOLDEN_CONTROL_VECTORS,
     GOLDEN_VECTOR_PROTOCOL_VERSION, GOLDEN_VECTOR_REGENERATION_RULE,
-    GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, HostMsg, PluginMsg,
-    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+    GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg,
+    PluginMsg, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
     WhiteboxDoorbellFrame, control_decode_host_msg, control_decode_plugin_msg,
-    control_encode_host_msg, control_encode_plugin_msg, encode_whitebox_doorbell_frame,
+    control_encode_host_msg, control_encode_plugin_msg, decode_whitebox_marker_payload,
+    encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
 };
 
 #[test]
@@ -96,6 +97,41 @@ fn doorbell_frame_golden_vectors_match_canonical_codec_bytes() {
             0x43, 0x52, 0x42, 0x4c, 2, 0, 5, 0, 10, 0, 0, 0, 0x04, 0x03, 0x02, 0x01, 4, 3, 0, 0x72,
             0x6e, 0x67,
         ],
+    );
+}
+
+#[test]
+fn marker_payload_golden_vectors_match_canonical_codec_bytes() {
+    assert_eq!(
+        GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS.map(|vector| vector.name),
+        [
+            "assert-always",
+            "lifecycle-setup-complete",
+            "event-note",
+            "coverage-hot-path",
+            "random-request",
+        ],
+    );
+    for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
+        assert_eq!(vector.protocol_version, WHITEBOX_DOORBELL_PROTOCOL_VERSION);
+        let frame = match WhiteboxDoorbellFrame::decode(vector.frame) {
+            Ok(frame) => frame,
+            Err(error) => panic!("marker golden vector should decode as frame: {error}"),
+        };
+        assert_eq!(frame.kind(), vector.kind);
+        assert_eq!(frame.payload(), vector.payload);
+        let payload = match decode_whitebox_marker_payload(&frame) {
+            Ok(payload) => payload,
+            Err(error) => panic!("marker golden vector should decode as payload: {error}"),
+        };
+        assert_eq!(
+            encode_whitebox_marker_frame(&payload),
+            Ok(vector.frame.to_vec()),
+        );
+    }
+    assert_marker_payload_vector_bytes(
+        "coverage-hot-path",
+        &[8, 0, 0x68, 0x6f, 0x74, 0x2d, 0x70, 0x61, 0x74, 0x68],
     );
 }
 
@@ -200,4 +236,14 @@ fn assert_doorbell_vector_bytes(name: &str, expected: &[u8]) {
         }
     }
     panic!("missing doorbell frame golden vector {name}");
+}
+
+fn assert_marker_payload_vector_bytes(name: &str, expected: &[u8]) {
+    for vector in GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS {
+        if vector.name == name {
+            assert_eq!(vector.payload, expected);
+            return;
+        }
+    }
+    panic!("missing marker payload golden vector {name}");
 }
