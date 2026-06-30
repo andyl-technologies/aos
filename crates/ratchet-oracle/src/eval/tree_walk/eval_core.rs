@@ -211,6 +211,31 @@ impl ForceCacheOptionsIdentity {
         Some(())
     }
 
+    fn update_first_class_primop_cache_identity(
+        &self,
+        hasher: &mut blake3::Hasher,
+        execution: BuiltinExecution,
+    ) -> Option<()> {
+        hasher.update(b"force-cache-first-class-primop-options-v1");
+        match execution {
+            BuiltinExecution::StrictUnary {
+                primop: StrictUnaryPrimOp::GetEnv,
+                ..
+            } => {
+                hasher.update(b"get-env");
+                if self.eval_mode == EvalMode::Pure {
+                    hasher.update(b"env-hidden");
+                } else {
+                    hasher.update(b"env-visible");
+                }
+            }
+            _ => {
+                return None;
+            }
+        }
+        Some(())
+    }
+
     fn update_synthetic_impure_constant_cache_identity(
         &self,
         hasher: &mut blake3::Hasher,

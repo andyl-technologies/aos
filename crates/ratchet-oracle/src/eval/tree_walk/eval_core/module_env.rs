@@ -26,6 +26,19 @@ impl TreeWalk {
         Some(DurableBlake3Hash::from_hasher(hasher))
     }
 
+    pub(super) fn cache_first_class_primop_module_identity_hash(
+        module: &TreeWalkModule,
+        execution: BuiltinExecution,
+    ) -> Option<DurableBlake3Hash> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION);
+        Self::update_cache_module_source_identity(&mut hasher, module, false)?;
+        module
+            .force_cache_options
+            .update_first_class_primop_cache_identity(&mut hasher, execution)?;
+        Some(DurableBlake3Hash::from_hasher(hasher))
+    }
+
     fn update_cache_module_source_identity(
         hasher: &mut blake3::Hasher,
         module: &TreeWalkModule,

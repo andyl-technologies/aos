@@ -835,6 +835,23 @@ alone (`M-1`/`Q-A`).
       currentTime runtime payload invalidation, observation-only currentTime
       sidecar-empty and stale-durable tombstone canaries, and source-backed/source-less
       currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
+- [x] Current first-class `getEnv` force-cache identity narrowing precursor:
+      admitted saturated first-class `builtins.getEnv` child-call identities now
+      reuse the source/lowered-IR module identity and call-site span, builtin
+      symbol, execution tag, and only the pure/non-pure environment visibility
+      salt instead of the broad evaluator-option identity and path-literal base.
+      The environment variable name remains in the child-call free-variable
+      value hash, while the observed environment value remains an impure-input
+      trace revalidated before replay; pure mode gets a separate
+      hidden-environment identity because pure `getEnv` returns the empty string
+      without recording an impure input. This is intentionally limited to
+      first-class `getEnv`; filesystem/search-path primops such as `readFile`,
+      `pathExists`, `hashFile`, `findFile`, and import still use their existing
+      conservative identities until their option and policy dependencies are
+      narrowed separately. The gate covers first-class `getEnv`
+      unrelated-option hit, changed-environment stale miss, pure-mode
+      identity-separation, and persistent child-call hit/stale-miss canaries
+      (`C-1`/`C-2`/`R-10`).
 - [x] Current source-less lowered-IR force-cache identity substrate:
       `cache::parse::lowered_ir_fingerprint` hashes the stable `ir.bin` and
       `symbols.bin` artifact encodings under the parse-cache schema version,

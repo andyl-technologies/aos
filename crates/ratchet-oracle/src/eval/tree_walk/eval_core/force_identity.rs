@@ -1250,7 +1250,9 @@ impl TreeWalk {
         builtin: Builtin,
     ) -> Option<CacheExprIdentity> {
         let module = self.modules.get(self.current_module.index())?;
-        let module_hash = Self::cache_module_identity_hash(module)?;
+        let module_hash =
+            Self::cache_first_class_primop_module_identity_hash(module, builtin.execution())
+                .or_else(|| Self::cache_module_identity_hash(module))?;
         let node = module.ir.arena.node(id)?;
         if node.kind != IrKind::Apply {
             return None;

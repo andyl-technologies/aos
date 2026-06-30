@@ -1300,6 +1300,31 @@ fn first_class_primop_persist_key_for_current_node(
     ))
 }
 
+fn first_class_get_env_apply_id(ir: &Ir) -> IrId {
+    let apply_ids = ir
+        .arena
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| (node.kind == IrKind::Apply).then(|| IrId::new(index as u32)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        apply_ids.len(),
+        1,
+        "test fixture should contain exactly one first-class getEnv apply"
+    );
+    apply_ids[0]
+}
+
+fn first_class_get_env_child_key_for_evaluator(
+    evaluator: &mut TreeWalk,
+    apply_id: IrId,
+) -> DemandCacheKey {
+    let builtin = lookup_builtin(b"getEnv").expect("getEnv builtin is registered");
+    first_class_primop_subject_key_for_current_node(evaluator, apply_id, builtin)
+        .expect("first-class getEnv child-call key builds")
+}
+
 fn assert_first_class_captured_arg_hits_child_call<C, A>(
     body: &str,
     source_name: &str,
@@ -1361,10 +1386,504 @@ fn assert_first_class_captured_arg_hits_child_call<C, A>(
     }
 }
 
+#[test]
+fn first_class_get_env_ignores_unrelated_option_identity_salts() {
+    let root = unique_temp_dir("force-cache-first-class-get-env-narrow-options");
+    fs::create_dir_all(&root).expect("temp root exists");
+    let root = fs::canonicalize(&root).expect("temp root canonicalizes");
+    let source = r#"{ a = let target = "AOS_FORCE_CACHE_FIRST_CLASS_NARROW"; f = builtins.getEnv; in f target; }"#;
+    let source_name = "first-class-get-env-narrow-options.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_NARROW";
+    let expected_trace = vec![
+        ImpureInputFingerprint::get_env(env_name, Some(b"shared getEnv payload"))
+            .expect("getEnv fingerprint builds"),
+    ];
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options.set_env_var(env_name.to_vec(), b"shared getEnv payload".to_vec());
+    first_options
+        .set_store_dir(path_bytes(&root.join("store-a")))
+        .expect("store dir is absolute");
+    first_options
+        .set_search_path_base(path_bytes(&root.join("search-a")))
+        .expect("search base is absolute");
+    first_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-a")))
+        .expect("nixPath entry configures");
+    first_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-a")))
+        .expect("path base is absolute");
+    first_options
+        .set_home_dir(path_bytes(&root.join("home-a")))
+        .expect("home is absolute");
+    first_options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .expect("currentSystem configures");
+    first_options
+        .set_current_time(1_700_000_000)
+        .expect("currentTime configures");
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options.clone(),
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let first_value = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(first_value)
+            .expect("first getEnv value is a string")
+            .bytes(),
+        b"shared getEnv payload"
+    );
+    assert_eq!(first.impure_input_trace(), expected_trace.as_slice());
+
+    let mut warm = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let warm_value = force_attr_a(&mut warm, &ir, a);
+    assert_eq!(
+        warm.heap()
+            .get_string(warm_value)
+            .expect("warm getEnv value is a string")
+            .bytes(),
+        b"shared getEnv payload"
+    );
+    assert_eq!(warm.impure_input_trace(), expected_trace.as_slice());
+    assert!(
+        warm.stats().force_cache_hits() > 0,
+        "same-option first-class getEnv replay should hit the child-call node"
+    );
+    let first_key = single_force_cache_impure_edge_owner_key(&cache, &expected_trace);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options.set_env_var(env_name.to_vec(), b"shared getEnv payload".to_vec());
+    changed_options
+        .set_store_dir(path_bytes(&root.join("store-b")))
+        .expect("store dir is absolute");
+    changed_options
+        .set_search_path_base(path_bytes(&root.join("search-b")))
+        .expect("search base is absolute");
+    changed_options
+        .add_nix_path_entry(b"pkg".to_vec(), path_bytes(&root.join("nix-b")))
+        .expect("nixPath entry configures");
+    changed_options
+        .set_path_literal_base(path_bytes(&root.join("path-base-b")))
+        .expect("path base is absolute");
+    changed_options
+        .set_home_dir(path_bytes(&root.join("home-b")))
+        .expect("home is absolute");
+    changed_options
+        .set_current_system(b"aarch64-linux".to_vec())
+        .expect("currentSystem configures");
+    changed_options
+        .set_current_time(1_800_000_000)
+        .expect("currentTime configures");
+    changed_options.set_reject_ambient_search_path(true);
+    changed_options.set_reject_unconfigured_impure_builtin_constants(true);
+    changed_options.set_eval_mode(EvalMode::Restricted);
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let changed_value = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(changed_value)
+            .expect("changed getEnv value is a string")
+            .bytes(),
+        b"shared getEnv payload"
+    );
+    assert_eq!(changed.impure_input_trace(), expected_trace.as_slice());
+    let changed_key = single_force_cache_impure_edge_owner_key(&cache, &expected_trace);
+    assert_eq!(
+        changed_key, first_key,
+        "unrelated evaluator options must not salt first-class getEnv child-call keys"
+    );
+    assert!(
+        changed.stats().force_cache_hits() > 0,
+        "matching first-class getEnv child call should hit across unrelated option changes"
+    );
+    assert!(
+        cache
+            .lock()
+            .expect("cache lock is valid")
+            .cache()
+            .expect("cache is enabled")
+            .graph()
+            .node_id_for_key(first_key)
+            .is_some(),
+        "shared runtime should retain the first-class getEnv child-call node under the narrow key"
+    );
+
+    fs::remove_dir_all(root).expect("temp tree removed");
+}
+
+#[test]
+fn first_class_get_env_changed_environment_misses_after_revalidation() {
+    let source = r#"{ a = let target = "AOS_FORCE_CACHE_FIRST_CLASS_CHANGED"; f = builtins.getEnv; in f target; }"#;
+    let source_name = "first-class-get-env-changed-env.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_CHANGED";
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options.set_env_var(env_name.to_vec(), b"first".to_vec());
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options.clone(),
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let first_value = force_attr_a(&mut first, &ir, a);
+    assert_eq!(
+        first
+            .heap()
+            .get_string(first_value)
+            .expect("first getEnv value is a string")
+            .bytes(),
+        b"first"
+    );
+    let first_trace = vec![
+        ImpureInputFingerprint::get_env(env_name, Some(b"first"))
+            .expect("first getEnv fingerprint builds"),
+    ];
+    assert_eq!(first.impure_input_trace(), first_trace.as_slice());
+
+    let mut warm = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        first_options,
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let warm_value = force_attr_a(&mut warm, &ir, a);
+    assert_eq!(
+        warm.heap()
+            .get_string(warm_value)
+            .expect("warm getEnv value is a string")
+            .bytes(),
+        b"first"
+    );
+    assert_eq!(warm.impure_input_trace(), first_trace.as_slice());
+    assert!(
+        warm.stats().force_cache_hits() > 0,
+        "same-env first-class getEnv replay should hit the child-call node"
+    );
+    let first_key = single_force_cache_impure_edge_owner_key(&cache, &first_trace);
+
+    let mut changed_options = TreeWalkOptions::new();
+    changed_options.set_env_var(env_name.to_vec(), b"second".to_vec());
+
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        changed_options,
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let changed_value = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(changed_value)
+            .expect("changed getEnv value is a string")
+            .bytes(),
+        b"second"
+    );
+    let changed_trace = vec![
+        ImpureInputFingerprint::get_env(env_name, Some(b"second"))
+            .expect("changed getEnv fingerprint builds"),
+    ];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+    let changed_key = single_force_cache_impure_edge_owner_key(&cache, &changed_trace);
+    assert_eq!(
+        changed_key, first_key,
+        "getEnv values are revalidated impure inputs, not expression identity salts"
+    );
+    assert!(
+        changed.stats().force_cache_misses() > 0,
+        "changed getEnv input must reject the stale payload and recompute"
+    );
+}
+
+#[test]
+fn first_class_get_env_hits_persistent_cache_across_unrelated_option_salts() {
+    let persist_root = unique_temp_dir("force-cache-first-class-get-env-persist");
+    let root = unique_temp_dir("force-cache-first-class-get-env-persist-salts");
+    fs::create_dir_all(&root).expect("salt root exists");
+    let root = fs::canonicalize(&root).expect("salt root canonicalizes");
+    let source = r#"{ a = let target = "AOS_FORCE_CACHE_FIRST_CLASS_PERSIST"; f = builtins.getEnv; in f target; }"#;
+    let source_name = "first-class-get-env-persist.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_PERSIST";
+    let expected_trace = vec![
+        ImpureInputFingerprint::get_env(env_name, Some(b"persistent payload"))
+            .expect("persistent getEnv fingerprint builds"),
+    ];
+
+    let configure_options =
+        |env_value: &[u8], suffix: &str, eval_mode: EvalMode| -> TreeWalkOptions {
+            let mut options = TreeWalkOptions::with_eval_cache_enabled(true);
+            options.set_persist_cache_root(&persist_root);
+            options.set_env_var(env_name.to_vec(), env_value.to_vec());
+            options
+                .set_store_dir(path_bytes(&root.join(format!("store-{suffix}"))))
+                .expect("store dir is absolute");
+            options
+                .set_search_path_base(path_bytes(&root.join(format!("search-{suffix}"))))
+                .expect("search base is absolute");
+            options
+                .add_nix_path_entry(
+                    b"pkg".to_vec(),
+                    path_bytes(&root.join(format!("nix-{suffix}"))),
+                )
+                .expect("nixPath entry configures");
+            options
+                .set_path_literal_base(path_bytes(&root.join(format!("path-base-{suffix}"))))
+                .expect("path base is absolute");
+            options
+                .set_home_dir(path_bytes(&root.join(format!("home-{suffix}"))))
+                .expect("home is absolute");
+            options
+                .set_current_system(format!("{suffix}-linux").into_bytes())
+                .expect("currentSystem configures");
+            options
+                .set_current_time(if suffix == "a" {
+                    1_700_000_000
+                } else {
+                    1_800_000_000
+                })
+                .expect("currentTime configures");
+            options.set_reject_ambient_search_path(suffix != "a");
+            options.set_reject_unconfigured_impure_builtin_constants(suffix != "a");
+            options.set_eval_mode(eval_mode);
+            options
+        };
+
+    let mut demand = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        configure_options(b"persistent payload", "a", EvalMode::Impure),
+        source_name,
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let demand_value = force_attr_a(&mut demand, &ir, a);
+    assert_eq!(
+        demand
+            .heap()
+            .get_string(demand_value)
+            .expect("demand getEnv value is a string")
+            .bytes(),
+        b"persistent payload"
+    );
+    assert_eq!(demand.impure_input_trace(), expected_trace.as_slice());
+    demand.advance_persist_eval_cache_run_boundary();
+    drop(demand);
+
+    let mut materialize = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        configure_options(b"persistent payload", "a", EvalMode::Impure),
+        source_name,
+        source,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    );
+    let materialized = force_attr_a(&mut materialize, &ir, a);
+    assert_eq!(
+        materialize
+            .heap()
+            .get_string(materialized)
+            .expect("materialized getEnv value is a string")
+            .bytes(),
+        b"persistent payload"
+    );
+    assert_eq!(materialize.impure_input_trace(), expected_trace.as_slice());
+    assert!(
+        materialize.stats().force_cache_misses() > 0,
+        "second first-class getEnv demand should materialize a trace-backed child payload"
+    );
+    let trace_entry = assert_persistent_trace_log_contains(
+        &persist_root,
+        &expected_trace,
+        "first-class getEnv materialization run",
+    );
+    materialize.advance_persist_eval_cache_run_boundary();
+    drop(materialize);
+
+    let hit_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut hit = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        configure_options(b"persistent payload", "b", EvalMode::Restricted),
+        source_name,
+        source,
+        hit_runtime.clone(),
+    );
+    let hit_value = force_attr_a(&mut hit, &ir, a);
+    assert_eq!(
+        hit.heap()
+            .get_string(hit_value)
+            .expect("persistent hit getEnv value is a string")
+            .bytes(),
+        b"persistent payload"
+    );
+    assert!(
+        hit.stats().thunks_forced() > 0,
+        "fresh-runtime first-class getEnv child hits should not imply enclosing whole-thunk hits"
+    );
+    assert_eq!(hit.stats().force_cache_hits(), 1);
+    assert_eq!(hit.stats().force_cache_misses(), 0);
+    assert_eq!(hit.impure_input_trace(), expected_trace.as_slice());
+    assert_eq!(
+        hit.persist_force_cache_hit_keys.as_slice(),
+        &[trace_entry.0],
+        "fresh-runtime first-class getEnv hit should load only the child-call metadata key"
+    );
+    assert_eq!(
+        assert_persistent_trace_log_contains(
+            &persist_root,
+            &expected_trace,
+            "fresh-runtime first-class getEnv hit",
+        ),
+        trace_entry,
+        "fresh-runtime first-class getEnv hit should keep the original verifying trace live"
+    );
+    let hit_key = single_force_cache_impure_edge_owner_key(&hit_runtime, &expected_trace);
+    drop(hit);
+
+    let changed_runtime = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut changed = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        configure_options(b"changed persistent payload", "b", EvalMode::Restricted),
+        source_name,
+        source,
+        changed_runtime.clone(),
+    );
+    let changed_value = force_attr_a(&mut changed, &ir, a);
+    assert_eq!(
+        changed
+            .heap()
+            .get_string(changed_value)
+            .expect("changed getEnv value is a string")
+            .bytes(),
+        b"changed persistent payload"
+    );
+    let changed_trace = vec![
+        ImpureInputFingerprint::get_env(env_name, Some(b"changed persistent payload"))
+            .expect("changed persistent getEnv fingerprint builds"),
+    ];
+    assert_eq!(changed.impure_input_trace(), changed_trace.as_slice());
+    let changed_key = single_force_cache_impure_edge_owner_key(&changed_runtime, &changed_trace);
+    assert_eq!(
+        changed_key, hit_key,
+        "changed getEnv values must revalidate under the same child-call identity, not miss by value-salted key"
+    );
+    assert_eq!(
+        changed.stats().force_cache_hits(),
+        0,
+        "changed persistent getEnv input must reject the stale child payload"
+    );
+    assert!(
+        changed.stats().force_cache_misses() > 0,
+        "changed persistent getEnv input should recompute after stale trace rejection"
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp tree removed");
+    fs::remove_dir_all(root).expect("salt temp tree removed");
+}
+
+#[test]
+fn first_class_get_env_pure_mode_separates_hidden_environment_identity() {
+    let source = r#"{ a = let f = builtins.getEnv; in f "AOS_FORCE_CACHE_FIRST_CLASS_PURE"; }"#;
+    let source_name = "first-class-get-env-pure-mode.nix";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let apply_id = first_class_get_env_apply_id(&ir);
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let env_name = b"AOS_FORCE_CACHE_FIRST_CLASS_PURE";
+
+    let mut impure_options = TreeWalkOptions::new();
+    impure_options.set_env_var(env_name.to_vec(), b"visible".to_vec());
+    let mut impure = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        impure_options,
+        source_name,
+        source,
+        cache.clone(),
+    );
+    let impure_value = force_attr_a(&mut impure, &ir, a);
+    assert_eq!(
+        impure
+            .heap()
+            .get_string(impure_value)
+            .expect("impure getEnv value is a string")
+            .bytes(),
+        b"visible"
+    );
+    let impure_key = first_class_get_env_child_key_for_evaluator(&mut impure, apply_id);
+
+    let mut pure_options = TreeWalkOptions::new();
+    pure_options.set_env_var(env_name.to_vec(), b"visible".to_vec());
+    pure_options.set_eval_mode(EvalMode::Pure);
+    let mut pure = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        pure_options,
+        source_name,
+        source,
+        cache,
+    );
+    let pure_value = force_attr_a(&mut pure, &ir, a);
+    assert_eq!(
+        pure.heap()
+            .get_string(pure_value)
+            .expect("pure getEnv value is a string")
+            .bytes(),
+        b""
+    );
+    let pure_key = first_class_get_env_child_key_for_evaluator(&mut pure, apply_id);
+    assert_ne!(
+        pure_key, impure_key,
+        "pure getEnv has no revalidation trace and must not share impure payload identities"
+    );
+    assert!(
+        pure.impure_input_trace().is_empty(),
+        "pure getEnv hides configured variables without recording an impure edge"
+    );
+    assert_eq!(
+        pure.stats().force_cache_hits(),
+        0,
+        "pure getEnv must not replay the impure cached payload"
+    );
+}
+
 fn assert_single_force_cache_impure_edge_owner_matches_trace(
     runtime: &Arc<Mutex<EvalCacheRuntime>>,
     expected_trace: &[ImpureInputFingerprint],
 ) {
+    let _ = single_force_cache_impure_edge_owner_key(runtime, expected_trace);
+}
+
+fn single_force_cache_impure_edge_owner_key(
+    runtime: &Arc<Mutex<EvalCacheRuntime>>,
+    expected_trace: &[ImpureInputFingerprint],
+) -> DemandCacheKey {
     assert!(
         !expected_trace.is_empty(),
         "edge-exactness assertions require at least one input leaf"
@@ -1424,6 +1943,7 @@ fn assert_single_force_cache_impure_edge_owner_matches_trace(
             "input leaf should record the first-class child call as a reverse dependent"
         );
     }
+    graph.node(*owner).expect("edge owner exists").key()
 }
 
 fn runtime_contains_node_key(runtime: &Arc<Mutex<EvalCacheRuntime>>, key: DemandCacheKey) -> bool {
@@ -1442,7 +1962,15 @@ fn assert_persistent_find_file_trace_log_contains(
     expected_trace: &[ImpureInputFingerprint],
     context: &str,
 ) -> (PersistNodeMetadataKey, ValueHash) {
-    let expected = expected_cacheable_find_file_trace(expected_trace, context);
+    assert_persistent_trace_log_contains(persist_root, expected_trace, context)
+}
+
+fn assert_persistent_trace_log_contains(
+    persist_root: &Path,
+    expected_trace: &[ImpureInputFingerprint],
+    context: &str,
+) -> (PersistNodeMetadataKey, ValueHash) {
+    let expected = expected_cacheable_trace(expected_trace, context);
     let persist = PersistCache::open(persist_root).expect("persistent cache opens");
     let metadata_entries = persist
         .node_metadata_index()
@@ -1473,7 +2001,7 @@ fn assert_persistent_find_file_trace_log_contains(
     live_matches[0]
 }
 
-fn expected_cacheable_find_file_trace(
+fn expected_cacheable_trace(
     expected_trace: &[ImpureInputFingerprint],
     context: &str,
 ) -> Vec<crate::cache::CacheableInputFingerprint> {
