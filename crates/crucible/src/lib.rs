@@ -174,9 +174,10 @@ pub use trigger::{
     HostAssertionProximity, HostAssertionReport, HostAssertionViolation, LintedHostAssertionOracle,
     LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
     ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
-    PropertyLifecycleState, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    PropertyLifecycleState, ReadyPointResolution, ReadyPointResolutionError,
+    ReadyPointResolutionKind, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
     check_assertion_violation_reproduction, check_assertion_violation_reproduction_with_oracles,
-    lint_host_assertion_harness_source,
+    lint_host_assertion_harness_source, resolve_ready_point,
 };
 
 #[cfg(debug_assertions)]
@@ -2450,13 +2451,12 @@ mod tests {
             initrd: None,
         };
 
-        let canonical = world_from_nodes(vec![
-            fixed.clone(),
-            idle.clone(),
-            console.clone(),
-            agent.clone(),
-        ]);
-        let reordered = world_from_nodes(vec![agent, console, idle, fixed]);
+        let canonical = world_from_nodes_and_links(
+            vec![fixed.clone(), idle.clone(), console.clone(), agent.clone()],
+            vec![link("a", "b")],
+        );
+        let reordered =
+            world_from_nodes_and_links(vec![agent, console, idle, fixed], vec![link("a", "b")]);
         let changed = world_from_nodes(vec![ready_node(
             "a",
             ReadyPoint::FixedIcount {
@@ -5822,8 +5822,9 @@ tag = "negative-time"
         ];
 
         for (index, (ready_point, white_box)) in policies.into_iter().enumerate() {
-            let world = world_from_nodes(vec![WorldNode {
-                id: node_id(&format!("node-{index}")),
+            let node_name = format!("node-{index}");
+            let node = WorldNode {
+                id: node_id(&node_name),
                 arch: NodeTemplate::DEFAULT_ARCH,
                 memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
@@ -5834,7 +5835,24 @@ tag = "negative-time"
                 kernel: None,
                 root_image: None,
                 initrd: None,
-            }]);
+            };
+            let world = if matches!(&node.ready_point, ReadyPoint::NetworkIdle { .. }) {
+                let peer_name = format!("peer-{index}");
+                world_from_nodes_and_links(
+                    vec![
+                        node,
+                        ready_node(
+                            &peer_name,
+                            ReadyPoint::FixedIcount {
+                                icount: Icount { retired: 1 },
+                            },
+                        ),
+                    ],
+                    vec![link(&node_name, &peer_name)],
+                )
+            } else {
+                world_from_nodes(vec![node])
+            };
             let first = match bake(&world) {
                 Ok(genesis) => genesis,
                 Err(error) => panic!("ready-point policy should bake: {error}"),
@@ -6022,8 +6040,41 @@ tag = "negative-time"
         ];
 
         for (label, base_node, changed_node) in cases {
-            let base = world_from_nodes(vec![base_node]);
-            let changed = world_from_nodes(vec![changed_node]);
+            let uses_network_idle =
+                matches!(&base_node.ready_point, ReadyPoint::NetworkIdle { .. })
+                    || matches!(&changed_node.ready_point, ReadyPoint::NetworkIdle { .. });
+            let base = if uses_network_idle {
+                world_from_nodes_and_links(
+                    vec![
+                        base_node,
+                        ready_node(
+                            "peer",
+                            ReadyPoint::FixedIcount {
+                                icount: Icount { retired: 1 },
+                            },
+                        ),
+                    ],
+                    vec![link("node", "peer")],
+                )
+            } else {
+                world_from_nodes(vec![base_node])
+            };
+            let changed = if uses_network_idle {
+                world_from_nodes_and_links(
+                    vec![
+                        changed_node,
+                        ready_node(
+                            "peer",
+                            ReadyPoint::FixedIcount {
+                                icount: Icount { retired: 1 },
+                            },
+                        ),
+                    ],
+                    vec![link("node", "peer")],
+                )
+            } else {
+                world_from_nodes(vec![changed_node])
+            };
             let base_baked = match bake(&base) {
                 Ok(genesis) => genesis,
                 Err(error) => panic!("{label} base world should bake: {error}"),

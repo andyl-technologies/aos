@@ -19,9 +19,10 @@ use crate::model::{
     FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId, MarkerId,
     MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
     NodeLifecycle, PartitionDirection, Plan, PlanEntry, Predicate, PreemptionKind, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, RegexProgram, ReproductionArtifact,
-    ReproductionReplay, RestartPolicy, RngStreamId, Schedule, SchedulerNodeId, SchedulingNodeKind,
-    SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
+    Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
+    ReproductionArtifact, ReproductionReplay, RestartPolicy, RngStreamId, Schedule,
+    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId,
+    VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
@@ -434,6 +435,392 @@ pub const BLACK_BOX_OBSERVATION_CONTRACTS: [BlackBoxObservationContract;
     BlackBoxObservationKind::CrashOrHangDetection.contract(),
     BlackBoxObservationKind::BasicBlockCoverage.contract(),
 ];
+
+/// Black-box ready-point heuristic that produced a deterministic point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReadyPointResolutionKind {
+    /// The policy resolved directly from a fixed retired-instruction count.
+    FixedIcount,
+    /// The policy resolved from the first deterministic network-idle window.
+    FirstNetworkIdle,
+    /// The policy resolved from a host-side console/serial marker match.
+    ConsoleMarker,
+}
+
+/// Deterministic point where a node reached its configured ready point.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReadyPointResolution {
+    node: NodeId,
+    kind: ReadyPointResolutionKind,
+    icount: Icount,
+    virtual_time: VirtualTime,
+}
+
+impl ReadyPointResolution {
+    /// Returns the node whose ready point was resolved.
+    #[must_use]
+    pub fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the black-box heuristic that resolved readiness.
+    #[must_use]
+    pub const fn kind(&self) -> ReadyPointResolutionKind {
+        self.kind
+    }
+
+    /// Returns the deterministic retired-instruction coordinate.
+    #[must_use]
+    pub const fn icount(&self) -> Icount {
+        self.icount
+    }
+
+    /// Returns the deterministic virtual-time coordinate.
+    #[must_use]
+    pub const fn virtual_time(&self) -> VirtualTime {
+        self.virtual_time
+    }
+}
+
+/// Failure to resolve a node's configured ready point from deterministic evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadyPointResolutionError {
+    /// No declared world node matched the requested id.
+    UnknownNode {
+        /// Requested node id.
+        node: NodeId,
+    },
+    /// The configured ready point uses the optional white-box channel.
+    AgentSignalRequiresWhiteBoxChannel {
+        /// Node whose ready point is not black-box resolvable.
+        node: NodeId,
+    },
+    /// Network-idle readiness saw no activity on any link for the node.
+    NetworkIdleRequiresObservedActivity {
+        /// Node whose links never showed initial activity.
+        node: NodeId,
+    },
+    /// Network-idle readiness has not yet observed a full idle window.
+    NetworkIdleWindowNotReached {
+        /// Node whose links have not been idle long enough.
+        node: NodeId,
+        /// Required idle window.
+        window: SimDuration,
+    },
+    /// Network-idle readiness would overflow virtual time.
+    NetworkIdleWindowOverflow {
+        /// Node whose idle-window endpoint overflowed.
+        node: NodeId,
+        /// Activity time at the start of the idle window.
+        last_activity: VirtualTime,
+        /// Required idle window.
+        window: SimDuration,
+    },
+    /// Console-marker readiness did not observe the marker.
+    ConsoleMarkerNotObserved {
+        /// Node whose console stream did not match.
+        node: NodeId,
+        /// Marker that was required.
+        marker: String,
+    },
+    /// A virtual-time/icount conversion failed.
+    TimeConversion {
+        /// Node whose resolved point could not be converted.
+        node: NodeId,
+        /// Deterministic conversion failure.
+        source: TimeConversionError,
+    },
+}
+
+impl fmt::Display for ReadyPointResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownNode { .. } => f.write_str("ready-point node is not declared"),
+            Self::AgentSignalRequiresWhiteBoxChannel { .. } => {
+                f.write_str("agent-signal ready point is not black-box resolvable")
+            }
+            Self::NetworkIdleRequiresObservedActivity { .. } => {
+                f.write_str("network-idle ready point requires observed link activity")
+            }
+            Self::NetworkIdleWindowNotReached { .. } => {
+                f.write_str("network-idle ready point has not reached its idle window")
+            }
+            Self::NetworkIdleWindowOverflow { .. } => {
+                f.write_str("network-idle ready point overflows virtual time")
+            }
+            Self::ConsoleMarkerNotObserved { .. } => {
+                f.write_str("console-marker ready point was not observed")
+            }
+            Self::TimeConversion { source, .. } => {
+                write!(f, "ready-point time conversion failed: {source}")
+            }
+        }
+    }
+}
+
+impl Error for ReadyPointResolutionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::TimeConversion { source, .. } => Some(source),
+            Self::UnknownNode { .. }
+            | Self::AgentSignalRequiresWhiteBoxChannel { .. }
+            | Self::NetworkIdleRequiresObservedActivity { .. }
+            | Self::NetworkIdleWindowNotReached { .. }
+            | Self::NetworkIdleWindowOverflow { .. }
+            | Self::ConsoleMarkerNotObserved { .. } => None,
+        }
+    }
+}
+
+/// Resolves a node's black-box ready point from deterministic observations.
+///
+/// `observed_until` is the checked event-log frontier. Network-idle readiness
+/// uses it to prove the idle window elapsed rather than relying on host wall
+/// clock. Console-marker readiness scans the ordered console byte stream and
+/// resolves at the event that completes the marker match.
+///
+/// # Errors
+///
+/// Returns [`ReadyPointResolutionError`] when `node` is undeclared, when the
+/// node uses the white-box-only agent signal, when the provided observations do
+/// not yet prove the configured heuristic, or when an icount/virtual-time
+/// conversion fails.
+pub fn resolve_ready_point(
+    world: &World,
+    node: &NodeId,
+    observed_until: VirtualTime,
+    observations: &[ObservableEvent],
+) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
+    let world_node = world
+        .nodes()
+        .iter()
+        .find(|candidate| &candidate.id == node)
+        .ok_or_else(|| ReadyPointResolutionError::UnknownNode { node: node.clone() })?;
+    let shift = Shift {
+        bits: world_node.icount_shift,
+    };
+
+    match &world_node.ready_point {
+        ReadyPoint::FixedIcount { icount } => {
+            resolution_from_icount(node, ReadyPointResolutionKind::FixedIcount, *icount, shift)
+        }
+        ReadyPoint::NetworkIdle { window } => {
+            resolve_network_idle_ready_point(world, node, *window, observed_until, observations)
+                .and_then(|at| {
+                    resolution_from_virtual_time(
+                        node,
+                        ReadyPointResolutionKind::FirstNetworkIdle,
+                        at,
+                        shift,
+                    )
+                })
+        }
+        ReadyPoint::ConsoleMarker { marker } => resolve_console_marker_ready_point(
+            node,
+            marker,
+            observed_until,
+            observations,
+        )
+        .and_then(|at| {
+            resolution_from_virtual_time(node, ReadyPointResolutionKind::ConsoleMarker, at, shift)
+        }),
+        ReadyPoint::AgentSignal => Err(
+            ReadyPointResolutionError::AgentSignalRequiresWhiteBoxChannel { node: node.clone() },
+        ),
+    }
+}
+
+fn resolution_from_icount(
+    node: &NodeId,
+    kind: ReadyPointResolutionKind,
+    icount: Icount,
+    shift: Shift,
+) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
+    let virtual_time =
+        icount
+            .to_virtual(shift)
+            .map_err(|source| ReadyPointResolutionError::TimeConversion {
+                node: node.clone(),
+                source,
+            })?;
+    Ok(ReadyPointResolution {
+        node: node.clone(),
+        kind,
+        icount,
+        virtual_time: VirtualTime {
+            ticks: virtual_time.nanos,
+        },
+    })
+}
+
+fn resolution_from_virtual_time(
+    node: &NodeId,
+    kind: ReadyPointResolutionKind,
+    virtual_time: VirtualTime,
+    shift: Shift,
+) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
+    let icount = crate::model::VirtualInstant {
+        nanos: virtual_time.ticks,
+    }
+    .to_icount_ceil(shift)
+    .map_err(|source| ReadyPointResolutionError::TimeConversion {
+        node: node.clone(),
+        source,
+    })?;
+    let rounded_virtual_time =
+        icount
+            .to_virtual(shift)
+            .map_err(|source| ReadyPointResolutionError::TimeConversion {
+                node: node.clone(),
+                source,
+            })?;
+    Ok(ReadyPointResolution {
+        node: node.clone(),
+        kind,
+        icount,
+        virtual_time: VirtualTime {
+            ticks: rounded_virtual_time.nanos,
+        },
+    })
+}
+
+fn resolve_network_idle_ready_point(
+    world: &World,
+    node: &NodeId,
+    window: SimDuration,
+    observed_until: VirtualTime,
+    observations: &[ObservableEvent],
+) -> Result<VirtualTime, ReadyPointResolutionError> {
+    let link_ids = incident_link_ids(world, node);
+    let mut activity = observations
+        .iter()
+        .filter_map(|event| match event.payload() {
+            ObservableEventPayload::NetworkDelivered {
+                link: Some(link), ..
+            } if link_ids.contains(link) => Some(event.at()),
+            ObservableEventPayload::NetworkDelivered { .. }
+            | ObservableEventPayload::ConsoleOutput { .. }
+            | ObservableEventPayload::CoverageBlock { .. }
+            | ObservableEventPayload::CoverageMarker { .. }
+            | ObservableEventPayload::AssertionProximity { .. }
+            | ObservableEventPayload::MemorySample { .. }
+            | ObservableEventPayload::IoCompletion { .. }
+            | ObservableEventPayload::NodeState { .. }
+            | ObservableEventPayload::AssertionStateChanged { .. }
+            | ObservableEventPayload::AssertionEvaluated { .. }
+            | ObservableEventPayload::GuestMarker { .. }
+            | ObservableEventPayload::GuestAssertionMarker { .. } => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    activity.retain(|at| *at <= observed_until);
+    if activity.is_empty() {
+        return Err(
+            ReadyPointResolutionError::NetworkIdleRequiresObservedActivity { node: node.clone() },
+        );
+    }
+
+    for (index, last_activity) in activity.iter().copied().enumerate() {
+        let ready_at = last_activity
+            .ticks
+            .checked_add(window.nanos)
+            .map(|ticks| VirtualTime { ticks })
+            .ok_or_else(|| ReadyPointResolutionError::NetworkIdleWindowOverflow {
+                node: node.clone(),
+                last_activity,
+                window,
+            })?;
+        let next_activity = activity.get(index + 1).copied();
+        let next_is_after_window = next_activity.is_none_or(|next| next > ready_at);
+        if ready_at <= observed_until && next_is_after_window {
+            return Ok(ready_at);
+        }
+    }
+
+    Err(ReadyPointResolutionError::NetworkIdleWindowNotReached {
+        node: node.clone(),
+        window,
+    })
+}
+
+fn resolve_console_marker_ready_point(
+    node: &NodeId,
+    marker: &str,
+    observed_until: VirtualTime,
+    observations: &[ObservableEvent],
+) -> Result<VirtualTime, ReadyPointResolutionError> {
+    let marker = marker.as_bytes();
+    let mut console = Vec::new();
+    let mut ordered = observations
+        .iter()
+        .filter_map(|event| {
+            if event.at() > observed_until {
+                return None;
+            }
+            match event.payload() {
+                ObservableEventPayload::ConsoleOutput {
+                    node: source,
+                    bytes,
+                } if source == node => Some((event.at(), bytes.as_slice())),
+                ObservableEventPayload::ConsoleOutput { .. }
+                | ObservableEventPayload::NetworkDelivered { .. }
+                | ObservableEventPayload::CoverageBlock { .. }
+                | ObservableEventPayload::CoverageMarker { .. }
+                | ObservableEventPayload::AssertionProximity { .. }
+                | ObservableEventPayload::MemorySample { .. }
+                | ObservableEventPayload::IoCompletion { .. }
+                | ObservableEventPayload::NodeState { .. }
+                | ObservableEventPayload::AssertionStateChanged { .. }
+                | ObservableEventPayload::AssertionEvaluated { .. }
+                | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestAssertionMarker { .. } => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    for (at, bytes) in ordered {
+        console.extend_from_slice(bytes);
+        if contains_subsequence(&console, marker) {
+            return Ok(at);
+        }
+    }
+
+    Err(ReadyPointResolutionError::ConsoleMarkerNotObserved {
+        node: node.clone(),
+        marker: String::from_utf8_lossy(marker).into_owned(),
+    })
+}
+
+fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|candidate| candidate == needle)
+}
+
+fn incident_link_ids(world: &World, node: &NodeId) -> BTreeSet<LinkId> {
+    let mut ids = BTreeSet::new();
+    for link in world.links() {
+        let (endpoint_a, endpoint_b) = link.endpoints();
+        if endpoint_a == node || endpoint_b == node {
+            ids.insert(LinkId::from_name(format!(
+                "{}--{}",
+                endpoint_a.name, endpoint_b.name
+            )));
+            ids.insert(LinkId::from_name(format!(
+                "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+                endpoint_a.name.len(),
+                endpoint_a.name,
+                endpoint_b.name.len(),
+                endpoint_b.name
+            )));
+        }
+    }
+    ids
+}
 
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
