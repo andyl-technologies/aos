@@ -859,10 +859,20 @@ verdict; it only shapes the next schedule the search tries.
   evaluation point, invalid-hash/non-dense/future-entry rejection,
   evaluation-pass access to the observed view, and static absence of host time or
   unordered map/set inputs in the observed-state fold.
-- [ ] **T-ASRT-5** Implement host-side assertions over observable state as the
+- [x] **T-ASRT-5** Implement host-side assertions over observable state as the
   default, zero-guest-cooperation source; verify all five quantifiers work in
   black-box mode on an unmodified guest. — satisfies [ASRT-8], [ASRT-9],
   [ASRT-10]; spec §18.4.
+  Completed by `checks.crucible.phase4.hostSideAssertions`:
+  `HostAssertionEvaluator` grades the five property quantifiers from checked
+  `ConditionEventLogPrefix` values using `BlackBoxHostOracle` as the default
+  zero-guest-cooperation source. Built-in black-box predicates reuse the shared
+  condition evaluator, named host predicates receive the read-only
+  `ObservedState` view, warnings do not fail the run, and violations are
+  normalized through `AssertionRunVerdict`. The gate verifies all five
+  quantifiers in black-box mode, failure/warning reporting, named predicate
+  access to observed ordering facts, and static absence of host time, thread RNG,
+  and unordered map/set inputs in the host assertion evaluator.
 - [ ] **T-ASRT-6** Implement guest-side marker assertions over the white-box
   channel with the same five-quantifier semantics; fold them into the same
   evaluation pass; keep them observational and fingerprint-neutral; require the

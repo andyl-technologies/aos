@@ -139,12 +139,14 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use trigger::{
-    Action, Condition, ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event,
-    EventEvaluationKind, EventEvaluationPoint, EventFiring, EventFirings, EventGraph,
-    EventGraphBuilder, EventGraphError, EventGraphEventBuilder, EventGraphState, FirePolicy,
-    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
-    ObservedOrderingFact, ObservedState, ResolvedCodePoint, ResolvedMemPlace,
+    Action, BlackBoxHostOracle, Condition, ConditionEvaluation, ConditionEvaluationError,
+    ConditionEvaluationPass, ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf,
+    ConditionLeafOracle, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring,
+    EventFirings, EventGraph, EventGraphBuilder, EventGraphError, EventGraphEventBuilder,
+    EventGraphState, FirePolicy, HostAssertionEvaluator, HostAssertionOracle, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionReport, LogLevel, LoweredPlanEventGraph,
+    ObservableEvent, ObservableEventPayload, ObservedFaultFact, ObservedOrderingFact,
+    ObservedState, ResolvedCodePoint, ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]
