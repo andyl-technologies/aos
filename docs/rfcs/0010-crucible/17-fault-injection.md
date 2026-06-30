@@ -1154,10 +1154,26 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   content-addressing path so a random failure can be pinned as a concrete
   `ScenarioDef`; nonzero block/9p weights are retained in the config but
   rejected until `World` carries a device namespace to target.
-- [ ] **T-FAULT-15** Wire the fault determinism gate: a Plan of every fault kind
-  run twice yields identical activation icounts, identical effects, and an
-  identical decision-RNG draw sequence; a divergence localizes to the first
-  differing fault decision. — satisfies [FAULT-31]; spec §17.8; cross-ref 24.
+- [x] **T-FAULT-15** Wire the fault determinism gate: a Plan of every currently
+  plan-valid fault kind run twice yields identical activation icounts, identical
+  effects, and an identical decision-RNG draw sequence; a divergence localizes to
+  the first differing fault decision. — satisfies [FAULT-31]; spec §17.8;
+  cross-ref 24.
+  Completed by `checks.crucible.phase4.faultDeterminismGate`: the focused gate
+  lowers a deterministic `FaultPlan` containing every currently plan-valid
+  network and node taxonomy kind, including each network corruption sub-kind,
+  applies it twice through the trigger scheduler, and compares activation times,
+  active tag/table effects, live link fault tables, full emitted delivery
+  records, drops, exact injected payload mutations/truncation, isolated reorder,
+  latency and bandwidth timing shifts, raw `RngDraw`s, and derived `FaultFires`
+  decisions. Dedicated live-link probes keep partition/loss from masking
+  duplicate, corruption, and timing effects. Negative regressions mutate, insert,
+  and truncate recorded fault outcomes and mutate raw draw values, verifying
+  localization to the first differing decision. The gate also enumerates the full
+  block/9p taxonomy and asserts those `FaultPlan` entries still fail with
+  `PlanFaultUnknownDevice`; block/9p per-kind effect execution remains the
+  explicit device test-double scope of T-FAULT-16 until `World` carries device
+  targets for `FaultPlan` validation.
 - [ ] **T-FAULT-16** Exercise every fault kind against the in-process test double
   (apply fault, drive request/frame sequence with a fixed seed, assert perturbed
   deliveries/drops/recorded decisions) with a per-kind run-twice determinism +
