@@ -10654,6 +10654,7 @@ pub async fn release(
     partitions: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
+    rotate_from: Option<&Path>,
     cache_key: Option<&Path>,
     cache_url: Option<&str>,
     cache_priority: Option<u32>,
@@ -10675,7 +10676,7 @@ pub async fn release(
     }
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let (_tuf_key_owners, tuf_signing_keys) =
-        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key)?;
+        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key, rotate_from)?;
 
     let upload_auth =
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
@@ -11039,6 +11040,7 @@ fn resolve_tuf_metadata_signing_keys(
     dir: &Path,
     registry_name: &str,
     primary: &ResolvedSigningKey,
+    rotate_from: Option<&Path>,
 ) -> Result<(Vec<ResolvedSigningKey>, Vec<tuf::MetadataSigningKey>)> {
     let primary_trust_key = derive_trust_key(registry_name, primary.path())?;
     let primary_key = tuf::MetadataSigningKey {
@@ -11049,6 +11051,44 @@ fn resolve_tuf_metadata_signing_keys(
     };
     let mut metadata_keys = vec![primary_key];
     let mut owners = Vec::new();
+
+    // An operator rotating the root signing key supplies the previous root key
+    // explicitly with `--rotate-from`; it co-signs the new root so the
+    // previous-root-role authorization check accepts the transition. It is not
+    // a member of the new root policy (role_key=false). Its id must be a key id
+    // in the *current* (previous) root role, matched by public key — a freshly
+    // derived id would not satisfy the previous-root authorization check.
+    if let Some(rotate_from) = rotate_from {
+        let rotate_from_str = rotate_from.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--rotate-from path is not valid UTF-8: {}",
+                rotate_from.display()
+            )
+        })?;
+        let rotate_public = derive_trust_key(registry_name, rotate_from_str)?;
+        if rotate_public == primary_trust_key {
+            bail!(
+                "--rotate-from key is the same as the release signing key; \
+                 omit --rotate-from when not rotating the root key"
+            );
+        }
+        let previous_key_id = tuf::worktree_root_role_keys(dir)?
+            .into_iter()
+            .find(|(_, public)| *public == rotate_public)
+            .map(|(key_id, _)| key_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--rotate-from key is not a current root-role key; \
+                     pass the previous root key being rotated away from"
+                )
+            })?;
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id: previous_key_id,
+            key_path: rotate_from.to_path_buf(),
+            key: rotate_public,
+            role_key: false,
+        });
+    }
 
     let Some(roster) = keys::load_keys_toml(dir)? else {
         return Ok((owners, metadata_keys));

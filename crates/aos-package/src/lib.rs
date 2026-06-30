@@ -1296,6 +1296,9 @@ pub enum RegistryCommand {
         /// Resolve signing key path from [registry.signing_keys] by keys.toml id
         #[arg(long = "key-id")]
         key_id: Option<String>,
+        /// Previous root key to co-sign a TUF root rotation (the key being rotated away from)
+        #[arg(long = "rotate-from")]
+        rotate_from: Option<PathBuf>,
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long = "cache-key")]
         cache_key: Option<PathBuf>,
@@ -3226,6 +3229,7 @@ async fn run_registry(
             partitions,
             key,
             key_id,
+            rotate_from,
             cache_key,
             cache_url,
             cache_priority,
@@ -3260,6 +3264,7 @@ async fn run_registry(
                 partitions.as_deref(),
                 key.as_deref(),
                 key_id.as_deref(),
+                rotate_from.as_deref(),
                 cache_key.as_deref(),
                 cache_url.as_deref(),
                 *cache_priority,
