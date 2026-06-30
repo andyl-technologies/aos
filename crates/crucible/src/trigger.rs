@@ -335,6 +335,21 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds a white-box named coverage-marker observation.
+    #[must_use]
+    pub fn coverage_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::CoverageMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
     /// Builds a deterministic memory/register sample observation.
     #[must_use]
     pub fn memory_sample(
@@ -491,6 +506,15 @@ pub enum ObservableEventPayload {
         guest_pc: u64,
         /// Translated block length supplied by QEMU.
         block_len: u32,
+    },
+    /// A white-box named coverage marker became visible.
+    CoverageMarker {
+        /// Exact guest instruction count where the marker retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Stable marker identity carried by the doorbell payload.
+        marker: MarkerId,
     },
     /// A deterministic guest memory or register sample became visible.
     MemorySample {
@@ -3892,6 +3916,11 @@ fn observable_event_violation_site(
             node,
             ..
         }
+        | ObservableEventPayload::CoverageMarker {
+            retired_icount,
+            node,
+            ..
+        }
         | ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -4305,6 +4334,7 @@ fn guest_marker_event_matches_policies(
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
         | ObservableEventPayload::CoverageBlock { .. }
+        | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
@@ -4836,6 +4866,19 @@ fn external_observable_event_payload_material(observable: &ObservableEventPayloa
             lines.push(external_node_id_material("observable.node", node));
             lines.push(format!("observable.guest_pc={guest_pc}"));
             lines.push(format!("observable.block_len={block_len}"));
+        }
+        ObservableEventPayload::CoverageMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            lines.push(String::from("observable=coverage-marker"));
+            lines.push(format!(
+                "observable.retired_icount={}",
+                retired_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(external_marker_id_material("observable.marker", marker));
         }
         ObservableEventPayload::MemorySample {
             sample_icount,
@@ -6492,6 +6535,7 @@ where
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
         | ObservableEventPayload::CoverageBlock { .. }
+        | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }

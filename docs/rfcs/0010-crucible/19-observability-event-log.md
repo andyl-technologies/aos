@@ -888,10 +888,14 @@ log, so they cannot disagree about what happened.
   node/icount, source, and kind directly from the log, and assertion replay
   divergence carries that same point into the bisection handoff instead of
   smoothing an event-stream mismatch into a later assertion-report difference.
-- [ ] **T-OBS-9** Record coverage (plugin TCG basic blocks + white-box named
+- [x] **T-OBS-9** Record coverage (plugin TCG basic blocks + white-box named
   markers) as observational `coverage` entries feeding fuzzing/search and the
   per-checkpoint coverage fingerprint, excluded from the comparison. — satisfies
   [OBS-29]; spec §19.6.3; cross-ref 07 §2, 22.
+  Completed by `checks.crucible.phase4.eventLogCoverage`: TCG basic-block hits and
+  white-box named coverage markers project as observational `coverage` entries,
+  checkpoint coverage fingerprints are derived from that coverage projection, and
+  causal determinism comparison continues to exclude coverage-only differences.
 - [ ] **T-OBS-10** Make the log the debugging artifact and fork-point index of a
   reproduction artifact: replay reconstructs a byte-identical causal subsequence;
   shared-store artifacts reference log segments by content key. — satisfies
