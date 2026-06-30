@@ -516,6 +516,43 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_cache_validation_smoke_hook_command() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--smoke",
+            "--cache-validation",
+            "--mode=byte",
+            "--",
+            "default.nix",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr,
+                smoke,
+                all,
+                systems,
+                file,
+                mode,
+                oracle_stats,
+                cache_validation,
+                ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(smoke);
+                assert!(!all);
+                assert!(!systems);
+                assert_eq!(file.as_deref(), Some(std::path::Path::new("default.nix")));
+                assert_eq!(mode, NixDiffMode::Byte);
+                assert!(!oracle_stats);
+                assert!(cache_validation);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
     fn nix_diff_parses_direct_drv_pair() {
         let cli = parse_cli([
             "aos",
