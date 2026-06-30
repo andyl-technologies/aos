@@ -2143,6 +2143,61 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            256,
+        );
+        let payload = WhiteboxMarkerPayload::Assertion(WhiteboxAssertionMarkerBody {
+            flavor: WhiteboxAssertionMarkerFlavor::Reachable,
+            condition: true,
+            must_hit: true,
+            id: String::from("guest.ready"),
+            message: String::from("guest reported ready"),
+            location: String::from("guest.rs:7"),
+            details: vec![WhiteboxMarkerDetail::new("phase", "setup")],
+        });
+        let frame = encode_whitebox_marker_frame(&payload)
+            .unwrap_or_else(|error| panic!("test marker frame should encode: {error}"));
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, frame.len());
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 888, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(frame);
+        let mut sink = EngineEventLogMarkerSink::new("db-0");
+
+        let marker =
+            match handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event) {
+                Ok(marker) => marker,
+                Err(error) => panic!("doorbell should append marker to engine event log: {error}"),
+            };
+
+        assert_eq!(marker.marker_icount(), 888);
+        assert_eq!(marker.decoded_payload(), &payload);
+        assert_eq!(sink.entries.len(), 1);
+        let entry = &sink.entries[0];
+        assert_eq!(entry.class(), crucible::EventClass::Observational);
+        assert_eq!(
+            entry.time().icount,
+            crucible::EventLogIcountStamp {
+                node: Some(crucible_node("db-0")),
+                icount: crucible::Icount { retired: 888 },
+            }
+        );
+        assert_eq!(
+            entry.source(),
+            &crucible::EventSource::Guest {
+                node: crucible_node("db-0"),
+            }
+        );
+        assert_eq!(entry.event_payload().kind(), "guest_marker");
+        assert_eq!(
+            entry.event_payload().string("assertion"),
+            Some("guest.ready")
+        );
+        assert!(crucible::event_log_causal_projection(&sink.entries).is_empty());
+    }
+
+    #[test]
     fn whitebox_doorbell_rejects_malformed_frame_without_marker() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -2790,6 +2845,58 @@ mod tests {
         ) -> Result<(), WhiteboxMarkerSinkError> {
             self.markers.push(marker.clone());
             Ok(())
+        }
+    }
+
+    struct EngineEventLogMarkerSink {
+        node: crucible::NodeId,
+        event_log: crucible::EventLog,
+        entries: Vec<crucible::SchedulerEventLogEntry>,
+    }
+
+    impl EngineEventLogMarkerSink {
+        fn new(node_name: &str) -> Self {
+            Self {
+                node: crucible_node(node_name),
+                event_log: crucible::EventLog::new(),
+                entries: Vec::new(),
+            }
+        }
+    }
+
+    impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
+        fn record_whitebox_marker(
+            &mut self,
+            marker: &WhiteboxMarker,
+        ) -> Result<(), WhiteboxMarkerSinkError> {
+            let event = crucible::observable_event_from_whitebox_marker_payload(
+                crucible::Icount {
+                    retired: marker.marker_icount(),
+                },
+                self.node.clone(),
+                marker.decoded_payload(),
+            )
+            .ok_or_else(|| {
+                WhiteboxMarkerSinkError::new("non-observational marker reached event-log sink")
+            })?;
+            let sequence = self
+                .event_log
+                .next_sequence(0)
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
+            let entry =
+                crucible::test_support::condition_observation_entry_for_test(sequence, &event);
+            let append = self
+                .event_log
+                .append_entries(vec![entry])
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
+            self.entries.extend(append.entries);
+            Ok(())
+        }
+    }
+
+    fn crucible_node(name: &str) -> crucible::NodeId {
+        crucible::NodeId {
+            name: name.to_owned(),
         }
     }
 
