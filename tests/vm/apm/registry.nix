@@ -5053,6 +5053,33 @@ in {
         cat "/tmp/signed-cache-$label.out"
       }
 
+      # Trusted-key happy path: `apr release` publishes, generates and uploads
+      # the static cache, emits the TUF metadata the consumer sync now requires,
+      # and creates the signed commit in one step (signed by the given key,
+      # which must be in the registry's trust roster).
+      release_signed_tool() {
+        version="$1"
+        store="$2"
+        key="$3"
+        label="$4"
+        $APR release "$version" \
+          --registry signed-reg \
+          --store-path "$store" \
+          --name signed-tool \
+          --description "Signed commit trust workflow tool" \
+          --license MIT \
+          --maintainer signed-commit@example.invalid \
+          --key "$key" \
+          --cache-url http://127.0.0.1:18106 \
+          --upload-url file:///tmp/signed-cache \
+          > "/tmp/signed-release-$label.out" 2>&1 || {
+          cat "/tmp/signed-release-$label.out"
+          fail "apr release signed-tool $version succeeds"
+          return 1
+        }
+        cat "/tmp/signed-release-$label.out"
+      }
+
       GOOD_KEY=/tmp/signed-commit-good
       BAD_KEY=/tmp/signed-commit-bad
       NEXT_KEY=/tmp/signed-commit-next
@@ -5121,14 +5148,13 @@ in {
         "registry records initial commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$TRUST_KEY" \
         "registry records initial commit signing key value"
-      publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
+      release_signed_tool 1.0.0 "$TOOL_V1_STORE" "$GOOD_KEY" v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_DEP_HASH.narinfo" \
         "static cache has signed-tool v1 dependency narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18106" "registry records signed cache URL"
-      commit_signed "$GOOD_KEY" v1 "release: signed-tool 1.0.0"
 
       git init --bare --object-format=sha256 /tmp/signed-origin.git
       git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -5245,12 +5271,11 @@ in {
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 3.0.0 "$TOOL_V3_STORE" v3-good
+      release_signed_tool 3.0.0 "$TOOL_V3_STORE" "$GOOD_KEY" v3-good
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has signed-tool v3 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_DEP_HASH.narinfo" \
         "static cache has signed-tool v3 dependency narinfo"
-      commit_signed "$GOOD_KEY" v3-good "release: signed-tool 3.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       echo "==> Consumer: recover on trusted signed update and upgrade"
@@ -5324,12 +5349,11 @@ in {
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 4.0.0 "$TOOL_V4_STORE" v4-next
+      release_signed_tool 4.0.0 "$TOOL_V4_STORE" "$NEXT_KEY" v4-next
       assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
         "static cache has signed-tool v4 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V4_DEP_HASH.narinfo" \
         "static cache has signed-tool v4 dependency narinfo"
-      commit_signed "$NEXT_KEY" v4-next "release: signed-tool 4.0.0"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       echo "==> Consumer: accept update signed by rotated key and upgrade"
