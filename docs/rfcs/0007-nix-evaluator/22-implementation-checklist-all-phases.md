@@ -924,6 +924,28 @@ alone (`M-1`/`Q-A`).
       `cache::persist::tests::format_tests::node_metadata_index`, `eval::heap`,
       captured free-variable tests, and derivation side-record cache-path tests
       (`S-15`).
+- [x] Current nested-let free-variable narrowing precursor: the tree-walk
+      force-cache free-variable collector now validates nested `let` binding
+      keys as static as before, then computes a same-frame reachable binding
+      slot set from the nested body and traverses only those binding values when
+      constructing ordered free-variable value hashes. If the local scan reaches
+      nested frame-producing syntax, recursive attrsets, invalid local slots, or
+      child tables it cannot validate, it falls back to the prior
+      all-static-binding traversal behavior, which may still reject subject
+      construction for unsupported nested nodes. Dynamic nested binding keys
+      still reject subject construction. This removes dead nested binding
+      captures from the current demand key without changing the key combiner,
+      value hashing, or persistence format; it is not the full strictness/escape
+      free-variable set fact, broad demand-sensitive traversal for lazy
+      attr/list/select/default positions, persistent graph integration, or the
+      cached/uncached false-hit harness. Gates:
+      `captured_nested_let_body_thunks_skip_dead_binding_free_variables`,
+      `captured_nested_let_body_thunks_keep_transitive_live_binding_free_variables`,
+      `captured_nested_let_body_thunks_drop_dead_transitive_binding_free_variables`,
+      `captured_nested_let_body_thunks_fallback_to_prior_static_binding_traversal`,
+      `captured_nested_let_body_thunks_hit_when_only_dead_outer_free_variables_change`,
+      existing nested-let capture hit/miss tests, and the dynamic-key
+      subject-rejection canary (`C-1`/`C-2`).
 - [x] Current node-span force-cache identity precursor: source-backed and
       source-less node-thunk expression identities now fold the lowered node's
       source span into the durable expression-identity hash before pairing that

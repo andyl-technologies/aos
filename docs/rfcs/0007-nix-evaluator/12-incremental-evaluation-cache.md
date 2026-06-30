@@ -973,6 +973,28 @@ harness, never cut for scope.
   `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`, `cache::key`,
   `cache::persist::tests::format_tests::node_metadata_index`, `eval::heap`,
   captured free-variable tests, and derivation side-record cache-path tests.
+- [x] Current nested-let free-variable narrowing precursor: the tree-walk
+  force-cache free-variable collector now validates nested `let` binding keys
+  as static as before, then computes a same-frame reachable binding slot set
+  from the nested body and traverses only those binding values when constructing
+  ordered free-variable value hashes. If the local scan reaches nested
+  frame-producing syntax, recursive attrsets, invalid local slots, or child
+  tables it cannot validate, it falls back to the prior all-static-binding
+  traversal behavior, which may still reject subject construction for
+  unsupported nested nodes. Dynamic nested binding keys still reject subject
+  construction. This removes dead nested binding captures from the current
+  demand key without changing the key combiner, value hashing, or persistence
+  format; it is not the full strictness/escape free-variable set fact, broad
+  demand-sensitive traversal for lazy attr/list/select/default positions,
+  persistent graph integration, or the cached/uncached false-hit harness
+  ([§3.2](#32-constructing-the-dependency-key)) — P2 precursor, `C-1`/`C-2`;
+  gate: `captured_nested_let_body_thunks_skip_dead_binding_free_variables`,
+  `captured_nested_let_body_thunks_keep_transitive_live_binding_free_variables`,
+  `captured_nested_let_body_thunks_drop_dead_transitive_binding_free_variables`,
+  `captured_nested_let_body_thunks_fallback_to_prior_static_binding_traversal`,
+  `captured_nested_let_body_thunks_hit_when_only_dead_outer_free_variables_change`,
+  existing nested-let capture hit/miss tests, and the dynamic-key
+  subject-rejection canary.
 - [x] Current node-span force-cache identity precursor: source-backed and source-less node-thunk expression identities now fold the lowered node's source span into the durable expression-identity hash before pairing that hash with the existing `IrId` discriminator, and synthetic builtin-attr identities fold the lowered force-site span into their force-site `IrId`/symbol/execution identity. This moves the current identity shape toward the RFC `source content hash + IR node position` key while preserving the existing source-byte/lowered-IR fingerprint, path-literal-base, evaluator-option salt, synthetic builtin symbol/execution behavior, and ordered free-variable value-hash behavior. Full cache-key integration still requires canonical strictness/escape free-variable sets, real durable value hashes for all admitted values, persistent key compatibility decisions, and the cached/uncached false-hit harness ([§3.2](#32-constructing-the-dependency-key)) — P2 precursor, `C-1`/`C-2`; gate: source-backed same-`IrId` node-span force-cache identity and shared-runtime no-hit regression, source-less fixed-module-hash identity separation plus span-mutated lowered-IR shared-runtime no-hit regression, and synthetic force-site span changes.
 - [ ] Full cache-key integration remains: feed source content + IR node position from the evaluator into demand-graph expression nodes, reuse the strictness/escape free-variable set for canonical slot ordering, feed real durable value hashes, and run the differential false-hit gate ([§3.2](#32-constructing-the-dependency-key)) — P2, `C-1`/`C-2`; gate: harness (false-hit = correctness bug).
 - [ ] Expression identity from source content hash + IR node position; free-variable narrowing reusing the strictness/escape FV set ([§3.2](#32-constructing-the-dependency-key)) — P2, `C-2`; gate: harness.

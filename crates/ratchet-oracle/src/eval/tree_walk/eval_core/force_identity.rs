@@ -420,9 +420,10 @@ impl TreeWalk {
                 IrData::Let { bindings, body, .. } => {
                     let nested_frame_count = nested_frame_count.checked_add(1)?;
                     stack.push((body, nested_frame_count));
-                    Self::push_static_binding_values_with_scope(
+                    Self::push_reachable_static_binding_values_with_scope(
                         ir,
                         bindings,
+                        body,
                         nested_frame_count,
                         &mut stack,
                     )
@@ -1064,6 +1065,89 @@ impl TreeWalk {
             stack.push((binding.value, nested_frame_count));
         }
         true
+    }
+
+    fn push_reachable_static_binding_values_with_scope(
+        ir: &Ir,
+        bindings: IrBindingSlice,
+        body: IrId,
+        nested_frame_count: usize,
+        stack: &mut Vec<(IrId, usize)>,
+    ) -> bool {
+        let Some(binding_values) = Self::binding_slice(ir, bindings) else {
+            return false;
+        };
+        if !binding_values
+            .iter()
+            .all(|binding| matches!(binding.key, IrAttrPathSegment::Static(_)))
+        {
+            return false;
+        }
+        let Some(reachable) = Self::reachable_let_binding_slots(ir, body, binding_values) else {
+            return Self::push_static_binding_values_with_scope(
+                ir,
+                bindings,
+                nested_frame_count,
+                stack,
+            );
+        };
+        for slot in reachable {
+            let Some(binding) = binding_values.get(slot) else {
+                return false;
+            };
+            stack.push((binding.value, nested_frame_count));
+        }
+        true
+    }
+
+    fn reachable_let_binding_slots(
+        ir: &Ir,
+        body: IrId,
+        bindings: &[IrBinding],
+    ) -> Option<BTreeSet<usize>> {
+        let mut reachable = BTreeSet::new();
+        let mut visited_nodes = BTreeSet::new();
+        let mut stack = vec![body];
+        while let Some(id) = stack.pop() {
+            if !visited_nodes.insert(id.as_u32()) {
+                continue;
+            }
+            let node = ir.arena.node(id)?;
+            match node.data {
+                IrData::Local { slot } => {
+                    let slot = slot as usize;
+                    if slot >= bindings.len() {
+                        return None;
+                    }
+                    if reachable.insert(slot) {
+                        stack.push(bindings.get(slot)?.value);
+                    }
+                }
+                IrData::Let { .. }
+                | IrData::Lambda { .. }
+                | IrData::FormalSet { .. }
+                | IrData::Formal { .. }
+                | IrData::AttrSet {
+                    recursive: true, ..
+                } => {
+                    return None;
+                }
+                _ => {
+                    let mut children = Vec::new();
+                    if !Self::push_ir_children(ir, node, &mut children) {
+                        return None;
+                    }
+                    stack.extend(children);
+                }
+            }
+        }
+        Some(reachable)
+    }
+
+    fn binding_slice(ir: &Ir, bindings: IrBindingSlice) -> Option<&[IrBinding]> {
+        let start = bindings.start as usize;
+        let end = start.checked_add(bindings.len())?;
+        ir.bindings.get(start..end)
     }
 
     fn push_attr_path_children(ir: &Ir, path: IrAttrPathId, stack: &mut Vec<IrId>) -> bool {
