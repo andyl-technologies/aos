@@ -692,6 +692,11 @@ in {
       attrPath = "checks.crucible.phase4.propertyFingerprintNeutrality";
       taskIds = ["T-ASRT-2"];
     };
+    propertyConfiguration = import ./phase4-property-configuration.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.propertyConfiguration";
+      taskIds = ["T-ASRT-3"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

@@ -13387,6 +13387,7 @@ enum AssertionPhaseToml {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ReachabilityExpectationToml {
     Reachable {
+        #[serde(default = "reachable_disposition_warn_toml")]
         on_unreached: ReachableDispositionToml,
     },
     Unreachable,
@@ -13398,6 +13399,10 @@ enum ReachabilityExpectationToml {
 enum ReachableDispositionToml {
     Warn,
     Fail,
+}
+
+fn reachable_disposition_warn_toml() -> ReachableDispositionToml {
+    ReachableDispositionToml::Warn
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
