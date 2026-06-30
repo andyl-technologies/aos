@@ -243,15 +243,13 @@ fn configured_import_cache_preserves_hash_builtin_surface() {
         "changed import parse-cache",
         changed_imported_parse_key,
     );
-    push_durable_blake3_canaries(
-        &mut canaries,
-        "original file-content",
-        &file_key.content_hash(),
-    );
+    let file_content_hash = file_key.content_hash().as_durable_hash();
+    push_durable_blake3_canaries(&mut canaries, "original file-content", &file_content_hash);
+    let changed_file_content_hash = changed_file_key.content_hash().as_durable_hash();
     push_durable_blake3_canaries(
         &mut canaries,
         "changed file-content",
-        &changed_file_key.content_hash(),
+        &changed_file_content_hash,
     );
     push_hot_string_canaries(&mut canaries, "original imported string", imported_value);
     push_hot_string_canaries(

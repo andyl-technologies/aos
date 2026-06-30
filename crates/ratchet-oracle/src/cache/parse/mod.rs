@@ -28,7 +28,7 @@ use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
-use crate::cache::DurableBlake3Hash;
+use crate::cache::{DurableBlake3Hash, ParseFileContentHash};
 use crate::compile::{
     Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
     InheritResolution, InheritSource, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
@@ -156,12 +156,12 @@ fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseFileKey {
     realpath: PathBuf,
-    content_hash: DurableBlake3Hash,
+    content_hash: ParseFileContentHash,
 }
 
 impl ParseFileKey {
     /// Creates a file memo key from a canonical path and content hash.
-    pub fn new(realpath: impl Into<PathBuf>, content_hash: DurableBlake3Hash) -> Self {
+    pub fn new(realpath: impl Into<PathBuf>, content_hash: ParseFileContentHash) -> Self {
         Self {
             realpath: realpath.into(),
             content_hash,
@@ -170,7 +170,7 @@ impl ParseFileKey {
 
     /// Creates a file memo key by hashing source bytes with BLAKE3.
     pub fn for_source(realpath: impl Into<PathBuf>, source: &[u8]) -> Self {
-        Self::new(realpath, file_content_hash(source))
+        Self::new(realpath, ParseFileContentHash::for_source(source))
     }
 
     /// Returns the canonical path component of the key.
@@ -179,13 +179,8 @@ impl ParseFileKey {
     }
 
     /// Returns the typed BLAKE3 content hash.
-    pub const fn content_hash(&self) -> DurableBlake3Hash {
+    pub const fn content_hash(&self) -> ParseFileContentHash {
         self.content_hash
-    }
-
-    /// Returns the lowercase hexadecimal content hash.
-    pub fn content_hash_hex(&self) -> String {
-        self.content_hash.to_hex()
     }
 }
 
@@ -435,10 +430,6 @@ pub struct CachedParse {
     pub hit: bool,
     /// Whether a valid artifact is present in the cache after this operation.
     pub stored: bool,
-}
-
-fn file_content_hash(source: &[u8]) -> DurableBlake3Hash {
-    DurableBlake3Hash::for_bytes(source)
 }
 
 fn encode_bundle_section(

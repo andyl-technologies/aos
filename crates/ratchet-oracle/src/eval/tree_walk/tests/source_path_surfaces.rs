@@ -297,7 +297,9 @@ in builtins.toString found"#,
     ] {
         canaries.extend(durable_hash_surface_canaries(
             label,
-            ParseFileKey::for_source(realpath, imported_source).content_hash(),
+            ParseFileKey::for_source(realpath, imported_source)
+                .content_hash()
+                .as_durable_hash(),
         ));
     }
     canaries.extend(durable_hash_surface_canaries(
@@ -518,7 +520,7 @@ fn configured_import_cache_preserves_filter_source_store_path_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "included file BLAKE3 sentinel",

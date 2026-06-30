@@ -22,7 +22,9 @@ pub use dcg::{
     ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, RecomputeReadyDirty, Reconsideration,
     SharedDemandGraph, SharedDemandGraphError,
 };
-pub use hashing::{DurableBlake3Hash, HotXxh3Hash, NixSha256Digest, PersistFileBlobHash};
+pub use hashing::{
+    DurableBlake3Hash, HotXxh3Hash, NixSha256Digest, ParseFileContentHash, PersistFileBlobHash,
+};
 pub use input::{
     CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputFingerprint,
     ImpureInputIdentity, ImpureInputKind, ImpureInputMode, InputFingerprintError, UncacheableInput,

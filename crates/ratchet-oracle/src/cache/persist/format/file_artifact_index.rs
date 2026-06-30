@@ -30,13 +30,13 @@ impl PersistFileArtifactKey {
     /// Creates a persistent file-artifact index key from raw canonical realpath bytes.
     pub fn for_realpath_bytes(
         realpath: &[u8],
-        content_hash: DurableBlake3Hash,
+        content_hash: ParseFileContentHash,
         parse_key: ParseCacheKey,
     ) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION);
         update_persist_index_chunk(&mut hasher, realpath);
-        hasher.update(&content_hash.as_bytes());
+        hasher.update(&content_hash.as_durable_hash().as_bytes());
         hasher.update(&parse_key.as_bytes());
         Self {
             hash: DurableBlake3Hash::from_hasher(hasher),

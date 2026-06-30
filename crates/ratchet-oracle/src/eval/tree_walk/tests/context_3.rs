@@ -436,11 +436,15 @@ fn configured_import_cache_preserves_to_file_store_path_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "name import file-content BLAKE3",
-        ParseFileKey::for_source(&name_realpath, &name_source).content_hash(),
+        ParseFileKey::for_source(&name_realpath, &name_source)
+            .content_hash()
+            .as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "contents import file-content BLAKE3",
-        ParseFileKey::for_source(&contents_realpath, &contents_source).content_hash(),
+        ParseFileKey::for_source(&contents_realpath, &contents_source)
+            .content_hash()
+            .as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "toFile contents BLAKE3 sentinel",

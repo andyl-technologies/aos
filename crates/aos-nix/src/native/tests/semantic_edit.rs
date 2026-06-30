@@ -429,11 +429,11 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial forced comment leaf content BLAKE3",
-        first_leaf_key.content_hash(),
+        first_leaf_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "changed forced comment leaf content BLAKE3",
-        second_leaf_key.content_hash(),
+        second_leaf_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(hot_xxh3_surface_canaries(
         "forced leaf currentSystem hot xxh3",
@@ -645,11 +645,11 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial comment leaf content BLAKE3",
-        first_leaf_key.content_hash(),
+        first_leaf_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "changed comment leaf content BLAKE3",
-        second_leaf_key.content_hash(),
+        second_leaf_key.content_hash().as_durable_hash(),
     ));
     assert_native_closure_surfaces_do_not_contain_canaries(
         "uncached initial semantic-edit closure",
@@ -810,11 +810,11 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial unused leaf content BLAKE3",
-        first_leaf_key.content_hash(),
+        first_leaf_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "changed unused leaf content BLAKE3",
-        second_leaf_key.content_hash(),
+        second_leaf_key.content_hash().as_durable_hash(),
     ));
     assert_native_closure_surfaces_do_not_contain_canaries(
         "uncached initial unused-leaf closure",

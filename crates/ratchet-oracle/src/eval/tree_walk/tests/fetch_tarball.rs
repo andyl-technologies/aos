@@ -217,7 +217,7 @@ fn configured_import_cache_preserves_fetch_tarball_store_path_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "archive bytes BLAKE3 sentinel",
@@ -728,7 +728,7 @@ fn configured_import_cache_preserves_path_store_path_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "path payload BLAKE3 sentinel",

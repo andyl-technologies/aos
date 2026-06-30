@@ -460,7 +460,7 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     for entry in &metadata_entries {
         canaries.extend(durable_hash_surface_canaries(
@@ -601,7 +601,7 @@ fn configured_import_cache_preserves_drv_surfaces() {
     );
     canaries.extend(durable_hash_surface_canaries(
         "imported-file content BLAKE3",
-        import_file_key.content_hash(),
+        import_file_key.content_hash().as_durable_hash(),
     ));
     assert_drv_surface_canaries_absent(
         "uncached import-cache derivation surface",

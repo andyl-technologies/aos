@@ -209,7 +209,7 @@ fn configured_import_cache_preserves_fetchurl_store_path_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "fetched payload BLAKE3 sentinel",

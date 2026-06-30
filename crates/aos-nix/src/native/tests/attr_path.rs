@@ -148,7 +148,7 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     );
     canaries.extend(durable_hash_surface_canaries(
         "file root content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     assert!(first_parse_cache.entry_for_key(parse_key).is_complete());
     assert!(

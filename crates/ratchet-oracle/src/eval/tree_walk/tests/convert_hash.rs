@@ -139,7 +139,7 @@ fn configured_import_cache_preserves_convert_hash_surface() {
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "imported hash BLAKE3 sentinel",

@@ -8,6 +8,7 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
+//! ParseFileContentHash -> parse-file realpath/content memo keys
 //! PersistFileBlobHash -> persisted `files/` blob payload addresses
 //! NixSha256Digest    -> Nix-observed store path and `.drv` hash bytes
 //! Nix-observed hash bytes cross cache code only through NixSha256Digest
@@ -90,6 +91,26 @@ impl DurableBlake3Hash {
 impl fmt::Display for DurableBlake3Hash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
+    }
+}
+
+/// A durable BLAKE3 content hash for source bytes read by the parse-file memo.
+///
+/// This type separates realpath/content memo identities from parse-cache source
+/// keys, persisted artifact blob addresses, value hashes, and Nix-observed hash
+/// surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ParseFileContentHash(DurableBlake3Hash);
+
+impl ParseFileContentHash {
+    /// Computes the file-content memo hash for `source`.
+    pub fn for_source(source: &[u8]) -> Self {
+        Self(DurableBlake3Hash::for_bytes(source))
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
     }
 }
 
@@ -187,6 +208,14 @@ mod tests {
 
         assert_eq!(file_hash.as_durable_hash(), durable);
         assert_eq!(PersistFileBlobHash::from_durable_hash(durable), file_hash);
+    }
+
+    #[test]
+    fn parse_file_content_hash_wraps_source_bytes() {
+        let durable = DurableBlake3Hash::for_bytes(b"source bytes");
+        let content_hash = ParseFileContentHash::for_source(b"source bytes");
+
+        assert_eq!(content_hash.as_durable_hash(), durable);
     }
 
     #[test]

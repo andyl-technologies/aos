@@ -76,7 +76,7 @@ fn native_file_cache_parity_harness_covers_empty_foldl_update_regression() -> Re
     );
     canaries.extend(durable_hash_surface_canaries(
         "foldl update file-root content BLAKE3",
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     assert_native_closure_surfaces_do_not_contain_canaries(
         "uncached foldl update closure",
@@ -1362,7 +1362,7 @@ fn file_parse_artifact_surface_canaries(
     );
     canaries.extend(durable_hash_surface_canaries(
         &format!("{label} content BLAKE3"),
-        file_key.content_hash(),
+        file_key.content_hash().as_durable_hash(),
     ));
     Ok(canaries)
 }

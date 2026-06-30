@@ -193,7 +193,7 @@ fn native_expression_eval_ignores_persistent_parse_cache_open_failure() -> Resul
 #[test]
 fn native_expression_eval_ignores_stale_persistent_parse_artifact() -> Result<()> {
     use crate::cache::{
-        DurableBlake3Hash, PERSIST_BLOB_PACK_HEADER_LEN, PersistBlobLocation, PersistCache,
+        PERSIST_BLOB_PACK_HEADER_LEN, PersistBlobLocation, PersistCache, PersistFileBlobHash,
         PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue, PersistParseArtifactKey,
     };
 
@@ -208,7 +208,7 @@ fn native_expression_eval_ignores_stale_persistent_parse_artifact() -> Result<()
     let parse_key = parse_cache.key_for_source(source.as_bytes());
     let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let stale_value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing raw expression artifact"),
+        PersistFileBlobHash::for_payload(b"missing raw expression artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     PersistCache::open(&persist_root)?.record_parse_artifact(
