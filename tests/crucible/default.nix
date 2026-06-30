@@ -12,7 +12,7 @@
   in
     (builtins.derivation {
       name = "crucible-green-before-advance-${gateSlug}-0";
-      system = lib.system;
+      inherit (lib) system;
       builder = "${pkgs.bash}/bin/bash";
       args = [
         "-c"
@@ -939,6 +939,11 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.eventLogClassCatalog";
       taskIds = ["T-OBS-4"];
+    };
+    eventLogContentAddress = import ./phase4-event-log-content-address.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogContentAddress";
+      taskIds = ["T-OBS-5"];
     };
     gates = rec {
       replayOracle = greenBeforeAdvance {

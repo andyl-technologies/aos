@@ -782,6 +782,7 @@ impl Error for ConditionEvaluationError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionEventLogPrefix {
     point: EventEvaluationPoint,
+    base_sequence: u64,
     event_log_offset: EventLogOffset,
     prefix_offsets: BTreeMap<u64, EventLogOffset>,
     scheduler_entries: Vec<SchedulerEventLogEntry>,
@@ -796,6 +797,7 @@ impl ConditionEventLogPrefix {
     pub fn genesis() -> Self {
         Self {
             point: EventEvaluationPoint::genesis(),
+            base_sequence: 0,
             event_log_offset: EventLogOffset::default(),
             prefix_offsets: BTreeMap::new(),
             scheduler_entries: Vec::new(),
@@ -826,6 +828,13 @@ impl ConditionEventLogPrefix {
     pub(crate) fn from_scheduler_event_log_entries(
         entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(entries, 0)
+    }
+
+    pub(crate) fn from_scheduler_event_log_entries_with_base(
+        entries: Vec<SchedulerEventLogEntry>,
+        base_sequence: u64,
+    ) -> Result<Self, ConditionEvaluationError> {
         let Some(last) = entries.last() else {
             return Err(ConditionEvaluationError::EmptyEventLogPrefix);
         };
@@ -834,12 +843,18 @@ impl ConditionEventLogPrefix {
         let mut ordering_facts = Vec::new();
         let mut fault_facts = Vec::new();
         for (offset, entry) in entries.iter().enumerate() {
-            let expected = u64::try_from(offset).map_err(|_| {
+            let offset = u64::try_from(offset).map_err(|_| {
                 ConditionEvaluationError::NonPrefixEventLogSequence {
                     expected: u64::MAX,
                     actual: entry.sequence(),
                 }
             })?;
+            let expected = base_sequence.checked_add(offset).ok_or(
+                ConditionEvaluationError::NonPrefixEventLogSequence {
+                    expected: u64::MAX,
+                    actual: entry.sequence(),
+                },
+            )?;
             if entry.sequence() != expected {
                 return Err(ConditionEvaluationError::NonPrefixEventLogSequence {
                     expected,
@@ -867,15 +882,21 @@ impl ConditionEventLogPrefix {
         }
         Ok(Self {
             point,
+            base_sequence,
             event_log_offset: EventLogOffset::new(
                 ContentHash::default(),
                 0,
-                u64::try_from(entries.len()).map_err(|_| {
-                    ConditionEvaluationError::NonPrefixEventLogSequence {
+                base_sequence
+                    .checked_add(u64::try_from(entries.len()).map_err(|_| {
+                        ConditionEvaluationError::NonPrefixEventLogSequence {
+                            expected: u64::MAX,
+                            actual: u64::MAX,
+                        }
+                    })?)
+                    .ok_or(ConditionEvaluationError::NonPrefixEventLogSequence {
                         expected: u64::MAX,
                         actual: u64::MAX,
-                    }
-                })?,
+                    })?,
             ),
             prefix_offsets: BTreeMap::new(),
             scheduler_entries: entries,
@@ -887,6 +908,11 @@ impl ConditionEventLogPrefix {
 
     pub(crate) fn with_event_log_offset(mut self, event_log_offset: EventLogOffset) -> Self {
         self.event_log_offset = event_log_offset;
+        self
+    }
+
+    fn with_base_sequence(mut self, base_sequence: u64) -> Self {
+        self.base_sequence = base_sequence;
         self
     }
 
@@ -915,17 +941,21 @@ impl ConditionEventLogPrefix {
         if entries.is_empty() {
             let mut prefix = Self::genesis();
             if !self.prefix_offsets.is_empty() {
-                prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_len)?);
+                let prefix_events = self.base_sequence.checked_add(prefix_len)?;
+                prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
             }
             return Some(
                 prefix
+                    .with_base_sequence(self.base_sequence)
                     .with_prefix_offsets(self.prefix_offsets.clone())
                     .with_point(point),
             );
         }
-        let mut prefix = Self::from_scheduler_event_log_entries(entries).ok()?;
+        let prefix_events = self.base_sequence.checked_add(prefix_len)?;
+        let mut prefix =
+            Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
         if !self.prefix_offsets.is_empty() {
-            prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_len)?);
+            prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
         }
         Some(
             prefix
@@ -2265,6 +2295,7 @@ impl RecordedAssertionLog {
             }
             let segment_bytes = scheduler_event_log_segment_bytes(prefix, &segment);
             let segment_hash = ContentHash::from_bytes(&segment_bytes);
+            let previous_prefix = prefix;
             let appended_bytes = u64::try_from(segment_bytes.len()).map_err(|_| {
                 OfflineAssertionCheckError::EventLogSegmentLengthOverflow {
                     segment_len: segment_bytes.len(),
@@ -2290,14 +2321,17 @@ impl RecordedAssertionLog {
             )?;
             let prefix_material = format!(
                 "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
-                prefix.to_hex(),
+                previous_prefix.to_hex(),
                 segment_hash.to_hex(),
             );
             prefix = ContentHash::from_canonical_material(
                 "crucible.scheduler.event-log.prefix.v1",
                 &prefix_material,
             );
-            prefix_offsets.insert(events, EventLogOffset::new(prefix, bytes, events));
+            prefix_offsets.insert(
+                events,
+                EventLogOffset::with_appended_segment(previous_prefix, bytes, events, segment_hash),
+            );
             entries.extend(segment);
         }
 
@@ -8831,5 +8865,39 @@ mod tests {
 
         assert_ne!(expected, reproduced);
         assert!(event_log_causal_projections_match(&expected, &reproduced));
+    }
+
+    #[test]
+    fn facts_through_point_preserves_resumed_event_log_base_sequence() {
+        let first = SchedulerEventLogEntry::with_payload_for_test(
+            5,
+            VirtualTime { ticks: 5 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("resumed-prefix-a"),
+                value: 17,
+            })),
+        );
+        let second = SchedulerEventLogEntry::with_payload_for_test(
+            6,
+            VirtualTime { ticks: 7 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("resumed-prefix-b"),
+                value: 23,
+            })),
+        );
+        let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+            vec![first.clone(), second],
+            5,
+        )
+        .expect("resumed nonzero event-log sequence should build");
+
+        let through_first = prefix
+            .with_facts_through_point(EventEvaluationPoint::event_log_entry(&first))
+            .expect("resumed prefix through first entry should be retained");
+
+        assert_eq!(through_first.scheduler_entries.len(), 1);
+        assert_eq!(through_first.scheduler_entries[0].sequence(), 5);
+        assert_eq!(through_first.base_sequence, 5);
+        assert_eq!(through_first.event_log_offset().events, 6);
     }
 }

@@ -34,8 +34,7 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     let append = log
         .append_entries(vec![entry])
         .expect("schema-complete guest entry should append");
-    let segment = String::from_utf8(append.segment_bytes)
-        .expect("canonical segment bytes should be UTF-8 material in this implementation");
+    let segment = append.segment_text;
 
     assert!(segment.contains("entry.at_virtual_time_ticks=99"));
     assert!(segment.contains("entry.at_icount_retired=99"));
@@ -70,8 +69,7 @@ fn command_caused_entries_preserve_command_correlation_source() {
     let append = log
         .append_entries(vec![entry])
         .expect("command-correlated entry should append");
-    let segment = String::from_utf8(append.segment_bytes)
-        .expect("canonical segment bytes should be UTF-8 material in this implementation");
+    let segment = append.segment_text;
 
     assert!(segment.contains("entry.source=command"));
     assert!(segment.contains("entry.source.command_id=42"));
