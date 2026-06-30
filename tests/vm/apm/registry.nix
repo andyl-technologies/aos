@@ -1669,7 +1669,11 @@ in {
       export AOS_NIX_STATE_DIR=/nix/var/nix
       SYSTEM_REG_CONFIG="$AOS_ROOT/var/lib/apm/config/registries.d/override-reg.toml"
       USER_REG_CONFIG="$HOME/.config/apm/registries.d/override-reg.toml"
-      PROFILE_ROOT="/var/lib/profiles/system-packages/current/bin/closure-root"
+      # A --sysroot package installed with `--system` lands as a numbered system
+      # generation under /var/lib/profiles/system (gen-N/toplevel -> store path,
+      # current -> gen-N), not a user-scope tool profile.
+      SYSTEM_PROFILE="/var/lib/profiles/system"
+      PROFILE_ROOT="$SYSTEM_PROFILE/current/toplevel/bin/closure-root"
       mkdir -p "$HOME"
 
       if [ -e "$USER_REG_CONFIG" ]; then
@@ -1792,8 +1796,18 @@ in {
       cat /tmp/override-install.out
       assert_file_contains /tmp/override-install.out "Downloading" \
         "apm install downloads from redirected system registry cache"
-      assert_file_contains /tmp/override-install.out "Installed 1 package" \
-        "apm install creates profile generation from redirected system registry"
+      assert_file_contains /tmp/override-install.out "System generation 1 active" \
+        "apm install activates a system generation from redirected system registry"
+      if [ "$(readlink "$SYSTEM_PROFILE/current")" = "gen-1" ]; then
+        pass "redirected system install points current at gen-1"
+      else
+        fail "redirected system install should point current at gen-1"
+      fi
+      if [ "$(readlink "$SYSTEM_PROFILE/gen-1/toplevel")" = "$ROOT_STORE" ]; then
+        pass "redirected system gen-1 toplevel points at installed sysroot"
+      else
+        fail "redirected system gen-1 toplevel should point at installed sysroot"
+      fi
       "$PROFILE_ROOT" > /tmp/override-run.out
       assert_file_contains /tmp/override-run.out \
         "^closure-root 1.0.0 via closure-leaf 1.0.0$" \
