@@ -3563,7 +3563,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
     encoded
 }
 
-fn scheduler_event_log_empty_prefix() -> ContentHash {
+pub(crate) fn scheduler_event_log_empty_prefix() -> ContentHash {
     ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
 }
 
@@ -4196,7 +4196,7 @@ fn validate_trigger_node_schedule_target(
     Ok(())
 }
 
-fn scheduler_event_log_segment_bytes(
+pub(crate) fn scheduler_event_log_segment_bytes(
     previous_prefix: ContentHash,
     entries: &[SchedulerEventLogEntry],
 ) -> Vec<u8> {
