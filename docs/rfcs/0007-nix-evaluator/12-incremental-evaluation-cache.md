@@ -1447,16 +1447,19 @@ harness, never cut for scope.
       plus structural-mode byte-and-field drift under an unchanged root path and
       require both oracle-vs-cold-cache and cache-off-vs-cold-cache matrix
       comparisons to fail while oracle-vs-cache-off remains clean. This
-      strengthens local coverage of the full-closure safety-net path only;
-      scheduled CI wiring, full AOS package-set closure coverage on Linux,
-      syscall-level cache-off no-read proof, and future value-memoization safety
-      remain open.
+      strengthened path now also rejects path-only evaluators in byte and
+      structural cache-validation modes instead of silently degrading to root
+      path comparison. This strengthens local coverage of the full-closure
+      safety-net path only; scheduled CI wiring, full AOS package-set closure
+      coverage on Linux, syscall-level cache-off no-read proof, and future
+      value-memoization safety remain open.
       ([§8.3](#83-correctness-anxiety-and-the-safety-net))
       — P2, `S-14`; gate:
       `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`,
       `cache_validation_byte_mode_detects_cold_closure_byte_drift`,
       `cache_validation_structural_mode_uses_in_memory_closures_without_path_fallback`,
-      and `cache_validation_structural_mode_detects_cold_closure_structural_drift`.
+      `cache_validation_structural_mode_detects_cold_closure_structural_drift`,
+      and `cache_validation_full_closure_modes_reject_path_only_evaluators`.
 - [x] Current cache-validation full-closure mode guard:
       `aos nix-diff --cache-validation` now rejects `--mode=path` before
       probing for `nix-instantiate` or selecting native side evaluators, and

@@ -1684,10 +1684,11 @@ fn instantiate_cache_validation_side(
         },
         DiffMode::Byte | DiffMode::Structural => match eval.instantiate_closure(file, attr) {
             Ok(Some(closure)) => CacheValidationInstantiation::Closure(closure),
-            Ok(None) => match eval.instantiate(file, attr) {
-                Ok(path) => CacheValidationInstantiation::Path(path),
-                Err(error) => CacheValidationInstantiation::Error(format!("{error:#}")),
-            },
+            Ok(None) => CacheValidationInstantiation::Error(format!(
+                "{} did not provide full .drv closure output for {} cache validation",
+                eval.name(),
+                mode_name(mode)
+            )),
             Err(error) => CacheValidationInstantiation::Error(format!("{error:#}")),
         },
     }
@@ -3122,6 +3123,54 @@ mod tests {
                 serde_json::Value::String("structural".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn cache_validation_full_closure_modes_reject_path_only_evaluators() {
+        for mode in [DiffMode::Byte, DiffMode::Structural] {
+            let oracle = FixedEval::new("oracle", "/nix/store/oracle.drv");
+            let cache_off = FixedEval::new("cache-off", "/nix/store/cache-off.drv");
+            let cold_cache = FixedEval::new("cold-cache", "/nix/store/cold-cache.drv");
+
+            let report = cache_validation_attr_report(
+                &oracle,
+                &cache_off,
+                &cold_cache,
+                PathBuf::from("/tmp/cold-cache"),
+                Path::new("default.nix"),
+                "pkgs.hello",
+                mode,
+            );
+
+            assert!(
+                report.has_failure(),
+                "{mode:?} cache validation should reject path-only evaluators"
+            );
+            assert_eq!(
+                oracle.instantiate_calls(),
+                0,
+                "{mode:?} cache validation must not fall back to oracle path instantiation"
+            );
+            assert_eq!(
+                cache_off.instantiate_calls(),
+                0,
+                "{mode:?} cache validation must not fall back to cache-off path instantiation"
+            );
+            assert_eq!(
+                cold_cache.instantiate_calls(),
+                0,
+                "{mode:?} cache validation must not fall back to cold-cache path instantiation"
+            );
+            assert!(report.comparisons().iter().all(|comparison| {
+                comparison.failure.is_some()
+                    && comparison.report.as_ref().is_some_and(|report| {
+                        report
+                            .divergences
+                            .iter()
+                            .any(|diff| matches!(diff, DrvDiff::EvaluationMismatch { .. }))
+                    })
+            }));
+        }
     }
 
     #[test]

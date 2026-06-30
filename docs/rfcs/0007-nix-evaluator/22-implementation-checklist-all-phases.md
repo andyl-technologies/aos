@@ -4012,14 +4012,18 @@ alone (`M-1`/`Q-A`).
       plus structural-mode byte-and-field drift under an unchanged root path and
       require both oracle-vs-cold-cache and cache-off-vs-cold-cache matrix
       comparisons to fail while oracle-vs-cache-off remains clean. This is
-      local unit coverage of the full-closure safety-net path only; scheduled
-      CI wiring, full AOS package-set closure coverage on Linux, syscall-level
-      cache-off no-read proof, and future value-memoization safety remain open.
+      also pinned so path-only evaluators are rejected in byte and structural
+      cache-validation modes instead of silently degrading to root path
+      comparison. This is local unit coverage of the full-closure safety-net
+      path only; scheduled CI wiring, full AOS package-set closure coverage on
+      Linux, syscall-level cache-off no-read proof, and future
+      value-memoization safety remain open.
       Gates:
       `cache_validation_byte_mode_uses_in_memory_closures_without_path_fallback`,
       `cache_validation_byte_mode_detects_cold_closure_byte_drift`,
       `cache_validation_structural_mode_uses_in_memory_closures_without_path_fallback`,
-      and `cache_validation_structural_mode_detects_cold_closure_structural_drift`
+      `cache_validation_structural_mode_detects_cold_closure_structural_drift`,
+      and `cache_validation_full_closure_modes_reject_path_only_evaluators`
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation full-closure mode guard:
       `aos nix-diff --cache-validation` rejects `--mode=path` before probing
