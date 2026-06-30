@@ -4019,7 +4019,9 @@ alone (`M-1`/`Q-A`).
       per-attr cold roots in accepted byte-mode full-closure fixtures, removes
       successful cold roots, retains failing cold roots, and reports a
       reproduction command carrying `--cache-validation` on failures. This is a
-      runnable command-level validation hook only;
+      runnable command-level validation hook only; the local
+      `just cache-validation-smoke` recipe runs the `--smoke` zlib witness via
+      `nix run . -- nix-diff --smoke --cache-validation --mode=byte -- default.nix`;
       scheduled CI wiring, full AOS package-set closure coverage on Linux,
       syscall-level cache-off no-read proof, and full future value-memoization
       safety remain open. Gates:

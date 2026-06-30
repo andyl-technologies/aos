@@ -60,6 +60,10 @@ system-eval variant="server":
 test:
     {{AOS}} test
 
+# Run the native cache-validation smoke matrix against the zlib witness
+cache-validation-smoke:
+    nix run . -- nix-diff --smoke --cache-validation --mode=byte -- default.nix
+
 # Run eval checks only
 test-eval:
     {{AOS}} test eval
