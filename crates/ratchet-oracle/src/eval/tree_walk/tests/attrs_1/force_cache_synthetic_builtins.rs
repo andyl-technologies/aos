@@ -874,6 +874,11 @@ fn assert_single_nix_path_entry(evaluator: &TreeWalk, value: Value, prefix: &[u8
         .heap()
         .get_attrs(entry)
         .expect("nixPath entry is an attrset");
+    assert_eq!(
+        attrs.len(),
+        2,
+        "nixPath entry should contain exactly prefix and path"
+    );
     let mut actual_prefix = None;
     let mut actual_path = None;
     for entry in attrs.iter_source_order() {
@@ -888,9 +893,18 @@ fn assert_single_nix_path_entry(evaluator: &TreeWalk, value: Value, prefix: &[u8
             .bytes()
             .to_vec();
         match name {
-            b"prefix" => actual_prefix = Some(value),
-            b"path" => actual_path = Some(value),
-            _ => {}
+            b"prefix" => assert!(
+                actual_prefix.replace(value).is_none(),
+                "nixPath entry contains duplicate prefix"
+            ),
+            b"path" => assert!(
+                actual_path.replace(value).is_none(),
+                "nixPath entry contains duplicate path"
+            ),
+            other => panic!(
+                "nixPath entry contains unexpected key {}",
+                String::from_utf8_lossy(other)
+            ),
         }
     }
     assert_eq!(actual_prefix.as_deref(), Some(prefix));

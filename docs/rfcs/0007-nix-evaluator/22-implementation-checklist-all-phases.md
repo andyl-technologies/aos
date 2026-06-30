@@ -778,26 +778,29 @@ alone (`M-1`/`Q-A`).
       SHA-256 short-circuiting, and cached/uncached harness proof remain open
       (`R-10`/`S-14`).
 - [x] Current force-cache evaluator option identity salt: force expression
-      identities now hash the module's `store_dir`, `home_dir`, configured
-      `current_system`, configured `current_time`, and `eval_mode` alongside
-      source name or lowered-IR fingerprint, path-literal base, lowered node
-      source span, and IR node id.
+      identities now hash the module's `store_dir`, search-path base, configured
+      `nix_path` entries, hidden corepkgs path, `home_dir`, configured
+      `current_system`, configured `current_time`, `eval_mode`, and
+      ambient-search-path rejection alongside source name or lowered-IR
+      fingerprint, path-literal base, lowered node source span, and IR node id.
       This prevents the current admitted force-cache path from sharing inline
       payloads across evaluator configurations that can change path/context,
-      ambient builtin constants, impurity-policy behavior, or expression source
-      position. It is deliberately conservative and may miss across option/span
-      changes that do not affect a
+      search-path resolution, ambient builtin constants, impurity-policy
+      behavior, or expression source position. It is deliberately conservative
+      and may miss across option/span changes that do not affect a
       specific expression; full cache-key integration, canonical free-variable
       hashes, fine-grained option dependency tracking, persistent keys, and
       cached/uncached harness proof remain open (`C-1`/`C-2`/`R-10`).
 - [x] Current ambient and synthetic builtin constant force-cache substrate: tree-walk admits
       only symbol-checked `BuiltinAttr` constants for force-cache
       lookup/observation: immediate true/false/null, `currentSystem`,
-      `storeDir`, `nixVersion`, and `langVersion`; `currentTime` is
+      `storeDir`, `nixVersion`, `langVersion`, and visible `nixPath`;
+      `currentTime` is
       observation-only and remains uncacheable through its existing impure
-      trace. Matching configured `currentSystem` and `storeDir` thunks can now
-      hit as context-free string payloads, while changed `currentSystem` or
-      `storeDir` options miss through the expanded option identity salt.
+      trace. Matching configured `currentSystem`, `storeDir`, and `nixPath`
+      thunks can now hit as context-free string or replayable list payloads,
+      while changed `currentSystem`, `storeDir`, or `nixPath` options miss
+      through the expanded option identity salt.
       Reified `builtins` attrset entries for those constants are now delayed
       synthetic builtin-attr thunks, so constructing the attrset does not force
       `currentTime`, and runtime selections such as
@@ -808,13 +811,15 @@ alone (`M-1`/`Q-A`).
       and trace sidecars empty, while seeded stale durable node-thunk and
       synthetic builtin-attr `currentTime` payloads are cleared and tombstoned
       without recording demand. This
-      deliberately skips the recursive `builtins` attrset, `nixPath`,
-      derivation, first-class primops, synthetic apply thunks,
+      deliberately skips the recursive `builtins` attrset, derivation,
+      first-class primops, synthetic apply thunks,
       remaining dynamic/unhashable select thunks,
       broader persistence, and cached/uncached harness proof. The gate covers
       source-backed and source-less ambient and synthetic currentSystem
-      hit/miss, synthetic storeDir hit/miss/symbol-separation, synthetic
-      force-site span separation, synthetic immediate constants, reified currentTime laziness, stale synthetic
+      hit/miss, direct ambient/source-less nixPath hit/miss, synthetic storeDir
+      hit/miss/symbol-separation, synthetic nixPath hit/miss by search-path
+      option salt, synthetic force-site span separation, synthetic immediate
+      constants, reified currentTime laziness, stale synthetic
       currentTime runtime payload invalidation, observation-only currentTime
       sidecar-empty and stale-durable tombstone canaries, and source-backed/source-less
       currentTime uncacheable-trace force-cache tests (`C-1`/`C-2`/`R-10`).
@@ -3710,7 +3715,7 @@ alone (`M-1`/`Q-A`).
       (`R-10`/`S-14`).
 - [x] Current precursor: force-cache option identity includes access policy.
       Forced-expression identities now salt normalized allowed filesystem roots
-      and allowed URI prefixes alongside search-path base, visible `nix_path`,
+      and allowed URI prefixes alongside search-path base, configured `nix_path`,
       corepkgs, store/home/system/time/eval-mode, and ambient-search-path
       rejection, intentionally making existing module-hash-derived derivation
       side records cold under the new v3 salt. Focused option-identity tests
@@ -3746,7 +3751,7 @@ alone (`M-1`/`Q-A`).
 - [x] Current precursor: first-class `findFile builtins.nixPath` child-call
       admission. Saturated first-class `findFile` calls whose first argument is
       the suspended synthetic `builtins.nixPath` attr now hash that argument
-      from the configured visible `nix_path`, admit after the normal
+      from the configured `nix_path`, admit after the normal
       first-class demand gate, replay candidate traces on in-memory and
       fresh-runtime persistent child-call hits, and miss when the configured
       `nix_path` changes. This is scoped to the `builtins.nixPath` child-call
@@ -3947,7 +3952,7 @@ alone (`M-1`/`Q-A`).
       recomputation, and keep all impure-input and persistent sidecar hashes out
       of `.drv` surfaces.
       `native_file_cache_parity_harness_covers_configured_search_path_input`
-      drives a caller-configured visible `nix_path` entry through native
+      drives a caller-configured `nix_path` entry through native
       file-root instantiation, resolves a direct `<pkg/source>` lookup into a
       `builtins.path` derivation argument, requires byte-identical closures
       across the same five harness legs while allowing ordinary per-evaluator
