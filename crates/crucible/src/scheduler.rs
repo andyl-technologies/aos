@@ -33,7 +33,7 @@ use crate::{
     CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash, ControlFaultAction,
     ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision,
     EventId, EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints,
-    FaultTag, Icount, LinkId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
+    FaultTag, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId, NodeLifecycle,
     PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId,
     RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, Shift,
     SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
@@ -1056,6 +1056,171 @@ fn event_log_causal_divergence_point(
 impl Default for EventLog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// One coverage observation retained by the event-log coverage projection.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EventLogCoverageObservation {
+    /// A TCG basic-block execution observation.
+    BasicBlock {
+        /// Node that executed the block.
+        node: NodeId,
+        /// Guest program counter for the translated block.
+        guest_pc: u64,
+        /// Translated block length supplied by QEMU.
+        block_len: u32,
+    },
+    /// A white-box named coverage marker observation.
+    Named {
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Stable marker identity carried by the doorbell payload.
+        marker: MarkerId,
+    },
+}
+
+/// One event-log entry retained by the coverage projection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EventLogCoverageProjectionEntry {
+    /// Index of the entry in the original unified event log before filtering.
+    pub raw_index: usize,
+    /// Icount-stamped location where the coverage observation occurred.
+    pub at: EventLogIcountStamp,
+    /// Closed source that emitted the coverage entry.
+    pub source: EventSource,
+    /// Coverage observation carried by this entry.
+    pub observation: EventLogCoverageObservation,
+}
+
+/// Coverage projection used by search/fuzzing feedback and checkpoint fingerprints.
+///
+/// The projection keeps coverage entries in event-log order for consumers that
+/// need stream context, while the content hash is computed from the sorted unique
+/// observation set so duplicate basic-block hits do not perturb feedback identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogCoverageProjection {
+    entries: Vec<EventLogCoverageProjectionEntry>,
+    content_hash: ContentHash,
+}
+
+impl EventLogCoverageProjection {
+    /// Returns coverage entries in original event-log order.
+    #[must_use]
+    pub fn entries(&self) -> &[EventLogCoverageProjectionEntry] {
+        &self.entries
+    }
+
+    /// Returns the deterministic coverage fingerprint for this projection.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the number of coverage entries retained by the projection.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the projection contains no coverage entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Builds the coverage projection for `entries`.
+#[must_use]
+pub fn event_log_coverage_projection(
+    entries: &[SchedulerEventLogEntry],
+) -> EventLogCoverageProjection {
+    let entries = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(raw_index, entry)| event_log_coverage_entry(raw_index, entry))
+        .collect::<Vec<_>>();
+    let unique_material = entries
+        .iter()
+        .map(event_log_coverage_observation_material)
+        .collect::<BTreeSet<_>>();
+    let content_hash = if unique_material.is_empty() {
+        ContentHash::default()
+    } else {
+        ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.coverage-projection.v1",
+            &unique_material.into_iter().collect::<Vec<_>>().join("\n"),
+        )
+    };
+    EventLogCoverageProjection {
+        entries,
+        content_hash,
+    }
+}
+
+/// Returns the checkpoint coverage fingerprint derived from `entries`.
+#[must_use]
+pub fn coverage_fingerprint_from_event_log(entries: &[SchedulerEventLogEntry]) -> ContentHash {
+    event_log_coverage_projection(entries).content_hash()
+}
+
+fn event_log_coverage_entry(
+    raw_index: usize,
+    entry: &SchedulerEventLogEntry,
+) -> Option<EventLogCoverageProjectionEntry> {
+    let observation = match entry.payload() {
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageBlock {
+            node,
+            guest_pc,
+            block_len,
+            ..
+        }) => EventLogCoverageObservation::BasicBlock {
+            node: node.clone(),
+            guest_pc: *guest_pc,
+            block_len: *block_len,
+        },
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::CoverageMarker {
+            node,
+            marker,
+            ..
+        }) => EventLogCoverageObservation::Named {
+            node: node.clone(),
+            marker: marker.clone(),
+        },
+        SchedulerEventLogPayload::ResolvedHappening(_)
+        | SchedulerEventLogPayload::Decision(_)
+        | SchedulerEventLogPayload::Observable(_)
+        | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::Diagnostic(_) => return None,
+    };
+    Some(EventLogCoverageProjectionEntry {
+        raw_index,
+        at: entry.time().icount.clone(),
+        source: entry.source().clone(),
+        observation,
+    })
+}
+
+fn event_log_coverage_observation_material(entry: &EventLogCoverageProjectionEntry) -> String {
+    match &entry.observation {
+        EventLogCoverageObservation::BasicBlock {
+            node,
+            guest_pc,
+            block_len,
+        } => format!(
+            "kind=basic_block\nnode_len={}\nnode={}\nguest_pc={guest_pc}\nblock_len={block_len}",
+            node.name.len(),
+            node.name
+        ),
+        EventLogCoverageObservation::Named { node, marker } => format!(
+            "kind=named\nnode_len={}\nnode={}\nid_len={}\nid={}",
+            node.name.len(),
+            node.name,
+            marker.name.len(),
+            marker.name
+        ),
     }
 }
 
@@ -4860,6 +5025,10 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
             block_len,
         } => {
             attributes.insert(
+                String::from("kind"),
+                EventAttributeValue::String(String::from("basic_block")),
+            );
+            attributes.insert(
                 String::from("node"),
                 EventAttributeValue::Node(node.clone()),
             );
@@ -4874,6 +5043,33 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
             attributes.insert(
                 String::from("block_len"),
                 EventAttributeValue::U64(u64::from(*block_len)),
+            );
+            attributes.insert(
+                String::from("block"),
+                EventAttributeValue::String(format!("{guest_pc:#x}+{block_len:#x}")),
+            );
+            EventPayload::new("coverage", attributes)
+        }
+        ObservableEventPayload::CoverageMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            attributes.insert(
+                String::from("kind"),
+                EventAttributeValue::String(String::from("named")),
+            );
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("retired_icount"),
+                EventAttributeValue::Icount(*retired_icount),
+            );
+            attributes.insert(
+                String::from("id"),
+                EventAttributeValue::String(marker.name.clone()),
             );
             EventPayload::new("coverage", attributes)
         }
@@ -5168,6 +5364,11 @@ fn observable_payload_icount(
             execution_icount,
             node,
             ..
+        }
+        | ObservableEventPayload::CoverageMarker {
+            retired_icount: execution_icount,
+            node,
+            ..
         } => EventLogIcountStamp {
             node: Some(node.clone()),
             icount: *execution_icount,
@@ -5279,17 +5480,18 @@ fn decision_source(decision: &Decision) -> EventSource {
 fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
-        | ObservableEventPayload::CoverageBlock { node, .. }
         | ObservableEventPayload::MemorySample { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => {
             EventSource::Node { node: node.clone() }
         }
         ObservableEventPayload::GuestMarker { node, .. }
+        | ObservableEventPayload::CoverageMarker { node, .. }
         | ObservableEventPayload::GuestAssertionMarker { node, .. } => {
             EventSource::Guest { node: node.clone() }
         }
         ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::CoverageBlock { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. } => EventSource::Engine,
     }
@@ -5320,6 +5522,7 @@ fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::GuestMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
     }

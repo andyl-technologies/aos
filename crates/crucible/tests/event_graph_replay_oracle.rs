@@ -271,6 +271,17 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             execution_icount.retired,
             node.name
         ),
+        ObservableEventPayload::CoverageMarker {
+            retired_icount,
+            node,
+            marker,
+        } => format!(
+            "observable:coverage-marker:at={}:retired_icount={}:node={}:marker={}",
+            event.at().ticks,
+            retired_icount.retired,
+            node.name,
+            marker.name
+        ),
         ObservableEventPayload::MemorySample {
             sample_icount,
             node,

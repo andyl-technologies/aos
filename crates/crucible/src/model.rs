@@ -7621,6 +7621,21 @@ impl Checkpoint {
         self
     }
 
+    /// Derives and replaces the observation-only coverage fingerprint from the event log.
+    ///
+    /// The checkpoint identity is unchanged: coverage is search/fuzzing feedback,
+    /// not execution state. The fingerprint is derived from the scheduler event-log
+    /// coverage projection, so callers with retained log entries do not maintain a
+    /// parallel coverage record.
+    #[must_use]
+    pub fn with_coverage_from_event_log(
+        mut self,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+    ) -> Self {
+        self.coverage_fingerprint = crate::scheduler::coverage_fingerprint_from_event_log(entries);
+        self
+    }
+
     /// Replaces identity-irrelevant metadata without changing identity.
     #[must_use]
     pub fn with_metadata(mut self, metadata: CheckpointMeta) -> Self {
@@ -8000,6 +8015,34 @@ impl TemporalGraph {
         }
         self.record_configuration(configuration.clone());
         self.cached_snapshots.insert(configuration.id(), checkpoint);
+        Ok(())
+    }
+
+    /// Registers a loadable snapshot with coverage feedback derived from event-log entries.
+    ///
+    /// Search and fuzzing consumers read the resulting
+    /// [`Checkpoint::coverage_fingerprint`] through the normal checkpoint/cache
+    /// path. This method is the boundary for callers that have retained unified
+    /// event-log entries: the graph stores only the deterministic projection
+    /// digest, not a second coverage record.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::cache_snapshot`].
+    pub fn cache_snapshot_with_event_log_coverage(
+        &mut self,
+        configuration: &Configuration,
+        checkpoint: Checkpoint,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+    ) -> Result<(), EngineError> {
+        let fingerprint = crate::scheduler::coverage_fingerprint_from_event_log(entries);
+        self.cache_snapshot(
+            configuration,
+            checkpoint.with_coverage_fingerprint(fingerprint),
+        )?;
+        if let Some(checkpoint) = self.checkpoint_nodes.get_mut(&configuration.id()) {
+            checkpoint.coverage_fingerprint = fingerprint;
+        }
         Ok(())
     }
 
@@ -9511,7 +9554,7 @@ impl TemporalGraph {
             },
         )?;
         self.record_checkpoint_closure(&parent)?;
-        let checkpoint = Checkpoint::from_recorded_configuration(
+        let mut checkpoint = Checkpoint::from_recorded_configuration(
             configuration,
             Some(&parent),
             VirtualTime::default(),
@@ -9519,6 +9562,9 @@ impl TemporalGraph {
             CheckpointKind::Thin,
             BTreeMap::new(),
         )?;
+        if let Some(snapshot) = self.cached_snapshots.get(&configuration.id()) {
+            checkpoint.coverage_fingerprint = snapshot.coverage_fingerprint;
+        }
         self.record_configuration(configuration.clone());
         self.checkpoint_nodes.insert(configuration.id(), checkpoint);
         Ok(true)
