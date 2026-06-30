@@ -4031,6 +4031,7 @@ alone (`M-1`/`Q-A`).
       safety remain open. Gates:
       `nix_diff_parses_cache_validation`,
       `nix_diff_parses_cache_validation_smoke_hook_command`,
+      `smoke_corpus_selects_zlib_witness`,
       `nix_diff_cache_validation_rejects_incompatible_modes`,
       `cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache`,
       `cache_validation_json_renders_full_closure_matrix_failures`,

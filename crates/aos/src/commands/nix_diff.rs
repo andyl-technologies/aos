@@ -4101,6 +4101,22 @@ mod tests {
     }
 
     #[test]
+    fn smoke_corpus_selects_zlib_witness() -> Result<()> {
+        let selection = corpus_entries(
+            &NixCli::new(0),
+            Path::new("default.nix"),
+            true,
+            false,
+            false,
+        )?;
+
+        assert_eq!(selection.entries.len(), 1);
+        assert_eq!(selection.entries[0].file, PathBuf::from("default.nix"));
+        assert_eq!(selection.entries[0].attr, "pkgs.zlib");
+        Ok(())
+    }
+
+    #[test]
     fn corpus_failure_rejects_one_divergent_attr_among_matches() {
         let matched = AttrDiffReport {
             file: PathBuf::from("default.nix"),
