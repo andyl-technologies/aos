@@ -2033,16 +2033,20 @@ where
             trigger,
             property,
             deadline,
-        } => observe_eventually_assertion(
-            state,
-            prefix,
-            oracle,
-            &trigger,
-            &property,
-            deadline,
-            once_latches,
-            white_box_policies,
-        ),
+        } => {
+            let mut leaf_cache = HostConditionEvaluationCache::new();
+            observe_eventually_assertion(
+                state,
+                prefix,
+                oracle,
+                &trigger,
+                &property,
+                deadline,
+                once_latches,
+                &mut leaf_cache,
+                white_box_policies,
+            )
+        }
         Property::AfterQuiescence { .. } => None,
         Property::Reachable {
             predicate,
@@ -2067,6 +2071,7 @@ fn observe_eventually_assertion<O>(
     property: &Condition,
     deadline: VirtualTime,
     once_latches: &mut Vec<Condition>,
+    leaf_cache: &mut HostConditionEvaluationCache,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> Option<HostAssertionOutcome>
 where
@@ -2090,7 +2095,14 @@ where
     }
 
     if !state.eventually_triggered
-        && host_condition_is_true(prefix, trigger, oracle, once_latches, white_box_policies)
+        && host_condition_is_true_with_cache(
+            prefix,
+            trigger,
+            oracle,
+            once_latches,
+            leaf_cache,
+            white_box_policies,
+        )
     {
         state.eventually_triggered = true;
         state.pending_eventually.push(EventuallyObligation {
@@ -2100,7 +2112,14 @@ where
     }
 
     if !state.pending_eventually.is_empty()
-        && host_condition_is_true(prefix, property, oracle, once_latches, white_box_policies)
+        && host_condition_is_true_with_cache(
+            prefix,
+            property,
+            oracle,
+            once_latches,
+            leaf_cache,
+            white_box_policies,
+        )
     {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -3377,7 +3396,30 @@ struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     observed: ObservedState<'prefix>,
     oracle: &'state mut O,
     once_latches: &'state mut Vec<Condition>,
+    leaf_cache: &'state mut HostConditionEvaluationCache,
     white_box_policies: &'state BTreeMap<NodeId, WhiteBoxPolicy>,
+}
+
+type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum HostConditionLeafKey {
+    Named { name: String, nodes: Vec<NodeId> },
+    GuestMarker { marker: MarkerId },
+}
+
+impl HostConditionLeafKey {
+    fn from_leaf(leaf: ConditionLeaf<'_>) -> Self {
+        match leaf {
+            ConditionLeaf::Named { name, nodes } => Self::Named {
+                name: name.to_owned(),
+                nodes: nodes.to_vec(),
+            },
+            ConditionLeaf::GuestMarker { marker } => Self::GuestMarker {
+                marker: marker.clone(),
+            },
+        }
+    }
 }
 
 impl<O> condition_evaluator_sealed::Sealed for HostConditionEvaluation<'_, '_, O> where
@@ -3398,7 +3440,13 @@ where
     }
 
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
-        HostAssertionOracle::leaf_is_true(self.oracle, self.observed, leaf)
+        let key = HostConditionLeafKey::from_leaf(leaf);
+        if let Some(value) = self.leaf_cache.get(&key).copied() {
+            return value;
+        }
+        let value = HostAssertionOracle::leaf_is_true(self.oracle, self.observed, leaf);
+        self.leaf_cache.insert(key, value);
+        value
     }
 
     fn observable_events(&self) -> &[ObservableEvent] {
@@ -3430,10 +3478,33 @@ fn host_condition_is_true<O>(
 where
     O: HostAssertionOracle + ?Sized,
 {
+    let mut leaf_cache = HostConditionEvaluationCache::new();
+    host_condition_is_true_with_cache(
+        prefix,
+        condition,
+        oracle,
+        once_latches,
+        &mut leaf_cache,
+        white_box_policies,
+    )
+}
+
+fn host_condition_is_true_with_cache<O>(
+    prefix: &ConditionEventLogPrefix,
+    condition: &Condition,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+    leaf_cache: &mut HostConditionEvaluationCache,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+) -> bool
+where
+    O: HostAssertionOracle + ?Sized,
+{
     let mut evaluator = HostConditionEvaluation {
         observed: prefix.observed_state(),
         oracle,
         once_latches,
+        leaf_cache,
         white_box_policies,
     };
     evaluate_condition(&mut evaluator, condition)
