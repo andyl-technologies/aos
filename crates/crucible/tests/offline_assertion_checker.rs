@@ -5,11 +5,12 @@
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, ConditionEvaluationError,
     ConditionLeaf, ContentHash, FramePredicate, HostAssertionEvaluator, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionReport, Icount, MarkerId, NodeId, NodeTemplate,
-    ObservableEvent, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker, Predicate,
-    Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
-    RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionReport, Icount,
+    LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate, ObservableEvent, ObservedState,
+    OfflineAssertionCheckError, OfflineAssertionChecker, Predicate, Properties, Property,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -205,6 +206,13 @@ fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a Hos
         .unwrap_or_else(|| panic!("missing outcome for assertion {assertion}"))
 }
 
+fn linted_host_oracle<O>(oracle: O) -> LintedHostAssertionOracle<O>
+where
+    O: HostAssertionPredicate,
+{
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(oracle)
+}
+
 #[test]
 fn offline_assertion_checker_matches_online_report_for_recorded_log() {
     let world = world();
@@ -266,18 +274,21 @@ fn offline_assertion_checker_uses_custom_host_oracle_over_recorded_state() {
         .event_log_offset(2)
         .expect("first recorded segment offset should exist");
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            name == "saw-ack-observation"
-                && nodes.is_empty()
-                && state.event_log_offset() == expected_offset
-                && state
-                    .observable_events()
-                    .iter()
-                    .any(|event| event.at() == time(3))
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    name == "saw-ack-observation"
+                        && nodes.is_empty()
+                        && state.event_log_offset() == expected_offset
+                        && state
+                            .observable_events()
+                            .iter()
+                            .any(|event| event.at() == time(3))
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let report = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut oracle)
@@ -305,10 +316,13 @@ fn offline_assertion_checker_requires_offsets_for_custom_host_oracle() {
     );
     let recorded_log = RecordedAssertionLog::from_entries(recorded_log());
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
-    let mut oracle = |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, .. } => name == "always-true",
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, .. } => name == "always-true",
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let error = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut oracle)
@@ -340,15 +354,18 @@ fn offline_assertion_checker_preserves_empty_run_offset_for_custom_oracle() {
         .event_log_offset(0)
         .expect("genesis offset should be retained");
     let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            name == "genesis-offset"
-                && nodes.is_empty()
-                && state.event_log_offset() == expected_offset
-                && expected_offset.prefix != ContentHash::default()
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    name == "genesis-offset"
+                        && nodes.is_empty()
+                        && state.event_log_offset() == expected_offset
+                        && expected_offset.prefix != ContentHash::default()
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let report = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut oracle)

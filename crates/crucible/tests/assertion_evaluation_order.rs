@@ -4,9 +4,9 @@
 
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, HostAssertionEvaluator,
-    HostAssertionOracle, ObservedState, OfflineAssertionChecker, Predicate, Properties, Property,
-    RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
-    World,
+    HostAssertionPredicate, LintedHostAssertionOracle, ObservedState, OfflineAssertionChecker,
+    Predicate, Properties, Property, RecordedAssertionLog, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, VirtualTime, World,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,17 +16,17 @@ struct EvaluationCall {
     name: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct RecordingOracle {
-    calls: Vec<EvaluationCall>,
+    calls: std::cell::RefCell<Vec<EvaluationCall>>,
 }
 
-impl HostAssertionOracle for RecordingOracle {
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+impl HostAssertionPredicate for RecordingOracle {
+    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
         match leaf {
             ConditionLeaf::Named { name, nodes } => {
                 assert!(nodes.is_empty());
-                self.calls.push(EvaluationCall {
+                self.calls.borrow_mut().push(EvaluationCall {
                     at: observed.at().ticks,
                     events: observed.event_log_offset().events,
                     name: name.to_owned(),
@@ -36,6 +36,13 @@ impl HostAssertionOracle for RecordingOracle {
             ConditionLeaf::GuestMarker { .. } => false,
         }
     }
+}
+
+fn linted_host_oracle<O>(oracle: O) -> LintedHostAssertionOracle<O>
+where
+    O: HostAssertionPredicate,
+{
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(oracle)
 }
 
 fn time(ticks: u64) -> VirtualTime {
@@ -116,12 +123,12 @@ fn expected_calls_at(at: u64, events: u64) -> Vec<EvaluationCall> {
 fn properties_are_evaluated_by_stable_id_and_each_named_predicate_once_per_point() {
     let properties = ordered_properties();
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = RecordingOracle::default();
+    let mut oracle = linted_host_oracle(RecordingOracle::default());
 
     let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
 
     assert!(outcomes.is_empty());
-    assert_eq!(oracle.calls, expected_calls_at(1, 1));
+    assert_eq!(&*oracle.oracle().calls.borrow(), &expected_calls_at(1, 1));
 }
 
 #[test]
@@ -136,14 +143,14 @@ fn duplicate_named_leaves_inside_one_predicate_are_evaluated_once_per_point() {
         },
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = RecordingOracle::default();
+    let mut oracle = linted_host_oracle(RecordingOracle::default());
 
     let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
 
     assert!(outcomes.is_empty());
     assert_eq!(
-        oracle.calls,
-        vec![EvaluationCall {
+        &*oracle.oracle().calls.borrow(),
+        &vec![EvaluationCall {
             at: 1,
             events: 1,
             name: String::from("shared-leaf"),
@@ -162,14 +169,14 @@ fn eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point() {
         },
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = RecordingOracle::default();
+    let mut oracle = linted_host_oracle(RecordingOracle::default());
 
     let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
 
     assert!(outcomes.is_empty());
     assert_eq!(
-        oracle.calls,
-        vec![EvaluationCall {
+        &*oracle.oracle().calls.borrow(),
+        &vec![EvaluationCall {
             at: 1,
             events: 1,
             name: String::from("shared-eventually-leaf"),
@@ -184,14 +191,14 @@ fn online_and_offline_custom_oracles_observe_identical_order() {
     let recorded_log =
         RecordedAssertionLog::from_segments(vec![event_log[..1].to_vec(), event_log[1..].to_vec()])
             .expect("recorded assertion order log should fold");
-    let mut online_oracle = RecordingOracle::default();
+    let mut online_oracle = linted_host_oracle(RecordingOracle::default());
     let mut online_evaluator = HostAssertionEvaluator::new(&properties);
 
     online_evaluator.observe_prefix(&prefix(event_log[..1].to_vec()), &mut online_oracle);
     let online_report =
         online_evaluator.finalize_prefix(&prefix(event_log.clone()), &mut online_oracle);
 
-    let mut offline_oracle = RecordingOracle::default();
+    let mut offline_oracle = linted_host_oracle(RecordingOracle::default());
     let offline_report = OfflineAssertionChecker::new()
         .check_run_with_oracle(&properties, &recorded_log, &mut offline_oracle)
         .expect("offline assertion order check should grade retained log");
@@ -200,6 +207,9 @@ fn online_and_offline_custom_oracles_observe_identical_order() {
 
     assert_eq!(online_report, offline_report);
     assert_eq!(online_report.verdict(), &AssertionRunVerdict::Passed);
-    assert_eq!(online_oracle.calls, expected_calls);
-    assert_eq!(offline_oracle.calls, online_oracle.calls);
+    assert_eq!(&*online_oracle.oracle().calls.borrow(), &expected_calls);
+    assert_eq!(
+        &*offline_oracle.oracle().calls.borrow(),
+        &*online_oracle.oracle().calls.borrow()
+    );
 }

@@ -145,11 +145,13 @@ pub use trigger::{
     EventFirings, EventGraph, EventGraphBuilder, EventGraphError, EventGraphEventBuilder,
     EventGraphState, ExternalFormalTraceExport, ExternalFormalTraceExporter, FirePolicy,
     GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator,
+    HostAssertionHarnessLint, HostAssertionHarnessLintError, HostAssertionHarnessLintViolation,
     HostAssertionLifecycle, HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind,
-    HostAssertionReport, LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload,
-    ObservedFaultFact, ObservedOrderingFact, ObservedState, OfflineAssertionCheckError,
-    OfflineAssertionChecker, PropertyLifecycleState, RecordedAssertionLog, ResolvedCodePoint,
-    ResolvedMemPlace,
+    HostAssertionPredicate, HostAssertionReport, LintedHostAssertionOracle, LogLevel,
+    LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
+    ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
+    PropertyLifecycleState, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    lint_host_assertion_harness_source,
 };
 
 #[cfg(debug_assertions)]
@@ -158,10 +160,22 @@ pub mod test_support {
     //! Debug-build helpers for integration tests.
 
     use crate::{
-        ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, ObservableEvent,
-        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-        VirtualTime,
+        ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, HostAssertionPredicate,
+        LintedHostAssertionOracle, ObservableEvent, SchedulerEvaluationBoundaryKind,
+        SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
     };
+
+    /// Wraps a host assertion predicate for tests that inspect evaluator behavior.
+    ///
+    /// This helper is debug-only and intentionally bypasses production harness
+    /// linting so integration tests can record evaluator call order.
+    #[must_use]
+    pub fn unchecked_host_assertion_oracle_for_test<O>(oracle: O) -> LintedHostAssertionOracle<O>
+    where
+        O: HostAssertionPredicate,
+    {
+        crate::trigger::unchecked_host_assertion_oracle_for_test(oracle)
+    }
 
     /// Builds a scheduler observable event-log entry for integration tests.
     #[must_use]

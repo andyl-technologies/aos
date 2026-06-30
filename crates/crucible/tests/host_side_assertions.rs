@@ -5,11 +5,11 @@
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, CodePoint, ConditionLeaf,
     Decision, DeliveryOrderDecision, EventKey, FramePredicate, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, NodeTemplate,
-    ObservableEvent, ObservedState, Predicate, Properties, Property, ReachabilityExpectation,
-    ReachableDisposition, ReadyPoint, RegexProgram, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, Icount,
+    LintedHostAssertionOracle, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, ObservedState,
+    Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
+    RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId,
+    SchedulingNodeKind, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -112,6 +112,13 @@ fn assert_outcome(
     kind: HostAssertionOutcomeKind,
 ) {
     assert_eq!(outcome(outcomes, assertion).kind, kind);
+}
+
+fn linted_host_oracle<O>(oracle: O) -> LintedHostAssertionOracle<O>
+where
+    O: HostAssertionPredicate,
+{
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(oracle)
 }
 
 #[test]
@@ -461,12 +468,15 @@ fn host_named_predicates_receive_read_only_observed_state() {
         })),
     );
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            name == "saw-ordering" && nodes.is_empty() && !state.ordering_facts().is_empty()
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    name == "saw-ordering" && nodes.is_empty() && !state.ordering_facts().is_empty()
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let outcomes = evaluator.observe_prefix(&prefix, &mut oracle);
 
@@ -479,7 +489,7 @@ fn host_named_predicates_receive_read_only_observed_state() {
 fn host_assertion_evaluator_avoids_host_time_rng_and_unordered_maps() {
     let trigger = include_str!("../src/trigger.rs");
     let evaluator_block = trigger
-        .split("pub trait HostAssertionOracle")
+        .split("pub struct HostAssertionEvaluator")
         .nth(1)
         .expect("host assertion evaluator block should exist")
         .split("pub(crate) fn evaluate_condition")
