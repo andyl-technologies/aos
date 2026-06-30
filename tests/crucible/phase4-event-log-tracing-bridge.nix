@@ -1,0 +1,277 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase4.eventLogTracingBridge",
+  taskIds ? ["T-OBS-12"],
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
+  };
+
+  manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  bridge = builtins.readFile ../../crates/crucible/src/tracing_bridge.rs;
+  bridgeTest = builtins.readFile ../../crates/crucible/tests/event_log_tracing_bridge.rs;
+  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  defaultChecks = builtins.readFile ./default.nix;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  taskList = builtins.concatStringsSep "," taskIds;
+  failures =
+    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+      {
+        label = "T-OBS-12 checked off";
+        needle = "- [x] **T-OBS-12**";
+      }
+      {
+        label = "T-OBS-12 completion note";
+        needle = "Completed by `checks.crucible.phase4.eventLogTracingBridge`";
+      }
+      {
+        label = "subscriber modes completion note";
+        needle = "filtering subscriber modes";
+      }
+    ]
+    ++ failuresFor "crates/crucible/Cargo.toml" manifest [
+      {
+        label = "crucible tracing dependency";
+        needle = "tracing = { workspace = true }";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+      {
+        label = "tracing bridge module";
+        needle = "pub mod tracing_bridge;";
+      }
+      {
+        label = "tracing bridge export";
+        needle = "TracingBridge";
+      }
+      {
+        label = "tracing bridge config export";
+        needle = "TracingBridgeConfig";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+      {
+        label = "crate-local diagnostic entry constructor";
+        needle = "pub(crate) fn diagnostic(";
+      }
+      {
+        label = "diagnostic constructor uses diagnostic payload";
+        needle = "SchedulerEventLogPayload::Diagnostic(diagnostic)";
+      }
+    ]
+    ++ lib.optionals (hasInfix "tracing::" scheduler) [
+      "crates/crucible/src/scheduler.rs: tracing bridge must stay off scheduler ordering paths"
+    ]
+    ++ failuresFor "crates/crucible/src/tracing_bridge.rs" bridge [
+      {
+        label = "bridge config type";
+        needle = "pub struct TracingBridgeConfig";
+      }
+      {
+        label = "bridge disabled by default";
+        needle = "derive(Clone, Copy, Debug, Default, PartialEq, Eq)";
+      }
+      {
+        label = "explicit disabled config";
+        needle = "pub const fn disabled() -> Self";
+      }
+      {
+        label = "explicit enabled config";
+        needle = "pub const fn enabled() -> Self";
+      }
+      {
+        label = "bridge type";
+        needle = "pub struct TracingBridge";
+      }
+      {
+        label = "enabled bridge constructor";
+        needle = "pub const fn enabled() -> Self";
+      }
+      {
+        label = "disabled bridge returns none";
+        needle = "if !self.config.enabled";
+      }
+      {
+        label = "diagnostic event-log entry only";
+        needle = "SchedulerEventLogEntry::diagnostic(sequence, at, diagnostic.clone())";
+      }
+      {
+        label = "subscriber panic ignored";
+        needle = "catch_unwind(AssertUnwindSafe";
+      }
+      {
+        label = "tracing sink target";
+        needle = "target: \"crucible::tracing_bridge\"";
+      }
+      {
+        label = "no scheduler readback";
+        needle = "never reads subscriber state";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/event_log_tracing_bridge.rs" bridgeTest [
+      {
+        label = "default-off test";
+        needle = "tracing_bridge_is_disabled_by_default";
+      }
+      {
+        label = "observational diagnostic test";
+        needle = "tracing_bridge_entries_are_observational_diagnostics";
+      }
+      {
+        label = "subscriber mode nonperturbation test";
+        needle = "tracing_subscriber_modes_do_not_change_causal_subsequence";
+      }
+      {
+        label = "panicking subscriber nonperturbation test";
+        needle = "tracing_subscriber_panics_do_not_escape_bridge";
+      }
+      {
+        label = "capturing subscriber mode";
+        needle = "captures_events: true";
+      }
+      {
+        label = "filtering subscriber mode";
+        needle = "captures_events: false";
+      }
+      {
+        label = "panicking subscriber mode";
+        needle = "PanickingSubscriber";
+      }
+      {
+        label = "causal projection assertion";
+        needle = "event_log_causal_projection";
+      }
+      {
+        label = "determinism comparison assertion";
+        needle = "compare_event_log_determinism";
+      }
+      {
+        label = "observational class assertion";
+        needle = "EventClass::Observational";
+      }
+      {
+        label = "diagnostic append assertion";
+        needle = "append_entries(no_subscriber)";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase4 event-log tracing bridge import";
+        needle = "eventLogTracingBridge = import ./phase4-event-log-tracing-bridge.nix";
+      }
+      {
+        label = "phase4 event-log tracing bridge attr path";
+        needle = "checks.crucible.phase4.eventLogTracingBridge";
+      }
+      {
+        label = "phase4 event-log tracing bridge task id";
+        needle = "taskIds = [\"T-OBS-12\"]";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase4 event-log tracing bridge check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase4-event-log-tracing-bridge";
+      version = "0";
+      src = crucibleSrc;
+
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.rust
+        pkgs.sed
+      ];
+
+      phases = [
+        {
+          name = "unpack";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            set -eu
+            export CARGO_HOME="$TMPDIR/cargo-home"
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            mkdir -p "$CARGO_HOME" .cargo
+            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+                > .cargo/config.toml
+            else
+              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+                > .cargo/config.toml
+            fi
+          '';
+        }
+        {
+          name = "run-event-log-tracing-bridge";
+          script = ''
+            set -eu
+            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+              cd source
+            fi
+            cd crates
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-event-log-tracing-bridge-target" \
+              -p crucible \
+              --test event_log_tracing_bridge \
+              -- --test-threads=1
+          '';
+        }
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=${attrPath}
+            tasks=${taskList}
+            tracing_bridge=opt-in
+            default=off
+            class=observational
+            subscriber_modes=no,capturing,filtering
+            RESULT
+          '';
+        }
+      ];
+    }

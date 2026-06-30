@@ -459,6 +459,20 @@ impl SchedulerEventLogEntry {
         )
     }
 
+    /// Builds an observational diagnostic entry as if appended by scheduler EMIT.
+    #[must_use]
+    pub(crate) fn diagnostic(
+        sequence: u64,
+        at: VirtualTime,
+        diagnostic: EventDiagnosticPayload,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            at,
+            SchedulerEventLogPayload::Diagnostic(diagnostic),
+        )
+    }
+
     /// Returns the dense event-log sequence number assigned by scheduler EMIT.
     #[must_use]
     pub fn sequence(&self) -> u64 {
