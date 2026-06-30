@@ -7611,6 +7611,7 @@ pub enum EventEvaluationKind {
 pub struct EventFiring {
     event: EventId,
     at: VirtualTime,
+    condition_summary: String,
     action: Action,
 }
 
@@ -7706,6 +7707,12 @@ impl EventFiring {
     pub fn action(&self) -> &Action {
         &self.action
     }
+
+    /// Returns the stable condition summary recorded with the firing.
+    #[must_use]
+    pub fn condition_summary(&self) -> &str {
+        &self.condition_summary
+    }
 }
 
 /// Stateful event-graph evaluator.
@@ -7769,6 +7776,10 @@ impl EventGraphState {
                 firings.push(EventFiring {
                     event: event.id.clone(),
                     at: point.at(),
+                    condition_summary: event
+                        .trigger
+                        .as_ref()
+                        .map_or_else(|| String::from("entrypoint"), Condition::canonical_summary),
                     action: event.action.clone(),
                 });
                 self.last_firing.insert(event.id.clone(), point.at());

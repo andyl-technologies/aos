@@ -6482,6 +6482,12 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    /// Returns a stable canonical summary for event-log payload attributes.
+    #[must_use]
+    pub fn canonical_summary(&self) -> String {
+        predicate_material(self)
+    }
+
     /// Builds a named host-side predicate with no declared node references.
     #[must_use]
     pub fn named(name: impl Into<String>) -> Self {

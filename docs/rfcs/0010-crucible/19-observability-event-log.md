@@ -925,12 +925,19 @@ log, so they cannot disagree about what happened.
   capture/filtering/panics as host-output concerns, and keeps the causal
   subsequence byte-identical with no subscriber, capturing subscriber, and
   filtering subscriber modes.
-- [ ] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
+- [x] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
   with each kind's fixed class, as the single source of truth referenced by
   18/20/21/22/24; golden-vector the canonical serialization of each kind; record a
   trigger firing as a causal `trigger_fired` entry (never a `Schedule` `Decision`)
   and evaluate conditions without logging the per-point truth of a standing
   condition. — satisfies [OBS-34], [OBS-35], [OBS-36]; spec §19.7, §19.3.
+  Completed by `checks.crucible.phase4.eventKindCatalogFreeze`: `crucible` now
+  exposes `event_catalog` as the versioned single source for event-kind classes,
+  includes all §19.7 required kinds plus currently emitted scheduler kinds, freezes
+  the catalog and structural 18/20/21/22/24 dependency map with a golden-vector
+  canonical serialization, and regresses that `trigger_fired` entries remain causal
+  event-log entries rather than `Schedule` `Decision`s while condition truth stays
+  evaluated rather than logged.
 - [ ] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
   observational `assertion_proximity` event-log kind, excluded from the determinism
   comparison; derive its per-checkpoint **minimum** as a deterministic digest of the

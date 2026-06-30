@@ -162,6 +162,7 @@ fn trigger_firing_is_causal_event_log_entry_not_schedule_decision() {
         SchedulerEventLogPayload::TriggerFired(firing) => {
             assert_eq!(firing.event().name, "activate-split");
             assert_eq!(firing.at(), time(0));
+            assert_eq!(firing.condition_summary(), "entrypoint");
             assert_eq!(firing.action(), firings[0].action());
         }
         SchedulerEventLogPayload::Decision(_) => {
@@ -210,9 +211,25 @@ fn stale_event_boundary_firing_batch_cannot_be_reappended() {
         event_boundary_firings.event_log_offset(),
         scheduler.event_log_offset()
     );
-    scheduler
+    let event_boundary_append = scheduler
         .append_trigger_firings(&event_boundary_firings)
         .expect("event-boundary firing should append once");
+    let event_boundary_entry = event_boundary_append
+        .entries
+        .last()
+        .expect("event-boundary firing should be appended");
+    assert_eq!(event_boundary_entry.event_payload().kind(), "trigger_fired");
+    assert_eq!(
+        event_boundary_entry.event_payload().string("condition"),
+        Some("predicate=named\npredicate_name_len=5\npredicate_name=again\npredicate_nodes=0")
+    );
+    assert!(
+        event_boundary_append
+            .entries
+            .iter()
+            .all(|entry| entry.event_payload().kind() != "condition_evaluated"),
+        "condition truth is evaluated for firing, not appended as its own event kind"
+    );
     assert_eq!(
         scheduler.condition_event_log_prefix().point().kind(),
         EventEvaluationKind::EventBoundary,

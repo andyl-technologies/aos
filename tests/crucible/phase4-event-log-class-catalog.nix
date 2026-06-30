@@ -12,6 +12,7 @@
   };
 
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -103,6 +104,28 @@
         needle = "does not match catalog class";
       }
       {
+        label = "class lookup reads versioned catalog";
+        needle = "crate::event_catalog::event_kind_catalog_class(payload.kind())";
+      }
+      {
+        label = "private class mismatch unit test";
+        needle = "event_log_append_rejects_class_catalog_mismatch";
+      }
+      {
+        label = "private typed kind drift unit test";
+        needle = "event_log_append_rejects_typed_kind_catalog_drift";
+      }
+      {
+        label = "unknown typed kind unit test";
+        needle = "event_log_append_rejects_unknown_typed_kind";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
+      {
+        label = "versioned catalog";
+        needle = "EVENT_KIND_CATALOG_VERSION";
+      }
+      {
         label = "causal backend kind";
         needle = "\"backend_input\"";
       }
@@ -120,19 +143,11 @@
       }
       {
         label = "diagnostic catalog kind";
-        needle = "\"diagnostic\" => Some(SchedulerEventLogClass::Observational)";
+        needle = "kind: \"diagnostic\"";
       }
       {
-        label = "private class mismatch unit test";
-        needle = "event_log_append_rejects_class_catalog_mismatch";
-      }
-      {
-        label = "private typed kind drift unit test";
-        needle = "event_log_append_rejects_typed_kind_catalog_drift";
-      }
-      {
-        label = "unknown typed kind unit test";
-        needle = "event_log_append_rejects_unknown_typed_kind";
+        label = "diagnostic observational class";
+        needle = "class: SchedulerEventLogClass::Observational";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_log_class_catalog.rs" catalogTest [
