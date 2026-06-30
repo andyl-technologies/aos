@@ -58,7 +58,47 @@ entirely as bare `${pkgs.foo}` (no `.override`, essentially no multi-output or
 A frozen eval of the server `configManifest` runs and resolves frozen
 store-path refs — confirming Layer 1 is sound — then stops at Layer 2.
 
-## Layer 2 — image-fixed config artifacts (DESIGNED, not yet built)
+## Layer 2 — image-fixed config artifacts (MECHANISM BUILT + VALIDATED)
+
+`modules/base/config-artifacts.nix` implements the channel; `dbus.nix` is the
+first conversion. **Validated on the builder:** existing systems stay
+byte-identical (server toplevel `.drv` unchanged), and the frozen eval of the
+server manifest now advances **past** `dbus-conf` to the next builder —
+confirming the mechanism and that the frozen eval **converges** by converting
+each manifest-path builder.
+
+### The conversion pattern (per builder)
+
+A module that builds an image-fixed artifact on the manifest path:
+
+```nix
+# let:  reference the resolved artifact, never the source.
+dbusConf = config.aos.config.artifacts.dbus-system-conf;
+# config:  register the source, GUARDED so the stage-2 frozen pkgs (which lacks
+#          builder functions) never evaluates it.
+aos.config._artifactSources.dbus-system-conf =
+  if config.aos.config.frozenArtifacts ? "dbus-system-conf"
+  then null
+  else pkgs.dbus-conf { … };          # the original expression, unchanged
+```
+
+When `frozenArtifacts` is empty (every normal build) this resolves to the exact
+same derivation → byte-identical. When the on-host evaluator injects the frozen
+path, the `else` thunk is never evaluated, so the missing builder never errors.
+
+### Scope of the remaining grind
+
+The frozen-eval loop converges by repeating the pattern. The surface is a *web*
+of interdependent image-fixed artifacts, not just a flat file list — e.g.
+`modules/packages.nix` alone has `packageSeedBundle` (`runCommand`),
+`packageAttestationCatalog`, and per-package `metaFile` builders that reference
+each other. Each manifest-path builder (`runCommand`×12, `writeTextFile`×6,
+`mkDerivation`×6, `writeShellScriptBin`×5 [some already F2-A job-scripts],
+`dbus-conf`×3) is converted the same way; toplevel-only builders are left alone
+(the manifest never forces them). Run the cached-`frozen-pkgs.json` harness, fix
+the reported builder, re-run, until `configManifest` serialises clean.
+
+## Layer 2 — original design notes
 
 Some config modules **build a derivation at eval time** for a `/etc` artifact or
 a unit input, e.g. `modules/services/dbus.nix`:
