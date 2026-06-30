@@ -880,9 +880,14 @@ log, so they cannot disagree about what happened.
   catalog kinds, and white-box assertion markers project through typed
   `guest_marker` entries while preserving the same Always/Sometimes/Reachable
   verdict semantics.
-- [ ] **T-OBS-8** Wire divergence bisection to localize a determinism failure to
+- [x] **T-OBS-8** Wire divergence bisection to localize a determinism failure to
   the first differing causal entry (node+icount, source, kind) with the log as the
   sole input. — satisfies [OBS-28]; spec §19.6.2; cross-ref 24.
+  Completed by `checks.crucible.phase4.eventLogDivergenceBisect`: the causal
+  event-log comparator now reports the first differing causal entry's
+  node/icount, source, and kind directly from the log, and assertion replay
+  divergence carries that same point into the bisection handoff instead of
+  smoothing an event-stream mismatch into a later assertion-report difference.
 - [ ] **T-OBS-9** Record coverage (plugin TCG basic blocks + white-box named
   markers) as observational `coverage` entries feeding fuzzing/search and the
   per-checkpoint coverage fingerprint, excluded from the comparison. — satisfies

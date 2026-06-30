@@ -955,6 +955,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogAssertionFold";
       taskIds = ["T-OBS-7"];
     };
+    eventLogDivergenceBisect = import ./phase4-event-log-divergence-bisect.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogDivergenceBisect";
+      taskIds = ["T-OBS-8"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

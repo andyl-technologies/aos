@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationReplayError, ConditionLeaf, Decision, EventDiagnosticPayload, EventLevel,
-    HostAssertionPredicate, Icount, LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate,
-    ObservableEvent, ObservedState, Plan, Predicate, Properties, Property, ReadyPoint,
-    RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDefForm,
-    Schedule, SchedulerEventLogPayload, Seed, VirtualTime, VmArchitecture, WhiteBoxPolicy, World,
-    WorldNode, check_assertion_violation_reproduction,
+    EventSource, HostAssertionPredicate, Icount, LintedHostAssertionOracle, MarkerId, NodeId,
+    NodeTemplate, ObservableEvent, ObservedState, Plan, Predicate, Properties, Property,
+    ReadyPoint, RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId,
+    ScenarioDefForm, Schedule, SchedulerEventLogPayload, Seed, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode, check_assertion_violation_reproduction,
     check_assertion_violation_reproduction_with_oracles,
 };
 
@@ -95,10 +95,13 @@ fn reproduction_artifact(
         .expect("violation reproduction artifact should reduce")
 }
 
-fn event_log(marker: MarkerId) -> Vec<crucible::SchedulerEventLogEntry> {
+fn event_log_with_decision_value(
+    marker: MarkerId,
+    decision_value: u64,
+) -> Vec<crucible::SchedulerEventLogEntry> {
     let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("assertion-violation-reproduction"),
-        value: 0xa15e_0015,
+        value: decision_value,
     }));
     let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
     let observed = ObservableEvent::guest_marker(icount(7), node("guest"), marker);
@@ -114,8 +117,18 @@ fn event_log(marker: MarkerId) -> Vec<crucible::SchedulerEventLogEntry> {
     ]
 }
 
+fn event_log(marker: MarkerId) -> Vec<crucible::SchedulerEventLogEntry> {
+    event_log_with_decision_value(marker, 0xa15e_0015)
+}
+
 fn recorded_log(marker: MarkerId) -> RecordedAssertionLog {
     let event_log = event_log(marker);
+    RecordedAssertionLog::from_segments(vec![event_log[..3].to_vec(), event_log[3..].to_vec()])
+        .expect("violation reproduction log should fold")
+}
+
+fn recorded_log_with_decision_value(marker: MarkerId, decision_value: u64) -> RecordedAssertionLog {
+    let event_log = event_log_with_decision_value(marker, decision_value);
     RecordedAssertionLog::from_segments(vec![event_log[..3].to_vec(), event_log[3..].to_vec()])
         .expect("violation reproduction log should fold")
 }
@@ -244,6 +257,63 @@ fn violation_reproduction_localizes_non_reproduction_as_divergence() {
             .as_ref()
             .map(|violation| violation.assertion.clone()),
         Some(assertion_id("no-forbidden-marker"))
+    );
+    assert!(divergence.reproduced_violation.is_none());
+}
+
+#[test]
+fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
+    let world = world();
+    let properties = properties(&world);
+    let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
+    let artifact_id = artifact.id();
+    let recorded = recorded_log_with_decision_value(marker_id("forbidden"), 0xa15e_0015);
+    let replayed = artifact_replay(
+        &artifact,
+        recorded_log_with_decision_value(marker_id("forbidden"), 0xa15e_0016),
+    );
+
+    let error = check_assertion_violation_reproduction(&artifact, &recorded, &replayed)
+        .expect_err("changed causal replay log should be reported as divergence");
+    let AssertionViolationReplayError::Divergence { divergence } = error else {
+        panic!("expected localized divergence");
+    };
+    let location = divergence
+        .first_different_causal_entry
+        .as_ref()
+        .expect("event-log divergence should report the first causal entry");
+    let request_location = divergence
+        .bisection
+        .first_different_causal_entry
+        .as_ref()
+        .expect("bisection request should carry the event-log location");
+
+    assert_eq!(divergence.artifact, artifact_id);
+    assert_eq!(divergence.first_different_prefix_len, 1);
+    assert_eq!(divergence.first_different_icount, Some(icount(0)));
+    assert_eq!(location, request_location);
+    assert_eq!(location.raw_index, 0);
+    assert_eq!(location.at.node.as_ref(), None);
+    assert_eq!(location.at.icount, icount(0));
+    assert_eq!(&location.source, &EventSource::Engine);
+    assert_eq!(location.kind.as_str(), "rng_draw");
+    assert_eq!(
+        divergence
+            .expected_event
+            .as_ref()
+            .map(|event| event.event_payload().kind()),
+        Some("rng_draw")
+    );
+    assert_eq!(
+        divergence
+            .reproduced_event
+            .as_ref()
+            .map(|event| event.event_payload().kind()),
+        Some("rng_draw")
+    );
+    assert!(
+        divergence.expected_violation.is_none(),
+        "event-log bisection should not smooth the first causal mismatch into a report difference"
     );
     assert!(divergence.reproduced_violation.is_none());
 }
