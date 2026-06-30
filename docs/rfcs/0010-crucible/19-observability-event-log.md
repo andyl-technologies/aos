@@ -848,11 +848,17 @@ log, so they cannot disagree about what happened.
   rejects entries whose recorded class disagrees with the typed payload-kind
   catalog, and private scheduler regressions prove both class mismatch and
   typed-kind drift fail before append.
-- [ ] **T-OBS-5** Implement content-addressed log segments (BLAKE3-keyed,
+- [x] **T-OBS-5** Implement content-addressed log segments (BLAKE3-keyed,
   deduplicated), prefix-sharing forks, checkpoint `event_log_offset` references,
   and a deterministic versioned binary canonical serialization with a derived text
   view. — satisfies [OBS-17], [OBS-18], [OBS-19], [OBS-20]; spec §19.4; cross-ref
   07 §3, §5, §7.
+  Completed by `checks.crucible.phase4.eventLogContentAddress`: `EventLog`
+  now writes versioned binary event-log segments through a shared BLAKE3-keyed
+  DAG store, exposes only a derived text projection for readable assertions,
+  deduplicates identical segment bytes across shared stores and cloned forks,
+  and preserves checkpoint `event_log_offset` references through runtime
+  materialization.
 - [ ] **T-OBS-6** Implement the determinism comparison: causal-subsequence
   projection, independent renumbering past observational interleaving, byte-for-byte
   equality wired to `gate:replay-oracle`/`gate:e2e-determinism`, and consistency

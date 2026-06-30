@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use crate::device::{
@@ -19,6 +20,7 @@ use crate::device::{
     block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
     ninep_faults_from_combined_ninep,
 };
+use crate::model::{DagStore, MemoryDagStore};
 use crate::node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
 };
@@ -40,6 +42,17 @@ use crate::{
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
 const SCHEDULER_QUANTUM_STREAM: &str = "quantum";
+const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 1;
+const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
+const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
+const EVENT_LOG_LEVEL_TRACE: u8 = 0;
+const EVENT_LOG_LEVEL_DEBUG: u8 = 1;
+const EVENT_LOG_LEVEL_INFO: u8 = 2;
+const EVENT_LOG_LEVEL_WARN: u8 = 3;
+const EVENT_LOG_LEVEL_ERROR: u8 = 4;
+const EVENT_LOG_CLASS_CAUSAL: u8 = 0;
+const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 
 /// Advances the system by one scheduler quantum.
 ///
@@ -101,6 +114,8 @@ pub struct QuantumOutcome {
     pub event_log_entries: Vec<SchedulerEventLogEntry>,
     /// Canonical bytes of the event-log segment appended by this quantum.
     pub event_log_segment_bytes: Vec<u8>,
+    /// Human-readable text projection derived from `event_log_segment_bytes`.
+    pub event_log_segment_text: String,
     /// Content address of `event_log_segment_bytes`, when this quantum emitted a segment.
     pub event_log_segment_hash: Option<ContentHash>,
     /// Event-log offset after this quantum's EMIT segment.
@@ -544,6 +559,51 @@ impl SchedulerEventLogEntry {
     }
 }
 
+#[derive(Clone)]
+struct EventLogSegmentStore {
+    store: Arc<dyn DagStore>,
+}
+
+impl EventLogSegmentStore {
+    fn memory() -> Self {
+        Self {
+            store: Arc::new(MemoryDagStore::new()),
+        }
+    }
+
+    fn from_store(store: Arc<dyn DagStore>) -> Self {
+        Self { store }
+    }
+
+    fn put_segment(&self, bytes: &[u8]) -> Result<ContentHash, SchedulerError> {
+        let expected = ContentHash::from_bytes(bytes);
+        let stored = self
+            .store
+            .put(bytes)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "event-log segment store rejected canonical segment bytes: {error}"
+                ),
+            })?;
+        if stored != expected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "event-log segment store returned {}, expected {}",
+                    stored.to_hex(),
+                    expected.to_hex()
+                ),
+            });
+        }
+        Ok(stored)
+    }
+}
+
+impl fmt::Debug for EventLogSegmentStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EventLogSegmentStore { store: <content-addressed> }")
+    }
+}
+
 /// The single unified event log for one run.
 ///
 /// `EventLog` is the owner of append sequencing, prefix content-addressing, and
@@ -551,10 +611,13 @@ impl SchedulerEventLogEntry {
 /// observability consumers take projections of this one stream.
 #[derive(Clone, Debug)]
 pub struct EventLog {
+    segment_store: EventLogSegmentStore,
     prefix: ContentHash,
+    offset: EventLogOffset,
     bytes: u64,
     events: u64,
     condition_entries: Vec<LogEntry>,
+    condition_base_events: u64,
     condition_prefix: ConditionEventLogPrefix,
 }
 
@@ -562,21 +625,64 @@ impl EventLog {
     /// Builds an empty unified event log.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_segment_store(EventLogSegmentStore::memory())
+    }
+
+    /// Builds an empty unified event log backed by `store`.
+    ///
+    /// Sharing the same store between a temporal graph and forked event logs
+    /// makes appended segment objects BLAKE3-keyed and idempotently deduplicated
+    /// by the same content-addressed store used for checkpoint closure objects.
+    #[must_use]
+    pub fn with_segment_store(store: Arc<dyn DagStore>) -> Self {
+        Self::from_segment_store(EventLogSegmentStore::from_store(store))
+    }
+
+    fn from_segment_store(segment_store: EventLogSegmentStore) -> Self {
         let prefix = scheduler_event_log_empty_prefix();
+        Self::from_offset_and_segment_store(EventLogOffset::new(prefix, 0, 0), segment_store)
+    }
+
+    /// Builds a unified event log resumed from `offset`.
+    #[must_use]
+    pub fn from_offset(offset: EventLogOffset) -> Self {
+        Self::from_offset_and_segment_store(offset, EventLogSegmentStore::memory())
+    }
+
+    /// Builds a unified event log resumed from `offset` and backed by `store`.
+    ///
+    /// The next append continues after the event count and byte offset recorded
+    /// in `offset`, using the reconstructed full prefix as the new segment's
+    /// shared prefix.
+    #[must_use]
+    pub fn from_offset_with_segment_store(
+        offset: EventLogOffset,
+        store: Arc<dyn DagStore>,
+    ) -> Self {
+        Self::from_offset_and_segment_store(offset, EventLogSegmentStore::from_store(store))
+    }
+
+    fn from_offset_and_segment_store(
+        offset: EventLogOffset,
+        segment_store: EventLogSegmentStore,
+    ) -> Self {
+        let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
+            segment_store,
             prefix,
-            bytes: 0,
-            events: 0,
+            offset,
+            bytes: offset.bytes,
+            events: offset.events,
             condition_entries: Vec::new(),
-            condition_prefix: ConditionEventLogPrefix::genesis()
-                .with_event_log_offset(EventLogOffset::new(prefix, 0, 0)),
+            condition_base_events: offset.events,
+            condition_prefix: ConditionEventLogPrefix::genesis().with_event_log_offset(offset),
         }
     }
 
     /// Returns the current shared-prefix offset.
     #[must_use]
     pub fn offset(&self) -> EventLogOffset {
-        EventLogOffset::new(self.prefix, self.bytes, self.events)
+        self.offset
     }
 
     /// Returns the condition-evaluation projection over the retained log prefix.
@@ -611,6 +717,7 @@ impl EventLog {
             return Ok(SchedulerEventLogAppend {
                 entries,
                 segment_bytes: Vec::new(),
+                segment_text: String::new(),
                 segment_hash: None,
                 offset: self.offset(),
             });
@@ -649,7 +756,14 @@ impl EventLog {
         }
 
         let segment_bytes = scheduler_event_log_segment_bytes(self.prefix, &entries);
-        let segment_hash = ContentHash::from_bytes(&segment_bytes);
+        let segment_text = decode_scheduler_event_log_segment(&segment_bytes)
+            .map(|segment| segment.text_view())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "event-log segment canonical bytes did not decode after encode: {error:?}"
+                ),
+            })?;
+        let segment_hash = self.segment_store.put_segment(&segment_bytes)?;
         let appended_bytes =
             u64::try_from(segment_bytes.len()).map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("event-log segment length exceeds u64"),
@@ -669,30 +783,23 @@ impl EventLog {
             }
         })?;
 
-        let offset =
+        let current_offset =
             EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
-        let prefix_material = format!(
-            "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
-            self.prefix.to_hex(),
-            segment_hash.to_hex(),
-        );
-        let prefix = ContentHash::from_canonical_material(
-            "crucible.scheduler.event-log.prefix.v1",
-            &prefix_material,
-        );
-        let current_offset = EventLogOffset::new(prefix, bytes, events);
+        let prefix =
+            scheduler_event_log_prefix_after_append(self.prefix, segment_hash, bytes, events);
         let mut condition_entries = self.condition_entries.clone();
         condition_entries.extend(entries.iter().cloned());
-        let condition_prefix =
-            ConditionEventLogPrefix::from_scheduler_event_log_entries(condition_entries.clone())
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "scheduler emitted invalid condition event-log prefix: {error:?}"
-                    ),
-                })?
-                .with_event_log_offset(current_offset);
+        let condition_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+            condition_entries.clone(),
+            self.condition_base_events,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
+        })?
+        .with_event_log_offset(current_offset);
 
         self.prefix = prefix;
+        self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;
         self.condition_entries = condition_entries;
@@ -701,8 +808,9 @@ impl EventLog {
         Ok(SchedulerEventLogAppend {
             entries,
             segment_bytes,
+            segment_text,
             segment_hash: Some(segment_hash),
-            offset,
+            offset: current_offset,
         })
     }
 }
@@ -1061,6 +1169,8 @@ pub struct SchedulerEventLogAppend {
     pub entries: Vec<SchedulerEventLogEntry>,
     /// Canonical bytes appended for this quantum's event-log segment.
     pub segment_bytes: Vec<u8>,
+    /// Human-readable text projection derived from `segment_bytes`.
+    pub segment_text: String,
     /// Content address of `segment_bytes`, when a segment was appended.
     pub segment_hash: Option<ContentHash>,
     /// Offset reached after appending this quantum's segment.
@@ -4068,6 +4178,32 @@ pub(crate) fn scheduler_event_log_empty_prefix() -> ContentHash {
     ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
 }
 
+fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash {
+    match offset.appended_segment {
+        Some(appended_segment) => scheduler_event_log_prefix_after_append(
+            offset.prefix,
+            appended_segment,
+            offset.bytes,
+            offset.events,
+        ),
+        None => offset.prefix,
+    }
+}
+
+fn scheduler_event_log_prefix_after_append(
+    previous_prefix: ContentHash,
+    appended_segment: ContentHash,
+    bytes: u64,
+    events: u64,
+) -> ContentHash {
+    let prefix_material = format!(
+        "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
+        previous_prefix.to_hex(),
+        appended_segment.to_hex(),
+    );
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", &prefix_material)
+}
+
 fn scheduler_event_log_sequence(base: u64, offset: usize) -> Result<u64, SchedulerError> {
     let offset = u64::try_from(offset).map_err(|_| SchedulerError::BoundaryViolation {
         message: String::from("scheduler event-log entry offset exceeds u64"),
@@ -5576,60 +5712,355 @@ fn validate_trigger_node_schedule_target(
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SchedulerEventLogSegmentMaterial {
+    previous_prefix: ContentHash,
+    entries: Vec<SchedulerEventLogSegmentEntryMaterial>,
+}
+
+impl SchedulerEventLogSegmentMaterial {
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
+        bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&self.previous_prefix.bytes);
+        write_u64_le(&mut bytes, self.entries.len() as u64);
+        for entry in &self.entries {
+            write_u64_le(&mut bytes, entry.sequence);
+            write_u64_le(&mut bytes, entry.at_virtual_time_ticks);
+            write_u64_le(&mut bytes, entry.at_icount_retired);
+            write_optional_string(&mut bytes, entry.at_icount_node.as_deref());
+            write_string(&mut bytes, &entry.source_material);
+            bytes.push(event_level_code(entry.level));
+            bytes.push(event_class_code(entry.class));
+            write_string(&mut bytes, &entry.payload_kind);
+            write_u64_le(&mut bytes, entry.payload_attribute_count);
+            bytes.extend_from_slice(&entry.content_hash.bytes);
+            write_string(&mut bytes, &entry.entry_material);
+        }
+        bytes
+    }
+
+    fn text_view(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(String::from(
+            "format=crucible.scheduler.event-log.segment-text.v1",
+        ));
+        lines.push(String::from(
+            "canonical_format=crucible.scheduler.event-log.segment.v1",
+        ));
+        lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
+        lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
+        lines.push(format!("entries={}", self.entries.len()));
+        for entry in &self.entries {
+            lines.push(format!("entry.sequence={}", entry.sequence));
+            lines.push(format!(
+                "entry.at_virtual_time_ticks={}",
+                entry.at_virtual_time_ticks
+            ));
+            lines.push(format!(
+                "entry.at_icount_retired={}",
+                entry.at_icount_retired
+            ));
+            match &entry.at_icount_node {
+                Some(node) => {
+                    lines.push(String::from("entry.at_icount_node=some"));
+                    lines.push(format!("entry.at_icount_node_name={node}"));
+                }
+                None => lines.push(String::from("entry.at_icount_node=none")),
+            }
+            lines.push(entry.source_material.clone());
+            lines.push(format!("entry.level={}", event_level_label(entry.level)));
+            lines.push(format!("entry.class={}", event_class_label(entry.class)));
+            lines.push(format!("entry.payload.kind={}", entry.payload_kind));
+            lines.push(format!(
+                "entry.payload.attributes={}",
+                entry.payload_attribute_count
+            ));
+            lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
+            lines.push(format!(
+                "entry.bytes={}",
+                entry.entry_material.as_bytes().len()
+            ));
+            lines.push(String::from("entry.material_begin"));
+            lines.push(entry.entry_material.clone());
+            lines.push(String::from("entry.material_end"));
+        }
+        lines.join("\n")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SchedulerEventLogSegmentEntryMaterial {
+    sequence: u64,
+    at_virtual_time_ticks: u64,
+    at_icount_retired: u64,
+    at_icount_node: Option<String>,
+    source_material: String,
+    level: EventLevel,
+    class: SchedulerEventLogClass,
+    payload_kind: String,
+    payload_attribute_count: u64,
+    content_hash: ContentHash,
+    entry_material: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SchedulerEventLogSegmentDecodeError {
+    InvalidMagic,
+    UnsupportedVersion { version: u32 },
+    Truncated { field: &'static str },
+    InvalidUtf8 { field: &'static str },
+    InvalidFlag { field: &'static str, value: u8 },
+    InvalidLevel { value: u8 },
+    InvalidClass { value: u8 },
+    LengthTooLarge { field: &'static str, len: u64 },
+    TrailingBytes { remaining: usize },
+}
+
+struct SchedulerEventLogSegmentCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SchedulerEventLogSegmentCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_exact(
+        &mut self,
+        field: &'static str,
+        len: usize,
+    ) -> Result<&'a [u8], SchedulerEventLogSegmentDecodeError> {
+        let end = self.offset.checked_add(len).ok_or(
+            SchedulerEventLogSegmentDecodeError::LengthTooLarge {
+                field,
+                len: len as u64,
+            },
+        )?;
+        let Some(slice) = self.bytes.get(self.offset..end) else {
+            return Err(SchedulerEventLogSegmentDecodeError::Truncated { field });
+        };
+        self.offset = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self, field: &'static str) -> Result<u8, SchedulerEventLogSegmentDecodeError> {
+        Ok(self.read_exact(field, 1)?[0])
+    }
+
+    fn read_u32_le(
+        &mut self,
+        field: &'static str,
+    ) -> Result<u32, SchedulerEventLogSegmentDecodeError> {
+        let mut word = [0; 4];
+        word.copy_from_slice(self.read_exact(field, 4)?);
+        Ok(u32::from_le_bytes(word))
+    }
+
+    fn read_u64_le(
+        &mut self,
+        field: &'static str,
+    ) -> Result<u64, SchedulerEventLogSegmentDecodeError> {
+        let mut word = [0; 8];
+        word.copy_from_slice(self.read_exact(field, 8)?);
+        Ok(u64::from_le_bytes(word))
+    }
+
+    fn read_string(
+        &mut self,
+        field: &'static str,
+    ) -> Result<String, SchedulerEventLogSegmentDecodeError> {
+        let len = self.read_u64_le(field)?;
+        let len = usize::try_from(len)
+            .map_err(|_| SchedulerEventLogSegmentDecodeError::LengthTooLarge { field, len })?;
+        let bytes = self.read_exact(field, len)?;
+        std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|_| SchedulerEventLogSegmentDecodeError::InvalidUtf8 { field })
+    }
+
+    fn read_optional_string(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Option<String>, SchedulerEventLogSegmentDecodeError> {
+        match self.read_u8(field)? {
+            EVENT_LOG_SEGMENT_NODE_ABSENT => Ok(None),
+            EVENT_LOG_SEGMENT_NODE_PRESENT => Ok(Some(self.read_string(field)?)),
+            value => Err(SchedulerEventLogSegmentDecodeError::InvalidFlag { field, value }),
+        }
+    }
+
+    fn read_content_hash(
+        &mut self,
+        field: &'static str,
+    ) -> Result<ContentHash, SchedulerEventLogSegmentDecodeError> {
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(self.read_exact(field, 32)?);
+        Ok(ContentHash { bytes })
+    }
+
+    fn finish(&self) -> Result<(), SchedulerEventLogSegmentDecodeError> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(SchedulerEventLogSegmentDecodeError::TrailingBytes {
+                remaining: self.bytes.len() - self.offset,
+            })
+        }
+    }
+}
+
 pub(crate) fn scheduler_event_log_segment_bytes(
     previous_prefix: ContentHash,
     entries: &[SchedulerEventLogEntry],
 ) -> Vec<u8> {
-    let mut lines = Vec::new();
-    lines.push(String::from(
-        "format=crucible.scheduler.event-log.segment.v1",
-    ));
-    lines.push(format!("previous_prefix={}", previous_prefix.to_hex()));
-    lines.push(format!("entries={}", entries.len()));
-    for entry in entries {
-        let entry_material = scheduler_event_log_entry_material(
-            entry.sequence,
-            &entry.at,
-            &entry.source,
-            entry.level,
-            entry.class,
-            &entry.event_payload,
-            &entry.payload,
-        );
-        lines.push(format!("entry.sequence={}", entry.sequence));
-        lines.push(format!(
-            "entry.at_virtual_time_ticks={}",
-            entry.at.virtual_time.ticks
-        ));
-        lines.push(format!(
-            "entry.at_icount_retired={}",
-            entry.at.icount.icount.retired
-        ));
-        match &entry.at.icount.node {
-            Some(node) => {
-                lines.push(String::from("entry.at_icount_node=some"));
-                lines.push(format!("entry.at_icount_node_name={}", node.name));
+    let bytes = scheduler_event_log_segment_material(previous_prefix, entries).encode();
+    debug_assert!(
+        decode_scheduler_event_log_segment(&bytes)
+            .map(|decoded| decoded.encode() == bytes)
+            .unwrap_or(false)
+    );
+    bytes
+}
+
+fn scheduler_event_log_segment_material(
+    previous_prefix: ContentHash,
+    entries: &[SchedulerEventLogEntry],
+) -> SchedulerEventLogSegmentMaterial {
+    let entries = entries
+        .iter()
+        .map(|entry| {
+            let entry_material = scheduler_event_log_entry_material(
+                entry.sequence,
+                &entry.at,
+                &entry.source,
+                entry.level,
+                entry.class,
+                &entry.event_payload,
+                &entry.payload,
+            );
+            SchedulerEventLogSegmentEntryMaterial {
+                sequence: entry.sequence,
+                at_virtual_time_ticks: entry.at.virtual_time.ticks,
+                at_icount_retired: entry.at.icount.icount.retired,
+                at_icount_node: entry.at.icount.node.as_ref().map(|node| node.name.clone()),
+                source_material: scheduler_event_log_source_material("entry.source", &entry.source),
+                level: entry.level,
+                class: entry.class,
+                payload_kind: entry.event_payload.kind().to_owned(),
+                payload_attribute_count: entry.event_payload.attributes().len() as u64,
+                content_hash: entry.content_hash,
+                entry_material,
             }
-            None => lines.push(String::from("entry.at_icount_node=none")),
-        }
-        lines.push(scheduler_event_log_source_material(
-            "entry.source",
-            &entry.source,
-        ));
-        lines.push(format!("entry.level={}", event_level_label(entry.level)));
-        lines.push(format!("entry.class={}", event_class_label(entry.class)));
-        lines.push(format!("entry.payload.kind={}", entry.event_payload.kind()));
-        lines.push(format!(
-            "entry.payload.attributes={}",
-            entry.event_payload.attributes().len()
-        ));
-        lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
-        lines.push(format!("entry.bytes={}", entry_material.len()));
-        lines.push(String::from("entry.material_begin"));
-        lines.push(entry_material);
-        lines.push(String::from("entry.material_end"));
+        })
+        .collect();
+    SchedulerEventLogSegmentMaterial {
+        previous_prefix,
+        entries,
     }
-    lines.join("\n").into_bytes()
+}
+
+fn decode_scheduler_event_log_segment(
+    bytes: &[u8],
+) -> Result<SchedulerEventLogSegmentMaterial, SchedulerEventLogSegmentDecodeError> {
+    let mut cursor = SchedulerEventLogSegmentCursor::new(bytes);
+    if cursor.read_exact("magic", EVENT_LOG_SEGMENT_BINARY_MAGIC.len())?
+        != EVENT_LOG_SEGMENT_BINARY_MAGIC
+    {
+        return Err(SchedulerEventLogSegmentDecodeError::InvalidMagic);
+    }
+    let version = cursor.read_u32_le("version")?;
+    if version != EVENT_LOG_SEGMENT_BINARY_VERSION {
+        return Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version });
+    }
+    let previous_prefix = cursor.read_content_hash("previous_prefix")?;
+    let entry_count = cursor.read_u64_le("entries")?;
+    let entry_count = usize::try_from(entry_count).map_err(|_| {
+        SchedulerEventLogSegmentDecodeError::LengthTooLarge {
+            field: "entries",
+            len: entry_count,
+        }
+    })?;
+    let mut entries = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        entries.push(SchedulerEventLogSegmentEntryMaterial {
+            sequence: cursor.read_u64_le("entry.sequence")?,
+            at_virtual_time_ticks: cursor.read_u64_le("entry.at_virtual_time_ticks")?,
+            at_icount_retired: cursor.read_u64_le("entry.at_icount_retired")?,
+            at_icount_node: cursor.read_optional_string("entry.at_icount_node")?,
+            source_material: cursor.read_string("entry.source")?,
+            level: event_level_from_code(cursor.read_u8("entry.level")?)?,
+            class: event_class_from_code(cursor.read_u8("entry.class")?)?,
+            payload_kind: cursor.read_string("entry.payload.kind")?,
+            payload_attribute_count: cursor.read_u64_le("entry.payload.attributes")?,
+            content_hash: cursor.read_content_hash("entry.hash")?,
+            entry_material: cursor.read_string("entry.material")?,
+        });
+    }
+    cursor.finish()?;
+    Ok(SchedulerEventLogSegmentMaterial {
+        previous_prefix,
+        entries,
+    })
+}
+
+fn write_u64_le(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_string(bytes: &mut Vec<u8>, value: &str) {
+    write_u64_le(bytes, value.as_bytes().len() as u64);
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
+            write_string(bytes, value);
+        }
+        None => bytes.push(EVENT_LOG_SEGMENT_NODE_ABSENT),
+    }
+}
+
+fn event_level_code(level: EventLevel) -> u8 {
+    match level {
+        EventLevel::Trace => EVENT_LOG_LEVEL_TRACE,
+        EventLevel::Debug => EVENT_LOG_LEVEL_DEBUG,
+        EventLevel::Info => EVENT_LOG_LEVEL_INFO,
+        EventLevel::Warn => EVENT_LOG_LEVEL_WARN,
+        EventLevel::Error => EVENT_LOG_LEVEL_ERROR,
+    }
+}
+
+fn event_level_from_code(value: u8) -> Result<EventLevel, SchedulerEventLogSegmentDecodeError> {
+    match value {
+        EVENT_LOG_LEVEL_TRACE => Ok(EventLevel::Trace),
+        EVENT_LOG_LEVEL_DEBUG => Ok(EventLevel::Debug),
+        EVENT_LOG_LEVEL_INFO => Ok(EventLevel::Info),
+        EVENT_LOG_LEVEL_WARN => Ok(EventLevel::Warn),
+        EVENT_LOG_LEVEL_ERROR => Ok(EventLevel::Error),
+        value => Err(SchedulerEventLogSegmentDecodeError::InvalidLevel { value }),
+    }
+}
+
+fn event_class_code(class: SchedulerEventLogClass) -> u8 {
+    match class {
+        SchedulerEventLogClass::Causal => EVENT_LOG_CLASS_CAUSAL,
+        SchedulerEventLogClass::Observational => EVENT_LOG_CLASS_OBSERVATIONAL,
+    }
+}
+
+fn event_class_from_code(
+    value: u8,
+) -> Result<SchedulerEventLogClass, SchedulerEventLogSegmentDecodeError> {
+    match value {
+        EVENT_LOG_CLASS_CAUSAL => Ok(SchedulerEventLogClass::Causal),
+        EVENT_LOG_CLASS_OBSERVATIONAL => Ok(SchedulerEventLogClass::Observational),
+        value => Err(SchedulerEventLogSegmentDecodeError::InvalidClass { value }),
+    }
 }
 
 fn scheduler_ordered_decisions(
@@ -6055,6 +6486,53 @@ impl SingleScheduler {
     /// represented or when an initial node counter cannot be projected onto the
     /// shared virtual timeline.
     pub fn new(scenario: SchedulerLivenessScenario) -> Result<Self, SchedulerError> {
+        Self::new_with_event_log(scenario, EventLog::new())
+    }
+
+    /// Builds a scheduler whose event log writes segments into `store`.
+    ///
+    /// Use this constructor when the scheduler and temporal graph share one
+    /// content-addressed store: every non-empty EMIT appends canonical binary
+    /// segment bytes at their BLAKE3 key before the quantum outcome is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the fixed timeline shift cannot be
+    /// represented or when an initial node counter cannot be projected onto the
+    /// shared virtual timeline.
+    pub fn new_with_event_log_segment_store(
+        scenario: SchedulerLivenessScenario,
+        store: Arc<dyn DagStore>,
+    ) -> Result<Self, SchedulerError> {
+        Self::new_with_event_log(scenario, EventLog::with_segment_store(store))
+    }
+
+    /// Builds a scheduler resumed from `event_log_offset` and backed by `store`.
+    ///
+    /// The next EMIT append starts at the recorded byte and event offsets, and
+    /// uses the reconstructed content prefix from `event_log_offset` as the
+    /// parent prefix for the new segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the fixed timeline shift cannot be
+    /// represented or when an initial node counter cannot be projected onto the
+    /// shared virtual timeline.
+    pub fn new_with_event_log_offset_and_segment_store(
+        scenario: SchedulerLivenessScenario,
+        event_log_offset: EventLogOffset,
+        store: Arc<dyn DagStore>,
+    ) -> Result<Self, SchedulerError> {
+        Self::new_with_event_log(
+            scenario,
+            EventLog::from_offset_with_segment_store(event_log_offset, store),
+        )
+    }
+
+    fn new_with_event_log(
+        scenario: SchedulerLivenessScenario,
+        event_log: EventLog,
+    ) -> Result<Self, SchedulerError> {
         let timeline = SharedTimeline::new(scenario.shift)?;
         let configuration = scenario.canonical_configuration();
         let mut nodes = scenario
@@ -6075,7 +6553,6 @@ impl SingleScheduler {
         )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
-        let event_log = EventLog::new();
         let (trigger_actions, replay_fault_sequence) =
             trigger_action_state_from_control_fault_decisions(configuration.schedule.decisions());
 
@@ -8906,6 +9383,7 @@ impl SingleScheduler {
                 decisions,
                 event_log_entries: event_log.entries,
                 event_log_segment_bytes: event_log.segment_bytes,
+                event_log_segment_text: event_log.segment_text,
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
             };
@@ -9025,6 +9503,7 @@ impl SingleScheduler {
                 decisions,
                 event_log_entries: event_log.entries,
                 event_log_segment_bytes: event_log.segment_bytes,
+                event_log_segment_text: event_log.segment_text,
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
             });
@@ -9103,6 +9582,7 @@ impl SingleScheduler {
                     decisions,
                     event_log_entries: event_log.entries,
                     event_log_segment_bytes: event_log.segment_bytes,
+                    event_log_segment_text: event_log.segment_text,
                     event_log_segment_hash: event_log.segment_hash,
                     event_log_offset: event_log.offset,
                 });
@@ -9183,6 +9663,7 @@ impl SingleScheduler {
             decisions,
             event_log_entries: event_log.entries,
             event_log_segment_bytes: event_log.segment_bytes,
+            event_log_segment_text: event_log.segment_text,
             event_log_segment_hash: event_log.segment_hash,
             event_log_offset: event_log.offset,
         })
@@ -10116,6 +10597,7 @@ mod tests {
                     decisions: Vec::new(),
                     event_log_entries: Vec::new(),
                     event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
                     event_log_segment_hash: None,
                     event_log_offset: EventLogOffset::default(),
                 })
@@ -10214,6 +10696,30 @@ mod tests {
             SchedulerError::BoundaryViolation { message }
                 if message.contains("payload kind unregistered_kind is not in the event-kind catalog")
         ));
+    }
+
+    #[test]
+    fn event_log_segment_binary_round_trips_to_same_bytes() {
+        let previous_prefix = scheduler_event_log_empty_prefix();
+        let entry = scheduler_event_log_entry(
+            0,
+            VirtualTime { ticks: 9 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("segment-round-trip"),
+                value: 41,
+            })),
+        );
+        let entries = vec![entry];
+        let segment = scheduler_event_log_segment_material(previous_prefix, &entries);
+        let bytes = segment.encode();
+
+        let decoded = decode_scheduler_event_log_segment(&bytes)
+            .unwrap_or_else(|error| panic!("segment should decode: {error:?}"));
+
+        assert_eq!(decoded, segment);
+        assert_eq!(decoded.encode(), bytes);
+        assert_eq!(decoded.text_view(), segment.text_view());
+        assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
     }
 
     #[test]
@@ -10415,6 +10921,7 @@ mod tests {
             decisions: vec![decision.clone()],
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
         };

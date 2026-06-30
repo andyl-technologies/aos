@@ -9844,6 +9844,8 @@ pub struct RuntimeState {
     pub node_icounts: BTreeMap<NodeId, Icount>,
     /// Scheduler-owned state reconstructed at the materialization point.
     pub scheduler: SchedulerState,
+    /// Event-log offset from which a resumed run continues appending.
+    pub event_log: EventLogOffset,
 }
 
 /// Appends one decision to a configuration without materializing runtime state.
@@ -10277,6 +10279,15 @@ pub enum EngineError {
         /// The configuration produced by replaying the suffix.
         actual: ContentHash,
     },
+    /// Pure temporal replay cannot advance a retained event-log offset.
+    EventLogReplayUnsupported {
+        /// The configuration replay started from.
+        start: ContentHash,
+        /// The requested target configuration.
+        target: ContentHash,
+        /// Event-log entries already retained at the replay start.
+        events: u64,
+    },
     /// A fat checkpoint did not match its thin replay derivation.
     ReplayOracleMismatch {
         /// The fat checkpoint under test.
@@ -10486,6 +10497,12 @@ impl fmt::Display for EngineError {
             Self::ReplayTargetMismatch { .. } => {
                 f.write_str("replayed suffix did not produce requested configuration")
             }
+            Self::EventLogReplayUnsupported { events, .. } => {
+                write!(
+                    f,
+                    "pure replay cannot advance retained event-log offset with {events} events"
+                )
+            }
             Self::ReplayOracleMismatch { .. } => {
                 f.write_str("replay oracle mismatch between fat checkpoint and thin derivation")
             }
@@ -10515,11 +10532,17 @@ fn load_snapshot(
         .as_ref()
         .map(|state| state.scheduler.clone())
         .unwrap_or_else(|| scheduler_state_for_configuration(configuration));
+    let event_log = checkpoint
+        .state
+        .as_ref()
+        .map(|state| state.event_log)
+        .unwrap_or_default();
     runtime_for_configuration_with_scheduler(
         configuration,
         checkpoint.node_blobs.clone(),
         checkpoint.node_icounts.clone(),
         scheduler,
+        event_log,
     )
 }
 
@@ -10528,6 +10551,7 @@ fn runtime_for_configuration_with_scheduler(
     node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     node_icounts: BTreeMap<NodeId, Icount>,
     scheduler: SchedulerState,
+    event_log: EventLogOffset,
 ) -> Result<RuntimeState, EngineError> {
     Ok(RuntimeState {
         id: reduce(&configuration.def, &configuration.schedule)?.id,
@@ -10535,6 +10559,7 @@ fn runtime_for_configuration_with_scheduler(
         node_blobs,
         node_icounts,
         scheduler,
+        event_log,
     })
 }
 
@@ -10564,11 +10589,30 @@ fn replay_suffix(
         });
     }
 
+    if !suffix.is_empty()
+        && (runtime.event_log.events != 0
+            || runtime.event_log.bytes != 0
+            || runtime.event_log.appended_segment.is_some())
+    {
+        return Err(EngineError::EventLogReplayUnsupported {
+            start: start.id(),
+            target: target.id(),
+            events: runtime.event_log.events,
+        });
+    }
+
     let node_blobs = replayed_node_blobs(&runtime.node_blobs, start, suffix, target);
     let node_icounts = replayed_node_icounts(&runtime.node_icounts, suffix);
     let mut scheduler = runtime.scheduler;
+    let event_log = runtime.event_log;
     scheduler.apply_decisions(suffix.decisions());
-    runtime_for_configuration_with_scheduler(&replayed, node_blobs, node_icounts, scheduler)
+    runtime_for_configuration_with_scheduler(
+        &replayed,
+        node_blobs,
+        node_icounts,
+        scheduler,
+        event_log,
+    )
 }
 
 fn scheduler_state_for_configuration(configuration: &Configuration) -> SchedulerState {
@@ -10624,7 +10668,7 @@ fn materialized_checkpoint_for_runtime(
         BTreeMap::new(),
         runtime.scheduler.clone(),
         DecisionRngState::empty(),
-        EventLogOffset::default(),
+        runtime.event_log,
     );
     let mut checkpoint = Checkpoint::from_recorded_configuration(
         configuration,
@@ -18890,27 +18934,41 @@ where
         if cow_deltas.contains_key(&cow_ref) {
             continue;
         }
-        let delta_key =
-            match cow_ref.kind {
-                CowDeltaKind::ScheduleDelta => {
-                    let key = store
-                        .put(&schedule_delta_store_bytes(&checkpoint.schedule_delta))
-                        .map_err(|source| TemporalGraphStoreError::Store {
-                            operation: "put-schedule-delta",
-                            source,
-                        })?;
-                    schedule_deltas.push(key);
-                    key
-                }
-                CowDeltaKind::VmMemory
-                | CowDeltaKind::DeviceOverlay
-                | CowDeltaKind::EventLogSegment => store
-                    .put(&cow_delta_store_bytes(cow_ref))
+        let delta_key = match cow_ref.kind {
+            CowDeltaKind::ScheduleDelta => {
+                let key = store
+                    .put(&schedule_delta_store_bytes(&checkpoint.schedule_delta))
                     .map_err(|source| TemporalGraphStoreError::Store {
-                        operation: "put-cow-delta",
+                        operation: "put-schedule-delta",
                         source,
-                    })?,
-            };
+                    })?;
+                schedule_deltas.push(key);
+                key
+            }
+            CowDeltaKind::EventLogSegment => {
+                let exists = store.exists(&cow_ref.content).map_err(|source| {
+                    TemporalGraphStoreError::Store {
+                        operation: "lookup-event-log-segment",
+                        source,
+                    }
+                })?;
+                if !exists {
+                    return Err(TemporalGraphStoreError::Store {
+                        operation: "lookup-event-log-segment",
+                        source: DagStoreError::NotFound {
+                            key: cow_ref.content,
+                        },
+                    });
+                }
+                cow_ref.content
+            }
+            CowDeltaKind::VmMemory | CowDeltaKind::DeviceOverlay => store
+                .put(&cow_delta_store_bytes(cow_ref))
+                .map_err(|source| TemporalGraphStoreError::Store {
+                    operation: "put-cow-delta",
+                    source,
+                })?,
+        };
         cow_deltas.insert(cow_ref, delta_key);
     }
     Ok(())
@@ -18924,8 +18982,14 @@ fn insert_checkpoint_store_keys(checkpoint: &Checkpoint, keys: &mut BTreeSet<Con
         )));
     }
     for cow_ref in checkpoint.cow_delta_refs() {
-        if cow_ref.kind != CowDeltaKind::ScheduleDelta {
-            keys.insert(ContentHash::from_bytes(&cow_delta_store_bytes(cow_ref)));
+        match cow_ref.kind {
+            CowDeltaKind::ScheduleDelta => {}
+            CowDeltaKind::EventLogSegment => {
+                keys.insert(cow_ref.content);
+            }
+            CowDeltaKind::VmMemory | CowDeltaKind::DeviceOverlay => {
+                keys.insert(ContentHash::from_bytes(&cow_delta_store_bytes(cow_ref)));
+            }
         }
     }
 }

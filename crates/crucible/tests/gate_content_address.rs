@@ -688,8 +688,8 @@ fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store(
         ContentHash::from_canonical_material("crucible.test.dag-store-persist.overlay", "sector=7");
     let log_prefix =
         ContentHash::from_canonical_material("crucible.test.dag-store-persist.log", "prefix");
-    let log_segment =
-        ContentHash::from_canonical_material("crucible.test.dag-store-persist.log", "segment");
+    let log_segment_bytes = b"crucible.test.dag-store-persist.log.segment";
+    let log_segment = ContentHash::from_bytes(log_segment_bytes);
     let fat_checkpoint = cow_fork_checkpoint(
         &first,
         &genesis,
@@ -708,6 +708,9 @@ fn gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store(
         .cache_snapshot(&first, fat_checkpoint)
         .unwrap_or_else(|error| panic!("fat checkpoint should cache: {error}"));
     let store = MemoryDagStore::new();
+    store
+        .put(log_segment_bytes)
+        .unwrap_or_else(|error| panic!("event-log segment bytes should store: {error}"));
 
     let first_keys = graph
         .persist_checkpoint_closure(&store, &first)
@@ -769,10 +772,10 @@ fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
         ContentHash::from_canonical_material("crucible.test.gc-refcount.overlay", "right-sector");
     let log_prefix =
         ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "shared-prefix");
-    let left_log_segment =
-        ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "left-segment");
-    let right_log_segment =
-        ContentHash::from_canonical_material("crucible.test.gc-refcount.log", "right-segment");
+    let left_log_segment_bytes = b"crucible.test.gc-refcount.log.left-segment";
+    let right_log_segment_bytes = b"crucible.test.gc-refcount.log.right-segment";
+    let left_log_segment = ContentHash::from_bytes(left_log_segment_bytes);
+    let right_log_segment = ContentHash::from_bytes(right_log_segment_bytes);
     let left_checkpoint = cow_fork_checkpoint(
         &left,
         &genesis,
@@ -811,6 +814,12 @@ fn gate_content_address_gc_refcounts_abandoned_branch_unique_objects() {
         .with_live_tip(left.id())
         .with_live_tip(right.id());
     let store = MemoryDagStore::new();
+    store
+        .put(left_log_segment_bytes)
+        .unwrap_or_else(|error| panic!("left event-log segment bytes should store: {error}"));
+    store
+        .put(right_log_segment_bytes)
+        .unwrap_or_else(|error| panic!("right event-log segment bytes should store: {error}"));
     let left_keys = graph
         .persist_checkpoint_closure(&store, &left)
         .unwrap_or_else(|error| panic!("left branch should persist before GC: {error}"));

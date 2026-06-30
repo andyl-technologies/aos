@@ -89,8 +89,7 @@ fn diagnostic_payload_is_typed_observational_escape_hatch() {
     let append = log
         .append_entries(vec![entry])
         .expect("diagnostic payload should append");
-    let segment = String::from_utf8(append.segment_bytes)
-        .expect("canonical segment bytes should be UTF-8 material in this implementation");
+    let segment = append.segment_text;
 
     assert!(segment.contains("entry.payload.kind=diagnostic"));
     assert!(segment.contains("event_payload.attribute.poll_count.value.type=u64"));
