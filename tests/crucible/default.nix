@@ -682,6 +682,11 @@ in {
       attrPath = "checks.crucible.phase4.faultTestDoubleGate";
       taskIds = ["T-FAULT-16"];
     };
+    propertyVocabulary = import ./phase4-property-vocabulary.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.propertyVocabulary";
+      taskIds = ["T-ASRT-1"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

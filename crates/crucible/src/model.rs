@@ -6055,6 +6055,110 @@ pub enum ReachabilityExpectation {
     Unreachable,
 }
 
+/// Schema version for the closed assertion property vocabulary.
+///
+/// The version covers the five temporal quantifiers, their binary tags, their
+/// canonical material labels, and the TOML `kind` strings. Adding or removing a
+/// quantifier is a schema change, not a runtime extension point.
+pub const PROPERTY_SCHEMA_VERSION: u32 = 1;
+
+/// Canonical material domain for [`Properties`] bundles.
+///
+/// The domain embeds [`PROPERTY_SCHEMA_VERSION`] through the `v1` suffix so a
+/// quantifier schema change cannot collide with an older properties component.
+pub const PROPERTY_SCHEMA_DOMAIN: &str = "crucible.model.properties.v1";
+
+/// Number of temporal property quantifiers in the closed vocabulary.
+pub const PROPERTY_QUANTIFIER_COUNT: usize = 5;
+
+/// Closed set of temporal property quantifier kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PropertyKind {
+    /// Invariant checked at every relevant evaluation point.
+    Always,
+    /// Liveness witness that must hold at least once.
+    Sometimes,
+    /// Bounded liveness property armed by a trigger predicate.
+    Eventually,
+    /// End-state property checked once at quiescence or run limit.
+    AfterQuiescence,
+    /// Coverage-style property, including the unreachable dual expectation.
+    Reachable,
+}
+
+impl PropertyKind {
+    /// Canonical closed-vocabulary order for the property schema.
+    pub const ALL: [Self; PROPERTY_QUANTIFIER_COUNT] = [
+        Self::Always,
+        Self::Sometimes,
+        Self::Eventually,
+        Self::AfterQuiescence,
+        Self::Reachable,
+    ];
+
+    /// Returns the compact-binary tag assigned to this property kind.
+    #[must_use]
+    pub const fn binary_tag(self) -> u8 {
+        match self {
+            Self::Always => 0,
+            Self::Sometimes => 1,
+            Self::Eventually => 2,
+            Self::AfterQuiescence => 3,
+            Self::Reachable => 4,
+        }
+    }
+
+    /// Parses a compact-binary property kind tag.
+    #[must_use]
+    pub const fn from_binary_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Always),
+            1 => Some(Self::Sometimes),
+            2 => Some(Self::Eventually),
+            3 => Some(Self::AfterQuiescence),
+            4 => Some(Self::Reachable),
+            _ => None,
+        }
+    }
+
+    /// Returns the canonical material label for this property kind.
+    #[must_use]
+    pub const fn canonical_label(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Sometimes => "sometimes",
+            Self::Eventually => "eventually",
+            Self::AfterQuiescence => "after-quiescence",
+            Self::Reachable => "reachable",
+        }
+    }
+
+    /// Returns the deterministic TOML `kind` string for this property kind.
+    #[must_use]
+    pub const fn toml_kind(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Sometimes => "sometimes",
+            Self::Eventually => "eventually",
+            Self::AfterQuiescence => "after_quiescence",
+            Self::Reachable => "reachable",
+        }
+    }
+
+    /// Parses a deterministic TOML `kind` string.
+    #[must_use]
+    pub const fn from_toml_kind(kind: &str) -> Option<Self> {
+        match kind.as_bytes() {
+            b"always" => Some(Self::Always),
+            b"sometimes" => Some(Self::Sometimes),
+            b"eventually" => Some(Self::Eventually),
+            b"after_quiescence" => Some(Self::AfterQuiescence),
+            b"reachable" => Some(Self::Reachable),
+            _ => None,
+        }
+    }
+}
+
 /// The shared declarative predicate vocabulary used by properties and triggers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Predicate {
@@ -6326,6 +6430,20 @@ pub enum Property {
     },
 }
 
+impl Property {
+    /// Returns this property's temporal quantifier kind.
+    #[must_use]
+    pub const fn kind(&self) -> PropertyKind {
+        match self {
+            Self::Always { .. } => PropertyKind::Always,
+            Self::Sometimes { .. } => PropertyKind::Sometimes,
+            Self::Eventually { .. } => PropertyKind::Eventually,
+            Self::AfterQuiescence { .. } => PropertyKind::AfterQuiescence,
+            Self::Reachable { .. } => PropertyKind::Reachable,
+        }
+    }
+}
+
 /// One named property assertion in a [`Properties`] bundle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AssertionDef {
@@ -6468,7 +6586,7 @@ impl Properties {
     fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Self {
         Self {
             id: ContentHash::from_canonical_material(
-                "crucible.model.properties.v1",
+                PROPERTY_SCHEMA_DOMAIN,
                 &properties_material(&assertions),
             ),
             assertions,
@@ -13091,26 +13209,18 @@ struct AssertionToml {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum PropertyToml {
-    Always {
-        predicate: PredicateToml,
-    },
-    Sometimes {
-        predicate: PredicateToml,
-    },
-    Eventually {
-        trigger: PredicateToml,
-        property: PredicateToml,
-        deadline_ticks: u64,
-    },
-    AfterQuiescence {
-        predicate: PredicateToml,
-    },
-    Reachable {
-        predicate: PredicateToml,
-        expectation: ReachabilityExpectationToml,
-    },
+struct PropertyToml {
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predicate: Option<PredicateToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<PredicateToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    property: Option<PredicateToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deadline_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expectation: Option<ReachabilityExpectationToml>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14326,64 +14436,168 @@ fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError>
 
 fn property_to_toml(property: &Property) -> PropertyToml {
     match property {
-        Property::Always { predicate } => PropertyToml::Always {
-            predicate: predicate_to_toml(predicate),
+        Property::Always { predicate } => PropertyToml {
+            kind: property.kind().toml_kind().to_owned(),
+            predicate: Some(predicate_to_toml(predicate)),
+            trigger: None,
+            property: None,
+            deadline_ticks: None,
+            expectation: None,
         },
-        Property::Sometimes { predicate } => PropertyToml::Sometimes {
-            predicate: predicate_to_toml(predicate),
+        Property::Sometimes { predicate } => PropertyToml {
+            kind: property.kind().toml_kind().to_owned(),
+            predicate: Some(predicate_to_toml(predicate)),
+            trigger: None,
+            property: None,
+            deadline_ticks: None,
+            expectation: None,
         },
         Property::Eventually {
             trigger,
             property,
             deadline,
-        } => PropertyToml::Eventually {
-            trigger: predicate_to_toml(trigger),
-            property: predicate_to_toml(property),
-            deadline_ticks: deadline.ticks,
+        } => PropertyToml {
+            kind: PropertyKind::Eventually.toml_kind().to_owned(),
+            predicate: None,
+            trigger: Some(predicate_to_toml(trigger)),
+            property: Some(predicate_to_toml(property)),
+            deadline_ticks: Some(deadline.ticks),
+            expectation: None,
         },
-        Property::AfterQuiescence { predicate } => PropertyToml::AfterQuiescence {
-            predicate: predicate_to_toml(predicate),
+        Property::AfterQuiescence { predicate } => PropertyToml {
+            kind: property.kind().toml_kind().to_owned(),
+            predicate: Some(predicate_to_toml(predicate)),
+            trigger: None,
+            property: None,
+            deadline_ticks: None,
+            expectation: None,
         },
         Property::Reachable {
             predicate,
             expectation,
-        } => PropertyToml::Reachable {
-            predicate: predicate_to_toml(predicate),
-            expectation: reachability_expectation_to_toml(*expectation),
+        } => PropertyToml {
+            kind: property.kind().toml_kind().to_owned(),
+            predicate: Some(predicate_to_toml(predicate)),
+            trigger: None,
+            property: None,
+            deadline_ticks: None,
+            expectation: Some(reachability_expectation_to_toml(*expectation)),
         },
     }
 }
 
 fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
-    Ok(match toml {
-        PropertyToml::Always { predicate } => Property::Always {
-            predicate: predicate_from_toml(predicate)?,
-        },
-        PropertyToml::Sometimes { predicate } => Property::Sometimes {
-            predicate: predicate_from_toml(predicate)?,
-        },
-        PropertyToml::Eventually {
-            trigger,
-            property,
-            deadline_ticks,
-        } => Property::Eventually {
-            trigger: predicate_from_toml(trigger)?,
-            property: predicate_from_toml(property)?,
-            deadline: VirtualTime {
-                ticks: deadline_ticks,
-            },
-        },
-        PropertyToml::AfterQuiescence { predicate } => Property::AfterQuiescence {
-            predicate: predicate_from_toml(predicate)?,
-        },
-        PropertyToml::Reachable {
-            predicate,
-            expectation,
-        } => Property::Reachable {
-            predicate: predicate_from_toml(predicate)?,
-            expectation: reachability_expectation_from_toml(expectation),
-        },
+    let PropertyToml {
+        kind,
+        predicate,
+        trigger,
+        property,
+        deadline_ticks,
+        expectation,
+    } = toml;
+    let kind = PropertyKind::from_toml_kind(&kind)
+        .ok_or_else(|| scenario_serialization_error(format!("invalid property kind `{kind}`")))?;
+    Ok(match kind {
+        PropertyKind::Always => {
+            reject_property_toml_field(kind, "trigger", trigger)?;
+            reject_property_toml_field(kind, "property", property)?;
+            reject_property_toml_field(kind, "deadline_ticks", deadline_ticks)?;
+            reject_property_toml_field(kind, "expectation", expectation)?;
+            Property::Always {
+                predicate: predicate_from_toml(require_property_toml_field(
+                    kind,
+                    "predicate",
+                    predicate,
+                )?)?,
+            }
+        }
+        PropertyKind::Sometimes => {
+            reject_property_toml_field(kind, "trigger", trigger)?;
+            reject_property_toml_field(kind, "property", property)?;
+            reject_property_toml_field(kind, "deadline_ticks", deadline_ticks)?;
+            reject_property_toml_field(kind, "expectation", expectation)?;
+            Property::Sometimes {
+                predicate: predicate_from_toml(require_property_toml_field(
+                    kind,
+                    "predicate",
+                    predicate,
+                )?)?,
+            }
+        }
+        PropertyKind::Eventually => {
+            reject_property_toml_field(kind, "predicate", predicate)?;
+            reject_property_toml_field(kind, "expectation", expectation)?;
+            Property::Eventually {
+                trigger: predicate_from_toml(require_property_toml_field(
+                    kind, "trigger", trigger,
+                )?)?,
+                property: predicate_from_toml(require_property_toml_field(
+                    kind, "property", property,
+                )?)?,
+                deadline: VirtualTime {
+                    ticks: require_property_toml_field(kind, "deadline_ticks", deadline_ticks)?,
+                },
+            }
+        }
+        PropertyKind::AfterQuiescence => {
+            reject_property_toml_field(kind, "trigger", trigger)?;
+            reject_property_toml_field(kind, "property", property)?;
+            reject_property_toml_field(kind, "deadline_ticks", deadline_ticks)?;
+            reject_property_toml_field(kind, "expectation", expectation)?;
+            Property::AfterQuiescence {
+                predicate: predicate_from_toml(require_property_toml_field(
+                    kind,
+                    "predicate",
+                    predicate,
+                )?)?,
+            }
+        }
+        PropertyKind::Reachable => {
+            reject_property_toml_field(kind, "trigger", trigger)?;
+            reject_property_toml_field(kind, "property", property)?;
+            reject_property_toml_field(kind, "deadline_ticks", deadline_ticks)?;
+            Property::Reachable {
+                predicate: predicate_from_toml(require_property_toml_field(
+                    kind,
+                    "predicate",
+                    predicate,
+                )?)?,
+                expectation: reachability_expectation_from_toml(require_property_toml_field(
+                    kind,
+                    "expectation",
+                    expectation,
+                )?),
+            }
+        }
     })
+}
+
+fn require_property_toml_field<T>(
+    kind: PropertyKind,
+    field_name: &'static str,
+    value: Option<T>,
+) -> Result<T, EngineError> {
+    value.ok_or_else(|| {
+        scenario_serialization_error(format!(
+            "property kind `{}` missing `{field_name}`",
+            kind.toml_kind()
+        ))
+    })
+}
+
+fn reject_property_toml_field<T>(
+    kind: PropertyKind,
+    field_name: &'static str,
+    value: Option<T>,
+) -> Result<(), EngineError> {
+    if value.is_some() {
+        Err(scenario_serialization_error(format!(
+            "property kind `{}` has unexpected `{field_name}`",
+            kind.toml_kind()
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
@@ -16462,11 +16676,11 @@ fn read_assertion_binary(
 fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter) {
     match property {
         Property::Always { predicate } => {
-            writer.write_u8(0);
+            writer.write_u8(property.kind().binary_tag());
             write_predicate_binary(predicate, writer);
         }
         Property::Sometimes { predicate } => {
-            writer.write_u8(1);
+            writer.write_u8(property.kind().binary_tag());
             write_predicate_binary(predicate, writer);
         }
         Property::Eventually {
@@ -16474,20 +16688,20 @@ fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter)
             property,
             deadline,
         } => {
-            writer.write_u8(2);
+            writer.write_u8(PropertyKind::Eventually.binary_tag());
             write_predicate_binary(trigger, writer);
             write_predicate_binary(property, writer);
             writer.write_u64(deadline.ticks);
         }
         Property::AfterQuiescence { predicate } => {
-            writer.write_u8(3);
+            writer.write_u8(property.kind().binary_tag());
             write_predicate_binary(predicate, writer);
         }
         Property::Reachable {
             predicate,
             expectation,
         } => {
-            writer.write_u8(4);
+            writer.write_u8(property.kind().binary_tag());
             write_predicate_binary(predicate, writer);
             write_reachability_expectation_binary(*expectation, writer);
         }
@@ -16495,28 +16709,28 @@ fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter)
 }
 
 fn read_property_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Property, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(Property::Always {
+    match PropertyKind::from_binary_tag(reader.read_u8()?) {
+        Some(PropertyKind::Always) => Ok(Property::Always {
             predicate: read_predicate_binary(reader)?,
         }),
-        1 => Ok(Property::Sometimes {
+        Some(PropertyKind::Sometimes) => Ok(Property::Sometimes {
             predicate: read_predicate_binary(reader)?,
         }),
-        2 => Ok(Property::Eventually {
+        Some(PropertyKind::Eventually) => Ok(Property::Eventually {
             trigger: read_predicate_binary(reader)?,
             property: read_predicate_binary(reader)?,
             deadline: VirtualTime {
                 ticks: reader.read_u64()?,
             },
         }),
-        3 => Ok(Property::AfterQuiescence {
+        Some(PropertyKind::AfterQuiescence) => Ok(Property::AfterQuiescence {
             predicate: read_predicate_binary(reader)?,
         }),
-        4 => Ok(Property::Reachable {
+        Some(PropertyKind::Reachable) => Ok(Property::Reachable {
             predicate: read_predicate_binary(reader)?,
             expectation: read_reachability_expectation_binary(reader)?,
         }),
-        _ => Err(scenario_serialization_error("invalid property tag")),
+        None => Err(scenario_serialization_error("invalid property tag")),
     }
 }
 
@@ -17919,10 +18133,18 @@ fn assertion_material(assertion: &AssertionDef) -> String {
 fn property_material(property: &Property) -> String {
     match property {
         Property::Always { predicate } => {
-            format!("property=always\n{}", predicate_material(predicate))
+            format!(
+                "property={}\n{}",
+                property.kind().canonical_label(),
+                predicate_material(predicate)
+            )
         }
         Property::Sometimes { predicate } => {
-            format!("property=sometimes\n{}", predicate_material(predicate))
+            format!(
+                "property={}\n{}",
+                property.kind().canonical_label(),
+                predicate_material(predicate)
+            )
         }
         Property::Eventually {
             trigger,
@@ -17930,7 +18152,8 @@ fn property_material(property: &Property) -> String {
             deadline,
         } => {
             format!(
-                "property=eventually\ndeadline_ticks={}\ntrigger:\n{}\nproperty_predicate:\n{}",
+                "property={}\ndeadline_ticks={}\ntrigger:\n{}\nproperty_predicate:\n{}",
+                PropertyKind::Eventually.canonical_label(),
                 deadline.ticks,
                 predicate_material(trigger),
                 predicate_material(property)
@@ -17938,7 +18161,8 @@ fn property_material(property: &Property) -> String {
         }
         Property::AfterQuiescence { predicate } => {
             format!(
-                "property=after-quiescence\n{}",
+                "property={}\n{}",
+                property.kind().canonical_label(),
                 predicate_material(predicate)
             )
         }
@@ -17956,7 +18180,8 @@ fn property_material(property: &Property) -> String {
                 ReachabilityExpectation::Unreachable => String::from("expectation=unreachable"),
             };
             format!(
-                "property=reachable\n{}\n{}",
+                "property={}\n{}\n{}",
+                property.kind().canonical_label(),
                 expectation_material,
                 predicate_material(predicate)
             )
