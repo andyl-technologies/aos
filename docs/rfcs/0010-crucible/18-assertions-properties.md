@@ -943,9 +943,18 @@ verdict; it only shapes the next schedule the search tries.
   event satisfaction inside a later prefix, terminal-only AfterQuiescence
   evaluation, retained offsets at synthetic deadline points, offline every-event
   replay, and static timing wiring.
-- [ ] **T-ASRT-11** Enforce deterministic evaluation order (by stable id,
+- [x] **T-ASRT-11** Enforce deterministic evaluation order (by stable id,
   single predicate evaluation per point) identical across runs and online/offline.
   — satisfies [ASRT-19]; spec §18.7.
+  Completed by `checks.crucible.phase4.assertionEvaluationOrder`:
+  property construction canonicalizes assertions by stable id before building
+  `HostAssertionEvaluator`, streaming and deadline folds iterate that canonical
+  vector deterministically, and host assertion condition evaluation uses a
+  point-local named-leaf cache so repeated leaves inside one assertion are
+  resolved once at that point. Guest marker state insertion remains sorted by id,
+  and offline checks reuse the same evaluator path. The gate covers compound and
+  Eventually duplicate-leaf caching, stable-id order, and identical
+  custom-oracle call order plus reports across online/offline replay.
 - [ ] **T-ASRT-12** Implement the property lifecycle
   (declared/passing/satisfied/failing/violated) and the single unified outcome
   set with the full disposition taxonomy and run verdict. — satisfies [ASRT-21],
