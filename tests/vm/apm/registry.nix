@@ -5018,53 +5018,89 @@ in {
         return 1
       }
 
-      commit_signed() {
-        key="$1"
-        label="$2"
-        message="$3"
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" \
-          -c gpg.format=ssh \
-          -c "user.signingkey=$key" \
-          commit -S -m "$message" > "/tmp/signed-commit-$label.out" 2>&1 || {
-          cat "/tmp/signed-commit-$label.out"
-          fail "signed commit succeeds: $message"
-          return 1
-        }
-        cat "/tmp/signed-commit-$label.out"
-        git -C "$REG_DIR" cat-file -p HEAD > "/tmp/signed-commit-$label.object"
-        assert_file_contains "/tmp/signed-commit-$label.object" \
-          "BEGIN SSH SIGNATURE" "registry commit $label carries SSH signature"
-      }
-
-      publish_signed_tool() {
+      # `apr release` is the only producer command that seals TUF metadata
+      # (root/targets/snapshot/timestamp) into a signed commit: it publishes the
+      # store path, generates + uploads the static cache, signs the commit, and
+      # creates the signed release tag. Consumers reject any synced commit whose
+      # TUF metadata is missing or stale, so the legacy `apr publish --no-commit`
+      # + hand `git commit -S` flow no longer authorizes a sync.
+      release_signed_tool() {
         version="$1"
         store="$2"
-        label="$3"
-        $APR publish "$store" \
+        key="$3"
+        label="$4"
+        shift 4
+        $APR release "$version" \
+          --registry signed-reg \
+          --store-path "$store" \
           --name signed-tool \
-          --version "$version" \
           --description "Signed commit trust workflow tool" \
           --license MIT \
           --maintainer signed-commit@example.invalid \
-          --registry signed-reg \
-          --no-commit > "/tmp/signed-publish-$label.out" 2>&1 || {
-          cat "/tmp/signed-publish-$label.out"
-          fail "apr publish signed-tool $version succeeds"
-          return 1
-        }
-        cat "/tmp/signed-publish-$label.out"
-        $APR cache generate \
-          --registry signed-reg \
-          --output /tmp/signed-cache \
+          --key "$key" \
+          --cache-key /tmp/signed-cache.sec \
           --cache-url http://127.0.0.1:18106 \
-          --priority 52 \
-          --no-commit > "/tmp/signed-cache-$label.out" 2>&1 || {
-          cat "/tmp/signed-cache-$label.out"
-          fail "apr cache generate signed-tool $version succeeds"
+          --cache-priority 52 \
+          --upload-url file:///tmp/signed-cache \
+          "$@" > "/tmp/signed-release-$label.out" 2>&1 || {
+          cat "/tmp/signed-release-$label.out"
+          fail "apr release signed-tool $version ($label) succeeds"
           return 1
         }
-        cat "/tmp/signed-cache-$label.out"
+        cat "/tmp/signed-release-$label.out"
+      }
+
+      # A metadata-only release re-seals TUF without publishing a package. It is
+      # used to re-seal the root after a roster change (rotation/retirement),
+      # because `apr keys add`/`apr keys retire` commit the roster but do not
+      # re-seal the TUF root themselves.
+      reseal_release() {
+        version="$1"
+        key="$2"
+        label="$3"
+        shift 3
+        $APR release "$version" \
+          --registry signed-reg \
+          --key "$key" \
+          --cache-key /tmp/signed-cache.sec \
+          --cache-url http://127.0.0.1:18106 \
+          --cache-priority 52 \
+          --upload-url file:///tmp/signed-cache \
+          "$@" > "/tmp/signed-reseal-$label.out" 2>&1 || {
+          cat "/tmp/signed-reseal-$label.out"
+          fail "apr reseal release $version ($label) succeeds"
+          return 1
+        }
+        cat "/tmp/signed-reseal-$label.out"
+      }
+
+      # Re-sign only the HEAD commit with a different key, leaving the sealed TUF
+      # tree untouched. Used to forge a commit whose TUF metadata is valid (good
+      # key) but whose commit signature is from an untrusted/retired key, so the
+      # consumer's rejection is specifically a commit-signature failure.
+      amend_commit() {
+        key="$1"
+        label="$2"
+        git -C "$REG_DIR" \
+          -c gpg.format=ssh \
+          -c "user.signingkey=$key" \
+          commit --amend --no-edit -S > "/tmp/signed-amend-$label.out" 2>&1 || {
+          cat "/tmp/signed-amend-$label.out"
+          fail "re-sign commit $label succeeds"
+          return 1
+        }
+        git -C "$REG_DIR" cat-file -p HEAD > "/tmp/signed-amend-$label.object"
+        assert_file_contains "/tmp/signed-amend-$label.object" \
+          "BEGIN SSH SIGNATURE" "re-signed commit $label carries SSH signature"
+      }
+
+      push_branch() {
+        git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" \
+          > /tmp/signed-push.out 2>&1 || {
+          cat /tmp/signed-push.out
+          fail "git push signed-reg branch"
+          return 1
+        }
       }
 
       GOOD_KEY=/tmp/signed-commit-good
@@ -5126,7 +5162,7 @@ in {
       assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
       assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
 
-      echo "==> Maintainer: publish signed-tool 1.0.0 with trusted commit key"
+      echo "==> Maintainer: release signed-tool 1.0.0 with trusted commit key"
       $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial \
         --key "$GOOD_KEY"
       REG_DIR="$REG_STORAGE/signed-reg"
@@ -5135,22 +5171,31 @@ in {
         "registry records initial commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$TRUST_KEY" \
         "registry records initial commit signing key value"
-      publish_signed_tool 1.0.0 "$TOOL_V1_STORE" v1
+
+      git init --bare --object-format=sha256 /tmp/signed-origin.git
+      git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/signed-origin.git
+
+      ${pkgs.iproute2}/sbin/ip link set lo up || true
+      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+      nix --extra-experimental-features nix-command key generate-secret \
+        --key-name signed-cache > /tmp/signed-cache.sec
+
+      release_signed_tool 1.0.0 "$TOOL_V1_STORE" "$GOOD_KEY" v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_DEP_HASH.narinfo" \
         "static cache has signed-tool v1 dependency narinfo"
       assert_file_contains "$REG_DIR/registry.toml" \
         "http://127.0.0.1:18106" "registry records signed cache URL"
-      commit_signed "$GOOD_KEY" v1 "release: signed-tool 1.0.0"
+      assert_file_exists "$REG_DIR/tuf/root.json" \
+        "release seals TUF root metadata into the registry tree"
+      git -C "$REG_DIR" cat-file -p HEAD > /tmp/signed-head-v1.object
+      assert_file_contains /tmp/signed-head-v1.object \
+        "BEGIN SSH SIGNATURE" "release commit v1 carries SSH signature"
+      push_branch
 
-      git init --bare --object-format=sha256 /tmp/signed-origin.git
-      git -C /tmp/signed-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      git -C "$REG_DIR" remote add origin /tmp/signed-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
-
-      ${pkgs.iproute2}/sbin/ip link set lo up || true
-      ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
       PYTHONUNBUFFERED=1 python3 -m http.server 18106 --bind 127.0.0.1 \
         --directory /tmp/signed-cache > /tmp/signed-cache-http.log 2>&1 &
       CACHE_PID=$!
@@ -5216,17 +5261,20 @@ in {
         "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
         "trusted signed v1 executable runs through dependency"
 
-      echo "==> Maintainer: publish v2 signed by the wrong key"
+      echo "==> Maintainer: release v2 sealed by the trusted key, commit re-signed wrong"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 2.0.0 "$TOOL_V2_STORE" v2-bad
+      # Seal v2's TUF with the trusted key, then re-sign only the commit with an
+      # untrusted key: the tree (and TUF metadata) stay valid, isolating the
+      # rejection to the commit signature.
+      release_signed_tool 2.0.0 "$TOOL_V2_STORE" "$GOOD_KEY" v2-bad --previous 1.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_HASH.narinfo" \
-        "static cache has wrong-key signed-tool v2 narinfo"
+        "static cache has signed-tool v2 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_DEP_HASH.narinfo" \
-        "static cache has wrong-key signed-tool v2 dependency narinfo"
-      commit_signed "$BAD_KEY" v2-bad "release: signed-tool 2.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+        "static cache has signed-tool v2 dependency narinfo"
+      amend_commit "$BAD_KEY" v2-bad
+      push_branch
 
       echo "==> Consumer: reject wrong-key registry update"
       export HOME=/tmp/signed-consumer
@@ -5255,17 +5303,16 @@ in {
         "^signed-tool 1.0.0 via signed-leaf 1.0.0$" \
         "wrong-key update leaves installed v1 active"
 
-      echo "==> Maintainer: publish v3 signed by the trusted key"
+      echo "==> Maintainer: release v3 sealed and signed by the trusted key"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 3.0.0 "$TOOL_V3_STORE" v3-good
+      release_signed_tool 3.0.0 "$TOOL_V3_STORE" "$GOOD_KEY" v3-good --previous 2.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has signed-tool v3 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_DEP_HASH.narinfo" \
         "static cache has signed-tool v3 dependency narinfo"
-      commit_signed "$GOOD_KEY" v3-good "release: signed-tool 3.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      push_branch
 
       echo "==> Consumer: recover on trusted signed update and upgrade"
       export HOME=/tmp/signed-consumer
@@ -5303,12 +5350,15 @@ in {
         "^signed-tool 3.0.0 via signed-leaf 3.0.0$" \
         "trusted signed v3 executable runs through dependency"
 
-      echo "==> Maintainer: rotate trust roster to a new signing key"
+      echo "==> Maintainer: rotate trust roster to add a new signing key, release v4"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      $APR keys add next "$NEXT_TRUST_KEY" --registry signed-reg --no-commit \
-        > /tmp/signed-keys-add-next.out 2>&1 || {
+      # Add the next key to the roster in a commit signed by the still-trusted
+      # initial key, then re-seal + publish v4 on top. The consumer accepts the
+      # rotation because it is delivered by a currently-trusted key.
+      $APR keys add next "$NEXT_TRUST_KEY" --registry signed-reg \
+        --key "$GOOD_KEY" > /tmp/signed-keys-add-next.out 2>&1 || {
         cat /tmp/signed-keys-add-next.out
         fail "apr keys add next succeeds"
       }
@@ -5317,13 +5367,19 @@ in {
         "registry records next commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$NEXT_TRUST_KEY" \
         "registry records next commit signing key value"
-      commit_signed "$GOOD_KEY" rotate-next "trust: add next signing key"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      release_signed_tool 4.0.0 "$TOOL_V4_STORE" "$GOOD_KEY" v4 --previous 3.0.0
+      assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
+        "static cache has signed-tool v4 narinfo"
+      push_branch
 
-      echo "==> Consumer: accept roster rotation signed by existing key"
+      echo "==> Consumer: accept roster rotation and upgrade to v4"
       export HOME=/tmp/signed-consumer
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
+      delete_store_path "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
       $APM update --registry signed-reg > /tmp/signed-update-rotate.out 2>&1 || {
         cat /tmp/signed-update-rotate.out
         fail "apm update accepts roster rotation signed by existing key"
@@ -5333,35 +5389,9 @@ in {
         'id = "next"' "consumer materializes rotated trust key id"
       assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
         "$NEXT_TRUST_KEY" "consumer materializes rotated trust key value"
-
-      echo "==> Maintainer: publish v4 signed by the rotated key"
-      export HOME=/tmp
-      export USER=root
-      APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 4.0.0 "$TOOL_V4_STORE" v4-next
-      assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
-        "static cache has signed-tool v4 narinfo"
-      assert_file_exists "/tmp/signed-cache/$TOOL_V4_DEP_HASH.narinfo" \
-        "static cache has signed-tool v4 dependency narinfo"
-      commit_signed "$NEXT_KEY" v4-next "release: signed-tool 4.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
-
-      echo "==> Consumer: accept update signed by rotated key and upgrade"
-      export HOME=/tmp/signed-consumer
-      export USER=signeduser
-      APM_CONFIG="$HOME/.config/apm"
-      delete_store_path "$TOOL_V4_STORE" "signed-tool-v4"
-      delete_store_path "$TOOL_V4_DEP_STORE" "signed-leaf-v4"
-      rm -rf "$HOME/.cache/apm"
-      mkdir -p "$HOME/.cache/apm"
-      $APM update --registry signed-reg > /tmp/signed-update-v4.out 2>&1 || {
-        cat /tmp/signed-update-v4.out
-        fail "apm update accepts signed v4 from rotated key"
-      }
-      cat /tmp/signed-update-v4.out
       $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v4.out 2>&1 || {
         cat /tmp/signed-upgrade-v4.out
-        fail "apm upgrade downloads rotated-key signed v4"
+        fail "apm upgrade downloads signed v4"
       }
       cat /tmp/signed-upgrade-v4.out
       assert_file_contains /tmp/signed-upgrade-v4.out "Downloading 2 NAR" \
@@ -5371,15 +5401,54 @@ in {
       "$PROFILE_TOOL" > /tmp/signed-run-v4.out
       assert_file_contains /tmp/signed-run-v4.out \
         "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
-        "rotated-key signed v4 executable runs through dependency"
+        "rotated-roster v4 executable runs through dependency"
 
-      echo "==> Maintainer: retire the original signing key"
+      echo "==> Maintainer: release v5 with a commit signed by the rotated key"
+      export HOME=/tmp
+      export USER=root
+      APM_CONFIG="$HOME/.config/apm"
+      # Seal v5 with the trusted initial key, then re-sign the commit with the
+      # rotated next key (now an active roster member): the consumer accepts it.
+      release_signed_tool 5.0.0 "$TOOL_V5_STORE" "$GOOD_KEY" v5 --previous 4.0.0
+      assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
+        "static cache has signed-tool v5 narinfo"
+      amend_commit "$NEXT_KEY" v5
+      push_branch
+
+      echo "==> Consumer: accept update signed by rotated key and upgrade to v5"
+      export HOME=/tmp/signed-consumer
+      export USER=signeduser
+      APM_CONFIG="$HOME/.config/apm"
+      delete_store_path "$TOOL_V5_STORE" "signed-tool-v5"
+      delete_store_path "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      rm -rf "$HOME/.cache/apm"
+      mkdir -p "$HOME/.cache/apm"
+      $APM update --registry signed-reg > /tmp/signed-update-v5.out 2>&1 || {
+        cat /tmp/signed-update-v5.out
+        fail "apm update accepts commit signed by rotated key"
+      }
+      cat /tmp/signed-update-v5.out
+      $APM upgrade signed-tool --yes > /tmp/signed-upgrade-v5.out 2>&1 || {
+        cat /tmp/signed-upgrade-v5.out
+        fail "apm upgrade downloads rotated-key signed v5"
+      }
+      cat /tmp/signed-upgrade-v5.out
+      assert_file_contains /tmp/signed-upgrade-v5.out "Downloading 2 NAR" \
+        "apm upgrade downloads signed v5 closure"
+      assert_store_valid "$TOOL_V5_STORE" "signed-tool-v5"
+      assert_store_valid "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      "$PROFILE_TOOL" > /tmp/signed-run-v5.out
+      assert_file_contains /tmp/signed-run-v5.out \
+        "^signed-tool 5.0.0 via signed-leaf 5.0.0$" \
+        "rotated-key signed v5 executable runs through dependency"
+
+      echo "==> Maintainer: retire the original signing key and rotate the TUF root"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
       $APR keys retire initial --vouched-by next --reason "rotation complete" \
         --key "$NEXT_KEY" \
-        --registry signed-reg --no-commit > /tmp/signed-keys-retire-initial.out 2>&1 || {
+        --registry signed-reg > /tmp/signed-keys-retire-initial.out 2>&1 || {
         cat /tmp/signed-keys-retire-initial.out
         fail "apr keys retire initial succeeds"
       }
@@ -5388,8 +5457,15 @@ in {
         "registry records retired signing key section"
       assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
         "registry records retired initial signing key id"
-      commit_signed "$NEXT_KEY" retire-initial "trust: retire initial signing key"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      # Retiring a key revokes it in the roster and re-signs tags but does not
+      # re-seal the TUF root, which still lists the retired key. Rotate the root
+      # off the retired key with a metadata-only release co-signed by the
+      # retiring key (--rotate-from) so consumers can authorize the transition.
+      reseal_release 5.1.0 "$NEXT_KEY" retire-reseal --previous 5.0.0 \
+        --rotate-from "$GOOD_KEY"
+      assert_file_not_contains "$REG_DIR/tuf/root.json" "$GOOD_PUBLIC" \
+        "rotated TUF root drops the retired key material"
+      push_branch
 
       echo "==> Consumer: accept retirement signed by rotated key"
       export HOME=/tmp/signed-consumer
@@ -5405,24 +5481,20 @@ in {
       assert_file_contains "$HOME/.local/share/apm/registries/signed-reg/keys.toml" \
         'id = "initial"' "consumer materializes retired initial signing key id"
 
-      echo "==> Maintainer: publish v5 signed by the retired original key"
+      echo "==> Maintainer: forge a commit signed by the retired original key"
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      publish_signed_tool 5.0.0 "$TOOL_V5_STORE" v5-retired
-      assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
-        "static cache has signed-tool v5 narinfo"
-      assert_file_exists "/tmp/signed-cache/$TOOL_V5_DEP_HASH.narinfo" \
-        "static cache has signed-tool v5 dependency narinfo"
-      commit_signed "$GOOD_KEY" v5-retired "release: signed-tool 5.0.0"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      # Seal the metadata with the active next key, then re-sign the commit with
+      # the retired initial key: the consumer must reject the retired signature.
+      reseal_release 5.2.0 "$NEXT_KEY" retired-forge --previous 5.1.0
+      amend_commit "$GOOD_KEY" retired-forge
+      push_branch
 
       echo "==> Consumer: reject update signed by retired original key"
       export HOME=/tmp/signed-consumer
       export USER=signeduser
       APM_CONFIG="$HOME/.config/apm"
-      delete_store_path "$TOOL_V5_STORE" "signed-tool-v5"
-      delete_store_path "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
       if $APM update --registry signed-reg > /tmp/signed-update-retired.out 2>&1; then
         cat /tmp/signed-update-retired.out
         fail "apm update should reject commit signed by retired key"
@@ -5437,16 +5509,12 @@ in {
         cat /tmp/signed-search-after-retired.out
         fail "apm search still works after rejected retired-key update"
       }
-      assert_file_contains /tmp/signed-search-after-retired.out "4.0.0" \
-        "rejected retired-key update leaves v4 metadata active"
-      assert_file_not_contains /tmp/signed-search-after-retired.out "5.0.0" \
-        "rejected retired-key update does not expose v5"
-      assert_store_missing "$TOOL_V5_STORE" "signed-tool-v5"
-      assert_store_missing "$TOOL_V5_DEP_STORE" "signed-leaf-v5"
+      assert_file_contains /tmp/signed-search-after-retired.out "5.0.0" \
+        "rejected retired-key update leaves v5 metadata active"
       "$PROFILE_TOOL" > /tmp/signed-run-after-retired.out
       assert_file_contains /tmp/signed-run-after-retired.out \
-        "^signed-tool 4.0.0 via signed-leaf 4.0.0$" \
-        "retired-key update leaves installed v4 active"
+        "^signed-tool 5.0.0 via signed-leaf 5.0.0$" \
+        "retired-key update leaves installed v5 active"
 
       if kill "$CACHE_PID" 2>/dev/null; then
         pass "signed static cache HTTP server stopped"
