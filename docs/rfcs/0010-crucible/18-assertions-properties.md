@@ -893,10 +893,20 @@ verdict; it only shapes the next schedule the search tries.
   outcome immutability, kind-mismatch diagnostics, and static absence of host
   time, thread RNG, unordered maps/sets, and scheduler decisions in the guest
   marker assertion evaluator.
-- [ ] **T-ASRT-7** Implement the offline assertion checker: grade a recorded run's
+- [x] **T-ASRT-7** Implement the offline assertion checker: grade a recorded run's
   log against the original or a new/amended property set with no guest
   re-execution, producing the identical online outcome set. — satisfies [ASRT-14],
   [ASRT-16]; spec §18.6.
+  Completed by `checks.crucible.phase4.offlineAssertionChecker`:
+  `OfflineAssertionChecker` takes a retained `SchedulerEventLogEntry` slice for
+  black-box checking, or a `RecordedAssertionLog` rebuilt from retained
+  event-log segments for custom host oracles, reconstructs checked
+  `ConditionEventLogPrefix` values from the recorded log, and drives
+  `HostAssertionEvaluator` without creating a scheduler or backend. The gate
+  verifies whole-report equality with the online evaluator, idempotent re-grading
+  of an amended property set, invalid recorded log rejection, default and custom
+  host-oracle entry points, missing-offset diagnostics, and static absence of
+  guest re-execution or host-time/RNG inputs in the offline checker.
 - [ ] **T-ASRT-8** Unify online and offline evaluation onto one log-fold code path
   and apply never-evaluated/never-triggered policies identically as a distinct
   outcome. — satisfies [ASRT-15]; spec §18.6, §18.8.

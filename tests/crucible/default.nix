@@ -712,6 +712,11 @@ in {
       attrPath = "checks.crucible.phase4.guestMarkerAssertions";
       taskIds = ["T-ASRT-6"];
     };
+    offlineAssertionChecker = import ./phase4-offline-assertion-checker.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.offlineAssertionChecker";
+      taskIds = ["T-ASRT-7"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

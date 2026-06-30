@@ -146,7 +146,8 @@ pub use trigger::{
     EventGraphState, FirePolicy, GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker,
     HostAssertionEvaluator, HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind,
     HostAssertionReport, LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload,
-    ObservedFaultFact, ObservedOrderingFact, ObservedState, ResolvedCodePoint, ResolvedMemPlace,
+    ObservedFaultFact, ObservedOrderingFact, ObservedState, OfflineAssertionCheckError,
+    OfflineAssertionChecker, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]

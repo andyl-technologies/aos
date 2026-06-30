@@ -26,7 +26,8 @@ use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
-    scheduled_event_resolve_class,
+    scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
+    scheduler_event_log_segment_bytes,
 };
 
 pub use crate::model::EventId;
@@ -1164,6 +1165,361 @@ impl HostAssertionReport {
     }
 }
 
+/// Offline assertion checker for a retained scheduler event log.
+///
+/// The checker never drives guests or scheduler state. It reconstructs checked
+/// [`ConditionEventLogPrefix`] values from recorded [`SchedulerEventLogEntry`]
+/// values and feeds them through [`HostAssertionEvaluator`], so amended property
+/// sets can be graded against retained runs.
+#[derive(Clone, Debug, Default)]
+pub struct OfflineAssertionChecker {
+    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    guest_assertion_catalog: Vec<GuestAssertionMarker>,
+}
+
+impl OfflineAssertionChecker {
+    /// Builds an offline checker with no white-box marker policy.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds authoritative white-box opt-in policies for guest marker evaluation.
+    #[must_use]
+    pub fn with_white_box_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
+    ) -> Self {
+        self.white_box_policies = policies.into_iter().collect();
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies from a world definition.
+    #[must_use]
+    pub fn with_world_white_box_policies(self, world: &World) -> Self {
+        self.with_white_box_policies(
+            world
+                .nodes()
+                .iter()
+                .map(|node| (node.id.clone(), node.white_box)),
+        )
+    }
+
+    /// Adds catalog-declared guest assertion markers for offline finalization.
+    #[must_use]
+    pub fn with_guest_assertion_catalog(
+        mut self,
+        catalog: impl IntoIterator<Item = GuestAssertionMarker>,
+    ) -> Self {
+        self.guest_assertion_catalog = catalog.into_iter().collect();
+        self
+    }
+
+    /// Grades `properties` against a retained event log using the black-box oracle.
+    ///
+    /// This entry point is for built-in black-box predicates and guest markers.
+    /// Named host predicates that inspect [`ObservedState::event_log_offset`]
+    /// should use [`Self::check_run_with_oracle`] with a [`RecordedAssertionLog`]
+    /// carrying the exact recorded prefix offsets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OfflineAssertionCheckError::ConditionEvaluation`] when the
+    /// recorded entries are not a dense, hash-valid scheduler log prefix.
+    pub fn check_run(
+        &self,
+        properties: &Properties,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<HostAssertionReport, OfflineAssertionCheckError> {
+        let mut oracle = BlackBoxHostOracle;
+        let recorded = RecordedAssertionLog::from_entries(event_log.to_vec());
+        self.check_run_internal(properties, &recorded, &mut oracle, false)
+    }
+
+    /// Grades `properties` against a retained event log using `oracle`.
+    ///
+    /// The event log is read-only input. Evaluation observes every recorded
+    /// scheduler evaluation boundary except the terminal prefix, then lets
+    /// [`HostAssertionEvaluator::finalize_prefix`] observe that terminal prefix
+    /// exactly once before applying end-of-run policies. Each observed point is
+    /// reconstructed as a [`ConditionEventLogPrefix`] before evaluation. The
+    /// supplied [`RecordedAssertionLog`] must carry exact event-log offsets for
+    /// every evaluated prefix so named host predicates see the same
+    /// [`ObservedState`] online and offline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OfflineAssertionCheckError::ConditionEvaluation`] when the
+    /// recorded entries are not a dense, hash-valid scheduler log prefix,
+    /// [`OfflineAssertionCheckError::MissingEventLogOffset`] when an evaluated
+    /// prefix has no recorded offset, or
+    /// [`OfflineAssertionCheckError::EventLogOffsetMismatch`] when a supplied
+    /// offset's event count does not match the evaluated prefix length.
+    pub fn check_run_with_oracle<O>(
+        &self,
+        properties: &Properties,
+        recorded_log: &RecordedAssertionLog,
+        oracle: &mut O,
+    ) -> Result<HostAssertionReport, OfflineAssertionCheckError>
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        self.check_run_internal(properties, recorded_log, oracle, true)
+    }
+
+    fn check_run_internal<O>(
+        &self,
+        properties: &Properties,
+        recorded_log: &RecordedAssertionLog,
+        oracle: &mut O,
+        require_recorded_offsets: bool,
+    ) -> Result<HostAssertionReport, OfflineAssertionCheckError>
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        let mut evaluator = HostAssertionEvaluator::new(properties)
+            .with_white_box_policies(self.white_box_policies.clone())
+            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone());
+        let event_log = recorded_log.entries();
+        let terminal_prefix_len = event_log.len();
+
+        for (index, entry) in event_log.iter().enumerate() {
+            let prefix_len = index + 1;
+            if prefix_len == terminal_prefix_len || !is_recorded_evaluation_boundary(entry) {
+                continue;
+            }
+            let prefix = condition_prefix_from_recorded_log(
+                recorded_log,
+                prefix_len,
+                require_recorded_offsets,
+            )?;
+            evaluator.observe_prefix(&prefix, oracle);
+        }
+
+        let terminal_prefix = condition_prefix_from_recorded_log(
+            recorded_log,
+            terminal_prefix_len,
+            require_recorded_offsets,
+        )?;
+        Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
+    }
+}
+
+/// Retained assertion-checking view of a recorded scheduler event log.
+///
+/// Custom host predicate oracles can inspect [`ObservedState::event_log_offset`].
+/// To make those predicates byte-identical online and offline, this value stores
+/// the scheduler entries plus offsets reconstructed from retained event-log
+/// segments using the scheduler's canonical segment and prefix hashing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedAssertionLog {
+    entries: Vec<SchedulerEventLogEntry>,
+    prefix_offsets: BTreeMap<u64, EventLogOffset>,
+}
+
+impl RecordedAssertionLog {
+    /// Builds a recorded log from scheduler entries without segment offsets.
+    ///
+    /// This is sufficient for [`OfflineAssertionChecker::check_run`], whose
+    /// default black-box oracle cannot inspect event-log offsets. Custom host
+    /// oracles should use [`Self::from_segments`] so evaluated prefixes carry the
+    /// same offsets the scheduler observed online.
+    #[must_use]
+    pub fn from_entries(entries: Vec<SchedulerEventLogEntry>) -> Self {
+        Self {
+            entries,
+            prefix_offsets: BTreeMap::new(),
+        }
+    }
+
+    /// Builds a recorded log from retained scheduler event-log segments.
+    ///
+    /// Each segment is folded in order with the same canonical segment bytes and
+    /// prefix hash material used by scheduler EMIT. Offsets are recorded at every
+    /// segment boundary, including the zero-entry genesis prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OfflineAssertionCheckError::EventLogSegmentLengthOverflow`] when
+    /// a segment byte length cannot fit in `u64`,
+    /// [`OfflineAssertionCheckError::EventLogByteOffsetOverflow`] when cumulative
+    /// bytes overflow, or [`OfflineAssertionCheckError::EventLogEventCountOverflow`]
+    /// when cumulative event count overflows.
+    pub fn from_segments(
+        segments: impl IntoIterator<Item = Vec<SchedulerEventLogEntry>>,
+    ) -> Result<Self, OfflineAssertionCheckError> {
+        let mut entries = Vec::new();
+        let mut prefix_offsets = BTreeMap::new();
+        let mut prefix = scheduler_event_log_empty_prefix();
+        let mut bytes = 0_u64;
+        let mut events = 0_u64;
+        prefix_offsets.insert(events, EventLogOffset::new(prefix, bytes, events));
+
+        for segment in segments {
+            if segment.is_empty() {
+                continue;
+            }
+            let segment_bytes = scheduler_event_log_segment_bytes(prefix, &segment);
+            let segment_hash = ContentHash::from_bytes(&segment_bytes);
+            let appended_bytes = u64::try_from(segment_bytes.len()).map_err(|_| {
+                OfflineAssertionCheckError::EventLogSegmentLengthOverflow {
+                    segment_len: segment_bytes.len(),
+                }
+            })?;
+            bytes = bytes.checked_add(appended_bytes).ok_or(
+                OfflineAssertionCheckError::EventLogByteOffsetOverflow {
+                    bytes,
+                    appended_bytes,
+                },
+            )?;
+            let appended_events = u64::try_from(segment.len()).map_err(|_| {
+                OfflineAssertionCheckError::EventLogEventCountOverflow {
+                    events,
+                    appended_events: u64::MAX,
+                }
+            })?;
+            events = events.checked_add(appended_events).ok_or(
+                OfflineAssertionCheckError::EventLogEventCountOverflow {
+                    events,
+                    appended_events,
+                },
+            )?;
+            let prefix_material = format!(
+                "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
+                prefix.to_hex(),
+                segment_hash.to_hex(),
+            );
+            prefix = ContentHash::from_canonical_material(
+                "crucible.scheduler.event-log.prefix.v1",
+                &prefix_material,
+            );
+            prefix_offsets.insert(events, EventLogOffset::new(prefix, bytes, events));
+            entries.extend(segment);
+        }
+
+        Ok(Self {
+            entries,
+            prefix_offsets,
+        })
+    }
+
+    /// Returns retained scheduler event-log entries.
+    #[must_use]
+    pub fn entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.entries
+    }
+
+    /// Returns the reconstructed event-log offset for `prefix_len`, if retained.
+    #[must_use]
+    pub fn event_log_offset(&self, prefix_len: u64) -> Option<EventLogOffset> {
+        self.prefix_offsets.get(&prefix_len).copied()
+    }
+}
+
+/// Error returned by offline assertion checking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OfflineAssertionCheckError {
+    /// A recorded scheduler prefix failed condition-prefix validation.
+    ConditionEvaluation(ConditionEvaluationError),
+    /// A custom-oracle check lacks the exact event-log offset for a prefix.
+    MissingEventLogOffset {
+        /// Number of scheduler entries visible in the evaluated prefix.
+        prefix_len: u64,
+    },
+    /// A supplied event-log offset does not describe the evaluated prefix.
+    EventLogOffsetMismatch {
+        /// Number of scheduler entries visible in the evaluated prefix.
+        prefix_len: u64,
+        /// Event count stored in the supplied offset.
+        offset_events: u64,
+    },
+    /// The platform prefix length could not be represented in the recorded format.
+    PrefixLengthOverflow {
+        /// Number of scheduler entries visible in the evaluated prefix.
+        prefix_len: usize,
+    },
+    /// A retained event-log segment's canonical byte length exceeded `u64`.
+    EventLogSegmentLengthOverflow {
+        /// Segment byte length that could not be represented.
+        segment_len: usize,
+    },
+    /// Cumulative event-log byte offsets overflowed.
+    EventLogByteOffsetOverflow {
+        /// Cumulative bytes before the segment was folded.
+        bytes: u64,
+        /// Bytes appended by the segment.
+        appended_bytes: u64,
+    },
+    /// Cumulative event-log event counts overflowed.
+    EventLogEventCountOverflow {
+        /// Cumulative events before the segment was folded.
+        events: u64,
+        /// Events appended by the segment.
+        appended_events: u64,
+    },
+}
+
+impl fmt::Display for OfflineAssertionCheckError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConditionEvaluation(error) => write!(formatter, "{error}"),
+            Self::MissingEventLogOffset { prefix_len } => write!(
+                formatter,
+                "offline assertion log is missing event-log offset for prefix length {prefix_len}"
+            ),
+            Self::EventLogOffsetMismatch {
+                prefix_len,
+                offset_events,
+            } => write!(
+                formatter,
+                "offline assertion log offset for prefix length {prefix_len} carries event count {offset_events}"
+            ),
+            Self::PrefixLengthOverflow { prefix_len } => write!(
+                formatter,
+                "offline assertion log prefix length {prefix_len} does not fit in u64"
+            ),
+            Self::EventLogSegmentLengthOverflow { segment_len } => write!(
+                formatter,
+                "offline assertion log segment length {segment_len} does not fit in u64"
+            ),
+            Self::EventLogByteOffsetOverflow {
+                bytes,
+                appended_bytes,
+            } => write!(
+                formatter,
+                "offline assertion log byte offset overflow: bytes={bytes} appended_bytes={appended_bytes}"
+            ),
+            Self::EventLogEventCountOverflow {
+                events,
+                appended_events,
+            } => write!(
+                formatter,
+                "offline assertion log event count overflow: events={events} appended_events={appended_events}"
+            ),
+        }
+    }
+}
+
+impl Error for OfflineAssertionCheckError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ConditionEvaluation(error) => Some(error),
+            Self::MissingEventLogOffset { .. }
+            | Self::EventLogOffsetMismatch { .. }
+            | Self::PrefixLengthOverflow { .. }
+            | Self::EventLogSegmentLengthOverflow { .. }
+            | Self::EventLogByteOffsetOverflow { .. }
+            | Self::EventLogEventCountOverflow { .. } => None,
+        }
+    }
+}
+
+impl From<ConditionEvaluationError> for OfflineAssertionCheckError {
+    fn from(error: ConditionEvaluationError) -> Self {
+        Self::ConditionEvaluation(error)
+    }
+}
+
 /// Streaming host-side assertion evaluator over checked observable state.
 #[derive(Clone, Debug)]
 pub struct HostAssertionEvaluator {
@@ -1708,6 +2064,48 @@ fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> Virt
             .checked_add(deadline.ticks)
             .unwrap_or(u64::MAX),
     }
+}
+
+fn condition_prefix_from_recorded_entries(
+    entries: &[SchedulerEventLogEntry],
+) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
+    if entries.is_empty() {
+        Ok(ConditionEventLogPrefix::genesis())
+    } else {
+        ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec())
+    }
+}
+
+fn condition_prefix_from_recorded_log(
+    recorded_log: &RecordedAssertionLog,
+    prefix_len: usize,
+    require_recorded_offset: bool,
+) -> Result<ConditionEventLogPrefix, OfflineAssertionCheckError> {
+    let entries = &recorded_log.entries()[..prefix_len];
+    let prefix = condition_prefix_from_recorded_entries(entries)?;
+    let prefix_len = u64::try_from(prefix_len)
+        .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
+    let Some(offset) = recorded_log.event_log_offset(prefix_len) else {
+        return if require_recorded_offset {
+            Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len })
+        } else {
+            Ok(prefix)
+        };
+    };
+    if offset.events != prefix_len {
+        return Err(OfflineAssertionCheckError::EventLogOffsetMismatch {
+            prefix_len,
+            offset_events: offset.events,
+        });
+    }
+    Ok(prefix.with_event_log_offset(offset))
+}
+
+fn is_recorded_evaluation_boundary(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::EvaluationBoundary(_)
+    )
 }
 
 fn observe_guest_marker_assertions(
