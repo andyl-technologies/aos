@@ -925,6 +925,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogUnified";
       taskIds = ["T-OBS-1"];
     };
+    eventLogSchema = import ./phase4-event-log-schema.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogSchema";
+      taskIds = ["T-OBS-2"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

@@ -819,11 +819,16 @@ log, so they cannot disagree about what happened.
   exactly **one** event log per run, all scheduler append sites route through the
   single append path `EventLog::append_entries`, and offset plus condition-log
   consumers read projections from that one retained stream.
-- [ ] **T-OBS-2** Define the entry schema (`seq`, `at` virtual-time+icount,
+- [x] **T-OBS-2** Define the entry schema (`seq`, `at` virtual-time+icount,
   `source`, open-set typed `payload`, `level`, `EventClass`) with monotonic
   gap-free `seq`, icount stamping, and the closed `EventSource` set incl.
   `Command` correlation. — satisfies [OBS-5], [OBS-6], [OBS-7], [OBS-8], [OBS-9];
   spec §19.2, §19.2.1.
+  Completed by `checks.crucible.phase4.eventLogSchema`: `LogEntry` now carries a
+  full `EventLogTime` (`VirtualTime` plus an `Icount` stamp, with a node on
+  node-local stamps), `EventSource`, `EventLevel`, and `EventClass`;
+  command-caused entries preserve `Command { command_id }` correlation, and
+  append material includes the schema fields in the content-addressed segment.
 - [ ] **T-OBS-3** Implement the open-set, typed `payload` (kind + named typed
   attributes, `diagnostic` escape hatch) read by name, and the orthogonal
   `Level`-vs-`EventClass` rule (level never consulted by the comparison). —

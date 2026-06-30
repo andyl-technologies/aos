@@ -121,7 +121,7 @@
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
       {
         label = "EventLog export";
-        needle = "ControlOperationKind, EventLog, ExactLocalEvent";
+        needle = "EventLevel, EventLog, EventLogIcountStamp";
       }
       {
         label = "LogEntry export";
