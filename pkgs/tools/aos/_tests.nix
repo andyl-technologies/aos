@@ -1358,6 +1358,11 @@ in {
 
         cache_root="$work/static-cache"
         mkdir -p "$cache_root/cache/nar" "$reg/packages/m"
+        printf '%s\n' \
+          'StoreDir: /nix/store' \
+          'WantMassQuery: 1' \
+          'Priority: 41' \
+          > "$cache_root/cache/nix-cache-info"
         printf '%s\n' "hostpkg NAR payload" > "$cache_root/cache/nar/$pkg_hash-hostpkg.nar"
         printf '%s\n' \
           "StorePath: /nix/store/$pkg_hash-hostpkg-1.0.0" \
@@ -2446,8 +2451,7 @@ in {
             and .channel.action == "init"
             and .channel.touched_partitions == 256
             and (.cache.paths >= 3)
-            and (.cache.narinfos >= 3)
-            and (.cache.nars >= 3)
+            and (.cache.remote_skipped >= 3)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
             and (.uploaded_files > 0)
