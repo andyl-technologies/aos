@@ -266,6 +266,19 @@ The canonical instruction ABI is versioned and single-sourced in the
 trap values, and the guest-agent crate re-exports the same table for its emitter
 to consume when the emitter implementation lands.
 
+Trap installation is also gated by an explicit setup validation record. Setup code
+builds `WhiteboxDoorbellSetupResources` from the guest's observed x86 device-port
+map and aarch64 reserved-immediate ownership, then calls
+`WhiteboxDoorbellSetupValidation::validate(...)` for the configured trap. When
+white-box mode is enabled, `PluginWhiteboxDoorbell::registration_plan` requires
+that validated record before it returns an install plan. An unchecked trap, a
+mismatched validation record, or a detected x86 port / aarch64 immediate collision
+is a setup error. When white-box mode is disabled, registration returns `Disabled`
+before consuming that record, so the disabled doorbell remains uninstalled and
+inert.
+The disabled doorbell remains uninstalled and inert by construction.
+In short, a collision is a setup error, not a silently installed shared trap.
+
 ```text
 instruction_abi_version = 1
 
@@ -744,9 +757,16 @@ the transport layer by construction.
   vector (`ef`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
   the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
   registration state is built from those ABI trap entries.
-- [ ] **T-GHC-6** Implement collision avoidance and inertness for the reserved
+- [x] **T-GHC-6** Implement collision avoidance and inertness for the reserved
   doorbell port/instruction: validate non-collision at setup; inert when the
   channel is disabled. — satisfies [GHC-17], [GHC-34]; spec §16.4, §16.7.
+  Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`: the
+  plugin now validates the configured trap against
+  `WhiteboxDoorbellSetupResources`, requires the resulting
+  `WhiteboxDoorbellSetupValidation` before installing the white-box trap, rejects
+  unchecked, mismatched, x86 port collision, and aarch64 reserved-immediate
+  collision records as setup errors, and preserves the disabled plan that installs
+  no trap so the doorbell remains inert when the channel is off.
 - [ ] **T-GHC-7** Implement the binary, versioned, length-prefixed doorbell frame
   format (magic/version/kind/len/payload, little-endian, length-prefixed strings),
   with golden vectors and a versioning rule. — satisfies [GHC-12], [GHC-19],

@@ -104,24 +104,30 @@ impl PluginWhiteboxDoorbell {
     ///
     /// Off-mode returns [`WhiteboxDoorbellRegistrationPlan::Disabled`] without
     /// requiring any white-box QEMU capability, which is the black-box default.
-    /// On-mode requires both the upstream memory-callback trap surface and the
-    /// guest-memory read surface before it can install the callback.
+    /// On-mode requires a setup-time non-collision validation for the configured
+    /// trap, the upstream memory-callback trap surface, and the guest-memory read
+    /// surface before it can install the callback.
     ///
     /// # Errors
     ///
     /// Returns [`WhiteboxDoorbellError::InvalidMaxPayloadLen`] when the payload
-    /// bound is zero or larger than the shared-memory frame bound. Returns
+    /// bound is zero or larger than the shared-memory frame bound. Returns a
+    /// setup validation error when the reserved trap was not checked, collided
+    /// with the guest's real device or instruction surface, or was checked for a
+    /// different trap. Returns
     /// [`WhiteboxDoorbellError::CapabilityUnavailable`] when white-box mode is
     /// enabled but a required QEMU capability is absent.
     pub fn registration_plan(
         &self,
         capabilities: WhiteboxDoorbellCapabilities,
+        setup_validation: WhiteboxDoorbellSetupValidation,
     ) -> Result<WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellError> {
         if !self.mode.is_on() {
             return Ok(WhiteboxDoorbellRegistrationPlan::Disabled);
         }
 
         self.validate_max_payload_len()?;
+        self.validate_setup_collision(setup_validation)?;
 
         if !capabilities.register_doorbell_trap() {
             return Err(WhiteboxDoorbellError::CapabilityUnavailable {
@@ -297,6 +303,31 @@ impl PluginWhiteboxDoorbell {
             })
         } else {
             Ok(())
+        }
+    }
+
+    fn validate_setup_collision(
+        &self,
+        setup_validation: WhiteboxDoorbellSetupValidation,
+    ) -> Result<(), WhiteboxDoorbellError> {
+        if setup_validation.trap() != self.trap {
+            return Err(WhiteboxDoorbellError::SetupValidationTrapMismatch {
+                configured: self.trap,
+                validated: setup_validation.trap(),
+            });
+        }
+
+        match setup_validation.outcome() {
+            WhiteboxDoorbellSetupOutcome::Unchecked => {
+                Err(WhiteboxDoorbellError::SetupCollisionUnchecked { trap: self.trap })
+            }
+            WhiteboxDoorbellSetupOutcome::CollisionFree => Ok(()),
+            WhiteboxDoorbellSetupOutcome::Collision { collision } => {
+                Err(WhiteboxDoorbellError::SetupCollision {
+                    trap: self.trap,
+                    collision,
+                })
+            }
         }
     }
 
@@ -1049,6 +1080,132 @@ impl WhiteboxDoorbellCapabilities {
     }
 }
 
+/// Guest-owned trap resources observed during white-box setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WhiteboxDoorbellSetupResources<'a> {
+    x86_mapped_ports: &'a [u16],
+    aarch64_reserved_immediates_in_use: &'a [u16],
+}
+
+impl<'a> WhiteboxDoorbellSetupResources<'a> {
+    /// Builds setup resources from the guest's observed device and instruction surface.
+    #[must_use]
+    pub const fn from_observed_resources(
+        x86_mapped_ports: &'a [u16],
+        aarch64_reserved_immediates_in_use: &'a [u16],
+    ) -> Self {
+        Self {
+            x86_mapped_ports,
+            aarch64_reserved_immediates_in_use,
+        }
+    }
+
+    /// Returns observed x86_64 ports that are already mapped to real guest devices.
+    #[must_use]
+    pub const fn x86_mapped_ports(self) -> &'a [u16] {
+        self.x86_mapped_ports
+    }
+
+    /// Returns observed aarch64 reserved immediates that are unavailable for Crucible.
+    #[must_use]
+    pub const fn aarch64_reserved_immediates_in_use(self) -> &'a [u16] {
+        self.aarch64_reserved_immediates_in_use
+    }
+}
+
+/// Setup-time non-collision validation for one reserved doorbell trap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WhiteboxDoorbellSetupValidation {
+    trap: WhiteboxDoorbellTrap,
+    outcome: WhiteboxDoorbellSetupOutcome,
+}
+
+impl WhiteboxDoorbellSetupValidation {
+    /// Builds an unchecked validation result for a configured trap.
+    #[must_use]
+    pub const fn unchecked(trap: WhiteboxDoorbellTrap) -> Self {
+        Self {
+            trap,
+            outcome: WhiteboxDoorbellSetupOutcome::Unchecked,
+        }
+    }
+
+    /// Validates a configured trap against setup-observed guest resources.
+    #[must_use]
+    pub fn validate(
+        trap: WhiteboxDoorbellTrap,
+        resources: WhiteboxDoorbellSetupResources<'_>,
+    ) -> Self {
+        let outcome = match trap {
+            WhiteboxDoorbellTrap::X86PortIo { port } => {
+                if resources.x86_mapped_ports().contains(&port) {
+                    WhiteboxDoorbellSetupOutcome::Collision {
+                        collision: WhiteboxDoorbellCollision::X86PortMapped { port },
+                    }
+                } else {
+                    WhiteboxDoorbellSetupOutcome::CollisionFree
+                }
+            }
+            WhiteboxDoorbellTrap::Aarch64Hlt { immediate } => {
+                if resources
+                    .aarch64_reserved_immediates_in_use()
+                    .contains(&immediate)
+                {
+                    WhiteboxDoorbellSetupOutcome::Collision {
+                        collision: WhiteboxDoorbellCollision::Aarch64ReservedImmediateInUse {
+                            immediate,
+                        },
+                    }
+                } else {
+                    WhiteboxDoorbellSetupOutcome::CollisionFree
+                }
+            }
+        };
+        Self { trap, outcome }
+    }
+
+    /// Returns the trap that was validated during setup.
+    #[must_use]
+    pub const fn trap(self) -> WhiteboxDoorbellTrap {
+        self.trap
+    }
+
+    /// Returns the setup validation outcome.
+    #[must_use]
+    pub const fn outcome(self) -> WhiteboxDoorbellSetupOutcome {
+        self.outcome
+    }
+}
+
+/// Result of checking a reserved doorbell trap against guest-owned resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhiteboxDoorbellSetupOutcome {
+    /// No setup-time collision check has been performed.
+    Unchecked,
+    /// The trap was checked and no collision was found.
+    CollisionFree,
+    /// The trap collides with a guest-owned resource or instruction use.
+    Collision {
+        /// The detected collision.
+        collision: WhiteboxDoorbellCollision,
+    },
+}
+
+/// A guest-owned resource that collides with the reserved doorbell trap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhiteboxDoorbellCollision {
+    /// The x86_64 port is mapped to a real guest device.
+    X86PortMapped {
+        /// Colliding port number.
+        port: u16,
+    },
+    /// The aarch64 `hlt #imm16` immediate is used by guest code or platform ABI.
+    Aarch64ReservedImmediateInUse {
+        /// Colliding immediate value.
+        immediate: u16,
+    },
+}
+
 /// A registration decision for the optional doorbell trap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhiteboxDoorbellRegistrationPlan {
@@ -1490,6 +1647,30 @@ impl WhiteboxGuestInputInjection {
 /// An error produced by white-box doorbell handling.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum WhiteboxDoorbellError {
+    /// Setup did not validate that the reserved trap is collision-free.
+    #[error("white-box doorbell trap {trap:?} was not checked for setup collisions")]
+    SetupCollisionUnchecked {
+        /// The unchecked trap.
+        trap: WhiteboxDoorbellTrap,
+    },
+    /// Setup found that the reserved trap collides with guest-owned state.
+    #[error("white-box doorbell trap {trap:?} collides at setup: {collision:?}")]
+    SetupCollision {
+        /// The configured trap.
+        trap: WhiteboxDoorbellTrap,
+        /// The detected collision.
+        collision: WhiteboxDoorbellCollision,
+    },
+    /// Setup validated a different trap than the configured doorbell trap.
+    #[error(
+        "white-box doorbell setup validated {validated:?}, but configured trap is {configured:?}"
+    )]
+    SetupValidationTrapMismatch {
+        /// The configured trap.
+        configured: WhiteboxDoorbellTrap,
+        /// The trap that setup validated.
+        validated: WhiteboxDoorbellTrap,
+    },
     /// A required QEMU white-box capability is unavailable.
     #[error("required white-box capability {symbol} is unavailable")]
     CapabilityUnavailable {
@@ -1576,6 +1757,13 @@ pub enum WhiteboxDoorbellError {
 mod tests {
     use super::*;
 
+    fn collision_free_setup(trap: WhiteboxDoorbellTrap) -> WhiteboxDoorbellSetupValidation {
+        WhiteboxDoorbellSetupValidation::validate(
+            trap,
+            WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[]),
+        )
+    }
+
     #[test]
     fn whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box() {
         let doorbell = PluginWhiteboxDoorbell::new(
@@ -1584,7 +1772,10 @@ mod tests {
             128,
         );
 
-        let plan = match doorbell.registration_plan(WhiteboxDoorbellCapabilities::none()) {
+        let plan = match doorbell.registration_plan(
+            WhiteboxDoorbellCapabilities::none(),
+            WhiteboxDoorbellSetupValidation::unchecked(doorbell.trap()),
+        ) {
             Ok(plan) => plan,
             Err(error) => panic!("off-mode should not require capabilities: {error}"),
         };
@@ -1603,7 +1794,10 @@ mod tests {
         );
 
         assert_eq!(
-            doorbell.registration_plan(WhiteboxDoorbellCapabilities::none()),
+            doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities::none(),
+                WhiteboxDoorbellSetupValidation::unchecked(doorbell.trap()),
+            ),
             Ok(WhiteboxDoorbellRegistrationPlan::Disabled)
         );
     }
@@ -1615,25 +1809,32 @@ mod tests {
             WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
             128,
         );
+        let setup_validation = collision_free_setup(doorbell.trap());
 
         assert_eq!(
-            doorbell.registration_plan(WhiteboxDoorbellCapabilities::none()),
+            doorbell.registration_plan(WhiteboxDoorbellCapabilities::none(), setup_validation),
             Err(WhiteboxDoorbellError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
             })
         );
         assert_eq!(
-            doorbell.registration_plan(WhiteboxDoorbellCapabilities {
-                register_doorbell_trap: true,
-                guest_memory_read: false,
-                guest_memory_write: false,
-            }),
+            doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities {
+                    register_doorbell_trap: true,
+                    guest_memory_read: false,
+                    guest_memory_write: false,
+                },
+                setup_validation,
+            ),
             Err(WhiteboxDoorbellError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
             })
         );
 
-        let plan = match doorbell.registration_plan(WhiteboxDoorbellCapabilities::guest_to_host()) {
+        let plan = match doorbell.registration_plan(
+            WhiteboxDoorbellCapabilities::guest_to_host(),
+            setup_validation,
+        ) {
             Ok(plan) => plan,
             Err(error) => panic!("on-mode capabilities should produce install plan: {error}"),
         };
@@ -1647,6 +1848,69 @@ mod tests {
         );
         assert!(plan.installs_trap());
         assert!(!plan.black_box_remains_functional());
+    }
+
+    #[test]
+    fn whitebox_registration_on_mode_requires_setup_collision_validation() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+
+        assert_eq!(
+            doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities::guest_to_host(),
+                WhiteboxDoorbellSetupValidation::unchecked(doorbell.trap()),
+            ),
+            Err(WhiteboxDoorbellError::SetupCollisionUnchecked {
+                trap: doorbell.trap(),
+            })
+        );
+        assert_eq!(
+            doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities::guest_to_host(),
+                WhiteboxDoorbellSetupValidation::validate(
+                    doorbell.trap(),
+                    WhiteboxDoorbellSetupResources::from_observed_resources(&[0xe7], &[]),
+                ),
+            ),
+            Err(WhiteboxDoorbellError::SetupCollision {
+                trap: doorbell.trap(),
+                collision: WhiteboxDoorbellCollision::X86PortMapped { port: 0xe7 },
+            })
+        );
+        assert_eq!(
+            doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities::guest_to_host(),
+                collision_free_setup(WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 }),
+            ),
+            Err(WhiteboxDoorbellError::SetupValidationTrapMismatch {
+                configured: doorbell.trap(),
+                validated: WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
+            })
+        );
+
+        let aarch64 = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
+            128,
+        );
+        assert_eq!(
+            aarch64.registration_plan(
+                WhiteboxDoorbellCapabilities::guest_to_host(),
+                WhiteboxDoorbellSetupValidation::validate(
+                    aarch64.trap(),
+                    WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[0x4c1]),
+                ),
+            ),
+            Err(WhiteboxDoorbellError::SetupCollision {
+                trap: aarch64.trap(),
+                collision: WhiteboxDoorbellCollision::Aarch64ReservedImmediateInUse {
+                    immediate: 0x4c1,
+                },
+            })
+        );
     }
 
     #[test]
@@ -1741,11 +2005,14 @@ mod tests {
     fn whitebox_doorbell_registration_uses_single_source_abi_trap() {
         for abi in WHITEBOX_DOORBELL_ABIS {
             let doorbell = PluginWhiteboxDoorbell::from_abi(PluginSwitch::On, *abi, 128);
-            let plan =
-                match doorbell.registration_plan(WhiteboxDoorbellCapabilities::guest_to_host()) {
-                    Ok(plan) => plan,
-                    Err(error) => panic!("ABI-derived doorbell should validate: {error}"),
-                };
+            let setup_validation = collision_free_setup(doorbell.trap());
+            let plan = match doorbell.registration_plan(
+                WhiteboxDoorbellCapabilities::guest_to_host(),
+                setup_validation,
+            ) {
+                Ok(plan) => plan,
+                Err(error) => panic!("ABI-derived doorbell should validate: {error}"),
+            };
 
             assert_eq!(doorbell.trap(), WhiteboxDoorbellTrap::from_abi(abi.trap()));
             assert_eq!(
@@ -2262,7 +2529,13 @@ mod tests {
             WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
             128,
         );
-        let plan = match doorbell.registration_plan(WhiteboxDoorbellCapabilities::none()) {
+        let plan = match doorbell.registration_plan(
+            WhiteboxDoorbellCapabilities::none(),
+            WhiteboxDoorbellSetupValidation::validate(
+                doorbell.trap(),
+                WhiteboxDoorbellSetupResources::from_observed_resources(&[0xe7], &[]),
+            ),
+        ) {
             Ok(plan) => plan,
             Err(error) => panic!("zero-request black-box plan should validate: {error}"),
         };
