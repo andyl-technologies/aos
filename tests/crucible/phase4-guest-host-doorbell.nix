@@ -149,7 +149,7 @@
       }
       {
         label = "aarch64 trap surface";
-        needle = "Aarch64ReservedInstruction";
+        needle = "Aarch64Hlt";
       }
       {
         label = "disabled trap error";

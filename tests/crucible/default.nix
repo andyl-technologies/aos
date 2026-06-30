@@ -1010,6 +1010,11 @@ in rec {
       attrPath = "checks.crucible.phase4.guestHostDoorbell";
       taskIds = ["T-GHC-4"];
     };
+    guestHostDoorbellAbi = import ./phase4-guest-host-doorbell-abi.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostDoorbellAbi";
+      taskIds = ["T-GHC-5"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

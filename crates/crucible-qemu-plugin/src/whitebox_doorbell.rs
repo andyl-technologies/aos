@@ -6,9 +6,17 @@
 //! adapter at the trap's current icount, records an observational marker, and
 //! routes any host-to-guest reply through an explicit delivery-icount gate.
 
-use thiserror::Error;
-
+pub use crucible_protocol::{
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
+    WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
+    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
+    whitebox_doorbell_abi_for_architecture,
+};
 use crucible_shmem::MAX_FRAME_DATA;
+use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
@@ -52,16 +60,26 @@ pub struct PluginWhiteboxDoorbell {
 impl PluginWhiteboxDoorbell {
     /// Builds doorbell state from the parsed `whitebox` switch and trap config.
     #[must_use]
-    pub const fn new(
-        mode: PluginSwitch,
-        trap: WhiteboxDoorbellTrap,
-        max_payload_len: usize,
-    ) -> Self {
+    const fn new(mode: PluginSwitch, trap: WhiteboxDoorbellTrap, max_payload_len: usize) -> Self {
         Self {
             mode,
             trap,
             max_payload_len,
         }
+    }
+
+    /// Builds doorbell state from a single-source architecture ABI entry.
+    #[must_use]
+    pub const fn from_abi(
+        mode: PluginSwitch,
+        abi: WhiteboxDoorbellAbi,
+        max_payload_len: usize,
+    ) -> Self {
+        Self::new(
+            mode,
+            WhiteboxDoorbellTrap::from_abi(abi.trap()),
+            max_payload_len,
+        )
     }
 
     /// Returns the launch-time white-box switch.
@@ -1069,11 +1087,22 @@ pub enum WhiteboxDoorbellTrap {
         /// Reserved port number chosen by the scenario.
         port: u16,
     },
-    /// aarch64 reserved trap instruction.
-    Aarch64ReservedInstruction {
+    /// aarch64 reserved `hlt #imm16` trap instruction.
+    Aarch64Hlt {
         /// Reserved immediate encoded in the trap instruction.
         immediate: u16,
     },
+}
+
+impl WhiteboxDoorbellTrap {
+    /// Converts the shared instruction ABI trap into the plugin registration trap.
+    #[must_use]
+    pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi) -> Self {
+        match trap {
+            WhiteboxDoorbellTrapAbi::X86PortIo { port } => Self::X86PortIo { port },
+            WhiteboxDoorbellTrapAbi::Aarch64Hlt { immediate } => Self::Aarch64Hlt { immediate },
+        }
+    }
 }
 
 /// The address space used for a guest-memory payload range.
@@ -1621,6 +1650,116 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64() {
+        assert_eq!(WHITEBOX_DOORBELL_ABIS.len(), 2);
+        assert_eq!(
+            WHITEBOX_DOORBELL_ABIS
+                .iter()
+                .map(|abi| abi.vector_name())
+                .collect::<Vec<_>>(),
+            vec!["x86_64-out-dx-eax-port-e7", "aarch64-hlt-imm-04c1"]
+        );
+        assert_eq!(
+            WHITEBOX_DOORBELL_ABIS
+                .iter()
+                .map(|abi| abi.version())
+                .collect::<Vec<_>>(),
+            vec![
+                WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
+                WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
+            ]
+        );
+        assert_eq!(
+            whitebox_doorbell_abi_for_architecture(WhiteboxDoorbellArchitecture::X86_64),
+            WHITEBOX_DOORBELL_X86_64_ABI
+        );
+        assert_eq!(
+            whitebox_doorbell_abi_for_architecture(WhiteboxDoorbellArchitecture::Aarch64),
+            WHITEBOX_DOORBELL_AARCH64_ABI
+        );
+    }
+
+    #[test]
+    fn whitebox_doorbell_x86_64_golden_vector_freezes_out_dx_eax() {
+        let abi = WHITEBOX_DOORBELL_X86_64_ABI;
+
+        assert_eq!(abi.architecture().as_str(), "x86_64");
+        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::X86OutDxEax);
+        assert_eq!(abi.instruction().as_str(), "out-dx-eax");
+        assert_eq!(
+            abi.trap(),
+            WhiteboxDoorbellTrapAbi::X86PortIo {
+                port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+            }
+        );
+        assert_eq!(
+            WhiteboxDoorbellTrap::from_abi(abi.trap()),
+            WhiteboxDoorbellTrap::X86PortIo {
+                port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+            }
+        );
+        assert_eq!(abi.payload_pointer_register(), "rax");
+        assert_eq!(abi.payload_length_register(), "rcx");
+        assert_eq!(abi.assembly(), "out dx, eax");
+        assert_eq!(
+            encode_x86_64_out_dx_eax_instruction(),
+            WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES
+        );
+        assert_eq!(abi.instruction_bytes(), &[0xef]);
+    }
+
+    #[test]
+    fn whitebox_doorbell_aarch64_golden_vector_freezes_hlt_immediate() {
+        let abi = WHITEBOX_DOORBELL_AARCH64_ABI;
+
+        assert_eq!(abi.architecture().as_str(), "aarch64");
+        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hlt);
+        assert_eq!(abi.instruction().as_str(), "hlt-imm16");
+        assert_eq!(
+            abi.trap(),
+            WhiteboxDoorbellTrapAbi::Aarch64Hlt {
+                immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+            }
+        );
+        assert_eq!(
+            WhiteboxDoorbellTrap::from_abi(abi.trap()),
+            WhiteboxDoorbellTrap::Aarch64Hlt {
+                immediate: WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
+            }
+        );
+        assert_eq!(abi.payload_pointer_register(), "x0");
+        assert_eq!(abi.payload_length_register(), "x1");
+        assert_eq!(abi.assembly(), "hlt #0x04c1");
+        assert_eq!(
+            encode_aarch64_hlt_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE),
+            WHITEBOX_DOORBELL_AARCH64_HLT_BYTES
+        );
+        assert_eq!(abi.instruction_bytes(), &[0x20, 0x98, 0x40, 0xd4]);
+    }
+
+    #[test]
+    fn whitebox_doorbell_registration_uses_single_source_abi_trap() {
+        for abi in WHITEBOX_DOORBELL_ABIS {
+            let doorbell = PluginWhiteboxDoorbell::from_abi(PluginSwitch::On, *abi, 128);
+            let plan =
+                match doorbell.registration_plan(WhiteboxDoorbellCapabilities::guest_to_host()) {
+                    Ok(plan) => plan,
+                    Err(error) => panic!("ABI-derived doorbell should validate: {error}"),
+                };
+
+            assert_eq!(doorbell.trap(), WhiteboxDoorbellTrap::from_abi(abi.trap()));
+            assert_eq!(
+                plan,
+                WhiteboxDoorbellRegistrationPlan::Install {
+                    trap: WhiteboxDoorbellTrap::from_abi(abi.trap()),
+                    callback_kind: PluginDeviceCallbackKind::WhiteboxDoorbell,
+                    max_payload_len: 128,
+                }
+            );
+        }
+    }
+
+    #[test]
     fn whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -1698,7 +1837,7 @@ mod tests {
     fn whitebox_doorbell_read_failure_records_no_marker() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
-            WhiteboxDoorbellTrap::Aarch64ReservedInstruction { immediate: 0x4c1 },
+            WhiteboxDoorbellTrap::Aarch64Hlt { immediate: 0x4c1 },
             128,
         );
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 4);
