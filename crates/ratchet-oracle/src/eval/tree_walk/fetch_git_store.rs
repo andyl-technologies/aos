@@ -207,7 +207,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let actual =
             self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
-        if actual.as_slice() == expected.as_bytes() {
+        if actual == expected {
             return Ok(());
         }
         Err(TreeWalkError::new(
@@ -215,7 +215,7 @@ impl TreeWalk {
                 id,
                 url: url.to_vec(),
                 expected: expected.as_bytes().to_vec(),
-                actual: actual.to_vec(),
+                actual: actual.as_bytes().to_vec(),
             },
             span,
         ))

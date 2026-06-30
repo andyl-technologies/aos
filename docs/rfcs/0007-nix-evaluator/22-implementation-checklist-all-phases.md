@@ -1580,8 +1580,8 @@ alone (`M-1`/`Q-A`).
       `store_path_bytes_from_fingerprint_parts`, `fixed_output_path_digest`,
       `flat_source_fixed_output_digest`, `build_ca_path`, and the helper that
       hashes Nix-observed SHA-256 preimages. Raw `[u8; 32]` values still enter
-      at existing Nix API edges such as decoded expected hashes, computed
-      NAR/file payload hashes, and `nix_compat` `CAHash` variants, but those
+      at existing Nix API edges such as decoded expected hashes and
+      `nix_compat` `CAHash` variants, but those
       call sites convert explicitly to `NixSha256Digest` before store-path
       fingerprint construction; mismatch/error surfaces still report the same
       raw digest bytes. This type-enforces selected current store-path
@@ -1602,13 +1602,14 @@ alone (`M-1`/`Q-A`).
 - [x] Current `builtins.path` expected-SHA type boundary: decoded
       `builtins.path { sha256 = ...; }` arguments now become `NixSha256Digest`
       before entering the shared source-path store-string helpers; recursive and
-      flat source hashing still compute raw Nix SHA-256 bytes for mismatch
-      diagnostics, then compare through the typed boundary and continue to typed
-      store-path fingerprint construction. This type-enforces the current
+      flat source hashing return typed Nix SHA-256 digests, compare through that
+      typed boundary for mismatch diagnostics, and continue to typed store-path
+      fingerprint construction. This type-enforces the current
       `builtins.path` expected-hash corridor only; hash builtin
       outputs/conversions, other source/fetch variants, and the full
       differential leak-invariant harness remain open (`S-15`). Gate:
-      `path_primop_supports_flat_hashing_and_sha256_checks` and path store-path
+      `path_primop_supports_flat_hashing_and_sha256_checks`,
+      `source_path_sha_helpers_return_nix_sha256_digests`, and path store-path
       surface canary.
 - [x] Current `fetchTree`/`fetchGit` NAR SHA-256 type boundary: decoded
       `builtins.fetchTree` `narHash` locks from attrsets and flake refs now
@@ -1622,6 +1623,21 @@ alone (`M-1`/`Q-A`).
       differential leak-invariant harness remain open (`S-15`). Gate:
       fetchTree/fetchGit store-path surface canaries and fetchTree hash
       mismatch tests.
+- [x] Current source/fetch payload SHA-256 helper boundary:
+      `TreeWalk::source_path_nar_sha256` and
+      `TreeWalk::source_path_flat_sha256` now return `NixSha256Digest`
+      directly, current fetchTarball/fetchTree/fetchGit source digest callers
+      carry that type through expected-hash comparison, SRI narHash rendering,
+      store-path construction, existing-store validation, and mismatch
+      diagnostics, and `builtins.fetchurl` wraps downloaded payload SHA-256
+      bytes with `NixSha256Digest` before expected-hash comparison or
+      store-path construction. The raw bytes are still produced at the local
+      SHA-256 computation point and unwrapped at Nix-observed diagnostic or
+      encoding edges. This tightens the selected current source/fetch SHA
+      corridor only; hash builtin outputs/conversions, other non-hash Nix byte
+      surfaces, and the full differential leak-invariant harness remain open
+      (`S-15`). Gate: `source_path_sha_helpers_return_nix_sha256_digests` plus
+      existing fetchurl/source/fetch store-path and mismatch tests.
 - [x] Current hash builtin/conversion Nix digest type boundary:
       `NixHashDigest` carries a `HashStringAlgorithm` with validated digest
       bytes for `hashString`, `hashFile`, and `convertHash` decode/encode

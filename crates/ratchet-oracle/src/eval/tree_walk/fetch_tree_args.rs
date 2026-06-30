@@ -413,8 +413,7 @@ impl TreeWalk {
     ) -> Result<FetchTreeResult, TreeWalkError> {
         self.check_fetch_tree_path_access(id, span, &path)?;
         let source = Path::new(OsStr::from_bytes(&path));
-        let digest =
-            NixSha256Digest::from_bytes(self.source_path_nar_sha256(id, span, source, None)?);
+        let digest = self.source_path_nar_sha256(id, span, source, None)?;
         Self::check_fetch_tree_hash(id, span, &path, expected_nar_hash, &digest)?;
         let last_modified = Self::fetch_tree_last_modified(id, span, &path, source)?;
         Self::check_fetch_tree_last_modified(
@@ -500,8 +499,7 @@ impl TreeWalk {
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     ) -> Result<FetchTreeResult, TreeWalkError> {
-        let digest =
-            NixSha256Digest::from_bytes(self.source_path_nar_sha256(id, span, source, None)?);
+        let digest = self.source_path_nar_sha256(id, span, source, None)?;
         Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
         let nar_hash = Self::encode_convert_hash_digest(
             id,
@@ -569,12 +567,7 @@ impl TreeWalk {
         let result = (|| {
             let source_root =
                 Self::fetch_tree_subdir_root(id, span, &url, &unpacked_root, dir.as_deref())?;
-            let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
-                id,
-                span,
-                &source_root,
-                None,
-            )?);
+            let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
             Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
             let observed_last_modified =
                 Self::fetch_tree_last_modified(id, span, &url, &source_root)?;
@@ -738,12 +731,7 @@ impl TreeWalk {
         };
         let store_root = Path::new(OsStr::from_bytes(&result.out_path));
         let source_root = Self::fetch_tree_subdir_root(id, span, input, store_root, Some(dir))?;
-        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
-            id,
-            span,
-            &source_root,
-            None,
-        )?);
+        let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
         result.nar_hash = Self::encode_convert_hash_digest(
             id,
             span,

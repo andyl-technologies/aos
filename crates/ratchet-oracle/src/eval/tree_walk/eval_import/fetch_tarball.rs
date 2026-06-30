@@ -10,7 +10,7 @@ impl TreeWalk {
         url: &[u8],
         source: &Path,
         store_path: &[u8],
-        digest: &[u8; 32],
+        digest: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let target = Path::new(OsStr::from_bytes(store_path));
         if target.exists() {
@@ -55,11 +55,11 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         store_path: &[u8],
-        expected: &[u8; 32],
+        expected: NixSha256Digest,
     ) -> Result<bool, TreeWalkError> {
         let actual =
             self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
-        Ok(actual.as_slice() == expected)
+        Ok(actual == expected)
     }
 
     pub(in crate::eval::tree_walk) fn validate_fetch_tarball_store_path_digest(
@@ -68,19 +68,19 @@ impl TreeWalk {
         span: Span,
         url: &[u8],
         store_path: &[u8],
-        expected: &[u8; 32],
+        expected: NixSha256Digest,
     ) -> Result<(), TreeWalkError> {
         let actual =
             self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
-        if actual.as_slice() == expected {
+        if actual == expected {
             return Ok(());
         }
         Err(TreeWalkError::new(
             TreeWalkErrorKind::FetchTarballHashMismatch {
                 id,
                 url: url.to_vec(),
-                expected: expected.to_vec(),
-                actual: actual.to_vec(),
+                expected: expected.as_bytes().to_vec(),
+                actual: actual.as_bytes().to_vec(),
             },
             span,
         ))

@@ -671,17 +671,16 @@ impl TreeWalk {
         };
 
         let contents = self.fetchurl_bytes(argument, argument_span, &args.url, &parsed)?;
-        let digest = Self::sha256_array(&contents);
-        let nix_digest = NixSha256Digest::from_bytes(digest);
+        let digest = Self::nix_sha256_digest(&contents);
         if let Some(expected) = args.expected_sha256
-            && expected != nix_digest
+            && expected != digest
         {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::FetchUrlHashMismatch {
                     id: argument,
                     url: args.url,
                     expected: expected.as_bytes().to_vec(),
-                    actual: digest.to_vec(),
+                    actual: digest.as_bytes().to_vec(),
                 },
                 argument_span,
             ));
@@ -694,7 +693,7 @@ impl TreeWalk {
                 argument_span,
                 &args.url,
                 &args.name,
-                nix_digest,
+                digest,
             )?,
         };
         self.text_store.insert(

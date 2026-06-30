@@ -42,12 +42,7 @@ impl TreeWalk {
             true,
         )?;
 
-        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
-            argument,
-            argument_span,
-            exported_dir,
-            None,
-        )?);
+        let digest = self.source_path_nar_sha256(argument, argument_span, exported_dir, None)?;
         let nar_hash = Self::encode_convert_hash_digest(
             argument,
             argument_span,
@@ -132,12 +127,7 @@ impl TreeWalk {
             true,
         )?;
 
-        let digest = NixSha256Digest::from_bytes(self.source_path_nar_sha256(
-            id,
-            span,
-            exported_dir,
-            None,
-        )?);
+        let digest = self.source_path_nar_sha256(id, span, exported_dir, None)?;
         let nar_hash = Self::encode_convert_hash_digest(
             id,
             span,

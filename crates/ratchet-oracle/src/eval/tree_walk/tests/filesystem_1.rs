@@ -52,6 +52,38 @@ fn hash_file_primop_hashes_file_contents() {
 }
 
 #[test]
+fn source_path_sha_helpers_return_nix_sha256_digests() {
+    let (dir, path) = temp_file_with_bytes("source-sha-domain", b"abc");
+    let ir = lower("null");
+    let root_span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+
+    let flat: NixSha256Digest = evaluator
+        .source_path_flat_sha256(ir.root, root_span, &path)
+        .expect("flat source SHA-256 computes");
+    let mut expected_flat = [0_u8; 32];
+    expected_flat.copy_from_slice(&Sha256::digest(b"abc"));
+    assert_eq!(flat, NixSha256Digest::from_bytes(expected_flat));
+
+    let nar: NixSha256Digest = evaluator
+        .source_path_nar_sha256(ir.root, root_span, &path, None)
+        .expect("recursive source NAR SHA-256 computes");
+    assert_ne!(nar, flat);
+    assert!(
+        evaluator
+            .fetch_tarball_store_path_matches_digest(
+                ir.root,
+                root_span,
+                path.as_os_str().as_bytes(),
+                nar
+            )
+            .expect("typed fetchTarball digest match checks")
+    );
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn hash_file_primop_rejects_context_bearing_algorithm() {
     let ir = lower("builtins.hashFile \"sha256\" ./crates/Cargo.toml");
     let root = *ir.arena.node(ir.root).expect("root exists");

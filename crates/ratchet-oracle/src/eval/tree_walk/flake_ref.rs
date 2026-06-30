@@ -442,9 +442,8 @@ impl TreeWalk {
                     return Err(error);
                 }
             };
-        let nix_digest = NixSha256Digest::from_bytes(digest);
         if let Some(expected) = args.expected_sha256
-            && expected != nix_digest
+            && expected != digest
         {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(TreeWalkError::new(
@@ -452,7 +451,7 @@ impl TreeWalk {
                     id: argument,
                     url: args.url,
                     expected: expected.as_bytes().to_vec(),
-                    actual: digest.to_vec(),
+                    actual: digest.as_bytes().to_vec(),
                 },
                 argument_span,
             ));
@@ -465,7 +464,7 @@ impl TreeWalk {
                 argument_span,
                 &args.url,
                 &args.name,
-                nix_digest,
+                digest,
             )?,
         };
         let materialize_result = self.materialize_fetch_tarball_store_path(
@@ -474,7 +473,7 @@ impl TreeWalk {
             &args.url,
             &unpacked_root,
             &path,
-            &digest,
+            digest,
         );
         let _ = fs::remove_dir_all(&temp_dir);
         materialize_result?;
@@ -670,12 +669,7 @@ impl TreeWalk {
             return Ok(true);
         }
 
-        self.fetch_tarball_store_path_matches_digest(
-            id,
-            span,
-            store_path,
-            expected_digest.as_bytes(),
-        )
+        self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
     }
 
     pub(super) fn can_trust_existing_fetch_tarball_store_path(&self, store_path: &[u8]) -> bool {

@@ -219,33 +219,22 @@ impl TreeWalk {
             self.source_path_flat_sha256(id, span, source_path)?
         };
         if let Some(expected) = expected_sha256
-            && expected.as_bytes() != &digest
+            && expected != digest
         {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::SourcePathHashMismatch {
                     id,
                     path: bytes.to_vec(),
                     expected: expected.as_bytes().to_vec(),
-                    actual: digest.to_vec(),
+                    actual: digest.as_bytes().to_vec(),
                 },
                 span,
             ));
         }
         let store_path = if recursive {
-            self.store_path_bytes_from_fingerprint_parts(
-                id,
-                span,
-                bytes,
-                b"source",
-                name,
-                NixSha256Digest::from_bytes(digest),
-            )?
+            self.store_path_bytes_from_fingerprint_parts(id, span, bytes, b"source", name, digest)?
         } else {
-            let fixed_digest = Self::flat_source_fixed_output_digest(
-                id,
-                span,
-                NixSha256Digest::from_bytes(digest),
-            )?;
+            let fixed_digest = Self::flat_source_fixed_output_digest(id, span, digest)?;
             self.store_path_bytes_from_fingerprint_parts(
                 id,
                 span,
@@ -324,7 +313,7 @@ impl TreeWalk {
         span: Span,
         path: &Path,
         filter: Option<&SourcePathFilter>,
-    ) -> Result<[u8; 32], TreeWalkError> {
+    ) -> Result<NixSha256Digest, TreeWalkError> {
         let mut nar = Vec::new();
         {
             let node = nix_compat::nar::writer::open(&mut nar)
@@ -334,7 +323,7 @@ impl TreeWalk {
         let digest = Sha256::digest(&nar);
         let mut fixed = [0_u8; 32];
         fixed.copy_from_slice(&digest);
-        Ok(fixed)
+        Ok(NixSha256Digest::from_bytes(fixed))
     }
 
     pub(super) fn source_path_flat_sha256(
@@ -342,13 +331,13 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         path: &Path,
-    ) -> Result<[u8; 32], TreeWalkError> {
+    ) -> Result<NixSha256Digest, TreeWalkError> {
         let contents = fs::read(path)
             .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
         let digest = Sha256::digest(&contents);
         let mut fixed = [0_u8; 32];
         fixed.copy_from_slice(&digest);
-        Ok(fixed)
+        Ok(NixSha256Digest::from_bytes(fixed))
     }
 
     pub(super) fn write_source_path_nar_node<W: io::Write>(
