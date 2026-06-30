@@ -14,16 +14,19 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::model::{
-    AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash, ControlFaultAction, Decision,
-    DeviceId, EventKey, EventLogOffset, Fault, FaultId, FaultPlanEntry, FaultTag, FramePredicate,
-    Icount, IoEventKind, LinkDef, LinkId, MarkerId, MemPlace, MembershipFault, MemoryCmp,
-    NetworkFault, NinePFault, NodeFault, NodeId, NodeLifecycle, Plan, PlanEntry, Predicate,
-    RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
+    AssertionDef, AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash,
+    ControlFaultAction, Decision, DeviceId, EventKey, EventLogOffset, Fault, FaultId,
+    FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId, MarkerId,
+    MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
+    NodeLifecycle, Plan, PlanEntry, Predicate, Properties, Property, ReachabilityExpectation,
+    ReachableDisposition, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World,
+    WorldStaticTopology,
 };
 use crate::scheduler::{
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerQuiescence, scheduled_event_resolve_class,
+    AssertionRunVerdict, AssertionVerdictFailure, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
+    scheduled_event_resolve_class,
 };
 
 pub use crate::model::EventId;
@@ -969,6 +972,554 @@ pub enum ObservedFaultFact {
         /// Stable fault tag.
         tag: FaultTag,
     },
+}
+
+/// Host-side resolver for assertion leaves over materialized observed state.
+///
+/// Built-in black-box predicates are evaluated by the shared condition
+/// evaluator from the checked event-log prefix. This oracle is called only for
+/// host-authored named leaves that need harness logic over [`ObservedState`].
+pub trait HostAssertionOracle {
+    /// Returns whether one host-side assertion leaf is true at `observed`.
+    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool;
+}
+
+impl<F> HostAssertionOracle for F
+where
+    F: for<'log, 'leaf> FnMut(ObservedState<'log>, ConditionLeaf<'leaf>) -> bool,
+{
+    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+        self(observed, leaf)
+    }
+}
+
+/// Default zero-guest-cooperation assertion oracle.
+///
+/// The oracle supplies no named host predicates. Properties that use only the
+/// built-in black-box observable vocabulary still evaluate through the checked
+/// event-log prefix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlackBoxHostOracle;
+
+impl HostAssertionOracle for BlackBoxHostOracle {
+    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
+        match leaf {
+            ConditionLeaf::Named { .. } | ConditionLeaf::GuestMarker { .. } => false,
+        }
+    }
+}
+
+/// Terminal kind for one host-side assertion outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HostAssertionOutcomeKind {
+    /// The assertion completed successfully.
+    Satisfied,
+    /// The assertion failed and contributes to the run verdict.
+    Violated,
+    /// The assertion produced a non-failing diagnostic outcome.
+    Warning,
+}
+
+/// Terminal result for one host-side assertion.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HostAssertionOutcome {
+    /// Assertion that produced the outcome.
+    pub assertion: AssertionId,
+    /// Deterministic virtual time where the outcome was recorded.
+    pub at: VirtualTime,
+    /// Terminal outcome kind.
+    pub kind: HostAssertionOutcomeKind,
+    /// Human-readable assertion message from the properties bundle.
+    pub message: String,
+    /// Stable assertion-layer reason.
+    pub reason: String,
+}
+
+/// Final host-side assertion report for one run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostAssertionReport {
+    outcomes: Vec<HostAssertionOutcome>,
+    verdict: AssertionRunVerdict,
+}
+
+impl HostAssertionReport {
+    /// Returns terminal assertion outcomes in canonical assertion order.
+    #[must_use]
+    pub fn outcomes(&self) -> &[HostAssertionOutcome] {
+        &self.outcomes
+    }
+
+    /// Returns the assertion-layer pass/fail verdict.
+    #[must_use]
+    pub fn verdict(&self) -> &AssertionRunVerdict {
+        &self.verdict
+    }
+}
+
+/// Streaming host-side assertion evaluator over checked observable state.
+#[derive(Clone, Debug)]
+pub struct HostAssertionEvaluator {
+    states: Vec<HostAssertionState>,
+    once_latches: Vec<Condition>,
+}
+
+impl HostAssertionEvaluator {
+    /// Builds an evaluator for the assertions in canonical property order.
+    #[must_use]
+    pub fn new(properties: &Properties) -> Self {
+        Self {
+            states: properties
+                .assertions()
+                .iter()
+                .map(HostAssertionState::new)
+                .collect(),
+            once_latches: Vec::new(),
+        }
+    }
+
+    /// Observes one checked event-log prefix and returns newly terminal outcomes.
+    pub fn observe_prefix<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+    ) -> Vec<HostAssertionOutcome>
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        let mut outcomes = Vec::new();
+        let once_latches = &mut self.once_latches;
+        for state in &mut self.states {
+            if let Some(outcome) = observe_host_assertion_state(state, prefix, oracle, once_latches)
+            {
+                outcomes.push(outcome);
+            }
+        }
+        outcomes
+    }
+
+    /// Finalizes all assertions at the supplied terminal event-log prefix.
+    pub fn finalize_prefix<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+    ) -> HostAssertionReport
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        self.observe_prefix(prefix, oracle);
+        let once_latches = &mut self.once_latches;
+        for state in &mut self.states {
+            finalize_host_assertion_state(state, prefix, oracle, once_latches);
+        }
+        let outcomes = self
+            .states
+            .iter()
+            .filter_map(HostAssertionState::outcome)
+            .collect::<Vec<_>>();
+        let failures = outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == HostAssertionOutcomeKind::Violated)
+            .map(|outcome| {
+                AssertionVerdictFailure::new(
+                    outcome.assertion.clone(),
+                    outcome.at,
+                    outcome.reason.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        HostAssertionReport {
+            outcomes,
+            verdict: AssertionRunVerdict::failed(failures),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HostAssertionState {
+    assertion: AssertionDef,
+    terminal: Option<HostAssertionTerminal>,
+    eventually_triggered: bool,
+    eventually_satisfied_at: Option<VirtualTime>,
+    pending_eventually: Vec<EventuallyObligation>,
+}
+
+impl HostAssertionState {
+    fn new(assertion: &AssertionDef) -> Self {
+        Self {
+            assertion: assertion.clone(),
+            terminal: None,
+            eventually_triggered: false,
+            eventually_satisfied_at: None,
+            pending_eventually: Vec::new(),
+        }
+    }
+
+    fn outcome(&self) -> Option<HostAssertionOutcome> {
+        self.terminal.as_ref().map(|terminal| HostAssertionOutcome {
+            assertion: self.assertion.id.clone(),
+            at: terminal.at,
+            kind: terminal.kind,
+            message: self.assertion.message.clone(),
+            reason: terminal.reason.clone(),
+        })
+    }
+
+    fn terminal(
+        &mut self,
+        kind: HostAssertionOutcomeKind,
+        at: VirtualTime,
+        reason: impl Into<String>,
+    ) -> Option<HostAssertionOutcome> {
+        if self.terminal.is_some() {
+            return None;
+        }
+        self.terminal = Some(HostAssertionTerminal {
+            kind,
+            at,
+            reason: reason.into(),
+        });
+        self.outcome()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HostAssertionTerminal {
+    kind: HostAssertionOutcomeKind,
+    at: VirtualTime,
+    reason: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EventuallyObligation {
+    triggered_at: VirtualTime,
+    deadline: VirtualTime,
+}
+
+fn observe_host_assertion_state<O>(
+    state: &mut HostAssertionState,
+    prefix: &ConditionEventLogPrefix,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+) -> Option<HostAssertionOutcome>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    if state.terminal.is_some() {
+        return None;
+    }
+
+    let at = prefix.point().at();
+    let property = state.assertion.property.clone();
+    match property {
+        Property::Always { predicate } => {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+                None
+            } else {
+                state.terminal(
+                    HostAssertionOutcomeKind::Violated,
+                    at,
+                    "always predicate was false",
+                )
+            }
+        }
+        Property::Sometimes { predicate } => {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+                state.terminal(
+                    HostAssertionOutcomeKind::Satisfied,
+                    at,
+                    "sometimes predicate became true",
+                )
+            } else {
+                None
+            }
+        }
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => observe_eventually_assertion(
+            state,
+            prefix,
+            oracle,
+            &trigger,
+            &property,
+            deadline,
+            once_latches,
+        ),
+        Property::AfterQuiescence { .. } => None,
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => observe_reachability_assertion(
+            state,
+            prefix,
+            oracle,
+            once_latches,
+            &predicate,
+            expectation,
+        ),
+    }
+}
+
+fn observe_eventually_assertion<O>(
+    state: &mut HostAssertionState,
+    prefix: &ConditionEventLogPrefix,
+    oracle: &mut O,
+    trigger: &Condition,
+    property: &Condition,
+    deadline: VirtualTime,
+    once_latches: &mut Vec<Condition>,
+) -> Option<HostAssertionOutcome>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let at = prefix.point().at();
+    if let Some(expired) = state
+        .pending_eventually
+        .iter()
+        .copied()
+        .find(|obligation| at.ticks > obligation.deadline.ticks)
+    {
+        return state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            expired.deadline,
+            format!(
+                "eventually deadline expired after trigger at {}",
+                expired.triggered_at.ticks
+            ),
+        );
+    }
+
+    if !state.eventually_triggered && host_condition_is_true(prefix, trigger, oracle, once_latches)
+    {
+        state.eventually_triggered = true;
+        state.pending_eventually.push(EventuallyObligation {
+            triggered_at: at,
+            deadline: eventually_deadline(at, deadline),
+        });
+    }
+
+    if !state.pending_eventually.is_empty()
+        && host_condition_is_true(prefix, property, oracle, once_latches)
+    {
+        state.pending_eventually.clear();
+        state.eventually_satisfied_at = Some(at);
+    }
+
+    None
+}
+
+fn observe_reachability_assertion<O>(
+    state: &mut HostAssertionState,
+    prefix: &ConditionEventLogPrefix,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+    predicate: &Condition,
+    expectation: ReachabilityExpectation,
+) -> Option<HostAssertionOutcome>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let reached = host_condition_is_true(prefix, predicate, oracle, once_latches);
+    match (expectation, reached) {
+        (ReachabilityExpectation::Reachable { .. }, true) => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            prefix.point().at(),
+            "reachable predicate became true",
+        ),
+        (ReachabilityExpectation::Unreachable, true) => state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            prefix.point().at(),
+            "unreachable predicate became true",
+        ),
+        (
+            ReachabilityExpectation::Reachable { .. } | ReachabilityExpectation::Unreachable,
+            false,
+        ) => None,
+    }
+}
+
+fn finalize_host_assertion_state<O>(
+    state: &mut HostAssertionState,
+    prefix: &ConditionEventLogPrefix,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+) where
+    O: HostAssertionOracle + ?Sized,
+{
+    if state.terminal.is_some() {
+        return;
+    }
+
+    let at = prefix.point().at();
+    let property = state.assertion.property.clone();
+    match property {
+        Property::Always { .. } => {
+            state.terminal(
+                HostAssertionOutcomeKind::Satisfied,
+                at,
+                "always predicate stayed true",
+            );
+        }
+        Property::Sometimes { .. } => {
+            state.terminal(
+                HostAssertionOutcomeKind::Violated,
+                at,
+                "sometimes predicate never became true",
+            );
+        }
+        Property::Eventually { .. } => finalize_eventually_assertion(state, at),
+        Property::AfterQuiescence { predicate } => {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+                state.terminal(
+                    HostAssertionOutcomeKind::Satisfied,
+                    at,
+                    "after-quiescence predicate was true",
+                );
+            } else {
+                state.terminal(
+                    HostAssertionOutcomeKind::Violated,
+                    at,
+                    "after-quiescence predicate was false",
+                );
+            }
+        }
+        Property::Reachable { expectation, .. } => match expectation {
+            ReachabilityExpectation::Reachable { on_unreached } => match on_unreached {
+                ReachableDisposition::Warn => {
+                    state.terminal(
+                        HostAssertionOutcomeKind::Warning,
+                        at,
+                        "reachable predicate was never reached",
+                    );
+                }
+                ReachableDisposition::Fail => {
+                    state.terminal(
+                        HostAssertionOutcomeKind::Violated,
+                        at,
+                        "reachable predicate was never reached",
+                    );
+                }
+            },
+            ReachabilityExpectation::Unreachable => {
+                state.terminal(
+                    HostAssertionOutcomeKind::Satisfied,
+                    at,
+                    "unreachable predicate stayed false",
+                );
+            }
+        },
+    }
+}
+
+fn finalize_eventually_assertion(state: &mut HostAssertionState, at: VirtualTime) {
+    if let Some(expired) = state
+        .pending_eventually
+        .iter()
+        .copied()
+        .find(|obligation| at.ticks > obligation.deadline.ticks)
+    {
+        state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            expired.deadline,
+            format!(
+                "eventually deadline expired after trigger at {}",
+                expired.triggered_at.ticks
+            ),
+        );
+    } else if !state.pending_eventually.is_empty() {
+        state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            "eventually run ended while triggered",
+        );
+    } else if let Some(satisfied_at) = state.eventually_satisfied_at {
+        state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            satisfied_at,
+            "eventually predicate became true",
+        );
+    } else if state.eventually_triggered {
+        state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            "eventually trigger fired without a satisfiable obligation",
+        );
+    } else {
+        state.terminal(
+            HostAssertionOutcomeKind::Warning,
+            at,
+            "eventually trigger never fired",
+        );
+    }
+}
+
+fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> VirtualTime {
+    VirtualTime {
+        ticks: triggered_at
+            .ticks
+            .checked_add(deadline.ticks)
+            .unwrap_or(u64::MAX),
+    }
+}
+
+struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
+    observed: ObservedState<'prefix>,
+    oracle: &'state mut O,
+    once_latches: &'state mut Vec<Condition>,
+}
+
+impl<O> condition_evaluator_sealed::Sealed for HostConditionEvaluation<'_, '_, O> where
+    O: HostAssertionOracle + ?Sized
+{
+}
+
+impl<O> ConditionEvaluator for HostConditionEvaluation<'_, '_, O>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    fn evaluation_point(&self) -> EventEvaluationPoint {
+        self.observed.point()
+    }
+
+    fn event_log_offset(&self) -> EventLogOffset {
+        self.observed.event_log_offset()
+    }
+
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        HostAssertionOracle::leaf_is_true(self.oracle, self.observed, leaf)
+    }
+
+    fn observable_events(&self) -> &[ObservableEvent] {
+        self.observed.observable_events()
+    }
+
+    fn once_condition_is_latched(&self, condition: &Condition) -> bool {
+        self.once_latches.iter().any(|latched| latched == condition)
+    }
+
+    fn latch_once_condition(&mut self, condition: &Condition) {
+        if !self.once_condition_is_latched(condition) {
+            self.once_latches.push(condition.clone());
+        }
+    }
+}
+
+fn host_condition_is_true<O>(
+    prefix: &ConditionEventLogPrefix,
+    condition: &Condition,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+) -> bool
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let mut evaluator = HostConditionEvaluation {
+        observed: prefix.observed_state(),
+        oracle,
+        once_latches,
+    };
+    evaluate_condition(&mut evaluator, condition)
 }
 
 fn push_observed_state_facts(

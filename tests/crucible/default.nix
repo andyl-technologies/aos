@@ -702,6 +702,11 @@ in {
       attrPath = "checks.crucible.phase4.observedStateMaterialization";
       taskIds = ["T-ASRT-4"];
     };
+    hostSideAssertions = import ./phase4-host-side-assertions.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.hostSideAssertions";
+      taskIds = ["T-ASRT-5"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
