@@ -184,8 +184,8 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:e2e-determinism",
-        owner_packages: &["crucible-harness", "crucible-cli"],
-        layers: &[Layer::L4, Layer::CrossCutting],
+        owner_packages: &["crucible", "crucible-cli"],
+        layers: &[Layer::L3, Layer::L4],
         shape: TestShape::E2eDeterminism,
         backend: TestBackend::Mixed,
     },
@@ -241,6 +241,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:replay-oracle",
             "gate:content-address",
             "gate:scheduler-liveness",
+            "gate:e2e-determinism",
         ],
     },
     CrateTestingOwnership {
@@ -266,7 +267,6 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:abi-conformance",
             "gate:divergence-bisect",
             "gate:adversarial-determinism",
-            "gate:e2e-determinism",
         ],
     },
 ];

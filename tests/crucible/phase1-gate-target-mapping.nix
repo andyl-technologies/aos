@@ -227,7 +227,7 @@
       package = "crucible-cli";
       testTarget = "gate_e2e_determinism";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
   ];
 
@@ -395,7 +395,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=3
+            placeholder_targets=2
             RESULT
           '';
         }

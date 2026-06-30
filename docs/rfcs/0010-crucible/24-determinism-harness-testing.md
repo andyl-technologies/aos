@@ -1008,12 +1008,24 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
-  fingerprints, observer output, and empty evidence; real multi-VM and
-  cross-machine reproduction artifacts remain owned by T-HARN-23 through
-  T-HARN-25.
-- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+  fingerprints, observer output, and empty evidence; real reproduction-artifact
+  format details, real-host reproduction verification, CLI produce/reproduce
+  wiring, and AOS VM/fleet checks remain owned by T-HARN-24, T-HARN-25, and the
+  packaging tasks.
+- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
+  Completed by `checks.crucible.phase7.gates.e2eDeterminism`: the `crucible-cli`
+  gate target now runs the representative self-contained mock e2e artifact
+  through the shared harness final-acceptance route, exercises the canonical
+  adversarial host profile matrix, verifies byte-identical logs/fingerprints,
+  replays from the artifact on different machine profiles, and rejects build
+  identity drift and missing cross-machine-profile coverage. The phase4
+  scheduler/mock gate remains the lower-layer e2e coverage; this phase7 target
+  closes the package-owned final acceptance target for the shared mock artifact
+  route without adding new CLI subcommand semantics. The concrete artifact
+  format, real-host reproduction check, and CLI/AOS produce/reproduce wiring
+  remain T-HARN-24, T-HARN-25, and packaging work.
 - [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into

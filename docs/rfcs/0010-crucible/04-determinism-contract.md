@@ -783,8 +783,10 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     containing `(seed, scenario, schedule, build identity)` across the canonical
     adversarial host profile matrix, compares canonical logs and final
     fingerprints, verifies reproduction from the artifact, and rejects build
-    identity, fault-corpus, and schedule-drift regressions. The CLI/AOS final
-    acceptance target remains pending for the later real-backend work.
+    identity, fault-corpus, and schedule-drift regressions. The phase7 CLI-owned
+    target is completed by `checks.crucible.phase7.gates.e2eDeterminism` over
+    the same shared mock artifact route; the real artifact format, real-host
+    reproduction check, and AOS VM/fleet wiring remain later tasks.
 - [x] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];

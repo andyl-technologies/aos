@@ -310,9 +310,9 @@
     }
     {
       gate = "gate:e2e-determinism";
-      package = "crucible-harness";
-      testTarget = "gate_e2e_determinism";
-      requiredFeatures = [];
+      package = "crucible";
+      testTarget = "gate_e2e_determinism_concurrency";
+      requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:e2e-determinism";
@@ -423,8 +423,8 @@
     }
     {
       gate = "gate:e2e-determinism";
-      ownerPackages = ["crucible-harness" "crucible-cli"];
-      layers = ["L4" "CrossCutting"];
+      ownerPackages = ["crucible" "crucible-cli"];
+      layers = ["L3" "L4"];
       shape = "e2e-determinism";
       backend = "mixed";
     }
@@ -480,7 +480,7 @@
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness"];
+      gates = ["gate:layer0-determinism" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:e2e-determinism"];
     }
     {
       package = "crucible-session";
@@ -500,7 +500,7 @@
     }
     {
       package = "crucible-harness";
-      gates = ["gate:harness-lint" "gate:abi-conformance" "gate:divergence-bisect" "gate:adversarial-determinism" "gate:e2e-determinism"];
+      gates = ["gate:harness-lint" "gate:abi-conformance" "gate:divergence-bisect" "gate:adversarial-determinism"];
     }
   ];
 

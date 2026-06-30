@@ -265,14 +265,32 @@
         needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_e2e_determinism_concurrency\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
       }
       {
-        label = "CLI final e2e target remains pending";
-        needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible-cli\",\n        test_target: \"gate_e2e_determinism\",\n        required_features: &[],\n        placeholder: true,";
+        label = "implemented CLI final e2e target";
+        needle = "gate: \"gate:e2e-determinism\",\n        package: \"crucible-cli\",\n        test_target: \"gate_e2e_determinism\",\n        required_features: &[],\n        placeholder: false,";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
       {
-        label = "CLI e2e final acceptance remains placeholder";
-        needle = "#[ignore = \"T-HARN-23 implements gate:e2e-determinism\"]";
+        label = "CLI e2e final acceptance implemented";
+        needle = "gate_e2e_determinism_cli_target_runs_final_acceptance_artifact";
+      }
+      {
+        label = "CLI e2e build identity negative control";
+        needle = "gate_e2e_determinism_cli_target_rejects_build_identity_drift";
+      }
+      {
+        label = "CLI e2e cross-machine negative control";
+        needle = "gate_e2e_determinism_cli_target_requires_cross_machine_reproduction";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
+      {
+        label = "ignored CLI e2e placeholder";
+        needle = "#[ignore";
+      }
+      {
+        label = "pending CLI e2e panic";
+        needle = "implementation is pending";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -281,24 +299,32 @@
         needle = "e2eDeterminism = import ./phase4-e2e-determinism.nix";
       }
       {
-        label = "phase7 e2e final acceptance remains red";
-        needle = "attrPath = \"checks.crucible.phase7.gates.e2eDeterminism\"";
+        label = "phase7 e2e final acceptance green check";
+        needle = "e2eDeterminism = import ./phase7-e2e-determinism.nix";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=3";
+        needle = "placeholder_targets=2";
       }
       {
         label = "implemented crucible e2e target in Nix lint";
         needle = "gate = \"gate:e2e-determinism\";\n      package = \"crucible\";\n      testTarget = \"gate_e2e_determinism_concurrency\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
       }
+      {
+        label = "implemented CLI e2e target in Nix lint";
+        needle = "gate = \"gate:e2e-determinism\";\n      package = \"crucible-cli\";\n      testTarget = \"gate_e2e_determinism\";\n      requiredFeatures = [];\n      placeholder = false;";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 remains final CLI/AOS placeholder";
-        needle = "- [ ] **T-HARN-23**";
+        label = "T-HARN-23 checklist complete";
+        needle = "- [x] **T-HARN-23**";
+      }
+      {
+        label = "T-HARN-23 completion note";
+        needle = "Completed by `checks.crucible.phase7.gates.e2eDeterminism`";
       }
     ];
 in
@@ -374,7 +400,7 @@ in
             scenario=serial-vs-concurrent-authoritative-drive
             artifact=self-contained-seed-scenario-schedule-build-identity
             adversarial_profiles=canonical-host-adversary-matrix
-            final_acceptance_cli_target=pending
+            final_acceptance_cli_target=implemented_shared_mock_artifact
             assertion_online_offline_outcomes=bit-identical
             assertion_cross_mode_outcomes=normalized-bit-identical
             assertion_run_verdict=deterministic
