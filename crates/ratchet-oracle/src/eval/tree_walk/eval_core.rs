@@ -647,14 +647,15 @@ impl TreeWalk {
         path: IrAttrPathId,
     ) -> Option<ForceCacheSubject> {
         let identity = self.cache_synthetic_select_identity(select, path)?;
-        let receiver_hash = self.force_cache_free_var_value_hash(receiver)?;
+        let selected_hash =
+            self.force_cache_static_select_value_hash(select.module(), receiver, path)?;
         Some(ForceCacheSubject {
             lookup_identity: Some(identity),
             pure_observation_identity: Some(identity),
             impure_observation_identity: None,
             metadata_identity: Some(identity),
             persistent_clear_identity: Some(identity),
-            free_var_value_hashes: vec![receiver_hash],
+            free_var_value_hashes: vec![selected_hash],
             replay_position_module: None,
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })

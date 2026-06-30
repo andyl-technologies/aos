@@ -353,6 +353,70 @@ fn synthetic_select_thunks_hit_when_receiver_hashes_match() {
 }
 
 #[test]
+fn synthetic_select_thunks_hit_when_unselected_receiver_siblings_change() {
+    let source = "{ a = 1; b = 2; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (unused_sibling, expected_hit) in [(2, false), (3, true)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "synthetic-select-unselected-sibling.nix",
+            source,
+            cache.clone(),
+        );
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(a, Value::int(7)),
+                AttrEntry::new(b, Value::int(unused_sibling)),
+            ],
+            &evaluator.symbols,
+        )
+        .expect("receiver attrs build");
+        let receiver = evaluator
+            .heap
+            .alloc_attrs(0, attrs)
+            .expect("receiver attrs allocate");
+        let thunk_value = evaluator
+            .alloc_select_thunk(
+                ir.root,
+                Span::new(0, source.len() as u32),
+                ir.root,
+                receiver,
+                path,
+            )
+            .expect("select thunk allocates");
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, source.len() as u32), thunk_value)
+            .expect("synthetic select thunk force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(
+            evaluator.stats().cache_hits() > 0,
+            expected_hit,
+            "unselected receiver siblings should not dirty the selected path key"
+        );
+    }
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert_eq!(
+        runtime.cache().expect("cache is enabled").len(),
+        1,
+        "matching selected values should share one demand node even when siblings change"
+    );
+}
+
+#[test]
 fn synthetic_select_thunks_include_path_and_site_in_cache_key() {
     let source = "let r = { a = 1; b = 2; }; in { left = r.a; middle = r.b; right = r.a; }";
     let ir = lower(source);
@@ -609,6 +673,292 @@ fn synthetic_select_thunks_with_unhashable_receivers_do_not_build_force_cache_su
         runtime.cache().expect("cache is enabled").is_empty(),
         "unhashable select receivers should skip expression node allocation"
     );
+}
+
+#[test]
+fn synthetic_select_thunks_with_unhashable_selected_values_do_not_build_force_cache_subjects() {
+    let source = "{ a = 1; }.a";
+    let ir = lower(source);
+    let path = {
+        let node = ir.arena.node(ir.root).expect("root select exists");
+        let IrData::Select { path, .. } = node.data else {
+            panic!("root is a select");
+        };
+        path
+    };
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "synthetic-select-unhashable-selected-value.nix",
+        source,
+        cache.clone(),
+    );
+    let selected = evaluator
+        .alloc_apply_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            Span::new(0, source.len() as u32),
+            Value::int(1),
+            ir.root,
+            Value::int(2),
+        )
+        .expect("unhashable selected thunk allocates");
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(a, selected)], &evaluator.symbols)
+        .expect("receiver attrs build");
+    let receiver = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("receiver attrs allocate");
+    let thunk_value = evaluator
+        .alloc_select_thunk(
+            ir.root,
+            Span::new(0, source.len() as u32),
+            ir.root,
+            receiver,
+            path,
+        )
+        .expect("select thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("synthetic select thunk is heap-owned");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Select { .. }));
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+    };
+    assert!(
+        subject.is_none(),
+        "synthetic select thunks over unhashable selected values must not build demand keys"
+    );
+
+    let runtime = cache.lock().expect("cache lock is valid");
+    assert!(
+        runtime.cache().expect("cache is enabled").is_empty(),
+        "unhashable selected values should skip expression node allocation"
+    );
+}
+
+fn captured_static_select_projection_ir() -> (Ir, Symbol, Symbol) {
+    let mut symbols = SymbolTable::new();
+    let used = symbols.intern(b"used").expect("used interns");
+    let unused = symbols.intern(b"unused").expect("unused interns");
+    let path = IrAttrPathId::new(0);
+    let ir = manual_ir_with_attr_paths(
+        IrId::new(1),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::Select,
+                Span::new(0, 6),
+                IrData::Select {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver: IrId::new(0),
+                    path,
+                    default: None,
+                },
+            ),
+        ],
+        symbols,
+        vec![Box::new([IrAttrPathSegment::Static(used)])],
+    );
+    (ir, used, unused)
+}
+
+fn captured_static_select_thunk_for_attrs(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    used: Symbol,
+    unused: Symbol,
+    selected_value: Value,
+    unused_value: Value,
+) -> Value {
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(used, selected_value),
+            AttrEntry::new(unused, unused_value),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("captured receiver attrs build");
+    let captured = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("captured receiver attrs allocate");
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame.set(0, captured).expect("capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("captured static select thunk allocates")
+}
+
+#[test]
+fn captured_static_selects_hit_when_unselected_receiver_siblings_change() {
+    let (ir, used, unused) = captured_static_select_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (unused_value, expected_hit) in [(1, false), (2, true)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-projection.nix",
+            "x.used",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Value::int(7),
+            Value::int(unused_value),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("captured static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "captured static select subject should hash the selected value"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 6), thunk_value)
+            .expect("captured static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > 0,
+            expected_hit,
+            "unselected captured receiver siblings should not dirty the selected path key"
+        );
+    }
+}
+
+#[test]
+fn captured_static_selects_miss_when_selected_values_change() {
+    let (ir, used, unused) = captured_static_select_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for selected_value in [7, 8] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-selected-change.nix",
+            "x.used",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Value::int(selected_value),
+            Value::int(1),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("captured static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "captured static select subject should hash the selected value"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 6), thunk_value)
+            .expect("captured static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(selected_value));
+        assert_eq!(
+            evaluator.stats().force_cache_hits(),
+            0,
+            "changed selected values must not false-hit through the projected key"
+        );
+    }
+}
+
+#[test]
+fn captured_static_selects_fallback_to_whole_receiver_without_forcing_suspended_receivers() {
+    let source = "let x = { used = 7; unused = 1; }; in { a = x.used; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-static-select-suspended-receiver.nix",
+        source,
+        cache.clone(),
+    );
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    let captured_x = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a is a node thunk");
+        let env = thunk.env().expect("a captures x");
+        env.frames()[0].get(0).expect("x capture exists")
+    };
+    let x_thunk = evaluator
+        .heap()
+        .get_thunk(captured_x)
+        .expect("x capture is a thunk");
+    assert_eq!(x_thunk.cell().state(), Ok(ThunkState::Suspended));
+
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("a remains a node thunk");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("captured static select fallback subject builds")
+    };
+    assert_eq!(
+        subject.free_var_value_hashes.len(),
+        1,
+        "fallback subject should retain one whole-receiver hash"
+    );
+    let x_thunk = evaluator
+        .heap()
+        .get_thunk(captured_x)
+        .expect("x capture remains a thunk");
+    assert_eq!(
+        x_thunk.cell().state(),
+        Ok(ThunkState::Suspended),
+        "projection fallback must not force a suspended receiver"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("captured static select force succeeds");
+
+    assert_eq!(forced.as_int(), Ok(7));
 }
 
 #[test]

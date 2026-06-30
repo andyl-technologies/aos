@@ -852,11 +852,21 @@ alone (`M-1`/`Q-A`).
       a suspended closed literal thunk whose static payload is one of those
       replayable values, or a suspended captured local/upvalue alias thunk whose
       referenced captured payload is one of those replayable values.
-      Static synthetic select thunks with static attr paths and hashable
-      receiver values now use a domain-separated select-site/path identity plus
-      the receiver's force-captured value hash; matching receivers hit, changed
-      receivers miss, changed paths or select sites do not false-hit, and
-      dynamic paths or unhashable receivers skip subject construction.
+      Static synthetic select thunks with static attr paths now use a
+      domain-separated select-site/path identity plus the selected path value's
+      force-captured hash; selected binding position source-name/span identities
+      are folded in when present. Matching selected values hit across unselected
+      receiver-sibling edits that do not move a retained selected binding
+      position; position-bearing selected bindings intentionally miss when their
+      retained source-name/span identity changes. Changed selected values miss,
+      changed paths or select sites do not false-hit, and dynamic paths,
+      unhashable receivers, or unhashable selected values skip subject
+      construction. Captured
+      free-variable scans also project simple static selects from captured
+      lexical slots to selected-value hashes, falling back to the prior
+      whole-slot hash when projection cannot be resolved without adding demand.
+      This lets derivation side-record keys ignore unselected imported attrset
+      siblings while preserving positioned-source identity.
       Strings and paths are hashed in one durable force-capture domain with typed
       string/path tags; contextual values append canonical context element tags
       and length-prefixed path/output bytes. Replayable list/attrset captures
@@ -879,7 +889,8 @@ alone (`M-1`/`Q-A`).
       values not already forced in the captured slot, recursive captured alias
       cycles, lambda/formal/recursive-attrset frame introducers and dynamic-key
       nested `let` bodies, apply thunks
-      and dynamic-path or unhashable-receiver select thunks, full
+      and dynamic-path, unhashable-receiver, or unhashable-selected-value select
+      thunks, full
       strictness/escape free-variable analysis, remaining
       composite value hashes, persistence, and cached/uncached harness
       proof. The gate covers captured inline/string/path/list and empty-attrset
@@ -894,8 +905,10 @@ alone (`M-1`/`Q-A`).
       hit/miss and dynamic-key skip canaries, lambda/recursive-attrset nested
       lexical-frame subject-skip canaries, captured lambda/primop value
       subject-skip canaries, synthetic apply/apply2 subject-skip canaries,
-      synthetic static-select receiver/path/site hit/miss and
-      dynamic-path/unhashable-receiver skip canaries, captured root/imported
+      synthetic static-select selected-value/path/site hit/miss,
+      unselected-sibling hit, and dynamic-path/unhashable-receiver/
+      unhashable-selected-value skip canaries, captured static-select
+      projection hit/miss and suspended-receiver fallback canaries, captured root/imported
       positioned attrset source-salted
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list
@@ -904,7 +917,11 @@ alone (`M-1`/`Q-A`).
       unary `getEnv`/`import`/`readDir`/`readFile`/`readFileType` argument hit
       canary, first-class captured `pathExists` and `hashFile` argument hit/miss
       canaries, and representative
-      captured unsupported free-variable skips
+      captured unsupported free-variable skips plus
+      `native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure`,
+      which now requires unselected leaf-package edits to reuse both static
+      output side records and both final ATerm paths with zero derivation hash or
+      text-path calculations
       (`C-1`/`C-2`).
 - [x] Current free-variable value-hash type boundary:
       `DemandCacheKey::for_free_vars`, `PersistNodeMetadataKey::for_expression`,
