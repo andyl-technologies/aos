@@ -10,7 +10,7 @@ impl EvalHeap {
     /// Creates an empty evaluator heap.
     pub fn new() -> Self {
         Self {
-            arena: BumpArena::new(),
+            allocator: RuntimeAllocator::tier_a_one_shot(),
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
@@ -27,7 +27,7 @@ impl EvalHeap {
     /// or overflows while being rounded to the arena word size.
     pub fn with_initial_chunk_bytes(chunk_bytes: usize) -> Result<Self, EvalHeapError> {
         Ok(Self {
-            arena: BumpArena::with_initial_chunk_bytes(chunk_bytes)
+            allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             records: Vec::new(),
             string_cons: HashConsTable::new(),
@@ -37,9 +37,14 @@ impl EvalHeap {
         })
     }
 
-    /// Returns current bump-arena accounting.
+    /// Returns current runtime allocator accounting.
     pub fn arena_stats(&self) -> ArenaStats {
-        self.arena.stats()
+        self.allocator.stats()
+    }
+
+    /// Returns the runtime allocation tier backing this heap.
+    pub fn allocator_tier(&self) -> RuntimeAllocatorTier {
+        self.allocator.tier()
     }
 
     /// Returns the number of typed objects registered in this heap.
@@ -60,8 +65,8 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
-    /// reserved, if the bump arena cannot reserve a string handle, or if the
-    /// resulting handle violates the runtime value alignment contract.
+    /// reserved, if the runtime allocator cannot reserve a string handle, or if
+    /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
         let hash = string.structural_hash_xxh3();
         let cons_slot = match self.admit_string_cons(hash, &string)? {
@@ -69,7 +74,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .arena
+            .allocator
             .aos_alloc_string(string.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -105,8 +110,8 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
-    /// reserved, if the bump arena cannot reserve a path handle, or if the
-    /// resulting handle violates the runtime value alignment contract.
+    /// reserved, if the runtime allocator cannot reserve a path handle, or if
+    /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_path(&mut self, path: NixString) -> Result<Value, EvalHeapError> {
         let hash = path.structural_hash_xxh3();
         let cons_slot = match self.admit_path_cons(hash, &path)? {
@@ -114,7 +119,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .arena
+            .allocator
             .aos_alloc_string(path.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -150,8 +155,8 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
-    /// reserved, if the bump arena cannot reserve a list handle, or if the
-    /// resulting handle violates the runtime value alignment contract.
+    /// reserved, if the runtime allocator cannot reserve a list handle, or if
+    /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_list(&mut self, list: NixList) -> Result<Value, EvalHeapError> {
         let hash = list_structural_hash(&list);
         let cons_slot = match self.admit_list_cons(hash, &list)? {
@@ -159,7 +164,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .arena
+            .allocator
             .aos_alloc_list(list.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -196,8 +201,8 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
     /// reserved, if the attrset length cannot fit the runtime slot count, if
-    /// the bump arena cannot reserve an attrset handle, or if the resulting
-    /// handle violates the runtime value alignment contract.
+    /// the runtime allocator cannot reserve an attrset handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_attrs(&mut self, shape: u32, attrs: FlatAttrs) -> Result<Value, EvalHeapError> {
         let hash = attrs_structural_hash(shape, &attrs);
         let slots = u32::try_from(attrs.len())
@@ -207,7 +212,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .arena
+            .allocator
             .aos_alloc_attrs(shape, slots)
             .map_err(EvalHeapError::Arena)
         {
@@ -243,12 +248,12 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a lambda handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// runtime allocator cannot reserve a lambda handle, or if the resulting
+    /// handle violates the runtime value alignment contract.
     pub fn alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
         self.reserve_record_slot()?;
         let allocation = self
-            .arena
+            .allocator
             .aos_alloc_lambda()
             .map_err(EvalHeapError::Arena)?;
         let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
@@ -270,12 +275,12 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a builtin handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// runtime allocator cannot reserve a builtin handle, or if the resulting
+    /// handle violates the runtime value alignment contract.
     pub fn alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
         self.reserve_record_slot()?;
         let allocation = self
-            .arena
+            .allocator
             .aos_alloc_raw(PRIMOP_HANDLE_BYTES, PRIMOP_HANDLE_ALIGN, PRIMOP_TYPE_TAG)
             .map_err(EvalHeapError::Arena)?;
         let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
@@ -297,11 +302,14 @@ impl EvalHeap {
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a thunk handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// runtime allocator cannot reserve a thunk handle, or if the resulting
+    /// handle violates the runtime value alignment contract.
     pub fn alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
         self.reserve_record_slot()?;
-        let allocation = self.arena.aos_alloc_thunk().map_err(EvalHeapError::Arena)?;
+        let allocation = self
+            .allocator
+            .aos_alloc_thunk()
+            .map_err(EvalHeapError::Arena)?;
         let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,

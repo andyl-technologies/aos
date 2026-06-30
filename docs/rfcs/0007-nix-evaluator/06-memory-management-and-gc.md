@@ -826,6 +826,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       helpers (`thunk`, `attrs`, `cons`/`list`, `string`, `raw`, plus lambda),
       reserves opaque aligned `HeapObject` handles in never-free owned chunks,
       registers typed side-table records, and exposes arena accounting for tests.
+- [x] Current P3 allocation-dispatch precursor: `ratchet-oracle::runtime::alloc`
+      installs a `RuntimeAllocator` strategy object for the tree-walk oracle;
+      `EvalHeap` no longer owns `BumpArena` directly and routes every typed heap
+      allocation through the centralized `aos_alloc_*`-shaped methods. The only
+      current backend is Tier-A `BumpArena`, so the frozen exported runtime/JIT
+      ABI row below remains open.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_thunk` / `aos_alloc_attrs` /
       `aos_alloc_cons` / `aos_alloc_string` / `aos_alloc_raw` symbols, startup

@@ -7,4 +7,6 @@
 //! no concrete evaluator. This module re-exports that metadata layer under its
 //! historical `crate::runtime::builtins` path for the runtime tiers.
 
+pub mod alloc;
+
 pub use crate::compile::builtins;

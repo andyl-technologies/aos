@@ -751,12 +751,13 @@ harness, never cut for scope.
 ### The runtime symbol table
 
 - [ ] Fixed named symbol set registered once via `JITBuilder::symbol`: allocation (`aos_alloc_*`), forcing/control (`aos_force`/`aos_force_deep`/`aos_blackhole_check`), attrset access (`aos_select_ic`/`aos_has_attr`/`aos_update`), builtins (`nix.builtin.*`) ([§3.1](#31-what-lives-in-it)–[§3.2](#32-how-symbols-are-registered-with-cranelift)) — P6, `S-12`.
-- [x] Current P1 tree-walk allocation substrate: `EvalHeap` routes tree-walk
-      heap object creation through `BumpArena::aos_alloc_*`
+- [x] Current P3 tree-walk allocation-dispatch precursor: `EvalHeap` routes
+      tree-walk heap object creation through `RuntimeAllocator::aos_alloc_*`
       entry-point-shaped Rust helpers for strings and paths, contiguous lists,
-      attrs, lambdas, primops, thunks, and raw records, giving the safe oracle a
-      single allocation helper surface and arena accounting. This is direct Rust
-      plumbing, not the frozen runtime/JIT ABI
+      attrs, lambdas, primops, thunks, and raw records; the installed strategy
+      currently delegates to Tier-A `BumpArena`, preserving arena accounting
+      while giving the safe oracle a single runtime allocation surface. This is
+      direct Rust plumbing, not the frozen runtime/JIT ABI
       ([06](06-memory-management-and-gc.md) §2).
 - [ ] Frozen runtime/JIT allocation indirection remains: `aos_alloc_*` exported
       as `unsafe extern "C"` or equivalent runtime symbols, registered with

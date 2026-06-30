@@ -4944,6 +4944,13 @@ and helps the oracle directly.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
+- [x] Current `runtime/alloc.rs` allocation-dispatch precursor:
+      `ratchet-oracle::runtime::alloc::RuntimeAllocator` installs the Tier-A
+      runtime allocation strategy for the tree-walk oracle; `EvalHeap` no longer
+      owns `BumpArena` directly and every typed heap allocation routes through
+      centralized `aos_alloc_*`-shaped methods. The actual exported
+      `unsafe extern "C"`/JIT-symbol ABI and multi-strategy GC swapping remain
+      open in the row above.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current safe-crate prerequisite already in place: the monolithic
       `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`

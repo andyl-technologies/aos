@@ -39,6 +39,14 @@ fn attrs_with_ordered_entries(first: &[u8], second: &[u8]) -> FlatAttrs {
 }
 
 #[test]
+fn default_heap_uses_tier_a_runtime_allocator() {
+    let heap = EvalHeap::new();
+
+    assert_eq!(heap.allocator_tier(), RuntimeAllocatorTier::TierAOneShot);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+}
+
+#[test]
 fn allocates_string_values_and_recovers_contents() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(64).expect("heap creates");
     let value = heap

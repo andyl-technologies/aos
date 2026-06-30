@@ -20,8 +20,9 @@ use crate::attrs::FlatAttrs;
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
-use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
+use crate::heap::arena::{ArenaError, ArenaStats};
 use crate::list::NixList;
+use crate::runtime::alloc::{RuntimeAllocator, RuntimeAllocatorTier};
 use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
@@ -152,7 +153,7 @@ pub struct EvalPrimOp {
 /// Owns typed heap values allocated by one tree-walk evaluation.
 #[derive(Debug)]
 pub struct EvalHeap {
-    arena: BumpArena,
+    allocator: RuntimeAllocator,
     records: Vec<HeapRecord>,
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,
@@ -212,8 +213,8 @@ impl HeapObjectValue {
 /// A typed evaluator-heap operation failed.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EvalHeapError {
-    /// The underlying bump arena could not allocate an opaque handle.
-    #[error("evaluator heap arena error: {0}")]
+    /// The runtime allocator could not allocate an opaque handle.
+    #[error("evaluator heap allocation error: {0}")]
     Arena(#[from] ArenaError),
     /// The heap side table length overflowed.
     #[error("evaluator heap record length overflow")]
