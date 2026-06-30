@@ -143,11 +143,12 @@ pub use trigger::{
     ConditionEvaluationPass, ConditionEvaluator, ConditionEventLogPrefix, ConditionLeaf,
     ConditionLeafOracle, Event, EventEvaluationKind, EventEvaluationPoint, EventFiring,
     EventFirings, EventGraph, EventGraphBuilder, EventGraphError, EventGraphEventBuilder,
-    EventGraphState, FirePolicy, GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker,
-    HostAssertionEvaluator, HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind,
-    HostAssertionReport, LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload,
-    ObservedFaultFact, ObservedOrderingFact, ObservedState, OfflineAssertionCheckError,
-    OfflineAssertionChecker, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    EventGraphState, ExternalFormalTraceExport, ExternalFormalTraceExporter, FirePolicy,
+    GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator,
+    HostAssertionOracle, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionReport,
+    LogLevel, LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
+    ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
+    RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
 };
 
 #[cfg(debug_assertions)]

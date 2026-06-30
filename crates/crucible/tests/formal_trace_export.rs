@@ -1,0 +1,218 @@
+//! Checks T-ASRT-9 external-only formal trace export.
+
+#![forbid(unsafe_code)]
+
+use crucible::{
+    AssertionId, ConditionEvaluationError, ContentHash, ExternalFormalTraceExporter,
+    GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, NodeId,
+    ObservableEvent, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
+};
+
+fn time(ticks: u64) -> VirtualTime {
+    VirtualTime { ticks }
+}
+
+fn retained_log() -> Vec<SchedulerEventLogEntry> {
+    let delivered = ObservableEvent::network_delivered(time(7), None, b"ack".to_vec());
+    vec![
+        crucible::test_support::condition_observation_entry_for_test(0, &delivered),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            time(7),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ]
+}
+
+#[test]
+fn formal_trace_export_is_deterministic_trace_bytes_only() {
+    let event_log = retained_log();
+
+    let first = ExternalFormalTraceExporter::export_event_log(&event_log)
+        .expect("retained event log should export");
+    let second = ExternalFormalTraceExporter::export_event_log(&event_log)
+        .expect("retained event log should export deterministically");
+
+    assert_eq!(first, second);
+    assert_eq!(first.format(), "crucible.external-formal-trace.v1");
+    assert_eq!(first.entry_count(), 2);
+    assert_eq!(first.content_hash(), ContentHash::from_bytes(first.bytes()));
+    let text = std::str::from_utf8(first.bytes()).expect("trace export should be utf-8");
+    assert!(text.contains("format=crucible.external-formal-trace.v1"));
+    assert!(text.contains("scheduler_event_log_previous_prefix="));
+    assert!(text.contains("entry_begin"));
+    assert!(text.contains("entry.sequence=0"));
+    assert!(text.contains("entry.sequence=1"));
+    assert!(text.contains("entry.payload_begin"));
+    assert!(text.contains("payload=observable"));
+    assert!(text.contains("observable=network-delivered"));
+    assert!(text.contains("payload=evaluation-boundary"));
+    assert!(text.contains("boundary.kind=quantum"));
+    assert!(!text.contains("entry.payload=Observable"));
+    assert!(!text.contains("NetworkDelivered"));
+    assert!(!text.contains("Quantum"));
+}
+
+#[test]
+fn formal_trace_export_rejects_invalid_recorded_log() {
+    let mut event_log = retained_log();
+    event_log[0] = crucible::test_support::condition_entry_with_content_hash_for_test(
+        event_log[0].clone(),
+        ContentHash::from_bytes(b"corrupt trace entry"),
+    );
+
+    let error = ExternalFormalTraceExporter::export_event_log(&event_log)
+        .expect_err("corrupt retained log should not export");
+
+    assert!(matches!(
+        error,
+        ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 0 }
+    ));
+}
+
+#[test]
+fn formal_trace_export_hex_encodes_free_form_strings() {
+    let marker = GuestAssertionMarker::new(
+        AssertionId::from_name("assert\nid"),
+        "message\nspoof=entry",
+        GuestAssertionKind::Reachable,
+        true,
+        true,
+        vec![GuestAssertionDetail::new(
+            "key\nwith=line",
+            "value\nentry_end",
+        )],
+        "guest.rs\n42",
+    );
+    let event = ObservableEvent::guest_assertion_marker(
+        Icount { retired: 13 },
+        NodeId {
+            name: String::from("node\nzero"),
+        },
+        marker,
+    );
+    let log = vec![crucible::test_support::condition_observation_entry_for_test(0, &event)];
+
+    let export = ExternalFormalTraceExporter::export_event_log(&log)
+        .expect("retained marker log should export");
+    let text = std::str::from_utf8(export.bytes()).expect("trace export should be utf-8");
+
+    assert!(text.contains("observable=guest-assertion-marker"));
+    assert!(text.contains("observable.marker.message.bytes="));
+    assert!(text.contains("6d6573736167650a73706f6f663d656e747279"));
+    assert!(!text.contains("message\nspoof=entry"));
+    assert!(!text.contains("key\nwith=line"));
+    assert!(!text.contains("value\nentry_end"));
+    assert!(!text.contains("guest.rs\n42"));
+    assert!(!text.contains("node\nzero"));
+}
+
+#[test]
+fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
+    let trigger = include_str!("../src/trigger.rs");
+    let exporter_block = trigger
+        .split("pub struct ExternalFormalTraceExporter")
+        .nth(1)
+        .expect("external formal trace exporter should exist")
+        .split("pub struct OfflineAssertionChecker")
+        .next()
+        .expect("offline assertion checker should follow trace exporter");
+
+    for required in [
+        "pub fn export_event_log",
+        "SchedulerEventLogEntry",
+        "ContentHash::from_bytes",
+        "external_formal_trace_bytes(entries)",
+        "validate_recorded_event_log_entries",
+    ] {
+        assert!(
+            exporter_block.contains(required),
+            "formal trace export must include {required}"
+        );
+    }
+    let external_trace_block = trigger
+        .split("fn external_formal_trace_bytes")
+        .nth(1)
+        .expect("external trace byte helper should exist")
+        .split("fn condition_prefix_from_recorded_log")
+        .next()
+        .expect("external trace helpers should precede recorded log helper");
+    for required in [
+        "fn external_formal_trace_entry_material",
+        "fn external_scheduler_event_log_payload_material",
+        "fn external_observable_event_payload_material",
+        "fn external_scheduler_evaluation_boundary_kind_label",
+    ] {
+        assert!(
+            external_trace_block.contains(required),
+            "formal trace export helpers must include {required}"
+        );
+    }
+    for forbidden in [":?", "scheduler_event_log_segment_bytes"] {
+        assert!(
+            !external_trace_block.contains(forbidden),
+            "formal trace export must not inherit Debug or scheduler segment material: {forbidden}"
+        );
+    }
+    for (path, source) in [
+        ("crates/crucible/Cargo.toml", include_str!("../Cargo.toml")),
+        ("src/backend.rs", include_str!("../src/backend.rs")),
+        (
+            "src/device_subnode.rs",
+            include_str!("../src/device_subnode.rs"),
+        ),
+        ("src/device.rs", include_str!("../src/device.rs")),
+        ("src/decision.rs", include_str!("../src/decision.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        (
+            "src/model/canonical.rs",
+            include_str!("../src/model/canonical.rs"),
+        ),
+        ("src/model.rs", include_str!("../src/model.rs")),
+        ("src/node_fault.rs", include_str!("../src/node_fault.rs")),
+        ("src/scheduler.rs", include_str!("../src/scheduler.rs")),
+        ("src/sim_backend.rs", include_str!("../src/sim_backend.rs")),
+        ("src/trigger.rs", include_str!("../src/trigger.rs")),
+    ] {
+        for forbidden in [
+            "struct Solver",
+            "enum Solver",
+            "trait Solver",
+            "struct ModelChecker",
+            "enum ModelChecker",
+            "trait ModelChecker",
+            "struct SpecEvaluator",
+            "enum SpecEvaluator",
+            "trait SpecEvaluator",
+            "check_conformance",
+            "evaluate_spec",
+            "model_check",
+            "smt",
+            "z3",
+            "tla",
+            "alloy",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} must not add an in-runtime formal evaluator: {forbidden}"
+            );
+        }
+    }
+
+    for forbidden in [
+        "ModelChecker",
+        "SpecEvaluator",
+        "check_conformance",
+        "evaluate_spec",
+        "model_check",
+        "smt",
+        "z3",
+        "tla",
+        "alloy",
+    ] {
+        assert!(
+            !exporter_block.contains(forbidden),
+            "formal trace export must not add an in-runtime evaluator: {forbidden}"
+        );
+    }
+}

@@ -18,14 +18,16 @@ use crate::model::{
     ControlFaultAction, Decision, DeviceId, EventKey, EventLogOffset, Fault, FaultId,
     FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId, MarkerId,
     MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
-    NodeLifecycle, Plan, PlanEntry, Predicate, Properties, Property, ReachabilityExpectation,
-    ReachableDisposition, RegexProgram, SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World,
-    WorldStaticTopology,
+    NodeLifecycle, PartitionDirection, Plan, PlanEntry, Predicate, PreemptionKind, Properties,
+    Property, ReachabilityExpectation, ReachableDisposition, RegexProgram, RestartPolicy,
+    RngStreamId, SchedulerNodeId, SchedulingNodeKind, SimDuration, TimerId, VirtualTime,
+    WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
-    AssertionRunVerdict, AssertionVerdictFailure, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
+    AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
     scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
     scheduler_event_log_segment_bytes,
 };
@@ -1173,6 +1175,74 @@ impl HostAssertionReport {
     }
 }
 
+/// Deterministic trace artifact intended for external formal tooling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalFormalTraceExport {
+    bytes: Vec<u8>,
+    content_hash: ContentHash,
+    entry_count: u64,
+}
+
+impl ExternalFormalTraceExport {
+    /// Returns the stable export format label.
+    #[must_use]
+    pub fn format(&self) -> &'static str {
+        "crucible.external-formal-trace.v1"
+    }
+
+    /// Returns deterministic trace bytes for external consumers.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the content address of [`Self::bytes`].
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the number of scheduler event-log entries exported.
+    #[must_use]
+    pub fn entry_count(&self) -> u64 {
+        self.entry_count
+    }
+}
+
+/// Exporter for external formal trace consumers.
+///
+/// This type only serializes a retained scheduler event log. It does not load,
+/// interpret, or evaluate an external specification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExternalFormalTraceExporter;
+
+impl ExternalFormalTraceExporter {
+    /// Exports a retained scheduler event log as deterministic trace bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] when the entries are not a dense,
+    /// hash-valid scheduler log prefix.
+    pub fn export_event_log(
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<ExternalFormalTraceExport, ConditionEvaluationError> {
+        validate_recorded_event_log_entries(entries)?;
+        let entry_count = u64::try_from(entries.len()).map_err(|_| {
+            ConditionEvaluationError::NonPrefixEventLogSequence {
+                expected: u64::MAX,
+                actual: u64::MAX,
+            }
+        })?;
+        let bytes = external_formal_trace_bytes(entries);
+        let content_hash = ContentHash::from_bytes(&bytes);
+        Ok(ExternalFormalTraceExport {
+            bytes,
+            content_hash,
+            entry_count,
+        })
+    }
+}
+
 /// Offline assertion checker for a retained scheduler event log.
 ///
 /// The checker never drives guests or scheduler state. It reconstructs checked
@@ -2097,6 +2167,822 @@ fn condition_prefix_from_recorded_entries(
     } else {
         ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec())
     }
+}
+
+fn validate_recorded_event_log_entries(
+    entries: &[SchedulerEventLogEntry],
+) -> Result<(), ConditionEvaluationError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec()).map(|_| ())
+}
+
+fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
+    let previous_prefix = scheduler_event_log_empty_prefix();
+    let mut lines = Vec::new();
+    lines.push(String::from("format=crucible.external-formal-trace.v1"));
+    lines.push(format!(
+        "scheduler_event_log_previous_prefix={}",
+        previous_prefix.to_hex()
+    ));
+    lines.push(format!("entries={}", entries.len()));
+    for entry in entries {
+        lines.push(external_formal_trace_entry_material(entry));
+    }
+    lines.join("\n").into_bytes()
+}
+
+fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> String {
+    let mut lines = Vec::new();
+    lines.push(String::from("entry_begin"));
+    lines.push(format!("entry.sequence={}", entry.sequence()));
+    lines.push(format!("entry.at_ticks={}", entry.at().ticks));
+    lines.push(format!(
+        "entry.class={}",
+        external_scheduler_event_log_class_label(entry.class())
+    ));
+    lines.push(format!("entry.hash={}", entry.content_hash().to_hex()));
+    lines.push(String::from("entry.payload_begin"));
+    lines.push(external_scheduler_event_log_payload_material(
+        entry.payload(),
+    ));
+    lines.push(String::from("entry.payload_end"));
+    lines.push(String::from("entry_end"));
+    lines.join("\n")
+}
+
+fn external_scheduler_event_log_class_label(class: SchedulerEventLogClass) -> &'static str {
+    match class {
+        SchedulerEventLogClass::Causal => "causal",
+        SchedulerEventLogClass::Observational => "observational",
+    }
+}
+
+fn external_scheduler_event_log_payload_material(payload: &SchedulerEventLogPayload) -> String {
+    let mut lines = Vec::new();
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            lines.push(String::from("payload=resolved-happening"));
+            lines.push(external_scheduled_event_material(event));
+        }
+        SchedulerEventLogPayload::Decision(decision) => {
+            lines.push(String::from("payload=decision"));
+            lines.push(external_decision_material(decision));
+        }
+        SchedulerEventLogPayload::Observable(observable) => {
+            lines.push(String::from("payload=observable"));
+            lines.push(external_observable_event_payload_material(observable));
+        }
+        SchedulerEventLogPayload::EvaluationBoundary(kind) => {
+            lines.push(String::from("payload=evaluation-boundary"));
+            lines.push(format!(
+                "boundary.kind={}",
+                external_scheduler_evaluation_boundary_kind_label(*kind)
+            ));
+        }
+        SchedulerEventLogPayload::TriggerFired(firing) => {
+            lines.push(String::from("payload=trigger-fired"));
+            lines.push(external_event_firing_material(firing));
+        }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            lines.push(String::from("payload=trigger-action-applied"));
+            lines.push(external_trigger_action_application_material(application));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_scheduled_event_material(event: &ScheduledEvent) -> String {
+    let mut lines = Vec::new();
+    lines.push(external_scheduled_event_key_material(&event.key));
+    lines.push(format!(
+        "event.resolve_class={}",
+        external_scheduled_event_resolve_class_label(scheduled_event_resolve_class(event))
+    ));
+    lines.push(external_scheduled_event_payload_material(&event.payload));
+    lines.join("\n")
+}
+
+fn external_scheduled_event_key_material(key: &ScheduledEventKey) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("event.time_ticks={}", key.virtual_time().ticks));
+    lines.push(external_scheduler_node_material(
+        "event.consumer",
+        key.consumer(),
+    ));
+    lines.push(external_scheduler_node_material(
+        "event.producer",
+        key.producer(),
+    ));
+    lines.push(format!("event.sequence={}", key.sequence()));
+    lines.join("\n")
+}
+
+fn external_scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
+    let mut lines = Vec::new();
+    match payload {
+        ScheduledEventPayload::BackendInput(input) => {
+            lines.push(String::from("event.payload=backend-input"));
+            lines.push(external_node_id_material("event.payload.node", &input.node));
+            lines.push(format!(
+                "event.payload.bytes={}",
+                external_hex_bytes(&input.payload)
+            ));
+        }
+        ScheduledEventPayload::IoCompletion(completion) => {
+            lines.push(String::from("event.payload=io-completion"));
+            lines.push(external_scheduler_node_material(
+                "event.payload.sub_node",
+                &completion.sub_node,
+            ));
+            lines.push(external_node_id_material(
+                "event.payload.target",
+                &completion.target,
+            ));
+            lines.push(format!(
+                "event.payload.delivery_icount={}",
+                completion.delivery_icount.retired
+            ));
+            lines.push(format!(
+                "event.payload.bytes={}",
+                external_hex_bytes(&completion.payload)
+            ));
+        }
+        ScheduledEventPayload::FaultActivation(fault) => {
+            lines.push(String::from("event.payload=fault-activation"));
+            lines.push(external_fault_id_material("event.payload.fault", fault));
+        }
+        ScheduledEventPayload::ProbabilisticFault(choice) => {
+            lines.push(String::from("event.payload=probabilistic-fault"));
+            lines.push(external_fault_id_material(
+                "event.payload.fault",
+                &choice.fault,
+            ));
+            lines.push(external_rng_stream_material(
+                "event.payload.stream",
+                &choice.stream,
+            ));
+            lines.push(format!(
+                "event.payload.rate_basis_points={}",
+                choice.rate.basis_points()
+            ));
+        }
+        ScheduledEventPayload::Control(operation) => {
+            lines.push(String::from("event.payload=control"));
+            lines.push(format!(
+                "event.payload.control.sequence={}",
+                operation.sequence
+            ));
+            lines.push(external_control_operation_kind_material(
+                "event.payload.control.kind",
+                &operation.kind,
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_decision_material(decision: &Decision) -> String {
+    use Decision as D;
+
+    let mut lines = Vec::new();
+    match decision {
+        D::DeliveryOrder(order) => {
+            lines.push(String::from("decision=delivery-order"));
+            lines.push(format!("decision.at_ticks={}", order.at.ticks));
+            lines.push(format!("decision.events={}", order.order.len()));
+            for (index, event) in order.order.iter().enumerate() {
+                lines.push(external_event_key_material(
+                    &format!("decision.event.{index}"),
+                    event,
+                ));
+            }
+        }
+        D::FaultFires(fault) => {
+            lines.push(String::from("decision=fault-fires"));
+            lines.push(format!("decision.at_ticks={}", fault.at.ticks));
+            lines.push(external_fault_id_material("decision.fault", &fault.fault));
+            lines.push(format!("decision.fired={}", fault.fired));
+        }
+        D::RngDraw(draw) => {
+            lines.push(String::from("decision=rng-draw"));
+            lines.push(external_rng_stream_material(
+                "decision.stream",
+                &draw.stream,
+            ));
+            lines.push(format!("decision.value={}", draw.value));
+        }
+        D::Override(override_decision) => {
+            lines.push(String::from("decision=override"));
+            lines.push(external_string_material(
+                "decision.point",
+                &override_decision.point.key,
+            ));
+            lines.push(external_string_material(
+                "decision.choice",
+                &override_decision.choice.name,
+            ));
+        }
+        D::Preemption(preemption) => {
+            lines.push(String::from("decision=preemption"));
+            lines.push(external_node_id_material("decision.node", &preemption.node));
+            lines.push(format!("decision.at_retired={}", preemption.at.retired));
+            lines.push(external_preemption_kind_material(
+                "decision.preemption",
+                &preemption.kind,
+            ));
+        }
+        D::AppRandom(random) => {
+            lines.push(String::from("decision=app-random"));
+            lines.push(external_node_id_material("decision.node", &random.node));
+            lines.push(external_rng_stream_material(
+                "decision.stream",
+                &random.stream,
+            ));
+            lines.push(format!("decision.request_id={}", random.request_id));
+            lines.push(format!("decision.width={}", random.width));
+            lines.push(format!("decision.value={}", random.value));
+        }
+        D::ControlFault(control) => {
+            lines.push(String::from("decision=control-fault"));
+            lines.push(format!("decision.at_ticks={}", control.at.ticks));
+            lines.push(format!("decision.control.sequence={}", control.sequence));
+            lines.push(external_control_fault_action_material(
+                "decision.control.action",
+                &control.action,
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_observable_event_payload_material(observable: &ObservableEventPayload) -> String {
+    let mut lines = Vec::new();
+    match observable {
+        ObservableEventPayload::NetworkDelivered { link, payload } => {
+            lines.push(String::from("observable=network-delivered"));
+            lines.push(external_optional_link_material("observable.link", link));
+            lines.push(format!(
+                "observable.payload_bytes={}",
+                external_hex_bytes(payload)
+            ));
+        }
+        ObservableEventPayload::ConsoleOutput { node, bytes } => {
+            lines.push(String::from("observable=console-output"));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!("observable.bytes={}", external_hex_bytes(bytes)));
+        }
+        ObservableEventPayload::CoverageBlock {
+            execution_icount,
+            node,
+            guest_pc,
+            block_len,
+        } => {
+            lines.push(String::from("observable=coverage-block"));
+            lines.push(format!(
+                "observable.execution_icount={}",
+                execution_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!("observable.guest_pc={guest_pc}"));
+            lines.push(format!("observable.block_len={block_len}"));
+        }
+        ObservableEventPayload::MemorySample {
+            sample_icount,
+            node,
+            place,
+            value,
+        } => {
+            lines.push(String::from("observable=memory-sample"));
+            lines.push(format!(
+                "observable.sample_icount={}",
+                sample_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(external_resolved_mem_place_material(
+                "observable.place",
+                place,
+            ));
+            lines.push(format!("observable.value={value}"));
+        }
+        ObservableEventPayload::IoCompletion {
+            node,
+            kind,
+            payload,
+        } => {
+            lines.push(String::from("observable=io-completion"));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!(
+                "observable.kind={}",
+                external_io_event_kind_label(*kind)
+            ));
+            lines.push(format!(
+                "observable.payload_bytes={}",
+                external_hex_bytes(payload)
+            ));
+        }
+        ObservableEventPayload::NodeState { node, state } => {
+            lines.push(String::from("observable=node-state"));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!(
+                "observable.state={}",
+                external_node_lifecycle_label(*state)
+            ));
+        }
+        ObservableEventPayload::AssertionStateChanged { name, state } => {
+            lines.push(String::from("observable=assertion-state-changed"));
+            lines.push(external_assertion_id_material("observable.assertion", name));
+            lines.push(format!(
+                "observable.state={}",
+                external_assertion_phase_label(*state)
+            ));
+        }
+        ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            lines.push(String::from("observable=guest-marker"));
+            lines.push(format!(
+                "observable.retired_icount={}",
+                retired_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(external_marker_id_material("observable.marker", marker));
+        }
+        ObservableEventPayload::GuestAssertionMarker {
+            retired_icount,
+            node,
+            marker,
+        } => {
+            lines.push(String::from("observable=guest-assertion-marker"));
+            lines.push(format!(
+                "observable.retired_icount={}",
+                retired_icount.retired
+            ));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(external_assertion_id_material(
+                "observable.marker.id",
+                &marker.id,
+            ));
+            lines.push(external_string_material(
+                "observable.marker.message",
+                &marker.message,
+            ));
+            lines.push(format!(
+                "observable.marker.kind={}",
+                external_guest_assertion_kind_label(marker.kind)
+            ));
+            lines.push(format!("observable.marker.condition={}", marker.condition));
+            lines.push(format!("observable.marker.must_hit={}", marker.must_hit));
+            lines.push(format!(
+                "observable.marker.details={}",
+                marker.details.len()
+            ));
+            for (index, detail) in marker.details.iter().enumerate() {
+                lines.push(format!(
+                    "{}",
+                    external_string_material(
+                        &format!("observable.marker.detail.{index}.key"),
+                        &detail.key,
+                    )
+                ));
+                lines.push(format!(
+                    "{}",
+                    external_string_material(
+                        &format!("observable.marker.detail.{index}.value"),
+                        &detail.value,
+                    )
+                ));
+            }
+            lines.push(external_string_material(
+                "observable.marker.location",
+                &marker.location,
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_event_firing_material(firing: &EventFiring) -> String {
+    let mut lines = Vec::new();
+    lines.push(external_event_id_material("firing.event", firing.event()));
+    lines.push(format!("firing.at_ticks={}", firing.at().ticks));
+    lines.push(external_action_material("firing.action", firing.action()));
+    lines.join("\n")
+}
+
+fn external_trigger_action_application_material(application: &TriggerActionApplication) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("application.sequence={}", application.sequence));
+    lines.push(external_event_id_material(
+        "application.event",
+        &application.event,
+    ));
+    lines.push(format!("application.at_ticks={}", application.at.ticks));
+    lines.push(format!("application.path_len={}", application.path.len()));
+    for (index, path) in application.path.iter().enumerate() {
+        lines.push(format!("application.path.{index}={path}"));
+    }
+    lines.push(external_action_material(
+        "application.action",
+        &application.action,
+    ));
+    lines.join("\n")
+}
+
+fn external_action_material(prefix: &str, action: &Action) -> String {
+    let mut lines = Vec::new();
+    match action {
+        Action::InjectFault { tag, fault } => {
+            lines.push(format!("{prefix}=inject-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+            lines.push(external_membership_fault_material(
+                &format!("{prefix}.fault"),
+                fault,
+            ));
+        }
+        Action::HealFault { tag } => {
+            lines.push(format!("{prefix}=heal-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+        }
+        Action::ArmTimer { name, after } => {
+            lines.push(format!("{prefix}=arm-timer"));
+            lines.push(external_timer_id_material(&format!("{prefix}.timer"), name));
+            lines.push(format!("{prefix}.after_nanos={}", after.nanos));
+        }
+        Action::CancelTimer { name } => {
+            lines.push(format!("{prefix}=cancel-timer"));
+            lines.push(external_timer_id_material(&format!("{prefix}.timer"), name));
+        }
+        Action::StartNode { node } => {
+            lines.push(format!("{prefix}=start-node"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
+        }
+        Action::StopNode { node } => {
+            lines.push(format!("{prefix}=stop-node"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
+        }
+        Action::CreateSavepoint { label } => {
+            lines.push(format!("{prefix}=create-savepoint"));
+            lines.push(external_optional_label_material(
+                &format!("{prefix}.label"),
+                label,
+            ));
+        }
+        Action::Fork { label } => {
+            lines.push(format!("{prefix}=fork"));
+            lines.push(external_optional_label_material(
+                &format!("{prefix}.label"),
+                label,
+            ));
+        }
+        Action::Pass => {
+            lines.push(format!("{prefix}=pass"));
+        }
+        Action::Fail { reason } => {
+            lines.push(format!("{prefix}=fail"));
+            lines.push(external_string_material(
+                &format!("{prefix}.reason"),
+                reason,
+            ));
+        }
+        Action::Log { level, message } => {
+            lines.push(format!("{prefix}=log"));
+            lines.push(format!(
+                "{prefix}.level={}",
+                external_log_level_label(*level)
+            ));
+            lines.push(external_string_material(
+                &format!("{prefix}.message"),
+                message,
+            ));
+        }
+        Action::Group(actions) => {
+            lines.push(format!("{prefix}=group"));
+            lines.push(format!("{prefix}.actions={}", actions.len()));
+            for (index, action) in actions.iter().enumerate() {
+                lines.push(external_action_material(
+                    &format!("{prefix}.action.{index}"),
+                    action,
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
+    let mut lines = Vec::new();
+    match fault {
+        MembershipFault::Crash { node, restart } => {
+            lines.push(format!("{prefix}=crash"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
+            lines.push(format!(
+                "{prefix}.restart={}",
+                external_restart_policy_label(*restart)
+            ));
+        }
+        MembershipFault::Partition {
+            endpoint_a,
+            endpoint_b,
+            direction,
+        } => {
+            lines.push(format!("{prefix}=partition"));
+            lines.push(external_node_id_material(
+                &format!("{prefix}.endpoint_a"),
+                endpoint_a,
+            ));
+            lines.push(external_node_id_material(
+                &format!("{prefix}.endpoint_b"),
+                endpoint_b,
+            ));
+            lines.push(format!(
+                "{prefix}.direction={}",
+                external_partition_direction_label(*direction)
+            ));
+        }
+        MembershipFault::Isolate { node } => {
+            lines.push(format!("{prefix}=isolate"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
+        }
+        MembershipFault::NotYetJoined { node } => {
+            lines.push(format!("{prefix}=not-yet-joined"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), node));
+        }
+        MembershipFault::Taxonomy { fault } => {
+            lines.push(format!("{prefix}=taxonomy"));
+            lines.push(external_string_material(
+                &format!("{prefix}.taxonomy_material"),
+                &fault.canonical_material(),
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
+    let mut lines = Vec::new();
+    match action {
+        ControlFaultAction::Inject { tag, fault } => {
+            lines.push(format!("{prefix}=inject-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+            lines.push(external_string_material(
+                &format!("{prefix}.fault_material"),
+                &fault.canonical_material(),
+            ));
+        }
+        ControlFaultAction::Heal { tag } => {
+            lines.push(format!("{prefix}=heal-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_control_operation_kind_material(prefix: &str, kind: &ControlOperationKind) -> String {
+    let mut lines = Vec::new();
+    match kind {
+        ControlOperationKind::Pause => lines.push(format!("{prefix}=pause")),
+        ControlOperationKind::Resume => lines.push(format!("{prefix}=resume")),
+        ControlOperationKind::Step => lines.push(format!("{prefix}=step")),
+        ControlOperationKind::Snapshot => lines.push(format!("{prefix}=snapshot")),
+        ControlOperationKind::Fork => lines.push(format!("{prefix}=fork")),
+        ControlOperationKind::Inject => lines.push(format!("{prefix}=inject")),
+        ControlOperationKind::Query => lines.push(format!("{prefix}=query")),
+        ControlOperationKind::InjectFault { tag, fault } => {
+            lines.push(format!("{prefix}=inject-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+            lines.push(external_string_material(
+                &format!("{prefix}.fault_material"),
+                &fault.canonical_material(),
+            ));
+        }
+        ControlOperationKind::HealFault { tag } => {
+            lines.push(format!("{prefix}=heal-fault"));
+            lines.push(external_fault_tag_material(&format!("{prefix}.tag"), tag));
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_event_key_material(prefix: &str, key: &EventKey) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("{prefix}.time_ticks={}", key.virtual_time.ticks));
+    lines.push(external_scheduler_node_material(
+        &format!("{prefix}.consumer"),
+        &key.consumer,
+    ));
+    lines.push(external_scheduler_node_material(
+        &format!("{prefix}.producer"),
+        &key.producer,
+    ));
+    lines.push(format!("{prefix}.sequence={}", key.sequence));
+    lines.join("\n")
+}
+
+fn external_scheduler_node_material(prefix: &str, node: &SchedulerNodeId) -> String {
+    format!(
+        "{}\n{prefix}.kind={}",
+        external_node_id_material(&format!("{prefix}.node"), &node.node),
+        external_scheduling_node_kind_label(node.kind)
+    )
+}
+
+fn external_node_id_material(prefix: &str, node: &NodeId) -> String {
+    external_string_material(prefix, &node.name)
+}
+
+fn external_event_id_material(prefix: &str, id: &EventId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_assertion_id_material(prefix: &str, id: &AssertionId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_marker_id_material(prefix: &str, id: &MarkerId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_fault_id_material(prefix: &str, id: &FaultId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_fault_tag_material(prefix: &str, tag: &FaultTag) -> String {
+    external_string_material(prefix, &tag.name)
+}
+
+fn external_timer_id_material(prefix: &str, id: &TimerId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_rng_stream_material(prefix: &str, stream: &RngStreamId) -> String {
+    format!(
+        "{}\n{}",
+        external_string_material(&format!("{prefix}.domain"), &stream.domain),
+        external_string_material(&format!("{prefix}.name"), &stream.name)
+    )
+}
+
+fn external_optional_label_material(prefix: &str, label: &Option<String>) -> String {
+    match label {
+        Some(label) => format!(
+            "{prefix}.present=true\n{}",
+            external_string_material(prefix, label)
+        ),
+        None => format!("{prefix}.present=false"),
+    }
+}
+
+fn external_optional_link_material(prefix: &str, link: &Option<LinkId>) -> String {
+    match link {
+        Some(link) => format!(
+            "{prefix}.present=true\n{}",
+            external_link_id_material(prefix, link)
+        ),
+        None => format!("{prefix}.present=false"),
+    }
+}
+
+fn external_link_id_material(prefix: &str, id: &LinkId) -> String {
+    external_string_material(prefix, &id.name)
+}
+
+fn external_resolved_mem_place_material(prefix: &str, place: &ResolvedMemPlace) -> String {
+    match place {
+        ResolvedMemPlace::PhysicalAddress { address, bytes } => {
+            format!("{prefix}=physical-address\n{prefix}.address={address}\n{prefix}.bytes={bytes}")
+        }
+        ResolvedMemPlace::VirtualAddress { address, bytes } => {
+            format!("{prefix}=virtual-address\n{prefix}.address={address}\n{prefix}.bytes={bytes}")
+        }
+        ResolvedMemPlace::Register { name, bytes } => format!(
+            "{prefix}=register\n{}\n{prefix}.bytes={bytes}",
+            external_string_material(&format!("{prefix}.name"), name)
+        ),
+    }
+}
+
+fn external_string_material(prefix: &str, value: &str) -> String {
+    format!(
+        "{prefix}.bytes_len={}\n{prefix}.bytes={}",
+        value.len(),
+        external_hex_bytes(value.as_bytes())
+    )
+}
+
+fn external_preemption_kind_material(prefix: &str, kind: &PreemptionKind) -> String {
+    match kind {
+        PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => format!(
+            "{prefix}=vcpu-switch\n{prefix}.from_vcpu={}\n{prefix}.to_vcpu={}",
+            from_vcpu.index, to_vcpu.index
+        ),
+        PreemptionKind::InterruptAt { target_vcpu, irq } => format!(
+            "{prefix}=interrupt-at\n{prefix}.target_vcpu={}\n{prefix}.irq={}",
+            target_vcpu.index, irq.vector
+        ),
+    }
+}
+
+fn external_scheduler_evaluation_boundary_kind_label(
+    kind: SchedulerEvaluationBoundaryKind,
+) -> &'static str {
+    match kind {
+        SchedulerEvaluationBoundaryKind::Quantum => "quantum",
+        SchedulerEvaluationBoundaryKind::Rendezvous => "rendezvous",
+    }
+}
+
+fn external_scheduled_event_resolve_class_label(class: ScheduledEventResolveClass) -> &'static str {
+    match class {
+        ScheduledEventResolveClass::FrameDelivery => "frame-delivery",
+        ScheduledEventResolveClass::IoCompletion => "io-completion",
+        ScheduledEventResolveClass::FaultActivation => "fault-activation",
+        ScheduledEventResolveClass::ProbabilisticFault => "probabilistic-fault",
+        ScheduledEventResolveClass::Control => "control",
+    }
+}
+
+fn external_scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+    match kind {
+        SchedulingNodeKind::Vm => "vm",
+        SchedulingNodeKind::Disk => "disk",
+        SchedulingNodeKind::NineP => "9p",
+        SchedulingNodeKind::Network => "network",
+        SchedulingNodeKind::ControlPlane => "control-plane",
+    }
+}
+
+fn external_io_event_kind_label(kind: IoEventKind) -> &'static str {
+    match kind {
+        IoEventKind::Any => "any",
+        IoEventKind::BlockRead => "block-read",
+        IoEventKind::BlockWrite => "block-write",
+        IoEventKind::Fsync => "fsync",
+        IoEventKind::NineP => "9p",
+        IoEventKind::Network => "network",
+    }
+}
+
+fn external_node_lifecycle_label(state: NodeLifecycle) -> &'static str {
+    match state {
+        NodeLifecycle::Started => "started",
+        NodeLifecycle::Crashed => "crashed",
+        NodeLifecycle::Exited => "exited",
+    }
+}
+
+fn external_assertion_phase_label(phase: AssertionPhase) -> &'static str {
+    match phase {
+        AssertionPhase::Satisfied => "satisfied",
+        AssertionPhase::Violated => "violated",
+    }
+}
+
+fn external_guest_assertion_kind_label(kind: GuestAssertionKind) -> &'static str {
+    match kind {
+        GuestAssertionKind::Always => "always",
+        GuestAssertionKind::Sometimes => "sometimes",
+        GuestAssertionKind::Reachable => "reachable",
+        GuestAssertionKind::Unreachable => "unreachable",
+    }
+}
+
+fn external_restart_policy_label(policy: RestartPolicy) -> &'static str {
+    match policy {
+        RestartPolicy::FromReadyPoint => "from-ready-point",
+        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
+        RestartPolicy::StayDown => "stay-down",
+    }
+}
+
+fn external_partition_direction_label(direction: PartitionDirection) -> &'static str {
+    match direction {
+        PartitionDirection::Bidirectional => "bidirectional",
+        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
+        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
+    }
+}
+
+fn external_log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    }
+}
+
+fn external_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn condition_prefix_from_recorded_log(
