@@ -3873,34 +3873,38 @@ alone (`M-1`/`Q-A`).
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure`,
       and `native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure`
-      evaluate a raw expression root and file-root attr paths whose selected
-      derivations depend on a leaf import through an input derivation, seed
-      configured parse/persist cache with the first source, rewrite either
-      raw-root comments/whitespace, leaf comments/whitespace, or an unused
-      derivation package in that leaf, and then require cache-disabled and
-      cached runs to keep the two-derivation `.drv` closure byte-identical while
-      the changed source reparses into the fresh cache root. The raw-expression
-      variant proves the changed source misses the first raw parse artifact and
-      then hydrates the changed raw parse artifact through a fresh parse root.
-      The forced-leaf
-      variant additionally persists a `currentSystem` force payload under the
-      first source, proves a same-source fresh runtime can replay it, then runs
-      the comment-only changed source through cached miss and later persistent-hit
-      paths while scanning the byte-identical closure surfaces for the observed
-      forced-payload sidecar hashes and the `currentSystem` hot xxh3 sentinel.
-      That forced-leaf path also proves the same-source materialization/fresh-hit
+      evaluate a raw expression root with inline input derivations plus
+      file-root attr paths whose selected derivations depend on a leaf import
+      through an input derivation. They seed configured parse/persist cache with
+      the first source, rewrite either raw-root comments/whitespace, leaf
+      comments/whitespace, or an unused derivation package in that leaf, and
+      then require cache-disabled and cached runs to keep the two-derivation
+      `.drv` closure byte-identical while the changed source reparses into the
+      fresh cache root. The raw-expression variant proves the changed source
+      misses the first raw parse artifact and then hydrates the changed raw
+      parse artifact through a fresh parse root. The forced-leaf variant
+      additionally materializes a `currentSystem` force payload under the first
+      source, decodes that indexed persistent payload back to the expected
+      context-free string, then runs the comment-only changed source through
+      cached miss and later persistent-hit paths while scanning the
+      byte-identical closure surfaces for the observed forced-payload sidecar
+      hashes and the `currentSystem` hot xxh3 sentinel. Because reusable
+      derivation side records may satisfy the later closure request before the
+      leaf `currentSystem` value is demanded again, the fresh-hit legs assert
+      that demanded persistent force-cache hit keys are reported and decodable
+      rather than requiring that specific `currentSystem` key to be hit. That
+      forced-leaf path also proves the same-source materialization/fresh-hit
       legs and the changed-source cached miss/fresh-hit legs reuse both
       static-output side records and final ATerm path side records for the two
-      derivations while performing zero derivation hash and final text-path
-      calculations.
-      The canaries also scan uncached/cached first and changed closures for the
-      exercised first/changed raw-wrapper parse-cache BLAKE3, leaf parse-cache
-      BLAKE3, and file-content BLAKE3 renderings in hex, raw bytes, and Nix
-      base32. This samples one raw-root comment/whitespace edit, one ordinary
-      comment/whitespace leaf edit, one forced comment/whitespace leaf edit, and
-      one unused leaf-package edit, not bounded recomputation
-      measurement, full AOS closure coverage, the full leak invariant, or
-      future value-memoization safety net
+      derivations, and perform zero derivation hash and final text-path
+      calculations. The canaries also scan uncached/cached first and changed
+      closures for the exercised first/changed raw-wrapper parse-cache BLAKE3,
+      leaf parse-cache BLAKE3, and file-content BLAKE3 renderings in hex, raw
+      bytes, and Nix base32. This samples one raw-root comment/whitespace edit,
+      one ordinary comment/whitespace leaf edit, one forced comment/whitespace
+      leaf edit, and one unused leaf-package edit, not bounded recomputation
+      measurement, full AOS closure coverage, the full leak invariant, or future
+      value-memoization safety net
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current native forced-expression sidecar leak/bypass canaries:
       `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure`
