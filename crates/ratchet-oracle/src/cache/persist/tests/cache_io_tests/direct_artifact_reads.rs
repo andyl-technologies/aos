@@ -3,6 +3,48 @@
 use super::*;
 
 #[test]
+fn cache_file_artifact_read_uses_scoped_mapped_files_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"mapped file artifact";
+    let index_value = append_file_artifact_blob(&cache, payload);
+
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
+    let result = cache
+        .read_file_artifact(index_value)
+        .expect("file artifact reads");
+    assert_eq!(result.as_slice(), payload);
+    assert_eq!(
+        cache.file_pack().mapped_read_count_for_tests(),
+        1,
+        "direct file-artifact reads should clone through the scoped mapped files pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_parse_artifact_read_uses_scoped_mapped_files_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"mapped parse artifact";
+    let index_value = append_parse_artifact_blob(&cache, payload);
+
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
+    let result = cache
+        .read_parse_artifact(index_value)
+        .expect("parse artifact reads");
+    assert_eq!(result.as_slice(), payload);
+    assert_eq!(
+        cache.file_pack().mapped_read_count_for_tests(),
+        1,
+        "direct parse-artifact reads should clone through the scoped mapped files pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_read_waits_for_store_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

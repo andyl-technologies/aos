@@ -6,8 +6,8 @@ use ratchet_cache::file_lock::AdvisoryFileLock;
 impl PersistCache {
     /// Reads and verifies a materialized frontend file artifact.
     ///
-    /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
-    /// the future file-artifact index.
+    /// This is a typed wrapper over the scoped mapped `files/` pack reader for
+    /// values decoded from the future file-artifact index.
     ///
     /// # Errors
     ///
@@ -20,13 +20,13 @@ impl PersistCache {
         &self,
         index_value: PersistFileArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        self.read_blob(index_value.blob_key(), index_value.location())
+        self.read_artifact_blob_mapped(index_value.blob_key(), index_value.location())
     }
 
     /// Reads and verifies a materialized frontend parse artifact.
     ///
-    /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
-    /// the parse-artifact index.
+    /// This is a typed wrapper over the scoped mapped `files/` pack reader for
+    /// values decoded from the parse-artifact index.
     ///
     /// # Errors
     ///
@@ -39,7 +39,22 @@ impl PersistCache {
         &self,
         index_value: PersistParseArtifactIndexValue,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        self.read_blob(index_value.blob_key(), index_value.location())
+        self.read_artifact_blob_mapped(index_value.blob_key(), index_value.location())
+    }
+
+    fn read_artifact_blob_mapped(
+        &self,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        let (files_advisory_guard, _files_guard) =
+            self.lock_blob_pack_read(PersistBlobStore::Files)?;
+        self.file_pack().with_mapped_blob(
+            &files_advisory_guard,
+            location,
+            key.hash(),
+            clone_mapped_artifact_payload,
+        )?
     }
 
     /// Reads a materialized parse-artifact bundle into a parse-cache entry.
@@ -581,4 +596,15 @@ impl PersistCache {
             .load_cached_bytes(&source)
             .map_err(|source| PersistParseFileIndexedLoadError::Load { source })
     }
+}
+
+fn clone_mapped_artifact_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(payload.len())
+        .map_err(|_| PersistBlobPackError::PayloadTooLarge {
+            payload_len: payload.len() as u128,
+        })?;
+    owned.extend_from_slice(payload);
+    Ok(owned)
 }

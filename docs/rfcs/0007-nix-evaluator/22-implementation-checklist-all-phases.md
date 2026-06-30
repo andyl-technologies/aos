@@ -1897,20 +1897,21 @@ alone (`M-1`/`Q-A`).
       bytes never escape `ratchet-oracle`'s safe API.
       `PersistCache::read_blob_indexed` clones owned bytes through that scoped
       mapped callback; `load_cached_expression_value_indexed`,
+      raw file/parse artifact reads,
       direct/keyed/entry-shaped file-artifact hydration, and
       direct/keyed/entry-shaped parse-artifact hydration decode through the same
       path under the existing shared value/files store advisory locks. Indexed
       file/parse artifact lookup hydration also holds the matching
       artifact-mapping advisory lock across sidecar lookup and mapped `files/`
-      decode. Focused cached-expression payload, lower-level blob-index, and
-      artifact-hydration tests require indexed value/file reads plus
+      decode. Focused cached-expression payload, lower-level blob-index, direct
+      artifact-read, and artifact-hydration tests require indexed value/file
+      reads plus raw file/parse artifact reads and
       direct/keyed/entry-shaped/indexed artifact hydration to enter the scoped
       mapped adapter, hold the selected store advisory lock, reject corrupt
       value-pack payloads, and fail key mismatches before taking the files store
-      lock. Direct raw `read_blob`,
-      `read_file_artifact`, `read_parse_artifact`, pack scans,
-      repack/GC/maintenance, and public borrowed parse/value cache results
-      remain buffered or owned. This is scoped cooperating-writer mmap
+      lock. Direct raw `read_blob`, pack scans, repack/GC/maintenance, and
+      public borrowed parse/value cache results remain buffered or owned. This
+      is scoped cooperating-writer mmap
       integration only; public borrowed payload APIs, LMDB/redb offset indexes,
       full mmap maintenance/repack paths, out-of-core rematerialization,
       cross-machine CAS-grade leases, and cached/uncached harness proof remain
@@ -1919,6 +1920,8 @@ alone (`M-1`/`Q-A`).
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
       `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`,
       `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`,
+      `cache_file_artifact_read_uses_scoped_mapped_files_pack`,
+      `cache_parse_artifact_read_uses_scoped_mapped_files_pack`,
       `cache_file_artifact_hydrates_parse_entry_from_materialized_bundle`,
       `cache_file_artifact_hydrates_parse_entry_after_key_match`,
       `cache_parse_artifact_hydrates_parse_entry_after_key_match`,
@@ -3341,13 +3344,15 @@ alone (`M-1`/`Q-A`).
       behavior when the threshold fails. Automatic parse-cache integration,
       durable hit selection, source/key equality proof, mmap reads, GC/repack,
       and harness proof remain open (`C-13`/`C-14`).
-- [x] Current explicit file-artifact read adapter:
-      `PersistCache::read_file_artifact` consumes a typed
-      `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
-      through the `files/` pack under the shared `files` store advisory lock
-      plus same-root file-store lock. This is a typed buffered read helper only;
-      parse-artifact payload decoding, automatic cache-hit selection,
-      mmap-backed raw reads, GC/repack, and harness proof remain open (`C-13`).
+- [x] Current explicit file/parse artifact read adapter:
+      `PersistCache::read_file_artifact` and `read_parse_artifact` consume typed
+      artifact index values and read/verify the referenced payload through the
+      scoped mapped `files/` pack adapter under the shared `files` store
+      advisory lock plus same-root file-store lock, cloning owned bytes before
+      returning to callers so borrowed mmap slices cannot escape the safe API.
+      This is a typed raw artifact read helper only; parse-artifact payload
+      decoding, automatic cache-hit selection, public borrowed artifact APIs,
+      GC/repack, and harness proof remain open (`C-13`).
 - [x] Current explicit file-artifact bundle hydration adapter:
       `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
       artifact value through the scoped mapped files-pack adapter under the
