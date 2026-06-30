@@ -77,7 +77,7 @@ impl PersistCache {
     /// Missing index entries return `Ok(None)`. Same-root writers opened on
     /// the same cache root and cooperating cross-process writers share the
     /// selected store lock while this method reads the sidecar index and then
-    /// reads the referenced pack record.
+    /// maps, verifies, and clones the referenced pack record.
     ///
     /// # Errors
     ///
@@ -89,14 +89,11 @@ impl PersistCache {
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
-        let (_advisory_guard, _read_guard) = self.lock_indexed_blob_read(key.store())?;
-        let Some(location) = self
-            .lookup_blob_location(key)
-            .map_err(|source| PersistBlobIndexedReadError::Lookup { source })?
+        let Some(payload) = self.read_blob_indexed_mapped_with(key, clone_mapped_blob_payload)?
         else {
             return Ok(None);
         };
-        self.read_blob_unlocked(key, location)
+        payload
             .map(Some)
             .map_err(|source| PersistBlobIndexedReadError::Read { source })
     }
@@ -475,6 +472,17 @@ impl PersistCache {
         active.remove(&node_key);
         result
     }
+}
+
+fn clone_mapped_blob_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(payload.len())
+        .map_err(|_| PersistBlobPackError::PayloadTooLarge {
+            payload_len: payload.len() as u128,
+        })?;
+    owned.extend_from_slice(payload);
+    Ok(owned)
 }
 
 fn revalidate_persist_node_trace_payload<R>(

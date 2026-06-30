@@ -7,15 +7,20 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"indexed payload";
+    let file_payload = b"indexed file payload";
     let key = PersistBlobKey::new(
         PersistBlobStore::Values,
         DurableBlake3Hash::for_bytes(payload),
     );
+    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
     let same_hash_file_key = PersistBlobKey::for_file(key.hash());
 
     let entry = cache
         .append_blob_indexed(key, payload)
         .expect("indexed blob appends");
+    cache
+        .append_blob_indexed(file_key, file_payload)
+        .expect("indexed file blob appends");
 
     assert_eq!(entry.key(), key);
     assert_eq!(
@@ -36,6 +41,16 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
             .as_slice(),
         payload
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(
+        cache
+            .read_blob_indexed(file_key)
+            .expect("indexed file read succeeds")
+            .expect("indexed file blob exists")
+            .as_slice(),
+        file_payload
+    );
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
     assert_eq!(
         cache
             .read_blob_indexed(same_hash_file_key)
@@ -43,8 +58,19 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
         None
     );
     assert_eq!(
+        cache.file_pack().mapped_read_count_for_tests(),
+        1,
+        "indexed misses should not map the selected pack"
+    );
+    assert_eq!(
         fs::metadata(cache.value_index().path())
             .expect("value index metadata")
+            .len(),
+        PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+    );
+    assert_eq!(
+        fs::metadata(cache.file_index().path())
+            .expect("file index metadata")
             .len(),
         PERSIST_BLOB_INDEX_ENTRY_LEN as u64
     );

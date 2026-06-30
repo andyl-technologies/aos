@@ -93,8 +93,8 @@ fn cache_cached_expression_payload_load_uses_scoped_mapped_value_pack() {
         .expect("owned indexed blob exists");
     assert_eq!(
         cache.value_pack().mapped_read_count_for_tests(),
-        0,
-        "owned indexed blob reads should not hit the scoped mapped adapter"
+        1,
+        "owned indexed blob reads should clone through the scoped mapped adapter"
     );
     assert_eq!(
         cache
@@ -105,7 +105,7 @@ fn cache_cached_expression_payload_load_uses_scoped_mapped_value_pack() {
     );
     assert_eq!(
         cache.value_pack().mapped_read_count_for_tests(),
-        1,
+        2,
         "cached-expression value loads should decode through the scoped mapped adapter"
     );
 

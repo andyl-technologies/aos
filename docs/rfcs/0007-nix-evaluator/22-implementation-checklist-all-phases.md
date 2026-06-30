@@ -1895,20 +1895,22 @@ alone (`M-1`/`Q-A`).
       `ratchet-oracle::cache::PersistBlobPack::with_mapped_blob` opens, leases,
       maps, verifies, and decodes a payload inside a callback so borrowed mmap
       bytes never escape `ratchet-oracle`'s safe API.
-      `PersistCache::load_cached_expression_value_indexed`,
+      `PersistCache::read_blob_indexed` clones owned bytes through that scoped
+      mapped callback, and `load_cached_expression_value_indexed`,
       `hydrate_file_artifact_bundle_from_index`, and
-      `hydrate_parse_artifact_bundle_from_index` now use that scoped path under
-      the existing shared value/files and mapping advisory locks. Focused
-      cached-expression payload tests require indexed value loads to enter the
-      scoped mapped adapter, hold the value-store advisory lock, and reject
-      corrupt value-pack payloads. Direct owned-byte APIs, entry-shaped
-      artifact hydration, pack scans,
-      repack/GC/maintenance, and public parse/value cache results remain
-      buffered or owned. This is scoped cooperating-writer mmap integration
-      only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
-      maintenance/repack paths, out-of-core rematerialization,
+      `hydrate_parse_artifact_bundle_from_index` decode through the same path
+      under the existing shared value/files and mapping advisory locks. Focused
+      cached-expression payload and lower-level blob-index tests require indexed
+      value/file reads to enter the scoped mapped adapter, hold the selected store
+      advisory lock, and reject corrupt value-pack payloads. Direct raw
+      `read_blob`, entry-shaped artifact hydration, pack scans,
+      repack/GC/maintenance, and public borrowed parse/value cache results
+      remain buffered or owned. This is scoped cooperating-writer mmap
+      integration only; public borrowed payload APIs, LMDB/redb offset indexes,
+      full mmap maintenance/repack paths, out-of-core rematerialization,
       cross-machine CAS-grade leases, and cached/uncached harness proof remain
       open (`C-13`/`R-14`). Gates include
+      `cache_blob_indexed_io_updates_index_and_reads_by_key`,
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
       `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`
       and `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`.
