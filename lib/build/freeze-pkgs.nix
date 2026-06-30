@@ -67,7 +67,12 @@ in {
   ## resulting `pkgs.foo` interpolates to its `outPath`; `pkgs.foo.<output>`
   ## interpolates to that output's path. No derivation is forced.
   frozenFromJSON = json: let
-    parsed = builtins.fromJSON json;
+    # `builtins.readFile` of a store path (the base-lib `frozen-pkgs.json`)
+    # returns a string carrying that path as string context, and
+    # `builtins.fromJSON` rejects context-bearing strings ("the string '…' is
+    # not allowed to refer to a store path"). The context is irrelevant here —
+    # we only parse the bytes — so discard it.
+    parsed = builtins.fromJSON (builtins.unsafeDiscardStringContext json);
     mkOutput = nm: p: {
       type = "derivation";
       name = nm;
