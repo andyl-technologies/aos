@@ -3460,13 +3460,21 @@ in {
             and .registries[0].updated == 0
             and .registries[0].removed == 0' \
           "$work/apm-system-provisioned-update.json" >/dev/null
+        # A user-scope `apm update` reads the registry from the immutable /etc
+        # seed (APM_SYSTEM_CONFIG_DIR) but records sync state as a delta in the
+        # user writable layer (XDG config). The seed is never mutated.
+        system_provisioned_state_config="$config/apm/registries.d/host-install-channel.toml"
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
         grep -q "last_update = \"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
+        if grep -q "last_commit = " \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"; then
+          cat "$system_provisioned_config/registries.d/host-install-channel.toml"
+          exit 1
+        fi
         grep -q "$install_channel_trust_key" \
           "$config/apm/trusted-keys.d/host-install-channel.pub"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
         run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm search hostinstall \
@@ -3524,10 +3532,9 @@ in {
             and .[0].last_commit == $head' \
           "$work/apm-system-provisioned-registry-list-after-install.json" >/dev/null
         grep -q '\[registry.state\]' \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
         run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm --json registry remove host-install-channel \
