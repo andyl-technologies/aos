@@ -258,12 +258,12 @@ fn guest_marker_assertions_fold_into_unified_report() {
     assert_outcome(
         report.outcomes(),
         "guest-reachable-warn",
-        HostAssertionOutcomeKind::Warning,
+        HostAssertionOutcomeKind::NeverReachedWarn,
     );
     assert_outcome(
         report.outcomes(),
         "guest-reachable-fail",
-        HostAssertionOutcomeKind::Violated,
+        HostAssertionOutcomeKind::NeverReachedFail,
     );
     assert_outcome(
         report.outcomes(),
@@ -327,12 +327,12 @@ fn catalog_declared_guest_markers_finalize_without_emitted_events() {
     assert_outcome(
         report.outcomes(),
         "catalog-reachable-fail",
-        HostAssertionOutcomeKind::Violated,
+        HostAssertionOutcomeKind::NeverReachedFail,
     );
     assert_outcome(
         report.outcomes(),
         "catalog-reachable-warn",
-        HostAssertionOutcomeKind::Warning,
+        HostAssertionOutcomeKind::NeverReachedWarn,
     );
     assert!(
         outcome(report.outcomes(), "catalog-reachable-fail")

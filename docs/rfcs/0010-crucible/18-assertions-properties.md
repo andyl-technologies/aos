@@ -907,9 +907,19 @@ verdict; it only shapes the next schedule the search tries.
   of an amended property set, invalid recorded log rejection, default and custom
   host-oracle entry points, missing-offset diagnostics, and static absence of
   guest re-execution or host-time/RNG inputs in the offline checker.
-- [ ] **T-ASRT-8** Unify online and offline evaluation onto one log-fold code path
+- [x] **T-ASRT-8** Unify online and offline evaluation onto one log-fold code path
   and apply never-evaluated/never-triggered policies identically as a distinct
   outcome. — satisfies [ASRT-15]; spec §18.6, §18.8.
+  Completed by `checks.crucible.phase4.assertionLogFold`: the online
+  `HostAssertionEvaluator` and offline `OfflineAssertionChecker` both report from
+  the same prefix fold/finalization path, and `HostAssertionOutcomeKind` now
+  carries distinct `NeverTriggered`, `NeverReachedWarn`, `NeverReachedFail`, and
+  empty-log `NeverEvaluated` outcomes instead of folding those edges into generic
+  pass/fail/warning. The gate verifies identical streaming online/offline reports
+  over the same retained log, fail-only verdict handling for fail-disposition
+  reachability, non-failing never-triggered and warn-disposition outcomes, and
+  static coverage of the distinct taxonomy. Full scoped lifecycle semantics
+  remain with T-ASRT-12.
 - [ ] **T-ASRT-9** Keep external formal-spec conformance strictly offline via
   trace export to existing tooling; ensure no in-runtime formal-spec evaluator is
   added. — satisfies [ASRT-17], [NG-3]; spec §18.6, §18.10.

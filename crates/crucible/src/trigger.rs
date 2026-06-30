@@ -1127,6 +1127,14 @@ pub enum HostAssertionOutcomeKind {
     Violated,
     /// The assertion produced a non-failing diagnostic outcome.
     Warning,
+    /// The assertion had no evaluation point in its declared scope.
+    NeverEvaluated,
+    /// The assertion's trigger never fired during the run.
+    NeverTriggered,
+    /// A warn-disposition reachability marker was never reached.
+    NeverReachedWarn,
+    /// A fail-disposition reachability marker was never reached.
+    NeverReachedFail,
 }
 
 /// Terminal result for one host-side assertion.
@@ -1646,7 +1654,7 @@ impl HostAssertionEvaluator {
         sort_host_assertion_outcomes(&mut outcomes);
         let failures = outcomes
             .iter()
-            .filter(|outcome| outcome.kind == HostAssertionOutcomeKind::Violated)
+            .filter(|outcome| host_assertion_outcome_fails_run(outcome.kind))
             .map(|outcome| {
                 AssertionVerdictFailure::new(
                     outcome.assertion.clone(),
@@ -1666,6 +1674,7 @@ impl HostAssertionEvaluator {
 struct HostAssertionState {
     assertion: AssertionDef,
     terminal: Option<HostAssertionTerminal>,
+    evaluated: bool,
     eventually_triggered: bool,
     eventually_satisfied_at: Option<VirtualTime>,
     pending_eventually: Vec<EventuallyObligation>,
@@ -1740,6 +1749,7 @@ impl HostAssertionState {
         Self {
             assertion: assertion.clone(),
             terminal: None,
+            evaluated: false,
             eventually_triggered: false,
             eventually_satisfied_at: None,
             pending_eventually: Vec::new(),
@@ -1805,6 +1815,10 @@ where
     let property = state.assertion.property.clone();
     match property {
         Property::Always { predicate } => {
+            if prefix.event_log_offset().events == 0 {
+                return None;
+            }
+            state.evaluated = true;
             if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
             {
                 None
@@ -1817,6 +1831,7 @@ where
             }
         }
         Property::Sometimes { predicate } => {
+            state.evaluated = true;
             if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
             {
                 state.terminal(
@@ -1957,11 +1972,19 @@ fn finalize_host_assertion_state<O>(
     let property = state.assertion.property.clone();
     match property {
         Property::Always { .. } => {
-            state.terminal(
-                HostAssertionOutcomeKind::Satisfied,
-                at,
-                "always predicate stayed true",
-            );
+            if state.evaluated {
+                state.terminal(
+                    HostAssertionOutcomeKind::Satisfied,
+                    at,
+                    "always predicate stayed true",
+                );
+            } else {
+                state.terminal(
+                    HostAssertionOutcomeKind::NeverEvaluated,
+                    at,
+                    "always predicate scope was never evaluated",
+                );
+            }
         }
         Property::Sometimes { .. } => {
             state.terminal(
@@ -1991,14 +2014,14 @@ fn finalize_host_assertion_state<O>(
             ReachabilityExpectation::Reachable { on_unreached } => match on_unreached {
                 ReachableDisposition::Warn => {
                     state.terminal(
-                        HostAssertionOutcomeKind::Warning,
+                        HostAssertionOutcomeKind::NeverReachedWarn,
                         at,
                         "reachable predicate was never reached",
                     );
                 }
                 ReachableDisposition::Fail => {
                     state.terminal(
-                        HostAssertionOutcomeKind::Violated,
+                        HostAssertionOutcomeKind::NeverReachedFail,
                         at,
                         "reachable predicate was never reached",
                     );
@@ -2050,7 +2073,7 @@ fn finalize_eventually_assertion(state: &mut HostAssertionState, at: VirtualTime
         );
     } else {
         state.terminal(
-            HostAssertionOutcomeKind::Warning,
+            HostAssertionOutcomeKind::NeverTriggered,
             at,
             "eventually trigger never fired",
         );
@@ -2231,12 +2254,12 @@ fn finalize_guest_marker_assertion_state(
             guest_marker_reason(state, "guest reachable marker was reached"),
         ),
         GuestAssertionKind::Reachable if state.must_hit => state.terminal(
-            HostAssertionOutcomeKind::Violated,
+            HostAssertionOutcomeKind::NeverReachedFail,
             at,
             guest_marker_reason(state, "guest reachable marker was never reached"),
         ),
         GuestAssertionKind::Reachable => state.terminal(
-            HostAssertionOutcomeKind::Warning,
+            HostAssertionOutcomeKind::NeverReachedWarn,
             at,
             guest_marker_reason(state, "guest reachable marker was never reached"),
         ),
@@ -2283,8 +2306,19 @@ fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
     match kind {
         HostAssertionOutcomeKind::Satisfied => 0,
         HostAssertionOutcomeKind::Warning => 1,
-        HostAssertionOutcomeKind::Violated => 2,
+        HostAssertionOutcomeKind::NeverEvaluated => 2,
+        HostAssertionOutcomeKind::NeverTriggered => 3,
+        HostAssertionOutcomeKind::NeverReachedWarn => 4,
+        HostAssertionOutcomeKind::NeverReachedFail => 5,
+        HostAssertionOutcomeKind::Violated => 6,
     }
+}
+
+fn host_assertion_outcome_fails_run(kind: HostAssertionOutcomeKind) -> bool {
+    matches!(
+        kind,
+        HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail
+    )
 }
 
 struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
