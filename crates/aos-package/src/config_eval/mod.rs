@@ -13,9 +13,11 @@
 //! - [`classify`] — the fragile string parse of stock-Nix throw strings into
 //!   the [`EvalClass`] seam (build-spec §2). P2 aos-nix replaces exactly this.
 //! - [`stock`] — the production [`NixEvaluator`] that renders `entry.nix`,
-//!   shells out to `nix eval --pure-eval --restrict-eval
-//!   --allow-import-from-derivation=false`, and classifies the result, plus the
-//!   registry-backed [`ConfigOutputFetcher`]. Builder-gated: it requires a real
+//!   shells out to `nix eval --option restrict-eval true
+//!   --option allow-import-from-derivation false` (NOT `--pure-eval`, which
+//!   would forbid importing the base-lib by store path), and classifies the
+//!   result, plus the registry-backed [`ConfigOutputFetcher`]. Builder-gated:
+//!   it requires a real
 //!   stock-nix and registry, so it is unit-tested only for `entry.nix`
 //!   rendering.
 //!
