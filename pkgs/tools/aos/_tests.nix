@@ -1750,6 +1750,7 @@ in {
         run_clean ${self}/bin/apr --json release 2.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
+          --rotate-from "$work/release-key" \
           > "$work/apr-release-v2.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "release"
