@@ -202,6 +202,7 @@ fn collect_condition_assertion_references(
         | Condition::MemoryPredicate { .. }
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
+        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => {}
@@ -674,6 +675,11 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     /// Returns scheduler-owned quiescence evidence for the evaluation point.
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         None
+    }
+
+    /// Returns fault activation and heal facts visible at the evaluation point.
+    fn fault_facts(&self) -> &[ObservedFaultFact] {
+        &[]
     }
 
     /// Returns the authoritative white-box opt-in policy for a node.
@@ -3941,6 +3947,10 @@ fn condition_observed_evidence(
             prefix.point(),
             format!("quiescence predicate returned {actual}"),
         )),
+        Condition::FaultActive { tag } => Some(evaluation_point_evidence(
+            prefix.point(),
+            format!("fault-active predicate tag={} returned {actual}", tag.name),
+        )),
         Condition::NetworkMatch { .. }
         | Condition::ConsoleMatch { .. }
         | Condition::CoveragePoint { .. }
@@ -4040,6 +4050,10 @@ fn false_observed_condition_summary(condition: &Condition, at: VirtualTime) -> S
         Condition::GuestMarker { marker } => format!(
             "no guest marker marker={} at virtual_time={}",
             marker.name, at.ticks
+        ),
+        Condition::FaultActive { tag } => format!(
+            "fault tag {} was not active at virtual_time={}",
+            tag.name, at.ticks
         ),
         Condition::At { .. }
         | Condition::After { .. }
@@ -5266,6 +5280,10 @@ where
         self.observed.observable_events()
     }
 
+    fn fault_facts(&self) -> &[ObservedFaultFact] {
+        self.observed.fault_facts()
+    }
+
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.white_box_policies.get(node).copied()
     }
@@ -5540,6 +5558,7 @@ where
         Condition::Quiescent => evaluator
             .scheduler_quiescence()
             .is_some_and(SchedulerQuiescence::is_quiescent),
+        Condition::FaultActive { tag } => fault_tag_is_active(evaluator.fault_facts(), tag),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -5571,6 +5590,34 @@ where
         }
         Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
     }
+}
+
+fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool {
+    let mut active = false;
+    for fact in facts {
+        match fact {
+            ObservedFaultFact::ControlInjected { tag, .. }
+            | ObservedFaultFact::TriggerInjected { tag, .. }
+                if tag == expected_tag =>
+            {
+                active = true;
+            }
+            ObservedFaultFact::ControlHealed { tag, .. }
+            | ObservedFaultFact::TriggerHealed { tag, .. }
+                if tag == expected_tag =>
+            {
+                active = false;
+            }
+            ObservedFaultFact::ScheduledActivation { .. }
+            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
+            | ObservedFaultFact::ProbabilisticOutcome { .. }
+            | ObservedFaultFact::ControlInjected { .. }
+            | ObservedFaultFact::ControlHealed { .. }
+            | ObservedFaultFact::TriggerInjected { .. }
+            | ObservedFaultFact::TriggerHealed { .. } => {}
+        }
+    }
+    active
 }
 
 fn observable_event_matches(
@@ -6092,6 +6139,10 @@ where
         self.scheduler_quiescence.as_ref()
     }
 
+    fn fault_facts(&self) -> &[ObservedFaultFact] {
+        &self.fault_facts
+    }
+
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.white_box_policies.get(node).copied()
     }
@@ -6611,6 +6662,10 @@ impl EventGraph {
         EventGraphBuilder::default()
     }
 
+    pub(crate) fn from_unchecked_events_for_model(events: Vec<Event>) -> Self {
+        Self { events }
+    }
+
     /// Builds an event graph with no declared assertion or white-box namespace.
     ///
     /// # Errors
@@ -6633,8 +6688,9 @@ impl EventGraph {
     /// references, and [`EventGraphError::NodeScheduleTargetRequiresWorld`] for
     /// `StartNode` or `StopNode`. It returns
     /// [`EventGraphError::UnknownFaultTagReference`] when a `HealFault` action
-    /// names no injected tag in the graph, [`EventGraphError::NonRepeatableCycle`]
-    /// for a hard dependency cycle among non-repeatable events, or
+    /// or `FaultActive` predicate references a tag that no graph action injects,
+    /// [`EventGraphError::NonRepeatableCycle`] for a hard dependency cycle among
+    /// non-repeatable events, or
     /// [`EventGraphError::UnreachableEvent`] when an event cannot be reached
     /// from an entrypoint.
     pub fn new(events: Vec<Event>) -> Result<Self, EventGraphError> {
@@ -6739,6 +6795,7 @@ impl EventGraph {
                     &timer_names,
                     &assertion_ids,
                     &white_box_nodes,
+                    &injected_tags,
                     topology.as_ref(),
                 )?;
             }
@@ -7080,6 +7137,10 @@ where
         self.inner.scheduler_quiescence()
     }
 
+    fn fault_facts(&self) -> &[ObservedFaultFact] {
+        self.inner.fault_facts()
+    }
+
     fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
         self.inner.white_box_policy_for_node(node)
     }
@@ -7215,9 +7276,9 @@ pub enum EventGraphError {
         /// Referenced node id.
         node: NodeId,
     },
-    /// A `HealFault` action references no tag injected by this graph.
+    /// A `HealFault` action or `FaultActive` predicate references no injected tag.
     UnknownFaultTagReference {
-        /// Event containing the invalid heal action.
+        /// Event containing the invalid fault tag reference.
         event: EventId,
         /// Referenced fault tag.
         tag: FaultTag,
@@ -7354,7 +7415,7 @@ impl fmt::Display for EventGraphError {
             Self::UnknownFaultTagReference { event, tag } => {
                 write!(
                     formatter,
-                    "event `{}` heals unknown fault tag `{}`",
+                    "event `{}` references unknown fault tag `{}`",
                     event.name, tag.name
                 )
             }
@@ -7691,6 +7752,7 @@ fn validate_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
+    injected_tags: &BTreeSet<FaultTag>,
     topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     match condition {
@@ -7742,6 +7804,16 @@ fn validate_condition_references(
                 })
             }
         }
+        Condition::FaultActive { tag } => {
+            if injected_tags.contains(tag) {
+                Ok(())
+            } else {
+                Err(EventGraphError::UnknownFaultTagReference {
+                    event: event.id.clone(),
+                    tag: tag.clone(),
+                })
+            }
+        }
         Condition::GuestMarker { marker } => {
             if white_box_nodes.is_empty() {
                 Err(EventGraphError::GuestMarkerWithoutWhiteBoxOptIn {
@@ -7760,6 +7832,7 @@ fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            injected_tags,
             topology,
         ),
         Condition::AnyOf { predicates } => validate_compound_condition_references(
@@ -7770,6 +7843,7 @@ fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            injected_tags,
             topology,
         ),
         Condition::Once { predicate } | Condition::Not { predicate } => {
@@ -7780,6 +7854,7 @@ fn validate_condition_references(
                 timer_names,
                 assertion_ids,
                 white_box_nodes,
+                injected_tags,
                 topology,
             )
         }
@@ -7795,6 +7870,7 @@ fn validate_compound_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
+    injected_tags: &BTreeSet<FaultTag>,
     topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     if predicates.is_empty() {
@@ -7812,6 +7888,7 @@ fn validate_compound_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
+            injected_tags,
             topology,
         )?;
     }
@@ -8028,6 +8105,7 @@ fn hard_event_dependencies(
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
+        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => BTreeSet::new(),
@@ -8125,6 +8203,7 @@ fn possible_dependency_alternatives(
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
+        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => vec![BTreeSet::new()],

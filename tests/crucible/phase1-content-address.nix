@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
+  taskIds ? ["T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,8 +12,10 @@
   };
   model = builtins.readFile ../../crates/crucible/src/model.rs;
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
+  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
   crucibleGate = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
+  predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
   simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_content_address.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
@@ -70,6 +72,30 @@
       {
         label = "content hash hex rendering";
         needle = "pub fn to_hex(self) -> String";
+      }
+      {
+        label = "fault-active predicate leaf";
+        needle = "FaultActive {";
+      }
+      {
+        label = "plan-aware assertion DSL constructor";
+        needle = "pub fn from_assertions_for_world_and_plan(";
+      }
+      {
+        label = "plan-aware canonical TOML DSL constructor";
+        needle = "pub fn from_canonical_toml_for_world_and_plan(";
+      }
+      {
+        label = "predicate DSL resolver";
+        needle = "fn resolve_named_predicate_dsl_for_context(";
+      }
+      {
+        label = "TOML string predicate DSL parsing";
+        needle = "PredicateToml::Dsl(name)";
+      }
+      {
+        label = "unknown named predicates remain additive";
+        needle = ".unwrap_or_else(|| predicate.clone())";
       }
       {
         label = "DAG store trait";
@@ -568,6 +594,54 @@
         needle = "FUTURE_RATCHET_INTEGRATION_SEAM";
       }
     ]
+    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+      {
+        label = "fault-active condition evaluation";
+        needle = "Condition::FaultActive { tag } => fault_tag_is_active(evaluator.fault_facts(), tag)";
+      }
+      {
+        label = "fault facts observation";
+        needle = "fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool";
+      }
+      {
+        label = "fault-active graph validation";
+        needle = "UnknownFaultTagReference";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/predicate_dsl.rs" predicateDsl [
+      {
+        label = "T-ASRT-17 regression module";
+        needle = "Checks T-ASRT-17 predicate DSL desugaring.";
+      }
+      {
+        label = "properties desugar to concrete identity";
+        needle = "predicate_dsl_desugars_to_concrete_conditions_for_properties";
+      }
+      {
+        label = "DSL hashes as expanded condition tree";
+        needle = "DSL properties must hash as the concrete expanded condition tree";
+      }
+      {
+        label = "string-authored properties TOML";
+        needle = "predicate = \"no_active_faults\"";
+      }
+      {
+        label = "string-authored trigger TOML";
+        needle = "trigger = \"quiescent\"";
+      }
+      {
+        label = "fault-active leaf coverage";
+        needle = "Predicate::fault_active(tag(\"split\"))";
+      }
+      {
+        label = "recorded fault facts coverage";
+        needle = "fault_active_condition_uses_recorded_fault_facts";
+      }
+      {
+        label = "host predicate additivity";
+        needle = "uncovered predicates remain host-extensible";
+      }
+    ]
     ++ failuresFor "crates/crucible/tests/gate_content_address.rs" crucibleGate [
       {
         label = "fixed vector coverage";
@@ -986,6 +1060,10 @@
         needle = "\"T-HARN-11\"";
       }
       {
+        label = "phase1 content-address lists T-ASRT-17";
+        needle = "\"T-ASRT-17\"";
+      }
+      {
         label = "phase1 content-address lists T-PAT-4";
         needle = "\"T-PAT-4\"";
       }
@@ -1231,6 +1309,14 @@ in
               --target-dir "$TMPDIR/crucible-content-address-target" \
               -p crucible \
               --features test-double \
+              --test predicate_dsl \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-content-address-target" \
+              -p crucible \
+              --features test-double \
               --test gate_content_address \
               -- --test-threads=1
             cargo test \
@@ -1252,8 +1338,10 @@ in
             check=${attrPath}
             gate=gate:content-address
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_tests=crucible::gate_content_address,crucible-sim::gate_content_address
+            rust_tests=crucible::predicate_dsl,crucible::gate_content_address,crucible-sim::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
+            predicate_dsl=world-plan-resolved-content-addressed-conditions
+            predicate_dsl_host_closures=additive-unknown-named-predicates
             checkpoint=Checkpoint
             checkpoint_identity=Configuration::id
             checkpoint_delta=schedule_delta
