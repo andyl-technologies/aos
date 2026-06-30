@@ -1030,12 +1030,20 @@ verdict; it only shapes the next schedule the search tries.
 	  outcome equality, deterministic verdict composition, idempotent corpus
 	  re-grading, artifact-derived replay logs, and bit-identical violation
 	  reproduction.
-- [ ] **T-ASRT-17** Implement the predicate DSL: a set of named, TOML-authorable
+- [x] **T-ASRT-17** Implement the predicate DSL: a set of named, TOML-authorable
   conditions (at least `no_crashed_nodes`, `quiescent`, `no_active_faults`,
   `node_alive:<n>`, `node_crashed:<n>`) that desugar to 17a leaf `Condition`s,
   usable as both assertion predicates and triggers, build-time-resolved against
   the `World`/`Plan`, strictly additive to host closures. — satisfies [ASRT-31];
   spec §18.12.2.
+  Completed by `checks.crucible.phase1.gates.contentAddress` and
+  `checks.crucible.phase1.gates.harnessLint`: predicate string TOML now parses
+  through the shared `Condition` vocabulary, plan-aware property construction and
+  event-graph plan construction resolve `no_crashed_nodes`, `quiescent`,
+  `no_active_faults`, `node_alive:<n>`, and `node_crashed:<n>` against the
+  `World`/`Plan`, and `FaultActive` evaluates recorded injected/healed fault
+  facts. Unknown named predicates remain preserved host predicates, so the DSL is
+  additive to existing host closures.
 - [ ] **T-ASRT-18** Implement the OPTIONAL assertion-proximity gradient: a
   deterministic, non-negative, monotone distance-to-satisfaction (0 iff satisfied)
   defined structurally over the 17a `Condition` tree (numeric leaf → threshold gap,

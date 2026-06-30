@@ -8,7 +8,10 @@
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  assertionProperties = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
+  crucibleModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
   harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
   harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
   harnessLintRust =
@@ -48,6 +51,15 @@
     builtins.any (index:
       builtins.substring index needleLen haystack == needle)
     indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
 
   charAt = content: index: builtins.substring index 1 content;
 
@@ -1453,7 +1465,59 @@
   in
     harnessFailures ++ denyCoverageFailures ++ docFailures ++ phaseWiringFailures;
 
-  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures ++ tDet17CompletionFailures;
+  tAsrt17CompletionFailures =
+    failuresFor "crates/crucible/tests/predicate_dsl.rs" predicateDsl [
+      {
+        label = "T-ASRT-17 regression module";
+        needle = "Checks T-ASRT-17 predicate DSL desugaring.";
+      }
+      {
+        label = "host predicate additivity evidence";
+        needle = "uncovered predicates remain host-extensible";
+      }
+      {
+        label = "unknown host predicate preserved";
+        needle = "always(Predicate::named(\"custom-host\"))";
+      }
+      {
+        label = "plan-aware property DSL coverage";
+        needle = "Properties::from_assertions_for_world_and_plan";
+      }
+      {
+        label = "plan-aware TOML DSL coverage";
+        needle = "Properties::from_canonical_toml_for_world_and_plan";
+      }
+      {
+        label = "trigger DSL coverage";
+        needle = "Plan::from_event_graph_for_world";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" crucibleModel [
+      {
+        label = "TOML string DSL parsing";
+        needle = "PredicateToml::Dsl(name)";
+      }
+      {
+        label = "unknown named predicate additive preservation";
+        needle = ".unwrap_or_else(|| predicate.clone())";
+      }
+      {
+        label = "predicate DSL resolver";
+        needle = "fn resolve_named_predicate_dsl_for_context(";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionProperties [
+      {
+        label = "T-ASRT-17 checklist complete";
+        needle = "- [x] **T-ASRT-17**";
+      }
+      {
+        label = "harness-lint gate named for predicate DSL";
+        needle = "`checks.crucible.phase1.gates.harnessLint`";
+      }
+    ];
+
+  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures ++ tDet17CompletionFailures ++ tAsrt17CompletionFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -1475,7 +1539,7 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
+            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
@@ -1483,6 +1547,7 @@ in
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
             custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments
             exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface
+            predicate_dsl_host_closures=additive-unknown-named-predicates
             RESULT
           '';
         }

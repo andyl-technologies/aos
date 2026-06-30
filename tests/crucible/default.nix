@@ -191,7 +191,7 @@ in {
       contentAddress = import ./phase1-content-address.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.contentAddress";
-        taskIds = ["T-PLAN-3" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
+        taskIds = ["T-PLAN-3" "T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
       };
       replayOracle = import ./phase1-replay-oracle.nix {
         inherit pkgs lib;

@@ -907,8 +907,10 @@ impl World {
         &self,
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
+        let plan = Plan::empty();
+        let properties = resolve_properties_dsl_for_context(self, &plan, properties)?;
         properties.validate_for_world(self)?;
-        Ok(self.scenario_def_from_components(&Plan::empty(), properties, Seed::default()))
+        Ok(self.scenario_def_from_components(&plan, &properties, Seed::default()))
     }
 
     /// Builds the canonical scenario definition for this world, plan, and
@@ -925,17 +927,18 @@ impl World {
         plan: &Plan,
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
+        let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
         match plan.event_graph() {
             Some(_) => {
                 properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, properties)?;
+                plan.validate_for_world_with_properties(self, &properties)?;
             }
             None => {
                 plan.validate_for_world(self)?;
                 properties.validate_for_world(self)?;
             }
         }
-        Ok(self.scenario_def_from_components(plan, properties, Seed::default()))
+        Ok(self.scenario_def_from_components(plan, &properties, Seed::default()))
     }
 
     /// Builds the canonical scenario definition for this world, empty plan,
@@ -960,17 +963,18 @@ impl World {
         properties: &Properties,
         seed: Seed,
     ) -> Result<ScenarioDef, EngineError> {
+        let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
         match plan.event_graph() {
             Some(_) => {
                 properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, properties)?;
+                plan.validate_for_world_with_properties(self, &properties)?;
             }
             None => {
                 plan.validate_for_world(self)?;
                 properties.validate_for_world(self)?;
             }
         }
-        Ok(self.scenario_def_from_components(plan, properties, seed))
+        Ok(self.scenario_def_from_components(plan, &properties, seed))
     }
 
     /// Derives this world's per-entity decision-RNG stream seeds from `seed`.
@@ -2380,10 +2384,11 @@ impl ScenarioDefForm {
         seed: Seed,
     ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
+        let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
         match plan.event_graph() {
             Some(_) => {
                 properties.validate_for_world(world)?;
-                plan.validate_for_world_with_properties(world, properties)?;
+                plan.validate_for_world_with_properties(world, &properties)?;
             }
             None => {
                 plan.validate_for_world(world)?;
@@ -2393,7 +2398,7 @@ impl ScenarioDefForm {
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
-            properties: properties.clone(),
+            properties,
             seed,
         })
     }
@@ -5565,6 +5570,8 @@ impl Plan {
         assertions: impl IntoIterator<Item = AssertionId>,
         graph: EventGraph,
     ) -> Result<Self, EngineError> {
+        let assertions = assertions.into_iter().collect::<Vec<_>>();
+        let graph = resolve_event_graph_dsl_for_world(world, &graph);
         let graph =
             validate_event_graph_plan(world, assertions, graph).map_err(event_graph_plan_error)?;
         Ok(Self::from_canonical_event_graph(graph))
@@ -6234,6 +6241,11 @@ pub enum Predicate {
     },
     /// True when scheduler-owned quiescence evidence has no blockers.
     Quiescent,
+    /// True when a declared fault tag is active at the evaluation point.
+    FaultActive {
+        /// Stable fault tag whose active state is matched.
+        tag: FaultTag,
+    },
     /// A named host-side predicate resolved by the harness and event log.
     Named {
         /// Stable predicate name.
@@ -6356,6 +6368,12 @@ impl Predicate {
     #[must_use]
     pub const fn quiescent() -> Self {
         Self::Quiescent
+    }
+
+    /// Builds an active-fault-tag predicate.
+    #[must_use]
+    pub fn fault_active(tag: FaultTag) -> Self {
+        Self::FaultActive { tag }
     }
 
     /// Builds a guest-marker predicate.
@@ -6502,6 +6520,27 @@ impl Properties {
         )))
     }
 
+    /// Builds a properties bundle after resolving DSL predicates against `world`
+    /// and `plan`.
+    ///
+    /// Named DSL predicates such as `no_crashed_nodes`, `node_alive:<node>`, and
+    /// `no_active_faults` are expanded to concrete predicates before validation
+    /// and hashing. Unrecognized `Named` predicates remain available for linted
+    /// host-side assertion oracles.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::from_assertions_for_world`]
+    /// after DSL expansion.
+    pub fn from_assertions_for_world_and_plan(
+        world: &World,
+        plan: &Plan,
+        assertions: Vec<AssertionDef>,
+    ) -> Result<Self, EngineError> {
+        let assertions = resolve_assertions_dsl_for_context(world, plan, &assertions);
+        Self::from_assertions_for_world(world, assertions)
+    }
+
     /// Returns property assertions in their canonical order.
     #[must_use]
     pub fn assertions(&self) -> &[AssertionDef] {
@@ -6538,6 +6577,28 @@ impl Properties {
             scenario_serialization_error(format!("parse properties TOML: {source}"))
         })?;
         properties_from_toml(world, toml)
+    }
+
+    /// Parses and validates deterministic TOML properties for `world` and `plan`.
+    ///
+    /// This parser resolves string-authored DSL predicates before checking the
+    /// serialized properties id. Use [`Self::from_canonical_toml_for_world`] for
+    /// component-only TOML that intentionally preserves opaque named host
+    /// predicates without plan context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
+    /// mismatch, or a property validation error after DSL expansion.
+    pub fn from_canonical_toml_for_world_and_plan(
+        world: &World,
+        plan: &Plan,
+        input: &str,
+    ) -> Result<Self, EngineError> {
+        let toml = toml::from_str::<PropertiesToml>(input).map_err(|source| {
+            scenario_serialization_error(format!("parse properties TOML: {source}"))
+        })?;
+        properties_from_toml_with_plan(world, plan, toml)
     }
 
     /// Serializes this properties component as compact binary.
@@ -12361,6 +12422,232 @@ fn validate_properties_for_world(
     Ok(())
 }
 
+fn resolve_assertions_dsl_for_context(
+    world: &World,
+    plan: &Plan,
+    assertions: &[AssertionDef],
+) -> Vec<AssertionDef> {
+    let fault_tags = plan_declared_fault_tags(plan);
+    assertions
+        .iter()
+        .map(|assertion| AssertionDef {
+            id: assertion.id.clone(),
+            message: assertion.message.clone(),
+            property: resolve_property_dsl_for_context(&assertion.property, world, &fault_tags),
+        })
+        .collect()
+}
+
+fn resolve_properties_dsl_for_context(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+) -> Result<Properties, EngineError> {
+    Properties::from_assertions_for_world_and_plan(world, plan, properties.assertions().to_vec())
+}
+
+fn resolve_property_dsl_for_context(
+    property: &Property,
+    world: &World,
+    fault_tags: &BTreeSet<FaultTag>,
+) -> Property {
+    match property {
+        Property::Always { predicate } => Property::Always {
+            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+        },
+        Property::Sometimes { predicate } => Property::Sometimes {
+            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+        },
+        Property::Eventually {
+            trigger,
+            property,
+            deadline,
+        } => Property::Eventually {
+            trigger: resolve_predicate_dsl_for_context(trigger, world, fault_tags),
+            property: resolve_predicate_dsl_for_context(property, world, fault_tags),
+            deadline: *deadline,
+        },
+        Property::AfterQuiescence { predicate } => Property::AfterQuiescence {
+            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+        },
+        Property::Reachable {
+            predicate,
+            expectation,
+        } => Property::Reachable {
+            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+            expectation: *expectation,
+        },
+    }
+}
+
+fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> EventGraph {
+    let fault_tags = event_graph_declared_fault_tags(graph.events());
+    EventGraph::from_unchecked_events_for_model(
+        graph
+            .events()
+            .iter()
+            .map(|event| Event {
+                id: event.id.clone(),
+                trigger: event
+                    .trigger
+                    .as_ref()
+                    .map(|trigger| resolve_predicate_dsl_for_context(trigger, world, &fault_tags)),
+                action: event.action.clone(),
+                policy: event.policy,
+            })
+            .collect(),
+    )
+}
+
+fn resolve_predicate_dsl_for_context(
+    predicate: &Predicate,
+    world: &World,
+    fault_tags: &BTreeSet<FaultTag>,
+) -> Predicate {
+    match predicate {
+        Predicate::Named { name, nodes } if nodes.is_empty() => {
+            resolve_named_predicate_dsl_for_context(name, world, fault_tags)
+                .unwrap_or_else(|| predicate.clone())
+        }
+        Predicate::AllOf { predicates } => Predicate::all_of(
+            predicates
+                .iter()
+                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world, fault_tags))
+                .collect(),
+        ),
+        Predicate::AnyOf { predicates } => Predicate::any_of(
+            predicates
+                .iter()
+                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world, fault_tags))
+                .collect(),
+        ),
+        Predicate::Once { predicate } => Predicate::once(resolve_predicate_dsl_for_context(
+            predicate, world, fault_tags,
+        )),
+        Predicate::Not { predicate } => Predicate::not(resolve_predicate_dsl_for_context(
+            predicate, world, fault_tags,
+        )),
+        Predicate::At { .. }
+        | Predicate::After { .. }
+        | Predicate::Timer { .. }
+        | Predicate::NetworkMatch { .. }
+        | Predicate::ConsoleMatch { .. }
+        | Predicate::CoveragePoint { .. }
+        | Predicate::MemoryPredicate { .. }
+        | Predicate::IoPattern { .. }
+        | Predicate::NodeState { .. }
+        | Predicate::AssertionState { .. }
+        | Predicate::Quiescent
+        | Predicate::FaultActive { .. }
+        | Predicate::Named { .. }
+        | Predicate::GuestMarker { .. } => predicate.clone(),
+    }
+}
+
+fn resolve_named_predicate_dsl_for_context(
+    name: &str,
+    world: &World,
+    fault_tags: &BTreeSet<FaultTag>,
+) -> Option<Predicate> {
+    match name {
+        "no_crashed_nodes" => {
+            Some(not_any_or_true(world.nodes().iter().map(|node| {
+                Predicate::node_state(node.id.clone(), NodeLifecycle::Crashed)
+            })))
+        }
+        "quiescent" => Some(Predicate::quiescent()),
+        "no_active_faults" => Some(not_any_or_true(
+            fault_tags.iter().cloned().map(Predicate::fault_active),
+        )),
+        _ => name
+            .strip_prefix("node_alive:")
+            .map(|node| Predicate::not(node_crashed_predicate(node)))
+            .or_else(|| {
+                name.strip_prefix("node_crashed:")
+                    .map(|node| Predicate::once(node_crashed_predicate(node)))
+            }),
+    }
+}
+
+fn node_crashed_predicate(node: &str) -> Predicate {
+    Predicate::node_state(
+        NodeId {
+            name: node.to_owned(),
+        },
+        NodeLifecycle::Crashed,
+    )
+}
+
+fn not_any_or_true(predicates: impl IntoIterator<Item = Predicate>) -> Predicate {
+    let predicates = predicates.into_iter().collect::<Vec<_>>();
+    if predicates.is_empty() {
+        dsl_true_predicate()
+    } else {
+        Predicate::not(Predicate::any_of(predicates))
+    }
+}
+
+fn dsl_true_predicate() -> Predicate {
+    Predicate::any_of(vec![
+        Predicate::quiescent(),
+        Predicate::not(Predicate::quiescent()),
+    ])
+}
+
+fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
+    match &plan.kind {
+        PlanKind::ScheduledEntries { entries } => entries
+            .iter()
+            .filter_map(|entry| match entry {
+                PlanEntry::Activate { tag, .. } => Some(tag.clone()),
+                PlanEntry::Heal { .. } => None,
+            })
+            .collect(),
+        PlanKind::FaultPlan { plan } => plan
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                FaultPlanEntry::At { tag, .. } | FaultPlanEntry::PermanentAt { tag, .. } => {
+                    Some(tag.clone())
+                }
+                FaultPlanEntry::Heal { .. } => None,
+            })
+            .collect(),
+        PlanKind::EventGraph { graph } => event_graph_declared_fault_tags(graph.events()),
+    }
+}
+
+fn event_graph_declared_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
+    let mut tags = BTreeSet::new();
+    for event in events {
+        collect_action_declared_fault_tags(&event.action, &mut tags);
+    }
+    tags
+}
+
+fn collect_action_declared_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
+    match action {
+        Action::InjectFault { tag, .. } => {
+            tags.insert(tag.clone());
+        }
+        Action::Group(actions) => {
+            for action in actions {
+                collect_action_declared_fault_tags(action, tags);
+            }
+        }
+        Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StartNode { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => {}
+    }
+}
+
 fn validate_property_for_world(
     property: &Property,
     node_ids: &BTreeSet<&NodeId>,
@@ -12403,7 +12690,10 @@ fn validate_property_predicate_for_world(
     white_box_node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match predicate {
-        Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(()),
+        Predicate::At { .. }
+        | Predicate::NetworkMatch { .. }
+        | Predicate::Quiescent
+        | Predicate::FaultActive { .. } => Ok(()),
         Predicate::After { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "after" }),
         Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "timer" }),
         Predicate::ConsoleMatch { node, regex } => {
@@ -12741,6 +13031,7 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
             state: *state,
         },
         Predicate::Quiescent => Predicate::Quiescent,
+        Predicate::FaultActive { tag } => Predicate::FaultActive { tag: tag.clone() },
         Predicate::Named { name, nodes } => Predicate::Named {
             name: name.clone(),
             nodes: nodes.clone(),
@@ -13224,9 +13515,16 @@ struct PropertyToml {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PredicateToml {
+    Dsl(String),
+    Structured(PredicateTomlKind),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PredicateToml {
+enum PredicateTomlKind {
     At {
         at_ticks: u64,
     },
@@ -13269,6 +13567,9 @@ enum PredicateToml {
         state: AssertionPhaseToml,
     },
     Quiescent,
+    FaultActive {
+        tag: String,
+    },
     Named {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -13425,15 +13726,15 @@ fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
 
 fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, EngineError> {
     let world = world_from_toml(toml.world)?;
-    let properties = properties_from_toml(&world, toml.properties)?;
+    let (properties_id, assertions) = properties_assertions_from_toml(toml.properties)?;
     let plan = plan_from_toml_with_assertions(
         &world,
-        properties
-            .assertions()
-            .iter()
-            .map(|assertion| assertion.id.clone()),
+        assertions.iter().map(|assertion| assertion.id.clone()),
         toml.plan,
     )?;
+    let raw_properties = Properties::from_assertions_for_world(&world, assertions)?;
+    let properties = resolve_properties_dsl_for_context(&world, &plan, &raw_properties)?;
+    validate_serialized_id("properties", properties_id, properties.content_hash())?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
     let expected = parse_content_hash_ref(&toml.scenario.id)?;
@@ -13661,9 +13962,8 @@ fn plan_from_toml_with_assertions(
                 .into_iter()
                 .map(event_from_toml)
                 .collect::<Result<Vec<_>, _>>()?;
-            let graph = EventGraph::new_with_assertions_for_world(events, assertions, world)
-                .map_err(event_graph_plan_error)?;
-            Plan::from_canonical_event_graph(graph)
+            let graph = EventGraph::from_unchecked_events_for_model(events);
+            Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
         }
     };
     validate_serialized_id("plan", id, plan.content_hash())?;
@@ -14412,15 +14712,33 @@ fn properties_to_toml(properties: &Properties) -> PropertiesToml {
 }
 
 fn properties_from_toml(world: &World, toml: PropertiesToml) -> Result<Properties, EngineError> {
+    let (id, assertions) = properties_assertions_from_toml(toml)?;
+    let properties = Properties::from_assertions_for_world(world, assertions)?;
+    validate_serialized_id("properties", id, properties.content_hash())?;
+    Ok(properties)
+}
+
+fn properties_from_toml_with_plan(
+    world: &World,
+    plan: &Plan,
+    toml: PropertiesToml,
+) -> Result<Properties, EngineError> {
+    let (id, assertions) = properties_assertions_from_toml(toml)?;
+    let properties = Properties::from_assertions_for_world_and_plan(world, plan, assertions)?;
+    validate_serialized_id("properties", id, properties.content_hash())?;
+    Ok(properties)
+}
+
+fn properties_assertions_from_toml(
+    toml: PropertiesToml,
+) -> Result<(ContentHash, Vec<AssertionDef>), EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
     let assertions = toml
         .assertion
         .into_iter()
         .map(assertion_from_toml)
         .collect::<Result<Vec<_>, _>>()?;
-    let properties = Properties::from_assertions_for_world(world, assertions)?;
-    validate_serialized_id("properties", id, properties.content_hash())?;
-    Ok(properties)
+    Ok((id, assertions))
 }
 
 fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
@@ -14606,24 +14924,24 @@ fn reject_property_toml_field<T>(
 }
 
 fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
-    match predicate {
-        Predicate::At { at } => PredicateToml::At { at_ticks: at.ticks },
-        Predicate::After { duration, of } => PredicateToml::After {
+    PredicateToml::Structured(match predicate {
+        Predicate::At { at } => PredicateTomlKind::At { at_ticks: at.ticks },
+        Predicate::After { duration, of } => PredicateTomlKind::After {
             duration_nanos: duration.nanos,
             of: of.name.clone(),
         },
-        Predicate::Timer { name } => PredicateToml::Timer {
+        Predicate::Timer { name } => PredicateTomlKind::Timer {
             name: name.name.clone(),
         },
-        Predicate::NetworkMatch { link, predicate } => PredicateToml::NetworkMatch {
+        Predicate::NetworkMatch { link, predicate } => PredicateTomlKind::NetworkMatch {
             link: link.as_ref().map(|link| link.name.clone()),
             predicate: frame_predicate_to_toml(predicate),
         },
-        Predicate::ConsoleMatch { node, regex } => PredicateToml::ConsoleMatch {
+        Predicate::ConsoleMatch { node, regex } => PredicateTomlKind::ConsoleMatch {
             node: node.name.clone(),
             regex: regex.pattern.clone(),
         },
-        Predicate::CoveragePoint { node, point } => PredicateToml::CoveragePoint {
+        Predicate::CoveragePoint { node, point } => PredicateTomlKind::CoveragePoint {
             node: node.name.clone(),
             point: code_point_to_toml(point),
         },
@@ -14632,74 +14950,86 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             place,
             cmp,
             value,
-        } => PredicateToml::MemoryPredicate {
+        } => PredicateTomlKind::MemoryPredicate {
             node: node.name.clone(),
             place: mem_place_to_toml(place),
             cmp: memory_cmp_to_toml(*cmp),
             value: *value,
         },
-        Predicate::IoPattern { node, kind } => PredicateToml::IoPattern {
+        Predicate::IoPattern { node, kind } => PredicateTomlKind::IoPattern {
             node: node.name.clone(),
             io_kind: io_event_kind_to_toml(*kind),
         },
-        Predicate::NodeState { node, state } => PredicateToml::NodeState {
+        Predicate::NodeState { node, state } => PredicateTomlKind::NodeState {
             node: node.name.clone(),
             state: node_lifecycle_to_toml(*state),
         },
-        Predicate::AssertionState { name, state } => PredicateToml::AssertionState {
+        Predicate::AssertionState { name, state } => PredicateTomlKind::AssertionState {
             name: name.name.clone(),
             state: assertion_phase_to_toml(*state),
         },
-        Predicate::Quiescent => PredicateToml::Quiescent,
-        Predicate::Named { name, nodes } => PredicateToml::Named {
+        Predicate::Quiescent => PredicateTomlKind::Quiescent,
+        Predicate::FaultActive { tag } => PredicateTomlKind::FaultActive {
+            tag: tag.name.clone(),
+        },
+        Predicate::Named { name, nodes } => PredicateTomlKind::Named {
             name: name.clone(),
             nodes: nodes.iter().map(|node| node.name.clone()).collect(),
         },
-        Predicate::GuestMarker { marker } => PredicateToml::GuestMarker {
+        Predicate::GuestMarker { marker } => PredicateTomlKind::GuestMarker {
             marker: marker.name.clone(),
         },
-        Predicate::AllOf { predicates } => PredicateToml::AllOf {
+        Predicate::AllOf { predicates } => PredicateTomlKind::AllOf {
             predicates: predicates.iter().map(predicate_to_toml).collect(),
         },
-        Predicate::AnyOf { predicates } => PredicateToml::AnyOf {
+        Predicate::AnyOf { predicates } => PredicateTomlKind::AnyOf {
             predicates: predicates.iter().map(predicate_to_toml).collect(),
         },
-        Predicate::Once { predicate } => PredicateToml::Once {
+        Predicate::Once { predicate } => PredicateTomlKind::Once {
             predicate: Box::new(predicate_to_toml(predicate)),
         },
-        Predicate::Not { predicate } => PredicateToml::Not {
+        Predicate::Not { predicate } => PredicateTomlKind::Not {
             predicate: Box::new(predicate_to_toml(predicate)),
         },
-    }
+    })
 }
 
 fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
+    let toml = match toml {
+        PredicateToml::Dsl(name) => {
+            return Ok(Predicate::Named {
+                name,
+                nodes: Vec::new(),
+            });
+        }
+        PredicateToml::Structured(toml) => toml,
+    };
     Ok(match toml {
-        PredicateToml::At { at_ticks } => Predicate::At {
+        PredicateTomlKind::At { at_ticks } => Predicate::At {
             at: VirtualTime { ticks: at_ticks },
         },
-        PredicateToml::After { duration_nanos, of } => Predicate::After {
+        PredicateTomlKind::After { duration_nanos, of } => Predicate::After {
             duration: SimDuration {
                 nanos: duration_nanos,
             },
             of: EventId { name: of },
         },
-        PredicateToml::Timer { name } => Predicate::Timer {
+        PredicateTomlKind::Timer { name } => Predicate::Timer {
             name: TimerId { name },
         },
-        PredicateToml::NetworkMatch { link, predicate } => Predicate::NetworkMatch {
+        PredicateTomlKind::NetworkMatch { link, predicate } => Predicate::NetworkMatch {
             link: link.map(|name| LinkId { name }),
             predicate: frame_predicate_from_toml(predicate)?,
         },
-        PredicateToml::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
+        PredicateTomlKind::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
             node: NodeId { name: node },
             regex: RegexProgram { pattern: regex },
         },
-        PredicateToml::CoveragePoint { node, point } => Predicate::CoveragePoint {
+        PredicateTomlKind::CoveragePoint { node, point } => Predicate::CoveragePoint {
             node: NodeId { name: node },
             point: code_point_from_toml(point),
         },
-        PredicateToml::MemoryPredicate {
+        PredicateTomlKind::MemoryPredicate {
             node,
             place,
             cmp,
@@ -14710,42 +15040,45 @@ fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
             cmp: memory_cmp_from_toml(cmp),
             value,
         },
-        PredicateToml::IoPattern { node, io_kind } => Predicate::IoPattern {
+        PredicateTomlKind::IoPattern { node, io_kind } => Predicate::IoPattern {
             node: NodeId { name: node },
             kind: io_event_kind_from_toml(io_kind),
         },
-        PredicateToml::NodeState { node, state } => Predicate::NodeState {
+        PredicateTomlKind::NodeState { node, state } => Predicate::NodeState {
             node: NodeId { name: node },
             state: node_lifecycle_from_toml(state),
         },
-        PredicateToml::AssertionState { name, state } => Predicate::AssertionState {
+        PredicateTomlKind::AssertionState { name, state } => Predicate::AssertionState {
             name: AssertionId { name },
             state: assertion_phase_from_toml(state),
         },
-        PredicateToml::Quiescent => Predicate::Quiescent,
-        PredicateToml::Named { name, nodes } => Predicate::Named {
+        PredicateTomlKind::Quiescent => Predicate::Quiescent,
+        PredicateTomlKind::FaultActive { tag } => Predicate::FaultActive {
+            tag: FaultTag { name: tag },
+        },
+        PredicateTomlKind::Named { name, nodes } => Predicate::Named {
             name,
             nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
         },
-        PredicateToml::GuestMarker { marker } => Predicate::GuestMarker {
+        PredicateTomlKind::GuestMarker { marker } => Predicate::GuestMarker {
             marker: MarkerId { name: marker },
         },
-        PredicateToml::AllOf { predicates } => Predicate::AllOf {
+        PredicateTomlKind::AllOf { predicates } => Predicate::AllOf {
             predicates: predicates
                 .into_iter()
                 .map(predicate_from_toml)
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        PredicateToml::AnyOf { predicates } => Predicate::AnyOf {
+        PredicateTomlKind::AnyOf { predicates } => Predicate::AnyOf {
             predicates: predicates
                 .into_iter()
                 .map(predicate_from_toml)
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        PredicateToml::Once { predicate } => Predicate::Once {
+        PredicateTomlKind::Once { predicate } => Predicate::Once {
             predicate: Box::new(predicate_from_toml(*predicate)?),
         },
-        PredicateToml::Not { predicate } => Predicate::Not {
+        PredicateTomlKind::Not { predicate } => Predicate::Not {
             predicate: Box::new(predicate_from_toml(*predicate)?),
         },
     })
@@ -15720,9 +16053,8 @@ fn read_plan_binary_inner(
             events.push(read_event_binary(reader)?);
         }
         let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
-        let graph = EventGraph::new_with_assertions_for_world(events, assertions, world)
-            .map_err(event_graph_plan_error)?;
-        Plan::from_canonical_event_graph(graph)
+        let graph = EventGraph::from_unchecked_events_for_model(events);
+        Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
     } else if count_or_sentinel == FAULT_PLAN_BINARY_SENTINEL {
         let count = reader.read_collection_count("plan.fault_entry")?;
         let mut entries = Vec::with_capacity(count);
@@ -15790,6 +16122,7 @@ fn collect_predicate_assertion_references(
         | Predicate::IoPattern { .. }
         | Predicate::NodeState { .. }
         | Predicate::Quiescent
+        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => {}
     }
@@ -16805,6 +17138,10 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
         Predicate::Quiescent => {
             writer.write_u8(16);
         }
+        Predicate::FaultActive { tag } => {
+            writer.write_u8(17);
+            writer.write_string(&tag.name);
+        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -16958,6 +17295,11 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
             state: read_assertion_phase_binary(reader)?,
         }),
         16 => Ok(Predicate::Quiescent),
+        17 => Ok(Predicate::FaultActive {
+            tag: FaultTag {
+                name: reader.read_string()?,
+            },
+        }),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
     }
 }
@@ -18269,6 +18611,9 @@ fn predicate_material(predicate: &Predicate) -> String {
             )
         }
         Predicate::Quiescent => String::from("predicate=quiescent"),
+        Predicate::FaultActive { tag } => {
+            format!("predicate=fault-active\n{}", fault_tag_material(tag))
+        }
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",
