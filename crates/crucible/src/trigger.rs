@@ -24,11 +24,11 @@ use crate::model::{
     SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
-    AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
-    scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
+    AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
+    EventLevel, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
+    TriggerActionApplication, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
     scheduler_event_log_segment_bytes,
 };
 
@@ -1966,7 +1966,9 @@ where
     )
     .map_err(AssertionViolationReplayError::ReproducedAssertionCheck)?;
 
-    if recorded_log.entries() != reproduced_log.entries() || expected != reproduced {
+    let event_logs_differ =
+        !event_log_causal_projections_match(recorded_log.entries(), reproduced_log.entries());
+    if event_logs_differ || expected != reproduced {
         return Err(AssertionViolationReplayError::Divergence {
             divergence: Box::new(assertion_violation_replay_divergence(
                 artifact_id,
@@ -3519,20 +3521,17 @@ fn assertion_violation_replay_divergence(
     expected_report: &HostAssertionReport,
     reproduced_report: &HostAssertionReport,
 ) -> AssertionViolationDivergence {
-    let event_logs_differ = expected_log.entries() != reproduced_log.entries();
-    let prefix_len = if event_logs_differ {
+    let event_logs_differ =
+        !event_log_causal_projections_match(expected_log.entries(), reproduced_log.entries());
+    let event_prefix = if event_logs_differ {
         first_different_assertion_replay_prefix(expected_log, reproduced_log)
     } else {
-        expected_log.entries().len()
+        CausalEventLogPrefixDivergence::terminal(expected_log, reproduced_log)
     };
     let bisection = AssertionViolationBisectionRequest {
         artifact,
-        last_matching_event_prefix_len: if event_logs_differ {
-            prefix_len.saturating_sub(1)
-        } else {
-            prefix_len
-        },
-        first_different_event_prefix_len: prefix_len,
+        last_matching_event_prefix_len: event_prefix.expected_last_matching_event_prefix_len,
+        first_different_event_prefix_len: event_prefix.expected_first_different_event_prefix_len,
         schedule_decision_count: schedule.len(),
         first_different_decision_prefix_len: first_different_decision_prefix_len(
             expected_log,
@@ -3540,12 +3539,22 @@ fn assertion_violation_replay_divergence(
         ),
         reason: "assertion violation did not reproduce bit-identically",
     };
-    let expected_prefix_report =
-        assertion_replay_report_for_prefix(artifact, properties, world, expected_log, prefix_len)
-            .unwrap_or_else(|_| expected_report.clone());
-    let reproduced_prefix_report =
-        assertion_replay_report_for_prefix(artifact, properties, world, reproduced_log, prefix_len)
-            .unwrap_or_else(|_| reproduced_report.clone());
+    let expected_prefix_report = assertion_replay_report_for_prefix(
+        artifact,
+        properties,
+        world,
+        expected_log,
+        event_prefix.expected_first_different_event_prefix_len,
+    )
+    .unwrap_or_else(|_| expected_report.clone());
+    let reproduced_prefix_report = assertion_replay_report_for_prefix(
+        artifact,
+        properties,
+        world,
+        reproduced_log,
+        event_prefix.reproduced_first_different_event_prefix_len,
+    )
+    .unwrap_or_else(|_| reproduced_report.clone());
     let (expected_violation, reproduced_violation) = first_differing_violation(
         expected_prefix_report.violations(),
         reproduced_prefix_report.violations(),
@@ -3558,7 +3567,11 @@ fn assertion_violation_replay_divergence(
         .then(|| {
             expected_log
                 .entries()
-                .get(prefix_len.saturating_sub(1))
+                .get(
+                    event_prefix
+                        .expected_first_different_event_prefix_len
+                        .saturating_sub(1),
+                )
                 .cloned()
         })
         .flatten();
@@ -3566,7 +3579,11 @@ fn assertion_violation_replay_divergence(
         .then(|| {
             reproduced_log
                 .entries()
-                .get(prefix_len.saturating_sub(1))
+                .get(
+                    event_prefix
+                        .reproduced_first_different_event_prefix_len
+                        .saturating_sub(1),
+                )
                 .cloned()
         })
         .flatten();
@@ -3583,7 +3600,7 @@ fn assertion_violation_replay_divergence(
 
     AssertionViolationDivergence {
         artifact,
-        first_different_prefix_len: prefix_len,
+        first_different_prefix_len: event_prefix.expected_first_different_event_prefix_len,
         first_different_icount,
         expected_event,
         reproduced_event,
@@ -3593,45 +3610,145 @@ fn assertion_violation_replay_divergence(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CausalEventLogPrefixDivergence {
+    expected_last_matching_event_prefix_len: usize,
+    expected_first_different_event_prefix_len: usize,
+    reproduced_first_different_event_prefix_len: usize,
+}
+
+impl CausalEventLogPrefixDivergence {
+    fn terminal(
+        expected_log: &RecordedAssertionLog,
+        reproduced_log: &RecordedAssertionLog,
+    ) -> Self {
+        Self {
+            expected_last_matching_event_prefix_len: expected_log.entries().len(),
+            expected_first_different_event_prefix_len: expected_log.entries().len(),
+            reproduced_first_different_event_prefix_len: reproduced_log.entries().len(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProjectedCausalEventLogEntry<'log> {
+    raw_index: usize,
+    entry: &'log SchedulerEventLogEntry,
+}
+
+impl<'log> ProjectedCausalEventLogEntry<'log> {
+    fn raw_prefix_len(self) -> usize {
+        self.raw_index.saturating_add(1)
+    }
+}
+
 fn first_different_assertion_replay_prefix(
     expected_log: &RecordedAssertionLog,
     reproduced_log: &RecordedAssertionLog,
-) -> usize {
-    let max_len = expected_log
-        .entries()
-        .len()
-        .max(reproduced_log.entries().len());
+) -> CausalEventLogPrefixDivergence {
+    let expected = event_log_causal_projection(expected_log.entries());
+    let reproduced = event_log_causal_projection(reproduced_log.entries());
+    let max_len = expected.len().max(reproduced.len());
     if max_len == 0 {
-        return 0;
+        return CausalEventLogPrefixDivergence::terminal(expected_log, reproduced_log);
     }
     let mut low = 0;
     let mut high = max_len;
     while low < high {
         let middle = low + (high - low) / 2;
-        if event_log_prefixes_match(expected_log, reproduced_log, middle) {
+        if event_log_causal_projection_prefixes_match(&expected, &reproduced, middle) {
             low = middle + 1;
         } else {
             high = middle;
         }
     }
-    low
+    CausalEventLogPrefixDivergence {
+        expected_last_matching_event_prefix_len: event_log_raw_prefix_for_causal_prefix(
+            &expected,
+            low.saturating_sub(1),
+            expected_log.entries().len(),
+        ),
+        expected_first_different_event_prefix_len: event_log_raw_prefix_for_causal_prefix(
+            &expected,
+            low,
+            expected_log.entries().len(),
+        ),
+        reproduced_first_different_event_prefix_len: event_log_raw_prefix_for_causal_prefix(
+            &reproduced,
+            low,
+            reproduced_log.entries().len(),
+        ),
+    }
 }
 
-fn event_log_prefixes_match(
-    expected_log: &RecordedAssertionLog,
-    reproduced_log: &RecordedAssertionLog,
-    prefix_len: usize,
+fn event_log_causal_projection(
+    entries: &[SchedulerEventLogEntry],
+) -> Vec<ProjectedCausalEventLogEntry<'_>> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(raw_index, entry)| {
+            (entry.class() == SchedulerEventLogClass::Causal)
+                .then_some(ProjectedCausalEventLogEntry { raw_index, entry })
+        })
+        .collect()
+}
+
+fn event_log_raw_prefix_for_causal_prefix(
+    projection: &[ProjectedCausalEventLogEntry<'_>],
+    causal_prefix_len: usize,
+    total_entries: usize,
+) -> usize {
+    if causal_prefix_len == 0 {
+        return 0;
+    }
+    projection
+        .get(causal_prefix_len - 1)
+        .map(|entry| entry.raw_prefix_len())
+        .unwrap_or_else(|| total_entries.saturating_add(1))
+}
+
+fn event_log_causal_projection_prefixes_match(
+    expected: &[ProjectedCausalEventLogEntry<'_>],
+    reproduced: &[ProjectedCausalEventLogEntry<'_>],
+    causal_prefix_len: usize,
 ) -> bool {
-    let Some(expected_entries) = expected_log.entries().get(..prefix_len) else {
+    let Some(expected_entries) = expected.get(..causal_prefix_len) else {
         return false;
     };
-    let Some(reproduced_entries) = reproduced_log.entries().get(..prefix_len) else {
+    let Some(reproduced_entries) = reproduced.get(..causal_prefix_len) else {
         return false;
     };
-    if expected_entries != reproduced_entries {
+    expected_entries
+        .iter()
+        .zip(reproduced_entries)
+        .all(|(expected, reproduced)| {
+            causal_event_log_entries_match(expected.entry, reproduced.entry)
+        })
+}
+
+fn event_log_causal_projections_match(
+    expected: &[SchedulerEventLogEntry],
+    reproduced: &[SchedulerEventLogEntry],
+) -> bool {
+    let expected = event_log_causal_projection(expected);
+    let reproduced = event_log_causal_projection(reproduced);
+    if expected.len() != reproduced.len() {
         return false;
     }
-    true
+    event_log_causal_projection_prefixes_match(&expected, &reproduced, expected.len())
+}
+
+fn causal_event_log_entries_match(
+    expected: &SchedulerEventLogEntry,
+    reproduced: &SchedulerEventLogEntry,
+) -> bool {
+    expected.class() == SchedulerEventLogClass::Causal
+        && reproduced.class() == SchedulerEventLogClass::Causal
+        && expected.at() == reproduced.at()
+        && expected.source() == reproduced.source()
+        && expected.event_payload() == reproduced.event_payload()
+        && expected.payload() == reproduced.payload()
 }
 
 fn assertion_replay_report_for_prefix(
@@ -3691,7 +3808,8 @@ fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
             | SchedulerEventLogPayload::Observable(_)
             | SchedulerEventLogPayload::EvaluationBoundary(_)
             | SchedulerEventLogPayload::TriggerFired(_)
-            | SchedulerEventLogPayload::TriggerActionApplied(_) => None,
+            | SchedulerEventLogPayload::TriggerActionApplied(_)
+            | SchedulerEventLogPayload::Diagnostic(_) => None,
         })
         .collect()
 }
@@ -3718,7 +3836,8 @@ fn event_icount(entry: Option<&SchedulerEventLogEntry>) -> Option<Icount> {
         SchedulerEventLogPayload::ResolvedHappening(_)
         | SchedulerEventLogPayload::Decision(_)
         | SchedulerEventLogPayload::TriggerFired(_)
-        | SchedulerEventLogPayload::TriggerActionApplied(_) => None,
+        | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::Diagnostic(_) => None,
     }
 }
 
@@ -4409,6 +4528,85 @@ fn external_scheduler_event_log_payload_material(payload: &SchedulerEventLogPayl
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             lines.push(String::from("payload=trigger-action-applied"));
             lines.push(external_trigger_action_application_material(application));
+        }
+        SchedulerEventLogPayload::Diagnostic(diagnostic) => {
+            lines.push(String::from("payload=diagnostic"));
+            lines.push(external_string_material(
+                "diagnostic.name",
+                &diagnostic.name,
+            ));
+            lines.push(format!(
+                "diagnostic.level={}",
+                external_event_level_label(diagnostic.level)
+            ));
+            lines.push(format!("diagnostic.details={}", diagnostic.details.len()));
+            for (index, (name, value)) in diagnostic.details.iter().enumerate() {
+                lines.push(external_string_material(
+                    &format!("diagnostic.detail.{index}.name"),
+                    name,
+                ));
+                lines.push(external_event_attribute_value_material(
+                    &format!("diagnostic.detail.{index}.value"),
+                    value,
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn external_event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
+    let mut lines = Vec::new();
+    match value {
+        EventAttributeValue::Bool(value) => {
+            lines.push(format!("{prefix}.type=bool"));
+            lines.push(format!("{prefix}.bool={value}"));
+        }
+        EventAttributeValue::U64(value) => {
+            lines.push(format!("{prefix}.type=u64"));
+            lines.push(format!("{prefix}.u64={value}"));
+        }
+        EventAttributeValue::String(value) => {
+            lines.push(format!("{prefix}.type=string"));
+            lines.push(external_string_material(&format!("{prefix}.string"), value));
+        }
+        EventAttributeValue::Bytes(value) => {
+            lines.push(format!("{prefix}.type=bytes"));
+            lines.push(format!("{prefix}.bytes_len={}", value.len()));
+            lines.push(format!("{prefix}.bytes={}", external_hex_bytes(value)));
+        }
+        EventAttributeValue::Node(value) => {
+            lines.push(format!("{prefix}.type=node"));
+            lines.push(external_node_id_material(&format!("{prefix}.node"), value));
+        }
+        EventAttributeValue::Event(value) => {
+            lines.push(format!("{prefix}.type=event"));
+            lines.push(external_event_id_material(
+                &format!("{prefix}.event"),
+                value,
+            ));
+        }
+        EventAttributeValue::Fault(value) => {
+            lines.push(format!("{prefix}.type=fault"));
+            lines.push(external_fault_id_material(
+                &format!("{prefix}.fault"),
+                value,
+            ));
+        }
+        EventAttributeValue::VirtualTime(value) => {
+            lines.push(format!("{prefix}.type=virtual-time"));
+            lines.push(format!("{prefix}.ticks={}", value.ticks));
+        }
+        EventAttributeValue::Icount(value) => {
+            lines.push(format!("{prefix}.type=icount"));
+            lines.push(format!("{prefix}.retired={}", value.retired));
+        }
+        EventAttributeValue::Level(value) => {
+            lines.push(format!("{prefix}.type=level"));
+            lines.push(format!(
+                "{prefix}.level={}",
+                external_event_level_label(*value)
+            ));
         }
     }
     lines.join("\n")
@@ -5136,6 +5334,16 @@ fn external_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
+fn external_event_level_label(level: EventLevel) -> &'static str {
+    match level {
+        EventLevel::Trace => "trace",
+        EventLevel::Debug => "debug",
+        EventLevel::Info => "info",
+        EventLevel::Warn => "warn",
+        EventLevel::Error => "error",
+    }
+}
+
 fn external_hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
@@ -5761,7 +5969,8 @@ fn push_observed_state_facts(
             | Decision::AppRandom(_),
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)
-        | SchedulerEventLogPayload::TriggerFired(_) => {}
+        | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::Diagnostic(_) => {}
     }
 }
 
@@ -8587,4 +8796,40 @@ fn combine_dependency_alternatives(
         }
     }
     combined
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::model::RngDecision;
+    use crate::scheduler::EventDiagnosticPayload;
+
+    #[test]
+    fn causal_projection_comparison_ignores_observational_entries() {
+        let causal = SchedulerEventLogEntry::with_payload_for_test(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("causal-projection"),
+                value: 11,
+            })),
+        );
+        let diagnostic = SchedulerEventLogEntry::with_payload_for_test(
+            1,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "executor.poll",
+                EventLevel::Warn,
+                BTreeMap::new(),
+            )),
+        );
+
+        let expected = vec![causal.clone()];
+        let reproduced = vec![diagnostic, causal];
+
+        assert_ne!(expected, reproduced);
+        assert!(event_log_causal_projections_match(&expected, &reproduced));
+    }
 }
