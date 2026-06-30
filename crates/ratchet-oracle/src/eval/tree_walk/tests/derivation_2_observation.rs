@@ -482,7 +482,7 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
         for input in entry.payload().inputs() {
             canaries.extend(durable_hash_surface_canaries(
                 "force trace identity BLAKE3",
-                input.identity().hash(),
+                input.identity().hash().as_durable_hash(),
             ));
             canaries.extend(durable_hash_surface_canaries(
                 "force trace observation BLAKE3",

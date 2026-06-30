@@ -7,7 +7,7 @@ fn cache_compact_node_traces_uses_advisory_trace_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let stale_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale value"));
@@ -63,9 +63,8 @@ fn cache_compact_node_traces_uses_advisory_trace_lock() {
 fn cache_node_traces_compacts_to_latest_entries() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let other_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let key = test_impure_input_node_key(b"input");
+    let other_key = test_impure_input_node_key(b"other input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let other_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"other value"));
@@ -120,9 +119,8 @@ fn cache_node_traces_compacts_to_latest_entries() {
 fn cache_node_materialization_reuse_records_and_looks_up_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let other_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let key = test_impure_input_node_key(b"input");
+    let other_key = test_impure_input_node_key(b"other input");
     let reuse = MaterializationReuse::new(2, 3);
 
     cache
@@ -159,7 +157,7 @@ fn cache_record_node_materialization_reuse_uses_advisory_metadata_lock() {
     let guard = cache
         .lock_node_metadata_for_tests()
         .expect("node metadata lock acquires");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let reuse = MaterializationReuse::new(2, 3);
     let worker_cache = cache.clone();
     let (tx, rx) = mpsc::channel();
@@ -198,7 +196,7 @@ fn cache_record_node_materialization_reuse_uses_advisory_metadata_lock() {
 fn cache_node_metadata_preserves_reuse_and_materialized_value_hash() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
 
     cache
@@ -250,7 +248,7 @@ fn cache_record_node_value_hash_uses_advisory_metadata_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let reuse = MaterializationReuse::new(2, 3);
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
 
@@ -297,7 +295,7 @@ fn cache_record_node_value_hash_uses_advisory_metadata_lock() {
 fn cache_node_metadata_clear_materialized_value_hash_preserves_reuse() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
 
     cache
@@ -347,7 +345,7 @@ fn cache_clear_node_value_hash_uses_advisory_metadata_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let reuse = MaterializationReuse::new(2, 3);
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
 
@@ -399,7 +397,7 @@ fn cache_clear_node_value_hash_uses_advisory_metadata_lock() {
 fn cache_node_current_demand_updates_latest_reuse_counters() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
 
     let first = cache
         .record_node_current_demand(key)
@@ -438,7 +436,7 @@ fn cache_node_current_demand_acquires_advisory_metadata_lock_before_same_process
     let guard = cache
         .lock_node_metadata_for_tests()
         .expect("node metadata lock acquires");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let worker_cache = cache.clone();
     let (tx, rx) = mpsc::channel();
 
@@ -478,7 +476,7 @@ fn cache_node_current_demand_acquires_advisory_metadata_lock_before_same_process
 fn cache_node_current_demand_serializes_independently_opened_same_root_handles() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let workers = 16usize;
     let barrier = Arc::new(Barrier::new(workers));
     let mut handles = Vec::new();
@@ -535,7 +533,7 @@ fn cache_node_metadata_reports_poisoned_same_root_lock() {
     });
     assert!(poisoner.join().is_err());
 
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let error = cache
         .record_node_current_demand(key)
         .expect_err("poisoned same-root metadata lock should reject writes");

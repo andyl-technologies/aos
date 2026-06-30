@@ -70,7 +70,7 @@ pub(crate) fn persistent_force_cache_surface_canaries(
         for input in entry.payload().inputs() {
             canaries.extend(durable_hash_surface_canaries(
                 "force trace identity BLAKE3",
-                input.identity().hash(),
+                input.identity().hash().as_durable_hash(),
             ));
             canaries.extend(durable_hash_surface_canaries(
                 "force trace observation BLAKE3",
@@ -157,7 +157,7 @@ fn add_impure_trace_surface_canaries(
         };
         canaries.extend(durable_hash_surface_canaries(
             "force trace identity BLAKE3",
-            input.identity().hash(),
+            input.identity().hash().as_durable_hash(),
         ));
         canaries.extend(durable_hash_surface_canaries(
             "force trace observation BLAKE3",

@@ -8,7 +8,7 @@ use ratchet_cache::node_metadata::{
     NodeMetadataEntry, NodeMetadataIndex, NodeMetadataKey, NodeMetadataValue,
 };
 use ratchet_oracle::cache::{
-    DurableBlake3Hash, MaterializationReuse, PersistNodeMetadataIndex,
+    DurableBlake3Hash, ImpureInputIdentityHash, MaterializationReuse, PersistNodeMetadataIndex,
     PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexError, PersistNodeMetadataIndexValue,
     PersistNodeMetadataKey, PersistPackFormatError, ValueHash,
 };
@@ -25,7 +25,9 @@ fn engine_value_from_oracle(value: PersistNodeMetadataIndexValue) -> NodeMetadat
 }
 
 fn oracle_key(name: &[u8]) -> PersistNodeMetadataKey {
-    PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(name))
+    PersistNodeMetadataKey::for_impure_input(ImpureInputIdentityHash::from_persisted_hash(
+        DurableBlake3Hash::for_bytes(name),
+    ))
 }
 
 fn oracle_value(previous: u64, current: u64, name: &[u8]) -> PersistNodeMetadataIndexValue {

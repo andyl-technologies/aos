@@ -622,7 +622,7 @@ fn persistent_force_cache_surface_canaries(persist_root: &Path) -> Result<Vec<(S
             for input in trace_entry.payload().inputs() {
                 canaries.extend(durable_hash_surface_canaries(
                     "forced expression trace identity BLAKE3",
-                    input.identity().hash(),
+                    input.identity().hash().as_durable_hash(),
                 ));
                 canaries.extend(durable_hash_surface_canaries(
                     "forced expression trace observation BLAKE3",

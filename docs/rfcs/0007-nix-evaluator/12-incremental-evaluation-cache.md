@@ -1596,12 +1596,28 @@ harness, never cut for scope.
       byte boundary, while `CacheableInputFingerprint::from_observation_hash`
       remains the explicit persisted-parts boundary for decoded traces and
       format fixtures. This type-enforces the current observation-hash corridor
-      only; impure-input identity hashes and the full internal-hash leak
-      invariant remain open. ([§5.2](#52-the-leak-invariant),
+      only; the full internal-hash leak invariant remains open.
+      ([§5.2](#52-the-leak-invariant),
       [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-15`; gate:
       `cache::input`, `cache::cutoff`, `cache::dcg::tests::impure_input`,
       `format_tests`, and test-target compile coverage for `ratchet-oracle`,
       `aos-nix`, and `aos-nix-harness`.
+- [x] Current impure-input identity hash boundary:
+      `ImpureInputIdentityHash` now marks domain-versioned impure-input
+      identity hashes over kind, mode, and subject bytes. `ImpureInputIdentity`
+      stores and returns this type, while `DemandCacheKey::for_impure_input`
+      and `PersistNodeMetadataKey::for_impure_input` require it before using
+      identity bytes in hot-key, confirmation-hash, or persistent metadata-key
+      preimages. Synthetic low-level persistence fixtures wrap arbitrary bytes
+      through an explicit test helper, and leak-canary scanners unwrap through
+      `ImpureInputIdentityHash::as_durable_hash()` only where they scan `.drv`
+      surfaces for raw internal BLAKE3 renderings. This type-enforces the
+      current impure-input identity corridor only; the full internal-hash leak
+      invariant remains open. ([§5.2](#52-the-leak-invariant),
+      [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-15`; gate:
+      `cache::input`, `cache::key`, `cache::dcg::tests::impure_input`,
+      `format_tests`, `node_metadata`, and test-target compile coverage for
+      `ratchet-oracle`, `aos-nix`, and `aos-nix-harness`.
 - [x] Current native forced-expression sidecar leak/bypass canaries: `native_instantiation_expr_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` and `native_file_instantiation_force_cache_sidecar_hashes_do_not_leak_into_drv_closure` drive raw-expression and file-root attr-path `NixNative` instantiation through cache-off, persistent demand observation, durable forced-value materialization, and a fresh-runtime persistent pass for a configured `currentSystem` thunk. The cache-off leak legs require zero aggregate evaluator cache hit/miss counters, zero force-cache hit/miss counters, zero force-cache memoization-decision counters, zero force-cache materialization threshold-decision counters, zero early cutoffs, and zero derivation final-path/static-output side-record reuse. The final fresh-runtime passes must report force-cache hits, and the canary scanner only admits persistent node metadata entries whose linked value loads through the cached-expression payload decoder. They then scan the resulting `.drv` path and ATerm closure surfaces for forced-expression node metadata BLAKE3 addresses, materialized value BLAKE3 addresses, trace-side BLAKE3 addresses when present, and a representative context-free `NixString` xxh3 hot-hash sentinel. `native_instantiation_expr_disabled_cache_bypasses_persistent_force_sidecar_effects` and `native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_effects` seed real persistent forced-expression payloads, then rerun the same raw-expression and file-root closures with eval-cache disabled and the same persistent root configured, requiring byte-identical closure output, the same zero incremental-cache stats contract, unchanged latest logical node metadata and trace entries, and no sidecar hash leak into the disabled closures. The raw-expression canary additionally requires byte-identical persistent cache file contents; the file-root canary requires byte-identical force-cache node/value sidecar contents while leaving file-root parse artifact persistence to the separate frontend cache gates. This extends the current native closure safety net to forced-expression persistent sidecars and populated-root disabled-cache side-effect bypasses on both native source entry shapes; it is not syscall-level no-read instrumentation, the full cache-off AOS closure harness, full internal-hash leak invariant, or future value-memoization safety net. ([§5.2](#52-the-leak-invariant), [§8.3](#83-correctness-anxiety-and-the-safety-net)) — P1/P2, `S-14`/`S-15`; gate: focused native force-cache sidecar leak/bypass canaries.
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

@@ -20,10 +20,11 @@ use super::parse::{
 };
 use super::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue,
-    CachedExpressionValuePayloadError, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputKind,
-    ImpureInputMode, ImpureInputRevalidator, InputFingerprintError, MaterializationCosts,
-    MaterializationDecision, MaterializationReuse, MaterializationSignals, ParseFileContentHash,
-    PersistFileBlobHash, UncacheableInput, ValueHash, ValueHashError,
+    CachedExpressionValuePayloadError, DurableBlake3Hash, ImpureInputFingerprint,
+    ImpureInputIdentityHash, ImpureInputKind, ImpureInputMode, ImpureInputRevalidator,
+    InputFingerprintError, MaterializationCosts, MaterializationDecision, MaterializationReuse,
+    MaterializationSignals, ParseFileContentHash, PersistFileBlobHash, UncacheableInput, ValueHash,
+    ValueHashError,
 };
 
 /// The persistent eval-cache schema format marker.

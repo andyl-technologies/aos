@@ -42,7 +42,8 @@ impl PersistNodeMetadataKey {
     }
 
     /// Creates a persistent metadata key for an impure-input leaf node.
-    pub fn for_impure_input(identity_hash: DurableBlake3Hash) -> Self {
+    pub fn for_impure_input(identity_hash: ImpureInputIdentityHash) -> Self {
+        let identity_hash = identity_hash.as_durable_hash();
         let mut hasher = blake3::Hasher::new();
         hasher.update(PERSIST_NODE_METADATA_IMPURE_INPUT_KEY_PERSONALIZATION);
         hasher.update(&identity_hash.as_bytes());

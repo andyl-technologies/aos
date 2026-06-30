@@ -38,14 +38,16 @@ fn node_metadata_index_keys_cover_expression_identity_and_free_vars() {
 
 #[test]
 fn node_metadata_index_keys_cover_impure_input_identities() {
-    let identity = DurableBlake3Hash::for_bytes(b"input identity");
-    let other_identity = DurableBlake3Hash::for_bytes(b"other input identity");
+    let identity = test_impure_input_identity_hash(b"input identity");
+    let other_identity = test_impure_input_identity_hash(b"other input identity");
     let key = PersistNodeMetadataKey::for_impure_input(identity);
     let same_key = PersistNodeMetadataKey::for_impure_input(identity);
     let other_key = PersistNodeMetadataKey::for_impure_input(other_identity);
     let expression_key = PersistNodeMetadataKey::for_expression(
-        CacheExprIdentity::new(identity, crate::compile::IrId::new(0)),
-        [ValueHash::from_canonical_value_hash(identity)],
+        CacheExprIdentity::new(identity.as_durable_hash(), crate::compile::IrId::new(0)),
+        [ValueHash::from_canonical_value_hash(
+            identity.as_durable_hash(),
+        )],
     );
 
     assert_eq!(key, same_key);
@@ -56,7 +58,7 @@ fn node_metadata_index_keys_cover_impure_input_identities() {
 
 #[test]
 fn node_metadata_index_keys_decode_and_reject_invalid_prefixes() {
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let mut encoded = key.index_bytes().to_vec();
     encoded.extend_from_slice(b"trailing index bytes");
 
@@ -158,7 +160,7 @@ fn node_metadata_index_values_reject_malformed_value_hash_field() {
 
 #[test]
 fn node_metadata_index_entries_round_trip_key_value_records() {
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value = PersistNodeMetadataIndexValue::with_materialized_value_hash(
         MaterializationReuse::new(2, 3),
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value")),
@@ -192,7 +194,7 @@ fn node_metadata_index_entries_reject_invalid_prefixes() {
         }
     );
 
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
     let entry = PersistNodeMetadataIndexEntry::new(key, value);
 
@@ -211,9 +213,8 @@ fn node_metadata_index_appends_and_finds_latest_matching_entry() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");
     let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let other_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let key = test_impure_input_node_key(b"input");
+    let other_key = test_impure_input_node_key(b"other input");
     let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
     let other = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
     let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
@@ -252,8 +253,8 @@ fn node_metadata_index_lists_latest_entries_in_key_order() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");
     let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
-    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
-    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_key = test_impure_input_node_key(b"a");
+    let second_key = test_impure_input_node_key(b"b");
     let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
     let second = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
     let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
@@ -287,8 +288,8 @@ fn node_metadata_index_compacts_to_latest_entries() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");
     let index = PersistNodeMetadataIndex::open(&index_path).expect("index opens");
-    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
-    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_key = test_impure_input_node_key(b"a");
+    let second_key = test_impure_input_node_key(b"b");
     let first = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(1, 2));
     let stale = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(3, 4));
     let latest = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(5, 6));
@@ -344,7 +345,7 @@ fn node_metadata_index_open_rejects_truncated_records() {
 fn node_metadata_index_lookup_rejects_malformed_records() {
     let root = temp_root();
     let index_path = root.join("nodes").join("metadata.index");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value = PersistNodeMetadataIndexValue::new(MaterializationReuse::new(2, 3));
     let mut encoded = PersistNodeMetadataIndexEntry::new(key, value).encode_index_entry();
     encoded[0] = 99;

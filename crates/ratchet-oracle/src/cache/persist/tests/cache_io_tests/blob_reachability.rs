@@ -80,9 +80,8 @@ fn cache_value_blob_reachability_plan_acquires_node_metadata_advisory_lock() {
 fn cache_value_blob_reachability_plan_classifies_value_records() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
-    let missing_node_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing node"));
+    let node_key = test_impure_input_node_key(b"node");
+    let missing_node_key = test_impure_input_node_key(b"missing node");
     let node_payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let node_value_hash = node_payload.value_hash().expect("payload hashes");
     let node_result = cache

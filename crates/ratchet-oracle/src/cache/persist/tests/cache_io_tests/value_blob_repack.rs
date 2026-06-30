@@ -407,7 +407,7 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted prefix appends");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_key = test_impure_input_node_key(b"node");
     let node_payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let node_value_hash = node_payload.value_hash().expect("payload hashes");
     let node_materialized = cache

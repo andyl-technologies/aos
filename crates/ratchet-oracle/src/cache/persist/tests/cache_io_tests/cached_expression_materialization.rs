@@ -487,7 +487,7 @@ fn cache_positioned_attrs_payload_materializes_and_loads_by_value_hash() {
 fn cache_cached_expression_node_payload_materialization_can_skip_without_writing() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_key = test_impure_input_node_key(b"node");
     let payload = CachedExpressionValue::context_free_string(b"cached string".to_vec());
 
     let result = cache
@@ -525,7 +525,7 @@ fn cache_cached_expression_node_payload_materialization_can_skip_without_writing
 fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_key = test_impure_input_node_key(b"node");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
 
@@ -565,11 +565,9 @@ fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
 fn cache_cached_expression_node_payload_borrowed_load_visits_decoded_value_under_scoped_mapping() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
-    let missing =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing"));
-    let reuse_only =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"reuse-only"));
+    let node_key = test_impure_input_node_key(b"node");
+    let missing = test_impure_input_node_key(b"missing");
+    let reuse_only = test_impure_input_node_key(b"reuse-only");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
     let value_store_lock_path = cache
@@ -726,11 +724,9 @@ fn cache_node_value_root_plan_acquires_node_metadata_advisory_lock() {
 fn cache_node_value_root_plan_resolves_latest_metadata_links() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
-    let missing_node_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing node"));
-    let reuse_only_node_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"reuse-only node"));
+    let node_key = test_impure_input_node_key(b"node");
+    let missing_node_key = test_impure_input_node_key(b"missing node");
+    let reuse_only_node_key = test_impure_input_node_key(b"reuse-only node");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
     let missing_value_hash =
@@ -786,7 +782,7 @@ fn cache_node_value_root_plan_resolves_latest_metadata_links() {
 fn cache_node_value_root_plan_rejects_corrupt_indexed_value_blob() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let node_key = test_impure_input_node_key(b"node");
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let result = cache
         .materialize_cached_expression_node_value_indexed(

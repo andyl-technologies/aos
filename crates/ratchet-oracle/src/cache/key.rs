@@ -12,7 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::{
     ValueHash,
-    hashing::{DurableBlake3Hash, HotXxh3Hash},
+    hashing::{DurableBlake3Hash, HotXxh3Hash, ImpureInputIdentityHash},
 };
 use crate::compile::IrId;
 
@@ -80,7 +80,8 @@ impl DemandCacheKey {
     /// This key domain is distinct from expression/free-variable keys. The
     /// caller supplies the typed identity hash from `cache::input`; the
     /// observed input result belongs in the node value hash, not in the key.
-    pub fn for_impure_input(identity_hash: DurableBlake3Hash) -> Self {
+    pub fn for_impure_input(identity_hash: ImpureInputIdentityHash) -> Self {
+        let identity_hash = identity_hash.as_durable_hash();
         let mut hasher = Xxh3::new();
         hasher.write(IMPURE_INPUT_KEY_DOMAIN_VERSION);
         hasher.write(&identity_hash.as_bytes());
@@ -192,6 +193,10 @@ mod tests {
         DurableBlake3Hash::for_bytes(bytes)
     }
 
+    fn input_identity_hash(bytes: &[u8]) -> ImpureInputIdentityHash {
+        ImpureInputIdentityHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
     fn identity(node: u32) -> CacheExprIdentity {
         CacheExprIdentity::new(source(b"source"), IrId::new(node))
     }
@@ -203,7 +208,8 @@ mod tests {
     #[test]
     fn impure_input_keys_are_domain_separated_from_expression_keys() {
         let hash = source(b"same durable bytes");
-        let input_key = DemandCacheKey::for_impure_input(hash);
+        let input_key =
+            DemandCacheKey::for_impure_input(ImpureInputIdentityHash::from_persisted_hash(hash));
         let expression_key = DemandCacheKey::for_free_vars(
             CacheExprIdentity::new(hash, IrId::new(0)),
             [ValueHash::from_canonical_value_hash(hash)],
@@ -215,8 +221,8 @@ mod tests {
 
     #[test]
     fn impure_input_identity_changes_key() {
-        let first = DemandCacheKey::for_impure_input(source(b"input one"));
-        let second = DemandCacheKey::for_impure_input(source(b"input two"));
+        let first = DemandCacheKey::for_impure_input(input_identity_hash(b"input one"));
+        let second = DemandCacheKey::for_impure_input(input_identity_hash(b"input two"));
 
         assert_ne!(first, second);
     }

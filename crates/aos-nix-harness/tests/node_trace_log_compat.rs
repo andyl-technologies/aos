@@ -8,8 +8,8 @@ use ratchet_cache::node_trace_log::{
     NodeTraceLog, NodeTraceLogEntry, NodeTraceLogKey, NodeTraceLogValueHash,
 };
 use ratchet_oracle::cache::{
-    CacheableInputFingerprint, DurableBlake3Hash, ImpureInputKind, ImpureInputMode,
-    PersistNodeMetadataKey, PersistNodeTraceLog, PersistNodeTraceLogEntry,
+    CacheableInputFingerprint, DurableBlake3Hash, ImpureInputIdentityHash, ImpureInputKind,
+    ImpureInputMode, PersistNodeMetadataKey, PersistNodeTraceLog, PersistNodeTraceLogEntry,
     PersistNodeTraceLogError, PersistNodeTraceLogFormatError, PersistNodeTracePayload,
     PersistPackFormatError, ValueHash,
 };
@@ -26,7 +26,9 @@ fn engine_value_hash_from_oracle(value_hash: ValueHash) -> NodeTraceLogValueHash
 }
 
 fn oracle_key(name: &[u8]) -> PersistNodeMetadataKey {
-    PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(name))
+    PersistNodeMetadataKey::for_impure_input(ImpureInputIdentityHash::from_persisted_hash(
+        DurableBlake3Hash::for_bytes(name),
+    ))
 }
 
 fn oracle_value_hash(name: &[u8]) -> ValueHash {

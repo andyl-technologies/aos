@@ -1489,7 +1489,7 @@ fn extend_impure_input_canaries(
     };
     canaries.extend(durable_hash_surface_canaries(
         &format!("{label} identity BLAKE3"),
-        cacheable.identity().hash(),
+        cacheable.identity().hash().as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         &format!("{label} observation BLAKE3"),

@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::cache::{
-    CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputKind,
-    InputFingerprintError,
+    CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputIdentityHash,
+    ImpureInputKind, InputFingerprintError,
 };
 
 mod blob_index;
@@ -43,13 +43,17 @@ fn test_node_trace_dependency_keys() -> [PersistNodeMetadataKey; 3] {
                 )),
             ],
         ),
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(
-            b"first impure input",
-        )),
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(
-            b"second impure input",
-        )),
+        test_impure_input_node_key(b"first impure input"),
+        test_impure_input_node_key(b"second impure input"),
     ]
+}
+
+fn test_impure_input_identity_hash(label: &[u8]) -> ImpureInputIdentityHash {
+    ImpureInputIdentityHash::from_persisted_hash(DurableBlake3Hash::for_bytes(label))
+}
+
+fn test_impure_input_node_key(label: &[u8]) -> PersistNodeMetadataKey {
+    PersistNodeMetadataKey::for_impure_input(test_impure_input_identity_hash(label))
 }
 
 #[test]
@@ -183,8 +187,7 @@ fn node_trace_payload_tombstone_uses_stable_wire_bytes() {
         PersistNodeTracePayloadError::InputCountOverflow { count: u64::MAX }
     );
 
-    let dependency =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let dependency = test_impure_input_node_key(b"dependency");
     let tombstone_with_dependency = PersistNodeTracePayload::tombstone()
         .with_memo_read_dependencies([dependency])
         .expect("tombstone dependency list clears");
@@ -551,8 +554,7 @@ fn node_trace_payload_rejects_malformed_dependency_records() {
         }
     );
 
-    let dependency_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let dependency_key = test_impure_input_node_key(b"dependency");
     let mut invalid_dependency_value_tag = Vec::new();
     invalid_dependency_value_tag.extend_from_slice(b"AOS-NIX-NTRACE01");
     invalid_dependency_value_tag.extend_from_slice(&5u32.to_le_bytes());
@@ -600,9 +602,8 @@ fn node_trace_log_appends_and_finds_latest_matching_entry() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let other_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"other input"));
+    let key = test_impure_input_node_key(b"input");
+    let other_key = test_impure_input_node_key(b"other input");
     let first_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
     let other_value_hash =
@@ -670,8 +671,8 @@ fn node_trace_log_lists_latest_entries_in_key_order() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
-    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
-    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_key = test_impure_input_node_key(b"a");
+    let second_key = test_impure_input_node_key(b"b");
     let first_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
     let stale_value_hash =
@@ -728,8 +729,8 @@ fn node_trace_log_compacts_to_latest_entries() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
-    let first_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"a"));
-    let second_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"b"));
+    let first_key = test_impure_input_node_key(b"a");
+    let second_key = test_impure_input_node_key(b"b");
     let first_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"first value"));
     let stale_value_hash =
@@ -794,9 +795,8 @@ fn node_trace_log_compaction_truncates_stale_temp_file() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
     let log = PersistNodeTraceLog::open(&log_path).expect("trace log opens");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
-    let stale_temp_key =
-        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"stale temp"));
+    let key = test_impure_input_node_key(b"input");
+    let stale_temp_key = test_impure_input_node_key(b"stale temp");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let stale_temp_value_hash =
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"stale temp value"));
@@ -866,7 +866,7 @@ fn node_trace_log_open_rejects_truncated_record_header() {
 fn node_trace_log_open_rejects_truncated_record_payload() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&key.index_bytes());
@@ -897,7 +897,7 @@ fn node_trace_log_open_rejects_truncated_record_payload() {
 fn node_trace_log_open_rejects_malformed_record_payload() {
     let root = temp_root();
     let log_path = root.join("nodes").join("traces.log");
-    let key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"input"));
+    let key = test_impure_input_node_key(b"input");
     let value_hash = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"value"));
     let payload = b"not-a-node-trace-payload-with-enough-bytes";
     let mut encoded = Vec::new();

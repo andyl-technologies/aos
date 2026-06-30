@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use thiserror::Error;
 
-use super::{DurableBlake3Hash, ImpureInputObservationHash};
+use super::{DurableBlake3Hash, ImpureInputIdentityHash, ImpureInputObservationHash};
 
 const IDENTITY_DOMAIN: &[u8] = b"aos-nix-input-identity-v1";
 const IMPORT_OBSERVATION_DOMAIN: &[u8] = b"aos-nix-input-import-observation-v1";
@@ -296,7 +296,7 @@ pub struct ImpureInputIdentity {
     kind: ImpureInputKind,
     mode: ImpureInputMode,
     subject: Vec<u8>,
-    hash: DurableBlake3Hash,
+    hash: ImpureInputIdentityHash,
 }
 
 impl ImpureInputIdentity {
@@ -313,7 +313,7 @@ impl ImpureInputIdentity {
             kind,
             mode,
             subject: copy_subject(subject)?,
-            hash: hasher.finalize(),
+            hash: ImpureInputIdentityHash::from_durable_hash(hasher.finalize()),
         })
     }
 
@@ -332,8 +332,8 @@ impl ImpureInputIdentity {
         &self.subject
     }
 
-    /// Returns the durable hash of the typed identity.
-    pub const fn hash(&self) -> DurableBlake3Hash {
+    /// Returns the typed durable hash of this input identity.
+    pub const fn hash(&self) -> ImpureInputIdentityHash {
         self.hash
     }
 }

@@ -1859,10 +1859,25 @@ alone (`M-1`/`Q-A`).
       byte boundary, while `CacheableInputFingerprint::from_observation_hash`
       remains the explicit persisted-parts boundary for decoded traces and
       format fixtures. This type-enforces the current observation-hash corridor
-      only; impure-input identity hashes and the full differential
-      leak-invariant harness remain open (`S-15`). Gate:
+      only; the full differential leak-invariant harness remains open (`S-15`).
+      Gate:
       `cache::input`, `cache::cutoff`, `cache::dcg::tests::impure_input`,
       `format_tests`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+      test-target compile coverage.
+- [x] Current impure-input identity hash boundary:
+      `ImpureInputIdentityHash` now marks domain-versioned impure-input
+      identity hashes over kind, mode, and subject bytes. `ImpureInputIdentity`
+      stores and returns this type, while `DemandCacheKey::for_impure_input`
+      and `PersistNodeMetadataKey::for_impure_input` require it before using
+      identity bytes in hot-key, confirmation-hash, or persistent metadata-key
+      preimages. Synthetic low-level persistence fixtures wrap arbitrary bytes
+      through explicit test helpers, and leak-canary scanners unwrap through
+      `ImpureInputIdentityHash::as_durable_hash()` only where they scan `.drv`
+      surfaces for raw internal BLAKE3 renderings. This type-enforces the
+      current impure-input identity corridor only; the full differential
+      leak-invariant harness remains open (`S-15`). Gate: `cache::input`,
+      `cache::key`, `cache::dcg::tests::impure_input`, `format_tests`,
+      `node_metadata`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
       test-target compile coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
@@ -4339,9 +4354,24 @@ alone (`M-1`/`Q-A`).
       byte boundary, while `CacheableInputFingerprint::from_observation_hash`
       remains the explicit persisted-parts boundary for decoded traces and
       format fixtures. This type-enforces the current observation-hash corridor
-      only; impure-input identity hashes and the full internal-hash leak
-      invariant remain open. Gate: `cache::input`, `cache::cutoff`,
+      only; the full internal-hash leak invariant remains open. Gate:
+      `cache::input`, `cache::cutoff`,
       `cache::dcg::tests::impure_input`, `format_tests`, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current impure-input identity hash boundary:
+      `ImpureInputIdentityHash` now marks domain-versioned impure-input
+      identity hashes over kind, mode, and subject bytes. `ImpureInputIdentity`
+      stores and returns this type, while `DemandCacheKey::for_impure_input`
+      and `PersistNodeMetadataKey::for_impure_input` require it before using
+      identity bytes in hot-key, confirmation-hash, or persistent metadata-key
+      preimages. Synthetic low-level persistence fixtures wrap arbitrary bytes
+      through explicit test helpers, and leak-canary scanners unwrap through
+      `ImpureInputIdentityHash::as_durable_hash()` only where they scan `.drv`
+      surfaces for raw internal BLAKE3 renderings. This type-enforces the
+      current impure-input identity corridor only; the full internal-hash leak
+      invariant remains open. Gate: `cache::input`, `cache::key`,
+      `cache::dcg::tests::impure_input`, `format_tests`, `node_metadata`, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
