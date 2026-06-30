@@ -53,7 +53,7 @@ impl TreeWalk {
             None => {
                 hasher.update(b"lowered-ir-v1");
                 let ir_hash = lowered_ir_fingerprint(&module.ir).ok()?;
-                let ir_hash_bytes = ir_hash.as_bytes();
+                let ir_hash_bytes = ir_hash.as_durable_hash().as_bytes();
                 Self::update_cache_identity_chunk(hasher, &ir_hash_bytes)?;
             }
         }

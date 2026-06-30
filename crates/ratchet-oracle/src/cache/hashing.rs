@@ -8,6 +8,7 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
+//! LoweredIrFingerprint -> lowered-IR artifact/source-less module identities
 //! ParseFileContentHash -> parse-file realpath/content memo keys
 //! PersistFileBlobHash -> persisted `files/` blob payload addresses
 //! NixSha256Digest    -> Nix-observed store path and `.drv` hash bytes
@@ -91,6 +92,26 @@ impl DurableBlake3Hash {
 impl fmt::Display for DurableBlake3Hash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
+    }
+}
+
+/// A durable BLAKE3 fingerprint for serialized lowered-IR artifacts.
+///
+/// This type separates source-independent module identities and `facts.bin`
+/// validation from parse-cache source keys, file-content memo keys, persisted
+/// blob addresses, value hashes, and Nix-observed hash surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LoweredIrFingerprint(DurableBlake3Hash);
+
+impl LoweredIrFingerprint {
+    /// Wraps a digest computed in the lowered-IR artifact fingerprint domain.
+    pub(in crate::cache) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
     }
 }
 
@@ -208,6 +229,14 @@ mod tests {
 
         assert_eq!(file_hash.as_durable_hash(), durable);
         assert_eq!(PersistFileBlobHash::from_durable_hash(durable), file_hash);
+    }
+
+    #[test]
+    fn lowered_ir_fingerprint_wraps_artifact_hashes() {
+        let durable = DurableBlake3Hash::for_bytes(b"serialized lowered ir");
+        let fingerprint = LoweredIrFingerprint::from_durable_hash(durable);
+
+        assert_eq!(fingerprint.as_durable_hash(), durable);
     }
 
     #[test]

@@ -1820,10 +1820,21 @@ alone (`M-1`/`Q-A`).
       unwrap with `ParseFileContentHash::as_durable_hash()` only where they scan
       `.drv` surfaces for raw internal BLAKE3 renderings. This type-enforces the
       current parse-file realpath/content memo corridor only; `ParseCacheKey`
-      source keys, lowered-IR fingerprints, full cache-value hashing, and the
-      full differential leak-invariant harness remain open (`S-15`). Gate:
+      source keys, full cache-value hashing, and the full differential
+      leak-invariant harness remain open (`S-15`). Gate:
       `parse_file_content_hash_wraps_source_bytes`, `cache::parse`,
       `format_tests`, and `ratchet-oracle` test-target compile coverage.
+- [x] Current lowered-IR artifact fingerprint hash boundary:
+      `LoweredIrFingerprint` now marks the stable `ir.bin`/`symbols.bin`
+      artifact digest used for source-less module identities and optional
+      `facts.bin` sidecar validation. `lowered_ir_fingerprint`,
+      `lowered_ir_artifact_fingerprint`, `encode_ir_facts`, and
+      `decode_ir_facts` traffic in that type, unwrapping only when framing the
+      fact artifact bytes or feeding the source-less module identity hasher.
+      This type-enforces the current lowered-IR artifact fingerprint corridor
+      only; `ParseCacheKey` source keys, full cache-value hashing, and the full
+      differential leak-invariant harness remain open (`S-15`). Gate:
+      `lowered_ir` tests and `ratchet-oracle` test-target compile coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4258,10 +4269,22 @@ alone (`M-1`/`Q-A`).
       unwrap with `ParseFileContentHash::as_durable_hash()` only where they scan
       `.drv` surfaces for raw internal BLAKE3 renderings. This type-enforces the
       current parse-file realpath/content memo corridor only; `ParseCacheKey`
-      source keys, lowered-IR fingerprints, full cache-value hashing, and the
-      full internal-hash leak invariant remain open. Gate:
+      source keys, full cache-value hashing, and the full internal-hash leak
+      invariant remain open. Gate:
       `parse_file_content_hash_wraps_source_bytes`, `cache::parse`,
       `format_tests`, and `ratchet-oracle` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current lowered-IR artifact fingerprint hash boundary:
+      `LoweredIrFingerprint` now marks the stable `ir.bin`/`symbols.bin`
+      artifact digest used for source-less module identities and optional
+      `facts.bin` sidecar validation. `lowered_ir_fingerprint`,
+      `lowered_ir_artifact_fingerprint`, `encode_ir_facts`, and
+      `decode_ir_facts` traffic in that type, unwrapping only when framing the
+      fact artifact bytes or feeding the source-less module identity hasher.
+      This type-enforces the current lowered-IR artifact fingerprint corridor
+      only; `ParseCacheKey` source keys, full cache-value hashing, and the full
+      internal-hash leak invariant remain open. Gate: `lowered_ir` tests and
+      `ratchet-oracle` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

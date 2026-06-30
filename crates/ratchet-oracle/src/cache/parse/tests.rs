@@ -33,6 +33,10 @@ fn cache_temp_files(entry: &ParseCacheEntry) -> Vec<PathBuf> {
         .collect()
 }
 
+fn test_lowered_ir_fingerprint(source: &[u8]) -> LoweredIrFingerprint {
+    LoweredIrFingerprint::from_durable_hash(DurableBlake3Hash::for_bytes(source))
+}
+
 fn resolved_single_symbol(symbols: SymbolTable, symbol: Symbol) -> ResolvedAst {
     ResolvedAst {
         root: NodeId::new(0),
@@ -156,7 +160,7 @@ fn lowered_ir_matcher_ignores_non_serialized_fact_table() {
 #[test]
 fn lowered_ir_fact_artifacts_roundtrip() {
     let mut facts = IrFacts::conservative(2);
-    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
     let expected = ExprFacts {
         strictness: Strictness::Strict,
         cardinality: Cardinality::Once,
@@ -174,7 +178,7 @@ fn lowered_ir_fact_artifacts_roundtrip() {
 #[test]
 fn lowered_ir_fact_artifacts_reject_count_mismatch() {
     let facts = IrFacts::conservative(1);
-    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
     let encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
     let error = decode_ir_facts(&encoded, 2, fingerprint).expect_err("mismatched count errors");
 
@@ -184,7 +188,7 @@ fn lowered_ir_fact_artifacts_reject_count_mismatch() {
 #[test]
 fn lowered_ir_fact_artifacts_reject_invalid_tags() {
     let facts = IrFacts::conservative(1);
-    let fingerprint = DurableBlake3Hash::for_bytes(b"fact-artifact-test");
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
     let mut encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
     encoded[FACTS_MAGIC.len() + 4 + 32 + 4] = 99;
 
@@ -196,10 +200,10 @@ fn lowered_ir_fact_artifacts_reject_invalid_tags() {
 #[test]
 fn lowered_ir_fact_artifacts_reject_fingerprint_mismatch() {
     let facts = IrFacts::conservative(1);
-    let encoded = encode_ir_facts(&facts, DurableBlake3Hash::for_bytes(b"old-ir"))
+    let encoded = encode_ir_facts(&facts, test_lowered_ir_fingerprint(b"old-ir"))
         .expect("fact artifact encodes");
 
-    let error = decode_ir_facts(&encoded, 1, DurableBlake3Hash::for_bytes(b"new-ir"))
+    let error = decode_ir_facts(&encoded, 1, test_lowered_ir_fingerprint(b"new-ir"))
         .expect_err("mismatched fingerprint errors");
 
     assert!(error.contains("fingerprint"), "{error}");

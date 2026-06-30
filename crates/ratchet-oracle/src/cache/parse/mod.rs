@@ -28,7 +28,7 @@ use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
-use crate::cache::{DurableBlake3Hash, ParseFileContentHash};
+use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
     Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
     InheritResolution, InheritSource, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
@@ -128,19 +128,19 @@ impl fmt::Display for ParseCacheKey {
 ///
 /// Returns [`ParseCacheError`] if the lowered IR or symbol-table artifact cannot
 /// be encoded.
-pub fn lowered_ir_fingerprint(ir: &Ir) -> Result<DurableBlake3Hash, ParseCacheError> {
+pub fn lowered_ir_fingerprint(ir: &Ir) -> Result<LoweredIrFingerprint, ParseCacheError> {
     let ir_bytes = encode_lowered_ir(ir)?;
     let symbol_bytes = encode_symbols(&ir.symbols)?;
     Ok(lowered_ir_artifact_fingerprint(&ir_bytes, &symbol_bytes))
 }
 
-fn lowered_ir_artifact_fingerprint(ir_bytes: &[u8], symbol_bytes: &[u8]) -> DurableBlake3Hash {
+fn lowered_ir_artifact_fingerprint(ir_bytes: &[u8], symbol_bytes: &[u8]) -> LoweredIrFingerprint {
     let mut hasher = blake3::Hasher::new();
     hasher.update(LOWERED_IR_FINGERPRINT_DOMAIN);
     hasher.update(&PARSE_CACHE_SCHEMA_VERSION.to_le_bytes());
     update_fingerprint_chunk(&mut hasher, &ir_bytes);
     update_fingerprint_chunk(&mut hasher, &symbol_bytes);
-    DurableBlake3Hash::from_hasher(hasher)
+    LoweredIrFingerprint::from_durable_hash(DurableBlake3Hash::from_hasher(hasher))
 }
 
 fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {

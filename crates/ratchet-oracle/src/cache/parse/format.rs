@@ -227,12 +227,12 @@ pub(super) fn encode_lowered_ir(ir: &Ir) -> Result<Vec<u8>, ParseCacheError> {
 
 pub(super) fn encode_ir_facts(
     facts: &IrFacts,
-    ir_fingerprint: DurableBlake3Hash,
+    ir_fingerprint: LoweredIrFingerprint,
 ) -> Result<Vec<u8>, ParseCacheError> {
     let mut out = Vec::new();
     out.extend_from_slice(FACTS_MAGIC);
     write_u32(&mut out, ARTIFACT_VERSION);
-    out.extend_from_slice(&ir_fingerprint.as_bytes());
+    out.extend_from_slice(&ir_fingerprint.as_durable_hash().as_bytes());
     write_len(&mut out, facts.len(), "IR fact count")?;
     for fact in facts.as_slice() {
         encode_expr_facts(&mut out, *fact);
@@ -243,7 +243,7 @@ pub(super) fn encode_ir_facts(
 pub(super) fn decode_ir_facts(
     bytes: &[u8],
     expected_node_count: usize,
-    expected_ir_fingerprint: DurableBlake3Hash,
+    expected_ir_fingerprint: LoweredIrFingerprint,
 ) -> Result<IrFacts, String> {
     let mut reader = BinaryReader::new(bytes);
     reader.expect_magic(FACTS_MAGIC)?;
@@ -252,7 +252,7 @@ pub(super) fn decode_ir_facts(
         return Err(format!("unsupported IR facts artifact version {version}"));
     }
     let actual_ir_fingerprint = reader.read_array::<32>()?;
-    if actual_ir_fingerprint != expected_ir_fingerprint.as_bytes() {
+    if actual_ir_fingerprint != expected_ir_fingerprint.as_durable_hash().as_bytes() {
         return Err("IR facts artifact fingerprint does not match lowered IR artifact".to_owned());
     }
     let fact_count = reader.read_len("IR fact count")?;
