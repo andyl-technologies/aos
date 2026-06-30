@@ -60,6 +60,71 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[test]
+fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root()?;
+    let protocol_lib = fs::read_to_string(root.join("crates/crucible-protocol/src/lib.rs"))?;
+    let protocol_doorbell =
+        fs::read_to_string(root.join("crates/crucible-protocol/src/doorbell_abi.rs"))?;
+    let plugin_lib = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/lib.rs"))?;
+    let plugin_whitebox =
+        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
+    let guest_lib = fs::read_to_string(root.join("crates/crucible-guest/src/lib.rs"))?;
+    let phase_check =
+        fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
+    let guest_host_spec =
+        fs::read_to_string(root.join("docs/rfcs/0010-crucible/16-guest-host-channel.md"))?;
+
+    assert_contains(&protocol_lib, "mod doorbell_abi;");
+    assert_contains(&protocol_lib, "WhiteboxDoorbellTrapAbi");
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 1;",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_X86_64_RESERVED_PORT: u16 = 0x00e7;",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE: u16 = 0x04c1;",
+    );
+    assert_contains(&protocol_doorbell, "WhiteboxDoorbellTrapAbi::Aarch64Hlt");
+    assert_contains(
+        &protocol_doorbell,
+        "doorbell_abi_x86_64_vector_freezes_out_dx_eax",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "doorbell_abi_aarch64_vector_freezes_hlt_immediate",
+    );
+
+    assert_contains(&plugin_lib, "WHITEBOX_DOORBELL_ABIS");
+    assert_contains(&plugin_whitebox, "pub use crucible_protocol");
+    assert_contains(
+        &plugin_whitebox,
+        "pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi)",
+    );
+    assert_contains(&plugin_whitebox, "WhiteboxDoorbellTrap::Aarch64Hlt");
+    assert!(
+        !plugin_whitebox.contains("pub const fn new(\n        mode: PluginSwitch"),
+        "doorbell state must not expose an arbitrary public trap constructor"
+    );
+
+    assert_contains(&guest_lib, "WHITEBOX_DOORBELL_ABIS");
+    assert_contains(&guest_lib, "WhiteboxDoorbellTrapAbi");
+
+    assert_contains(&phase_check, "checks.crucible.phase4.guestHostDoorbellAbi");
+    assert_contains(&phase_check, "gate=gate:abi-conformance");
+    assert_contains(&guest_host_spec, "- [x] **T-GHC-5**");
+    assert_contains(&guest_host_spec, "x86_64   out dx,eax, port 0x00e7");
+    assert_contains(&guest_host_spec, "aarch64  hlt #0x04c1");
+
+    run_doorbell_abi_unit_targets(&root)?;
+
+    Ok(())
+}
+
 fn assert_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
@@ -81,11 +146,44 @@ fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
+fn run_doorbell_abi_unit_targets(root: &Path) -> Result<(), Box<dyn Error>> {
+    run_cargo_test(
+        root,
+        &[
+            "test",
+            "--frozen",
+            "--offline",
+            "--manifest-path",
+            "crates/Cargo.toml",
+            "-p",
+            "crucible-protocol",
+            "doorbell_abi",
+            "--",
+            "--test-threads=1",
+        ],
+    )?;
+    run_cargo_test(
+        root,
+        &[
+            "test",
+            "--frozen",
+            "--offline",
+            "--manifest-path",
+            "crates/Cargo.toml",
+            "-p",
+            "crucible-qemu-plugin",
+            "--lib",
+            "whitebox_doorbell",
+            "--",
+            "--test-threads=1",
+        ],
+    )
+}
+
 fn run_plugin_io_wire_fuzz_unit_target(root: &Path) -> Result<(), Box<dyn Error>> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .current_dir(root)
-        .args([
+    run_cargo_test(
+        root,
+        &[
             "test",
             "--frozen",
             "--offline",
@@ -97,12 +195,22 @@ fn run_plugin_io_wire_fuzz_unit_target(root: &Path) -> Result<(), Box<dyn Error>
             "io_wire_fuzz",
             "--",
             "--test-threads=1",
-        ])
+        ],
+    )
+}
+
+fn run_cargo_test(root: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let nested_target = std::env::temp_dir().join("crucible-gate-abi-conformance-target");
+    let status = Command::new(cargo)
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", nested_target)
+        .args(args)
         .status()?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(format!("plugin I/O wire fuzz unit target failed with status {status}").into())
+        Err(format!("cargo test target failed with status {status}: {args:?}").into())
     }
 }

@@ -261,6 +261,22 @@ it (§16.5) is not. Each architecture's doorbell MUST be an instruction the plug
 can trap synchronously and that does not collide with instructions a normal guest
 would execute for its own purposes.
 
+The canonical instruction ABI is versioned and single-sourced in the
+`WHITEBOX_DOORBELL_ABIS` table. The plugin registration path consumes the table's
+trap values, and the guest-agent crate re-exports the same table for its emitter
+to consume when the emitter implementation lands.
+
+```text
+instruction_abi_version = 1
+
+arch     trap                    payload registers  trap bytes
+-------  ----------------------  -----------------  --------------------------
+x86_64   out dx,eax, port 0x00e7 ptr=rax len=rcx    ef
+aarch64  hlt #0x04c1             ptr=x0  len=x1     20 98 40 d4
+
+aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820.
+```
+
 - **[GHC-15]** On **x86_64**, the doorbell MUST be a write to a **reserved port-I/O
   address** (`out` to a configured, otherwise-unused port). Port I/O is the
   portable x86 choice: it is a single instruction, it is trappable by the plugin
@@ -718,10 +734,16 @@ the transport layer by construction.
   trap `current_icount`, accepts only shared-page or register pointer+length
   payload sources, rejects disabled or oversized traps before reading guest
   memory, and keeps device-queue channel markers out of the doorbell path.
-- [ ] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
+- [x] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
   [GHC-16], [GHC-18]; spec §16.4.
+  Completed by `checks.crucible.phase4.guestHostDoorbellAbi`: `crucible-protocol`
+  now exports `WHITEBOX_DOORBELL_ABIS` as the single-source instruction ABI, the
+  QEMU plugin and guest-agent boundary re-export it, the x86_64 `out dx,eax` byte
+  vector (`ef`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
+  the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
+  registration state is built from those ABI trap entries.
 - [ ] **T-GHC-6** Implement collision avoidance and inertness for the reserved
   doorbell port/instruction: validate non-collision at setup; inert when the
   channel is disabled. — satisfies [GHC-17], [GHC-34]; spec §16.4, §16.7.

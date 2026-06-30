@@ -1,6 +1,6 @@
-//! `crucible-protocol` owns the host/plugin wire protocol.
+//! `crucible-protocol` owns the host/plugin wire protocol and shared channel ABIs.
 //!
-//! Spec index: RFC-0010 files 14.
+//! Spec index: RFC-0010 files 14, 16.
 //!
 //! This L1 crate owns the framed IPC message constants, version fields,
 //! encode/decode routines, and golden vectors specified by its indexed RFC-0010
@@ -10,6 +10,7 @@
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
 //! orchestration, setup descriptor passing, and control/data split contract.
+//! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `golden_vectors` owns the frozen ABI-conformance corpus, and `codec_fuzz`
 //! owns the structure-aware fuzz target and regression corpus.
 //!
@@ -32,6 +33,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod codec_fuzz;
+mod doorbell_abi;
 mod golden_vectors;
 
 use std::io::{ErrorKind, Read, Write};
@@ -41,6 +43,15 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
     run_control_codec_fuzz_target,
+};
+pub use doorbell_abi::{
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
+    WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+    WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
+    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
+    whitebox_doorbell_abi_for_architecture,
 };
 pub use golden_vectors::{
     ControlGoldenVector, ControlGoldenVectorMessage, GOLDEN_CONTROL_VECTORS,
