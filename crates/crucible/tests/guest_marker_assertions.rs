@@ -248,7 +248,7 @@ fn guest_marker_assertions_fold_into_unified_report() {
     assert_outcome(
         report.outcomes(),
         "guest-always",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),
@@ -322,7 +322,7 @@ fn catalog_declared_guest_markers_finalize_without_emitted_events() {
     assert_outcome(
         report.outcomes(),
         "catalog-always",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),
@@ -425,7 +425,7 @@ fn guest_marker_predicates_work_in_all_five_property_quantifiers() {
     assert_outcome(
         report.outcomes(),
         "always-no-forbidden-guest-marker",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),
@@ -440,7 +440,7 @@ fn guest_marker_predicates_work_in_all_five_property_quantifiers() {
     assert_outcome(
         report.outcomes(),
         "after-quiescence-guest-marker",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),

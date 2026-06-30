@@ -244,7 +244,7 @@ fn offline_assertion_checker_regrades_amended_properties_idempotently() {
     );
     assert_eq!(
         outcome(first.outcomes(), "unreachable-forbidden-marker").kind,
-        HostAssertionOutcomeKind::Satisfied
+        HostAssertionOutcomeKind::Passed
     );
 }
 
@@ -357,7 +357,7 @@ fn offline_assertion_checker_preserves_empty_run_offset_for_custom_oracle() {
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(
         outcome(report.outcomes(), "named-genesis-offset").kind,
-        HostAssertionOutcomeKind::Satisfied
+        HostAssertionOutcomeKind::Passed
     );
 }
 

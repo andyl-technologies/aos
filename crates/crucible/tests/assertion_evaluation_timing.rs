@@ -236,6 +236,6 @@ fn after_quiescence_evaluates_once_at_terminal_prefix() {
     assert_eq!(*evaluated_at.borrow(), vec![10]);
     assert_eq!(
         outcome(report.outcomes(), "after-quiescence-terminal-only").kind,
-        HostAssertionOutcomeKind::Satisfied
+        HostAssertionOutcomeKind::Passed
     );
 }

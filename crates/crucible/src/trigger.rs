@@ -1173,7 +1173,9 @@ impl HostAssertionOracle for BlackBoxHostOracle {
 /// Terminal kind for one host-side assertion outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostAssertionOutcomeKind {
-    /// The assertion completed successfully.
+    /// The assertion completed with its safety-style obligation intact.
+    Passed,
+    /// The assertion discharged an existential or liveness obligation.
     Satisfied,
     /// The assertion failed and contributes to the run verdict.
     Violated,
@@ -1189,6 +1191,30 @@ pub enum HostAssertionOutcomeKind {
     NeverReachedFail,
 }
 
+/// Lifecycle state of one declared property during deterministic evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PropertyLifecycleState {
+    /// The property is registered but has not yet been evaluated.
+    Declared,
+    /// The property has been evaluated without a broken obligation.
+    Passing,
+    /// The property discharged an existential or liveness obligation.
+    Satisfied,
+    /// The property has an open failing-in-progress obligation.
+    Failing,
+    /// The property reached a terminal failing state.
+    Violated,
+}
+
+/// Current lifecycle state for one assertion in the unified outcome engine.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HostAssertionLifecycle {
+    /// Assertion whose lifecycle state is reported.
+    pub assertion: AssertionId,
+    /// Current deterministic lifecycle state.
+    pub state: PropertyLifecycleState,
+}
+
 /// Terminal result for one host-side assertion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostAssertionOutcome {
@@ -1198,6 +1224,8 @@ pub struct HostAssertionOutcome {
     pub at: VirtualTime,
     /// Terminal outcome kind.
     pub kind: HostAssertionOutcomeKind,
+    /// Terminal lifecycle state.
+    pub lifecycle: PropertyLifecycleState,
     /// Human-readable assertion message from the properties bundle.
     pub message: String,
     /// Stable assertion-layer reason.
@@ -1751,6 +1779,27 @@ impl HostAssertionEvaluator {
         outcomes
     }
 
+    /// Returns current lifecycle states in canonical assertion order.
+    #[must_use]
+    pub fn lifecycle_states(&self) -> Vec<HostAssertionLifecycle> {
+        let mut states = self
+            .states
+            .iter()
+            .map(HostAssertionState::lifecycle)
+            .chain(
+                self.guest_marker_states
+                    .iter()
+                    .map(GuestMarkerAssertionState::lifecycle),
+            )
+            .collect::<Vec<_>>();
+        states.sort_by(|left, right| {
+            left.assertion
+                .cmp(&right.assertion)
+                .then_with(|| left.state.cmp(&right.state))
+        });
+        states
+    }
+
     fn observe_due_eventually_deadlines<O>(
         &mut self,
         prefix: &ConditionEventLogPrefix,
@@ -1859,6 +1908,7 @@ impl HostAssertionEvaluator {
 #[derive(Clone, Debug)]
 struct HostAssertionState {
     assertion: AssertionDef,
+    lifecycle: PropertyLifecycleState,
     terminal: Option<HostAssertionTerminal>,
     evaluated: bool,
     eventually_triggered: bool,
@@ -1869,6 +1919,7 @@ struct HostAssertionState {
 #[derive(Clone, Debug)]
 struct GuestMarkerAssertionState {
     id: AssertionId,
+    lifecycle: PropertyLifecycleState,
     message: String,
     kind: GuestAssertionKind,
     must_hit: bool,
@@ -1882,6 +1933,7 @@ impl GuestMarkerAssertionState {
     fn new(marker: &GuestAssertionMarker) -> Self {
         Self {
             id: marker.id.clone(),
+            lifecycle: PropertyLifecycleState::Declared,
             message: marker.message.clone(),
             kind: marker.kind,
             must_hit: marker.must_hit,
@@ -1897,8 +1949,18 @@ impl GuestMarkerAssertionState {
         self.message = marker.message.clone();
         self.location = marker.location.clone();
         self.details = marker.details.clone();
+        if self.lifecycle == PropertyLifecycleState::Declared {
+            self.lifecycle = PropertyLifecycleState::Passing;
+        }
         if marker.condition {
             self.observed_true = true;
+        }
+    }
+
+    fn lifecycle(&self) -> HostAssertionLifecycle {
+        HostAssertionLifecycle {
+            assertion: self.id.clone(),
+            state: self.lifecycle,
         }
     }
 
@@ -1907,6 +1969,7 @@ impl GuestMarkerAssertionState {
             assertion: self.id.clone(),
             at: terminal.at,
             kind: terminal.kind,
+            lifecycle: terminal.lifecycle,
             message: self.message.clone(),
             reason: terminal.reason.clone(),
         })
@@ -1921,8 +1984,11 @@ impl GuestMarkerAssertionState {
         if self.terminal.is_some() {
             return None;
         }
+        let lifecycle = lifecycle_for_outcome_kind(kind);
+        self.lifecycle = lifecycle;
         self.terminal = Some(HostAssertionTerminal {
             kind,
+            lifecycle,
             at,
             reason: reason.into(),
         });
@@ -1934,6 +2000,7 @@ impl HostAssertionState {
     fn new(assertion: &AssertionDef) -> Self {
         Self {
             assertion: assertion.clone(),
+            lifecycle: PropertyLifecycleState::Declared,
             terminal: None,
             evaluated: false,
             eventually_triggered: false,
@@ -1942,11 +2009,19 @@ impl HostAssertionState {
         }
     }
 
+    fn lifecycle(&self) -> HostAssertionLifecycle {
+        HostAssertionLifecycle {
+            assertion: self.assertion.id.clone(),
+            state: self.lifecycle,
+        }
+    }
+
     fn outcome(&self) -> Option<HostAssertionOutcome> {
         self.terminal.as_ref().map(|terminal| HostAssertionOutcome {
             assertion: self.assertion.id.clone(),
             at: terminal.at,
             kind: terminal.kind,
+            lifecycle: terminal.lifecycle,
             message: self.assertion.message.clone(),
             reason: terminal.reason.clone(),
         })
@@ -1961,8 +2036,11 @@ impl HostAssertionState {
         if self.terminal.is_some() {
             return None;
         }
+        let lifecycle = lifecycle_for_outcome_kind(kind);
+        self.lifecycle = lifecycle;
         self.terminal = Some(HostAssertionTerminal {
             kind,
+            lifecycle,
             at,
             reason: reason.into(),
         });
@@ -1973,6 +2051,7 @@ impl HostAssertionState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HostAssertionTerminal {
     kind: HostAssertionOutcomeKind,
+    lifecycle: PropertyLifecycleState,
     at: VirtualTime,
     reason: String,
 }
@@ -2005,6 +2084,7 @@ where
                 return None;
             }
             state.evaluated = true;
+            state.lifecycle = PropertyLifecycleState::Passing;
             if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
             {
                 None
@@ -2018,6 +2098,7 @@ where
         }
         Property::Sometimes { predicate } => {
             state.evaluated = true;
+            state.lifecycle = PropertyLifecycleState::Passing;
             if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
             {
                 state.terminal(
@@ -2078,6 +2159,10 @@ where
     O: HostAssertionOracle + ?Sized,
 {
     let at = prefix.point().at();
+    state.evaluated = true;
+    if state.lifecycle == PropertyLifecycleState::Declared {
+        state.lifecycle = PropertyLifecycleState::Passing;
+    }
     if let Some(expired) = state
         .pending_eventually
         .iter()
@@ -2105,6 +2190,7 @@ where
         )
     {
         state.eventually_triggered = true;
+        state.lifecycle = PropertyLifecycleState::Failing;
         state.pending_eventually.push(EventuallyObligation {
             triggered_at: at,
             deadline: eventually_deadline(at, deadline),
@@ -2123,6 +2209,7 @@ where
     {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
+        state.lifecycle = PropertyLifecycleState::Satisfied;
     } else if let Some(expired) = state
         .pending_eventually
         .iter()
@@ -2160,9 +2247,11 @@ where
         return None;
     };
     let at = prefix.point().at();
+    state.lifecycle = PropertyLifecycleState::Failing;
     if host_condition_is_true(prefix, &property, oracle, once_latches, white_box_policies) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
+        state.lifecycle = PropertyLifecycleState::Satisfied;
         return None;
     }
 
@@ -2196,6 +2285,8 @@ fn observe_reachability_assertion<O>(
 where
     O: HostAssertionOracle + ?Sized,
 {
+    state.evaluated = true;
+    state.lifecycle = PropertyLifecycleState::Passing;
     let reached =
         host_condition_is_true(prefix, predicate, oracle, once_latches, white_box_policies);
     match (expectation, reached) {
@@ -2235,7 +2326,7 @@ fn finalize_host_assertion_state<O>(
         Property::Always { .. } => {
             if state.evaluated {
                 state.terminal(
-                    HostAssertionOutcomeKind::Satisfied,
+                    HostAssertionOutcomeKind::Passed,
                     at,
                     "always predicate stayed true",
                 );
@@ -2259,7 +2350,7 @@ fn finalize_host_assertion_state<O>(
             if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
             {
                 state.terminal(
-                    HostAssertionOutcomeKind::Satisfied,
+                    HostAssertionOutcomeKind::Passed,
                     at,
                     "after-quiescence predicate was true",
                 );
@@ -2290,7 +2381,7 @@ fn finalize_host_assertion_state<O>(
             },
             ReachabilityExpectation::Unreachable => {
                 state.terminal(
-                    HostAssertionOutcomeKind::Satisfied,
+                    HostAssertionOutcomeKind::Passed,
                     at,
                     "unreachable predicate stayed false",
                 );
@@ -3310,7 +3401,7 @@ fn finalize_guest_marker_assertion_state(
 
     match state.kind {
         GuestAssertionKind::Always => state.terminal(
-            HostAssertionOutcomeKind::Satisfied,
+            HostAssertionOutcomeKind::Passed,
             at,
             guest_marker_reason(state, "guest always marker stayed true"),
         ),
@@ -3335,7 +3426,7 @@ fn finalize_guest_marker_assertion_state(
             guest_marker_reason(state, "guest reachable marker was never reached"),
         ),
         GuestAssertionKind::Unreachable => state.terminal(
-            HostAssertionOutcomeKind::Satisfied,
+            HostAssertionOutcomeKind::Passed,
             at,
             guest_marker_reason(state, "guest unreachable marker stayed unreached"),
         ),
@@ -3373,15 +3464,30 @@ fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
     });
 }
 
+fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> PropertyLifecycleState {
+    match kind {
+        HostAssertionOutcomeKind::Passed
+        | HostAssertionOutcomeKind::Warning
+        | HostAssertionOutcomeKind::NeverTriggered
+        | HostAssertionOutcomeKind::NeverReachedWarn => PropertyLifecycleState::Passing,
+        HostAssertionOutcomeKind::Satisfied => PropertyLifecycleState::Satisfied,
+        HostAssertionOutcomeKind::NeverEvaluated => PropertyLifecycleState::Declared,
+        HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail => {
+            PropertyLifecycleState::Violated
+        }
+    }
+}
+
 fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
     match kind {
-        HostAssertionOutcomeKind::Satisfied => 0,
-        HostAssertionOutcomeKind::Warning => 1,
-        HostAssertionOutcomeKind::NeverEvaluated => 2,
-        HostAssertionOutcomeKind::NeverTriggered => 3,
-        HostAssertionOutcomeKind::NeverReachedWarn => 4,
-        HostAssertionOutcomeKind::NeverReachedFail => 5,
-        HostAssertionOutcomeKind::Violated => 6,
+        HostAssertionOutcomeKind::Passed => 0,
+        HostAssertionOutcomeKind::Satisfied => 1,
+        HostAssertionOutcomeKind::Warning => 2,
+        HostAssertionOutcomeKind::NeverEvaluated => 3,
+        HostAssertionOutcomeKind::NeverTriggered => 4,
+        HostAssertionOutcomeKind::NeverReachedWarn => 5,
+        HostAssertionOutcomeKind::NeverReachedFail => 6,
+        HostAssertionOutcomeKind::Violated => 7,
     }
 }
 

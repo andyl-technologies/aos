@@ -198,7 +198,7 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
     assert_outcome(
         report.outcomes(),
         "always-no-forbidden-frame",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),
@@ -213,7 +213,7 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
     assert_outcome(
         report.outcomes(),
         "after-quiescence-exited",
-        HostAssertionOutcomeKind::Satisfied,
+        HostAssertionOutcomeKind::Passed,
     );
     assert_outcome(
         report.outcomes(),
