@@ -3,7 +3,7 @@
 
 set positional-arguments
 
-AOS := "./cli/target/release/aos"
+AOS := "nix run . --"
 
 default:
     @just --list
@@ -40,17 +40,17 @@ lint pkg="":
 # System Operations
 # ===========================================================================
 
-# Build a system variant closure
-system-build variant="server":
-    {{AOS}} system build {{variant}}
+# Build the default system closure
+system-build:
+    {{AOS}} system build
 
-# Build a bootable disk image
-system-image variant="server":
-    {{AOS}} system image {{variant}}
+# Build the default bootable disk image
+system-image:
+    {{AOS}} system image
 
 # Evaluate a system configuration (show as JSON)
-system-eval variant="server":
-    {{AOS}} system eval {{variant}}
+system-eval:
+    {{AOS}} system eval
 
 # ===========================================================================
 # Testing
@@ -86,7 +86,7 @@ test-fleet suite="":
 
 # Enter development shell
 shell:
-    {{AOS}} shell
+    nix develop
 
 # Interactive Nix REPL with full system loaded
 repl:
@@ -118,7 +118,7 @@ gc-list:
 
 # Build the aos CLI from source
 cli-build:
-    cd cli && cargo build --release
+    cargo build --manifest-path crates/Cargo.toml -p aos --release
 
 # Generate shell completions
 completions shell="bash":
@@ -128,13 +128,13 @@ completions shell="bash":
 # Quick Workflows
 # ===========================================================================
 
-# Build CLI + specific image in one step
-quick variant="server": cli-build
-    {{AOS}} system image {{variant}}
+# Build the default image
+quick:
+    {{AOS}} system image
 
-# Full pipeline: build CLI, run tests, build server image
-full: cli-build test
-    {{AOS}} system image server
+# Full pipeline: run tests, then build the default image
+full: test
+    {{AOS}} system image
 
 # ===========================================================================
 # Direct Nix (bypass CLI)
