@@ -8,9 +8,11 @@
 ##! infrastructure orders against the new backends via the provisioning-backend
 ##! indirection in modules/services/ignition.nix.
 ##!
-##! `aos.config.evalAtBoot` stays off here until the base-lib builder lands; the
-##! box boots on the baked gen-0 toplevel and the metadata agent stashes (but
-##! does not yet apply) the operator host.nix.
+##! `aos.config.evalAtBoot` is enabled: the in-image base library
+##! (`aos.config.evalAtBoot.baseLib`) is assembled by the system discovery in
+##! `default.nix` (`mkBaseLib`), and `aos-eval.service` recomputes a config
+##! generation on-host from the verified `host.nix`. With no `host.nix` present
+##! the service is a clean no-op and the box stays on the baked gen-0 toplevel.
 {...}: {
   aos.profiles.server.enable = true;
   aos.profiles.debug.enable = true;
@@ -20,4 +22,8 @@
   aos.provisioning.ignition.enable = false;
   aos.provisioning.repart.enable = true;
   aos.metadata.enable = true;
+
+  # On-host config evaluation. `baseLib` is wired by the system discovery in
+  # default.nix; the service is `ConditionPathExists`-guarded on host.nix.
+  aos.config.evalAtBoot.enable = true;
 }

@@ -244,11 +244,18 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    byte-diff), `module-enforcement`, `module-args`, `systemd-lib`,
    `systemd-generate`, `config-eval`, `config-parity`, `package-expose`,
    `package-preset`, `systemd-credentials`, `systemd-verity`, `lint`.
-4. ⏭ Build base-lib; fix `stock.rs` (sandbox + `configManifest`); prove a real
-   on-host eval converges to a valid manifest under the sandbox. The hard part
-   (a build-graph-free manifest eval) is done — this is packaging the frozen
-   inputs into a stage-1 derivation and pointing the Rust evaluator at it with
-   `restrict-eval` (not `--pure-eval`).
+4. ✅ Build base-lib; fix `stock.rs` (sandbox + `configManifest`); prove a real
+   on-host eval converges to a valid manifest under the sandbox.
+   `lib/build/base-lib.nix` bundles the source + baked `frozen-pkgs.json` /
+   `frozen-artifacts.json` and exports `evalHostConfig`. Validated on the
+   builder: `evalHostConfig {}` and the exact `stock.rs` invocation (`nix eval
+   --option restrict-eval true --option allow-import-from-derivation false
+   -I <root> -I <base-lib> -f entry.nix manifest`) both produce a manifest
+   byte-identical to the real-pkgs manifest. `stock.rs` drops `--pure-eval`,
+   reads `configManifest`, and adds the imported store paths as `-I` roots.
+   Remaining for step 5: wire `mkBaseLib` into the image build so
+   `system.build` produces the variant's base-lib and `aos.config.evalAtBoot.
+   baseLib` points at it.
 5. ⏭ Enable `aos.config.evalAtBoot` on `server-rfc0011`; boot + fleet validate
    (the metadata agent fetches `host.nix`, repart provisions, stage-2 eval +
    activate apply the config generation).
