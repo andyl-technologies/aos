@@ -7976,6 +7976,12 @@ in {
           next_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
           test "$next_tag" != "$initial_tag"
 
+          # The consumer fetches this registry over dumb HTTP; refresh the
+          # server-info advertisement so info/refs lists the current branch and
+          # the re-signed 1.0.0 tag (and packed objects) the TUF root verifies
+          # against.
+          run_clean ${pkgs.git}/bin/git -C "$reg" update-server-info \
+            > "$work/git-update-server-info.out" 2>&1
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$port" \
             --bind 127.0.0.1 --directory "$data/apm/registries" \
             > "$work/http-server.log" 2>&1 &
