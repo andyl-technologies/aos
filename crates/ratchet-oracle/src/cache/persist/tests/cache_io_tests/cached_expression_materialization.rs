@@ -113,6 +113,53 @@ fn cache_cached_expression_payload_load_uses_scoped_mapped_value_pack() {
 }
 
 #[test]
+fn cache_cached_expression_payload_borrowed_load_visits_decoded_value_under_scoped_mapping() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let missing_payload = CachedExpressionValue::immediate(Value::int(7)).expect("payload builds");
+    let missing_hash = missing_payload.value_hash().expect("payload hashes");
+    let value_store_lock_path = cache
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Values);
+    cache
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
+        .expect("payload materializes");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    let observed_hash = cache
+        .with_cached_expression_value_indexed(value_hash, |value| {
+            assert_eq!(value, &payload);
+            let value_store_guard =
+                AdvisoryFileLock::try_lock(&value_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("decoded-value visitor runs after the value-store lock is released");
+            drop(value_store_guard);
+            value.value_hash().expect("visited payload hashes")
+        })
+        .expect("borrowed cached-expression load succeeds")
+        .expect("indexed value exists");
+
+    assert_eq!(observed_hash, value_hash);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(
+        cache
+            .with_cached_expression_value_indexed(missing_hash, |_| panic!(
+                "indexed cached-expression miss should not visit payload"
+            ))
+            .expect("indexed miss succeeds"),
+        None
+    );
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        1,
+        "cached-expression misses should not map the value pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_payload_load_acquires_value_store_advisory_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

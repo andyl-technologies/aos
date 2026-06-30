@@ -252,27 +252,65 @@ impl PersistCache {
         &self,
         value_hash: ValueHash,
     ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
+        self.decode_cached_expression_value_indexed(value_hash)
+    }
+
+    /// Visits a cached expression payload from the indexed `values/` pack.
+    ///
+    /// Missing index entries return `Ok(None)`. Present entries are mapped,
+    /// verified, decoded, and rehashed before the callback receives a reference
+    /// to the decoded owned value. The callback runs after the mapped payload and
+    /// value-store locks have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionValueIndexedLoadError`] if the sidecar
+    /// index cannot be read, the indexed blob cannot be verified, the bytes are
+    /// not a supported cached-expression payload, or the decoded payload's value
+    /// hash does not match `value_hash`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics on an indexed hit.
+    pub fn with_cached_expression_value_indexed<R>(
+        &self,
+        value_hash: ValueHash,
+        visit: impl FnOnce(&CachedExpressionValue) -> R,
+    ) -> Result<Option<R>, PersistCachedExpressionValueIndexedLoadError> {
+        let Some(value) = self.decode_cached_expression_value_indexed(value_hash)? else {
+            return Ok(None);
+        };
+        Ok(Some(visit(&value)))
+    }
+
+    fn decode_cached_expression_value_indexed(
+        &self,
+        value_hash: ValueHash,
+    ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
         let key = PersistBlobKey::for_value(value_hash);
         let Some(value) = self
-            .read_blob_indexed_mapped_with(key, CachedExpressionValue::decode_persistent_payload)
+            .read_blob_indexed_mapped_with(key, |payload| {
+                let value = CachedExpressionValue::decode_persistent_payload(payload).map_err(
+                    |source| PersistCachedExpressionValueIndexedLoadError::Decode { source },
+                )?;
+                let actual = value.value_hash().map_err(|source| {
+                    PersistCachedExpressionValueIndexedLoadError::Hash { source }
+                })?;
+                if actual != value_hash {
+                    return Err(
+                        PersistCachedExpressionValueIndexedLoadError::ValueHashMismatch {
+                            expected: value_hash,
+                            actual,
+                        },
+                    );
+                }
+                Ok(value)
+            })
             .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Read { source })?
         else {
             return Ok(None);
         };
-        let value = value
-            .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Decode { source })?;
-        let actual = value
-            .value_hash()
-            .map_err(|source| PersistCachedExpressionValueIndexedLoadError::Hash { source })?;
-        if actual != value_hash {
-            return Err(
-                PersistCachedExpressionValueIndexedLoadError::ValueHashMismatch {
-                    expected: value_hash,
-                    actual,
-                },
-            );
-        }
-        Ok(Some(value))
+        value.map(Some)
     }
 
     /// Materializes a cached expression payload and links it from node metadata.

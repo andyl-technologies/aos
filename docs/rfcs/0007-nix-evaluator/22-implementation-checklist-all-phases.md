@@ -1899,7 +1899,10 @@ alone (`M-1`/`Q-A`).
       public callback-scoped borrowed payload visits through that scoped mapped
       callback, while `PersistCache::read_blob` and
       `PersistCache::read_blob_indexed` remain owned-byte wrappers;
-      `load_cached_expression_value_indexed`,
+      `PersistCache::with_cached_expression_value_indexed` decodes and rehashes
+      cached-expression values through the scoped mapped callback before
+      visiting the decoded value after the value-store locks are released, while
+      `load_cached_expression_value_indexed` remains an owned decoded-value wrapper;
       raw file/parse artifact reads,
       direct/keyed/entry-shaped file-artifact hydration, and
       direct/keyed/entry-shaped parse-artifact hydration decode through the same
@@ -1909,6 +1912,7 @@ alone (`M-1`/`Q-A`).
       decode. Focused cached-expression payload, lower-level blob-index, direct
       artifact-read, and artifact-hydration tests require indexed value/file
       reads, cache-level direct raw `read_blob`/`with_blob`,
+      decoded cached-expression value visits,
       raw file/parse artifact reads,
       and direct/keyed/entry-shaped/indexed artifact hydration to enter the
       scoped mapped adapter, hold the selected store advisory lock, reject
@@ -1920,13 +1924,15 @@ alone (`M-1`/`Q-A`).
       scoped mapped payload checks under the selected store advisory lock, and
       value/file repack apply copies relocated live records through scoped mapped
       payload checks under that same selected store advisory lock. Lower-level
-      `PersistBlobPack::read_blob` and decoded parse/value cache results
-      remain buffered or owned. This
+      `PersistBlobPack::read_blob`, decoded parse-artifact cache results, and
+      node/trace-linked cached-expression hit results remain buffered or owned. This
       is scoped cooperating-writer mmap integration
-      only; public borrowed decoded parse/value result APIs, LMDB/redb offset
-      indexes, out-of-core rematerialization, cross-machine CAS-grade leases, and
+      only; public borrowed decoded parse-artifact result APIs, public borrowed
+      node/trace-linked value-hit APIs, LMDB/redb offset indexes, out-of-core
+      rematerialization, cross-machine CAS-grade leases, and
       cached/uncached harness proof remain open
       (`C-13`/`R-14`). Gates include
+      `cache_cached_expression_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`,
       `cache_raw_blob_borrowed_read_uses_scoped_mapped_payload`,
       `cache_blob_indexed_borrowed_read_uses_scoped_mapped_payload`,
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
@@ -2798,16 +2804,17 @@ alone (`M-1`/`Q-A`).
       malformed/non-canonical attrset binding payloads including duplicate source-order binding names. `PersistCache::materialize_cached_expression_value_indexed`,
       `materialize_cached_expression_value_indexed_with_signals`, and
       `load_cached_expression_value_indexed` write and read those payloads
-      through the indexed `values/` pack by value hash; indexed loads decode
-      from a scoped mapped payload under the value-store advisory read lock and
-      rehash the decoded payload before returning it, with focused coverage for
-      scoped mapped-adapter use, advisory-lock blocking, and corrupt payload
-      rejection, while preserving skip-without-hash/encode/write behavior when the
-      materialization threshold fails. This is an explicit cache-level payload
-      bridge only; evaluator durable hit selection, lazy-element list or
-      lazy-binding attrset values, public borrowed value APIs, full AOS cost
-      calibration, GC/repack, and cached/uncached harness proof remain open
-      (`C-13`/`C-14`/`S-14`). Gates include
+      through the indexed `values/` pack by value hash, while
+      `with_cached_expression_value_indexed` exposes a callback-scoped decoded
+      value visit after the scoped mapped payload has been decoded and rehashed.
+      Focused coverage proves scoped mapped-adapter use, advisory-lock blocking,
+      corrupt payload rejection, decoded-value visits, and preservation of
+      skip-without-hash/encode/write behavior when the materialization threshold
+      fails. This is an explicit cache-level payload bridge only; evaluator
+      durable hit selection, lazy-element list or lazy-binding attrset values,
+      full AOS cost calibration, GC/repack, and cached/uncached harness proof
+      remain open (`C-13`/`C-14`/`S-14`). Gates include
+      `cache_cached_expression_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`,
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
       `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`
       and `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`.
@@ -2825,7 +2832,7 @@ alone (`M-1`/`Q-A`).
       reuse-only metadata, cleared metadata, or missing value blobs. This is
       explicit cache-level linkage only; evaluator durable hit selection,
       node/value transactionality, lazy-element list or lazy-binding attrset
-      values, public borrowed value APIs, cost measurement, GC/repack, and
+      values, public borrowed node-linked value-hit APIs, cost measurement, GC/repack, and
       cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
 - [x] Current threshold-driven force-cache persistent value writeback:
       tree-walk `force_value` now materializes replayable forced-expression
