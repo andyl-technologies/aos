@@ -256,12 +256,37 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    Remaining for step 5: wire `mkBaseLib` into the image build so
    `system.build` produces the variant's base-lib and `aos.config.evalAtBoot.
    baseLib` points at it.
-5. ⏭ Enable `aos.config.evalAtBoot` on `server-rfc0011`; boot + fleet validate
-   (the metadata agent fetches `host.nix`, repart provisions, stage-2 eval +
-   activate apply the config generation).
-6. ⏭ Phase C removal: delete `pkgs.ignition`/`pkgs.butane`/`lib/formats/
-   ignition.nix`, the ignition-specific units, retarget `aos-var-crypt`/
-   `activate.sh.in`/the "read-only seed … via Ignition" message, migrate
-   `modules/tests/ignition.nix` + the `ignition-format`/`ignition-storage-files`
-   checks. The absence of `pkgs.ignition`/`butane` from every system closure is
-   the final test.
+5. ◐ Enable `aos.config.evalAtBoot` on `server-rfc0011` (✅ done) + boot validate
+   (✅ done) + fleet validate (⏭ remaining). `server-rfc0011` builds with
+   evalAtBoot on and its auto-wired base-lib, and **boots in a VM**:
+   `nix-build -A systems.server-rfc0011.checks.system-boot` passes (erofs
+   mounted, machine-id, neutral boot with Ignition off). A *fleet* test that
+   delivers a `host.nix`, runs `aos-eval.service` to a manifest, and has
+   `activate` apply the generation does not exist yet — it is the remaining
+   runtime validation (today's `checks.config-eval` is eval/unit-level).
+6. ⏭ Phase C removal — a multi-step migration, gated on step 5's fleet
+   validation (Ignition is still the default backend, so it cannot simply be
+   deleted):
+   1. Flip the stock systems (`server.nix`, `edge`, …) to the new path
+      (`ignition.enable = false`, `repart`/`metadata`/`evalAtBoot` on), or make
+      `server-rfc0011` the canonical `server`. This changes those systems'
+      toplevel bytes, so **regenerate the `rfc-0011-characterization` golden**
+      in the same reviewed diff.
+   2. Boot-validate each migrated system.
+   3. Delete `pkgs/boot/ignition.nix` + `pkgs/boot/butane.nix` (+
+      `ignition-patches/`), `lib/formats/ignition.nix`, `lib/modules/ignition/`,
+      and the ignition stage services in `modules/services/ignition.nix`
+      (keeping the neutral-boot half). Retarget the ~20 consumer references
+      (`aos-var-crypt`, `activate.sh.in`'s `@ignition@`, `config-seed.nix`,
+      `secure-boot.nix`, the initrd `aos-platform-detect` `IGNITION_CONFIG_FILE`
+      path, etc.) to the metadata/repart substrate.
+   4. Migrate the tests: `modules/tests/ignition.nix`,
+      `lib/testing/ignition-format.nix`, the `ignition-format` /
+      `ignition-storage-files` checks, and the metadata-ISO helper
+      (`lib/testing/metadata.nix` still serialises via the ignition format).
+   5. Final gate: assert `pkgs.ignition` / `pkgs.butane` appear in **no** system
+      closure.
+
+   Surface: ~40 files reference `ignition`/`butane`; the core ignition files are
+   ~1250 lines. This is a focused migration best done as a dedicated change with
+   boot/fleet re-validation after each step, not folded into the eval-only core.
