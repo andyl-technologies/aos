@@ -727,6 +727,11 @@ in {
       attrPath = "checks.crucible.phase4.formalTraceExport";
       taskIds = ["T-ASRT-9"];
     };
+    assertionEvaluationTiming = import ./phase4-assertion-evaluation-timing.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.assertionEvaluationTiming";
+      taskIds = ["T-ASRT-10"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

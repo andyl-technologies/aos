@@ -777,6 +777,8 @@ impl Error for ConditionEvaluationError {}
 pub struct ConditionEventLogPrefix {
     point: EventEvaluationPoint,
     event_log_offset: EventLogOffset,
+    prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    scheduler_entries: Vec<SchedulerEventLogEntry>,
     observable_events: Vec<ObservableEvent>,
     ordering_facts: Vec<ObservedOrderingFact>,
     fault_facts: Vec<ObservedFaultFact>,
@@ -789,6 +791,8 @@ impl ConditionEventLogPrefix {
         Self {
             point: EventEvaluationPoint::genesis(),
             event_log_offset: EventLogOffset::default(),
+            prefix_offsets: BTreeMap::new(),
+            scheduler_entries: Vec::new(),
             observable_events: Vec::new(),
             ordering_facts: Vec::new(),
             fault_facts: Vec::new(),
@@ -867,6 +871,8 @@ impl ConditionEventLogPrefix {
                     }
                 })?,
             ),
+            prefix_offsets: BTreeMap::new(),
+            scheduler_entries: entries,
             observable_events,
             ordering_facts,
             fault_facts,
@@ -876,6 +882,50 @@ impl ConditionEventLogPrefix {
     pub(crate) fn with_event_log_offset(mut self, event_log_offset: EventLogOffset) -> Self {
         self.event_log_offset = event_log_offset;
         self
+    }
+
+    pub(crate) fn with_prefix_offsets(
+        mut self,
+        prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    ) -> Self {
+        self.prefix_offsets = prefix_offsets;
+        self
+    }
+
+    pub(crate) fn with_point(mut self, point: EventEvaluationPoint) -> Self {
+        self.point = point;
+        self
+    }
+
+    pub(crate) fn with_facts_through_point(&self, point: EventEvaluationPoint) -> Option<Self> {
+        let through = point.at().ticks;
+        let entries = self
+            .scheduler_entries
+            .iter()
+            .take_while(|entry| entry.at().ticks <= through)
+            .cloned()
+            .collect::<Vec<_>>();
+        let prefix_len = u64::try_from(entries.len()).ok()?;
+        if entries.is_empty() {
+            let mut prefix = Self::genesis();
+            if !self.prefix_offsets.is_empty() {
+                prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_len)?);
+            }
+            return Some(
+                prefix
+                    .with_prefix_offsets(self.prefix_offsets.clone())
+                    .with_point(point),
+            );
+        }
+        let mut prefix = Self::from_scheduler_event_log_entries(entries).ok()?;
+        if !self.prefix_offsets.is_empty() {
+            prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_len)?);
+        }
+        Some(
+            prefix
+                .with_prefix_offsets(self.prefix_offsets.clone())
+                .with_point(point),
+        )
     }
 
     /// Returns the deterministic evaluation point this prefix is visible at.
@@ -1317,19 +1367,20 @@ impl OfflineAssertionChecker {
     /// Grades `properties` against a retained event log using `oracle`.
     ///
     /// The event log is read-only input. Evaluation observes every recorded
-    /// scheduler evaluation boundary except the terminal prefix, then lets
+    /// event-log prefix except the terminal prefix, then lets
     /// [`HostAssertionEvaluator::finalize_prefix`] observe that terminal prefix
     /// exactly once before applying end-of-run policies. Each observed point is
     /// reconstructed as a [`ConditionEventLogPrefix`] before evaluation. The
-    /// supplied [`RecordedAssertionLog`] must carry exact event-log offsets for
-    /// every evaluated prefix so named host predicates see the same
-    /// [`ObservedState`] online and offline.
+    /// supplied [`RecordedAssertionLog`] should carry exact event-log offsets for
+    /// every prefix that can be observed by a named host predicate. Intermediate
+    /// prefixes without retained offsets are skipped for custom-oracle checks;
+    /// the terminal prefix must always have an exact offset.
     ///
     /// # Errors
     ///
     /// Returns [`OfflineAssertionCheckError::ConditionEvaluation`] when the
     /// recorded entries are not a dense, hash-valid scheduler log prefix,
-    /// [`OfflineAssertionCheckError::MissingEventLogOffset`] when an evaluated
+    /// [`OfflineAssertionCheckError::MissingEventLogOffset`] when the terminal
     /// prefix has no recorded offset, or
     /// [`OfflineAssertionCheckError::EventLogOffsetMismatch`] when a supplied
     /// offset's event count does not match the evaluated prefix length.
@@ -1361,9 +1412,18 @@ impl OfflineAssertionChecker {
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
 
-        for (index, entry) in event_log.iter().enumerate() {
+        for index in 0..event_log.len() {
             let prefix_len = index + 1;
-            if prefix_len == terminal_prefix_len || !is_recorded_evaluation_boundary(entry) {
+            if prefix_len == terminal_prefix_len {
+                continue;
+            }
+            if require_recorded_offsets
+                && recorded_log
+                    .event_log_offset(u64::try_from(prefix_len).map_err(|_| {
+                        OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len }
+                    })?)
+                    .is_none()
+            {
                 continue;
             }
             let prefix = condition_prefix_from_recorded_log(
@@ -1605,6 +1665,7 @@ pub struct HostAssertionEvaluator {
     guest_marker_states: Vec<GuestMarkerAssertionState>,
     once_latches: Vec<Condition>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    last_prefix: Option<ConditionEventLogPrefix>,
 }
 
 impl HostAssertionEvaluator {
@@ -1620,6 +1681,7 @@ impl HostAssertionEvaluator {
             guest_marker_states: Vec::new(),
             once_latches: Vec::new(),
             white_box_policies: BTreeMap::new(),
+            last_prefix: None,
         }
     }
 
@@ -1666,6 +1728,7 @@ impl HostAssertionEvaluator {
         O: HostAssertionOracle + ?Sized,
     {
         let mut outcomes = Vec::new();
+        outcomes.extend(self.observe_due_eventually_deadlines(prefix, oracle));
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
             if let Some(outcome) = observe_host_assertion_state(
@@ -1683,7 +1746,60 @@ impl HostAssertionEvaluator {
             prefix,
             &self.white_box_policies,
         ));
+        self.last_prefix = Some(prefix.clone());
         sort_host_assertion_outcomes(&mut outcomes);
+        outcomes
+    }
+
+    fn observe_due_eventually_deadlines<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+    ) -> Vec<HostAssertionOutcome>
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
+        let Some(previous_prefix) = self.last_prefix.clone() else {
+            return Vec::new();
+        };
+        let previous_at = previous_prefix.point().at().ticks;
+        let next_at = prefix.point().at().ticks;
+        if next_at <= previous_at {
+            return Vec::new();
+        }
+
+        let mut deadlines = BTreeSet::new();
+        for state in &self.states {
+            if state.terminal.is_some() {
+                continue;
+            }
+            for obligation in &state.pending_eventually {
+                if obligation.deadline.ticks > previous_at && obligation.deadline.ticks < next_at {
+                    deadlines.insert(obligation.deadline);
+                }
+            }
+        }
+
+        let mut outcomes = Vec::new();
+        for deadline in deadlines {
+            let Some(deadline_prefix) =
+                prefix.with_facts_through_point(EventEvaluationPoint::assertion_deadline(deadline))
+            else {
+                continue;
+            };
+            let once_latches = &mut self.once_latches;
+            for state in &mut self.states {
+                if let Some(outcome) = observe_eventually_deadline_state(
+                    state,
+                    &deadline_prefix,
+                    oracle,
+                    once_latches,
+                    &self.white_box_policies,
+                ) {
+                    outcomes.push(outcome);
+                }
+            }
+        }
         outcomes
     }
 
@@ -1988,9 +2104,65 @@ where
     {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
+    } else if let Some(expired) = state
+        .pending_eventually
+        .iter()
+        .copied()
+        .find(|obligation| at.ticks >= obligation.deadline.ticks)
+    {
+        return state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            expired.deadline,
+            format!(
+                "eventually deadline expired after trigger at {}",
+                expired.triggered_at.ticks
+            ),
+        );
     }
 
     None
+}
+
+fn observe_eventually_deadline_state<O>(
+    state: &mut HostAssertionState,
+    prefix: &ConditionEventLogPrefix,
+    oracle: &mut O,
+    once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+) -> Option<HostAssertionOutcome>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    if state.terminal.is_some() || state.pending_eventually.is_empty() {
+        return None;
+    }
+
+    let Property::Eventually { property, .. } = state.assertion.property.clone() else {
+        return None;
+    };
+    let at = prefix.point().at();
+    if host_condition_is_true(prefix, &property, oracle, once_latches, white_box_policies) {
+        state.pending_eventually.clear();
+        state.eventually_satisfied_at = Some(at);
+        return None;
+    }
+
+    let Some(expired) = state
+        .pending_eventually
+        .iter()
+        .copied()
+        .find(|obligation| at.ticks >= obligation.deadline.ticks)
+    else {
+        return None;
+    };
+    state.terminal(
+        HostAssertionOutcomeKind::Violated,
+        expired.deadline,
+        format!(
+            "eventually deadline expired after trigger at {}",
+            expired.triggered_at.ticks
+        ),
+    )
 }
 
 fn observe_reachability_assertion<O>(
@@ -2991,7 +3163,8 @@ fn condition_prefix_from_recorded_log(
     require_recorded_offset: bool,
 ) -> Result<ConditionEventLogPrefix, OfflineAssertionCheckError> {
     let entries = &recorded_log.entries()[..prefix_len];
-    let prefix = condition_prefix_from_recorded_entries(entries)?;
+    let prefix = condition_prefix_from_recorded_entries(entries)?
+        .with_prefix_offsets(recorded_log.prefix_offsets.clone());
     let prefix_len = u64::try_from(prefix_len)
         .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
     let Some(offset) = recorded_log.event_log_offset(prefix_len) else {
@@ -3008,13 +3181,6 @@ fn condition_prefix_from_recorded_log(
         });
     }
     Ok(prefix.with_event_log_offset(offset))
-}
-
-fn is_recorded_evaluation_boundary(entry: &SchedulerEventLogEntry) -> bool {
-    matches!(
-        entry.payload(),
-        SchedulerEventLogPayload::EvaluationBoundary(_)
-    )
 }
 
 fn observe_guest_marker_assertions(
@@ -4775,6 +4941,13 @@ impl EventEvaluationPoint {
         }
     }
 
+    pub(crate) const fn assertion_deadline(at: VirtualTime) -> Self {
+        Self {
+            at,
+            kind: EventEvaluationKind::AssertionDeadline,
+        }
+    }
+
     /// Returns the virtual time of the evaluation point.
     #[must_use]
     pub fn at(self) -> VirtualTime {
@@ -4799,6 +4972,8 @@ pub enum EventEvaluationKind {
     QuantumBoundary,
     /// A deterministic scheduler rendezvous boundary.
     RendezvousBoundary,
+    /// A synthetic assertion deadline point derived from pending obligations.
+    AssertionDeadline,
 }
 
 /// One action fired by the event graph at an evaluation point.

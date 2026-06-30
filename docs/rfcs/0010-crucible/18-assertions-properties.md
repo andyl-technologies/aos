@@ -930,10 +930,19 @@ verdict; it only shapes the next schedule the search tries.
   The gate verifies deterministic export, invalid-log rejection, public export
   wiring, and a static guard against named in-runtime
   solver/model-checker/spec-evaluator entry points or dependencies.
-- [ ] **T-ASRT-10** Implement the assertion engine's evaluation timing
+- [x] **T-ASRT-10** Implement the assertion engine's evaluation timing
   (per-relevant-event + Eventually deadline points; AfterQuiescence once at
   quiescence/limit) as a deterministic function of the log. — satisfies [ASRT-18],
   [ASRT-20]; spec §18.7.
+  Completed by `checks.crucible.phase4.assertionEvaluationTiming`:
+  `HostAssertionEvaluator` tracks the previous real checked prefix and inserts
+  deterministic synthetic `AssertionDeadline` points for pending Eventually
+  obligations whose deadlines fall between recorded prefixes. AfterQuiescence
+  remains skipped during streaming and is evaluated once during terminal
+  finalization. The gate covers synthetic deadline satisfaction, exact-deadline
+  event satisfaction inside a later prefix, terminal-only AfterQuiescence
+  evaluation, retained offsets at synthetic deadline points, offline every-event
+  replay, and static timing wiring.
 - [ ] **T-ASRT-11** Enforce deterministic evaluation order (by stable id,
   single predicate evaluation per point) identical across runs and online/offline.
   — satisfies [ASRT-19]; spec §18.7.
