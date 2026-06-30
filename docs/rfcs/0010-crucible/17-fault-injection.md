@@ -1110,10 +1110,21 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   imperative fault state without resubmitting controls, and compact-binary
   schedule round trips include control-fault decisions. Unknown imperative heals
   remain runtime no-ops while still being recorded in the schedule artifact.
-- [ ] **T-FAULT-12** Implement tag-based activation/heal (heal by tag,
+- [x] **T-FAULT-12** Implement tag-based activation/heal (heal by tag,
   replace-on-retag, build-time rejection of declarative heal of an uninjected
   tag, runtime no-op heal of an unknown tag) and carry the active-tag set in
   `MaterializedState`. — satisfies [FAULT-27]; spec §17.6.3; cross-ref 06 §9, 07.
+  Completed by `checks.crucible.phase4.faultTagState`: trigger and imperative
+  control fault application now share tag-keyed activation semantics where
+  reinjecting an active tag replaces the prior binding and healing removes only
+  the named tag. Declarative `FaultPlan` heals whose tag is never injected remain
+  build-time errors, while imperative unknown heals are recorded runtime no-ops.
+  `SchedulerState` now materializes the active tag-to-fault binding, hashes it
+  into `MaterializedState`, and includes it in symmetry material.
+  `SingleScheduler::materialized_scheduler_state` captures declarative
+  trigger/fault-plan active tags, while fat checkpoint materialization derives
+  imperative tags from recorded `Decision::ControlFault` schedule prefixes so
+  resumed checkpoints carry the same healable tags.
 - [ ] **T-FAULT-13** Implement the scheduler's deterministic active-fault table
   (edge/node-keyed, combined per §17.3.3, recomputed with lookahead at the quantum
   boundary on activation/heal, in `MaterializedState`, no unordered iteration). —

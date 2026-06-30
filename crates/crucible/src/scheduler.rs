@@ -33,8 +33,9 @@ use crate::{
     EventKey, EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints, FaultTag,
     Icount, LinkId, MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection,
     PreemptionDecision, PreemptionKind, RestartPolicy, RngStreamId, RngStreamPosition, ScenarioDef,
-    SchedulerNodeId, SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError,
-    TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, Shift, SimDuration, SimInstant,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldLookaheadEdge,
+    WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -5037,6 +5038,15 @@ impl SingleScheduler {
     #[must_use]
     pub fn trigger_actions(&self) -> &TriggerActionState {
         &self.trigger_actions
+    }
+
+    /// Captures the scheduler-owned state that must survive a materialized checkpoint.
+    #[must_use]
+    pub fn materialized_scheduler_state(&self) -> SchedulerState {
+        let mut state = SchedulerState::empty();
+        state.event_sequences = self.event_sequences.clone();
+        state.active_fault_tags = self.trigger_actions.active_faults.clone();
+        state
     }
 
     /// Returns the world-derived static topology used for trigger action validation.

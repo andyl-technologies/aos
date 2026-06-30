@@ -359,6 +359,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 heal_at: Some(VirtualTime { ticks: 120 }),
             },
         )]),
+        active_fault_tags: BTreeMap::new(),
     };
     let decision_rng = DecisionRngState {
         positions: BTreeMap::from([(stream, RngStreamPosition::new(11))]),

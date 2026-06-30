@@ -209,6 +209,11 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
         hasher.write_bytes(fault.name.as_bytes());
         write_fault_state(hasher, state);
     }
+    hasher.write_u64(state.active_fault_tags.len() as u64);
+    for (tag, fault) in &state.active_fault_tags {
+        hasher.write_bytes(tag.name.as_bytes());
+        hasher.write_bytes(super::membership_fault_material(fault).as_bytes());
+    }
 }
 
 fn write_pending_frame(hasher: &mut MaterialHasher, frame: &PendingFrame) {
