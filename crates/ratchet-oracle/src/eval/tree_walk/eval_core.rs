@@ -1,6 +1,7 @@
 //! Core evaluation entry points, scope/environment management, and module bookkeeping.
 
 use super::*;
+use crate::cache::hashing::ForceCapturedValueHash;
 
 mod force_identity;
 mod force_payload;
@@ -978,8 +979,8 @@ impl TreeWalk {
             hasher.update(b"entry-path");
             Self::update_cache_identity_chunk(&mut hasher, entry.path())?;
         }
-        Some(ValueHash::from_canonical_value_hash(
-            DurableBlake3Hash::from_hasher(hasher),
+        Some(ValueHash::from_force_captured_value_hash(
+            ForceCapturedValueHash::from_hasher(hasher),
         ))
     }
 

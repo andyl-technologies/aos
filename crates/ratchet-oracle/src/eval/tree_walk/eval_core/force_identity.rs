@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::cache::CacheExprSourceHash;
-use crate::cache::hashing::{ForceCapturePositionSourceHash, StaticSelectPositionHash};
+use crate::cache::hashing::{
+    ForceCapturePositionSourceHash, ForceCapturedValueHash, StaticSelectPositionHash,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturedFreeVariableDependency {
@@ -246,7 +248,9 @@ impl TreeWalk {
                     hasher.update(&identity.as_durable_hash().as_bytes());
                 }
                 return Some(StaticSelectProjection::Present(
-                    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher)),
+                    ValueHash::from_force_captured_value_hash(ForceCapturedValueHash::from_hasher(
+                        hasher,
+                    )),
                 ));
             }
             current = selected;
@@ -387,8 +391,8 @@ impl TreeWalk {
         if let Some(selected_hash) = selected_hash {
             hasher.update(&selected_hash.as_durable_hash().as_bytes());
         }
-        Some(ValueHash::from_canonical_value_hash(
-            DurableBlake3Hash::from_hasher(hasher),
+        Some(ValueHash::from_force_captured_value_hash(
+            ForceCapturedValueHash::from_hasher(hasher),
         ))
     }
 
@@ -436,8 +440,8 @@ impl TreeWalk {
         hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
         hasher.update(b"static-has-attr");
         hasher.update(&[u8::from(present)]);
-        Some(ValueHash::from_canonical_value_hash(
-            DurableBlake3Hash::from_hasher(hasher),
+        Some(ValueHash::from_force_captured_value_hash(
+            ForceCapturedValueHash::from_hasher(hasher),
         ))
     }
 
@@ -535,7 +539,7 @@ impl TreeWalk {
                 if string.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, string.context())?;
                 }
-                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
             ValueTag::Path => {
                 let path = self.heap.get_path(value).ok()?;
@@ -546,7 +550,7 @@ impl TreeWalk {
                 if path.has_context() {
                     Self::update_force_capture_string_context(&mut hasher, path.context())?;
                 }
-                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
             ValueTag::List | ValueTag::Attrs => {
                 let payload = self.force_cache_payload_for_value_with_depth(
@@ -558,7 +562,7 @@ impl TreeWalk {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
                 self.update_force_capture_composite_payload_hash(&mut hasher, &payload)?;
-                self.cache_force_capture_hash(value, DurableBlake3Hash::from_hasher(hasher))
+                self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
             ValueTag::Thunk => {
                 let thunk_key = value.payload_bits();
@@ -696,8 +700,12 @@ impl TreeWalk {
         frames.get(frame_index)?.get(slot).ok()
     }
 
-    fn cache_force_capture_hash(&self, value: Value, hash: DurableBlake3Hash) -> Option<ValueHash> {
-        let hash = ValueHash::from_canonical_value_hash(hash);
+    fn cache_force_capture_hash(
+        &self,
+        value: Value,
+        hash: ForceCapturedValueHash,
+    ) -> Option<ValueHash> {
+        let hash = ValueHash::from_force_captured_value_hash(hash);
         self.heap.cache_captured_value_hash(value, hash).ok()?;
         Some(hash)
     }
@@ -715,37 +723,37 @@ impl TreeWalk {
         if let Some(bytes) = payload.context_free_string_bytes() {
             hasher.update(b"string");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
-            return Some(ValueHash::from_canonical_value_hash(
-                DurableBlake3Hash::from_hasher(hasher),
+            return Some(ValueHash::from_force_captured_value_hash(
+                ForceCapturedValueHash::from_hasher(hasher),
             ));
         }
         if let Some((bytes, context)) = payload.context_string_parts() {
             hasher.update(b"string");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
             Self::update_force_capture_string_context(&mut hasher, context)?;
-            return Some(ValueHash::from_canonical_value_hash(
-                DurableBlake3Hash::from_hasher(hasher),
+            return Some(ValueHash::from_force_captured_value_hash(
+                ForceCapturedValueHash::from_hasher(hasher),
             ));
         }
         if let Some(bytes) = payload.path_bytes() {
             hasher.update(b"path");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
-            return Some(ValueHash::from_canonical_value_hash(
-                DurableBlake3Hash::from_hasher(hasher),
+            return Some(ValueHash::from_force_captured_value_hash(
+                ForceCapturedValueHash::from_hasher(hasher),
             ));
         }
         if let Some((bytes, context)) = payload.context_path_parts() {
             hasher.update(b"path");
             Self::update_cache_identity_chunk(&mut hasher, bytes)?;
             Self::update_force_capture_string_context(&mut hasher, context)?;
-            return Some(ValueHash::from_canonical_value_hash(
-                DurableBlake3Hash::from_hasher(hasher),
+            return Some(ValueHash::from_force_captured_value_hash(
+                ForceCapturedValueHash::from_hasher(hasher),
             ));
         }
 
         self.update_force_capture_composite_payload_hash(&mut hasher, payload)?;
-        Some(ValueHash::from_canonical_value_hash(
-            DurableBlake3Hash::from_hasher(hasher),
+        Some(ValueHash::from_force_captured_value_hash(
+            ForceCapturedValueHash::from_hasher(hasher),
         ))
     }
 

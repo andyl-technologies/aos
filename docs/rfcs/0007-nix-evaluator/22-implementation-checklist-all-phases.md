@@ -1932,13 +1932,31 @@ alone (`M-1`/`Q-A`).
       each selected binding position identity before sorting/deduplicating the
       projection set, and unwraps only when appending those identities to the
       stable `static-select` captured-value preimage. This type-enforces the
-      current selected-binding position projection corridor only; broader
-      static-select subject typing, remaining generic durable hash plumbing, and
+      current selected-binding position projection corridor only; remaining
+      force-captured value-hash finalization, generic durable hash plumbing, and
       the full differential leak-invariant harness remain open (`S-15`). Gate:
       `captured_static_selects_miss_when_selected_binding_position_changes`,
       captured static-select projection tests, captured positioned-composite
       force-cache tests, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
       test-target compile coverage.
+- [x] Current force-captured value hash boundary:
+      `ForceCapturedValueHash` now marks durable digests finalized under
+      `FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION` before they enter shared
+      `ValueHash` key material. Tree-walk string/path/composite
+      captured-free-variable hashing, static-select projection and default
+      branch hashes, static-has-attr result hashes, replayed payload
+      free-variable hashes, and synthetic visible `nixPath` argument hashing
+      finalize through this type, while
+      `ValueHash::from_force_captured_value_hash` is the only conversion for
+      force-captured BLAKE3 digests into demand-key material. This
+      type-enforces the current force-cache free-variable fingerprint
+      finalization corridor only; canonical value-hash serialization,
+      remaining generic durable hash plumbing, and the full differential
+      leak-invariant harness remain open (`S-15`). Gate: `captured_scalars`,
+      `materialized_captures`, captured static-select / default / has-attr
+      force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4487,13 +4505,32 @@ alone (`M-1`/`Q-A`).
       each selected binding position identity before sorting/deduplicating the
       projection set, and unwraps only when appending those identities to the
       stable `static-select` captured-value preimage. This type-enforces the
-      current selected-binding position projection corridor only; broader
-      static-select subject typing, remaining generic durable hash plumbing, and
+      current selected-binding position projection corridor only; remaining
+      force-captured value-hash finalization, generic durable hash plumbing, and
       the full internal-hash leak invariant remain open. Gate:
       `captured_static_selects_miss_when_selected_binding_position_changes`,
       captured static-select projection tests, captured positioned-composite
       force-cache tests, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
       test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current force-captured value hash boundary:
+      `ForceCapturedValueHash` now marks durable digests finalized under
+      `FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION` before they enter shared
+      `ValueHash` key material. Tree-walk string/path/composite
+      captured-free-variable hashing, static-select projection and default
+      branch hashes, static-has-attr result hashes, replayed payload
+      free-variable hashes, and synthetic visible `nixPath` argument hashing
+      finalize through this type, while
+      `ValueHash::from_force_captured_value_hash` is the only conversion for
+      force-captured BLAKE3 digests into demand-key material. This
+      type-enforces the current force-cache free-variable fingerprint
+      finalization corridor only; canonical value-hash serialization,
+      remaining generic durable hash plumbing, and the full internal-hash leak
+      invariant remain open. Gate: `captured_scalars`,
+      `materialized_captures`, captured static-select / default / has-attr
+      force-cache tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

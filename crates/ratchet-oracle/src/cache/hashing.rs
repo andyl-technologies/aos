@@ -11,6 +11,7 @@
 //! AttrPositionSourceHash -> positioned-payload source provenance
 //! ForceCapturePositionSourceHash -> positioned captured-value source salts
 //! StaticSelectPositionHash -> static-select binding position identities
+//! ForceCapturedValueHash -> force-cache captured free-variable fingerprints
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -189,6 +190,31 @@ impl StaticSelectPositionHash {
     /// Wraps a digest computed from a static selected binding position.
     pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for force-cache captured free-variable fingerprints.
+///
+/// This type marks hashes computed under
+/// `FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION` before they are intentionally
+/// adapted into [`crate::cache::ValueHash`] key material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ForceCapturedValueHash(DurableBlake3Hash);
+
+impl ForceCapturedValueHash {
+    /// Wraps a digest computed in the force-captured value hash domain.
+    const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Finalizes a BLAKE3 hasher in the force-captured value hash domain.
+    pub(crate) fn from_hasher(hasher: blake3::Hasher) -> Self {
+        Self::from_durable_hash(DurableBlake3Hash::from_hasher(hasher))
     }
 
     /// Returns the underlying durable BLAKE3 digest.

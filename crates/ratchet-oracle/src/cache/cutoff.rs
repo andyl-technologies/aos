@@ -7,7 +7,7 @@
 
 use thiserror::Error;
 
-use super::hashing::{DurableBlake3Hash, ImpureInputObservationHash};
+use super::hashing::{DurableBlake3Hash, ForceCapturedValueHash, ImpureInputObservationHash};
 use crate::string::{ContextKind, StringContext};
 use crate::value::{Value, ValueError, ValueTag};
 
@@ -206,6 +206,16 @@ impl ValueHash {
     /// This constructor is for demand-graph leaf nodes whose "value" is an
     /// observed filesystem or environment result, not a canonical Nix value.
     pub const fn from_impure_input_observation_hash(hash: ImpureInputObservationHash) -> Self {
+        Self(hash.as_durable_hash())
+    }
+
+    /// Wraps a durable BLAKE3 hash of a force-cache captured free-variable fingerprint.
+    ///
+    /// This constructor is for demand-key free-variable material computed from
+    /// captured heap values, static-select projections, or synthetic visible
+    /// inputs. It keeps that non-canonical value-hash precursor on an explicit
+    /// typed path before it enters the shared demand-key `ValueHash` format.
+    pub(crate) const fn from_force_captured_value_hash(hash: ForceCapturedValueHash) -> Self {
         Self(hash.as_durable_hash())
     }
 }
