@@ -1601,6 +1601,28 @@ in {
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
+        # Build a small real package registered in this test's Nix store to
+        # release (apr release introspects the store path via `nix path-info`).
+        cat > "$work/resume-build.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' 'printf "host resume package executed\n"'
+        } > "$out/bin/hostresume-tool"
+        @AOS_COREUTILS@/bin/chmod +x "$out/bin/hostresume-tool"
+        SCRIPT
+        cat > "$work/resume-fixture.nix" << 'NIX'
+        derivation {
+          name = "hostresume-1.0.0";
+          system = "x86_64-linux";
+          builder = "@AOS_BASH@/bin/bash";
+          args = [ ./resume-build.sh ];
+        }
+        NIX
+        substitute_fixture_paths "$work/resume-build.sh"
+        substitute_fixture_paths "$work/resume-fixture.nix"
+        resume_store=$(nix_build "$work/resume-fixture.nix" --no-out-link)
         # The release pipeline now generates and uploads the static cache
         # before creating the signed tag, so a partially-interrupted release
         # can no longer be simulated with a missing store path. Instead drive
@@ -1609,7 +1631,7 @@ in {
         # --resume is given, and --resume reuses the existing tag/pack.
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
-          --store-path "${pkgs.jq}" \
+          --store-path "$resume_store" \
           --name hostresume \
           --description "Host release resume fixture" \
           --license MIT \
@@ -1626,7 +1648,7 @@ in {
         test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         if run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
-          --store-path "${pkgs.jq}" \
+          --store-path "$resume_store" \
           --name hostresume \
           --key "$work/resume-release-key" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
@@ -1639,7 +1661,7 @@ in {
           "$work/apr-release-host-resume-without-flag.json"
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
-          --store-path "${pkgs.jq}" \
+          --store-path "$resume_store" \
           --name hostresume \
           --key "$work/resume-release-key" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
