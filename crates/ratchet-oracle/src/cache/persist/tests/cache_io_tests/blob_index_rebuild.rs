@@ -26,6 +26,8 @@ fn cache_blob_io_is_routed_by_key_store() {
         file_location.record_offset(),
         PERSIST_BLOB_PACK_HEADER_LEN as u64
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
     assert_eq!(
         cache
             .read_blob(value_key, value_location)
@@ -33,6 +35,8 @@ fn cache_blob_io_is_routed_by_key_store() {
             .as_slice(),
         payload
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
     assert_eq!(
         cache
             .read_blob(file_key, file_location)
@@ -40,6 +44,8 @@ fn cache_blob_io_is_routed_by_key_store() {
             .as_slice(),
         payload
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
     assert_eq!(
         fs::metadata(cache.value_pack().path())
             .expect("value pack metadata")

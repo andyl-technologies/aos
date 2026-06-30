@@ -474,7 +474,7 @@ impl PersistCache {
     }
 }
 
-fn clone_mapped_blob_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
+pub(super) fn clone_mapped_blob_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
     let mut owned = Vec::new();
     owned
         .try_reserve_exact(payload.len())

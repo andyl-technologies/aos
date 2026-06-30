@@ -1,5 +1,6 @@
 //! Blob-pack, blob-index, artifact sidecar, and advisory-lock operations.
 
+use super::indexed_values::clone_mapped_blob_payload;
 use super::*;
 
 use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockMode};
@@ -471,16 +472,13 @@ impl PersistCache {
         key: PersistBlobKey,
         location: PersistBlobLocation,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let (_advisory_guard, _read_guard) = self.lock_blob_pack_read(key.store())?;
-        self.read_blob_unlocked(key, location)
-    }
-
-    pub(super) fn read_blob_unlocked(
-        &self,
-        key: PersistBlobKey,
-        location: PersistBlobLocation,
-    ) -> Result<Vec<u8>, PersistBlobPackError> {
-        self.blob_pack(key.store()).read_blob(location, key.hash())
+        let (advisory_guard, _read_guard) = self.lock_blob_pack_read(key.store())?;
+        self.blob_pack(key.store()).with_mapped_blob(
+            &advisory_guard,
+            location,
+            key.hash(),
+            clone_mapped_blob_payload,
+        )?
     }
 
     /// Appends a durable file-artifact mapping entry to the sidecar index.

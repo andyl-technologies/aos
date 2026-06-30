@@ -1895,8 +1895,9 @@ alone (`M-1`/`Q-A`).
       `ratchet-oracle::cache::PersistBlobPack::with_mapped_blob` opens, leases,
       maps, verifies, and decodes a payload inside a callback so borrowed mmap
       bytes never escape `ratchet-oracle`'s safe API.
-      `PersistCache::read_blob_indexed` clones owned bytes through that scoped
-      mapped callback; `load_cached_expression_value_indexed`,
+      `PersistCache::read_blob` and `PersistCache::read_blob_indexed` clone
+      owned bytes through that scoped mapped callback;
+      `load_cached_expression_value_indexed`,
       raw file/parse artifact reads,
       direct/keyed/entry-shaped file-artifact hydration, and
       direct/keyed/entry-shaped parse-artifact hydration decode through the same
@@ -1905,20 +1906,21 @@ alone (`M-1`/`Q-A`).
       artifact-mapping advisory lock across sidecar lookup and mapped `files/`
       decode. Focused cached-expression payload, lower-level blob-index, direct
       artifact-read, and artifact-hydration tests require indexed value/file
-      reads plus raw file/parse artifact reads and
-      direct/keyed/entry-shaped/indexed artifact hydration to enter the scoped
-      mapped adapter, hold the selected store advisory lock, reject corrupt
-      value-pack payloads, and fail key mismatches before taking the files store
-      lock. Blob-index rebuild, liveness, reachability, and repack-planning
-      scan adapters also use scoped mapped metadata scans under the selected
-      store advisory lock. Direct raw `read_blob`, reachability root
-      verification payload checks, repack copy/apply paths, and public borrowed
-      parse/value cache results remain buffered or owned. This is scoped
-      cooperating-writer mmap integration only; public borrowed payload APIs,
-      LMDB/redb offset indexes, full mmap maintenance/repack paths,
-      out-of-core rematerialization, cross-machine CAS-grade leases, and
+      reads, cache-level direct raw `read_blob`, raw file/parse artifact reads,
+      and direct/keyed/entry-shaped/indexed artifact hydration to enter the
+      scoped mapped adapter, hold the selected store advisory lock, reject
+      corrupt value-pack payloads, and fail key mismatches before taking the
+      files store lock. Blob-index rebuild, liveness, reachability, and
+      repack-planning scan adapters also use scoped mapped metadata scans under
+      the selected store advisory lock. Lower-level `PersistBlobPack::read_blob`,
+      reachability root verification payload checks, repack copy/apply paths,
+      and public borrowed parse/value cache results remain buffered or owned.
+      This is scoped cooperating-writer mmap integration only; public borrowed
+      payload APIs, LMDB/redb offset indexes, full mmap maintenance/repack
+      paths, out-of-core rematerialization, cross-machine CAS-grade leases, and
       cached/uncached harness proof remain open (`C-13`/`R-14`). Gates include
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
+      `cache_blob_io_is_routed_by_key_store`,
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
       `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`,
       `cache_cached_expression_payload_load_rejects_corrupt_mapped_value_blob`,
@@ -2080,22 +2082,26 @@ alone (`M-1`/`Q-A`).
       namespace separation for identical payload hashes while reusing pack-level
       hash and record verification; `append_blob` holds the selected store's
       advisory file lock and same-process same-root blob write lock before
-      appending. Automatic durable index lookup/update from these raw helpers,
-      node metadata, mmap reads, writer batching, maintenance-writer
+      appending, while cache-level `read_blob` holds the selected store's shared
+      advisory file lock and same-process same-root blob read lock before
+      cloning the payload through the scoped mapped-pack adapter. Automatic
+      durable index lookup/update from these raw helpers, node metadata, public
+      borrowed zero-copy payload reads, writer batching, maintenance-writer
       coordination, CAS policy, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      (`C-13`/`R-14`). Gates include `cache_blob_io_is_routed_by_key_store`.
 - [x] Current explicit indexed blob IO helpers:
       `PersistCache::append_blob_indexed` appends through the key-routed pack
       while holding the selected store's advisory file lock and same-process
       same-root blob-store write lock and records the returned location in the
       selected `PersistBlobIndex`, while `lookup_blob_location`/`read_blob_indexed`
-      scan the sidecar index and read/verify the indexed pack record under the
-      selected store's shared advisory file lock plus same-process same-root
-      store lock, returning `None` for misses. This is explicit non-transactional
-      sidecar integration only; automatic low-level append/read indexing, raw
-      lower-level pack/index coordination, node metadata linkage, mmap reads,
-      writer batching, CAS policy, GC/repack, Attic transport, and harness proof
-      remain open (`C-13`/`R-14`).
+      scan the sidecar index and map/verify/clone the indexed pack record under
+      the selected store's shared advisory file lock plus same-process same-root
+      store lock, returning `None` for misses. This is explicit
+      non-transactional sidecar integration only; automatic low-level
+      append/read indexing, raw lower-level pack/index coordination, node
+      metadata linkage, public borrowed zero-copy payload reads, writer
+      batching, CAS policy, GC/repack, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current explicit blob-pack tail-GC helper:
       `PersistCache::trim_blob_pack_tail` snapshots the selected store's latest
       live roots (`values/` blob index entries, or `files/`
