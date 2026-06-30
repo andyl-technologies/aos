@@ -1914,13 +1914,15 @@ alone (`M-1`/`Q-A`).
       repack-planning scan adapters also use scoped mapped metadata scans under
       the selected store advisory lock. Node value-root, value/file
       reachability, liveness-plan, and tail-trim root verification also use
-      scoped mapped payload checks under the selected store advisory lock.
-      Lower-level `PersistBlobPack::read_blob`, repack copy/apply paths, and
-      public borrowed parse/value cache results remain buffered or owned. This
+      scoped mapped payload checks under the selected store advisory lock, and
+      value/file repack apply copies relocated live records through scoped mapped
+      payload checks under that same selected store advisory lock. Lower-level
+      `PersistBlobPack::read_blob` and public borrowed parse/value cache results
+      remain buffered or owned. This
       is scoped cooperating-writer mmap integration
-      only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
-      maintenance/repack paths, out-of-core rematerialization, cross-machine
-      CAS-grade leases, and cached/uncached harness proof remain open
+      only; public borrowed payload APIs, LMDB/redb offset indexes, out-of-core
+      rematerialization, cross-machine CAS-grade leases, and
+      cached/uncached harness proof remain open
       (`C-13`/`R-14`). Gates include
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
       `cache_blob_io_is_routed_by_key_store`,
@@ -2217,15 +2219,15 @@ alone (`M-1`/`Q-A`).
       per-store and artifact-mapping advisory locking and scoped mapped
       live-root planning, while durable transaction policy across staged
       sidecars and packs, raw lower-level writers, cross-process pending
-      artifact publication during file repack, mmap repack-copy/apply paths, and
-      automatic GC policy remain open
+      artifact publication during file repack, and automatic GC policy remain open
       (`C-13`/`R-14`).
 - [x] Current explicit value-pack repack helper:
       `PersistCache::repack_value_blob_pack` holds the selected store's
       advisory file lock and same-root `values/` store lock, plans live-record
       relocation through the scoped mapped liveness scan, stages a compacted
-      value pack plus replacement value blob-index sidecar, and swaps both into
-      place via
+      value pack by copying each relocated live record through scoped mapped
+      payload verification plus replacement value blob-index sidecar, and swaps
+      both into place via
       `ratchet-cache::file_replace::FileReplacementSet` with best-effort
       rollback for ordinary filesystem errors. It preserves latest indexed
       value roots, omits unrooted value records, and has direct stale-location
@@ -2234,14 +2236,15 @@ alone (`M-1`/`Q-A`).
       caller-driven
       maintenance only; crash transactionality, node metadata pruning, automatic
       GC policy, raw lower-level writer coordination, unrelated sidecar
-      coordination, mmap repack-copy/apply paths, Attic transport, and harness proof remain open
+      coordination, Attic transport, and harness proof remain open
       (`C-13`/`R-14`).
 - [x] Current explicit file-pack repack helper:
       `PersistCache::repack_file_blob_pack` holds the selected store's advisory
       file lock, the file/parse artifact advisory locks, and the same-root
       `files/` store, file-artifact, and parse-artifact locks, rejects
       same-process pending artifact roots, plans live-record relocation through
-      the scoped mapped liveness scan, stages a compacted file pack plus
+      the scoped mapped liveness scan, stages a compacted file pack by copying
+      each relocated live record through scoped mapped payload verification plus
       relocated file blob, file-artifact, and parse-artifact sidecars, and swaps
       them into place via
       `ratchet-cache::file_replace::FileReplacementSet` with best-effort
@@ -2251,7 +2254,7 @@ alone (`M-1`/`Q-A`).
       sidecars load the relocated payloads. This is caller-driven
       maintenance only; crash transactionality, automatic GC policy, raw
       lower-level writer coordination, cross-process pending artifact
-      publication, mmap repack-copy/apply paths, Attic transport, and harness proof remain open
+      publication, Attic transport, and harness proof remain open
       (`C-13`/`R-14`/`R-10`).
 - [x] Current explicit all-blob-pack repack helper:
       `PersistCache::repack_blob_packs` runs value-pack repack and then

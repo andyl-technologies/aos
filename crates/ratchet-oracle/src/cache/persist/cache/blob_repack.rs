@@ -57,7 +57,11 @@ impl PersistCache {
             rewrite_id,
         );
         self.value_pack
-            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+            .write_relocated_records_mapped_to(
+                &advisory_guard,
+                &tmp_pack_path,
+                plan.record_relocations(),
+            )
             .map_err(|source| PersistValueBlobPackRepackError::Pack { source })?;
         if let Err(source) = write_repacked_blob_index(&tmp_index_path, plan.record_relocations()) {
             replacements.cleanup_staged();
@@ -158,10 +162,11 @@ impl PersistCache {
             parse_artifact_index: self.parse_artifact_index.path(),
         };
         let replacements = file_repack_replacements(paths, stage, rewrite_id);
-        if let Err(source) = self
-            .file_pack
-            .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
-        {
+        if let Err(source) = self.file_pack.write_relocated_records_mapped_to(
+            &advisory_guard,
+            &tmp_pack_path,
+            plan.record_relocations(),
+        ) {
             replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::Pack { source });
         }

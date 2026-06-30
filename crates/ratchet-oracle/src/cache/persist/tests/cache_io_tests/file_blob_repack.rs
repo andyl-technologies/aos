@@ -65,7 +65,7 @@ fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
     let plan = cache
         .repack_file_blob_pack()
         .expect("file blob pack repacks");
-    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 4);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 7);
 
     assert!(plan.reclaimable_bytes() > 0);
     assert_eq!(plan.bytes_before(), bytes_before);

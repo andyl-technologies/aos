@@ -786,6 +786,74 @@ impl PersistBlobPack {
         })
     }
 
+    /// Writes a compacted mapped copy of the supplied records to `tmp_path`.
+    ///
+    /// The temporary pack is staged through the same rewrite primitive as
+    /// [`Self::write_relocated_records_to`] so source/temp alias rejection and
+    /// stale temporary cleanup stay centralized. Each relocated source record is
+    /// then verified through a scoped mapped payload read while `read_lease` is
+    /// held, appended to the temporary pack, and checked against the planned new
+    /// location.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the current pack cannot be read or
+    /// mapped, a relocated source record fails verification, the temporary pack
+    /// cannot be created or written, `tmp_path` aliases the source pack, a copied
+    /// record lands at a different location than planned, or the completed
+    /// temporary pack fails validation.
+    pub(super) fn write_relocated_records_mapped_to(
+        &self,
+        read_lease: &AdvisoryFileLock,
+        tmp_path: impl Into<PathBuf>,
+        relocations: &[PersistBlobRecordRelocation],
+    ) -> Result<PersistBlobPack, PersistBlobPackError> {
+        let tmp_path = tmp_path.into();
+        open_engine_blob_pack_appender(&self.path)?;
+        let reader = open_engine_blob_pack_reader(&self.path)?;
+        let tmp_reader = reader
+            .write_relocated_records_to(tmp_path, &[])
+            .map_err(engine_rewrite_error_to_persist)?;
+        let path = tmp_reader.path().to_path_buf();
+        let tmp_appender = open_engine_blob_pack_appender(&path)?;
+        let copy_result = (|| {
+            for relocation in relocations {
+                let hash = relocation.key().hash();
+                let copied = self.with_mapped_blob(
+                    read_lease,
+                    relocation.old_location(),
+                    hash,
+                    |payload| {
+                        tmp_appender
+                            .append_payload(durable_hash_to_engine(hash), payload)
+                            .map_err(engine_append_error_to_persist)
+                    },
+                )??;
+                let copied = engine_location_to_persist(copied);
+                if copied != relocation.new_location() {
+                    return Err(PersistBlobPackError::RecordLocationMismatch {
+                        expected: relocation.new_location(),
+                        actual: copied,
+                    });
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = copy_result {
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
+
+        let reader = open_engine_blob_pack_reader(&path)?;
+        reader.len().map_err(engine_read_error_to_persist)?;
+        Ok(Self {
+            appender: tmp_appender,
+            path,
+            #[cfg(test)]
+            mapped_read_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
     /// Truncates unneeded bytes after `end_offset`.
     ///
     /// `end_offset` must be at least the fixed pack header length and no larger
