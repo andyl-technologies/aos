@@ -583,6 +583,19 @@ impl SchedulerEventLogEntry {
     ) -> Self {
         scheduler_event_log_entry(sequence, at, payload)
     }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn with_time_for_test(self, at: EventLogTime) -> Self {
+        scheduler_event_log_entry_with_material(
+            self.sequence,
+            at,
+            self.source,
+            self.level,
+            self.class,
+            self.event_payload,
+            self.payload,
+        )
+    }
 }
 
 #[derive(Clone)]

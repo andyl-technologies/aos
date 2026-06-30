@@ -6229,6 +6229,8 @@ pub enum NodeLifecycle {
     Started,
     /// The node crashed.
     Crashed,
+    /// The node stopped making forward progress within its deterministic window.
+    Hung,
     /// The node exited or completed.
     Exited,
 }
@@ -14061,6 +14063,7 @@ enum IoEventKindToml {
 enum NodeLifecycleToml {
     Started,
     Crashed,
+    Hung,
     Exited,
 }
 
@@ -15625,6 +15628,7 @@ fn node_lifecycle_to_toml(state: NodeLifecycle) -> NodeLifecycleToml {
     match state {
         NodeLifecycle::Started => NodeLifecycleToml::Started,
         NodeLifecycle::Crashed => NodeLifecycleToml::Crashed,
+        NodeLifecycle::Hung => NodeLifecycleToml::Hung,
         NodeLifecycle::Exited => NodeLifecycleToml::Exited,
     }
 }
@@ -15633,6 +15637,7 @@ fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
     match toml {
         NodeLifecycleToml::Started => NodeLifecycle::Started,
         NodeLifecycleToml::Crashed => NodeLifecycle::Crashed,
+        NodeLifecycleToml::Hung => NodeLifecycle::Hung,
         NodeLifecycleToml::Exited => NodeLifecycle::Exited,
     }
 }
@@ -17877,6 +17882,7 @@ fn write_node_lifecycle_binary(state: NodeLifecycle, writer: &mut ScenarioBinary
         NodeLifecycle::Started => 0,
         NodeLifecycle::Crashed => 1,
         NodeLifecycle::Exited => 2,
+        NodeLifecycle::Hung => 3,
     });
 }
 
@@ -17887,6 +17893,7 @@ fn read_node_lifecycle_binary(
         0 => Ok(NodeLifecycle::Started),
         1 => Ok(NodeLifecycle::Crashed),
         2 => Ok(NodeLifecycle::Exited),
+        3 => Ok(NodeLifecycle::Hung),
         _ => Err(scenario_serialization_error("invalid node lifecycle tag")),
     }
 }
@@ -19159,6 +19166,7 @@ fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     match state {
         NodeLifecycle::Started => "started",
         NodeLifecycle::Crashed => "crashed",
+        NodeLifecycle::Hung => "hung",
         NodeLifecycle::Exited => "exited",
     }
 }

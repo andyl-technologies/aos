@@ -25,11 +25,12 @@ use crate::model::{
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
-    EventLevel, EventLogCausalDivergencePoint, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
-    TriggerActionApplication, compare_event_log_determinism, scheduled_event_resolve_class,
-    scheduler_event_log_empty_prefix, scheduler_event_log_segment_bytes,
+    EventLevel, EventLogCausalDivergencePoint, EventLogIcountStamp, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
+    compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
+    scheduler_event_log_segment_bytes,
 };
 
 pub use crate::model::EventId;
@@ -278,7 +279,40 @@ impl ResolvedMemPlace {
     }
 }
 
-/// One black-box observable event visible to condition evaluation.
+/// Required black-box observation surface categories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlackBoxObservationKind {
+    /// Network frame traffic observed outside the guest.
+    NetworkTraffic,
+    /// Block-device or 9p request/response completion observed outside the guest.
+    DiskOrNinePIo,
+    /// Console or serial bytes captured as a pure output sink.
+    ConsoleSerialOutput,
+    /// QMP/plugin register or memory state sampled at a scheduler-defined point.
+    ArchitecturalStateSample,
+    /// Guest lifecycle outcome such as start or clean exit.
+    RunOutcome,
+    /// Crash or no-forward-progress detection.
+    CrashOrHangDetection,
+    /// TCG-exec basic-block coverage harvested without guest instrumentation.
+    BasicBlockCoverage,
+}
+
+/// Number of required black-box observation surface categories.
+pub const BLACK_BOX_OBSERVATION_KIND_COUNT: usize = 7;
+
+/// Closed required black-box observation surface.
+pub const BLACK_BOX_OBSERVATION_KINDS: [BlackBoxObservationKind; BLACK_BOX_OBSERVATION_KIND_COUNT] = [
+    BlackBoxObservationKind::NetworkTraffic,
+    BlackBoxObservationKind::DiskOrNinePIo,
+    BlackBoxObservationKind::ConsoleSerialOutput,
+    BlackBoxObservationKind::ArchitecturalStateSample,
+    BlackBoxObservationKind::RunOutcome,
+    BlackBoxObservationKind::CrashOrHangDetection,
+    BlackBoxObservationKind::BasicBlockCoverage,
+];
+
+/// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObservableEvent {
     at: VirtualTime,
@@ -497,6 +531,12 @@ impl ObservableEvent {
     pub fn payload(&self) -> &ObservableEventPayload {
         &self.payload
     }
+
+    /// Returns the required black-box surface category for this event, if any.
+    #[must_use]
+    pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
+        self.payload.black_box_observation_kind()
+    }
 }
 
 /// Typed observable event payloads used by condition leaves.
@@ -612,6 +652,49 @@ pub enum ObservableEventPayload {
         /// Assertion marker payload carried by the doorbell.
         marker: GuestAssertionMarker,
     },
+}
+
+impl ObservableEventPayload {
+    /// Returns the required black-box surface category for this payload, if any.
+    #[must_use]
+    pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
+        match self {
+            Self::NetworkDelivered { .. } => Some(BlackBoxObservationKind::NetworkTraffic),
+            Self::ConsoleOutput { .. } => Some(BlackBoxObservationKind::ConsoleSerialOutput),
+            Self::CoverageBlock { .. } => Some(BlackBoxObservationKind::BasicBlockCoverage),
+            Self::MemorySample { .. } => Some(BlackBoxObservationKind::ArchitecturalStateSample),
+            Self::IoCompletion {
+                kind:
+                    IoEventKind::BlockRead
+                    | IoEventKind::BlockWrite
+                    | IoEventKind::Fsync
+                    | IoEventKind::NineP,
+                ..
+            } => Some(BlackBoxObservationKind::DiskOrNinePIo),
+            Self::IoCompletion {
+                kind: IoEventKind::Network,
+                ..
+            } => Some(BlackBoxObservationKind::NetworkTraffic),
+            Self::NodeState {
+                state: NodeLifecycle::Started | NodeLifecycle::Exited,
+                ..
+            } => Some(BlackBoxObservationKind::RunOutcome),
+            Self::NodeState {
+                state: NodeLifecycle::Crashed | NodeLifecycle::Hung,
+                ..
+            } => Some(BlackBoxObservationKind::CrashOrHangDetection),
+            Self::CoverageMarker { .. }
+            | Self::AssertionProximity { .. }
+            | Self::AssertionStateChanged { .. }
+            | Self::AssertionEvaluated { .. }
+            | Self::IoCompletion {
+                kind: IoEventKind::Any,
+                ..
+            }
+            | Self::GuestMarker { .. }
+            | Self::GuestAssertionMarker { .. } => None,
+        }
+    }
 }
 
 /// Assertion flavor carried by a white-box doorbell assertion marker.
@@ -811,7 +894,7 @@ mod condition_evaluator_sealed {
 }
 
 /// Error returned when constructing a deterministic condition-evaluation prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConditionEvaluationError {
     /// A scheduler event-log prefix contained no entries.
     EmptyEventLogPrefix,
@@ -827,6 +910,17 @@ pub enum ConditionEvaluationError {
         /// Sequence number carried by the invalid entry.
         sequence: u64,
     },
+    /// A required black-box observation regressed relative to the previous one.
+    OutOfOrderEventLogEntry {
+        /// Sequence number carried by the previous black-box observation entry.
+        previous_sequence: u64,
+        /// Time of the previous black-box observation entry.
+        previous_at: VirtualTime,
+        /// Sequence number carried by the out-of-order black-box observation.
+        sequence: u64,
+        /// Time of the out-of-order black-box observation.
+        event_at: VirtualTime,
+    },
     /// An event-log entry occurs after the derived evaluation point.
     FutureEventLogEntry {
         /// Deterministic evaluation point.
@@ -835,6 +929,26 @@ pub enum ConditionEvaluationError {
         sequence: u64,
         /// Time of the future event-log entry.
         event_at: VirtualTime,
+    },
+    /// A required black-box observation was not logged as observational.
+    InvalidBlackBoxObservationClass {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+        /// Required black-box surface kind reconstructed from the payload.
+        kind: BlackBoxObservationKind,
+        /// Class recorded by the event-log entry.
+        class: SchedulerEventLogClass,
+    },
+    /// A required black-box observation's icount stamp does not match its payload.
+    InvalidBlackBoxObservationStamp {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+        /// Required black-box surface kind reconstructed from the payload.
+        kind: BlackBoxObservationKind,
+        /// Expected icount stamp for the payload at this event-log time.
+        expected: EventLogIcountStamp,
+        /// Icount stamp recorded by the event-log entry.
+        actual: EventLogIcountStamp,
     },
 }
 
@@ -853,6 +967,16 @@ impl fmt::Display for ConditionEvaluationError {
                 formatter,
                 "scheduler event-log entry {sequence} has an invalid content hash"
             ),
+            Self::OutOfOrderEventLogEntry {
+                previous_sequence,
+                previous_at,
+                sequence,
+                event_at,
+            } => write!(
+                formatter,
+                "black-box observation entry {sequence} at {} is before entry {previous_sequence} at {}",
+                event_at.ticks, previous_at.ticks
+            ),
             Self::FutureEventLogEntry {
                 point,
                 sequence,
@@ -861,6 +985,23 @@ impl fmt::Display for ConditionEvaluationError {
                 formatter,
                 "event-log entry {sequence} at {} is after evaluation point {}",
                 event_at.ticks, point.ticks
+            ),
+            Self::InvalidBlackBoxObservationClass {
+                sequence,
+                kind,
+                class,
+            } => write!(
+                formatter,
+                "black-box observation {kind:?} at event-log entry {sequence} has class {class:?}"
+            ),
+            Self::InvalidBlackBoxObservationStamp {
+                sequence,
+                kind,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "black-box observation {kind:?} at event-log entry {sequence} has icount stamp {actual:?}, expected {expected:?}"
             ),
         }
     }
@@ -877,6 +1018,7 @@ pub struct ConditionEventLogPrefix {
     prefix_offsets: BTreeMap<u64, EventLogOffset>,
     scheduler_entries: Vec<SchedulerEventLogEntry>,
     observable_events: Vec<ObservableEvent>,
+    black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
     ordering_facts: Vec<ObservedOrderingFact>,
     fault_facts: Vec<ObservedFaultFact>,
 }
@@ -892,6 +1034,7 @@ impl ConditionEventLogPrefix {
             prefix_offsets: BTreeMap::new(),
             scheduler_entries: Vec::new(),
             observable_events: Vec::new(),
+            black_box_observation_kinds: BTreeSet::new(),
             ordering_facts: Vec::new(),
             fault_facts: Vec::new(),
         }
@@ -912,9 +1055,13 @@ impl ConditionEventLogPrefix {
     /// [`ConditionEvaluationError::NonPrefixEventLogSequence`] when the entries
     /// are not a dense prefix starting at zero,
     /// [`ConditionEvaluationError::InvalidEventLogEntryHash`] when any entry's
-    /// content hash does not match its canonical material, or
+    /// content hash does not match its canonical material,
+    /// [`ConditionEvaluationError::OutOfOrderEventLogEntry`] when required
+    /// black-box observations are not ordered by event-log time,
     /// [`ConditionEvaluationError::FutureEventLogEntry`] when an entry occurs
-    /// after the derived evaluation point.
+    /// after the derived evaluation point, or a black-box observation error
+    /// when a required surface observation is not observational or carries an
+    /// invalid icount stamp.
     pub(crate) fn from_scheduler_event_log_entries(
         entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<Self, ConditionEvaluationError> {
@@ -930,8 +1077,10 @@ impl ConditionEventLogPrefix {
         };
         let point = EventEvaluationPoint::event_log_entry(last);
         let mut observable_events = Vec::new();
+        let mut black_box_observation_kinds = BTreeSet::new();
         let mut ordering_facts = Vec::new();
         let mut fault_facts = Vec::new();
+        let mut previous_black_box_observation: Option<&SchedulerEventLogEntry> = None;
         for (offset, entry) in entries.iter().enumerate() {
             let offset = u64::try_from(offset).map_err(|_| {
                 ConditionEvaluationError::NonPrefixEventLogSequence {
@@ -956,6 +1105,19 @@ impl ConditionEventLogPrefix {
                     sequence: entry.sequence(),
                 });
             }
+            if scheduler_entry_black_box_observation_kind(entry).is_some() {
+                if let Some(previous) = previous_black_box_observation {
+                    if entry.at().ticks < previous.at().ticks {
+                        return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
+                            previous_sequence: previous.sequence(),
+                            previous_at: previous.at(),
+                            sequence: entry.sequence(),
+                            event_at: entry.at(),
+                        });
+                    }
+                }
+                previous_black_box_observation = Some(entry);
+            }
             if entry.at().ticks > point.at().ticks {
                 return Err(ConditionEvaluationError::FutureEventLogEntry {
                     point: point.at(),
@@ -966,9 +1128,10 @@ impl ConditionEventLogPrefix {
             push_observed_state_facts(
                 entry,
                 &mut observable_events,
+                &mut black_box_observation_kinds,
                 &mut ordering_facts,
                 &mut fault_facts,
-            );
+            )?;
         }
         Ok(Self {
             point,
@@ -991,6 +1154,7 @@ impl ConditionEventLogPrefix {
             prefix_offsets: BTreeMap::new(),
             scheduler_entries: entries,
             observable_events,
+            black_box_observation_kinds,
             ordering_facts,
             fault_facts,
         })
@@ -1070,6 +1234,12 @@ impl ConditionEventLogPrefix {
     #[must_use]
     pub fn observable_events(&self) -> &[ObservableEvent] {
         &self.observable_events
+    }
+
+    /// Returns the required black-box observation categories present in this prefix.
+    #[must_use]
+    pub fn black_box_observation_kinds(&self) -> &BTreeSet<BlackBoxObservationKind> {
+        &self.black_box_observation_kinds
     }
 
     /// Returns cross-node ordering facts visible at [`Self::point`].
@@ -5454,6 +5624,7 @@ fn external_node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     match state {
         NodeLifecycle::Started => "started",
         NodeLifecycle::Crashed => "crashed",
+        NodeLifecycle::Hung => "hung",
         NodeLifecycle::Exited => "exited",
     }
 }
@@ -6095,15 +6266,21 @@ fn memory_cmp_distance_to_satisfaction(cmp: MemoryCmp, actual: u64, expected: u6
 fn push_observed_state_facts(
     entry: &SchedulerEventLogEntry,
     observable_events: &mut Vec<ObservableEvent>,
+    black_box_observation_kinds: &mut BTreeSet<BlackBoxObservationKind>,
     ordering_facts: &mut Vec<ObservedOrderingFact>,
     fault_facts: &mut Vec<ObservedFaultFact>,
-) {
+) -> Result<(), ConditionEvaluationError> {
     match entry.payload() {
         SchedulerEventLogPayload::Observable(payload) => {
-            observable_events.push(ObservableEvent {
+            let event = ObservableEvent {
                 at: entry.at(),
                 payload: payload.clone(),
-            });
+            };
+            if let Some(kind) = event.black_box_observation_kind() {
+                validate_black_box_observation_entry(entry, &event, kind)?;
+                black_box_observation_kinds.insert(kind);
+            }
+            observable_events.push(event);
         }
         SchedulerEventLogPayload::ResolvedHappening(event) => {
             push_resolved_happening_observed_facts(
@@ -6150,6 +6327,103 @@ fn push_observed_state_facts(
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::Diagnostic(_) => {}
+    }
+    Ok(())
+}
+
+fn scheduler_entry_black_box_observation_kind(
+    entry: &SchedulerEventLogEntry,
+) -> Option<BlackBoxObservationKind> {
+    let SchedulerEventLogPayload::Observable(payload) = entry.payload() else {
+        return None;
+    };
+    payload.black_box_observation_kind()
+}
+
+fn validate_black_box_observation_entry(
+    entry: &SchedulerEventLogEntry,
+    event: &ObservableEvent,
+    kind: BlackBoxObservationKind,
+) -> Result<(), ConditionEvaluationError> {
+    if entry.class() != SchedulerEventLogClass::Observational {
+        return Err(ConditionEvaluationError::InvalidBlackBoxObservationClass {
+            sequence: entry.sequence(),
+            kind,
+            class: entry.class(),
+        });
+    }
+    let expected = black_box_observation_icount_stamp(event.at(), event.payload());
+    if entry.time().icount != expected {
+        return Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
+            sequence: entry.sequence(),
+            kind,
+            expected,
+            actual: entry.time().icount.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn black_box_observation_icount_stamp(
+    at: VirtualTime,
+    payload: &ObservableEventPayload,
+) -> EventLogIcountStamp {
+    match payload {
+        ObservableEventPayload::NetworkDelivered { .. } => black_box_boundary_icount(at),
+        ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::IoCompletion {
+            kind:
+                IoEventKind::BlockRead
+                | IoEventKind::BlockWrite
+                | IoEventKind::Fsync
+                | IoEventKind::NineP
+                | IoEventKind::Network,
+            node,
+            ..
+        }
+        | ObservableEventPayload::NodeState { node, .. } => {
+            black_box_node_boundary_icount(at, node)
+        }
+        ObservableEventPayload::CoverageBlock {
+            execution_icount,
+            node,
+            ..
+        } => EventLogIcountStamp {
+            node: Some(node.clone()),
+            icount: *execution_icount,
+        },
+        ObservableEventPayload::MemorySample {
+            sample_icount,
+            node,
+            ..
+        } => EventLogIcountStamp {
+            node: Some(node.clone()),
+            icount: *sample_icount,
+        },
+        ObservableEventPayload::IoCompletion {
+            kind: IoEventKind::Any,
+            ..
+        }
+        | ObservableEventPayload::CoverageMarker { .. }
+        | ObservableEventPayload::AssertionProximity { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. }
+        | ObservableEventPayload::GuestMarker { .. }
+        | ObservableEventPayload::GuestAssertionMarker { .. } => black_box_boundary_icount(at),
+    }
+}
+
+fn black_box_boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
+    EventLogIcountStamp {
+        node: None,
+        icount: Icount { retired: at.ticks },
+    }
+}
+
+fn black_box_node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
+    EventLogIcountStamp {
+        node: Some(node.clone()),
+        icount: Icount { retired: at.ticks },
     }
 }
 

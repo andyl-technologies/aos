@@ -669,10 +669,19 @@ the transport layer by construction.
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
 > whose primary area is the guest↔host channel, tracked by [PLAN-3].
 
-- [ ] **T-GHC-1** Specify and enforce the black-box observation surface (network,
+- [x] **T-GHC-1** Specify and enforce the black-box observation surface (network,
   disk/9p, console/serial, QMP regs/memory, exit codes, crash/hang, basic-block
   coverage) as the required floor, each observation icount-stamped and ordered. —
   satisfies [GHC-1], [GHC-3], [GHC-7], [GHC-8]; spec §16.1, §16.2.
+  Completed by `checks.crucible.phase4.guestHostBlackBoxSurface`: `crucible`
+  now exposes a closed `BlackBoxObservationKind` catalog for the required
+  black-box floor, classifies observable event payloads into that surface while
+  excluding optional white-box markers, enforces the required surface and
+  virtual-time order plus required icount stamps when constructing condition
+  prefixes, records
+  no-progress detection as the black-box `Hung` node lifecycle state, and
+  regresses that every required surface category becomes an ordered,
+  icount-stamped observational event-log entry.
 - [ ] **T-GHC-2** Implement the OS-agnostic guarantee of black-box observation:
   no Linux/init/filesystem/ABI assumptions; verify on a non-Linux image. —
   satisfies [GHC-4], [GHC-9]; spec §16.2.

@@ -6,10 +6,11 @@ use std::collections::BTreeMap;
 
 use crucible::{
     Action, ConditionLeaf, ConditionLeafOracle, Event, EventGraph, EventGraphState, EventId,
-    FaultTag, Icount, LinkDef, LogLevel, MembershipFault, NodeId, NodeTemplate, PartitionDirection,
-    Plan, PlanEntry, Predicate, ReadyPoint, RegexProgram, RestartPolicy,
-    SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    ExactLocalEvent, FaultTag, Icount, LinkDef, LogLevel, MembershipFault, NetworkLookahead,
+    NodeCounter, NodeId, NodeTemplate, PartitionDirection, Plan, PlanEntry, Predicate, ReadyPoint,
+    RegexProgram, RestartPolicy, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
+    SimInstant, SingleScheduler, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn event_id(name: &str) -> EventId {
@@ -66,10 +67,27 @@ fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
         shift(0),
         16,
         SimInstant { nanos: 100 },
-        Vec::new(),
+        vec![scenario_node("db-0"), scenario_node("db-1")],
         Vec::new(),
     )
     .with_trigger_world(world)
+}
+
+fn scenario_node(name: &str) -> SchedulerScenarioNode {
+    SchedulerScenarioNode {
+        id: scheduler_node(name),
+        counter: NodeCounter { ticks: 0 },
+        activity: SchedulerNodeActivity::Idle,
+        network_lookahead: NetworkLookahead::Infinite,
+        exact_local_event: ExactLocalEvent::NoArmedTimer,
+    }
+}
+
+fn scheduler_node(name: &str) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: node(name),
+        kind: SchedulingNodeKind::Vm,
+    }
 }
 
 fn split_fault() -> MembershipFault {

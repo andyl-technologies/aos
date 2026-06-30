@@ -158,7 +158,7 @@ fn assertion_state_observes_current_causal_entry() {
     );
 
     assert!(
-        evaluator(42, vec![wrong_state, wrong_assertion, wrong_time, matching])
+        evaluator(42, vec![wrong_time, wrong_state, wrong_assertion, matching])
             .evaluate_assertion_condition(&condition)
     );
 }
