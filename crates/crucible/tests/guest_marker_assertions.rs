@@ -675,12 +675,12 @@ fn guest_marker_assertions_ignore_disabled_white_box_nodes() {
 fn guest_marker_assertion_implementation_is_observational_and_deterministic() {
     let trigger = include_str!("../src/trigger.rs");
     let marker_block = trigger
-        .split("pub struct GuestAssertionMarker")
+        .split("pub enum GuestAssertionKind")
         .nth(1)
-        .expect("guest assertion marker payload should exist")
-        .split("fn push_observed_state_facts")
+        .expect("guest assertion marker kind should exist")
+        .split("/// Host-authored resolver for assertion leaves")
         .next()
-        .expect("observed state fold follows guest assertion evaluator");
+        .expect("host assertion resolver follows guest assertion marker payload");
 
     for required in [
         "pub id: AssertionId",
@@ -689,7 +689,13 @@ fn guest_marker_assertion_implementation_is_observational_and_deterministic() {
         "pub must_hit: bool",
         "pub details: Vec<GuestAssertionDetail>",
         "pub location: String",
-        "ObservableEventPayload::GuestAssertionMarker",
+    ] {
+        assert!(
+            marker_block.contains(required),
+            "guest assertion marker implementation must include {required}"
+        );
+    }
+    for required in [
         "GuestAssertionKind::Always",
         "GuestAssertionKind::Sometimes",
         "GuestAssertionKind::Reachable",
@@ -698,7 +704,7 @@ fn guest_marker_assertion_implementation_is_observational_and_deterministic() {
         "with_guest_assertion_catalog",
     ] {
         assert!(
-            marker_block.contains(required),
+            trigger.contains(required),
             "guest assertion marker implementation must include {required}"
         );
     }

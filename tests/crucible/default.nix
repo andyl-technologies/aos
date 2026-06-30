@@ -747,6 +747,11 @@ in {
       attrPath = "checks.crucible.phase4.assertionDeterminismNonPerturbation";
       taskIds = ["T-ASRT-13"];
     };
+    assertionViolationRecords = import ./phase4-assertion-violation-records.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.assertionViolationRecords";
+      taskIds = ["T-ASRT-14"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
