@@ -839,10 +839,15 @@ log, so they cannot disagree about what happened.
   includes that payload view in canonical entry and segment material, and carries
   a typed `diagnostic` escape hatch whose display `EventLevel` stays independent
   from `EventClass`.
-- [ ] **T-OBS-4** Bake the causal/observational split into the schema: class is a
+- [x] **T-OBS-4** Bake the causal/observational split into the schema: class is a
   function of the payload kind set at the typed append site, with a lint that
   rejects any append whose class mismatches the catalog. — satisfies [OBS-13],
   [OBS-14], [OBS-15], [OBS-16]; spec §19.3, §19.7.
+  Completed by `checks.crucible.phase4.eventLogClassCatalog`: `LogEntry` now
+  exposes a catalog-class predicate, the unified `EventLog::append_entries` path
+  rejects entries whose recorded class disagrees with the typed payload-kind
+  catalog, and private scheduler regressions prove both class mismatch and
+  typed-kind drift fail before append.
 - [ ] **T-OBS-5** Implement content-addressed log segments (BLAKE3-keyed,
   deduplicated), prefix-sharing forks, checkpoint `event_log_offset` references,
   and a deterministic versioned binary canonical serialization with a derived text
