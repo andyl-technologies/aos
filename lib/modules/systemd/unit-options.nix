@@ -223,6 +223,20 @@ in rec {
         internal = true;
         description = "The generated unit.";
       };
+
+      # RFC-0011 F2-A: the job-script records (from `makeJobScript`) whose
+      # `#aos-jobscript:<key>#` placeholders appear in `text`. `serviceToUnit`
+      # copies the owning service's records here so `makeUnit` can substitute
+      # each placeholder back to its build-side `path` when materializing the
+      # bootable unit file. `text` keeps placeholders so the on-host eval-only
+      # manifest (`system.build.systemdUnitBodies`) renders the unit body
+      # without forcing any job-script derivation. Untyped (like `unit`) so
+      # type-checking never forces the carried `path` derivations.
+      jobScripts = mkOption {
+        internal = true;
+        default = [];
+        description = "RFC-0011 F2-A job-script records whose placeholders appear in `text`.";
+      };
     };
 
   commonUnitOptions = {
@@ -613,7 +627,17 @@ in rec {
         # records are folded into `manifest.jobScripts` and drive the
         # build-side job-script materialization. Was `listOf path` (bare
         # store paths) before the render/assemble split.
-        type = with types; listOf (attrsOf (either str package));
+        #
+        # The element type is the freeform `attrs`, NOT
+        # `attrsOf (either str package)`: the latter's per-field `package`
+        # check calls `isDerivation` on every record field, forcing the `drv`
+        # (a `writeTextFile`) whenever the option is read — even though the
+        # manifest only consumes the string fields (`key`/`body`/`mode`/
+        # `scriptName`). That force faults under the RFC-0011 on-host eval-only
+        # `pkgs` (no builder functions). `attrs` validates each element is an
+        # attrset without descending into (forcing) its values; `listOf`
+        # still concatenates contributions across the six Exec* mkMerge blocks.
+        type = with types; listOf attrs;
         internal = true;
         description = "Job-script records (RFC-0011 F2-A) for this unit.";
         default = [];
@@ -648,12 +672,18 @@ in rec {
     # sub-attribute level inside `serviceConfig = attrsOf unitOption`.
     #
     # RFC-0011 F2-A: `makeJobScript` now returns a record (not a bare path).
-    # Each block appends the record to `jobScripts` and plugs the build-side
-    # store path (`js.path`) into the `Exec*=` directive — keeping the exact
-    # value *shape* of the old code (list vs. string, the `script` case's
-    # `path + " " + scriptArgs` form, trailing space when `scriptArgs == ""`)
-    # so the only rendered byte change is the path token itself. `slot` is
-    # the systemd directive each option feeds; index is always 0.
+    # Each block appends the record to `jobScripts` and plugs the *placeholder*
+    # token (`js.placeholder = #aos-jobscript:<key>#`) into the `Exec*=`
+    # directive — NOT the build-side store path. The placeholder is a pure
+    # function of the unit/slot/index (no derivation), so the rendered unit
+    # text is drv-free and the on-host eval-only manifest can compute it under
+    # a `pkgs` that has no builder functions (RFC-0011 stage-2). The build-side
+    # `makeUnit` substitutes each placeholder back to `js.path` when it
+    # materializes the bootable unit file, so `system.build.systemdSystemUnits`
+    # stays byte-for-byte identical. The value *shape* is unchanged (list vs.
+    # string, the `script` case's `<tok> + " " + scriptArgs` form, trailing
+    # space when `scriptArgs == ""`). `slot` is the systemd directive each
+    # option feeds; index is always 0.
     config = mkMerge [
       (mkIf (config.preStart != "") (let
         js = makeJobScript {
@@ -664,7 +694,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecStartPre = lib.mkDefault [js.path];
+        serviceConfig.ExecStartPre = lib.mkDefault [js.placeholder];
       }))
       (mkIf (config.script != "") (let
         js = makeJobScript {
@@ -675,7 +705,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecStart = lib.mkDefault (js.path + " " + config.scriptArgs);
+        serviceConfig.ExecStart = lib.mkDefault (js.placeholder + " " + config.scriptArgs);
       }))
       (mkIf (config.postStart != "") (let
         js = makeJobScript {
@@ -686,7 +716,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecStartPost = lib.mkDefault [js.path];
+        serviceConfig.ExecStartPost = lib.mkDefault [js.placeholder];
       }))
       (mkIf (config.reload != "") (let
         js = makeJobScript {
@@ -697,7 +727,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecReload = lib.mkDefault js.path;
+        serviceConfig.ExecReload = lib.mkDefault js.placeholder;
       }))
       (mkIf (config.preStop != "") (let
         js = makeJobScript {
@@ -708,7 +738,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecStop = lib.mkDefault js.path;
+        serviceConfig.ExecStop = lib.mkDefault js.placeholder;
       }))
       (mkIf (config.postStop != "") (let
         js = makeJobScript {
@@ -719,7 +749,7 @@ in rec {
         };
       in {
         jobScripts = [js];
-        serviceConfig.ExecStopPost = lib.mkDefault js.path;
+        serviceConfig.ExecStopPost = lib.mkDefault js.placeholder;
       }))
     ];
   };
