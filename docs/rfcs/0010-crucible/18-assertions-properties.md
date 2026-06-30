@@ -920,9 +920,16 @@ verdict; it only shapes the next schedule the search tries.
   reachability, non-failing never-triggered and warn-disposition outcomes, and
   static coverage of the distinct taxonomy. Full scoped lifecycle semantics
   remain with T-ASRT-12.
-- [ ] **T-ASRT-9** Keep external formal-spec conformance strictly offline via
+- [x] **T-ASRT-9** Keep external formal-spec conformance strictly offline via
   trace export to existing tooling; ensure no in-runtime formal-spec evaluator is
   added. — satisfies [ASRT-17], [NG-3]; spec §18.6, §18.10.
+  Completed by `checks.crucible.phase4.formalTraceExport`:
+  `ExternalFormalTraceExporter` validates retained scheduler event-log entries
+  and emits deterministic, content-addressed trace bytes for external consumers
+  without changing scheduler event-log encoding.
+  The gate verifies deterministic export, invalid-log rejection, public export
+  wiring, and a static guard against named in-runtime
+  solver/model-checker/spec-evaluator entry points or dependencies.
 - [ ] **T-ASRT-10** Implement the assertion engine's evaluation timing
   (per-relevant-event + Eventually deadline points; AfterQuiescence once at
   quiescence/limit) as a deterministic function of the log. — satisfies [ASRT-18],
