@@ -657,6 +657,11 @@ in {
       attrPath = "checks.crucible.phase4.imperativeFaultControl";
       taskIds = ["T-FAULT-11"];
     };
+    faultTagState = import ./phase4-fault-tag-state.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.faultTagState";
+      taskIds = ["T-FAULT-12"];
+    };
     gates = {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;

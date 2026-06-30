@@ -6569,6 +6569,8 @@ pub struct SchedulerState {
     pub timers: TimerRegistry,
     /// Faults currently active in the scheduler.
     pub active_faults: BTreeMap<FaultId, FaultState>,
+    /// Active injected faults keyed by their stable heal tag.
+    pub active_fault_tags: BTreeMap<FaultTag, MembershipFault>,
 }
 
 impl SchedulerState {
@@ -6581,6 +6583,38 @@ impl SchedulerState {
             event_sequences: EventSequenceState::empty(),
             timers: TimerRegistry::empty(),
             active_faults: BTreeMap::new(),
+            active_fault_tags: BTreeMap::new(),
+        }
+    }
+
+    /// Reconstructs scheduler state from the causal decisions in `schedule`.
+    #[must_use]
+    pub fn from_schedule(schedule: &Schedule) -> Self {
+        let mut state = Self::empty();
+        state.apply_decisions(schedule.decisions());
+        state
+    }
+
+    /// Applies causal decisions that mutate materialized scheduler state.
+    pub fn apply_decisions(&mut self, decisions: &[Decision]) {
+        for decision in decisions {
+            self.apply_decision(decision);
+        }
+    }
+
+    /// Applies one causal decision that mutates materialized scheduler state.
+    pub fn apply_decision(&mut self, decision: &Decision) {
+        let Decision::ControlFault(control) = decision else {
+            return;
+        };
+        match &control.action {
+            ControlFaultAction::Inject { tag, fault } => {
+                self.active_fault_tags
+                    .insert(tag.clone(), MembershipFault::taxonomy(fault.clone()));
+            }
+            ControlFaultAction::Heal { tag } => {
+                self.active_fault_tags.remove(tag);
+            }
         }
     }
 }
@@ -6906,6 +6940,12 @@ impl Checkpoint {
         node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     ) -> Result<Self, EngineError> {
         let (parent, schedule_delta) = checkpoint_edge(configuration, parent)?;
+        let state = materialized_state_for_kind_with_scheduler(
+            kind,
+            &node_icounts,
+            &node_blobs,
+            scheduler_state_for_configuration(configuration),
+        );
         Ok(Self {
             id: configuration.id(),
             configuration: configuration.id(),
@@ -6913,7 +6953,7 @@ impl Checkpoint {
             parent,
             schedule_delta,
             virtual_time,
-            state: materialized_state_for_kind(kind, &node_icounts, &node_blobs),
+            state,
             node_icounts,
             coverage_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
@@ -9186,6 +9226,8 @@ pub struct RuntimeState {
     pub node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     /// Per-node retired instruction counters at the materialization point.
     pub node_icounts: BTreeMap<NodeId, Icount>,
+    /// Scheduler-owned state reconstructed at the materialization point.
+    pub scheduler: SchedulerState,
 }
 
 /// Appends one decision to a configuration without materializing runtime state.
@@ -9844,23 +9886,31 @@ fn load_snapshot(
     checkpoint: &Checkpoint,
 ) -> Result<RuntimeState, EngineError> {
     validate_loadable_checkpoint(checkpoint, configuration)?;
-    runtime_for_configuration(
+    let scheduler = checkpoint
+        .state
+        .as_ref()
+        .map(|state| state.scheduler.clone())
+        .unwrap_or_else(|| scheduler_state_for_configuration(configuration));
+    runtime_for_configuration_with_scheduler(
         configuration,
         checkpoint.node_blobs.clone(),
         checkpoint.node_icounts.clone(),
+        scheduler,
     )
 }
 
-fn runtime_for_configuration(
+fn runtime_for_configuration_with_scheduler(
     configuration: &Configuration,
     node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     node_icounts: BTreeMap<NodeId, Icount>,
+    scheduler: SchedulerState,
 ) -> Result<RuntimeState, EngineError> {
     Ok(RuntimeState {
         id: reduce(&configuration.def, &configuration.schedule)?.id,
         configuration: configuration.id(),
         node_blobs,
         node_icounts,
+        scheduler,
     })
 }
 
@@ -9892,7 +9942,13 @@ fn replay_suffix(
 
     let node_blobs = replayed_node_blobs(&runtime.node_blobs, start, suffix, target);
     let node_icounts = replayed_node_icounts(&runtime.node_icounts, suffix);
-    runtime_for_configuration(&replayed, node_blobs, node_icounts)
+    let mut scheduler = runtime.scheduler;
+    scheduler.apply_decisions(suffix.decisions());
+    runtime_for_configuration_with_scheduler(&replayed, node_blobs, node_icounts, scheduler)
+}
+
+fn scheduler_state_for_configuration(configuration: &Configuration) -> SchedulerState {
+    SchedulerState::from_schedule(&configuration.schedule)
 }
 
 fn instantiate_thin_replay(
@@ -9939,14 +9995,23 @@ fn materialized_checkpoint_for_runtime(
         });
     }
     let parent = immediate_parent_configuration(configuration)?;
-    Checkpoint::from_recorded_configuration(
+    let state = MaterializedState::from_components(
+        materialized_vm_snapshots(&runtime.node_icounts, &runtime.node_blobs),
+        BTreeMap::new(),
+        runtime.scheduler.clone(),
+        DecisionRngState::empty(),
+        EventLogOffset::default(),
+    );
+    let mut checkpoint = Checkpoint::from_recorded_configuration(
         configuration,
         parent.as_ref(),
         VirtualTime::default(),
         runtime.node_icounts,
         CheckpointKind::Fat,
         runtime.node_blobs,
-    )
+    )?;
+    checkpoint.state = Some(state);
+    Ok(checkpoint)
 }
 
 fn validate_loadable_checkpoint(
@@ -10164,10 +10229,27 @@ fn materialized_state_for_kind(
     node_icounts: &BTreeMap<NodeId, Icount>,
     node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
 ) -> Option<MaterializedState> {
+    materialized_state_for_kind_with_scheduler(
+        kind,
+        node_icounts,
+        node_blobs,
+        SchedulerState::empty(),
+    )
+}
+
+fn materialized_state_for_kind_with_scheduler(
+    kind: CheckpointKind,
+    node_icounts: &BTreeMap<NodeId, Icount>,
+    node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
+    scheduler: SchedulerState,
+) -> Option<MaterializedState> {
     match kind {
-        CheckpointKind::Fat => Some(MaterializedState::from_checkpoint_parts(
-            node_icounts,
-            node_blobs,
+        CheckpointKind::Fat => Some(MaterializedState::from_components(
+            materialized_vm_snapshots(node_icounts, node_blobs),
+            BTreeMap::new(),
+            scheduler,
+            DecisionRngState::empty(),
+            EventLogOffset::default(),
         )),
         CheckpointKind::Thin => None,
     }
@@ -10628,6 +10710,19 @@ fn push_symmetry_scheduler_lines(
     fault_lines.sort();
     lines.push(format!("scheduler.active_faults={}", fault_lines.len()));
     lines.extend(fault_lines);
+
+    let mut tag_lines = Vec::new();
+    for (tag, fault) in &scheduler.active_fault_tags {
+        tag_lines.push(format!(
+            "scheduler.fault_tag.name_len={}\nscheduler.fault_tag.name={}\nscheduler.fault_tag.fault={}",
+            tag.name.len(),
+            tag.name,
+            membership_fault_material(fault)
+        ));
+    }
+    tag_lines.sort();
+    lines.push(format!("scheduler.active_fault_tags={}", tag_lines.len()));
+    lines.extend(tag_lines);
     Some(())
 }
 

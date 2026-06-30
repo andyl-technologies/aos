@@ -1069,6 +1069,12 @@ mod tests {
                 configuration: config.id(),
                 node_blobs: snapshot.checkpoint.node_blobs.clone(),
                 node_icounts: snapshot.checkpoint.node_icounts.clone(),
+                scheduler: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.scheduler.clone())
+                    .unwrap_or_else(crucible::SchedulerState::empty),
             })
         }
 
@@ -1090,6 +1096,12 @@ mod tests {
                 configuration: config.id(),
                 node_blobs: snapshot.checkpoint.node_blobs.clone(),
                 node_icounts: snapshot.checkpoint.node_icounts.clone(),
+                scheduler: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.scheduler.clone())
+                    .unwrap_or_else(crucible::SchedulerState::empty),
             })
         }
 
@@ -1106,6 +1118,12 @@ mod tests {
                 configuration: config.id(),
                 node_blobs: snapshot.checkpoint.node_blobs.clone(),
                 node_icounts: snapshot.checkpoint.node_icounts.clone(),
+                scheduler: snapshot
+                    .checkpoint
+                    .state
+                    .as_ref()
+                    .map(|state| state.scheduler.clone())
+                    .unwrap_or_else(crucible::SchedulerState::empty),
             })
         }
 
@@ -1119,11 +1137,14 @@ mod tests {
                 to_len: request.to.schedule.len(),
                 value: decision_value(&request.decision),
             });
+            let mut scheduler = runtime.scheduler;
+            scheduler.apply_decision(&request.decision);
             Ok(RuntimeState {
                 id: request.to.id(),
                 configuration: request.to.id(),
                 node_blobs: runtime.node_blobs,
                 node_icounts: runtime.node_icounts,
+                scheduler,
             })
         }
     }
@@ -1256,6 +1277,51 @@ mod tests {
             QemuVmRealizationOperation::Fork { prefix_len: 1 }
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_loadvm_preserves_materialized_scheduler_active_tags()
+    -> Result<(), QemuVmRealizationError> {
+        let log = shared_log();
+        let mut executor = scripted_executor(log);
+        let def = scenario("qemu-active-tags");
+        let config = Configuration::genesis(def);
+        let tag = crucible::FaultTag::from_name("qemu-tag");
+        let fault = crucible::MembershipFault::NotYetJoined {
+            node: NodeId {
+                name: String::from("qemu"),
+            },
+        };
+        let mut scheduler = crucible::SchedulerState::empty();
+        scheduler
+            .active_fault_tags
+            .insert(tag.clone(), fault.clone());
+        let state = MaterializedState::from_components(
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            scheduler,
+            crucible::DecisionRngState::empty(),
+            crucible::EventLogOffset::default(),
+        );
+        let snapshot = QemuVmSnapshot {
+            checkpoint: checkpoint_for_config("qemu-active-tags", &config, CheckpointKind::Fat)
+                .with_materialized_state(Some(state)),
+            replay_oracle_validation: QemuReplayOracleValidation::Match {
+                runtime_hash: config.id(),
+            },
+        };
+
+        let runtime = executor.load_exact_snapshot(
+            &config,
+            &snapshot,
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
+            QemuLoadvmRealizationAdmission {
+                runtime_hash: config.id(),
+            },
+        )?;
+
+        assert_eq!(runtime.scheduler.active_fault_tags.get(&tag), Some(&fault));
         Ok(())
     }
 
