@@ -868,6 +868,19 @@ impl EventLogCausalProjection {
     }
 }
 
+/// Event-log coordinate for the first differing causal entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogCausalDivergencePoint {
+    /// Index of the entry in the original unified event log before filtering.
+    pub raw_index: usize,
+    /// Icount-stamped location that pins the divergence to a node, when node-local.
+    pub at: EventLogIcountStamp,
+    /// Closed source that emitted the differing entry.
+    pub source: EventSource,
+    /// Open-set payload kind for the differing entry.
+    pub kind: String,
+}
+
 /// First causal-subsequence difference found by an event-log comparison.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogDeterminismMismatch {
@@ -877,10 +890,24 @@ pub struct EventLogDeterminismMismatch {
     pub expected_raw_index: Option<usize>,
     /// Raw unified-log index on the reproduced side, when present.
     pub reproduced_raw_index: Option<usize>,
+    /// Expected-side coordinate for the first differing causal entry.
+    pub expected_location: Option<EventLogCausalDivergencePoint>,
+    /// Reproduced-side coordinate for the first differing causal entry.
+    pub reproduced_location: Option<EventLogCausalDivergencePoint>,
     /// Expected renumbered causal entry at `causal_index`, when present.
     pub expected_entry: Option<SchedulerEventLogEntry>,
     /// Reproduced renumbered causal entry at `causal_index`, when present.
     pub reproduced_entry: Option<SchedulerEventLogEntry>,
+}
+
+impl EventLogDeterminismMismatch {
+    /// Returns the first available side-specific event-log localization point.
+    #[must_use]
+    pub fn first_location(&self) -> Option<&EventLogCausalDivergencePoint> {
+        self.expected_location
+            .as_ref()
+            .or(self.reproduced_location.as_ref())
+    }
 }
 
 /// Result of comparing two unified event logs for deterministic equality.
@@ -1005,12 +1032,25 @@ fn event_log_determinism_mismatch(
                 causal_index,
                 expected_raw_index: expected_entry.map(|entry| entry.raw_index),
                 reproduced_raw_index: reproduced_entry.map(|entry| entry.raw_index),
+                expected_location: expected_entry.map(event_log_causal_divergence_point),
+                reproduced_location: reproduced_entry.map(event_log_causal_divergence_point),
                 expected_entry: expected_entry.map(|entry| entry.entry.clone()),
                 reproduced_entry: reproduced_entry.map(|entry| entry.entry.clone()),
             });
         }
     }
     None
+}
+
+fn event_log_causal_divergence_point(
+    entry: &EventLogCausalProjectionEntry,
+) -> EventLogCausalDivergencePoint {
+    EventLogCausalDivergencePoint {
+        raw_index: entry.raw_index,
+        at: entry.entry.time().icount.clone(),
+        source: entry.entry.source().clone(),
+        kind: entry.entry.event_payload().kind().to_owned(),
+    }
 }
 
 impl Default for EventLog {

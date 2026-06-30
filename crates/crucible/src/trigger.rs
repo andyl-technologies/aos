@@ -25,9 +25,9 @@ use crate::model::{
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
-    EventLevel, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
+    EventLevel, EventLogCausalDivergencePoint, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
     TriggerActionApplication, compare_event_log_determinism, scheduled_event_resolve_class,
     scheduler_event_log_empty_prefix, scheduler_event_log_segment_bytes,
 };
@@ -1742,6 +1742,8 @@ pub struct AssertionViolationBisectionRequest {
     pub schedule_decision_count: usize,
     /// First differing schedule-decision prefix length, when the logs expose one.
     pub first_different_decision_prefix_len: Option<usize>,
+    /// First differing causal event-log entry reported to `gate:divergence-bisect`.
+    pub first_different_causal_entry: Option<EventLogCausalDivergencePoint>,
     /// Stable reason for invoking `gate:divergence-bisect`.
     pub reason: &'static str,
 }
@@ -1772,6 +1774,8 @@ pub struct AssertionViolationDivergence {
     pub first_different_prefix_len: usize,
     /// Icount associated with the first differing event or violation, when known.
     pub first_different_icount: Option<Icount>,
+    /// First differing causal event-log entry, when the event log differs.
+    pub first_different_causal_entry: Option<EventLogCausalDivergencePoint>,
     /// Recorded event-log entry at the first differing prefix position.
     pub expected_event: Option<SchedulerEventLogEntry>,
     /// Replayed event-log entry at the first differing prefix position.
@@ -3590,8 +3594,13 @@ fn assertion_violation_replay_divergence(
     expected_report: &HostAssertionReport,
     reproduced_report: &HostAssertionReport,
 ) -> AssertionViolationDivergence {
-    let event_logs_differ =
-        !event_log_causal_projections_match(expected_log.entries(), reproduced_log.entries());
+    let event_log_comparison =
+        compare_event_log_determinism(expected_log.entries(), reproduced_log.entries());
+    let event_logs_differ = !event_log_comparison.passes();
+    let event_mismatch = event_log_comparison.mismatch().cloned();
+    let first_different_causal_entry = event_mismatch
+        .as_ref()
+        .and_then(|mismatch| mismatch.first_location().cloned());
     let event_prefix = if event_logs_differ {
         first_different_assertion_replay_prefix(expected_log, reproduced_log)
     } else {
@@ -3606,6 +3615,7 @@ fn assertion_violation_replay_divergence(
             expected_log,
             reproduced_log,
         ),
+        first_different_causal_entry: first_different_causal_entry.clone(),
         reason: "assertion violation did not reproduce bit-identically",
     };
     let expected_prefix_report = assertion_replay_report_for_prefix(
@@ -3632,45 +3642,35 @@ fn assertion_violation_replay_divergence(
         first_differing_violation(expected_report.violations(), reproduced_report.violations())
             .unwrap_or((None, None))
     });
-    let expected_event = event_logs_differ
-        .then(|| {
-            expected_log
-                .entries()
-                .get(
-                    event_prefix
-                        .expected_first_different_event_prefix_len
-                        .saturating_sub(1),
-                )
-                .cloned()
-        })
-        .flatten();
-    let reproduced_event = event_logs_differ
-        .then(|| {
-            reproduced_log
-                .entries()
-                .get(
-                    event_prefix
-                        .reproduced_first_different_event_prefix_len
-                        .saturating_sub(1),
-                )
-                .cloned()
-        })
-        .flatten();
-    let first_different_icount = expected_violation
+    let expected_event = event_mismatch
         .as_ref()
-        .and_then(|violation| violation.at_icount)
+        .and_then(|mismatch| mismatch.expected_raw_index)
+        .and_then(|raw_index| expected_log.entries().get(raw_index))
+        .cloned();
+    let reproduced_event = event_mismatch
+        .as_ref()
+        .and_then(|mismatch| mismatch.reproduced_raw_index)
+        .and_then(|raw_index| reproduced_log.entries().get(raw_index))
+        .cloned();
+    let first_different_icount = first_different_causal_entry
+        .as_ref()
+        .map(|entry| entry.at.icount)
+        .or_else(|| {
+            expected_violation
+                .as_ref()
+                .and_then(|violation| violation.at_icount)
+        })
         .or_else(|| {
             reproduced_violation
                 .as_ref()
                 .and_then(|violation| violation.at_icount)
-        })
-        .or_else(|| event_icount(expected_event.as_ref()))
-        .or_else(|| event_icount(reproduced_event.as_ref()));
+        });
 
     AssertionViolationDivergence {
         artifact,
         first_different_prefix_len: event_prefix.expected_first_different_event_prefix_len,
         first_different_icount,
+        first_different_causal_entry,
         expected_event,
         reproduced_event,
         expected_violation,
@@ -3867,34 +3867,6 @@ fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
             | SchedulerEventLogPayload::Diagnostic(_) => None,
         })
         .collect()
-}
-
-fn event_icount(entry: Option<&SchedulerEventLogEntry>) -> Option<Icount> {
-    let entry = entry?;
-    match entry.payload() {
-        SchedulerEventLogPayload::Observable(observable) => match observable {
-            ObservableEventPayload::CoverageBlock {
-                execution_icount, ..
-            } => Some(*execution_icount),
-            ObservableEventPayload::MemorySample { sample_icount, .. } => Some(*sample_icount),
-            ObservableEventPayload::GuestMarker { retired_icount, .. }
-            | ObservableEventPayload::GuestAssertionMarker { retired_icount, .. } => {
-                Some(*retired_icount)
-            }
-            ObservableEventPayload::NetworkDelivered { .. }
-            | ObservableEventPayload::ConsoleOutput { .. }
-            | ObservableEventPayload::IoCompletion { .. }
-            | ObservableEventPayload::NodeState { .. }
-            | ObservableEventPayload::AssertionStateChanged { .. }
-            | ObservableEventPayload::AssertionEvaluated { .. } => None,
-        },
-        SchedulerEventLogPayload::EvaluationBoundary(_) => None,
-        SchedulerEventLogPayload::ResolvedHappening(_)
-        | SchedulerEventLogPayload::Decision(_)
-        | SchedulerEventLogPayload::TriggerFired(_)
-        | SchedulerEventLogPayload::TriggerActionApplied(_)
-        | SchedulerEventLogPayload::Diagnostic(_) => None,
-    }
 }
 
 fn engine_error_message(error: &EngineError) -> String {

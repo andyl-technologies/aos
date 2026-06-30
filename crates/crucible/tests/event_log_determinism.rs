@@ -5,15 +5,25 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError,
-    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, MaterializedState,
-    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
+    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
+    EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, EventSource,
+    Icount, MaterializedState, NodeId, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
     compare_event_log_determinism, event_log_causal_projection, step,
 };
 
+fn node(name: &str) -> NodeId {
+    NodeId {
+        name: name.to_owned(),
+    }
+}
+
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
+}
+
+fn icount(retired: u64) -> Icount {
+    Icount { retired }
 }
 
 fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEventLogEntry {
@@ -22,6 +32,26 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
         time(ticks),
         SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name(stream),
+            value,
+        })),
+    )
+}
+
+fn app_random_entry(
+    sequence: u64,
+    ticks: u64,
+    node_name: &str,
+    stream: &str,
+    value: u64,
+) -> SchedulerEventLogEntry {
+    crucible::test_support::condition_payload_entry_for_test(
+        sequence,
+        time(ticks),
+        SchedulerEventLogPayload::Decision(Decision::AppRandom(AppRandomDecision {
+            node: node(node_name),
+            stream: RngStreamId::from_name(stream),
+            request_id: 1,
+            width: 32,
             value,
         })),
     )
@@ -127,6 +157,51 @@ fn causal_projection_bytes_differ_on_first_causal_payload_change() {
     assert_eq!(mismatch.causal_index, 0);
     assert_eq!(mismatch.expected_raw_index, Some(0));
     assert_eq!(mismatch.reproduced_raw_index, Some(0));
+}
+
+#[test]
+fn causal_mismatch_reports_first_differing_entry_coordinate() {
+    let expected = vec![
+        diagnostic_entry(0, 8, "before", EventLevel::Debug, BTreeMap::new()),
+        app_random_entry(1, 9, "guest-a", "node-local-random", 31),
+        boundary_entry(2, 10),
+    ];
+    let reproduced = vec![
+        diagnostic_entry(0, 8, "before", EventLevel::Trace, BTreeMap::new()),
+        app_random_entry(1, 9, "guest-a", "node-local-random", 32),
+        boundary_entry(2, 10),
+    ];
+
+    let comparison = compare_event_log_determinism(&expected, &reproduced);
+    let mismatch = comparison
+        .mismatch()
+        .expect("node-local causal payload change should produce a mismatch");
+    let expected_location = mismatch
+        .expected_location
+        .as_ref()
+        .expect("expected side should carry a causal divergence point");
+    let reproduced_location = mismatch
+        .reproduced_location
+        .as_ref()
+        .expect("reproduced side should carry a causal divergence point");
+
+    assert!(!comparison.passes());
+    assert_eq!(mismatch.causal_index, 0);
+    assert_eq!(expected_location.raw_index, 1);
+    assert_eq!(expected_location.at.node.as_ref(), Some(&node("guest-a")));
+    assert_eq!(expected_location.at.icount, icount(9));
+    assert_eq!(
+        &expected_location.source,
+        &EventSource::Guest {
+            node: node("guest-a")
+        }
+    );
+    assert_eq!(expected_location.kind.as_str(), "app_random");
+    assert_eq!(mismatch.first_location(), Some(expected_location));
+    assert_eq!(reproduced_location.raw_index, 1);
+    assert_eq!(&reproduced_location.at, &expected_location.at);
+    assert_eq!(&reproduced_location.source, &expected_location.source);
+    assert_eq!(&reproduced_location.kind, &expected_location.kind);
 }
 
 #[test]
