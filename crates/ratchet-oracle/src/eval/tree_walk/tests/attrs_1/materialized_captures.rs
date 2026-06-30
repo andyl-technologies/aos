@@ -90,7 +90,9 @@ fn captured_empty_attrsets_use_free_variable_hashes() {
 fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"force-captured-attrs-result"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"force-captured-attrs-result",
+        )),
         IrId::new(17),
     );
     let subject_for = |hash| ForceCacheSubject {

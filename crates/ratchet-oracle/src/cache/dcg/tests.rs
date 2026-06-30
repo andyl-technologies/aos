@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::cache::{
-    CacheExprIdentity, DurableBlake3Hash, HotXxh3Hash, ImpureInputFingerprint, UncacheableInput,
+    CacheExprIdentity, CacheExprSourceHash, DurableBlake3Hash, HotXxh3Hash, ImpureInputFingerprint,
+    UncacheableInput,
 };
 use crate::compile::IrId;
 use crate::value::{HeapObject, Value, ValueTag};
@@ -30,8 +31,12 @@ fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
     DurableBlake3Hash::for_bytes(bytes)
 }
 
+fn expr_source_hash(bytes: &[u8]) -> CacheExprSourceHash {
+    CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
+}
+
 fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
-    CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+    CacheExprIdentity::new(expr_source_hash(source), IrId::new(node))
 }
 
 fn key(node: u32, label: &[u8]) -> DemandCacheKey {

@@ -559,7 +559,9 @@ fn empty_attrset_result_thunks_hit_after_heap_rehydration() {
 fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"force-strict-attrs-result"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"force-strict-attrs-result",
+        )),
         IrId::new(14),
     );
     let subject = ForceCacheSubject {
@@ -622,7 +624,9 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
 fn strict_attrset_payloads_preserve_position_bearing_attrsets_in_memory() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"force-position-attrs-result"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"force-position-attrs-result",
+        )),
         IrId::new(15),
     );
     let subject = ForceCacheSubject {
@@ -890,7 +894,9 @@ fn unsafe_get_attr_pos_observes_position_bearing_attrsets_from_force_cache_paylo
 fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"force-source-order-attrs-result"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"force-source-order-attrs-result",
+        )),
         IrId::new(16),
     );
     let subject = ForceCacheSubject {

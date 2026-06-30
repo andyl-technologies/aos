@@ -521,8 +521,9 @@ mod tests {
     use super::*;
     use crate::attrs::AttrPosition;
     use crate::cache::{
-        CutoffDecision, DemandCacheKey, ImpureTraceStatus, MemoizationDecision, MemoizationDemand,
-        MemoizationSubject, NodeFreshness, UncacheableInput,
+        CacheExprSourceHash, CutoffDecision, DemandCacheKey, ImpureTraceStatus,
+        MemoizationDecision, MemoizationDemand, MemoizationSubject, NodeFreshness,
+        UncacheableInput,
     };
     use crate::compile::IrId;
     use crate::string::{ContextElement, StringContext};
@@ -608,12 +609,12 @@ mod tests {
         ValueHash::from_derivation_aterm_bytes(aterm)
     }
 
-    fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
-        DurableBlake3Hash::for_bytes(bytes)
+    fn expr_source_hash(bytes: &[u8]) -> CacheExprSourceHash {
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
     fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
-        CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+        CacheExprIdentity::new(expr_source_hash(source), IrId::new(node))
     }
 
     fn opaque_context(path: &[u8]) -> StringContext {

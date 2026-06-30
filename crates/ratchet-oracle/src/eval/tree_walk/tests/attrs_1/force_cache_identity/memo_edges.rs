@@ -8,11 +8,11 @@ fn source_backed_active_force_cache_hits_record_memo_read_edges() {
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"memo-read-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(b"memo-read-child")),
         IrId::new(1),
     );
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(b"memo-read-parent")),
         IrId::new(2),
     );
     let child_subject = synthetic_selected_force_cache_subject(child_identity);
@@ -91,15 +91,21 @@ fn source_backed_active_force_cache_hits_replace_prior_memo_read_edges() {
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let stale_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"stale-memo-read-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"stale-memo-read-child",
+        )),
         IrId::new(1),
     );
     let fresh_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"fresh-memo-read-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"fresh-memo-read-child",
+        )),
         IrId::new(2),
     );
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"replacement-memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"replacement-memo-read-parent",
+        )),
         IrId::new(3),
     );
     let fresh_subject = synthetic_selected_force_cache_subject(fresh_identity);
@@ -201,7 +207,9 @@ fn source_backed_parent_force_without_hits_clears_prior_memo_read_edges() {
     let parent = symbol_for(&ir, b"parent");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let stale_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"empty-replacement-stale-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"empty-replacement-stale-child",
+        )),
         IrId::new(1),
     );
     let stale_node = {
@@ -287,7 +295,9 @@ fn source_backed_active_force_cache_child_misses_record_memo_read_edges() {
     let child = symbol_for(&ir, b"child");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"cold-memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"cold-memo-read-parent",
+        )),
         IrId::new(1),
     );
     let parent_subject = synthetic_selected_force_cache_subject(parent_identity);
@@ -383,11 +393,15 @@ fn source_backed_active_persistent_force_cache_hits_record_memo_read_edges() {
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-memo-read-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-memo-read-child",
+        )),
         IrId::new(1),
     );
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-memo-read-parent",
+        )),
         IrId::new(2),
     );
     let child_subject = synthetic_selected_force_cache_subject(child_identity);
@@ -489,7 +503,9 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-dirty-supplier-child",
+        )),
         IrId::new(1),
     );
     let child_subject = synthetic_selected_force_cache_subject(child_identity);
@@ -518,7 +534,9 @@ fn persistent_force_cache_hit_rejects_dirty_runtime_supplier() {
         let mut runtime = cache.lock().expect("cache lock is valid");
         let cache = runtime.cache_mut().expect("cache is enabled");
         let supplier_identity = CacheExprIdentity::new(
-            DurableBlake3Hash::for_bytes(b"persistent-dirty-supplier"),
+            CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+                b"persistent-dirty-supplier",
+            )),
             IrId::new(2),
         );
         let supplier = cache
@@ -582,11 +600,15 @@ fn persistent_force_cache_hit_rejects_dirty_supplier_from_trace_dependency_key()
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-dirty-key-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-dirty-key-child",
+        )),
         IrId::new(1),
     );
     let supplier_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-dirty-key-supplier"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-dirty-key-supplier",
+        )),
         IrId::new(2),
     );
     let child_subject = synthetic_selected_force_cache_subject(child_identity);
@@ -683,11 +705,15 @@ fn persistent_force_cache_hit_rejects_unresolved_supplier_without_runtime_payloa
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-unresolved-key-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-unresolved-key-child",
+        )),
         IrId::new(1),
     );
     let supplier_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-unresolved-key-supplier"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-unresolved-key-supplier",
+        )),
         IrId::new(2),
     );
     let child_subject = synthetic_selected_force_cache_subject(child_identity);

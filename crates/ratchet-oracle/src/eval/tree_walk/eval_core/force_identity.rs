@@ -1,6 +1,7 @@
 //! Force-cache free-variable hashing, cache identities, and IR safety walks.
 
 use super::*;
+use crate::cache::CacheExprSourceHash;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturedFreeVariableDependency {
@@ -1231,7 +1232,10 @@ impl TreeWalk {
         hasher.update(&module_hash.as_bytes());
         hasher.update(&span.start.to_le_bytes());
         hasher.update(&span.end.to_le_bytes());
-        CacheExprIdentity::new(DurableBlake3Hash::from_hasher(hasher), id)
+        CacheExprIdentity::new(
+            CacheExprSourceHash::from_durable_hash(DurableBlake3Hash::from_hasher(hasher)),
+            id,
+        )
     }
 
     /// Builds a node expression identity from a fixed module hash for tests.
@@ -1265,7 +1269,7 @@ impl TreeWalk {
         hasher.update(&node.span.end.to_le_bytes());
         Self::update_cache_identity_chunk(&mut hasher, builtin.name())?;
         Some(CacheExprIdentity::new(
-            DurableBlake3Hash::from_hasher(hasher),
+            CacheExprSourceHash::from_durable_hash(DurableBlake3Hash::from_hasher(hasher)),
             id,
         ))
     }
@@ -1309,7 +1313,7 @@ impl TreeWalk {
         hasher.update(&node.span.start.to_le_bytes());
         hasher.update(&node.span.end.to_le_bytes());
         Some(CacheExprIdentity::new(
-            DurableBlake3Hash::from_hasher(hasher),
+            CacheExprSourceHash::from_durable_hash(DurableBlake3Hash::from_hasher(hasher)),
             id,
         ))
     }
@@ -1522,7 +1526,7 @@ impl TreeWalk {
         Self::update_cache_identity_chunk(&mut hasher, symbol_name)?;
         Self::update_cache_identity_chunk(&mut hasher, execution_bytes)?;
         Some(CacheExprIdentity::new(
-            DurableBlake3Hash::from_hasher(hasher),
+            CacheExprSourceHash::from_durable_hash(DurableBlake3Hash::from_hasher(hasher)),
             site.id(),
         ))
     }
@@ -1556,7 +1560,7 @@ impl TreeWalk {
             Self::update_cache_identity_chunk(&mut hasher, name)?;
         }
         Some(CacheExprIdentity::new(
-            DurableBlake3Hash::from_hasher(hasher),
+            CacheExprSourceHash::from_durable_hash(DurableBlake3Hash::from_hasher(hasher)),
             select.id(),
         ))
     }

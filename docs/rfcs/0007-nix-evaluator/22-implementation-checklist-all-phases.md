@@ -1879,6 +1879,24 @@ alone (`M-1`/`Q-A`).
       `cache::key`, `cache::dcg::tests::impure_input`, `format_tests`,
       `node_metadata`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
       test-target compile coverage.
+- [x] Current cache expression source hash boundary:
+      `CacheExprSourceHash` now marks the source/artifact component of
+      `CacheExprIdentity`. Production tree-walk constructors compute this type
+      from domain-separated expression, first-class primop call, derivation,
+      synthetic builtin-attr, and synthetic select identity preimages, while
+      `CacheExprIdentity::new`
+      requires it before demand keys, value-hash confirmation keys, or
+      persistent node-metadata keys can consume expression identity source
+      bytes. Persistent-key and demand-key preimages unwrap through
+      `CacheExprSourceHash::as_durable_hash()` only at those stable byte-format
+      boundaries, and synthetic fixtures wrap arbitrary bytes through explicit
+      test helpers. This type-enforces the current expression-source identity
+      corridor only; positioned payload provenance hashes, remaining generic
+      durable hash plumbing, and the full differential leak-invariant harness
+      remain open (`S-15`). Gate: `cache::key`, `cache::dcg`,
+      `cache::runtime`, `format_tests`, `node_metadata`, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4373,6 +4391,24 @@ alone (`M-1`/`Q-A`).
       invariant remains open. Gate: `cache::input`, `cache::key`,
       `cache::dcg::tests::impure_input`, `format_tests`, `node_metadata`, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current cache expression source hash boundary:
+      `CacheExprSourceHash` now marks the source/artifact component of
+      `CacheExprIdentity`. Production tree-walk constructors compute this type
+      from domain-separated expression, first-class primop call, derivation,
+      synthetic builtin-attr, and synthetic select identity preimages, while
+      `CacheExprIdentity::new`
+      requires it before demand keys, value-hash confirmation keys, or
+      persistent node-metadata keys can consume expression identity source
+      bytes. Persistent-key and demand-key preimages unwrap through
+      `CacheExprSourceHash::as_durable_hash()` only at those stable byte-format
+      boundaries, and synthetic fixtures wrap arbitrary bytes through explicit
+      test helpers. This type-enforces the current expression-source identity
+      corridor only; positioned payload provenance hashes, remaining generic
+      durable hash plumbing, and the full internal-hash leak invariant remain
+      open. Gate: `cache::key`, `cache::dcg`, `cache::runtime`, `format_tests`,
+      `node_metadata`, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+      test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

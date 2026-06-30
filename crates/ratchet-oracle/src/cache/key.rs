@@ -12,7 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use super::{
     ValueHash,
-    hashing::{DurableBlake3Hash, HotXxh3Hash, ImpureInputIdentityHash},
+    hashing::{CacheExprSourceHash, DurableBlake3Hash, HotXxh3Hash, ImpureInputIdentityHash},
 };
 use crate::compile::IrId;
 
@@ -24,24 +24,24 @@ const IMPURE_INPUT_CONFIRMATION_DOMAIN_VERSION: &[u8] =
 
 /// The stable identity of one lowered expression within a source artifact.
 ///
-/// The first component is a durable expression/artifact hash. Callers may supply
+/// The first component is a typed expression/artifact hash. Callers may supply
 /// a plain parsed/lowered artifact digest or an expression-positioned digest
 /// that already includes caller-owned salts such as a source span. [`IrId`]
 /// preserves the lowered node discriminator within that artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CacheExprIdentity {
-    source_hash: DurableBlake3Hash,
+    source_hash: CacheExprSourceHash,
     node: IrId,
 }
 
 impl CacheExprIdentity {
     /// Creates an expression identity from an expression/artifact hash and IR node id.
-    pub const fn new(source_hash: DurableBlake3Hash, node: IrId) -> Self {
+    pub const fn new(source_hash: CacheExprSourceHash, node: IrId) -> Self {
         Self { source_hash, node }
     }
 
-    /// Returns the durable expression/artifact hash component.
-    pub const fn source_hash(self) -> DurableBlake3Hash {
+    /// Returns the typed expression/artifact hash component.
+    pub const fn source_hash(self) -> CacheExprSourceHash {
         self.source_hash
     }
 
@@ -51,7 +51,7 @@ impl CacheExprIdentity {
     }
 
     fn write_to(self, hasher: &mut Xxh3) {
-        hasher.write(&self.source_hash.as_bytes());
+        hasher.write(&self.source_hash.as_durable_hash().as_bytes());
         hasher.write(&self.node.as_u32().to_le_bytes());
     }
 }
@@ -151,7 +151,7 @@ where
     identity.write_to(&mut hot);
     let mut confirmation = blake3::Hasher::new();
     confirmation.update(KEY_CONFIRMATION_DOMAIN_VERSION);
-    confirmation.update(&identity.source_hash().as_bytes());
+    confirmation.update(&identity.source_hash().as_durable_hash().as_bytes());
     confirmation.update(&identity.node().as_u32().to_le_bytes());
     for chunk in chunks {
         let chunk = chunk.as_ref();
@@ -193,12 +193,16 @@ mod tests {
         DurableBlake3Hash::for_bytes(bytes)
     }
 
+    fn expr_source(bytes: &[u8]) -> CacheExprSourceHash {
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
     fn input_identity_hash(bytes: &[u8]) -> ImpureInputIdentityHash {
         ImpureInputIdentityHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
     fn identity(node: u32) -> CacheExprIdentity {
-        CacheExprIdentity::new(source(b"source"), IrId::new(node))
+        CacheExprIdentity::new(expr_source(b"source"), IrId::new(node))
     }
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
@@ -211,7 +215,7 @@ mod tests {
         let input_key =
             DemandCacheKey::for_impure_input(ImpureInputIdentityHash::from_persisted_hash(hash));
         let expression_key = DemandCacheKey::for_free_vars(
-            CacheExprIdentity::new(hash, IrId::new(0)),
+            CacheExprIdentity::new(CacheExprSourceHash::from_persisted_hash(hash), IrId::new(0)),
             [ValueHash::from_canonical_value_hash(hash)],
         )
         .expect("expression key builds");
@@ -241,7 +245,7 @@ mod tests {
 
     #[test]
     fn expression_identity_changes_key() {
-        let source_changed = CacheExprIdentity::new(source(b"other-source"), IrId::new(7));
+        let source_changed = CacheExprIdentity::new(expr_source(b"other-source"), IrId::new(7));
         let node_changed = identity(8);
         let base =
             DemandCacheKey::for_free_vars(identity(7), [value_hash(b"value")]).expect("key builds");

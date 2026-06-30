@@ -7,7 +7,9 @@ fn rejected_force_observation_clears_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-clear-rejected");
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-node"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-node",
+        )),
         IrId::new(7),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
@@ -110,11 +112,15 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-impure-writeback");
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-impure"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-impure",
+        )),
         IrId::new(9),
     );
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-impure-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-impure-child",
+        )),
         IrId::new(10),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
@@ -234,11 +240,15 @@ fn force_observation_with_unproven_memo_supplier_clears_persistent_value_link() 
     let persist_root = unique_temp_dir("force-cache-persistent-unproven-memo-supplier");
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-unproven-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-unproven-parent",
+        )),
         IrId::new(11),
     );
     let child_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-unproven-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-unproven-child",
+        )),
         IrId::new(12),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
@@ -319,7 +329,9 @@ fn large_force_payload_measurement_skips_unprofitable_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-large-skip");
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-large-skip"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-large-skip",
+        )),
         IrId::new(10),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
@@ -390,7 +402,9 @@ fn force_work_measurement_materializes_large_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-large-work");
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-large-work"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-large-work",
+        )),
         IrId::new(10),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());
@@ -566,7 +580,9 @@ fn unsupported_force_payload_clears_persistent_value_link() {
     let persist_root = unique_temp_dir("force-cache-persistent-clear-unsupported");
     let ir = lower("{ a = 1 / 0; }");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-force-unsupported"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-force-unsupported",
+        )),
         IrId::new(11),
     );
     let key = PersistNodeMetadataKey::for_expression(identity, std::iter::empty::<ValueHash>());

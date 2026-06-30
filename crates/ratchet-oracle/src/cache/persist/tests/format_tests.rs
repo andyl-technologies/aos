@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::cache::{
-    CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputIdentityHash,
-    ImpureInputKind, InputFingerprintError,
+    CacheExprSourceHash, CacheableInputFingerprint, DirEntryInput, FileTypeForInput,
+    ImpureInputIdentityHash, ImpureInputKind, InputFingerprintError,
 };
 
 mod blob_index;
@@ -31,7 +31,7 @@ fn test_node_trace_dependency_keys() -> [PersistNodeMetadataKey; 3] {
     [
         PersistNodeMetadataKey::for_expression(
             CacheExprIdentity::new(
-                DurableBlake3Hash::for_bytes(b"expression source"),
+                test_cache_expr_source_hash(b"expression source"),
                 crate::compile::IrId::new(7),
             ),
             [
@@ -50,6 +50,10 @@ fn test_node_trace_dependency_keys() -> [PersistNodeMetadataKey; 3] {
 
 fn test_impure_input_identity_hash(label: &[u8]) -> ImpureInputIdentityHash {
     ImpureInputIdentityHash::from_persisted_hash(DurableBlake3Hash::for_bytes(label))
+}
+
+fn test_cache_expr_source_hash(label: &[u8]) -> CacheExprSourceHash {
+    CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(label))
 }
 
 fn test_impure_input_node_key(label: &[u8]) -> PersistNodeMetadataKey {

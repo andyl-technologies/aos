@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
+//! CacheExprSourceHash -> expression/artifact identity source components
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -95,6 +96,35 @@ impl DurableBlake3Hash {
 impl fmt::Display for DurableBlake3Hash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.to_hex())
+    }
+}
+
+/// A durable BLAKE3 hash for a cache expression identity source component.
+///
+/// This type separates the artifact/span-specific source component of
+/// [`crate::cache::CacheExprIdentity`] from canonical Nix value hashes,
+/// impure-input identity and observation hashes, parse-cache keys, persisted
+/// blob addresses, and Nix-observed hash surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CacheExprSourceHash(DurableBlake3Hash);
+
+impl CacheExprSourceHash {
+    /// Wraps a digest computed in a cache-expression identity domain.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Wraps persisted or synthetic cache-expression identity source bytes.
+    ///
+    /// This constructor is for explicit low-level persistence-format
+    /// boundaries and test fixtures that already own the identity preimage.
+    pub const fn from_persisted_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
     }
 }
 

@@ -5,14 +5,17 @@ use super::*;
 
 mod persistent_paths;
 use crate::cache::{
-    CacheExprIdentity, CachedDerivationAtermPath, CachedDerivationOutputPath,
+    CacheExprIdentity, CacheExprSourceHash, CachedDerivationAtermPath, CachedDerivationOutputPath,
     CachedDerivationOutputPaths, CachedStaticDerivationOutputPathsPayload, DemandCacheKey,
     DemandDependencyGroup, DurableBlake3Hash, MaterializationDecision, NodeFreshness,
     PersistBlobKey, PersistCache, PersistNodeMetadataKey, ValueHash,
 };
 
 fn test_cache_identity(label: &[u8], node: u32) -> CacheExprIdentity {
-    CacheExprIdentity::new(DurableBlake3Hash::for_bytes(label), IrId::new(node))
+    CacheExprIdentity::new(
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(label)),
+        IrId::new(node),
+    )
 }
 
 fn test_value_hash(label: &[u8]) -> ValueHash {
@@ -406,7 +409,9 @@ fn derivation_strict_errors_preserve_prior_final_aterm_memo_read_edges() {
         stale_node = runtime
             .get_or_insert_expression_node(
                 CacheExprIdentity::new(
-                    DurableBlake3Hash::for_bytes(b"stale-derivation-aterm-memo-read"),
+                    CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+                        b"stale-derivation-aterm-memo-read",
+                    )),
                     IrId::new(4096),
                 ),
                 std::iter::empty::<ValueHash>(),

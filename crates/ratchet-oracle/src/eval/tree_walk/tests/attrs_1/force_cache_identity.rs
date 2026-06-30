@@ -541,7 +541,9 @@ fn observation_only_subject_allocates_active_node_without_lookup_replay() {
     let ir = lower(source);
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let observation_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"observation-only-active-node"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"observation-only-active-node",
+        )),
         IrId::new(7),
     );
     let free_var_hash =
@@ -651,7 +653,9 @@ fn source_backed_admitted_force_error_preserves_prior_memo_read_edges() {
     let a = symbol_for(&ir, b"a");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let stale_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"error-stale-memo-read-child"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"error-stale-memo-read-child",
+        )),
         IrId::new(1),
     );
     let stale_node = {

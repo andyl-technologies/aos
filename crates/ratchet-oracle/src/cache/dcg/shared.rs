@@ -239,7 +239,10 @@ impl From<DemandGraphError> for SharedDemandGraphError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cache::DurableBlake3Hash, compile::IrId};
+    use crate::{
+        cache::{CacheExprSourceHash, DurableBlake3Hash},
+        compile::IrId,
+    };
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -247,12 +250,12 @@ mod tests {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
-    fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
-        DurableBlake3Hash::for_bytes(bytes)
+    fn expr_source_hash(bytes: &[u8]) -> CacheExprSourceHash {
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(bytes))
     }
 
     fn identity(source: &[u8], node: u32) -> CacheExprIdentity {
-        CacheExprIdentity::new(durable_hash(source), IrId::new(node))
+        CacheExprIdentity::new(expr_source_hash(source), IrId::new(node))
     }
 
     fn key(node: u32, label: &[u8]) -> DemandCacheKey {

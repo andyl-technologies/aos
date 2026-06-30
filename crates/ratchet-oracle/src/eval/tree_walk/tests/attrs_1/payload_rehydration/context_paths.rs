@@ -6,7 +6,9 @@ use super::*;
 fn context_path_payloads_rehydrate_after_heap_lookup() {
     let ir = lower("1");
     let identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"force-context-path-result"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"force-context-path-result",
+        )),
         IrId::new(13),
     );
     let subject = ForceCacheSubject {

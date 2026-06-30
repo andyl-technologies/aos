@@ -6,11 +6,11 @@ use super::*;
 fn node_metadata_index_keys_cover_expression_identity_and_free_vars() {
     use crate::compile::IrId;
 
-    let source = DurableBlake3Hash::for_bytes(b"source");
+    let source = test_cache_expr_source_hash(b"source");
     let identity = CacheExprIdentity::new(source, IrId::new(7));
     let same = CacheExprIdentity::new(source, IrId::new(7));
     let source_changed =
-        CacheExprIdentity::new(DurableBlake3Hash::for_bytes(b"other source"), IrId::new(7));
+        CacheExprIdentity::new(test_cache_expr_source_hash(b"other source"), IrId::new(7));
     let node_changed = CacheExprIdentity::new(source, IrId::new(8));
     let left = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"left"));
     let right = ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"right"));
@@ -44,7 +44,10 @@ fn node_metadata_index_keys_cover_impure_input_identities() {
     let same_key = PersistNodeMetadataKey::for_impure_input(identity);
     let other_key = PersistNodeMetadataKey::for_impure_input(other_identity);
     let expression_key = PersistNodeMetadataKey::for_expression(
-        CacheExprIdentity::new(identity.as_durable_hash(), crate::compile::IrId::new(0)),
+        CacheExprIdentity::new(
+            CacheExprSourceHash::from_persisted_hash(identity.as_durable_hash()),
+            crate::compile::IrId::new(0),
+        ),
         [ValueHash::from_canonical_value_hash(
             identity.as_durable_hash(),
         )],

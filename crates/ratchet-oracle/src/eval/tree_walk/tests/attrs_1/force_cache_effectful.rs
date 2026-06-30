@@ -3214,7 +3214,9 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
     let builtin = lookup_builtin(b"pathExists").expect("pathExists builtin is registered");
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"effectful-primop-cold-memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"effectful-primop-cold-memo-read-parent",
+        )),
         IrId::new(1),
     );
     let parent_subject = ForceCacheSubject {
@@ -3809,7 +3811,9 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
     let ir = lower(source);
     let a = symbol_for(&ir, b"a");
     let parent_identity = CacheExprIdentity::new(
-        DurableBlake3Hash::for_bytes(b"persistent-effectful-memo-read-parent"),
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(
+            b"persistent-effectful-memo-read-parent",
+        )),
         IrId::new(9),
     );
     let parent_subject = ForceCacheSubject {
