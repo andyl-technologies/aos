@@ -5,5 +5,6 @@ edition = "2024"
 
 [dependencies]
 aos-nix-syntax = { workspace = true }
+libc = { workspace = true }
 thiserror = { workspace = true }
 xxhash-rust = { workspace = true }

@@ -1,11 +1,14 @@
 //! Tier-A one-shot bump arena.
 //!
-//! This is the safe Phase-1 allocator substrate for the tree-walk oracle. It
-//! reserves aligned slots in owned chunks, returns opaque [`HeapObject`] handles,
-//! and never frees individual allocations. The implementation deliberately avoids
-//! raw memory writes until concrete heap object layouts exist.
+//! This is the Tier-A allocator substrate for the tree-walk oracle. It
+//! reserves aligned slots in anonymous `mmap` chunks, returns opaque
+//! [`HeapObject`] handles, and never frees individual allocations. The
+//! implementation deliberately avoids raw memory writes until concrete heap
+//! object layouts exist.
 
+use std::cell::RefCell;
 use std::mem;
+use std::ptr;
 
 use thiserror::Error;
 
@@ -20,6 +23,13 @@ const LAMBDA_BYTES: usize = 4 * WORD_BYTES;
 // Header plus u32 length, padded so the inline Value tail starts 8-byte aligned.
 const LIST_ELEMENTS_OFFSET_BYTES: usize = OBJECT_HEADER_BYTES + WORD_BYTES;
 const CONS_BYTES: usize = OBJECT_HEADER_BYTES + mem::size_of::<Value>() + WORD_BYTES;
+const MAX_MMAP_BYTES: usize = isize::MAX as usize;
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANONYMOUS;
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANON;
 
 /// The logical heap object kind requested through an allocation entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,18 +85,24 @@ pub struct ArenaAllocation {
 pub struct ArenaStats {
     /// Number of chunks currently owned by the arena.
     pub chunks: usize,
-    /// Number of bytes reserved by all chunks.
+    /// Logical bytes reserved by all chunks for bump allocation.
     pub reserved_bytes: usize,
+    /// Page-rounded bytes mapped from the host OS.
+    pub mapped_bytes: usize,
     /// Number of bytes consumed by allocations, including alignment padding and
     /// word rounding.
     pub used_bytes: usize,
 }
 
-/// A safe, never-free bump arena for one evaluator invocation.
+/// A safe API over a never-free bump arena for one evaluator invocation.
 #[derive(Debug)]
 pub struct BumpArena {
     chunks: Vec<Chunk>,
     next_chunk_bytes: usize,
+}
+
+thread_local! {
+    static THREAD_LOCAL_ARENA: RefCell<BumpArena> = RefCell::new(BumpArena::new());
 }
 
 impl Default for BumpArena {
@@ -127,10 +143,12 @@ impl BumpArena {
         let mut stats = ArenaStats {
             chunks: self.chunks.len(),
             reserved_bytes: 0,
+            mapped_bytes: 0,
             used_bytes: 0,
         };
         for chunk in &self.chunks {
             stats.reserved_bytes += chunk.capacity_bytes();
+            stats.mapped_bytes += chunk.mapped_bytes();
             stats.used_bytes += chunk.cursor;
         }
         stats
@@ -293,34 +311,132 @@ impl BumpArena {
     }
 }
 
+/// Access to the Tier-A arena owned by the current evaluator worker thread.
+///
+/// Each OS thread receives an independent never-free bump arena. This is the
+/// allocation substrate for the Phase-3 per-worker model; the sequential
+/// tree-walk oracle may still own an explicit [`BumpArena`] directly when it
+/// needs deterministic per-evaluation accounting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThreadLocalBumpArena;
+
+impl ThreadLocalBumpArena {
+    /// Runs `f` with mutable access to the current thread's Tier-A arena.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `f` re-enters [`ThreadLocalBumpArena::with_current`] or
+    /// [`ThreadLocalBumpArena::reset_current`] on the same thread before the
+    /// outer borrow returns.
+    pub fn with_current<R>(f: impl FnOnce(&mut BumpArena) -> R) -> R {
+        THREAD_LOCAL_ARENA.with(|arena| f(&mut arena.borrow_mut()))
+    }
+
+    /// Drops the current thread's arena and replaces it with an empty one.
+    ///
+    /// Returns the accounting from the dropped arena so callers can record
+    /// per-worker allocation totals before reset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current thread's arena is already mutably borrowed through
+    /// [`ThreadLocalBumpArena::with_current`].
+    pub fn reset_current() -> ArenaStats {
+        THREAD_LOCAL_ARENA.with(|arena| {
+            let mut arena = arena.borrow_mut();
+            let previous = mem::take(&mut *arena);
+            let stats = previous.stats();
+            drop(previous);
+            stats
+        })
+    }
+}
+
 #[derive(Debug)]
 struct Chunk {
-    words: Box<[u64]>,
+    ptr: std::ptr::NonNull<u8>,
+    logical_bytes: usize,
+    mapped_bytes: usize,
     cursor: usize,
 }
 
+// SAFETY: `Chunk` uniquely owns an anonymous mapping returned by `mmap`, and
+// the mapping is not tied to the thread that created it. Mutation of the bump
+// cursor requires `&mut Chunk`; shared references expose only immutable metadata.
+// Dropping a moved `Chunk` on another thread calls `munmap` with the exact
+// owned mapping address and length.
+unsafe impl Send for Chunk {}
+
+// SAFETY: Shared `&Chunk` access cannot mutate the cursor or the mapped bytes,
+// and the raw mapping pointer is never dereferenced through shared references.
+// All allocation and unmapping require unique ownership or `&mut Chunk`.
+unsafe impl Sync for Chunk {}
+
 impl Chunk {
     fn new(bytes: usize) -> Result<Self, ArenaError> {
-        let bytes = round_up(bytes, WORD_BYTES)?;
-        let words = bytes
-            .checked_div(WORD_BYTES)
-            .ok_or(ArenaError::SizeOverflow)?;
-        if words == 0 {
+        let logical_bytes = round_up(bytes, WORD_BYTES)?;
+        if logical_bytes == 0 {
             return Err(ArenaError::InvalidChunkSize { chunk_bytes: bytes });
         }
-        let mut storage = Vec::new();
-        storage
-            .try_reserve_exact(words)
-            .map_err(|_| ArenaError::AllocationFailed { bytes })?;
-        storage.resize(words, 0u64);
+        if logical_bytes > MAX_MMAP_BYTES {
+            return Err(ArenaError::AllocationFailed {
+                bytes: logical_bytes,
+            });
+        }
+        let mapped_bytes = round_up(logical_bytes, system_page_size()?)?;
+        if mapped_bytes > MAX_MMAP_BYTES {
+            return Err(ArenaError::AllocationFailed {
+                bytes: logical_bytes,
+            });
+        }
+
+        let raw_ptr = {
+            // SAFETY: The mapping request uses a null address hint, a non-zero
+            // page-rounded length, read/write protection, and an anonymous
+            // private mapping with `fd = -1`, as required by POSIX mmap for
+            // anonymous memory. The returned pointer is checked for
+            // `MAP_FAILED` and null before it is stored.
+            unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    mapped_bytes,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | MAP_ANONYMOUS_FLAG,
+                    -1,
+                    0,
+                )
+            }
+        };
+        if raw_ptr == libc::MAP_FAILED {
+            return Err(ArenaError::AllocationFailed {
+                bytes: logical_bytes,
+            });
+        }
+        if raw_ptr.is_null() {
+            // SAFETY: A null return that is not `MAP_FAILED` is still a mapping
+            // returned by `mmap`; this arena cannot represent null heap handles,
+            // so it immediately releases the mapping with the exact length.
+            unsafe {
+                libc::munmap(raw_ptr, mapped_bytes);
+            }
+            return Err(ArenaError::NullChunkPointer);
+        }
+        let ptr =
+            std::ptr::NonNull::new(raw_ptr.cast::<u8>()).ok_or(ArenaError::NullChunkPointer)?;
         Ok(Self {
-            words: storage.into_boxed_slice(),
+            ptr,
+            logical_bytes,
+            mapped_bytes,
             cursor: 0,
         })
     }
 
     fn capacity_bytes(&self) -> usize {
-        self.words.len() * WORD_BYTES
+        self.logical_bytes
+    }
+
+    fn mapped_bytes(&self) -> usize {
+        self.mapped_bytes
     }
 
     fn can_fit(&self, size: usize, align: usize) -> bool {
@@ -343,11 +459,29 @@ impl Chunk {
         if end > self.capacity_bytes() {
             return Err(ArenaError::ChunkExhausted);
         }
-        let base = self.words.as_mut_ptr().cast::<u8>();
+        let base = self.ptr.as_ptr();
         let ptr = std::ptr::NonNull::new(base.wrapping_add(start).cast::<HeapObject>())
             .ok_or(ArenaError::NullChunkPointer)?;
         self.cursor = end;
         Ok(ptr)
+    }
+}
+
+impl Drop for Chunk {
+    fn drop(&mut self) {
+        let rc = {
+            // SAFETY: `ptr` and `mapped_bytes` are exactly the address and
+            // length returned by a successful anonymous `mmap` in `Chunk::new`,
+            // and `Chunk` owns that mapping until this drop runs.
+            unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.mapped_bytes) }
+        };
+        if rc != 0 {
+            debug_assert!(
+                false,
+                "munmap failed for arena chunk: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 }
 
@@ -369,6 +503,9 @@ pub enum ArenaError {
     /// An allocation size computation overflowed.
     #[error("arena allocation size overflow")]
     SizeOverflow,
+    /// The host page size could not be read.
+    #[error("arena failed to read the host page size")]
+    PageSizeUnavailable,
     /// Arena storage could not be reserved.
     #[error("arena failed to reserve {bytes} bytes of storage")]
     AllocationFailed {
@@ -406,9 +543,29 @@ fn round_up(value: usize, align: usize) -> Result<usize, ArenaError> {
     align_up(value, align)
 }
 
+fn system_page_size() -> Result<usize, ArenaError> {
+    let page_size = {
+        // SAFETY: `sysconf(_SC_PAGESIZE)` is a side-effect-free libc query. The
+        // return value is validated before conversion to `usize`.
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) }
+    };
+    if page_size <= 0 {
+        return Err(ArenaError::PageSizeUnavailable);
+    }
+    usize::try_from(page_size).map_err(|_| ArenaError::PageSizeUnavailable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn arena_handles_are_send_sync_for_worker_handoff() {
+        assert_send_sync::<BumpArena>();
+        assert_send_sync::<ThreadLocalBumpArena>();
+    }
 
     #[test]
     fn empty_arena_has_no_chunks() {
@@ -424,7 +581,9 @@ mod tests {
             .aos_alloc_raw(1, 1, 7)
             .expect("raw allocation succeeds");
         assert_eq!(allocation.reserved_size, WORD_BYTES);
-        assert_eq!(arena.stats().reserved_bytes, 16);
+        let stats = arena.stats();
+        assert_eq!(stats.reserved_bytes, 16);
+        assert!(stats.mapped_bytes >= system_page_size().expect("page size"));
     }
 
     #[test]
@@ -473,6 +632,7 @@ mod tests {
         assert_eq!(allocation.reserved_size, 80);
         assert_eq!(stats.chunks, 1);
         assert_eq!(stats.reserved_bytes, 80);
+        assert!(stats.mapped_bytes >= stats.reserved_bytes);
         assert_eq!(stats.used_bytes, 80);
     }
 
@@ -570,5 +730,41 @@ mod tests {
         assert_eq!(allocation.requested_size, 0);
         assert_eq!(allocation.reserved_size, WORD_BYTES);
         assert_eq!(arena.stats().used_bytes, WORD_BYTES);
+    }
+
+    #[test]
+    fn thread_local_arena_is_independent_per_worker() {
+        ThreadLocalBumpArena::reset_current();
+        let main_addr = ThreadLocalBumpArena::with_current(|arena| {
+            arena
+                .aos_alloc_raw(8, 8, 1)
+                .expect("main allocation succeeds")
+                .ptr
+                .as_ptr() as usize
+        });
+        let main_stats = ThreadLocalBumpArena::with_current(|arena| arena.stats());
+
+        let worker = std::thread::spawn(|| {
+            ThreadLocalBumpArena::reset_current();
+            let before = ThreadLocalBumpArena::with_current(|arena| arena.stats());
+            let addr = ThreadLocalBumpArena::with_current(|arena| {
+                arena
+                    .aos_alloc_raw(8, 8, 2)
+                    .expect("worker allocation succeeds")
+                    .ptr
+                    .as_ptr() as usize
+            });
+            let after = ThreadLocalBumpArena::with_current(|arena| arena.stats());
+            ThreadLocalBumpArena::reset_current();
+            (before, after, addr)
+        })
+        .join()
+        .expect("worker thread joins");
+
+        assert_eq!(main_stats.chunks, 1);
+        assert_eq!(worker.0, ArenaStats::default());
+        assert_eq!(worker.1.chunks, 1);
+        assert_ne!(main_addr, worker.2);
+        ThreadLocalBumpArena::reset_current();
     }
 }

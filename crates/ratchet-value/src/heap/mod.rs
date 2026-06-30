@@ -1,15 +1,17 @@
 //! Heap allocation strategies for evaluator runtime objects.
 //!
-//! Phase 1 starts with the Tier-A one-shot bump arena: allocate monotonically,
-//! never free individual objects, and drop all chunks with the arena. Later
-//! phases add precise GC and daemon-mode collectors behind the same allocation
-//! entry-point shape.
+//! Tier A uses a one-shot bump arena: allocate monotonically, never free
+//! individual objects, and `munmap` all anonymous chunks when the arena drops.
+//! Later phases add precise GC and daemon-mode collectors behind the same
+//! allocation entry-point shape.
 
 pub mod arena;
 pub mod concurrent_gc;
 pub mod region;
 
-pub use arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind};
+pub use arena::{
+    ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
+};
 pub use concurrent_gc::{
     BarrierAddress, ConcurrentGcError, ConcurrentGcTier, GcColor, LoadBarrierAction,
     LoadBarrierSlowReason, ThunkMutation, ThunkMutationBarrier, classify_load_barrier,

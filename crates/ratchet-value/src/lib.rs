@@ -8,11 +8,10 @@
 //!
 //! The RFC §1.1 reserves this crate as the eventual home of the NaN-boxed,
 //! pointer-tagged, hash-consed value representation (an UNSAFE band). The
-//! current pointer-tagging support is still a safe layout helper; there is no
-//! `unsafe` here, so the crate keeps `#![forbid(unsafe_code)]`. The attribute
-//! relaxes to the per-block `// SAFETY:` discipline when the bit-twiddling
-//! runtime representation arrives.
-#![forbid(unsafe_code)]
+//! current pointer-tagging support is still a safe layout helper. The Tier-A
+//! arena now owns its `mmap`/`munmap` boundary here, so unsafe code stays
+//! confined to the runtime-value crate under explicit `// SAFETY:` comments.
+#![deny(unsafe_op_in_unsafe_fn)]
 
 // Re-exported so the moved `attrs` module's `crate::syntax::Symbol` path keeps
 // resolving without rewriting it (attrs needs the interned-symbol type).

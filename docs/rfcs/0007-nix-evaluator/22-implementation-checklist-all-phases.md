@@ -4931,13 +4931,19 @@ and helps the oracle directly.
 
 **Deliverables.**
 
-- [x] Current prerequisite already in place: P1 safe owned-chunk `BumpArena`
-      substrate from [06](06-memory-management-and-gc.md) — aligned monotonic
-      allocations through entry-point-shaped `aos_alloc_*` Rust helpers,
-      never-free typed handles, Rust-owned chunk drop, and arena accounting.
+- [x] P1 arena-shape prerequisite already in place: `BumpArena` established
+      aligned monotonic allocations through entry-point-shaped `aos_alloc_*`
+      Rust helpers, never-free typed handles, geometric/dedicated chunk growth,
+      and arena accounting before the P3 mmap backend replaced the concrete
+      chunk storage.
 - [ ] Final Tier-A runtime arena remains: `mmap`/`munmap` chunks, thread-local
       per-worker arenas, CLI-wide Tier-A default, and byte-green proof under
       Tier A (the per-invocation default, `C-10`).
+- [x] Current Tier-A mmap/thread-local precursor: `ratchet-value::heap::BumpArena`
+      uses anonymous `mmap` chunks and `munmap` drop, records both logical
+      reserved bytes and page-rounded mapped bytes, and exposes
+      `ThreadLocalBumpArena` for per-worker never-free arenas. Full Tier-A
+      closure proof and benchmark evidence remain open in the row above.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).

@@ -842,11 +842,16 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
-- [x] Current P1 safe owned-chunk bump arena: `BumpArena` serves aligned
-      monotonic allocations by cursor/limit checks inside owned `Box<[u64]>`
-      chunks, grows chunks geometrically or dedicates a chunk for oversized
-      allocations, never frees individual objects, releases owned chunks through
-      Rust drop, and exposes allocation stats/layout tests.
+- [x] P1 safe owned-chunk arena prerequisite: `BumpArena` established aligned
+      monotonic allocation by cursor/limit checks, geometric or dedicated
+      oversized chunks, never-free object handles, and allocation stats/layout
+      tests before the P3 mmap backend replaced the concrete chunk storage.
+- [x] Current P3 mmap-backed chunk precursor: `BumpArena` now reserves chunks
+      with anonymous `mmap`, releases them with `munmap` on arena drop, reports
+      logical reserved bytes plus page-rounded mapped bytes, and exposes
+      `ThreadLocalBumpArena` for per-worker Tier-A arenas. The full Tier-A row
+      below remains open until CLI-wide/full-closure byte-green proof and
+      benchmark evidence are recorded under the runtime default.
 - [ ] Final Tier-A runtime arena still open: geometric `mmap` chunk growth,
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A

@@ -3765,6 +3765,7 @@ name = "ratchet-value"
 version = "0.1.0"
 dependencies = [
  "aos-nix-syntax",
+ "libc",
  "thiserror",
  "xxhash-rust",
 ]
