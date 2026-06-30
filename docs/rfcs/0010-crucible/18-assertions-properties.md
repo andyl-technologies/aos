@@ -969,10 +969,24 @@ verdict; it only shapes the next schedule the search tries.
   every declared property, never-evaluated/never-triggered/never-reached edge
   dispositions, and fail-only run verdict derivation from violated plus
   fail-disposition outcomes.
-- [ ] **T-ASRT-13** Enforce determinism and non-perturbation of evaluation:
+- [x] **T-ASRT-13** Enforce determinism and non-perturbation of evaluation:
   deterministic merge, no banned nondeterminism, read-only observed-state view,
   side-effect-free, fingerprint-neutral. — satisfies [ASRT-24], [ASRT-25],
   [ASRT-26]; spec §18.9.
+  Completed by `checks.crucible.phase4.assertionDeterminismNonPerturbation`:
+  assertion evaluation now has an assertion-engine-specific gate proving repeated
+  online/offline grading yields identical merged host/guest outcomes in stable-id
+  order, the observed-state view exposes read-only slices only, and a
+  `test-double` backend fingerprint witness is unchanged by assertion evaluation.
+  `lint_host_assertion_harness_source` is the host-predicate `gate:harness-lint`
+  hook: the evaluator-facing `HostAssertionOracle` is sealed, direct blanket
+  implementations are forbidden, and production code exposes no public custom
+  wrapper constructor that could pair benign linted source with different
+  predicate code. The lint rejects host wall-clock, direct entropy/RNG,
+  randomized hashing, unordered-map/set, environment, filesystem/process,
+  network, host I/O, threading/scheduling, shared mutable state, interior
+  mutability, and unsafe-code access in harness predicate source; the gate also
+  statically rejects those patterns in the assertion evaluator path.
 - [ ] **T-ASRT-14** Implement the violation record (id, icount/virtual-time, node,
   detail, content-addressed reproduction-artifact link) read entirely from the
   deterministic log. — satisfies [ASRT-27], [ASRT-28]; spec §18.10.

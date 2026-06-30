@@ -4,9 +4,9 @@
 
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, ConditionEventLogPrefix, ConditionLeaf,
-    HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, ObservedState,
-    Predicate, Properties, Property, PropertyLifecycleState, ReachabilityExpectation,
-    ReachableDisposition, VirtualTime, World,
+    HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate,
+    LintedHostAssertionOracle, ObservedState, Predicate, Properties, Property,
+    PropertyLifecycleState, ReachabilityExpectation, ReachableDisposition, VirtualTime, World,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -56,6 +56,13 @@ fn lifecycle_or_panic(
 ) -> PropertyLifecycleState {
     lifecycle(evaluator, assertion)
         .unwrap_or_else(|| panic!("missing lifecycle state for assertion {assertion}"))
+}
+
+fn linted_host_oracle<O>(oracle: O) -> LintedHostAssertionOracle<O>
+where
+    O: HostAssertionPredicate,
+{
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(oracle)
 }
 
 fn lifecycle_oracle(state: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
@@ -112,7 +119,7 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
         ),
     ]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = lifecycle_oracle;
+    let mut oracle = linted_host_oracle(lifecycle_oracle);
 
     assert_eq!(
         lifecycle_or_panic(&evaluator, "after-terminal"),
@@ -208,13 +215,16 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
         ),
     ]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { nodes, .. } => {
-            assert!(nodes.is_empty());
-            false
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { nodes, .. } => {
+                    assert!(nodes.is_empty());
+                    false
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let report = evaluator.finalize_prefix(&prefix(1), &mut oracle);
 
@@ -263,7 +273,7 @@ fn empty_log_always_remains_declared_and_reports_never_evaluated() {
         },
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = |_state: ObservedState<'_>, _leaf: ConditionLeaf<'_>| true;
+    let mut oracle = linted_host_oracle(|_state: ObservedState<'_>, _leaf: ConditionLeaf<'_>| true);
 
     let report = evaluator.finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle);
 

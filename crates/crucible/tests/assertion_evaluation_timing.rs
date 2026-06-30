@@ -7,8 +7,9 @@ use std::cell::RefCell;
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, ConditionLeaf,
     FramePredicate, HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind,
-    ObservableEvent, ObservedState, OfflineAssertionChecker, Predicate, Properties, Property,
-    RecordedAssertionLog, SchedulerEvaluationBoundaryKind, VirtualTime, World,
+    HostAssertionPredicate, LintedHostAssertionOracle, ObservableEvent, ObservedState,
+    OfflineAssertionChecker, Predicate, Properties, Property, RecordedAssertionLog,
+    SchedulerEvaluationBoundaryKind, VirtualTime, World,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -44,6 +45,13 @@ fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a Hos
         .unwrap_or_else(|| panic!("missing outcome for assertion {assertion}"))
 }
 
+fn linted_host_oracle<O>(oracle: O) -> LintedHostAssertionOracle<O>
+where
+    O: HostAssertionPredicate,
+{
+    crucible::test_support::unchecked_host_assertion_oracle_for_test(oracle)
+}
+
 #[test]
 fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
     let properties = properties(vec![assertion(
@@ -58,16 +66,19 @@ fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
     let trigger = ObservableEvent::network_delivered(time(3), None, b"trigger".to_vec());
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let evaluated_at = RefCell::new(Vec::new());
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            evaluated_at.borrow_mut().push(state.at().ticks);
-            name == "deadline-point"
-                && nodes.is_empty()
-                && state.at() == time(5)
-                && state.event_log_offset().events == 1
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    evaluated_at.borrow_mut().push(state.at().ticks);
+                    name == "deadline-point"
+                        && nodes.is_empty()
+                        && state.at() == time(5)
+                        && state.event_log_offset().events == 1
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     evaluator.observe_prefix(&observable_prefix(3, vec![trigger.clone()]), &mut oracle);
     let report = evaluator.finalize_prefix(&observable_prefix(10, vec![trigger]), &mut oracle);
@@ -182,15 +193,18 @@ fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
     let expected_offset = recorded_log
         .event_log_offset(1)
         .expect("deadline prefix offset should be retained");
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            name == "deadline-offset"
-                && nodes.is_empty()
-                && state.at() == time(5)
-                && state.event_log_offset() == expected_offset
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    name == "deadline-offset"
+                        && nodes.is_empty()
+                        && state.at() == time(5)
+                        && state.event_log_offset() == expected_offset
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     let report = OfflineAssertionChecker::new()
         .check_run_with_oracle(&properties, &recorded_log, &mut oracle)
@@ -218,13 +232,16 @@ fn after_quiescence_evaluates_once_at_terminal_prefix() {
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let evaluated_at = RefCell::new(Vec::new());
-    let mut oracle = |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            evaluated_at.borrow_mut().push(state.at().ticks);
-            name == "terminal-only" && nodes.is_empty() && state.at() == time(10)
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
-    };
+    let mut oracle =
+        linted_host_oracle(
+            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
+                ConditionLeaf::Named { name, nodes } => {
+                    evaluated_at.borrow_mut().push(state.at().ticks);
+                    name == "terminal-only" && nodes.is_empty() && state.at() == time(10)
+                }
+                ConditionLeaf::GuestMarker { .. } => false,
+            },
+        );
 
     evaluator.observe_prefix(&observable_prefix(3, Vec::new()), &mut oracle);
     evaluator.observe_prefix(&observable_prefix(7, Vec::new()), &mut oracle);
