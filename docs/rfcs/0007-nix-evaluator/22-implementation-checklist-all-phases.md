@@ -1832,10 +1832,11 @@ alone (`M-1`/`Q-A`).
 - [x] Current buffered blob pack append/validation substrate: `PersistBlobPack`
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
-      offsets plus lengths, and keeps buffered payload-window, streaming
-      verification, and payload-comparison helpers for maintenance paths. Owned
-      direct payload reads and record scans now route through the scoped mmap row
-      below. This is ordinary `std::fs` append plus buffered validation only;
+      offsets plus lengths, and keeps the buffered payload-window helper for
+      metadata-only validation plus relocation staging. Owned direct payload
+      reads, record scans, payload verification, and payload comparisons now
+      route through the scoped mmap row below. This is ordinary `std::fs` append
+      plus buffered validation only;
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:
@@ -1897,7 +1898,9 @@ alone (`M-1`/`Q-A`).
       API. `PersistBlobPack::read_blob` remains an owned-byte wrapper around
       that lower-level visitor. `PersistBlobPack::records` and
       `with_mapped_records` perform verified pack-record metadata scans through
-      scoped mappings.
+      scoped mappings, while `PersistBlobPack::verify_blob` and
+      `payload_matches` verify payloads through scoped mappings and return only
+      owned payload-window metadata or booleans.
       `PersistCache::with_blob` and `PersistCache::with_blob_indexed` expose
       public callback-scoped borrowed payload visits through that scoped mapped
       callback, while `PersistCache::read_blob` and
@@ -1930,8 +1933,8 @@ alone (`M-1`/`Q-A`).
       wrappers. Focused cached-expression payload, lower-level blob-pack,
       lower-level blob-index, direct artifact-read, artifact-hydration, and
       indexed parse-cache hit tests require lower-level
-      `PersistBlobPack::records` plus indexed value/file reads, cache-level
-      direct raw `read_blob`/`with_blob`,
+      `PersistBlobPack::records`/`verify_blob`/`payload_matches` plus indexed
+      value/file reads, cache-level direct raw `read_blob`/`with_blob`,
       decoded cached-expression value visits, node-linked decoded
       cached-expression value visits, trace-revalidated decoded cached-expression
       value/dependency visits, decoded parse-artifact bundle visits, raw file/parse artifact
@@ -1958,6 +1961,8 @@ alone (`M-1`/`Q-A`).
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `blob_pack_records_scans_verified_records_in_pack_order`,
       `blob_pack_borrowed_read_uses_scoped_mapped_payload`,
+      `blob_pack_verify_blob_uses_scoped_mapped_payload_without_materializing`,
+      `blob_pack_payload_matches_compares_verified_payload_bytes`,
       `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_source_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_file_index_borrowed_load_visits_cached_parse_after_hydration`,

@@ -289,7 +289,7 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
 }
 
 #[test]
-fn blob_pack_verify_blob_streams_payload_hash_without_materializing() {
+fn blob_pack_verify_blob_uses_scoped_mapped_payload_without_materializing() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");
     let payload = vec![b'x'; 16 * 1024 + 17];
@@ -298,6 +298,7 @@ fn blob_pack_verify_blob_streams_payload_hash_without_materializing() {
         .append_blob(hash, &payload)
         .expect("large blob appends");
 
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
     let window = pack
         .verify_blob(location, hash)
         .expect("large payload verifies");
@@ -307,6 +308,11 @@ fn blob_pack_verify_blob_streams_payload_hash_without_materializing() {
     assert_eq!(
         window.payload_end(),
         location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64 + payload.len() as u64
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "verify_blob should use the mapped adapter"
     );
 
     let mut file = OpenOptions::new()
@@ -325,6 +331,11 @@ fn blob_pack_verify_blob_streams_payload_hash_without_materializing() {
         error,
         PersistBlobPackError::PayloadHashMismatch { .. }
     ));
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "failed mapped payload verification should not count as a successful visit"
+    );
 
     let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
 }
@@ -337,19 +348,31 @@ fn blob_pack_payload_matches_compares_verified_payload_bytes() {
     let hash = DurableBlake3Hash::for_bytes(payload);
     let location = pack.append_blob(hash, payload).expect("blob appends");
 
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
     assert!(
         pack.payload_matches(location, hash, payload)
             .expect("matching payload verifies")
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "matching payload comparisons should use the mapped adapter"
     );
     assert!(
         !pack
             .payload_matches(location, hash, b"payloae")
             .expect("same-length mismatch verifies")
     );
+    assert_eq!(pack.mapped_read_count_for_tests(), 2);
     assert!(
         !pack
             .payload_matches(location, hash, b"payload with suffix")
             .expect("length mismatch validates metadata")
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        3,
+        "length mismatches should still verify through the mapped adapter"
     );
     let wrong_hash = DurableBlake3Hash::for_bytes(b"other payload");
     let error = pack
@@ -359,6 +382,7 @@ fn blob_pack_payload_matches_compares_verified_payload_bytes() {
         error,
         PersistBlobPackError::RecordHashMismatch { .. }
     ));
+    assert_eq!(pack.mapped_read_count_for_tests(), 3);
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -378,6 +402,11 @@ fn blob_pack_payload_matches_compares_verified_payload_bytes() {
         error,
         PersistBlobPackError::PayloadHashMismatch { .. }
     ));
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        3,
+        "failed mapped payload comparisons should not count as successful visits"
+    );
 
     let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
 }

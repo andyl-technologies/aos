@@ -538,64 +538,59 @@ impl PersistBlobPack {
             .map_err(engine_read_error_to_persist)
     }
 
-    /// Verifies the payload at `location` without materializing it.
+    /// Maps and verifies the payload at `location` without materializing it.
     ///
     /// This validates the record metadata and pack bounds in the same way as
-    /// [`Self::payload_window`], then streams the payload bytes through BLAKE3
-    /// and returns the verified byte window. It is intended for maintenance
-    /// paths that need to prove a pack root is live without allocating the
-    /// payload.
+    /// [`Self::payload_window`], then hashes mapped payload bytes and returns
+    /// the verified byte window. It is intended for maintenance paths that need
+    /// to prove a pack root is live without allocating the payload.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, seeked, or read, if `location` is invalid, if record metadata
-    /// does not match the expected lookup, if the declared payload window falls
-    /// outside the current packfile, or if the payload hash does not verify.
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if `location` is invalid, if record metadata does not match the expected
+    /// lookup, if the declared payload window falls outside the mapping, or if
+    /// the payload hash does not verify.
     pub fn verify_blob(
         &self,
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader
-            .verify_payload(
-                persist_location_to_engine(location),
-                durable_hash_to_engine(expected_hash),
-            )
-            .map(engine_payload_window_to_persist)
-            .map_err(engine_read_error_to_persist)
+        self.with_blob(location, expected_hash, |_| {
+            verified_payload_window(location, expected_hash)
+        })?
     }
 
     /// Returns whether the verified payload at `location` equals `expected_payload`.
     ///
-    /// This validates the record metadata and pack bounds, streams the payload
-    /// bytes once, compares them with `expected_payload`, and still verifies
-    /// that the stored payload hashes to `expected_hash`. A length mismatch
-    /// after metadata validation returns `Ok(false)`.
+    /// This validates the record metadata and pack bounds, maps and hashes the
+    /// payload bytes once, compares them with `expected_payload`, and still
+    /// verifies that the stored payload hashes to `expected_hash`. A length
+    /// mismatch after metadata validation returns `Ok(false)`.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, seeked, or read, if `location` is invalid, if record metadata
-    /// does not match the expected lookup, if the declared payload window falls
-    /// outside the current packfile, if `expected_payload` is too large to
-    /// compare with a pack record, or if the stored payload hash does not
-    /// verify.
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if `location` is invalid, if record metadata does not match the expected
+    /// lookup, if the declared payload window falls outside the mapping, if
+    /// `expected_payload` is too large to compare with a pack record, or if the
+    /// stored payload hash does not verify.
     pub fn payload_matches(
         &self,
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
         expected_payload: &[u8],
     ) -> Result<bool, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader
-            .payload_matches(
-                persist_location_to_engine(location),
-                durable_hash_to_engine(expected_hash),
-                expected_payload,
-            )
-            .map_err(engine_read_error_to_persist)
+        let expected_len = u64::try_from(expected_payload.len()).map_err(|_| {
+            PersistBlobPackError::PayloadTooLarge {
+                payload_len: expected_payload.len() as u128,
+            }
+        })?;
+        self.with_blob(location, expected_hash, |payload| {
+            expected_len == location.payload_len() && payload == expected_payload
+        })
     }
 
     /// Reads and verifies a blob at `location`.
@@ -717,24 +712,7 @@ impl PersistBlobPack {
         expected_hash: DurableBlake3Hash,
     ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
         self.with_mapped_blob(read_lease, location, expected_hash, |_| {
-            let payload_start = location
-                .record_offset()
-                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
-                .ok_or(PersistBlobPackError::RecordBoundsOverflow {
-                    record_offset: location.record_offset(),
-                    payload_len: location.payload_len(),
-                })?;
-            let payload_end = payload_start.checked_add(location.payload_len()).ok_or(
-                PersistBlobPackError::RecordBoundsOverflow {
-                    record_offset: location.record_offset(),
-                    payload_len: location.payload_len(),
-                },
-            )?;
-            Ok(PersistBlobPayloadWindow::new(
-                PersistBlobPackRecord::new(expected_hash, location),
-                payload_start,
-                payload_end,
-            ))
+            verified_payload_window(location, expected_hash)
         })?
     }
 
@@ -906,6 +884,30 @@ impl PersistBlobPack {
             .trim_tail(end_offset)
             .map_err(engine_trim_error_to_persist)
     }
+}
+
+fn verified_payload_window(
+    location: PersistBlobLocation,
+    expected_hash: DurableBlake3Hash,
+) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
+    let payload_start = location
+        .record_offset()
+        .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+        .ok_or(PersistBlobPackError::RecordBoundsOverflow {
+            record_offset: location.record_offset(),
+            payload_len: location.payload_len(),
+        })?;
+    let payload_end = payload_start.checked_add(location.payload_len()).ok_or(
+        PersistBlobPackError::RecordBoundsOverflow {
+            record_offset: location.record_offset(),
+            payload_len: location.payload_len(),
+        },
+    )?;
+    Ok(PersistBlobPayloadWindow::new(
+        PersistBlobPackRecord::new(expected_hash, location),
+        payload_start,
+        payload_end,
+    ))
 }
 
 fn clone_mapped_blob_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
