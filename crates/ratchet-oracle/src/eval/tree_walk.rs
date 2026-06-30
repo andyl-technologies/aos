@@ -596,7 +596,7 @@ struct TextStoreEntry {
     references: StringContext,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ImpureInputTraceCursor {
     len: usize,
     complete: bool,
@@ -788,6 +788,7 @@ pub struct TreeWalk {
     impure_input_trace_complete: bool,
     force_cache_impure_trace_epoch: u64,
     active_memo_read_nodes: Vec<ActiveMemoReadNode>,
+    active_derivation_trace_cursors: Vec<ImpureInputTraceCursor>,
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,

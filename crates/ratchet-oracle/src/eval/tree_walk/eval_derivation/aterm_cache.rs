@@ -350,7 +350,8 @@ impl TreeWalk {
                 }
             }
         };
-        if observed {
+        let persistable = self.active_derivation_side_record_trace_is_persistable();
+        if observed && persistable {
             self.materialize_persist_derivation_aterm_path(
                 identity,
                 &free_var_value_hashes,
@@ -358,7 +359,7 @@ impl TreeWalk {
                 &drv_path_bytes,
                 Some(known_hash.nix_sha256_digest()),
             );
-        } else if rejected {
+        } else if rejected || !persistable {
             self.clear_persist_derivation_aterm_path(identity, &free_var_value_hashes);
         }
         if early_cutoff {

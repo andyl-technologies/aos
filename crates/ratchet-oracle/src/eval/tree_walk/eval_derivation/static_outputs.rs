@@ -392,14 +392,15 @@ impl TreeWalk {
                 }
             }
         };
-        if observed {
+        let persistable = self.active_derivation_side_record_trace_is_persistable();
+        if observed && persistable {
             self.materialize_persist_static_derivation_output_paths(
                 identity,
                 &free_var_value_hashes,
                 pre_output_aterm,
                 output_paths,
             );
-        } else if rejected {
+        } else if rejected || !persistable {
             self.clear_persist_static_derivation_output_paths(identity, &free_var_value_hashes);
         }
     }

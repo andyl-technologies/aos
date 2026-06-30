@@ -1,7 +1,7 @@
 //! Tree-walk evaluator tests for derivation force-cache surfaces.
 
 use super::derivation_2_support::{
-    derivation_aterm_cache_subject, eval_single_derivation_with_cache,
+    derivation_aterm_cache_subject, derivation_surfaces, eval_single_derivation_with_cache,
     static_derivation_outputs_cache_subject,
 };
 use super::*;
@@ -568,6 +568,67 @@ fn current_time_derivation_skips_persistent_side_record_nodes() {
     fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
 }
 
+#[test]
+fn nested_current_time_derivations_skip_persistent_side_record_nodes() {
+    let persist_root = unique_temp_dir("force-cache-current-time-nested-side-record-persist");
+    let source = r#"let
+             b = builtins;
+             inner = derivationStrict {
+               name = "force-cache-current-time-nested-inner";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               env = b.currentTime;
+             };
+           in derivationStrict {
+             name = "force-cache-current-time-nested-outer";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ inner.drvPath ];
+           }"#;
+    let ir = lower(source);
+    let expected_trace = vec![ImpureInputFingerprint::current_time()];
+    let options = |current_time| {
+        let mut options = TreeWalkOptions::with_current_time(current_time)
+            .expect("currentTime is valid for nested derivations");
+        options.set_eval_cache_enabled(true);
+        options.set_persist_cache_root(&persist_root);
+        options
+    };
+
+    let first =
+        evaluate_nested_current_time_derivations(&ir, options(1_700_000_000), "first nested run");
+    assert_eq!(first.surfaces.len(), 2);
+    assert_eq!(first.trace, expected_trace);
+    assert_eq!(first.path_reuses, 0);
+    assert_eq!(first.output_path_reuses, 0);
+    assert!(first.hash_calculations > 0);
+    assert!(first.text_path_calculations > 0);
+
+    let replay =
+        evaluate_nested_current_time_derivations(&ir, options(1_700_000_000), "replay nested run");
+    assert_eq!(replay.surfaces, first.surfaces);
+    assert_eq!(replay.trace, expected_trace);
+    assert_eq!(replay.path_reuses, 0);
+    assert_eq!(replay.output_path_reuses, 0);
+    assert!(replay.hash_calculations > 0);
+    assert!(replay.text_path_calculations > 0);
+
+    let changed =
+        evaluate_nested_current_time_derivations(&ir, options(1_700_000_123), "changed nested run");
+    assert_ne!(changed.surfaces, first.surfaces);
+    assert_eq!(changed.trace, expected_trace);
+    assert_eq!(changed.path_reuses, 0);
+    assert_eq!(changed.output_path_reuses, 0);
+    assert!(changed.hash_calculations > 0);
+    assert!(changed.text_path_calculations > 0);
+    assert_persistent_force_cache_sidecars_empty(
+        &persist_root,
+        "nested uncacheable currentTime derivation canary",
+    );
+
+    fs::remove_dir_all(persist_root).expect("persistent temp directory removes");
+}
+
 #[derive(Debug)]
 struct EffectfulDerivationSurface {
     path: String,
@@ -582,6 +643,43 @@ struct EffectfulDerivationSurface {
     hash_calculations: u64,
     text_path_calculations: u64,
     persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
+}
+
+#[derive(Debug)]
+struct NestedCurrentTimeDerivations {
+    surfaces: Vec<(String, Vec<u8>)>,
+    trace: Vec<ImpureInputFingerprint>,
+    path_reuses: u64,
+    output_path_reuses: u64,
+    hash_calculations: u64,
+    text_path_calculations: u64,
+}
+
+fn evaluate_nested_current_time_derivations(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    context: &str,
+) -> NestedCurrentTimeDerivations {
+    let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        ir,
+        options,
+        None,
+        Arc::new(Mutex::new(EvalCacheRuntime::enabled())),
+    )
+    .unwrap_or_else(|error| panic!("{context} should evaluate: {error:?}"));
+    assert_eq!(
+        outcome.derivations().len(),
+        2,
+        "{context} should record inner and outer derivations"
+    );
+    NestedCurrentTimeDerivations {
+        surfaces: derivation_surfaces(&outcome),
+        trace: outcome.impure_input_trace().to_vec(),
+        path_reuses: outcome.stats().derivation_aterm_path_reuses(),
+        output_path_reuses: outcome.stats().static_derivation_output_path_reuses(),
+        hash_calculations: outcome.stats().derivation_hash_calculations(),
+        text_path_calculations: outcome.stats().derivation_text_path_calculations(),
+    }
 }
 
 fn assert_persistent_force_cache_trace_log_contains(

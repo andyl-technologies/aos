@@ -162,9 +162,11 @@ impl TreeWalk {
         argument_span: Span,
     ) -> Result<Value, TreeWalkError> {
         let trace_cursor = self.impure_input_trace_cursor();
-        let result = self.with_active_derivation_aterm_memo_read_node(id, |eval| {
-            let value = eval.eval_node(argument)?;
-            eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+        let result = self.with_active_derivation_trace_cursor(trace_cursor, |eval| {
+            eval.with_active_derivation_aterm_memo_read_node(id, |eval| {
+                let value = eval.eval_node(argument)?;
+                eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+            })
         });
         if result.is_ok() {
             let trace = self.impure_input_trace_segment(trace_cursor);
@@ -182,8 +184,10 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let trace_cursor = self.impure_input_trace_cursor();
-        let result = self.with_active_derivation_aterm_memo_read_node(id, |eval| {
-            eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+        let result = self.with_active_derivation_trace_cursor(trace_cursor, |eval| {
+            eval.with_active_derivation_aterm_memo_read_node(id, |eval| {
+                eval.eval_derivation_strict_value_inner(id, span, argument, argument_span, value)
+            })
         });
         if result.is_ok() {
             let trace = self.impure_input_trace_segment(trace_cursor);
@@ -200,12 +204,7 @@ impl TreeWalk {
         // Derivation side records do not retain verifying traces yet, so any
         // incomplete or uncacheable input observed while building the .drv must
         // make the side records unavailable for same-runtime reuse.
-        if trace.complete
-            && trace
-                .trace
-                .iter()
-                .all(|fingerprint| fingerprint.as_cacheable().is_some())
-        {
+        if Self::derivation_side_record_trace_is_persistable(trace) {
             return;
         }
         let derivation_aterm_subject = self.derivation_aterm_cache_subject_for_current_node(id);
@@ -237,6 +236,34 @@ impl TreeWalk {
                 );
             }
         }
+    }
+
+    fn active_derivation_side_record_trace_is_persistable(&self) -> bool {
+        let Some(cursor) = self.active_derivation_trace_cursors.last().copied() else {
+            return true;
+        };
+        let trace = self.impure_input_trace_segment(cursor);
+        Self::derivation_side_record_trace_is_persistable(&trace)
+    }
+
+    fn derivation_side_record_trace_is_persistable(trace: &ImpureInputTraceSegment) -> bool {
+        trace.complete
+            && trace
+                .trace
+                .iter()
+                .all(|fingerprint| fingerprint.as_cacheable().is_some())
+    }
+
+    fn with_active_derivation_trace_cursor<T>(
+        &mut self,
+        cursor: ImpureInputTraceCursor,
+        evaluate: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.active_derivation_trace_cursors.push(cursor);
+        let result = evaluate(self);
+        let popped = self.active_derivation_trace_cursors.pop();
+        debug_assert_eq!(popped, Some(cursor));
+        result
     }
 
     pub(in crate::eval::tree_walk) fn with_active_derivation_aterm_memo_read_node<T>(
