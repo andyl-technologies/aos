@@ -761,12 +761,12 @@ in {
       replayOracle = import ./phase4-event-graph-replay-oracle.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase4.gates.replayOracle";
-        taskIds = ["T-TRIG-20"];
+        taskIds = ["T-TRIG-20" "T-ASRT-16"];
       };
       e2eDeterminism = import ./phase4-e2e-determinism.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
-        taskIds = ["T-PLAN-3" "T-DET-26"];
+        taskIds = ["T-PLAN-3" "T-DET-26" "T-ASRT-16"];
       };
     };
   };

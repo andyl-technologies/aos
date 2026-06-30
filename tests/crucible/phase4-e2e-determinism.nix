@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.e2eDeterminism",
-  taskIds ? ["T-DET-26"],
+  taskIds ? ["T-DET-26" "T-ASRT-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,12 +13,14 @@
 
   e2eHarness = builtins.readFile ../../crates/crucible-harness/src/e2e.rs;
   e2eGate = builtins.readFile ../../crates/crucible-harness/tests/gate_e2e_determinism.rs;
+  crucibleE2eGate = builtins.readFile ../../crates/crucible/tests/gate_e2e_determinism_concurrency.rs;
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   cliE2eGate = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   hasInfix = needle: haystack: let
@@ -63,6 +65,16 @@
       {
         label = "T-DET-26 completion note";
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism`";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
+      {
+        label = "T-ASRT-16 checklist complete";
+        needle = "- [x] **T-ASRT-16**";
+      }
+      {
+        label = "T-ASRT-16 completion note";
+        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/e2e.rs" e2eHarness [
@@ -205,6 +217,28 @@
         needle = "gate_e2e_determinism_canonical_artifact_encoding_is_length_prefixed";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/gate_e2e_determinism_concurrency.rs" crucibleE2eGate [
+      {
+        label = "assertion online/offline e2e coverage";
+        needle = "gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict";
+      }
+      {
+        label = "assertion e2e outcome equality";
+        needle = "gate:e2e-determinism must compare identical assertion outcome sets online/offline";
+      }
+      {
+        label = "assertion e2e scheduler-backed drive";
+        needle = "drive_with_assertions(DriveMode::Authoritative";
+      }
+      {
+        label = "assertion e2e cross-mode outcome signature";
+        needle = "assertion_outcome_signature(&authoritative.assertion_fail_online)";
+      }
+      {
+        label = "assertion e2e failed verdict composition";
+        needle = "deterministic run-verdict composition must match for failed assertions";
+      }
+    ]
     ++ forbiddenFor "crates/crucible-harness/tests/gate_e2e_determinism.rs" e2eGate [
       {
         label = "ignored harness e2e placeholder";
@@ -341,6 +375,9 @@ in
             artifact=self-contained-seed-scenario-schedule-build-identity
             adversarial_profiles=canonical-host-adversary-matrix
             final_acceptance_cli_target=pending
+            assertion_online_offline_outcomes=bit-identical
+            assertion_cross_mode_outcomes=normalized-bit-identical
+            assertion_run_verdict=deterministic
             RESULT
           '';
         }
