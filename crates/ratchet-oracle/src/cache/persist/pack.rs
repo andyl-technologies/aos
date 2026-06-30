@@ -8,9 +8,9 @@ use super::*;
 use ratchet_cache::blob_pack::{
     BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackAppender, BlobPackFileIdentityError,
     BlobPackFileReadLease, BlobPackFormatError, BlobPackHash, BlobPackLocation,
-    BlobPackPayloadWindow, BlobPackReadError, BlobPackReadLeaseError, BlobPackReader,
-    BlobPackRecord, BlobPackRecordRelocation, BlobPackRewriteError, BlobPackTrimError,
-    MappedBlobPack, MappedBlobPackError, blob_pack_rewrite_paths_alias, write_staged_blob_pack,
+    BlobPackPayloadWindow, BlobPackReadError, BlobPackReadLeaseError, BlobPackRecord,
+    BlobPackRewriteError, BlobPackTrimError, MappedBlobPack, MappedBlobPackError,
+    blob_pack_rewrite_paths_alias, write_staged_blob_pack,
 };
 use ratchet_cache::file_lock::AdvisoryFileLock;
 use ratchet_cache::store::ReadOnlyMmapError;
@@ -47,10 +47,6 @@ fn open_engine_blob_pack_appender(path: &Path) -> Result<BlobPackAppender, Persi
     BlobPackAppender::open(path.to_path_buf()).map_err(engine_append_error_to_persist)
 }
 
-fn open_engine_blob_pack_reader(path: &Path) -> Result<BlobPackReader, PersistBlobPackError> {
-    BlobPackReader::open(path.to_path_buf()).map_err(engine_read_error_to_persist)
-}
-
 fn durable_hash_to_engine(hash: DurableBlake3Hash) -> BlobPackHash {
     BlobPackHash::from_bytes(hash.as_bytes())
 }
@@ -79,16 +75,6 @@ fn engine_payload_window_to_persist(window: BlobPackPayloadWindow) -> PersistBlo
         engine_record_to_persist(window.record()),
         window.payload_start(),
         window.payload_end(),
-    )
-}
-
-fn persist_relocation_to_engine(
-    relocation: PersistBlobRecordRelocation,
-) -> BlobPackRecordRelocation {
-    BlobPackRecordRelocation::new(
-        durable_hash_to_engine(relocation.key().hash()),
-        persist_location_to_engine(relocation.old_location()),
-        persist_location_to_engine(relocation.new_location()),
     )
 }
 
@@ -822,25 +808,17 @@ impl PersistBlobPack {
         tmp_path: impl Into<PathBuf>,
         relocations: &[PersistBlobRecordRelocation],
     ) -> Result<PersistBlobPack, PersistBlobPackError> {
-        let tmp_path = tmp_path.into();
-        open_engine_blob_pack_appender(&self.path)?;
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        let engine_relocations = relocations
-            .iter()
-            .copied()
-            .map(persist_relocation_to_engine)
-            .collect::<Vec<_>>();
-        let tmp_reader = reader
-            .write_relocated_records_to(tmp_path, &engine_relocations)
-            .map_err(engine_rewrite_error_to_persist)?;
-        let path = tmp_reader.path().to_path_buf();
-        let appender = open_engine_blob_pack_appender(&path)?;
-        Ok(Self {
-            appender,
-            path,
-            #[cfg(test)]
-            mapped_read_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        })
+        self.write_relocated_records_from_mapped_source_to(
+            tmp_path.into(),
+            relocations,
+            |pack, location, hash, tmp_appender| {
+                pack.with_mapped_blob_unlocked(location, hash, |payload| {
+                    tmp_appender
+                        .append_payload(durable_hash_to_engine(hash), payload)
+                        .map_err(engine_append_error_to_persist)
+                })?
+            },
+        )
     }
 
     /// Writes a compacted mapped copy of the supplied records to `tmp_path`.
@@ -864,7 +842,30 @@ impl PersistBlobPack {
         tmp_path: impl Into<PathBuf>,
         relocations: &[PersistBlobRecordRelocation],
     ) -> Result<PersistBlobPack, PersistBlobPackError> {
-        let tmp_path = tmp_path.into();
+        self.write_relocated_records_from_mapped_source_to(
+            tmp_path.into(),
+            relocations,
+            |pack, location, hash, tmp_appender| {
+                pack.with_mapped_blob(read_lease, location, hash, |payload| {
+                    tmp_appender
+                        .append_payload(durable_hash_to_engine(hash), payload)
+                        .map_err(engine_append_error_to_persist)
+                })?
+            },
+        )
+    }
+
+    fn write_relocated_records_from_mapped_source_to(
+        &self,
+        tmp_path: PathBuf,
+        relocations: &[PersistBlobRecordRelocation],
+        mut append_mapped_payload: impl FnMut(
+            &Self,
+            PersistBlobLocation,
+            DurableBlake3Hash,
+            &BlobPackAppender,
+        ) -> Result<BlobPackLocation, PersistBlobPackError>,
+    ) -> Result<PersistBlobPack, PersistBlobPackError> {
         if blob_pack_rewrite_paths_alias(&self.path, &tmp_path) {
             return Err(PersistBlobPackError::SourceEqualsTemp {
                 source_path: self.path.clone(),
@@ -876,16 +877,8 @@ impl PersistBlobPack {
             write_staged_blob_pack(&self.path, tmp_path, |tmp_appender| {
                 for relocation in relocations {
                     let hash = relocation.key().hash();
-                    let copied = self.with_mapped_blob(
-                        read_lease,
-                        relocation.old_location(),
-                        hash,
-                        |payload| {
-                            tmp_appender
-                                .append_payload(durable_hash_to_engine(hash), payload)
-                                .map_err(engine_append_error_to_persist)
-                        },
-                    )??;
+                    let copied =
+                        append_mapped_payload(self, relocation.old_location(), hash, tmp_appender)?;
                     let copied = engine_location_to_persist(copied);
                     if copied != relocation.new_location() {
                         return Err(PersistBlobPackError::RecordLocationMismatch {

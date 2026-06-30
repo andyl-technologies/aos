@@ -1829,15 +1829,14 @@ alone (`M-1`/`Q-A`).
       plus payload length as stable little-endian metadata. This is format
       metadata only; file creation, append/read, mmap, payload verification,
       offset-index writes, GC/repack, and harness proof remain open (`C-13`).
-- [x] Current buffered blob pack append/validation substrate: `PersistBlobPack`
+- [x] Current blob pack append/validation substrate: `PersistBlobPack`
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
-      offsets plus lengths, and keeps raw lower-level buffered relocation for
-      compacted temporary packs. Length reads, owned direct payload reads,
+      offsets plus lengths. Length reads, owned direct payload reads,
       metadata-only payload-window validation, record scans, payload
-      verification, payload comparisons, and cache-level repack copies now
-      route through the scoped mmap row below. This is ordinary `std::fs`
-      append plus buffered validation only;
+      verification, payload comparisons, raw lower-level relocation copies, and
+      cache-level repack copies now route through the scoped mmap row below.
+      This is ordinary `std::fs` append plus mapped validation only;
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:

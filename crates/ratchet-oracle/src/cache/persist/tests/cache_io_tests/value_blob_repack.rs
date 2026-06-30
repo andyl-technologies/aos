@@ -529,6 +529,126 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
 }
 
 #[test]
+fn cache_value_blob_pack_raw_repack_copy_uses_mapped_reads() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let first_payload = b"raw mapped copy first live value";
+    let first_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(first_payload),
+    );
+    cache
+        .append_blob_indexed(first_key, first_payload)
+        .expect("first indexed value appends");
+    let second_payload = b"raw mapped copy second live value";
+    let second_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(second_payload),
+    );
+    cache
+        .append_blob_indexed(second_key, second_payload)
+        .expect("second indexed value appends");
+    let unrooted_payload = b"raw mapped copy unrooted value";
+    let unrooted_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(unrooted_payload),
+    );
+    cache
+        .append_blob(unrooted_key, unrooted_payload)
+        .expect("unrooted value appends");
+
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Values)
+        .expect("value repack plan builds");
+    assert_eq!(plan.record_relocations().len(), 2);
+    assert_eq!(plan.unrooted_records().len(), 1);
+    let mapped_reads_after_plan = cache.value_pack().mapped_read_count_for_tests();
+    let tmp_pack_path = cache
+        .value_pack()
+        .path()
+        .with_extension("raw-repack-mapped.tmp");
+
+    let staged_pack = cache
+        .value_pack()
+        .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+        .expect("raw relocated copy writes staged pack");
+
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        mapped_reads_after_plan + plan.record_relocations().len()
+    );
+    for relocation in plan.record_relocations() {
+        let key = relocation.key();
+        let payload = staged_pack
+            .read_blob(relocation.new_location(), key.hash())
+            .expect("relocated payload reads from staged pack");
+        match key {
+            _ if key == first_key => assert_eq!(payload, first_payload),
+            _ if key == second_key => assert_eq!(payload, second_payload),
+            _ => panic!("unexpected relocated key: {key:?}"),
+        }
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_value_blob_pack_raw_repack_copy_removes_stage_pack_on_corrupt_source() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let prefix_payload = b"raw unrooted value prefix";
+    let prefix_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(prefix_payload),
+    );
+    cache
+        .append_blob(prefix_key, prefix_payload)
+        .expect("unrooted prefix appends");
+    let live_payload = b"raw mapped copy corrupt source";
+    let live_key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(live_payload),
+    );
+    let live_entry = cache
+        .append_blob_indexed(live_key, live_payload)
+        .expect("indexed live value appends");
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Values)
+        .expect("value repack plan builds");
+    let tmp_pack_path = cache
+        .value_pack()
+        .path()
+        .with_extension("raw-repack-corrupt.tmp");
+    fs::write(&tmp_pack_path, b"stale temp").expect("stale temp writes");
+    let payload_offset =
+        live_entry.location().record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(cache.value_pack().path())
+        .expect("value pack opens for mutation");
+    file.seek(SeekFrom::Start(payload_offset))
+        .expect("payload offset seeks");
+    file.write_all(b"X").expect("payload corrupts");
+    file.flush().expect("payload corruption flushes");
+
+    let error = cache
+        .value_pack()
+        .write_relocated_records_to(&tmp_pack_path, plan.record_relocations())
+        .expect_err("corrupt source blocks raw repack copy");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+    assert!(
+        !tmp_pack_path.exists(),
+        "failed raw repack copy should remove the staged pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_pack_repack_rejects_source_path_as_stage_pack() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
