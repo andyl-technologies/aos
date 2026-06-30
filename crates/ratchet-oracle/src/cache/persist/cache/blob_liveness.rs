@@ -154,7 +154,7 @@ impl PersistCache {
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
-        let (_blob_advisory_guard, _blob_guard) = self.lock_blob_liveness_plan_read(store)?;
+        let (blob_advisory_guard, _blob_guard) = self.lock_blob_liveness_plan_read(store)?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
             Some(self.lock_file_artifact_read().map_err(|source| {
                 PersistBlobPackLivenessPlanError::Roots {
@@ -176,23 +176,25 @@ impl PersistCache {
         let roots = self
             .snapshot_blob_live_roots_unlocked(store)
             .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
-        self.plan_blob_pack_liveness_from_roots(store, roots)
+        self.plan_blob_pack_liveness_from_roots(store, roots, &blob_advisory_guard)
     }
 
     fn plan_blob_pack_liveness_unlocked(
         &self,
         store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
     ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
         let roots = self
             .snapshot_blob_live_roots_unlocked(store)
             .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
-        self.plan_blob_pack_liveness_from_roots(store, roots)
+        self.plan_blob_pack_liveness_from_roots(store, roots, advisory_guard)
     }
 
     fn plan_blob_pack_liveness_from_roots(
         &self,
         store: PersistBlobStore,
         roots: Vec<PersistBlobLiveRoot>,
+        advisory_guard: &AdvisoryFileLock,
     ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
         let pack = self.blob_pack(store);
         let mut rooted_identities = std::collections::BTreeSet::new();
@@ -209,7 +211,7 @@ impl PersistCache {
             .len()
             .map_err(|source| PersistBlobPackLivenessPlanError::Scan { source })?;
         let records = pack
-            .records()
+            .with_mapped_records(advisory_guard, |records| records)
             .map_err(|source| PersistBlobPackLivenessPlanError::Scan { source })?;
         let mut rooted_records = Vec::new();
         let mut unrooted_records = Vec::new();
@@ -269,9 +271,10 @@ impl PersistCache {
     pub(super) fn plan_blob_pack_repack_unlocked(
         &self,
         store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
     ) -> Result<PersistBlobPackRepackPlan, PersistBlobPackRepackPlanError> {
         let liveness = self
-            .plan_blob_pack_liveness_unlocked(store)
+            .plan_blob_pack_liveness_unlocked(store, advisory_guard)
             .map_err(|source| PersistBlobPackRepackPlanError::Liveness { source })?;
         blob_pack_repack_plan_from_liveness(store, liveness)
     }

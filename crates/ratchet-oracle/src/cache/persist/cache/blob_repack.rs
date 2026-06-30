@@ -33,9 +33,9 @@ impl PersistCache {
     pub fn repack_value_blob_pack(
         &self,
     ) -> Result<PersistBlobPackRepackPlan, PersistValueBlobPackRepackError> {
-        let (_advisory_guard, _write_guard) = self.lock_value_blob_pack_repack()?;
+        let (advisory_guard, _write_guard) = self.lock_value_blob_pack_repack()?;
         let plan = self
-            .plan_blob_pack_repack_unlocked(PersistBlobStore::Values)
+            .plan_blob_pack_repack_unlocked(PersistBlobStore::Values, &advisory_guard)
             .map_err(|source| PersistValueBlobPackRepackError::Plan { source })?;
         if plan.reclaimable_bytes() == 0 {
             return Ok(plan);
@@ -92,7 +92,7 @@ impl PersistCache {
     pub fn repack_file_blob_pack(
         &self,
     ) -> Result<PersistBlobPackRepackPlan, PersistFileBlobPackRepackError> {
-        let (_advisory_guard, _file_guard) = self.lock_file_blob_pack_repack()?;
+        let (advisory_guard, _file_guard) = self.lock_file_blob_pack_repack()?;
         let _file_artifact_guard = self
             .lock_file_artifact_write()
             .map_err(|source| PersistFileBlobPackRepackError::FileArtifactIndex { source })?;
@@ -109,7 +109,7 @@ impl PersistCache {
             });
         }
         let plan = self
-            .plan_blob_pack_repack_unlocked(PersistBlobStore::Files)
+            .plan_blob_pack_repack_unlocked(PersistBlobStore::Files, &advisory_guard)
             .map_err(|source| PersistFileBlobPackRepackError::Plan { source })?;
         if plan.reclaimable_bytes() == 0 {
             return Ok(plan);
