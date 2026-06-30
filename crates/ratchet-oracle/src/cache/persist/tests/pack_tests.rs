@@ -391,7 +391,13 @@ fn blob_pack_records_scans_verified_records_in_pack_order() {
     let second_payload = b"second payload";
     let second_hash = DurableBlake3Hash::for_bytes(second_payload);
 
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
     assert!(pack.records().expect("empty pack scan succeeds").is_empty());
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "empty physical record scans should still use the mapped adapter"
+    );
     let first = pack
         .append_blob(first_hash, first_payload)
         .expect("first blob appends");
@@ -402,6 +408,11 @@ fn blob_pack_records_scans_verified_records_in_pack_order() {
     let records = pack.records().expect("pack records scan");
 
     assert_eq!(records.len(), 2);
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        2,
+        "physical record scans should use the mapped adapter"
+    );
     assert_eq!(records[0].hash(), first_hash);
     assert_eq!(records[0].location(), first);
     assert_eq!(

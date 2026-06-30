@@ -469,26 +469,22 @@ impl PersistBlobPack {
         Ok(self.len()? == BLOB_PACK_HEADER_LEN as u64)
     }
 
-    /// Returns all verified blob records in packfile order.
+    /// Returns all mapped and verified blob records in packfile order.
     ///
-    /// This reads each record header and payload, verifies that the payload
-    /// bytes hash to the record's declared content address, and returns only
-    /// record metadata. It is a buffered integrity-scan helper for future
-    /// maintenance paths; hot cache-hit reads still use direct indexed lookups.
+    /// This holds a descriptor read lease while it maps the packfile, validates
+    /// each record header and payload window, verifies mapped payload hashes,
+    /// and returns only owned record metadata. Payload bytes are not copied out
+    /// of the mapping.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, seeked, or read, if any record header is malformed or
-    /// truncated, if a record points past the current packfile length, if a
-    /// payload length cannot fit in memory, or if a payload hash does not match
-    /// the record header.
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if any record header is malformed or truncated, if any payload window
+    /// falls outside the mapping, or if any payload hash does not match its
+    /// record header.
     pub fn records(&self) -> Result<Vec<PersistBlobPackRecord>, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader
-            .records()
-            .map(|records| records.into_iter().map(engine_record_to_persist).collect())
-            .map_err(engine_read_error_to_persist)
+        self.mapped_records_unlocked()
     }
 
     /// Appends `payload` as a content-addressed immutable blob.
@@ -761,6 +757,11 @@ impl PersistBlobPack {
         _read_lease: &AdvisoryFileLock,
         visit: impl FnOnce(Vec<PersistBlobPackRecord>) -> R,
     ) -> Result<R, PersistBlobPackError> {
+        let records = self.mapped_records_unlocked()?;
+        Ok(visit(records))
+    }
+
+    fn mapped_records_unlocked(&self) -> Result<Vec<PersistBlobPackRecord>, PersistBlobPackError> {
         let file = fs::File::open(&self.path).map_err(|source| PersistBlobPackError::Open {
             path: self.path.clone(),
             source,
@@ -778,7 +779,7 @@ impl PersistBlobPack {
         #[cfg(test)]
         self.mapped_read_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(visit(records))
+        Ok(records)
     }
 
     /// Writes a compacted copy of the supplied records to `tmp_path`.

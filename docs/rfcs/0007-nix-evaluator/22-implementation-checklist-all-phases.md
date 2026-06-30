@@ -1832,9 +1832,9 @@ alone (`M-1`/`Q-A`).
 - [x] Current buffered blob pack append/validation substrate: `PersistBlobPack`
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
-      offsets plus lengths, and keeps buffered record-scan, payload-window,
-      streaming verification, and payload-comparison helpers for maintenance
-      paths. Owned direct payload reads now route through the scoped mmap row
+      offsets plus lengths, and keeps buffered payload-window, streaming
+      verification, and payload-comparison helpers for maintenance paths. Owned
+      direct payload reads and record scans now route through the scoped mmap row
       below. This is ordinary `std::fs` append plus buffered validation only;
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
@@ -1895,7 +1895,9 @@ alone (`M-1`/`Q-A`).
       `with_mapped_blob` open, lease, map, verify, and visit payload bytes inside
       a callback so borrowed mmap bytes never escape `ratchet-oracle`'s safe
       API. `PersistBlobPack::read_blob` remains an owned-byte wrapper around
-      that lower-level visitor.
+      that lower-level visitor. `PersistBlobPack::records` and
+      `with_mapped_records` perform verified pack-record metadata scans through
+      scoped mappings.
       `PersistCache::with_blob` and `PersistCache::with_blob_indexed` expose
       public callback-scoped borrowed payload visits through that scoped mapped
       callback, while `PersistCache::read_blob` and
@@ -1925,9 +1927,11 @@ alone (`M-1`/`Q-A`).
       `with_parse_cache_file_from_index` visit hydrated `CachedParse` hits after
       indexed artifact lookup, scoped mapped hydration, and files/artifact locks
       are released, while their load counterparts remain owned `CachedParse`
-      wrappers. Focused cached-expression payload, lower-level blob-index, direct
-      artifact-read, artifact-hydration, and indexed parse-cache hit tests
-      require indexed value/file reads, cache-level direct raw `read_blob`/`with_blob`,
+      wrappers. Focused cached-expression payload, lower-level blob-pack,
+      lower-level blob-index, direct artifact-read, artifact-hydration, and
+      indexed parse-cache hit tests require lower-level
+      `PersistBlobPack::records` plus indexed value/file reads, cache-level
+      direct raw `read_blob`/`with_blob`,
       decoded cached-expression value visits, node-linked decoded
       cached-expression value visits, trace-revalidated decoded cached-expression
       value/dependency visits, decoded parse-artifact bundle visits, raw file/parse artifact
@@ -1952,6 +1956,7 @@ alone (`M-1`/`Q-A`).
       `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`,
       `cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
+      `blob_pack_records_scans_verified_records_in_pack_order`,
       `blob_pack_borrowed_read_uses_scoped_mapped_payload`,
       `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_source_index_borrowed_load_visits_cached_parse_after_hydration`,
@@ -2306,15 +2311,15 @@ alone (`M-1`/`Q-A`).
       pending artifact publication, or apply automatic GC policy
       (`C-13`/`R-14`).
 - [x] Current blob-pack integrity scan primitive:
-      `PersistBlobPack::records` scans a pack in record order, validates every
-      record header and payload hash, rejects truncated or corrupt tails instead
-      of returning partial metadata, and returns `PersistBlobPackRecord`
-      hash/location entries for maintenance callers. `with_mapped_records`
-      performs the same verified metadata scan through a scoped memory map while
-      a caller-owned advisory read lease is held, without letting payload bytes
-      escape. This is read-only scan metadata only; live-root selection,
-      repack/relocation writing, automatic GC policy, full maintenance mmap
-      wiring, Attic transport, and harness proof remain open (`C-13`/`R-14`).
+      `PersistBlobPack::records` scans a pack in record order through a scoped
+      memory map, validates every record header and mapped payload hash, rejects
+      truncated or corrupt tails instead of returning partial metadata, and
+      returns `PersistBlobPackRecord` hash/location entries for maintenance
+      callers. `with_mapped_records` performs the same verified metadata scan
+      while a caller-owned advisory read lease is held, without letting payload
+      bytes escape. This is read-only scan metadata only; live-root selection,
+      repack/relocation writing, automatic GC policy, Attic transport, and
+      harness proof remain open (`C-13`/`R-14`).
 - [x] Current store-typed blob-pack index-entry scan adapter:
       `PersistCache::blob_pack_index_entries` routes a scoped mapped verified
       pack scan through the selected `values/` or `files/` store under that
@@ -2363,8 +2368,8 @@ alone (`M-1`/`Q-A`).
       history. This is caller-driven single-sidecar repair only; live-root
       selection, blob-pack trimming, full repack/relocation, raw lower-level
       sidecar coordination, unrelated maintenance-writer coordination,
-      automatic GC/repair policy, full maintenance mmap wiring, Attic
-      transport, and harness proof remain open (`C-13`/`R-14`).
+      automatic GC/repair policy, Attic transport, and harness proof remain
+      open (`C-13`/`R-14`).
 - [x] Current explicit all-blob-index rebuild helper:
       `PersistCache::rebuild_blob_indexes_from_packs` rebuilds the `values/`
       and then `files/` hash-to-offset sidecars from verified pack scans and
