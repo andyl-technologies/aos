@@ -1,4 +1,12 @@
-##! lib/testing/apm-install-at-boot.nix — Ignition-authored apm intent check.
+##! lib/testing/apm-install-at-boot.nix — baked apm install-at-boot intent check.
+##!
+##! RFC-0011: the desired-packages list (`/etc/aos/packages.d/desired.toml`) and
+##! the apm registries are baked straight into the read-only image `/etc` when
+##! `aos.apm.installAtBoot.enable` is set (modules/base/apm.nix and
+##! modules/base/apm-registries.nix). The booting system carries the intent
+##! directly — there is no Ignition stage to author it at first boot — so the
+##! test enables installAtBoot on the system under test and asserts the baked
+##! files are present and `aos-install-packages.service` reconciles cleanly.
 {
   pkgs,
   mkSystem,
@@ -6,11 +14,6 @@
 }: let
   anchorKey = "example:Ed25519:QUJDREVGR0g=";
   testSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-    ];
-  };
-  metadataSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -30,7 +33,6 @@ in
     name = "apm-install-at-boot";
     system = testSystem;
     timeout = 300;
-    instanceMetadata.config = metadataSystem.config.aos.apm.installAtBoot.ignitionConfig;
     testScript = ''
       vm.wait_for_unit("aos-install-packages.service", timeout=120)
 
