@@ -248,7 +248,7 @@ in
             artifact=mock-seed-scenario-schedule-build-identity
             adversarial_profiles=canonical-host-adversary-matrix
             cross_machine_reproduction=different-machine-profile-replay
-            real_vm_artifact_format=deferred-to-T-HARN-24
+            shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
             real_host_reproduction=deferred-to-T-HARN-25
             cli_target=implemented_shared_mock_artifact
             RESULT

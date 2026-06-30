@@ -1008,9 +1008,8 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
-  fingerprints, observer output, and empty evidence; real reproduction-artifact
-  format details, real-host reproduction verification, CLI produce/reproduce
-  wiring, and AOS VM/fleet checks remain owned by T-HARN-24, T-HARN-25, and the
+  fingerprints, observer output, and empty evidence; real-host reproduction
+  verification and AOS VM/fleet checks remain owned by T-HARN-25 and the
   packaging tasks.
 - [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
@@ -1023,13 +1022,27 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   identity drift and missing cross-machine-profile coverage. The phase4
   scheduler/mock gate remains the lower-layer e2e coverage; this phase7 target
   closes the package-owned final acceptance target for the shared mock artifact
-  route without adding new CLI subcommand semantics. The concrete artifact
-  format, real-host reproduction check, and CLI/AOS produce/reproduce wiring
-  remain T-HARN-24, T-HARN-25, and packaging work.
-- [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
+  route without adding new CLI subcommand semantics. The versioned shared
+  artifact format and CLI produce/replay seam are completed by T-HARN-24; the
+  real-host reproduction check and AOS VM/fleet wiring remain T-HARN-25 and
+  packaging work.
+- [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
+  Completed by `checks.crucible.phase7.reproductionArtifactFormat`:
+  `crucible_harness::reproduction` now defines the versioned canonical text
+  artifact format with `(seed, ScenarioDef reference, Schedule)`, stable
+  `cas:crucible-hash:` component references, inline payload records for small
+  self-contained components, pinned engine/artifact/QEMU/plugin identity fields,
+  schedule-order and digest validation, canonical encode/decode support, and a
+  representative mock e2e producer that carries its ScenarioDef material. The
+  `crucible` CLI now validates artifacts through `replay <artifact>` and has a
+  failure-artifact writer that emits the artifact plus parseable replay/debug
+  command lines. This completes the mock format and CLI validation seam;
+  T-HARN-25 remains responsible for real different-host byte-identical
+  verification, BLAKE3/DagStore-backed durable identities, and identity-mismatch
+  replay failure.
 - [ ] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
