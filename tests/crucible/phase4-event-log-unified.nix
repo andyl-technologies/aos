@@ -115,13 +115,13 @@
       }
       {
         label = "condition prefix derives from same retained entries";
-        needle = "ConditionEventLogPrefix::from_scheduler_event_log_entries(condition_entries.clone())";
+        needle = "ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
       {
         label = "EventLog export";
-        needle = "EventDiagnosticPayload, EventLevel,\n    EventLog, EventLogIcountStamp";
+        needle = "EventLog, EventLogCausalProjection";
       }
       {
         label = "LogEntry export";

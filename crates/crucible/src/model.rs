@@ -8666,6 +8666,7 @@ impl TemporalGraph {
         if checkpoint.id != thin_checkpoint.id
             || checkpoint.node_blobs != thin_checkpoint.node_blobs
             || checkpoint.node_icounts != thin_checkpoint.node_icounts
+            || fat_state.event_log != thin_state.event_log
             || fat_state.id != thin_state.id
         {
             return Err(EngineError::ReplayOracleMismatch {

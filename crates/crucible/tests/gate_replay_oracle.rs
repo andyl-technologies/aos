@@ -8,16 +8,17 @@ use std::io::{Error as IoError, ErrorKind};
 use crucible::{
     AppRandomDecision, AssertionDef, AssertionId, AssertionQuantifierKind,
     AssertionViolationArtifactReplay, AssertionViolationReplayError, Checkpoint, CheckpointKind,
-    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError, EventKey,
-    FaultDecision, FaultId, FramePredicate, FrontierReductionPolicy, GenesisCheckpoint, Icount,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
-    NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties,
-    Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId,
-    ScenarioDef, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode, bake, check_assertion_violation_reproduction, instantiate,
-    reduce, step,
+    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError,
+    EventDiagnosticPayload, EventKey, EventLevel, FaultDecision, FaultId, FramePredicate,
+    FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
+    MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate,
+    ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties, Property, ReadyPoint,
+    RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDef,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
+    SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode, bake, check_assertion_violation_reproduction, compare_event_log_determinism,
+    instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -1291,6 +1292,52 @@ fn assert_replay_oracle_excludes_observational_entries(
     assert_eq!(
         double.replay_case(&materialized)?,
         double.replay_case(&with_extra_observation)?
+    );
+    let expected_log = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("observation/control"),
+                value: 11,
+            })),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            1,
+            VirtualTime { ticks: 1 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let reproduced_log = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "host-observation:ignored",
+                EventLevel::Debug,
+                std::collections::BTreeMap::new(),
+            )),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 0 },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("observation/control"),
+                value: 11,
+            })),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            2,
+            VirtualTime { ticks: 1 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let comparison = compare_event_log_determinism(&expected_log, &reproduced_log);
+
+    assert!(comparison.passes());
+    assert_eq!(
+        comparison.expected().canonical_bytes(),
+        comparison.reproduced().canonical_bytes()
     );
     Ok(())
 }

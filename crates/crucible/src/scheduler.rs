@@ -815,6 +815,204 @@ impl EventLog {
     }
 }
 
+/// One causal entry retained by the event-log determinism projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogCausalProjectionEntry {
+    /// Index of the entry in the original unified event log before filtering.
+    pub raw_index: usize,
+    /// Renumbered causal entry used for canonical comparison.
+    pub entry: SchedulerEventLogEntry,
+}
+
+/// Canonical causal-subsequence projection used by determinism gates.
+///
+/// The projection strips observational entries, renumbers surviving causal
+/// entries from zero, and serializes those renumbered entries with the same
+/// versioned binary segment encoder used for stored event-log segments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogCausalProjection {
+    entries: Vec<EventLogCausalProjectionEntry>,
+    canonical_bytes: Vec<u8>,
+    content_hash: ContentHash,
+}
+
+impl EventLogCausalProjection {
+    /// Returns the renumbered causal entries retained by the projection.
+    #[must_use]
+    pub fn entries(&self) -> &[EventLogCausalProjectionEntry] {
+        &self.entries
+    }
+
+    /// Returns the canonical binary bytes compared by determinism gates.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Returns the content hash of [`Self::canonical_bytes`].
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the number of causal entries retained by the projection.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the projection contains no causal entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// First causal-subsequence difference found by an event-log comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogDeterminismMismatch {
+    /// Renumbered causal index at which comparison first diverged.
+    pub causal_index: usize,
+    /// Raw unified-log index on the expected side, when present.
+    pub expected_raw_index: Option<usize>,
+    /// Raw unified-log index on the reproduced side, when present.
+    pub reproduced_raw_index: Option<usize>,
+    /// Expected renumbered causal entry at `causal_index`, when present.
+    pub expected_entry: Option<SchedulerEventLogEntry>,
+    /// Reproduced renumbered causal entry at `causal_index`, when present.
+    pub reproduced_entry: Option<SchedulerEventLogEntry>,
+}
+
+/// Result of comparing two unified event logs for deterministic equality.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogDeterminismComparison {
+    expected: EventLogCausalProjection,
+    reproduced: EventLogCausalProjection,
+    byte_identical: bool,
+    mismatch: Option<EventLogDeterminismMismatch>,
+}
+
+impl EventLogDeterminismComparison {
+    /// Returns the expected run's causal projection.
+    #[must_use]
+    pub fn expected(&self) -> &EventLogCausalProjection {
+        &self.expected
+    }
+
+    /// Returns the reproduced run's causal projection.
+    #[must_use]
+    pub fn reproduced(&self) -> &EventLogCausalProjection {
+        &self.reproduced
+    }
+
+    /// Returns whether both canonical causal projections are byte-identical.
+    #[must_use]
+    pub fn byte_identical(&self) -> bool {
+        self.byte_identical
+    }
+
+    /// Returns the first entry-level causal mismatch, when one is localized.
+    #[must_use]
+    pub fn mismatch(&self) -> Option<&EventLogDeterminismMismatch> {
+        self.mismatch.as_ref()
+    }
+
+    /// Returns whether both causal projections are byte-identical.
+    #[must_use]
+    pub fn passes(&self) -> bool {
+        self.byte_identical
+    }
+}
+
+/// Builds the canonical causal-subsequence projection for `entries`.
+#[must_use]
+pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventLogCausalProjection {
+    let entries = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.class == SchedulerEventLogClass::Causal)
+        .enumerate()
+        .map(
+            |(causal_index, (raw_index, entry))| EventLogCausalProjectionEntry {
+                raw_index,
+                entry: scheduler_event_log_entry_with_material(
+                    causal_index as u64,
+                    entry.at.clone(),
+                    entry.source.clone(),
+                    entry.level,
+                    SchedulerEventLogClass::Causal,
+                    entry.event_payload.clone(),
+                    entry.payload.clone(),
+                ),
+            },
+        )
+        .collect::<Vec<_>>();
+    let canonical_entries = entries
+        .iter()
+        .map(|entry| entry.entry.clone())
+        .collect::<Vec<_>>();
+    let canonical_bytes =
+        scheduler_event_log_segment_bytes(scheduler_event_log_empty_prefix(), &canonical_entries);
+    let content_hash = ContentHash::from_bytes(&canonical_bytes);
+    EventLogCausalProjection {
+        entries,
+        canonical_bytes,
+        content_hash,
+    }
+}
+
+/// Compares two unified event logs by their canonical causal subsequence.
+///
+/// Observational entries are excluded before comparison. Surviving causal
+/// entries are renumbered independently on both sides, so different
+/// observational interleavings do not perturb the comparison.
+#[must_use]
+pub fn compare_event_log_determinism(
+    expected: &[SchedulerEventLogEntry],
+    reproduced: &[SchedulerEventLogEntry],
+) -> EventLogDeterminismComparison {
+    let expected = event_log_causal_projection(expected);
+    let reproduced = event_log_causal_projection(reproduced);
+    let byte_identical = expected.canonical_bytes == reproduced.canonical_bytes;
+    let mismatch = if byte_identical {
+        None
+    } else {
+        event_log_determinism_mismatch(&expected, &reproduced)
+    };
+    EventLogDeterminismComparison {
+        expected,
+        reproduced,
+        byte_identical,
+        mismatch,
+    }
+}
+
+fn event_log_determinism_mismatch(
+    expected: &EventLogCausalProjection,
+    reproduced: &EventLogCausalProjection,
+) -> Option<EventLogDeterminismMismatch> {
+    let max_len = expected.entries.len().max(reproduced.entries.len());
+    for causal_index in 0..max_len {
+        let expected_entry = expected.entries.get(causal_index);
+        let reproduced_entry = reproduced.entries.get(causal_index);
+        let entries_match = match (expected_entry, reproduced_entry) {
+            (Some(expected), Some(reproduced)) => expected.entry == reproduced.entry,
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+        if !entries_match {
+            return Some(EventLogDeterminismMismatch {
+                causal_index,
+                expected_raw_index: expected_entry.map(|entry| entry.raw_index),
+                reproduced_raw_index: reproduced_entry.map(|entry| entry.raw_index),
+                expected_entry: expected_entry.map(|entry| entry.entry.clone()),
+                reproduced_entry: reproduced_entry.map(|entry| entry.entry.clone()),
+            });
+        }
+    }
+    None
+}
+
 impl Default for EventLog {
     fn default() -> Self {
         Self::new()
@@ -4249,6 +4447,40 @@ fn scheduler_event_log_entry_with_class(
     SchedulerEventLogEntry {
         sequence,
         at: time,
+        source,
+        level,
+        class,
+        event_payload,
+        payload,
+        content_hash,
+        provenance: SchedulerEventLogEntryProvenance,
+    }
+}
+
+fn scheduler_event_log_entry_with_material(
+    sequence: u64,
+    at: EventLogTime,
+    source: EventSource,
+    level: EventLevel,
+    class: SchedulerEventLogClass,
+    event_payload: EventPayload,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
+    let content_hash = ContentHash::from_canonical_material(
+        "crucible.scheduler.event-log.entry.v1",
+        &scheduler_event_log_entry_material(
+            sequence,
+            &at,
+            &source,
+            level,
+            class,
+            &event_payload,
+            &payload,
+        ),
+    );
+    SchedulerEventLogEntry {
+        sequence,
+        at,
         source,
         level,
         class,
