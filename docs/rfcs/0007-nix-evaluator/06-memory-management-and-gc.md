@@ -556,11 +556,11 @@ rarely-hot code path behind the `alloc-via-symbols` wall.
 /// and `value` is young.
 unsafe fn thunk_resolve(rt: *mut Runtime, thunk: *mut Thunk, value: Value) {
     // SAFETY: thunk is blackholed and owned by the current forcing context.
+    aos_gc_write_barrier(rt, thunk as *mut Obj, value); // card-mark if old<-young
     // `state` is the AtomicU64 from doc 05 §6; publish the Forced(value)
     // encoding with a release store so other threads see a fully-initialized
     // result (see parallel evaluation, doc 13).
     (*thunk).state.store(encode_forced(value), Ordering::Release);
-    aos_gc_write_barrier(rt, thunk as *mut Obj, value); // card-mark if old<-young
 }
 ```
 
@@ -885,6 +885,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       Cranelift stack-map emission/consumption remain open in the row above and
       in [08](08-execution-tiers-and-cranelift.md).
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
+- [x] Current thunk-resolve write-barrier precursor:
+      `ratchet-value::heap::gc` defines the generational decision table for the
+      only mutating heap transition, records old/permanent-to-young thunk
+      resolution edges in a deduplicating `RememberedSet`, and disables the
+      barrier in one-shot arena mode. `ratchet-oracle::eval::thunk` routes
+      `ForceGuard` publication through `finish_with_barrier`, with the default
+      tree-walk `finish` using a disabled barrier and tests proving barrier
+      execution happens while the thunk is still blackholed and before the
+      forced result is published. The real daemon card table, object-generation
+      metadata, and Tier-B collector integration remain open in the row above.
 - [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
 

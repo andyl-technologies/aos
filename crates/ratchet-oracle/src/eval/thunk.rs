@@ -92,7 +92,32 @@ impl ForceGuard<'_> {
     /// blackholed. Returns [`ForceError::InvalidStateWord`] if the private
     /// atomic state word has an unsupported encoding.
     pub fn finish(mut self, value: Value) -> Result<Value, ForceError> {
-        let value = self.thunk.publish_forced(value)?;
+        let mut barrier = DisabledThunkResolveBarrier;
+        let value = self
+            .thunk
+            .publish_forced_with_barrier(value, &mut barrier)?;
+        self.active = false;
+        Ok(value)
+    }
+
+    /// Publishes the WHNF result after running a thunk-resolution write barrier.
+    ///
+    /// This is the single tree-walk hook for the future generational
+    /// `Blackhole -> Forced(value)` write barrier. The active one-shot arena
+    /// path uses [`DisabledThunkResolveBarrier`] through [`ForceGuard::finish`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForceError::UnexpectedState`] if the thunk is no longer
+    /// blackholed before or after the barrier runs. Returns
+    /// [`ForceError::InvalidStateWord`] if the private atomic state word has an
+    /// unsupported encoding. Returns any [`ForceError`] produced by `barrier`.
+    pub fn finish_with_barrier(
+        mut self,
+        value: Value,
+        barrier: &mut impl ThunkResolveBarrier,
+    ) -> Result<Value, ForceError> {
+        let value = self.thunk.publish_forced_with_barrier(value, barrier)?;
         self.active = false;
         Ok(value)
     }
@@ -116,6 +141,30 @@ impl Drop for ForceGuard<'_> {
         if self.active {
             let _ = self.thunk.abort_claim();
         }
+    }
+}
+
+/// A hook that runs immediately before a forced thunk result is published.
+///
+/// Future daemon GC code uses this hook to record the single generational
+/// old-to-young edge that can be created by resolving a thunk. Implementations
+/// must not publish the thunk result themselves.
+pub trait ThunkResolveBarrier {
+    /// Runs the barrier before `value` is installed as the forced result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForceError`] if the forced result must not be published.
+    fn before_publish_forced(&mut self, value: Value) -> Result<(), ForceError>;
+}
+
+/// A thunk-resolution barrier used when no collector is active.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DisabledThunkResolveBarrier;
+
+impl ThunkResolveBarrier for DisabledThunkResolveBarrier {
+    fn before_publish_forced(&mut self, _value: Value) -> Result<(), ForceError> {
+        Ok(())
     }
 }
 
@@ -212,7 +261,19 @@ impl ThunkCell {
         }
     }
 
-    fn publish_forced(&self, value: Value) -> Result<Value, ForceError> {
+    fn publish_forced_with_barrier(
+        &self,
+        value: Value,
+        barrier: &mut impl ThunkResolveBarrier,
+    ) -> Result<Value, ForceError> {
+        let actual = self.state()?;
+        if actual != ThunkState::Blackhole {
+            return Err(ForceError::UnexpectedState {
+                expected: ThunkState::Blackhole,
+                actual,
+            });
+        }
+        barrier.before_publish_forced(value)?;
         let actual = self.state()?;
         if actual != ThunkState::Blackhole {
             return Err(ForceError::UnexpectedState {
@@ -261,6 +322,12 @@ pub enum ForceError {
     InvalidStateWord {
         /// The unsupported raw state word.
         raw: u64,
+    },
+    /// A thunk-resolution write barrier rejected publishing the forced result.
+    #[error("thunk resolve write barrier rejected forced result: {reason}")]
+    WriteBarrierRejected {
+        /// The reason supplied by the write-barrier hook.
+        reason: &'static str,
     },
 }
 
@@ -328,6 +395,71 @@ mod tests {
                 .expect("forced"),
             42,
         );
+    }
+
+    #[derive(Debug)]
+    struct ObservingBarrier<'a> {
+        thunk: &'a ThunkCell,
+        observed_state: Option<ThunkState>,
+        observed_value: Option<Value>,
+    }
+
+    impl ThunkResolveBarrier for ObservingBarrier<'_> {
+        fn before_publish_forced(&mut self, value: Value) -> Result<(), ForceError> {
+            self.observed_state = Some(self.thunk.state()?);
+            self.observed_value = Some(value);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn finish_with_barrier_runs_before_forced_value_is_published() {
+        let thunk = ThunkCell::new();
+        let claim = thunk.begin_force().expect("claim succeeds");
+        let ForceClaim::Claimed(guard) = claim else {
+            panic!("suspended thunk should be claimed");
+        };
+        let mut barrier = ObservingBarrier {
+            thunk: &thunk,
+            observed_state: None,
+            observed_value: None,
+        };
+
+        let value = guard
+            .finish_with_barrier(Value::int(42), &mut barrier)
+            .expect("finish succeeds");
+
+        assert_int(value, 42);
+        assert_eq!(barrier.observed_state, Some(ThunkState::Blackhole));
+        assert_int(barrier.observed_value.expect("barrier saw value"), 42);
+        assert_eq!(thunk.state(), Ok(ThunkState::Forced));
+    }
+
+    #[derive(Debug)]
+    struct RejectingBarrier;
+
+    impl ThunkResolveBarrier for RejectingBarrier {
+        fn before_publish_forced(&mut self, _value: Value) -> Result<(), ForceError> {
+            Err(ForceError::WriteBarrierRejected { reason: "test" })
+        }
+    }
+
+    #[test]
+    fn rejected_finish_barrier_aborts_claim_without_publishing_value() {
+        let thunk = ThunkCell::new();
+        let claim = thunk.begin_force().expect("claim succeeds");
+        let ForceClaim::Claimed(guard) = claim else {
+            panic!("suspended thunk should be claimed");
+        };
+        let mut barrier = RejectingBarrier;
+
+        let error = guard
+            .finish_with_barrier(Value::int(42), &mut barrier)
+            .expect_err("barrier rejects publish");
+
+        assert_eq!(error, ForceError::WriteBarrierRejected { reason: "test" });
+        assert_eq!(thunk.state(), Ok(ThunkState::Suspended));
+        assert!(matches!(thunk.cached_value(), Ok(None)));
     }
 
     #[test]

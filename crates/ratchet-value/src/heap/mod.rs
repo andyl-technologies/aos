@@ -7,6 +7,7 @@
 
 pub mod arena;
 pub mod concurrent_gc;
+pub mod gc;
 pub mod region;
 
 pub use arena::{
@@ -16,6 +17,12 @@ pub use concurrent_gc::{
     BarrierAddress, ConcurrentGcError, ConcurrentGcTier, GcColor, LoadBarrierAction,
     LoadBarrierSlowReason, ThunkMutation, ThunkMutationBarrier, classify_load_barrier,
     classify_thunk_mutation_barrier,
+};
+pub use gc::{
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, RememberedEdge,
+    RememberedSet, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
+    ThunkResolveWriteBarrier, classify_thunk_resolve_write_barrier,
+    record_thunk_resolve_write_barrier,
 };
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,

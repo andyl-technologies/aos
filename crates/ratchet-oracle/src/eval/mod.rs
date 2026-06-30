@@ -19,7 +19,10 @@ pub use internal_diff::{
     InternalDiffError, InternalDiffReport, InternalDiffTier, compare_raw_with_oracle,
 };
 pub use module::{EvalModuleId, EvalNodeRef};
-pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
+pub use thunk::{
+    DisabledThunkResolveBarrier, ForceClaim, ForceError, ForceGuard, ThunkCell,
+    ThunkResolveBarrier, ThunkState,
+};
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
     IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, TreeWalk, TreeWalkError,

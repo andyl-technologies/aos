@@ -4973,6 +4973,16 @@ and helps the oracle directly.
       slots; production tree-walk safepoint enumeration, the moving Tier-B
       collector, and Cranelift stack-map wiring remain open in the row above and
       in [08](08-execution-tiers-and-cranelift.md).
+- [x] Current thunk-resolve write-barrier precursor:
+      `ratchet-value::heap::gc` classifies the single generational write
+      barrier for `Blackhole -> Forced(value)`, records only
+      old/permanent-to-young edges in a deduplicating remembered set, and leaves
+      one-shot arena mode disabled. `ratchet-oracle::eval::thunk::ForceGuard`
+      now exposes `finish_with_barrier`, while the default tree-walk `finish`
+      uses the disabled barrier; tests pin that custom barriers run while the
+      thunk is still blackholed and can reject publication without leaving a
+      forced result. The actual daemon card table, generation metadata, and
+      Tier-B collector integration remain open under `heap/gc.rs`.
 - [x] Current safe-crate prerequisite already in place: the monolithic
       `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`
       and checks/source scans show no Rust `unsafe` forms in the evaluator
