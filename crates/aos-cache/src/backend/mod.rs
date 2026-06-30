@@ -306,7 +306,7 @@ pub trait CacheBackend: Send + Sync {
 /// This is the single source of truth for the registry's "immutable" caching
 /// policy: the binary-cache backends apply it to NAR uploads, and the
 /// git-origin uploader applies it to content-addressed objects and packs.
-pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, s-maxage=31536000, immutable";
 
 /// `Cache-Control` for small files that are rewritten in place across
 /// publishes: git ref pointers (`HEAD`, `info/refs`, `objects/info/*`,
@@ -314,7 +314,7 @@ pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// `nix-cache-info`. The short `max-age` with `must-revalidate` bounds how
 /// long a stale copy may be served — the freshness contract a CDN origin must
 /// honor for a release to become visible promptly.
-pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
+pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, s-maxage=60, must-revalidate";
 
 /// Appends optional `Content-Type` / `Cache-Control` headers to a static
 /// file upload request. Shared by all backends' `put_static_file`.
