@@ -2845,7 +2845,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/aos-package-verify-host-subtree.json" >/dev/null
         run_clean ${self}/bin/aos --json package --yes remove hostsubtree \
@@ -3090,14 +3090,17 @@ in {
         fi
         grep -q "git merge -- feature/hostmerge-conflict failed" \
           "$work/apr-merge-host-merge-conflict.out"
-        grep -q "CONFLICT" "$work/apr-merge-host-merge-conflict.out"
+        grep -q "merge has conflicts" "$work/apr-merge-host-merge-conflict.out"
         test "$(git -C "$merge_reg" rev-parse HEAD)" = "$merge_before_conflict"
+        # libgit2 performs the merge in-process and refuses a conflicting merge
+        # cleanly: HEAD is unchanged and no half-merged index/worktree is left
+        # behind (unlike the git CLI, which would leave UU conflict markers and a
+        # MERGE_HEAD to `git merge --abort`). The repository stays recoverable
+        # without any cleanup.
         git -C "$merge_reg" status --porcelain \
           > "$work/git-status-host-merge-conflict.out"
-        grep -q '^UU packages/h/hostmergeleaf.toml$' \
-          "$work/git-status-host-merge-conflict.out"
-        git -C "$merge_reg" merge --abort \
-          > "$work/git-merge-abort-host-merge-conflict.out" 2>&1
+        test ! -s "$work/git-status-host-merge-conflict.out"
+        test ! -e "$merge_reg/.git/MERGE_HEAD"
         run_clean ${self}/bin/apr --json status \
           --registry host-merge-review > "$work/apr-status-host-merge-after-conflict-abort.json"
         ${pkgs.jq}/bin/jq -e \
@@ -4002,7 +4005,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-bulk-channel.json" >/dev/null
         assert_default_profile_absent
@@ -4735,7 +4738,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install.json" >/dev/null
         assert_default_profile_absent
@@ -6099,7 +6102,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install-v2.json" >/dev/null
         assert_default_profile_absent
@@ -7492,7 +7495,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-orphan-reattached.json" >/dev/null
         run_clean ${self}/bin/apm --json registry remove orphan-reg --keep-local \
@@ -8153,6 +8156,58 @@ in {
           producer_cache="$cache"
           producer_profile_root="$profile_root"
 
+          # Retiring 'next' revokes it in the roster and re-signs the release
+          # tags, but the TUF root sealed at 1.0.0 still lists 'next' with a
+          # 2-of-2 threshold, so a fresh consumer cannot bootstrap that release
+          # with only the surviving key. Rotating the root happens at the next
+          # release: re-seal a 1.1.0 release whose new 1-of-1 root is co-signed
+          # by the retiring key (--rotate-from), authorizing the transition off
+          # the old root. Fresh consumers then bootstrap the clean root.
+          cat > "$work/build-package-v11.sh" << SCRIPT
+          set -eu
+          ${pkgs.coreutils}/bin/mkdir -p "\$out/bin"
+          {
+            printf '%s\n' '#!${pkgs.bash}/bin/bash'
+            printf '%s\n' 'printf "host key retirement package 1.1.0 executed\n"'
+          } > "\$out/bin/host-key-retirement-tool"
+          ${pkgs.coreutils}/bin/chmod +x "\$out/bin/host-key-retirement-tool"
+          SCRIPT
+          cat > "$work/package-v11.nix" << NIX
+          derivation {
+            name = "hostkeyresign-1.1.0";
+            system = "x86_64-linux";
+            builder = "${pkgs.bash}/bin/bash";
+            args = [ ./build-package-v11.sh ];
+          }
+          NIX
+          store_path_v11=$(nix_build "$work/package-v11.nix" --no-out-link)
+          run_clean ${self}/bin/apr --json release 1.1.0 \
+            --registry host-keyresign \
+            --store-path "$store_path_v11" \
+            --name hostkeyresign \
+            --description "Host key retirement re-seal fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --previous 1.0.0 \
+            --key "$work/initial-release-key" \
+            --rotate-from "$config/apm/keys/host-keyresign-next.key" \
+            > "$work/apr-release-host-keyresign-v11.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-keyresign"
+              and .version == "1.1.0"' \
+            "$work/apr-release-host-keyresign-v11.json" >/dev/null
+          # The rotated 1-of-1 root must drop 'next' entirely.
+          git -C "$reg" show HEAD:tuf/root.json \
+            > "$work/host-keyresign-rotated-root.json"
+          if grep -q "$host_keyresign_next" "$work/host-keyresign-rotated-root.json"; then
+            cat "$work/host-keyresign-rotated-root.json"
+            exit 1
+          fi
+          run_clean ${pkgs.git}/bin/git -C "$reg" update-server-info \
+            > "$work/git-update-server-info-v11.out" 2>&1
+
           home="$work/tag-client-home"
           config="$work/tag-client-config"
           data="$work/tag-client-share"
@@ -8161,7 +8216,7 @@ in {
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
-            --tag 1.0.0 \
+            --tag 1.1.0 \
             --trust-key "$trust_key" \
             > "$work/apm-add-host-keyresign-tag.out" 2>&1
           grep -q "Registry 'host-keyresign' added" \
@@ -8169,7 +8224,7 @@ in {
           run_clean ${self}/bin/apm search hostkeyresign \
             --registry host-keyresign \
             > "$work/apm-search-host-keyresign-tag.out" 2>&1
-          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+          grep -q "hostkeyresign/host-keyresign 1.1.0" \
             "$work/apm-search-host-keyresign-tag.out"
           tag_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
           grep -q "$trust_key" "$tag_trust_file"
@@ -8188,7 +8243,7 @@ in {
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
-            --version '^1.0' \
+            --version '^1.1' \
             --trust-key "$trust_key" \
             > "$work/apm-add-host-keyresign-version.out" 2>&1
           grep -q "Registry 'host-keyresign' added" \
@@ -8196,7 +8251,7 @@ in {
           run_clean ${self}/bin/apm search hostkeyresign \
             --registry host-keyresign \
             > "$work/apm-search-host-keyresign-version.out" 2>&1
-          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+          grep -q "hostkeyresign/host-keyresign 1.1.0" \
             "$work/apm-search-host-keyresign-version.out"
           version_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
           grep -q "$trust_key" "$version_trust_file"
