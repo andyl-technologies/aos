@@ -1707,6 +1707,21 @@ alone (`M-1`/`Q-A`).
       accessors. This type-enforces the current derivation side-record modulo
       path only; other store-path/hash builtin SHA-256 preimages and the full
       differential `.drv` harness remain open (`S-15`).
+- [x] Current derivation side-payload value hash boundary:
+      `DerivationSidePayloadValueHash` now marks BLAKE3 side-record payload
+      hashes for cached final ATerm path payloads and static derivation output
+      path payloads. `CachedDerivationOutputPaths::value_hash` and final
+      ATerm path payload hashing finalize through this type before
+      `ValueHash::from_derivation_side_payload_hash` adapts them into graph
+      material, while derivation ATerm input comparison still uses
+      `ValueHash::from_derivation_aterm_bytes` and Nix-observed modulo/path
+      hashing still uses `NixSha256Digest`. This type-enforces the current
+      derivation side-payload BLAKE3 finalization corridor only; generic
+      canonical value-hash serialization, persistent graph serialization, and
+      the full differential `.drv` harness remain open (`S-15`). Gate:
+      `derivation_payload`, derivation side-record runtime tests, derivation
+      path-reuse surface tests, and
+      `internal_cache_hash_canaries_do_not_reach_drv_surfaces`.
 - [x] Current store-path SHA-256 preimage type boundary: derivation, text,
       fixed-output, and source store-path constructors now carry
       `NixSha256Digest` through `build_store_path_from_fingerprint_parts`,
@@ -4532,6 +4547,22 @@ alone (`M-1`/`Q-A`).
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
       coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current derivation side-payload value hash boundary:
+      `DerivationSidePayloadValueHash` now marks BLAKE3 side-record payload
+      hashes for cached final ATerm path payloads and static derivation output
+      path payloads. `CachedDerivationOutputPaths::value_hash` and final
+      ATerm path payload hashing finalize through this type before
+      `ValueHash::from_derivation_side_payload_hash` adapts them into graph
+      material, while derivation ATerm input comparison still uses
+      `ValueHash::from_derivation_aterm_bytes` and Nix-observed modulo/path
+      hashing still uses `NixSha256Digest`. This type-enforces the current
+      derivation side-payload BLAKE3 finalization corridor only; generic
+      canonical value-hash serialization, persistent graph serialization, and
+      the full internal-hash leak invariant remain open. Gate:
+      `derivation_payload`, derivation side-record runtime tests, derivation
+      path-reuse surface tests, and
+      `internal_cache_hash_canaries_do_not_reach_drv_surfaces`
+      ([12](12-incremental-evaluation-cache.md) §5.2/§4.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

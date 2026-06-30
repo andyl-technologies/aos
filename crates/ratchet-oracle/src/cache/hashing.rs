@@ -12,6 +12,7 @@
 //! ForceCapturePositionSourceHash -> positioned captured-value source salts
 //! StaticSelectPositionHash -> static-select binding position identities
 //! ForceCapturedValueHash -> force-cache captured free-variable fingerprints
+//! DerivationSidePayloadValueHash -> derivation side-record payload hashes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -215,6 +216,26 @@ impl ForceCapturedValueHash {
     /// Finalizes a BLAKE3 hasher in the force-captured value hash domain.
     pub(crate) fn from_hasher(hasher: blake3::Hasher) -> Self {
         Self::from_durable_hash(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for cached derivation side-record payloads.
+///
+/// This type marks the value-hash identity for derivation ATerm-path and
+/// static-output side payload records before they are intentionally adapted
+/// into [`crate::cache::ValueHash`] graph material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DerivationSidePayloadValueHash(DurableBlake3Hash);
+
+impl DerivationSidePayloadValueHash {
+    /// Finalizes a BLAKE3 hasher in a derivation side-payload value domain.
+    pub(crate) fn from_hasher(hasher: blake3::Hasher) -> Self {
+        Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
     /// Returns the underlying durable BLAKE3 digest.

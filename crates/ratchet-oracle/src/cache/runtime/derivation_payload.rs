@@ -2,7 +2,8 @@
 
 use thiserror::Error;
 
-use crate::cache::{DurableBlake3Hash, NixSha256Digest, ValueHash};
+use crate::cache::hashing::DerivationSidePayloadValueHash;
+use crate::cache::{NixSha256Digest, ValueHash};
 
 const DERIVATION_ATERM_PATH_VALUE_HASH_DOMAIN_VERSION: &[u8] =
     b"aos-nix-derivation-aterm-path-value-hash-v1";
@@ -78,7 +79,9 @@ impl CachedDerivationOutputPaths {
             update_derivation_side_payload_hash_chunk(&mut hasher, &output_path.name);
             update_derivation_side_payload_hash_chunk(&mut hasher, &output_path.path);
         }
-        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+        ValueHash::from_derivation_side_payload_hash(DerivationSidePayloadValueHash::from_hasher(
+            hasher,
+        ))
     }
 }
 
@@ -412,7 +415,9 @@ fn derivation_aterm_path_payload_value_hash(
         hasher.update(b"hash-derivation-modulo");
         hasher.update(hash_derivation_modulo.as_bytes());
     }
-    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+    ValueHash::from_derivation_side_payload_hash(DerivationSidePayloadValueHash::from_hasher(
+        hasher,
+    ))
 }
 
 impl StaticDerivationOutputPathRecord {
