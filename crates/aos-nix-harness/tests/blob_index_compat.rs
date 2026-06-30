@@ -8,7 +8,7 @@ use ratchet_cache::blob_index::{BlobIndex, BlobIndexEntry, BlobIndexKey, BlobInd
 use ratchet_cache::blob_pack::{BlobPackHash, BlobPackLocation};
 use ratchet_oracle::cache::{
     DurableBlake3Hash, PersistBlobIndex, PersistBlobIndexEntry, PersistBlobIndexError,
-    PersistBlobKey, PersistBlobLocation, PersistBlobStore, PersistPackFormatError,
+    PersistBlobKey, PersistBlobLocation, PersistFileBlobHash, PersistPackFormatError, ValueHash,
 };
 
 const VALUES: BlobIndexNamespace = BlobIndexNamespace::from_tag(1);
@@ -19,9 +19,9 @@ fn oracle_blob_index_writer_is_readable_by_engine_index() {
     let temp = tempfile::tempdir().expect("tempdir creates");
     let index_path = temp.path().join("values.index");
     let oracle = PersistBlobIndex::open(&index_path).expect("oracle index opens");
-    let value_hash = DurableBlake3Hash::for_bytes(b"value payload");
-    let file_hash = DurableBlake3Hash::for_bytes(b"file payload");
-    let value_key = PersistBlobKey::new(PersistBlobStore::Values, value_hash);
+    let value_digest = DurableBlake3Hash::for_bytes(b"value payload");
+    let file_hash = PersistFileBlobHash::for_payload(b"file payload");
+    let value_key = PersistBlobKey::for_value(ValueHash::from_canonical_value_hash(value_digest));
     let file_key = PersistBlobKey::for_file(file_hash);
     let value_location = PersistBlobLocation::new(24, 13);
     let file_location = PersistBlobLocation::new(77, 12);
@@ -39,7 +39,7 @@ fn oracle_blob_index_writer_is_readable_by_engine_index() {
         engine
             .lookup(BlobIndexKey::new(
                 VALUES,
-                BlobPackHash::from_bytes(value_hash.as_bytes())
+                BlobPackHash::from_bytes(value_digest.as_bytes())
             ))
             .expect("value lookup succeeds through engine"),
         Some(BlobPackLocation::new(
@@ -51,7 +51,7 @@ fn oracle_blob_index_writer_is_readable_by_engine_index() {
         engine
             .lookup(BlobIndexKey::new(
                 FILES,
-                BlobPackHash::from_bytes(file_hash.as_bytes())
+                BlobPackHash::from_bytes(file_hash.as_durable_hash().as_bytes())
             ))
             .expect("file lookup succeeds through engine"),
         Some(BlobPackLocation::new(
@@ -67,7 +67,8 @@ fn engine_blob_index_writer_is_readable_by_oracle_index() {
     let index_path = temp.path().join("values.index");
     let engine = BlobIndex::open(&index_path).expect("engine index opens");
     let value_hash = BlobPackHash::for_bytes(b"engine value payload");
-    let file_hash = BlobPackHash::for_bytes(b"engine file payload");
+    let file_payload = b"engine file payload";
+    let file_hash = BlobPackHash::for_bytes(file_payload);
     let value_location = BlobPackLocation::new(24, 20);
     let file_location = BlobPackLocation::new(84, 19);
 
@@ -88,9 +89,10 @@ fn engine_blob_index_writer_is_readable_by_oracle_index() {
 
     assert_eq!(
         oracle
-            .lookup(PersistBlobKey::new(
-                PersistBlobStore::Values,
-                DurableBlake3Hash::from_bytes(value_hash.as_bytes())
+            .lookup(PersistBlobKey::for_value(
+                ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes(
+                    value_hash.as_bytes(),
+                )),
             ))
             .expect("value lookup succeeds through oracle"),
         Some(PersistBlobLocation::new(
@@ -100,8 +102,8 @@ fn engine_blob_index_writer_is_readable_by_oracle_index() {
     );
     assert_eq!(
         oracle
-            .lookup(PersistBlobKey::for_file(DurableBlake3Hash::from_bytes(
-                file_hash.as_bytes()
+            .lookup(PersistBlobKey::for_file(PersistFileBlobHash::for_payload(
+                file_payload
             )))
             .expect("file lookup succeeds through oracle"),
         Some(PersistBlobLocation::new(
@@ -128,9 +130,8 @@ fn oracle_rejects_engine_sidecar_with_unknown_namespace() {
     let oracle = PersistBlobIndex::open(&index_path).expect("oracle index opens by length");
 
     let error = oracle
-        .lookup(PersistBlobKey::new(
-            PersistBlobStore::Values,
-            DurableBlake3Hash::for_bytes(b"missing payload"),
+        .lookup(PersistBlobKey::for_value(
+            ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(b"missing payload")),
         ))
         .expect_err("oracle rejects invalid namespace during scan");
 

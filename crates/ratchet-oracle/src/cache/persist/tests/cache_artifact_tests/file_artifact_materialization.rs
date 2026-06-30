@@ -75,7 +75,7 @@ fn cache_file_artifact_materialization_appends_files_blob_when_requested() {
     );
     assert_eq!(
         index_value.blob_hash(),
-        DurableBlake3Hash::for_bytes(payload)
+        PersistFileBlobHash::for_payload(payload)
     );
     assert_eq!(
         index_value.location().record_offset(),
@@ -182,7 +182,7 @@ fn cache_indexed_file_artifact_materialization_updates_blob_and_mapping_indexes(
     assert_eq!(index_entry.key(), artifact_key);
     assert_eq!(
         index_value.blob_hash(),
-        DurableBlake3Hash::for_bytes(payload)
+        PersistFileBlobHash::for_payload(payload)
     );
     assert_eq!(
         cache
@@ -440,7 +440,7 @@ fn cache_indexed_file_artifact_materialization_reports_mapping_index_errors() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let parse_key = test_parse_key(source);
     let payload = b"serialized IR artifact";
-    let blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+    let blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
     fs::remove_file(cache.file_artifact_index().path()).expect("index file removes");
     fs::create_dir(cache.file_artifact_index().path()).expect("index path becomes directory");
 

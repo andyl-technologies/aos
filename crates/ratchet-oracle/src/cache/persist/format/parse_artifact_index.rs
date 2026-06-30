@@ -71,13 +71,13 @@ impl PersistParseArtifactKey {
 /// on read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistParseArtifactIndexValue {
-    blob_hash: DurableBlake3Hash,
+    blob_hash: PersistFileBlobHash,
     location: PersistBlobLocation,
 }
 
 impl PersistParseArtifactIndexValue {
     /// Creates a parse-artifact index value for a `files/` blob hash and location.
-    pub const fn new(blob_hash: DurableBlake3Hash, location: PersistBlobLocation) -> Self {
+    pub const fn new(blob_hash: PersistFileBlobHash, location: PersistBlobLocation) -> Self {
         Self {
             blob_hash,
             location,
@@ -85,7 +85,7 @@ impl PersistParseArtifactIndexValue {
     }
 
     /// Returns the durable hash of the parse artifact blob.
-    pub const fn blob_hash(self) -> DurableBlake3Hash {
+    pub const fn blob_hash(self) -> PersistFileBlobHash {
         self.blob_hash
     }
 
@@ -129,7 +129,10 @@ impl PersistParseArtifactIndexValue {
         }
         let location =
             PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
-        Ok(Self::new(blob_key.hash(), location))
+        Ok(Self::new(
+            PersistFileBlobHash::from_durable_hash(blob_key.hash()),
+            location,
+        ))
     }
 }
 

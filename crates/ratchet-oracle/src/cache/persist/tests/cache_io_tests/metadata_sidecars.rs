@@ -24,7 +24,7 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
         .append_entry(PersistBlobIndexEntry::new(value_key, value_latest))
         .expect("latest value blob index entry appends");
 
-    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    let file_blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"file payload"));
     let file_latest = PersistBlobLocation::new(444, 78);
     cache
         .file_index()
@@ -43,14 +43,14 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let file_artifact_latest = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistFileBlobHash::for_payload(b"latest file artifact"),
         PersistBlobLocation::new(666, 12),
     );
     cache
         .record_file_artifact(PersistFileArtifactIndexEntry::new(
             file_artifact_key,
             PersistFileArtifactIndexValue::new(
-                DurableBlake3Hash::for_bytes(b"first file artifact"),
+                PersistFileBlobHash::for_payload(b"first file artifact"),
                 PersistBlobLocation::new(555, 90),
             ),
         ))
@@ -64,14 +64,14 @@ fn cache_sidecar_compaction_compacts_all_current_sidecars() {
 
     let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let parse_artifact_latest = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistFileBlobHash::for_payload(b"latest parse artifact"),
         PersistBlobLocation::new(888, 56),
     );
     cache
         .record_parse_artifact(PersistParseArtifactIndexEntry::new(
             parse_artifact_key,
             PersistParseArtifactIndexValue::new(
-                DurableBlake3Hash::for_bytes(b"first parse artifact"),
+                PersistFileBlobHash::for_payload(b"first parse artifact"),
                 PersistBlobLocation::new(777, 34),
             ),
         ))

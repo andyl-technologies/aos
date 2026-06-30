@@ -386,7 +386,7 @@ fn cache_file_blob_pack_tail_trim_acquires_advisory_store_lock_before_same_proce
         .record_file_artifact(index_entry)
         .expect("file artifact mapping records");
     let tail_payload = b"unindexed file tail payload";
-    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(tail_payload));
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unindexed file tail appends");
@@ -584,7 +584,7 @@ fn cache_file_blob_pack_repack_acquires_advisory_store_lock_before_same_process_
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let unrooted_payload = b"unrooted file before repack";
-    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unrooted_payload));
     let unrooted_location = cache
         .append_blob(unrooted_key, unrooted_payload)
         .expect("unrooted file appends");
@@ -657,7 +657,7 @@ fn cache_file_blob_pack_repack_acquires_file_artifact_advisory_lock_before_same_
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let unrooted_payload = b"unrooted file before file-artifact repack";
-    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unrooted_payload));
     cache
         .append_blob(unrooted_key, unrooted_payload)
         .expect("unrooted file appends");
@@ -732,7 +732,7 @@ fn cache_file_blob_pack_repack_acquires_parse_artifact_advisory_lock_before_same
     let cache = PersistCache::open(&root).expect("cache opens");
     let layout = cache.layout().clone();
     let unrooted_payload = b"unrooted file before parse-artifact repack";
-    let unrooted_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_payload));
+    let unrooted_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unrooted_payload));
     cache
         .append_blob(unrooted_key, unrooted_payload)
         .expect("unrooted file appends");

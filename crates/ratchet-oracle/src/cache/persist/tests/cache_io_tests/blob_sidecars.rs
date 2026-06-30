@@ -12,8 +12,8 @@ fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
         PersistBlobStore::Values,
         DurableBlake3Hash::for_bytes(payload),
     );
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
-    let same_hash_file_key = PersistBlobKey::for_file(key.hash());
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_payload));
+    let same_hash_file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
 
     let entry = cache
         .append_blob_indexed(key, payload)
@@ -146,7 +146,9 @@ fn assert_blob_indexed_read_waits_for_store_lock(store: PersistBlobStore, payloa
     let hash = DurableBlake3Hash::for_bytes(payload);
     let key = match store {
         PersistBlobStore::Values => PersistBlobKey::new(PersistBlobStore::Values, hash),
-        PersistBlobStore::Files => PersistBlobKey::for_file(hash),
+        PersistBlobStore::Files => {
+            PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload))
+        }
     };
     cache
         .append_blob_indexed(key, payload)
@@ -281,7 +283,7 @@ fn cache_file_artifact_index_records_and_looks_up_entries() {
         parse_key,
     );
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistFileBlobHash::for_payload(b"serialized IR artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
 
@@ -324,7 +326,7 @@ fn cache_record_file_artifact_acquires_advisory_mapping_lock_before_same_process
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"advisory file artifact"),
+        PersistFileBlobHash::for_payload(b"advisory file artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     let worker_cache = cache.clone();
@@ -370,7 +372,7 @@ fn cache_lookup_file_artifact_acquires_advisory_mapping_lock_before_same_process
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"lookup advisory file artifact"),
+        PersistFileBlobHash::for_payload(b"lookup advisory file artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     cache
@@ -430,7 +432,7 @@ fn cache_file_artifact_index_serializes_independently_opened_same_root_handles()
             let file_key = ParseFileKey::for_source(realpath.as_str(), source.as_bytes());
             let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
             let value = PersistFileArtifactIndexValue::new(
-                DurableBlake3Hash::for_bytes(format!("artifact-{worker}").as_bytes()),
+                PersistFileBlobHash::for_payload(format!("artifact-{worker}").as_bytes()),
                 PersistBlobLocation::new(
                     PERSIST_BLOB_PACK_HEADER_LEN as u64 + worker as u64,
                     worker as u64,
@@ -494,7 +496,7 @@ fn cache_file_artifact_index_reports_poisoned_same_root_lock() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistFileBlobHash::for_payload(b"serialized IR artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     let error = cache
@@ -523,7 +525,7 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
         PersistBlobStore::Values,
         DurableBlake3Hash::for_bytes(b"value payload"),
     );
-    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    let file_blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"file payload"));
     let value_first = PersistBlobLocation::new(111, 12);
     let value_latest = PersistBlobLocation::new(222, 34);
     let file_first = PersistBlobLocation::new(333, 56);
@@ -551,11 +553,11 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let file_artifact_first = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first file artifact"),
+        PersistFileBlobHash::for_payload(b"first file artifact"),
         PersistBlobLocation::new(555, 90),
     );
     let file_artifact_latest = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistFileBlobHash::for_payload(b"latest file artifact"),
         PersistBlobLocation::new(666, 12),
     );
     cache
@@ -573,11 +575,11 @@ fn cache_fixed_record_indexes_compact_to_latest_entries() {
 
     let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let parse_artifact_first = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first parse artifact"),
+        PersistFileBlobHash::for_payload(b"first parse artifact"),
         PersistBlobLocation::new(777, 34),
     );
     let parse_artifact_latest = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistFileBlobHash::for_payload(b"latest parse artifact"),
         PersistBlobLocation::new(888, 56),
     );
     cache
@@ -705,11 +707,11 @@ fn cache_compact_file_artifact_index_acquires_advisory_mapping_lock_before_same_
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let first = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first file artifact"),
+        PersistFileBlobHash::for_payload(b"first file artifact"),
         PersistBlobLocation::new(555, 90),
     );
     let latest = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest file artifact"),
+        PersistFileBlobHash::for_payload(b"latest file artifact"),
         PersistBlobLocation::new(666, 12),
     );
     cache
@@ -766,11 +768,11 @@ fn cache_compact_parse_artifact_index_acquires_advisory_mapping_lock_before_same
     let parse_key = test_parse_key(source);
     let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let first = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first parse artifact"),
+        PersistFileBlobHash::for_payload(b"first parse artifact"),
         PersistBlobLocation::new(777, 34),
     );
     let latest = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest parse artifact"),
+        PersistFileBlobHash::for_payload(b"latest parse artifact"),
         PersistBlobLocation::new(888, 56),
     );
     cache
@@ -834,7 +836,7 @@ fn cache_parse_artifact_index_serializes_independently_opened_same_root_handles(
             let parse_key = test_parse_key(source.as_bytes());
             let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
             let value = PersistParseArtifactIndexValue::new(
-                DurableBlake3Hash::for_bytes(format!("parse-artifact-{worker}").as_bytes()),
+                PersistFileBlobHash::for_payload(format!("parse-artifact-{worker}").as_bytes()),
                 PersistBlobLocation::new(
                     PERSIST_BLOB_PACK_HEADER_LEN as u64 + worker as u64,
                     worker as u64,
@@ -892,7 +894,7 @@ fn cache_record_parse_artifact_acquires_advisory_mapping_lock_before_same_proces
     let parse_key = test_parse_key(source);
     let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"advisory parse artifact"),
+        PersistFileBlobHash::for_payload(b"advisory parse artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     let worker_cache = cache.clone();
@@ -937,7 +939,7 @@ fn cache_lookup_parse_artifact_acquires_advisory_mapping_lock_before_same_proces
     let parse_key = test_parse_key(source);
     let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"lookup advisory parse artifact"),
+        PersistFileBlobHash::for_payload(b"lookup advisory parse artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     cache
@@ -996,7 +998,7 @@ fn cache_parse_artifact_index_reports_poisoned_same_root_lock() {
     let parse_key = test_parse_key(source);
     let key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized parse artifact"),
+        PersistFileBlobHash::for_payload(b"serialized parse artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
     );
     let error = cache

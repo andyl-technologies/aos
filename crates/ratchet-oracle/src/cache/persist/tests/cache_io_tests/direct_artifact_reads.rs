@@ -216,30 +216,32 @@ fn append_file_artifact_blob(
     cache: &PersistCache,
     payload: &[u8],
 ) -> PersistFileArtifactIndexValue {
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+    let blob_hash = PersistFileBlobHash::for_payload(payload);
+    let key = PersistBlobKey::for_file(blob_hash);
     let location = cache.append_blob(key, payload).expect("file blob appends");
-    PersistFileArtifactIndexValue::new(key.hash(), location)
+    PersistFileArtifactIndexValue::new(blob_hash, location)
 }
 
 fn append_parse_artifact_blob(
     cache: &PersistCache,
     payload: &[u8],
 ) -> PersistParseArtifactIndexValue {
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+    let blob_hash = PersistFileBlobHash::for_payload(payload);
+    let key = PersistBlobKey::for_file(blob_hash);
     let location = cache.append_blob(key, payload).expect("parse blob appends");
-    PersistParseArtifactIndexValue::new(key.hash(), location)
+    PersistParseArtifactIndexValue::new(blob_hash, location)
 }
 
 fn synthetic_file_artifact_value(payload: &[u8]) -> PersistFileArtifactIndexValue {
     PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(payload),
+        PersistFileBlobHash::for_payload(payload),
         PersistBlobLocation::new(0, 0),
     )
 }
 
 fn synthetic_parse_artifact_value(payload: &[u8]) -> PersistParseArtifactIndexValue {
     PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(payload),
+        PersistFileBlobHash::for_payload(payload),
         PersistBlobLocation::new(0, 0),
     )
 }

@@ -389,7 +389,7 @@ fn cache_parse_artifact_hydration_rejects_key_mismatch_before_locking_files() {
     let expected = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let actual = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let y = 2; in y"));
     let index_value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     let target = ParseCacheEntry::new(root.join("target-keyed-parse-entry"));
@@ -443,7 +443,7 @@ fn cache_parse_artifact_hydration_from_entry_rejects_key_mismatch() {
     let index_entry = PersistParseArtifactIndexEntry::new(
         actual,
         PersistParseArtifactIndexValue::new(
-            DurableBlake3Hash::for_bytes(b"missing artifact"),
+            PersistFileBlobHash::for_payload(b"missing artifact"),
             PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
         ),
     );
@@ -485,7 +485,7 @@ fn cache_parse_artifact_hydration_from_entry_rejects_key_mismatch_before_locking
     let index_entry = PersistParseArtifactIndexEntry::new(
         actual,
         PersistParseArtifactIndexValue::new(
-            DurableBlake3Hash::for_bytes(b"missing artifact"),
+            PersistFileBlobHash::for_payload(b"missing artifact"),
             PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
         ),
     );
@@ -593,7 +593,7 @@ fn cache_file_artifact_hydration_rejects_key_mismatch_before_read() {
         parse_key,
     );
     let index_value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     let target = ParseCacheEntry::new(root.join("target-entry"));
@@ -638,7 +638,7 @@ fn cache_file_artifact_hydration_rejects_key_mismatch_before_locking_files() {
         parse_key,
     );
     let index_value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     let target = ParseCacheEntry::new(root.join("target-keyed-entry"));
@@ -760,7 +760,7 @@ fn cache_file_artifact_hydration_from_entry_rejects_key_mismatch() {
     let index_entry = PersistFileArtifactIndexEntry::new(
         actual,
         PersistFileArtifactIndexValue::new(
-            DurableBlake3Hash::for_bytes(b"missing artifact"),
+            PersistFileBlobHash::for_payload(b"missing artifact"),
             PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
         ),
     );
@@ -808,7 +808,7 @@ fn cache_file_artifact_hydration_from_entry_rejects_key_mismatch_before_locking_
     let index_entry = PersistFileArtifactIndexEntry::new(
         actual,
         PersistFileArtifactIndexValue::new(
-            DurableBlake3Hash::for_bytes(b"missing artifact"),
+            PersistFileBlobHash::for_payload(b"missing artifact"),
             PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
         ),
     );

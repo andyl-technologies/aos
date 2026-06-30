@@ -538,9 +538,9 @@ fn ordinary_filesystem_import_ignores_persistent_parse_cache_writeback_errors() 
 #[test]
 fn ordinary_filesystem_import_falls_back_after_stale_persistent_parse_cache_hit() {
     use crate::cache::{
-        DurableBlake3Hash, PERSIST_BLOB_PACK_HEADER_LEN, ParseCache, ParseFileKey,
-        PersistBlobLocation, PersistCache, PersistFileArtifactIndexEntry,
-        PersistFileArtifactIndexValue, PersistFileArtifactKey,
+        PERSIST_BLOB_PACK_HEADER_LEN, ParseCache, ParseFileKey, PersistBlobLocation, PersistCache,
+        PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
+        PersistFileBlobHash,
     };
 
     let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-stale-hit"))
@@ -556,7 +556,7 @@ fn ordinary_filesystem_import_falls_back_after_stale_persistent_parse_cache_hit(
     let file_key = ParseFileKey::for_source(&realpath, source);
     let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let stale_value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     PersistCache::open(&persist_root)

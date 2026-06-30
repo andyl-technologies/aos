@@ -487,7 +487,7 @@ fn cache_file_index_load_reports_hydration_errors() {
     let file_key = ParseFileKey::for_source(&realpath, source);
     let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let stale_value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     persist
@@ -549,7 +549,7 @@ fn cache_file_artifact_hydration_from_index_reports_hydration_errors() {
     let parse_key = test_parse_key(source);
     let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let stale_value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     let target = ParseCacheEntry::new(root.join("stale-hydration-target"));

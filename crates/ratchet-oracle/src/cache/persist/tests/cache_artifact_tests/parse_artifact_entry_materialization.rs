@@ -207,7 +207,7 @@ fn cache_indexed_parse_artifact_entry_materialization_reports_mapping_index_erro
         .read_artifact_bundle()
         .expect("artifact bundle reads");
     let payload = bundle.encode().expect("bundle encodes");
-    let blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(&payload));
+    let blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(&payload));
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     fs::remove_file(persist.file_artifact_index().path()).expect("index file removes");
     fs::create_dir(persist.file_artifact_index().path()).expect("index path becomes directory");
@@ -255,7 +255,7 @@ fn cache_indexed_parse_artifact_entry_materialization_reports_blob_index_errors(
         .read_artifact_bundle()
         .expect("artifact bundle reads");
     let payload = bundle.encode().expect("bundle encodes");
-    let blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(&payload));
+    let blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(&payload));
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     fs::remove_file(persist.file_index().path()).expect("index file removes");
     fs::create_dir(persist.file_index().path()).expect("index path becomes directory");
@@ -290,7 +290,7 @@ fn cache_indexed_parse_artifact_entry_materialization_reports_blob_index_errors(
     assert!(
         persist
             .read_file_artifact(PersistFileArtifactIndexValue::new(
-                blob_key.hash(),
+                PersistFileBlobHash::from_durable_hash(blob_key.hash()),
                 PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, payload.len() as u64),
             ))
             .expect("unindexed blob remains readable by location")

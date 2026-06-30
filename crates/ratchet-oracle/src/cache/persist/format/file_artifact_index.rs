@@ -88,13 +88,13 @@ impl PersistFileArtifactKey {
 /// on read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistFileArtifactIndexValue {
-    blob_hash: DurableBlake3Hash,
+    blob_hash: PersistFileBlobHash,
     location: PersistBlobLocation,
 }
 
 impl PersistFileArtifactIndexValue {
     /// Creates a file-artifact index value for a `files/` blob hash and location.
-    pub const fn new(blob_hash: DurableBlake3Hash, location: PersistBlobLocation) -> Self {
+    pub const fn new(blob_hash: PersistFileBlobHash, location: PersistBlobLocation) -> Self {
         Self {
             blob_hash,
             location,
@@ -102,7 +102,7 @@ impl PersistFileArtifactIndexValue {
     }
 
     /// Returns the durable hash of the file artifact blob.
-    pub const fn blob_hash(self) -> DurableBlake3Hash {
+    pub const fn blob_hash(self) -> PersistFileBlobHash {
         self.blob_hash
     }
 
@@ -146,7 +146,10 @@ impl PersistFileArtifactIndexValue {
         }
         let location =
             PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
-        Ok(Self::new(blob_key.hash(), location))
+        Ok(Self::new(
+            PersistFileBlobHash::from_durable_hash(blob_key.hash()),
+            location,
+        ))
     }
 }
 

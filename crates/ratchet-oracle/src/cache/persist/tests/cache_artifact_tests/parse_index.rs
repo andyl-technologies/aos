@@ -427,7 +427,7 @@ fn cache_parse_index_load_reports_hydration_errors() {
     let parse_key = parse_cache.key_for_source(source);
     let artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
     let stale_value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"missing artifact"),
+        PersistFileBlobHash::for_payload(b"missing artifact"),
         PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
     );
     persist

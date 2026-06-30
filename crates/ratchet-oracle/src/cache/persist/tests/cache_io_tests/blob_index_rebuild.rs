@@ -9,7 +9,7 @@ fn cache_blob_io_is_routed_by_key_store() {
     let payload = b"shared payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
     let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
-    let file_key = PersistBlobKey::for_file(hash);
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
 
     let value_location = cache
         .append_blob(value_key, payload)
@@ -77,7 +77,7 @@ fn cache_blob_pack_index_entries_are_store_typed() {
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
     let file_payload = b"file payload";
-    let file_hash = DurableBlake3Hash::for_bytes(file_payload);
+    let file_hash = PersistFileBlobHash::for_payload(file_payload);
     let file_key = PersistBlobKey::for_file(file_hash);
     let file_location = cache
         .append_blob(file_key, file_payload)
@@ -208,7 +208,7 @@ fn cache_latest_blob_pack_index_entries_keep_store_namespaces_separate() {
     let payload = b"shared payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
     let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
-    let file_key = PersistBlobKey::for_file(hash);
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
     let value_location = cache
         .append_blob(value_key, payload)
         .expect("value blob appends");
@@ -332,7 +332,7 @@ fn cache_blob_index_rebuild_plan_keeps_store_namespaces_separate() {
     let payload = b"shared namespace payload";
     let hash = DurableBlake3Hash::for_bytes(payload);
     let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash);
-    let file_key = PersistBlobKey::for_file(hash);
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
     let value_entry = cache
         .append_blob_indexed(value_key, payload)
         .expect("value indexed payload appends");
@@ -419,7 +419,8 @@ fn cache_blob_index_rebuild_plan_classifies_wrong_store_sidecar_entry_as_danglin
     let value_location = cache
         .append_blob(value_key, payload)
         .expect("value blob appends");
-    let wrong_store_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"wrong store"));
+    let wrong_store_key =
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"wrong store"));
     let wrong_store_entry =
         PersistBlobIndexEntry::new(wrong_store_key, PersistBlobLocation::new(777, 5));
     cache
@@ -655,7 +656,7 @@ fn cache_blob_index_rebuild_from_pack_repairs_file_store_sidecar() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"file rebuild payload";
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
     let file_location = cache
         .append_blob(file_key, payload)
         .expect("file blob appends");
@@ -783,7 +784,7 @@ fn cache_blob_indexes_rebuild_from_packs_repairs_value_and_file_sidecars() {
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
     let file_payload = b"all rebuild file payload";
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_payload));
     let file_location = cache
         .append_blob(file_key, file_payload)
         .expect("file blob appends");
@@ -830,7 +831,7 @@ fn cache_blob_indexes_rebuild_from_packs_keeps_value_rebuild_when_file_rebuild_f
         .append_blob(value_key, value_payload)
         .expect("value blob appends");
     let file_payload = b"boundary corrupt file payload";
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_payload));
     let file_location = cache
         .append_blob(file_key, file_payload)
         .expect("file blob appends");

@@ -81,7 +81,8 @@ fn blob_index_paths_are_store_separated() {
 fn blob_index_keys_are_domain_separated_by_store() {
     let hash = DurableBlake3Hash::for_bytes(b"same bytes");
     let value_key = PersistBlobKey::new(PersistBlobStore::Values, hash).index_bytes();
-    let file_key = PersistBlobKey::for_file(hash).index_bytes();
+    let file_key =
+        PersistBlobKey::for_file(PersistFileBlobHash::from_durable_hash(hash)).index_bytes();
 
     assert_ne!(value_key, file_key);
     assert_eq!(value_key[0], 1);
@@ -107,7 +108,7 @@ fn blob_index_keys_are_stable_content_addresses() {
 
 #[test]
 fn blob_index_keys_decode_and_reject_invalid_prefixes() {
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"payload"));
     let mut encoded = key.index_bytes().to_vec();
     encoded.extend_from_slice(b"trailing index bytes");
 
@@ -176,7 +177,7 @@ fn blob_index_values_reject_short_prefix() {
 
 #[test]
 fn blob_index_entries_round_trip_key_value_records() {
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"payload"));
     let location = PersistBlobLocation::new(123, 456);
     let entry = PersistBlobIndexEntry::new(key, location);
     let entry_bytes = entry.encode_index_entry();
@@ -211,7 +212,7 @@ fn blob_index_entries_reject_invalid_prefixes() {
         }
     );
 
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+    let key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"payload"));
     let location = PersistBlobLocation::new(123, 456);
     let entry = PersistBlobIndexEntry::new(key, location);
     let mut invalid_key = entry.encode_index_entry();
@@ -233,7 +234,7 @@ fn blob_index_appends_and_finds_latest_matching_entry() {
         PersistBlobStore::Values,
         DurableBlake3Hash::for_bytes(b"payload"),
     );
-    let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
+    let other_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"other payload"));
     let first = PersistBlobLocation::new(123, 456);
     let other = PersistBlobLocation::new(789, 10);
     let latest = PersistBlobLocation::new(999, 11);
@@ -276,7 +277,7 @@ fn blob_index_compacts_to_latest_entries() {
         PersistBlobStore::Values,
         DurableBlake3Hash::for_bytes(b"payload"),
     );
-    let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
+    let other_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"other payload"));
     let first = PersistBlobLocation::new(123, 456);
     let other = PersistBlobLocation::new(789, 10);
     let latest = PersistBlobLocation::new(999, 11);

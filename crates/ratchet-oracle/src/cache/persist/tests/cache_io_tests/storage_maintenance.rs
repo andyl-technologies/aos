@@ -178,7 +178,7 @@ fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails(
     let parse_key = test_parse_key(source);
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let file_payload = b"file live payload";
-    let file_blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_blob_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_payload));
     cache
         .file_index()
         .append_entry(PersistBlobIndexEntry::new(
@@ -191,7 +191,7 @@ fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails(
         .record_file_artifact(PersistFileArtifactIndexEntry::new(
             file_artifact_key,
             PersistFileArtifactIndexValue::new(
-                DurableBlake3Hash::for_bytes(b"stale file artifact"),
+                PersistFileBlobHash::for_payload(b"stale file artifact"),
                 PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
             ),
         ))
@@ -209,7 +209,8 @@ fn cache_storage_maintenance_compacts_sidecars_rebuilds_indexes_and_trims_tails(
         .expect("file artifact should materialize");
     let file_index_value = file_index_entry.value();
     let file_tail_payload = b"file tail";
-    let file_tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_tail_payload));
+    let file_tail_key =
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_tail_payload));
     let file_tail_location = cache
         .append_blob(file_tail_key, file_tail_payload)
         .expect("file tail appends");
@@ -373,7 +374,7 @@ fn cache_storage_maintenance_value_rebuild_failure_keeps_sidecar_compaction() {
         .expect("duplicate value index entry appends");
 
     let file_payload = b"file live payload";
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(file_payload));
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(file_payload));
     let file_location = cache
         .append_blob_indexed(file_key, file_payload)
         .expect("file blob appends")
@@ -478,9 +479,10 @@ fn cache_storage_maintenance_file_trim_failure_keeps_blob_index_rebuilds() {
     let source = b"let x = 1; in x";
     let parse_key = test_parse_key(source);
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
-    let expected_file_hash = DurableBlake3Hash::for_bytes(b"expected file");
+    let expected_file_hash = PersistFileBlobHash::for_payload(b"expected file");
     let wrong_file_payload = b"wrong file payload";
-    let wrong_file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(wrong_file_payload));
+    let wrong_file_key =
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(wrong_file_payload));
     let wrong_file_location = cache
         .append_blob(wrong_file_key, wrong_file_payload)
         .expect("wrong file blob appends");
@@ -578,7 +580,7 @@ fn cache_storage_repack_compacts_sidecars_and_repacks_blob_packs() {
 
     let unrooted_file_payload = b"unrooted file before storage repack";
     let unrooted_file_key =
-        PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_file_payload));
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unrooted_file_payload));
     let unrooted_file_location = cache
         .append_blob(unrooted_file_key, unrooted_file_payload)
         .expect("unrooted file appends");

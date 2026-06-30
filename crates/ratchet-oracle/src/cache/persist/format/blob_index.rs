@@ -43,7 +43,10 @@ pub struct PersistBlobKey {
 
 impl PersistBlobKey {
     /// Creates a persistent blob key in `store` for `hash`.
-    pub const fn new(store: PersistBlobStore, hash: DurableBlake3Hash) -> Self {
+    pub(in crate::cache::persist) const fn new(
+        store: PersistBlobStore,
+        hash: DurableBlake3Hash,
+    ) -> Self {
         Self { store, hash }
     }
 
@@ -53,8 +56,8 @@ impl PersistBlobKey {
     }
 
     /// Creates a persistent file-blob key for `hash`.
-    pub const fn for_file(hash: DurableBlake3Hash) -> Self {
-        Self::new(PersistBlobStore::Files, hash)
+    pub const fn for_file(hash: PersistFileBlobHash) -> Self {
+        Self::new(PersistBlobStore::Files, hash.as_durable_hash())
     }
 
     /// Returns the immutable blob namespace addressed by this key.

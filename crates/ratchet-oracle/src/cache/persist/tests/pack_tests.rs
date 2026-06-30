@@ -527,7 +527,7 @@ fn blob_pack_records_scans_verified_records_in_pack_order() {
     assert_eq!(records[1].location(), second);
     assert_eq!(
         records[1].key(PersistBlobStore::Files),
-        PersistBlobKey::for_file(second_hash)
+        PersistBlobKey::for_file(PersistFileBlobHash::from_durable_hash(second_hash))
     );
 
     let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));

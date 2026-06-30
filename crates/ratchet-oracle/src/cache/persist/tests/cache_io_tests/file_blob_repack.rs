@@ -7,7 +7,7 @@ fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let prefix_payload = b"unrooted file prefix";
-    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(prefix_payload));
     cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted file prefix appends");
@@ -48,12 +48,12 @@ fn cache_file_blob_pack_repack_relocates_artifacts_and_rewrites_sidecars() {
         .record_parse_artifact(parse_entry)
         .expect("parse artifact mapping records");
     let indexed_payload = b"indexed file blob";
-    let indexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(indexed_payload));
     let indexed_old_entry = cache
         .append_blob_indexed(indexed_key, indexed_payload)
         .expect("indexed file blob appends");
     let tail_payload = b"unrooted file tail";
-    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(tail_payload));
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unrooted file tail appends");
@@ -239,7 +239,7 @@ fn cache_blob_pack_repack_adapter_repacks_value_and_file_packs() {
     let unrooted_file_payload = b"unrooted file before aggregate repack";
     cache
         .append_blob(
-            PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unrooted_file_payload)),
+            PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unrooted_file_payload)),
             unrooted_file_payload,
         )
         .expect("unrooted file appends");
@@ -385,7 +385,7 @@ fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let prefix_payload = b"unrooted file prefix";
-    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(prefix_payload));
     let prefix_location = cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted prefix appends");
@@ -422,7 +422,7 @@ fn cache_blob_pack_liveness_plan_includes_file_artifact_roots() {
         .record_parse_artifact(parse_entry)
         .expect("parse artifact mapping records");
     let tail_payload = b"unrooted file tail";
-    let tail_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(tail_payload));
+    let tail_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(tail_payload));
     let tail_location = cache
         .append_blob(tail_key, tail_payload)
         .expect("unrooted tail appends");
@@ -614,12 +614,12 @@ fn cache_blob_pack_repack_plan_includes_file_artifact_and_pending_roots() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let prefix_payload = b"unrooted file prefix";
-    let prefix_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(prefix_payload));
+    let prefix_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(prefix_payload));
     let prefix_location = cache
         .append_blob(prefix_key, prefix_payload)
         .expect("unrooted prefix appends");
     let indexed_payload = b"indexed file payload";
-    let indexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(indexed_payload));
     let indexed_entry = cache
         .append_blob_indexed(indexed_key, indexed_payload)
         .expect("indexed file appends");

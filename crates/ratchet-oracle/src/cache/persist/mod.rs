@@ -22,8 +22,8 @@ use super::{
     CacheExprIdentity, CacheableInputFingerprint, CachedExpressionValue,
     CachedExpressionValuePayloadError, DurableBlake3Hash, ImpureInputFingerprint, ImpureInputKind,
     ImpureInputMode, ImpureInputRevalidator, InputFingerprintError, MaterializationCosts,
-    MaterializationDecision, MaterializationReuse, MaterializationSignals, UncacheableInput,
-    ValueHash, ValueHashError,
+    MaterializationDecision, MaterializationReuse, MaterializationSignals, PersistFileBlobHash,
+    UncacheableInput, ValueHash, ValueHashError,
 };
 
 /// The persistent eval-cache schema format marker.

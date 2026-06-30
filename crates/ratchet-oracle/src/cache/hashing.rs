@@ -8,6 +8,7 @@
 //! ```text
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
+//! PersistFileBlobHash -> persisted `files/` blob payload addresses
 //! NixSha256Digest    -> Nix-observed store path and `.drv` hash bytes
 //! Nix-observed hash bytes cross cache code only through NixSha256Digest
 //! ```
@@ -92,6 +93,31 @@ impl fmt::Display for DurableBlake3Hash {
     }
 }
 
+/// A durable BLAKE3 content address for payloads stored in the `files/` blob pack.
+///
+/// This type separates persisted frontend artifact payload hashes from other
+/// BLAKE3 domains that also use [`DurableBlake3Hash`], such as parse-cache
+/// identities, file-content memo keys, and value-cache confirmation hashes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PersistFileBlobHash(DurableBlake3Hash);
+
+impl PersistFileBlobHash {
+    /// Computes the `files/` blob content address for `payload`.
+    pub fn for_payload(payload: &[u8]) -> Self {
+        Self(DurableBlake3Hash::for_bytes(payload))
+    }
+
+    /// Wraps decoded persistent `files/` blob hash bytes.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
 /// A SHA-256 digest that is part of Nix-observed store or `.drv` identity.
 ///
 /// This type marks the boundary where RFC-0007 requires internal xxh3 and
@@ -152,6 +178,15 @@ mod tests {
             DurableBlake3Hash::from_blake3_hash(blake3::hash(b"cache input")),
             hash
         );
+    }
+
+    #[test]
+    fn persist_file_blob_hash_wraps_files_payload_hashes() {
+        let durable = DurableBlake3Hash::for_bytes(b"serialized file artifact");
+        let file_hash = PersistFileBlobHash::for_payload(b"serialized file artifact");
+
+        assert_eq!(file_hash.as_durable_hash(), durable);
+        assert_eq!(PersistFileBlobHash::from_durable_hash(durable), file_hash);
     }
 
     #[test]

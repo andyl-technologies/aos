@@ -1798,6 +1798,19 @@ alone (`M-1`/`Q-A`).
       and the full differential leak-invariant harness remain open (`S-15`).
       Gate: `op_types` hash-domain tests plus hashString/hashFile/convertHash
       behavior and cache-surface canaries.
+- [x] Current persistent `files/` blob key hash boundary:
+      `PersistFileBlobHash` now marks payload addresses stored in the persistent
+      `files/` blob pack. Production file/parse artifact materialization computes
+      this type from artifact payload bytes, `PersistBlobKey::for_file` requires it,
+      and file/parse artifact index values store and return it while decoded
+      persisted `files/` blob-key bytes cross through an explicit wrapper. This
+      type-enforces the current frontend artifact blob corridor only; parse-cache
+      source keys, parse file-content memo keys, full cache-value hashing, and
+      the full differential leak-invariant harness remain open (`S-15`). Gate:
+      `format_tests`, `blob_sidecars`, `file_artifact_materialization`,
+      `file_artifact_hydration`, `parse_artifact_entry_materialization`,
+      `cache_io_tests`, plus `ratchet-oracle` and `aos-nix-harness` test-target
+      checks.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4208,6 +4221,22 @@ alone (`M-1`/`Q-A`).
       `cargo check --manifest-path crates/Cargo.toml -p aos-nix-harness --tests`, `blob_index`,
       `cached_expression_materialization`, `blob_reachability`,
       `value_blob_repack` ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current persistent `files/` blob key hash boundary:
+      `PersistFileBlobHash` now marks payload addresses stored in the persistent
+      `files/` blob pack. Production file/parse artifact materialization computes
+      this type from artifact payload bytes, `PersistBlobKey::for_file` requires it,
+      and file/parse artifact index values store and return it while decoded
+      persisted `files/` blob-key bytes cross through an explicit wrapper. The
+      public cross-crate compatibility tests use typed `ValueHash` and
+      `PersistFileBlobHash` constructors instead of the generic raw blob-key
+      constructor. This closes the current semantic constructor leak for
+      frontend artifact blobs; parse-cache source keys, parse file-content memo
+      keys, full cache-value hashing, and the full internal-hash leak invariant
+      remain open. Gate: `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`,
+      `cargo check --manifest-path crates/Cargo.toml -p aos-nix-harness --tests`,
+      `format_tests`, `blob_sidecars`, `file_artifact_materialization`,
+      `file_artifact_hydration`, `parse_artifact_entry_materialization`,
+      `cache_io_tests` ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,

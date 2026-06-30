@@ -72,7 +72,7 @@ fn file_artifact_index_keys_decode_and_reject_invalid_prefixes() {
 
 #[test]
 fn file_artifact_index_values_round_trip_file_blob_locations() {
-    let blob_hash = DurableBlake3Hash::for_bytes(b"serialized IR artifact");
+    let blob_hash = PersistFileBlobHash::for_payload(b"serialized IR artifact");
     let location = PersistBlobLocation::new(123, 456);
     let value = PersistFileArtifactIndexValue::new(blob_hash, location);
     let mut encoded = value.encode_index_value().to_vec();
@@ -130,7 +130,7 @@ fn file_artifact_index_entries_round_trip_key_value_records() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistFileBlobHash::for_payload(b"serialized IR artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let entry = PersistFileArtifactIndexEntry::new(key, value);
@@ -167,7 +167,7 @@ fn file_artifact_index_entries_reject_invalid_prefixes() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistFileBlobHash::for_payload(b"serialized IR artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let entry = PersistFileArtifactIndexEntry::new(key, value);
@@ -208,15 +208,15 @@ fn file_artifact_index_appends_and_finds_latest_matching_entry() {
         parse_key,
     );
     let first = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistFileBlobHash::for_payload(b"first artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let other = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistFileBlobHash::for_payload(b"other artifact"),
         PersistBlobLocation::new(789, 10),
     );
     let latest = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistFileBlobHash::for_payload(b"latest artifact"),
         PersistBlobLocation::new(999, 11),
     );
 
@@ -264,15 +264,15 @@ fn file_artifact_index_compacts_to_latest_entries() {
         parse_key,
     );
     let first = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistFileBlobHash::for_payload(b"first artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let other = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistFileBlobHash::for_payload(b"other artifact"),
         PersistBlobLocation::new(789, 10),
     );
     let latest = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistFileBlobHash::for_payload(b"latest artifact"),
         PersistBlobLocation::new(999, 11),
     );
     index
@@ -349,7 +349,7 @@ fn file_artifact_index_lookup_rejects_malformed_records() {
     let file_key = ParseFileKey::for_source("/src/default.nix", source);
     let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
     let value = PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+        PersistFileBlobHash::for_payload(b"serialized IR artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let mut encoded = PersistFileArtifactIndexEntry::new(key, value).encode_index_entry();

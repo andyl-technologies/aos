@@ -66,7 +66,7 @@ fn parse_artifact_index_keys_decode_and_reject_invalid_prefixes() {
 
 #[test]
 fn parse_artifact_index_values_round_trip_file_blob_locations() {
-    let blob_hash = DurableBlake3Hash::for_bytes(b"serialized parse artifact");
+    let blob_hash = PersistFileBlobHash::for_payload(b"serialized parse artifact");
     let location = PersistBlobLocation::new(123, 456);
     let value = PersistParseArtifactIndexValue::new(blob_hash, location);
     let mut encoded = value.encode_index_value().to_vec();
@@ -121,7 +121,7 @@ fn parse_artifact_index_values_reject_invalid_prefixes() {
 fn parse_artifact_index_entries_round_trip_key_value_records() {
     let key = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 1; in x"));
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized parse artifact"),
+        PersistFileBlobHash::for_payload(b"serialized parse artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let entry = PersistParseArtifactIndexEntry::new(key, value);
@@ -155,7 +155,7 @@ fn parse_artifact_index_entries_reject_invalid_prefixes() {
 
     let key = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 1; in x"));
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized parse artifact"),
+        PersistFileBlobHash::for_payload(b"serialized parse artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let entry = PersistParseArtifactIndexEntry::new(key, value);
@@ -190,15 +190,15 @@ fn parse_artifact_index_appends_and_finds_latest_matching_entry() {
     let other_key =
         PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 2; in x"));
     let first = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistFileBlobHash::for_payload(b"first artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let other = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistFileBlobHash::for_payload(b"other artifact"),
         PersistBlobLocation::new(789, 10),
     );
     let latest = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistFileBlobHash::for_payload(b"latest artifact"),
         PersistBlobLocation::new(999, 11),
     );
 
@@ -240,15 +240,15 @@ fn parse_artifact_index_compacts_to_latest_entries() {
     let other_key =
         PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 2; in x"));
     let first = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"first artifact"),
+        PersistFileBlobHash::for_payload(b"first artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let other = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"other artifact"),
+        PersistFileBlobHash::for_payload(b"other artifact"),
         PersistBlobLocation::new(789, 10),
     );
     let latest = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"latest artifact"),
+        PersistFileBlobHash::for_payload(b"latest artifact"),
         PersistBlobLocation::new(999, 11),
     );
     index
@@ -322,7 +322,7 @@ fn parse_artifact_index_lookup_rejects_malformed_records() {
     let index_path = root.join("nodes").join("parse-artifacts.index");
     let key = PersistParseArtifactKey::from_parse_cache_key(test_parse_key(b"let x = 1; in x"));
     let value = PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(b"serialized parse artifact"),
+        PersistFileBlobHash::for_payload(b"serialized parse artifact"),
         PersistBlobLocation::new(123, 456),
     );
     let mut encoded = PersistParseArtifactIndexEntry::new(key, value).encode_index_entry();

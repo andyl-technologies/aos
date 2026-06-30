@@ -139,7 +139,7 @@ impl PersistCache {
                 Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
-                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let location = self.append_pending_file_artifact_blob(
                     PersistBlobKey::for_file(blob_hash),
                     payload,
@@ -185,7 +185,7 @@ impl PersistCache {
                 Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
-                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let blob_entry = self
                     .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
                     .map_err(|source| PersistFileArtifactIndexedWriteError::Blob { source })?;
@@ -232,7 +232,7 @@ impl PersistCache {
                 Ok(PersistParseArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
-                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let location = self.append_pending_file_artifact_blob(
                     PersistBlobKey::for_file(blob_hash),
                     payload,
@@ -277,7 +277,7 @@ impl PersistCache {
                 Ok(PersistParseArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
-                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let blob_entry = self
                     .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
                     .map_err(|source| PersistParseArtifactIndexedWriteError::Blob { source })?;

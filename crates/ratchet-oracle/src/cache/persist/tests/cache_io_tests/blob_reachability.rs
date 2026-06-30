@@ -260,7 +260,7 @@ fn cache_value_blob_reachability_plan_rejects_mismatched_value_index_root() {
 fn cache_value_blob_reachability_plan_rejects_wrong_store_value_index_root() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
-    let file_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"file payload"));
+    let file_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"file payload"));
     cache
         .value_index()
         .append_entry(PersistBlobIndexEntry::new(
@@ -347,12 +347,13 @@ fn cache_file_blob_reachability_plan_classifies_file_records() {
         .index_entry()
         .expect("pending parse artifact should materialize");
     let indexed_payload = b"indexed file blob only";
-    let indexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(indexed_payload));
+    let indexed_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(indexed_payload));
     let indexed_entry = cache
         .append_blob_indexed(indexed_key, indexed_payload)
         .expect("indexed file blob appends");
     let unindexed_payload = b"unindexed file blob";
-    let unindexed_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(unindexed_payload));
+    let unindexed_key =
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(unindexed_payload));
     let unindexed_location = cache
         .append_blob(unindexed_key, unindexed_payload)
         .expect("unindexed file blob appends");
@@ -592,7 +593,7 @@ fn cache_file_blob_reachability_plan_rejects_corrupt_unindexed_record() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let payload = b"corrupt unindexed file";
-    let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+    let key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(payload));
     let location = cache
         .append_blob(key, payload)
         .expect("unindexed file blob appends");
@@ -625,12 +626,12 @@ fn cache_file_blob_reachability_plan_rejects_mismatched_file_index_root() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
     let actual_payload = b"actual indexed file";
-    let actual_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(actual_payload));
+    let actual_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(actual_payload));
     let actual_location = cache
         .append_blob(actual_key, actual_payload)
         .expect("actual file blob appends");
     let expected_key =
-        PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"expected indexed file"));
+        PersistBlobKey::for_file(PersistFileBlobHash::for_payload(b"expected indexed file"));
     cache
         .file_index()
         .append_entry(PersistBlobIndexEntry::new(expected_key, actual_location))

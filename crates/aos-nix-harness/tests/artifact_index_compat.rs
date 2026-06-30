@@ -9,11 +9,11 @@ use ratchet_cache::artifact_index::{
 };
 use ratchet_oracle::cache::{
     DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, PERSIST_BLOB_INDEX_KEY_LEN, ParseCacheFlags,
-    ParseCacheKey, ParseFileKey, PersistBlobKey, PersistBlobLocation, PersistBlobStore,
-    PersistFileArtifactIndex, PersistFileArtifactIndexEntry, PersistFileArtifactIndexError,
-    PersistFileArtifactIndexValue, PersistFileArtifactKey, PersistPackFormatError,
-    PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexError,
-    PersistParseArtifactIndexValue, PersistParseArtifactKey,
+    ParseCacheKey, ParseFileKey, PersistBlobKey, PersistBlobLocation, PersistFileArtifactIndex,
+    PersistFileArtifactIndexEntry, PersistFileArtifactIndexError, PersistFileArtifactIndexValue,
+    PersistFileArtifactKey, PersistFileBlobHash, PersistPackFormatError, PersistParseArtifactIndex,
+    PersistParseArtifactIndexEntry, PersistParseArtifactIndexError, PersistParseArtifactIndexValue,
+    PersistParseArtifactKey, ValueHash,
 };
 
 fn engine_key_from_file_key(key: PersistFileArtifactKey) -> ArtifactIndexKey {
@@ -54,14 +54,14 @@ fn parse_artifact_key(source: &[u8]) -> PersistParseArtifactKey {
 
 fn file_value(name: &[u8], offset: u64) -> PersistFileArtifactIndexValue {
     PersistFileArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(name),
+        PersistFileBlobHash::for_payload(name),
         PersistBlobLocation::new(offset, name.len() as u64),
     )
 }
 
 fn parse_value(name: &[u8], offset: u64) -> PersistParseArtifactIndexValue {
     PersistParseArtifactIndexValue::new(
-        DurableBlake3Hash::for_bytes(name),
+        PersistFileBlobHash::for_payload(name),
         PersistBlobLocation::new(offset, name.len() as u64),
     )
 }
@@ -226,10 +226,9 @@ fn oracle_rejects_stale_malformed_engine_file_artifact_value() {
     let latest_value = file_value(b"latest file artifact", 99);
     let mut malformed_stale = file_value(b"stale file artifact", 24).encode_index_value();
     malformed_stale[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(
-        &PersistBlobKey::new(
-            PersistBlobStore::Values,
+        &PersistBlobKey::for_value(ValueHash::from_canonical_value_hash(
             DurableBlake3Hash::for_bytes(b"wrong store"),
-        )
+        ))
         .index_bytes(),
     );
 
@@ -269,10 +268,9 @@ fn oracle_rejects_stale_malformed_engine_parse_artifact_value() {
     let latest_value = parse_value(b"latest parse artifact", 99);
     let mut malformed_stale = parse_value(b"stale parse artifact", 24).encode_index_value();
     malformed_stale[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(
-        &PersistBlobKey::new(
-            PersistBlobStore::Values,
+        &PersistBlobKey::for_value(ValueHash::from_canonical_value_hash(
             DurableBlake3Hash::for_bytes(b"wrong store"),
-        )
+        ))
         .index_bytes(),
     );
 
