@@ -666,6 +666,46 @@ impl PersistBlobPack {
         Ok(visit(payload.as_bytes()))
     }
 
+    /// Maps and verifies a blob payload while returning only owned window metadata.
+    ///
+    /// The caller must hold the same advisory read lock used by cooperating
+    /// blob-pack writers for the duration of the call. Payload bytes are verified
+    /// through the scoped mapping but are not copied or exposed to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the advisory read lease does not cover the opened packfile,
+    /// if `location` is invalid, or if record/payload hashes do not match
+    /// `expected_hash`.
+    pub(super) fn verify_mapped_blob(
+        &self,
+        read_lease: &AdvisoryFileLock,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+    ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
+        self.with_mapped_blob(read_lease, location, expected_hash, |_| {
+            let payload_start = location
+                .record_offset()
+                .checked_add(PERSIST_BLOB_RECORD_HEADER_LEN as u64)
+                .ok_or(PersistBlobPackError::RecordBoundsOverflow {
+                    record_offset: location.record_offset(),
+                    payload_len: location.payload_len(),
+                })?;
+            let payload_end = payload_start.checked_add(location.payload_len()).ok_or(
+                PersistBlobPackError::RecordBoundsOverflow {
+                    record_offset: location.record_offset(),
+                    payload_len: location.payload_len(),
+                },
+            )?;
+            Ok(PersistBlobPayloadWindow::new(
+                PersistBlobPackRecord::new(expected_hash, location),
+                payload_start,
+                payload_end,
+            ))
+        })?
+    }
+
     /// Maps, verifies, and visits all blob records while a caller-owned read lease is held.
     ///
     /// The callback receives owned record metadata produced from a memory-mapped

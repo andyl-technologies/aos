@@ -109,7 +109,7 @@ impl PersistCache {
                 });
             }
             self.value_pack
-                .verify_blob(entry.location(), key.hash())
+                .verify_mapped_blob(&value_advisory_guard, entry.location(), key.hash())
                 .map_err(|source| PersistValueBlobReachabilityPlanError::Read { source })?;
             value_locations.insert(key.index_bytes(), entry.location());
             index_identities.insert(blob_record_identity(key, entry.location()), ());
@@ -260,7 +260,7 @@ impl PersistCache {
                 });
             }
             self.file_pack
-                .verify_blob(entry.location(), key.hash())
+                .verify_mapped_blob(&file_advisory_guard, entry.location(), key.hash())
                 .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
             blob_index_roots.push(PersistBlobLiveRoot::new(
                 PersistBlobLiveRootSource::BlobIndex,
@@ -273,21 +273,21 @@ impl PersistCache {
         let mut file_artifact_identities = BTreeMap::new();
         for root in &file_artifact_roots {
             self.file_pack
-                .verify_blob(root.location(), root.key().hash())
+                .verify_mapped_blob(&file_advisory_guard, root.location(), root.key().hash())
                 .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
             file_artifact_identities.insert(blob_live_root_identity(*root), ());
         }
         let mut parse_artifact_identities = BTreeMap::new();
         for root in &parse_artifact_roots {
             self.file_pack
-                .verify_blob(root.location(), root.key().hash())
+                .verify_mapped_blob(&file_advisory_guard, root.location(), root.key().hash())
                 .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
             parse_artifact_identities.insert(blob_live_root_identity(*root), ());
         }
         let mut pending_artifact_identities = BTreeMap::new();
         for root in &pending_artifact_roots {
             self.file_pack
-                .verify_blob(root.location(), root.key().hash())
+                .verify_mapped_blob(&file_advisory_guard, root.location(), root.key().hash())
                 .map_err(|source| PersistFileBlobReachabilityPlanError::Read { source })?;
             pending_artifact_identities.insert(blob_live_root_identity(*root), ());
         }
