@@ -873,12 +873,26 @@ verdict; it only shapes the next schedule the search tries.
   quantifiers in black-box mode, failure/warning reporting, named predicate
   access to observed ordering facts, and static absence of host time, thread RNG,
   and unordered map/set inputs in the host assertion evaluator.
-- [ ] **T-ASRT-6** Implement guest-side marker assertions over the white-box
+- [x] **T-ASRT-6** Implement guest-side marker assertions over the white-box
   channel with the same five-quantifier semantics; fold them into the same
   evaluation pass; keep them observational and fingerprint-neutral; require the
   white-box marker payload to carry id/kind/`must_hit`/details/location so a
   never-reached marker still finalizes Always/Reachable. — satisfies
   [ASRT-11], [ASRT-12], [ASRT-13], [ASRT-32]; spec §18.5, §18.12.3.
+  Completed by `checks.crucible.phase4.guestMarkerAssertions`:
+  `ObservableEventPayload` now has an assertion-flavored guest marker payload
+  carrying id, kind, condition, `must_hit`, structured details, and source
+  location. `HostAssertionEvaluator` folds those observational white-box marker
+  entries into the same outcome report as host-side properties, using
+  world-derived white-box policy rather than self-attested marker data. Generic
+  `GuestMarker` predicates match only bare guest-marker events, while assertion
+  markers are folded only by `HostAssertionEvaluator` from their recorded
+  condition. The gate verifies marker-defined Always/Sometimes/Reachable/
+  Unreachable outcomes, all five authored property quantifiers over guest-marker
+  predicates, disabled-node rejection, payload finalization fields, terminal
+  outcome immutability, kind-mismatch diagnostics, and static absence of host
+  time, thread RNG, unordered maps/sets, and scheduler decisions in the guest
+  marker assertion evaluator.
 - [ ] **T-ASRT-7** Implement the offline assertion checker: grade a recorded run's
   log against the original or a new/amended property set with no guest
   re-execution, producing the identical online outcome set. — satisfies [ASRT-14],

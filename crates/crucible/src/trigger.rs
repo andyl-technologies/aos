@@ -406,6 +406,25 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds an optional white-box assertion-marker observation.
+    #[must_use]
+    pub fn guest_assertion_marker(
+        retired_icount: Icount,
+        node: NodeId,
+        marker: GuestAssertionMarker,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestAssertionMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
     /// Returns the deterministic virtual-time coordinate of the observation.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
@@ -490,6 +509,95 @@ pub enum ObservableEventPayload {
         /// Stable marker identity carried by the doorbell payload.
         marker: MarkerId,
     },
+    /// An optional white-box assertion marker was observed.
+    GuestAssertionMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Assertion marker payload carried by the doorbell.
+        marker: GuestAssertionMarker,
+    },
+}
+
+/// Assertion flavor carried by a white-box doorbell assertion marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestAssertionKind {
+    /// Invariant marker; any false observation violates the assertion.
+    Always,
+    /// Liveness marker; at least one true observation is required.
+    Sometimes,
+    /// Coverage marker; true observation satisfies reachability.
+    Reachable,
+    /// Unreachable dual; any true observation violates the assertion.
+    Unreachable,
+}
+
+/// One structured key/value detail carried by a guest assertion marker.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuestAssertionDetail {
+    /// Stable detail key.
+    pub key: String,
+    /// Stable detail value.
+    pub value: String,
+}
+
+impl GuestAssertionDetail {
+    /// Builds one guest assertion detail field.
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// Assertion payload carried by a white-box doorbell marker.
+///
+/// The payload is observational: it is stored in the event log and can drive
+/// assertion finalization, but it does not feed scheduler decisions or node
+/// fingerprints.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GuestAssertionMarker {
+    /// Stable assertion id in the marker/assertion namespace.
+    pub id: AssertionId,
+    /// Human-readable assertion message.
+    pub message: String,
+    /// Quantifier flavor declared by the marker payload.
+    pub kind: GuestAssertionKind,
+    /// Boolean truth value observed at the doorbell retirement point.
+    pub condition: bool,
+    /// Whether this marker is catalog-declared and must be hit to avoid failure.
+    pub must_hit: bool,
+    /// Structured marker details for later violation records.
+    pub details: Vec<GuestAssertionDetail>,
+    /// Source location supplied by the guest emitter.
+    pub location: String,
+}
+
+impl GuestAssertionMarker {
+    /// Builds a white-box assertion marker payload.
+    #[must_use]
+    pub fn new(
+        id: AssertionId,
+        message: impl Into<String>,
+        kind: GuestAssertionKind,
+        condition: bool,
+        must_hit: bool,
+        details: Vec<GuestAssertionDetail>,
+        location: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            message: message.into(),
+            kind,
+            condition,
+            must_hit,
+            details,
+            location: location.into(),
+        }
+    }
 }
 
 /// One leaf predicate request made by the shared condition evaluator.
@@ -1060,7 +1168,9 @@ impl HostAssertionReport {
 #[derive(Clone, Debug)]
 pub struct HostAssertionEvaluator {
     states: Vec<HostAssertionState>,
+    guest_marker_states: Vec<GuestMarkerAssertionState>,
     once_latches: Vec<Condition>,
+    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
 }
 
 impl HostAssertionEvaluator {
@@ -1073,8 +1183,43 @@ impl HostAssertionEvaluator {
                 .iter()
                 .map(HostAssertionState::new)
                 .collect(),
+            guest_marker_states: Vec::new(),
             once_latches: Vec::new(),
+            white_box_policies: BTreeMap::new(),
         }
+    }
+
+    /// Adds authoritative white-box opt-in policies for guest marker evaluation.
+    #[must_use]
+    pub fn with_white_box_policies(
+        mut self,
+        policies: impl IntoIterator<Item = (NodeId, WhiteBoxPolicy)>,
+    ) -> Self {
+        self.white_box_policies = policies.into_iter().collect();
+        self
+    }
+
+    /// Adds authoritative white-box opt-in policies from a world definition.
+    #[must_use]
+    pub fn with_world_white_box_policies(self, world: &World) -> Self {
+        self.with_white_box_policies(
+            world
+                .nodes()
+                .iter()
+                .map(|node| (node.id.clone(), node.white_box)),
+        )
+    }
+
+    /// Adds catalog-declared guest assertion markers before event-log evaluation.
+    #[must_use]
+    pub fn with_guest_assertion_catalog(
+        mut self,
+        catalog: impl IntoIterator<Item = GuestAssertionMarker>,
+    ) -> Self {
+        for marker in catalog {
+            let _ = guest_marker_assertion_state_for(&mut self.guest_marker_states, &marker);
+        }
+        self
     }
 
     /// Observes one checked event-log prefix and returns newly terminal outcomes.
@@ -1089,11 +1234,22 @@ impl HostAssertionEvaluator {
         let mut outcomes = Vec::new();
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
-            if let Some(outcome) = observe_host_assertion_state(state, prefix, oracle, once_latches)
-            {
+            if let Some(outcome) = observe_host_assertion_state(
+                state,
+                prefix,
+                oracle,
+                once_latches,
+                &self.white_box_policies,
+            ) {
                 outcomes.push(outcome);
             }
         }
+        outcomes.extend(observe_guest_marker_assertions(
+            &mut self.guest_marker_states,
+            prefix,
+            &self.white_box_policies,
+        ));
+        sort_host_assertion_outcomes(&mut outcomes);
         outcomes
     }
 
@@ -1109,13 +1265,29 @@ impl HostAssertionEvaluator {
         self.observe_prefix(prefix, oracle);
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
-            finalize_host_assertion_state(state, prefix, oracle, once_latches);
+            finalize_host_assertion_state(
+                state,
+                prefix,
+                oracle,
+                once_latches,
+                &self.white_box_policies,
+            );
+        }
+        for state in &mut self.guest_marker_states {
+            finalize_guest_marker_assertion_state(state, prefix.point().at());
         }
         let outcomes = self
             .states
             .iter()
             .filter_map(HostAssertionState::outcome)
+            .chain(
+                self.guest_marker_states
+                    .iter()
+                    .filter_map(GuestMarkerAssertionState::outcome),
+            )
             .collect::<Vec<_>>();
+        let mut outcomes = outcomes;
+        sort_host_assertion_outcomes(&mut outcomes);
         let failures = outcomes
             .iter()
             .filter(|outcome| outcome.kind == HostAssertionOutcomeKind::Violated)
@@ -1141,6 +1313,70 @@ struct HostAssertionState {
     eventually_triggered: bool,
     eventually_satisfied_at: Option<VirtualTime>,
     pending_eventually: Vec<EventuallyObligation>,
+}
+
+#[derive(Clone, Debug)]
+struct GuestMarkerAssertionState {
+    id: AssertionId,
+    message: String,
+    kind: GuestAssertionKind,
+    must_hit: bool,
+    details: Vec<GuestAssertionDetail>,
+    location: String,
+    observed_true: bool,
+    terminal: Option<HostAssertionTerminal>,
+}
+
+impl GuestMarkerAssertionState {
+    fn new(marker: &GuestAssertionMarker) -> Self {
+        Self {
+            id: marker.id.clone(),
+            message: marker.message.clone(),
+            kind: marker.kind,
+            must_hit: marker.must_hit,
+            details: marker.details.clone(),
+            location: marker.location.clone(),
+            observed_true: false,
+            terminal: None,
+        }
+    }
+
+    fn observe_payload(&mut self, marker: &GuestAssertionMarker) {
+        self.must_hit |= marker.must_hit;
+        self.message = marker.message.clone();
+        self.location = marker.location.clone();
+        self.details = marker.details.clone();
+        if marker.condition {
+            self.observed_true = true;
+        }
+    }
+
+    fn outcome(&self) -> Option<HostAssertionOutcome> {
+        self.terminal.as_ref().map(|terminal| HostAssertionOutcome {
+            assertion: self.id.clone(),
+            at: terminal.at,
+            kind: terminal.kind,
+            message: self.message.clone(),
+            reason: terminal.reason.clone(),
+        })
+    }
+
+    fn terminal(
+        &mut self,
+        kind: HostAssertionOutcomeKind,
+        at: VirtualTime,
+        reason: impl Into<String>,
+    ) -> Option<HostAssertionOutcome> {
+        if self.terminal.is_some() {
+            return None;
+        }
+        self.terminal = Some(HostAssertionTerminal {
+            kind,
+            at,
+            reason: reason.into(),
+        });
+        self.outcome()
+    }
 }
 
 impl HostAssertionState {
@@ -1200,6 +1436,7 @@ fn observe_host_assertion_state<O>(
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -1212,7 +1449,8 @@ where
     let property = state.assertion.property.clone();
     match property {
         Property::Always { predicate } => {
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
+            {
                 None
             } else {
                 state.terminal(
@@ -1223,7 +1461,8 @@ where
             }
         }
         Property::Sometimes { predicate } => {
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
+            {
                 state.terminal(
                     HostAssertionOutcomeKind::Satisfied,
                     at,
@@ -1245,6 +1484,7 @@ where
             &property,
             deadline,
             once_latches,
+            white_box_policies,
         ),
         Property::AfterQuiescence { .. } => None,
         Property::Reachable {
@@ -1255,6 +1495,7 @@ where
             prefix,
             oracle,
             once_latches,
+            white_box_policies,
             &predicate,
             expectation,
         ),
@@ -1269,6 +1510,7 @@ fn observe_eventually_assertion<O>(
     property: &Condition,
     deadline: VirtualTime,
     once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
@@ -1290,7 +1532,8 @@ where
         );
     }
 
-    if !state.eventually_triggered && host_condition_is_true(prefix, trigger, oracle, once_latches)
+    if !state.eventually_triggered
+        && host_condition_is_true(prefix, trigger, oracle, once_latches, white_box_policies)
     {
         state.eventually_triggered = true;
         state.pending_eventually.push(EventuallyObligation {
@@ -1300,7 +1543,7 @@ where
     }
 
     if !state.pending_eventually.is_empty()
-        && host_condition_is_true(prefix, property, oracle, once_latches)
+        && host_condition_is_true(prefix, property, oracle, once_latches, white_box_policies)
     {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
@@ -1314,13 +1557,15 @@ fn observe_reachability_assertion<O>(
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
     predicate: &Condition,
     expectation: ReachabilityExpectation,
 ) -> Option<HostAssertionOutcome>
 where
     O: HostAssertionOracle + ?Sized,
 {
-    let reached = host_condition_is_true(prefix, predicate, oracle, once_latches);
+    let reached =
+        host_condition_is_true(prefix, predicate, oracle, once_latches, white_box_policies);
     match (expectation, reached) {
         (ReachabilityExpectation::Reachable { .. }, true) => state.terminal(
             HostAssertionOutcomeKind::Satisfied,
@@ -1344,6 +1589,7 @@ fn finalize_host_assertion_state<O>(
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) where
     O: HostAssertionOracle + ?Sized,
 {
@@ -1370,7 +1616,8 @@ fn finalize_host_assertion_state<O>(
         }
         Property::Eventually { .. } => finalize_eventually_assertion(state, at),
         Property::AfterQuiescence { predicate } => {
-            if host_condition_is_true(prefix, &predicate, oracle, once_latches) {
+            if host_condition_is_true(prefix, &predicate, oracle, once_latches, white_box_policies)
+            {
                 state.terminal(
                     HostAssertionOutcomeKind::Satisfied,
                     at,
@@ -1463,10 +1710,190 @@ fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> Virt
     }
 }
 
+fn observe_guest_marker_assertions(
+    states: &mut Vec<GuestMarkerAssertionState>,
+    prefix: &ConditionEventLogPrefix,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
+) -> Vec<HostAssertionOutcome> {
+    let mut outcomes = Vec::new();
+    let at = prefix.point().at();
+    for event in prefix.observable_events() {
+        if event.at() != at {
+            continue;
+        }
+        let ObservableEventPayload::GuestAssertionMarker {
+            retired_icount: _,
+            node,
+            marker,
+        } = event.payload()
+        else {
+            continue;
+        };
+        if white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled) {
+            continue;
+        }
+        let state = guest_marker_assertion_state_for(states, marker);
+        if state.terminal.is_some() {
+            continue;
+        }
+        state.observe_payload(marker);
+        if let Some(outcome) = observe_guest_marker_assertion_state(state, at, marker) {
+            outcomes.push(outcome);
+        }
+    }
+    outcomes
+}
+
+fn guest_marker_assertion_state_for<'a>(
+    states: &'a mut Vec<GuestMarkerAssertionState>,
+    marker: &GuestAssertionMarker,
+) -> &'a mut GuestMarkerAssertionState {
+    match states.binary_search_by(|state| state.id.cmp(&marker.id)) {
+        Ok(index) => &mut states[index],
+        Err(index) => {
+            states.insert(index, GuestMarkerAssertionState::new(marker));
+            &mut states[index]
+        }
+    }
+}
+
+fn observe_guest_marker_assertion_state(
+    state: &mut GuestMarkerAssertionState,
+    at: VirtualTime,
+    marker: &GuestAssertionMarker,
+) -> Option<HostAssertionOutcome> {
+    if state.terminal.is_some() {
+        return None;
+    }
+
+    if marker.kind != state.kind {
+        return state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            guest_marker_payload_reason(
+                marker,
+                &format!(
+                    "guest marker assertion kind mismatch: declared {:?}, observed {:?}",
+                    state.kind, marker.kind
+                ),
+            ),
+        );
+    }
+
+    match state.kind {
+        GuestAssertionKind::Always if !marker.condition => state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            guest_marker_payload_reason(marker, "guest always marker condition was false"),
+        ),
+        GuestAssertionKind::Sometimes if marker.condition => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            guest_marker_payload_reason(marker, "guest sometimes marker became true"),
+        ),
+        GuestAssertionKind::Reachable if marker.condition => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            guest_marker_payload_reason(marker, "guest reachable marker was reached"),
+        ),
+        GuestAssertionKind::Unreachable if marker.condition => state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            guest_marker_payload_reason(marker, "guest unreachable marker was reached"),
+        ),
+        GuestAssertionKind::Always
+        | GuestAssertionKind::Sometimes
+        | GuestAssertionKind::Reachable
+        | GuestAssertionKind::Unreachable => None,
+    }
+}
+
+fn finalize_guest_marker_assertion_state(
+    state: &mut GuestMarkerAssertionState,
+    at: VirtualTime,
+) -> Option<HostAssertionOutcome> {
+    if state.terminal.is_some() {
+        return None;
+    }
+
+    match state.kind {
+        GuestAssertionKind::Always => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            guest_marker_reason(state, "guest always marker stayed true"),
+        ),
+        GuestAssertionKind::Sometimes => state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            guest_marker_reason(state, "guest sometimes marker never became true"),
+        ),
+        GuestAssertionKind::Reachable if state.observed_true => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            guest_marker_reason(state, "guest reachable marker was reached"),
+        ),
+        GuestAssertionKind::Reachable if state.must_hit => state.terminal(
+            HostAssertionOutcomeKind::Violated,
+            at,
+            guest_marker_reason(state, "guest reachable marker was never reached"),
+        ),
+        GuestAssertionKind::Reachable => state.terminal(
+            HostAssertionOutcomeKind::Warning,
+            at,
+            guest_marker_reason(state, "guest reachable marker was never reached"),
+        ),
+        GuestAssertionKind::Unreachable => state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            guest_marker_reason(state, "guest unreachable marker stayed unreached"),
+        ),
+    }
+}
+
+fn guest_marker_reason(state: &GuestMarkerAssertionState, summary: &str) -> String {
+    let details = details_reason(&state.details);
+    format!("{summary}; location={}; details={details}", state.location)
+}
+
+fn guest_marker_payload_reason(marker: &GuestAssertionMarker, summary: &str) -> String {
+    let details = details_reason(&marker.details);
+    format!("{summary}; location={}; details={details}", marker.location)
+}
+
+fn details_reason(details: &[GuestAssertionDetail]) -> String {
+    details
+        .iter()
+        .map(|detail| format!("{}={}", detail.key, detail.value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
+    outcomes.sort_by(|left, right| {
+        left.assertion
+            .cmp(&right.assertion)
+            .then_with(|| left.at.cmp(&right.at))
+            .then_with(|| {
+                host_assertion_outcome_kind_rank(left.kind)
+                    .cmp(&host_assertion_outcome_kind_rank(right.kind))
+            })
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+}
+
+fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
+    match kind {
+        HostAssertionOutcomeKind::Satisfied => 0,
+        HostAssertionOutcomeKind::Warning => 1,
+        HostAssertionOutcomeKind::Violated => 2,
+    }
+}
+
 struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     observed: ObservedState<'prefix>,
     oracle: &'state mut O,
     once_latches: &'state mut Vec<Condition>,
+    white_box_policies: &'state BTreeMap<NodeId, WhiteBoxPolicy>,
 }
 
 impl<O> condition_evaluator_sealed::Sealed for HostConditionEvaluation<'_, '_, O> where
@@ -1494,6 +1921,10 @@ where
         self.observed.observable_events()
     }
 
+    fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
+        self.white_box_policies.get(node).copied()
+    }
+
     fn once_condition_is_latched(&self, condition: &Condition) -> bool {
         self.once_latches.iter().any(|latched| latched == condition)
     }
@@ -1510,6 +1941,7 @@ fn host_condition_is_true<O>(
     condition: &Condition,
     oracle: &mut O,
     once_latches: &mut Vec<Condition>,
+    white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> bool
 where
     O: HostAssertionOracle + ?Sized,
@@ -1518,6 +1950,7 @@ where
         observed: prefix.observed_state(),
         oracle,
         once_latches,
+        white_box_policies,
     };
     evaluate_condition(&mut evaluator, condition)
 }
@@ -1987,16 +2420,24 @@ fn guest_marker_event_matches<E>(
 where
     E: ConditionEvaluator + ?Sized,
 {
-    let ObservableEventPayload::GuestMarker {
-        retired_icount: _,
-        node,
-        marker,
-    } = event
-    else {
-        return false;
-    };
-    marker == expected_marker
-        && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+    match event {
+        ObservableEventPayload::GuestMarker {
+            retired_icount: _,
+            node,
+            marker,
+        } => {
+            marker == expected_marker
+                && evaluator.white_box_policy_for_node(node) == Some(WhiteBoxPolicy::Enabled)
+        }
+        ObservableEventPayload::GuestAssertionMarker { .. } => false,
+        ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::CoverageBlock { .. }
+        | ObservableEventPayload::MemorySample { .. }
+        | ObservableEventPayload::IoCompletion { .. }
+        | ObservableEventPayload::NodeState { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. } => false,
+    }
 }
 
 /// Condition evaluator backed by a leaf oracle.
