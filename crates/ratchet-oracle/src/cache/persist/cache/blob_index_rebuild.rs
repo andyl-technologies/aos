@@ -5,35 +5,47 @@ use super::*;
 impl PersistCache {
     /// Returns verified pack records as typed blob-index entries for `store`.
     ///
-    /// This read-only adapter scans the selected store's pack, verifies every
-    /// record through [`PersistBlobPack::records`], and maps each record to the
-    /// `PersistBlobIndexEntry` shape used by the hash-to-offset sidecar. It
-    /// returns physical pack records, including stale duplicate records and
+    /// This read-only adapter scans the selected store's pack through the
+    /// scoped mapped-pack path, verifies every record, and maps each record to
+    /// the `PersistBlobIndexEntry` shape used by the hash-to-offset sidecar.
+    /// It returns physical pack records, including stale duplicate records and
     /// unindexed records. It does not write or repair the sidecar index, select
     /// live roots, or compact the pack.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the selected pack cannot be opened,
-    /// inspected, seeked, or read, if any record header is malformed or
-    /// truncated, if a record points past the current packfile length, or if a
-    /// payload hash does not match its record header.
+    /// Returns [`PersistBlobPackError`] if the selected store's advisory or
+    /// same-root read lock cannot be acquired, if the selected pack cannot be
+    /// opened or mapped, if any record header is malformed or truncated, if a
+    /// record points past the current packfile length, or if a payload hash
+    /// does not match its record header.
     pub fn blob_pack_index_entries(
         &self,
         store: PersistBlobStore,
     ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
-        self.blob_pack(store).records().map(|records| {
-            records
-                .into_iter()
-                .map(|record| PersistBlobIndexEntry::new(record.key(store), record.location()))
-                .collect()
-        })
+        let (advisory_guard, _read_guard) = self.lock_blob_pack_read(store)?;
+        self.blob_pack_index_entries_with_lock(store, &advisory_guard)
+    }
+
+    fn blob_pack_index_entries_with_lock(
+        &self,
+        store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
+    ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
+        self.blob_pack(store)
+            .with_mapped_records(advisory_guard, |records| {
+                records
+                    .into_iter()
+                    .map(|record| PersistBlobIndexEntry::new(record.key(store), record.location()))
+                    .collect()
+            })
     }
 
     /// Returns newest physical pack records as typed blob-index entries.
     ///
-    /// This read-only adapter scans the selected store's pack and collapses
-    /// duplicate physical records for the same content hash with
+    /// This read-only adapter scans the selected store's pack through the
+    /// scoped mapped-pack path and collapses duplicate physical records for the
+    /// same content hash with
     /// newest-record-wins semantics. Entries are returned in stable encoded-key
     /// order, matching the current fixed-record sidecar's latest-entry
     /// encoded-key ordering. It does not write or repair the sidecar index,
@@ -41,16 +53,26 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the selected pack cannot be opened,
-    /// inspected, seeked, or read, if any record header is malformed or
-    /// truncated, if a record points past the current packfile length, or if a
-    /// payload hash does not match its record header.
+    /// Returns [`PersistBlobPackError`] if the selected store's advisory or
+    /// same-root read lock cannot be acquired, if the selected pack cannot be
+    /// opened or mapped, if any record header is malformed or truncated, if a
+    /// record points past the current packfile length, or if a payload hash
+    /// does not match its record header.
     pub fn latest_blob_pack_index_entries(
         &self,
         store: PersistBlobStore,
     ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
+        let (advisory_guard, _read_guard) = self.lock_blob_pack_read(store)?;
+        self.latest_blob_pack_index_entries_with_lock(store, &advisory_guard)
+    }
+
+    fn latest_blob_pack_index_entries_with_lock(
+        &self,
+        store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
+    ) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobPackError> {
         let mut latest = std::collections::BTreeMap::new();
-        for entry in self.blob_pack_index_entries(store)? {
+        for entry in self.blob_pack_index_entries_with_lock(store, advisory_guard)? {
             latest.insert(entry.key().index_bytes(), entry);
         }
         Ok(latest.into_values().collect())
@@ -69,14 +91,27 @@ impl PersistCache {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobIndexRebuildPlanError`] if the selected pack cannot
-    /// be fully verified or the selected sidecar cannot be snapshotted.
+    /// Returns [`PersistBlobIndexRebuildPlanError`] if the selected store's
+    /// advisory or same-root read lock cannot be acquired, if the selected pack
+    /// cannot be fully verified, or if the selected sidecar cannot be
+    /// snapshotted.
     pub fn plan_blob_index_rebuild(
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildPlanError> {
+        let (advisory_guard, _read_guard) = self
+            .lock_blob_pack_read(store)
+            .map_err(|source| PersistBlobIndexRebuildPlanError::Pack { source })?;
+        self.plan_blob_index_rebuild_with_lock(store, &advisory_guard)
+    }
+
+    fn plan_blob_index_rebuild_with_lock(
+        &self,
+        store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
+    ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildPlanError> {
         let planned_entries = self
-            .latest_blob_pack_index_entries(store)
+            .latest_blob_pack_index_entries_with_lock(store, advisory_guard)
             .map_err(|source| PersistBlobIndexRebuildPlanError::Pack { source })?;
         let current_entries = self
             .blob_index(store)
@@ -140,9 +175,9 @@ impl PersistCache {
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobIndexRebuildPlan, PersistBlobIndexRebuildError> {
-        let (_advisory_guard, _write_guard) = self.lock_blob_index_rebuild(store)?;
+        let (advisory_guard, _write_guard) = self.lock_blob_index_rebuild(store)?;
         let plan = self
-            .plan_blob_index_rebuild(store)
+            .plan_blob_index_rebuild_with_lock(store, &advisory_guard)
             .map_err(|source| PersistBlobIndexRebuildError::Plan { source })?;
         self.blob_index(store)
             .replace_entries(plan.planned_entries())

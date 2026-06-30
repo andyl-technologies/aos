@@ -666,6 +666,45 @@ impl PersistBlobPack {
         Ok(visit(payload.as_bytes()))
     }
 
+    /// Maps, verifies, and visits all blob records while a caller-owned read lease is held.
+    ///
+    /// The callback receives owned record metadata produced from a memory-mapped
+    /// pack scan. Payload bytes are verified through the mapping but cannot
+    /// escape this method, and the caller must hold the same advisory read lock
+    /// used by cooperating blob-pack writers for the duration of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the advisory read lease does not cover the opened packfile,
+    /// if any record header is malformed or truncated, if any payload window
+    /// falls outside the mapping, or if any payload hash does not match its
+    /// record header.
+    pub(super) fn with_mapped_records<R>(
+        &self,
+        _read_lease: &AdvisoryFileLock,
+        visit: impl FnOnce(Vec<PersistBlobPackRecord>) -> R,
+    ) -> Result<R, PersistBlobPackError> {
+        let file = fs::File::open(&self.path).map_err(|source| PersistBlobPackError::Open {
+            path: self.path.clone(),
+            source,
+        })?;
+        let lease = BlobPackFileReadLease::new(&file)
+            .map_err(|source| engine_read_lease_error_to_persist(&self.path, source))?;
+        let pack = MappedBlobPack::map_file_with_lease(&file, &lease)
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        let records = pack
+            .records()
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?
+            .into_iter()
+            .map(engine_record_to_persist)
+            .collect();
+        #[cfg(test)]
+        self.mapped_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(visit(records))
+    }
+
     /// Writes a compacted copy of the supplied records to `tmp_path`.
     ///
     /// Each relocation is read from the current pack at its old location,

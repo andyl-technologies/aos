@@ -77,18 +77,26 @@ fn cache_blob_pack_index_entries_are_store_typed() {
         .append_blob(file_key, file_payload)
         .expect("file blob appends");
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
+    let value_entries = cache
+        .blob_pack_index_entries(PersistBlobStore::Values)
+        .expect("value pack scans");
     assert_eq!(
-        cache
-            .blob_pack_index_entries(PersistBlobStore::Values)
-            .expect("value pack scans"),
+        value_entries,
         vec![PersistBlobIndexEntry::new(value_key, value_location)]
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
+    let file_entries = cache
+        .blob_pack_index_entries(PersistBlobStore::Files)
+        .expect("file pack scans");
     assert_eq!(
-        cache
-            .blob_pack_index_entries(PersistBlobStore::Files)
-            .expect("file pack scans"),
+        file_entries,
         vec![PersistBlobIndexEntry::new(file_key, file_location)]
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -130,12 +138,14 @@ fn cache_latest_blob_pack_index_entries_compacts_physical_duplicates() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
     assert!(
         cache
             .latest_blob_pack_index_entries(PersistBlobStore::Values)
             .expect("empty value pack scans")
             .is_empty()
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
 
     let duplicate_payload = b"duplicate payload";
     let duplicate_key = PersistBlobKey::new(
@@ -163,16 +173,16 @@ fn cache_latest_blob_pack_index_entries_compacts_physical_duplicates() {
     ];
     expected.sort_by_key(|entry| entry.key().index_bytes());
 
+    let latest_entries = cache
+        .latest_blob_pack_index_entries(PersistBlobStore::Values)
+        .expect("latest value pack entries scan");
+    assert_eq!(latest_entries, expected);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 2);
+    let physical_entries = cache
+        .blob_pack_index_entries(PersistBlobStore::Values)
+        .expect("physical value pack entries scan");
     assert_eq!(
-        cache
-            .latest_blob_pack_index_entries(PersistBlobStore::Values)
-            .expect("latest value pack entries scan"),
-        expected
-    );
-    assert_eq!(
-        cache
-            .blob_pack_index_entries(PersistBlobStore::Values)
-            .expect("physical value pack entries scan"),
+        physical_entries,
         vec![
             PersistBlobIndexEntry::new(duplicate_key, first_duplicate),
             PersistBlobIndexEntry::new(other_key, other_location),
@@ -180,6 +190,7 @@ fn cache_latest_blob_pack_index_entries_compacts_physical_duplicates() {
         ],
         "physical scan should keep duplicates for repair tools that need them"
     );
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 3);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -264,9 +275,11 @@ fn cache_blob_index_rebuild_plan_reports_missing_stale_and_dangling_entries() {
         .append_entry(dangling_entry)
         .expect("dangling sidecar entry records");
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
     let plan = cache
         .plan_blob_index_rebuild(PersistBlobStore::Values)
         .expect("rebuild plan builds");
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
     let mut planned = vec![
         exact_entry,
         PersistBlobIndexEntry::new(stale_key, stale_planned),

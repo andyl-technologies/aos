@@ -1909,8 +1909,10 @@ alone (`M-1`/`Q-A`).
       direct/keyed/entry-shaped/indexed artifact hydration to enter the scoped
       mapped adapter, hold the selected store advisory lock, reject corrupt
       value-pack payloads, and fail key mismatches before taking the files store
-      lock. Direct raw `read_blob`, pack scans, repack/GC/maintenance, and
-      public borrowed parse/value cache results remain buffered or owned. This
+      lock. The blob-index rebuild scan adapters also use scoped mapped
+      metadata scans under the selected store advisory lock. Direct raw
+      `read_blob`, maintenance/reachability/repack pack scans, and public
+      borrowed parse/value cache results remain buffered or owned. This
       is scoped cooperating-writer mmap
       integration only; public borrowed payload APIs, LMDB/redb offset indexes,
       full mmap maintenance/repack paths, out-of-core rematerialization,
@@ -2243,40 +2245,50 @@ alone (`M-1`/`Q-A`).
       `PersistBlobPack::records` scans a pack in record order, validates every
       record header and payload hash, rejects truncated or corrupt tails instead
       of returning partial metadata, and returns `PersistBlobPackRecord`
-      hash/location entries for maintenance callers. This is read-only buffered
-      scan metadata only; live-root selection, repack/relocation writing,
-      concurrent writer coordination, automatic GC policy, mmap reads, Attic
-      transport, and harness proof remain open (`C-13`/`R-14`).
+      hash/location entries for maintenance callers. `with_mapped_records`
+      performs the same verified metadata scan through a scoped memory map while
+      a caller-owned advisory read lease is held, without letting payload bytes
+      escape. This is read-only scan metadata only; live-root selection,
+      repack/relocation writing, automatic GC policy, full maintenance mmap
+      wiring, Attic transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current store-typed blob-pack index-entry scan adapter:
-      `PersistCache::blob_pack_index_entries` routes a verified pack scan
-      through the selected `values/` or `files/` store and maps every physical
-      record, including stale duplicates and unindexed tails, to the matching
+      `PersistCache::blob_pack_index_entries` routes a scoped mapped verified
+      pack scan through the selected `values/` or `files/` store under that
+      store's advisory read lock, and maps every physical record, including
+      stale duplicates and unindexed tails, to the matching
       `PersistBlobIndexEntry` key/location shape without writing the sidecar.
-      This is read-only repair/repack input only; index rebuild, live-root
-      selection, repack/relocation writing, concurrent writer coordination,
-      automatic GC policy, mmap reads, Attic transport, and harness proof remain
-      open (`C-13`/`R-14`).
+      This is read-only repair/repack input only; live-root selection,
+      repack/relocation writing, unrelated maintenance-writer coordination,
+      automatic GC policy, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`). Gates include
+      `cache_blob_pack_index_entries_are_store_typed` and
+      `cache_blob_pack_index_entries_acquires_advisory_store_lock_before_same_process_lock`.
 - [x] Current newest physical blob-pack index-entry scan adapter:
-      `PersistCache::latest_blob_pack_index_entries` collapses the verified
-      physical pack scan to newest-record-wins `PersistBlobIndexEntry`
+      `PersistCache::latest_blob_pack_index_entries` collapses the scoped
+      mapped physical pack scan to newest-record-wins `PersistBlobIndexEntry`
       candidates per content hash in stable encoded-key order, matching sidecar
       latest-entry encoded-key ordering while still including unindexed physical
-      records. This is read-only index-rebuild input only; index rewrite,
-      live-root selection, repack/relocation writing, concurrent writer
-      coordination, automatic GC policy, mmap reads, Attic transport, and
-      harness proof remain open (`C-13`/`R-14`).
+      records. This is read-only index-rebuild input only; live-root selection,
+      repack/relocation writing, unrelated maintenance-writer coordination,
+      automatic GC policy, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`). Gates include
+      `cache_latest_blob_pack_index_entries_compacts_physical_duplicates` and
+      `cache_latest_blob_pack_index_entries_acquires_advisory_store_lock_before_same_process_lock`.
 - [x] Current read-only blob-index rebuild plan:
       `PersistCache::plan_blob_index_rebuild` compares the selected sidecar's
-      newest lookup entries with the verified newest physical records in the
-      matching blob pack, returning the exact entries a future rebuild would
-      write plus missing, stale, and dangling lookup differences. Older
-      append-only sidecar history is ignored once newest lookups match, and
-      corrupt packs fail the plan rather than producing partial repair
-      metadata. This is diagnostic rebuild input only; index rewrite, physical
-      sidecar canonicalization, live-root selection, pack trimming,
-      repack/relocation writing, concurrent writer coordination, automatic GC
-      policy, mmap reads, Attic transport, and harness proof remain open
-      (`C-13`/`R-14`).
+      newest lookup entries with the scoped mapped newest physical records in
+      the matching blob pack while holding the selected store's advisory read
+      lock, returning the exact entries a future rebuild would write plus
+      missing, stale, and dangling lookup differences. Older append-only
+      sidecar history is ignored once newest lookups match, and corrupt packs
+      fail the plan rather than producing partial repair metadata. This is
+      diagnostic rebuild input only; physical sidecar canonicalization,
+      live-root selection, pack trimming, repack/relocation writing, unrelated
+      maintenance-writer coordination, automatic GC policy, Attic transport,
+      and harness proof remain open (`C-13`/`R-14`). Gates include
+      `cache_blob_index_rebuild_plan_reports_missing_stale_and_dangling_entries`
+      and
+      `cache_blob_index_rebuild_plan_acquires_advisory_store_lock_before_same_process_lock`.
 - [x] Current explicit blob-index rebuild helper:
       `PersistCache::rebuild_blob_index_from_pack` builds the verified rebuild
       plan for one store while holding that store's advisory file lock and
@@ -2287,8 +2299,8 @@ alone (`M-1`/`Q-A`).
       history. This is caller-driven single-sidecar repair only; live-root
       selection, blob-pack trimming, full repack/relocation, raw lower-level
       sidecar coordination, unrelated maintenance-writer coordination,
-      automatic GC/repair policy, mmap reads, Attic transport, and harness proof
-      remain open (`C-13`/`R-14`).
+      automatic GC/repair policy, full maintenance mmap wiring, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current explicit all-blob-index rebuild helper:
       `PersistCache::rebuild_blob_indexes_from_packs` rebuilds the `values/`
       and then `files/` hash-to-offset sidecars from verified pack scans and
