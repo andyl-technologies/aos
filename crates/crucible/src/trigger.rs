@@ -312,6 +312,129 @@ pub const BLACK_BOX_OBSERVATION_KINDS: [BlackBoxObservationKind; BLACK_BOX_OBSER
     BlackBoxObservationKind::BasicBlockCoverage,
 ];
 
+/// Host-side source used to acquire a black-box observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlackBoxObservationSource {
+    /// Frames captured by the host-owned network device path.
+    ExternalNetworkTap,
+    /// Block or 9p completion records captured by host-owned device sub-nodes.
+    ExternalDeviceSubNode,
+    /// Console or serial bytes captured as a host-side output sink.
+    ExternalConsoleSerialSink,
+    /// Architectural registers or memory read at a scheduler-defined point.
+    ExternalArchitecturalSampler,
+    /// Exit, crash, hang, start, or stop state observed by the host runtime.
+    ExternalLifecycleMonitor,
+    /// Basic-block execution trace collected by host/plugin execution hooks.
+    ExternalExecutionTrace,
+}
+
+/// OS-agnostic contract for one black-box observation category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlackBoxObservationContract {
+    kind: BlackBoxObservationKind,
+    source: BlackBoxObservationSource,
+}
+
+impl BlackBoxObservationContract {
+    /// Builds a contract for one black-box observation category.
+    #[must_use]
+    const fn new(kind: BlackBoxObservationKind, source: BlackBoxObservationSource) -> Self {
+        Self { kind, source }
+    }
+
+    /// Returns the black-box observation category covered by this contract.
+    #[must_use]
+    pub const fn kind(self) -> BlackBoxObservationKind {
+        self.kind
+    }
+
+    /// Returns the host-side source for this observation category.
+    #[must_use]
+    pub const fn source(self) -> BlackBoxObservationSource {
+        self.source
+    }
+
+    /// Returns whether this observation requires a guest operating-system contract.
+    #[must_use]
+    pub const fn requires_guest_os_contract(self) -> bool {
+        false
+    }
+
+    /// Returns whether this observation requires a guest init or service manager.
+    #[must_use]
+    pub const fn requires_guest_init_contract(self) -> bool {
+        false
+    }
+
+    /// Returns whether this observation requires a guest filesystem layout.
+    #[must_use]
+    pub const fn requires_guest_filesystem_contract(self) -> bool {
+        false
+    }
+
+    /// Returns whether this observation requires a guest ABI or in-guest agent.
+    #[must_use]
+    pub const fn requires_guest_abi_contract(self) -> bool {
+        false
+    }
+
+    /// Returns whether this observation carries host-to-guest payload bytes.
+    #[must_use]
+    pub const fn carries_host_to_guest_payload(self) -> bool {
+        false
+    }
+}
+
+impl BlackBoxObservationKind {
+    /// Returns the OS-agnostic contract for this black-box observation category.
+    #[must_use]
+    pub const fn contract(self) -> BlackBoxObservationContract {
+        match self {
+            Self::NetworkTraffic => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalNetworkTap,
+            ),
+            Self::DiskOrNinePIo => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalDeviceSubNode,
+            ),
+            Self::ConsoleSerialOutput => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalConsoleSerialSink,
+            ),
+            Self::ArchitecturalStateSample => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalArchitecturalSampler,
+            ),
+            Self::RunOutcome => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalLifecycleMonitor,
+            ),
+            Self::CrashOrHangDetection => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalLifecycleMonitor,
+            ),
+            Self::BasicBlockCoverage => BlackBoxObservationContract::new(
+                self,
+                BlackBoxObservationSource::ExternalExecutionTrace,
+            ),
+        }
+    }
+}
+
+/// Closed OS-agnostic contract catalog for the required black-box surface.
+pub const BLACK_BOX_OBSERVATION_CONTRACTS: [BlackBoxObservationContract;
+    BLACK_BOX_OBSERVATION_KIND_COUNT] = [
+    BlackBoxObservationKind::NetworkTraffic.contract(),
+    BlackBoxObservationKind::DiskOrNinePIo.contract(),
+    BlackBoxObservationKind::ConsoleSerialOutput.contract(),
+    BlackBoxObservationKind::ArchitecturalStateSample.contract(),
+    BlackBoxObservationKind::RunOutcome.contract(),
+    BlackBoxObservationKind::CrashOrHangDetection.contract(),
+    BlackBoxObservationKind::BasicBlockCoverage.contract(),
+];
+
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObservableEvent {
@@ -537,6 +660,12 @@ impl ObservableEvent {
     pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
         self.payload.black_box_observation_kind()
     }
+
+    /// Returns the OS-agnostic black-box contract for this event, if any.
+    #[must_use]
+    pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
+        self.payload.black_box_observation_contract()
+    }
 }
 
 /// Typed observable event payloads used by condition leaves.
@@ -694,6 +823,13 @@ impl ObservableEventPayload {
             | Self::GuestMarker { .. }
             | Self::GuestAssertionMarker { .. } => None,
         }
+    }
+
+    /// Returns the OS-agnostic black-box contract for this payload, if any.
+    #[must_use]
+    pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
+        self.black_box_observation_kind()
+            .map(BlackBoxObservationKind::contract)
     }
 }
 

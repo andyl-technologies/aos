@@ -682,9 +682,16 @@ the transport layer by construction.
   no-progress detection as the black-box `Hung` node lifecycle state, and
   regresses that every required surface category becomes an ordered,
   icount-stamped observational event-log entry.
-- [ ] **T-GHC-2** Implement the OS-agnostic guarantee of black-box observation:
+- [x] **T-GHC-2** Implement the OS-agnostic guarantee of black-box observation:
   no Linux/init/filesystem/ABI assumptions; verify on a non-Linux image. —
   satisfies [GHC-4], [GHC-9]; spec §16.2.
+  Completed by `checks.crucible.phase4.guestHostOsAgnostic`: `crucible` now
+  exposes a closed OS-agnostic black-box observation contract catalog, projects
+  every required black-box observable event into that contract, marks all
+  surfaces as requiring no guest OS, init system, filesystem layout, or in-guest
+  ABI, treats console/serial observation as an output-only sink, and regresses
+  those guarantees against a content-addressed raw non-Linux AArch64 root image
+  byte fixture with white-box guest software disabled.
 - [ ] **T-GHC-3** Implement the readiness heuristic (fixed icount /
   first-network-idle / console marker), resolving to a deterministic icount and
   hashed into the scenario; reject non-deterministic heuristics at validation. —
