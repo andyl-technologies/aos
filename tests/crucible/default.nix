@@ -807,6 +807,11 @@ in {
       attrPath = "checks.crucible.phase7.reproductionArtifactFormat";
       taskIds = ["T-HARN-24"];
     };
+    machineIndependentReproduction = import ./phase7-machine-independent-reproduction.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.machineIndependentReproduction";
+      taskIds = ["T-HARN-25"];
+    };
     gates = {
       perfBench = redGate {
         attrPath = "checks.crucible.phase7.gates.perfBench";

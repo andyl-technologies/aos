@@ -17,9 +17,13 @@
 //! decision  0  1  node-a  deliver  crucible-hash:...
 //! ```
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use crate::adversarial::{
+    HostAdversaryProfile, ProducerConsumerPair, run_profiled_producer_consumer_tasks,
+};
 use crate::e2e::{
     E2eBuildIdentity, E2eDecision, E2eFaultKind, E2ePropertyKind, E2eReproductionArtifact,
     canonical_mock_build_identity, representative_mock_e2e_artifact, reproduce_mock_e2e_artifact,
@@ -30,6 +34,38 @@ pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v
 
 /// Media type for the canonical artifact encoding.
 pub const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+
+/// Component name for recorded producer canonical-log evidence.
+pub const PRODUCER_CANONICAL_LOG_COMPONENT_NAME: &str = "producer-canonical-log";
+
+/// Component name for recorded producer final-fingerprint evidence.
+pub const PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME: &str = "producer-final-fingerprint";
+
+/// Component name for the source producer artifact digest.
+pub const PRODUCER_ARTIFACT_DIGEST_COMPONENT_NAME: &str = "producer-artifact-digest";
+
+/// Component name for the source producer backend build id.
+pub const PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME: &str = "producer-backend-build-id";
+
+/// Media type for recorded producer canonical-log evidence.
+pub const PRODUCER_CANONICAL_LOG_MEDIA_TYPE: &str =
+    "application/vnd.crucible.producer-canonical-log+bytes";
+
+/// Media type for recorded producer final-fingerprint evidence.
+pub const PRODUCER_FINAL_FINGERPRINT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.producer-final-fingerprint+bytes";
+
+/// Media type for the source producer artifact digest.
+pub const PRODUCER_ARTIFACT_DIGEST_MEDIA_TYPE: &str =
+    "application/vnd.crucible.producer-artifact-digest+bytes";
+
+/// Media type for the source producer backend build id.
+pub const PRODUCER_BACKEND_BUILD_ID_MEDIA_TYPE: &str =
+    "application/vnd.crucible.producer-backend-build-id+text";
+
+/// Media type for recorded decision payload evidence.
+pub const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
+    "application/vnd.crucible.recorded-decision-payload+text";
 
 /// A versioned reproduction artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +88,39 @@ pub struct ReproductionArtifact {
     pub fingerprint_tail: Vec<FingerprintTailSample>,
     /// Fingerprint sampling configuration used by the producer.
     pub sampling_config: FingerprintSamplingConfig,
+}
+
+/// A successful machine-independent reproduction verification report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineReproductionReport {
+    /// Content address of the validated artifact bytes.
+    pub artifact_digest: String,
+    /// Baseline reproduction run used for byte comparison.
+    pub baseline: MachineReproductionRun,
+    /// Reproduction runs from host profiles that differ from the baseline.
+    pub reproduced_on_different_machine_profiles: Vec<MachineReproductionRun>,
+}
+
+/// One reproduction run derived from a versioned artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineReproductionRun {
+    /// Host profile used to execute the reproduction.
+    pub profile: String,
+    /// Canonical log bytes produced by the replay.
+    pub canonical_log: Vec<u8>,
+    /// Final execution fingerprint bytes produced by the replay.
+    pub final_fingerprint: Vec<u8>,
+    /// Content address of the artifact replayed by this run.
+    pub artifact_digest: String,
+}
+
+/// The reproduction output field that diverged across host profiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineReproductionMismatchKind {
+    /// The canonical log bytes differed.
+    CanonicalLog,
+    /// The final fingerprint bytes differed.
+    FinalFingerprint,
 }
 
 impl ReproductionArtifact {
@@ -520,6 +589,47 @@ impl FingerprintSamplingConfig {
 /// A reproduction-artifact format error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReproductionArtifactError {
+    /// No host profiles were supplied for reproduction verification.
+    EmptyProfileMatrix,
+    /// The artifact build identity did not match the local replay identity.
+    BuildIdentityMismatch {
+        /// Identity expected by the verifier.
+        expected: PinnedBuildIdentity,
+        /// Identity pinned in the artifact.
+        actual: PinnedBuildIdentity,
+    },
+    /// No supplied profile represented a different machine from the baseline.
+    MissingDifferentMachineProfile,
+    /// The artifact did not carry required producer evidence.
+    MissingProducerEvidence {
+        /// Required producer evidence component name.
+        component: String,
+    },
+    /// The recorded producer artifact digest did not match decoded contents.
+    ProducerArtifactDigestMismatch {
+        /// Digest recomputed from the decoded artifact contents.
+        expected: Vec<u8>,
+        /// Digest recorded in the artifact evidence.
+        actual: Vec<u8>,
+    },
+    /// Reproduction output diverged across host profiles.
+    MachineReproductionMismatch {
+        /// Baseline host profile name.
+        baseline_profile: String,
+        /// Divergent host profile name.
+        divergent_profile: String,
+        /// Output field that differed.
+        kind: MachineReproductionMismatchKind,
+        /// Baseline bytes for the differing field.
+        baseline: Vec<u8>,
+        /// Divergent bytes for the differing field.
+        reproduced: Vec<u8>,
+    },
+    /// The host-adversary fixture could not execute a profile.
+    HostAdversary {
+        /// Human-readable fixture failure.
+        reason: String,
+    },
     /// The artifact schema is not supported by this decoder.
     UnsupportedSchema {
         /// Schema identifier found in the artifact.
@@ -601,6 +711,52 @@ pub enum ReproductionArtifactError {
 impl fmt::Display for ReproductionArtifactError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyProfileMatrix => {
+                write!(formatter, "machine reproduction profile matrix is empty")
+            }
+            Self::BuildIdentityMismatch { expected, actual } => write!(
+                formatter,
+                "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`",
+                expected.engine_version,
+                expected.engine_abi,
+                expected.artifact_abi,
+                expected.qemu_build_id,
+                expected.plugin_abi,
+                actual.engine_version,
+                actual.engine_abi,
+                actual.artifact_abi,
+                actual.qemu_build_id,
+                actual.plugin_abi
+            ),
+            Self::MissingDifferentMachineProfile => write!(
+                formatter,
+                "machine reproduction requires at least one profile that differs from the baseline"
+            ),
+            Self::MissingProducerEvidence { component } => write!(
+                formatter,
+                "reproduction artifact is missing producer evidence component `{component}`"
+            ),
+            Self::ProducerArtifactDigestMismatch { expected, actual } => write!(
+                formatter,
+                "producer artifact digest mismatch: expected {}, got {}",
+                e2e_hex_bytes(expected),
+                e2e_hex_bytes(actual)
+            ),
+            Self::MachineReproductionMismatch {
+                baseline_profile,
+                divergent_profile,
+                kind,
+                ..
+            } => write!(
+                formatter,
+                "machine reproduction diverged for {kind:?}: baseline `{baseline_profile}`, reproduced `{divergent_profile}`"
+            ),
+            Self::HostAdversary { reason } => {
+                write!(
+                    formatter,
+                    "host-adversary reproduction fixture failed: {reason}"
+                )
+            }
             Self::UnsupportedSchema { schema_version } => {
                 write!(
                     formatter,
@@ -676,6 +832,145 @@ pub fn mock_e2e_reproduction_artifact() -> Result<ReproductionArtifact, Reproduc
     reproduction_artifact_from_mock_e2e(&representative_mock_e2e_artifact())
 }
 
+/// Returns the pinned identity expected by the mock reproduction verifier.
+#[must_use]
+pub fn mock_reproduction_build_identity() -> PinnedBuildIdentity {
+    pinned_identity_from_e2e(&canonical_mock_build_identity())
+}
+
+/// Verifies that a versioned mock artifact reproduces identically across hosts.
+///
+/// # Errors
+///
+/// Returns [`ReproductionArtifactError`] when the artifact is malformed, the
+/// pinned identity does not match `expected_build_identity`, the profile matrix
+/// has no different-machine profile, the host fixture fails, or the reproduced
+/// bytes diverge across profiles.
+pub fn verify_mock_machine_independent_reproduction(
+    artifact: &ReproductionArtifact,
+    profiles: &[HostAdversaryProfile],
+    expected_build_identity: &PinnedBuildIdentity,
+) -> Result<MachineReproductionReport, ReproductionArtifactError> {
+    if profiles.is_empty() {
+        return Err(ReproductionArtifactError::EmptyProfileMatrix);
+    }
+
+    let producer_canonical_log = producer_evidence_payload(
+        artifact,
+        PRODUCER_CANONICAL_LOG_COMPONENT_NAME,
+        PRODUCER_CANONICAL_LOG_MEDIA_TYPE,
+    )?;
+    let producer_final_fingerprint = producer_evidence_payload(
+        artifact,
+        PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME,
+        PRODUCER_FINAL_FINGERPRINT_MEDIA_TYPE,
+    )?;
+
+    let baseline = reproduce_mock_reproduction_artifact_on_profile(
+        artifact,
+        profiles[0],
+        expected_build_identity,
+    )?;
+    compare_run_to_producer_evidence(
+        &baseline,
+        &producer_canonical_log,
+        &producer_final_fingerprint,
+    )?;
+    let mut reproduced_on_different_machine_profiles = Vec::new();
+    for profile in profiles
+        .iter()
+        .copied()
+        .filter(|profile| is_different_machine_profile(profiles[0], *profile))
+    {
+        let reproduced = reproduce_mock_reproduction_artifact_on_profile(
+            artifact,
+            profile,
+            expected_build_identity,
+        )?;
+        compare_run_to_producer_evidence(
+            &reproduced,
+            &producer_canonical_log,
+            &producer_final_fingerprint,
+        )?;
+        reproduced_on_different_machine_profiles.push(reproduced);
+    }
+    if reproduced_on_different_machine_profiles.is_empty() {
+        return Err(ReproductionArtifactError::MissingDifferentMachineProfile);
+    }
+
+    Ok(MachineReproductionReport {
+        artifact_digest: baseline.artifact_digest.clone(),
+        baseline,
+        reproduced_on_different_machine_profiles,
+    })
+}
+
+/// Decodes and verifies a versioned mock artifact across host profiles.
+///
+/// # Errors
+///
+/// Returns [`ReproductionArtifactError`] when decoding fails or machine
+/// reproduction verification fails.
+pub fn verify_mock_machine_independent_reproduction_bytes(
+    bytes: &[u8],
+    profiles: &[HostAdversaryProfile],
+    expected_build_identity: &PinnedBuildIdentity,
+) -> Result<MachineReproductionReport, ReproductionArtifactError> {
+    let artifact = ReproductionArtifact::decode(bytes)?;
+    verify_mock_machine_independent_reproduction(&artifact, profiles, expected_build_identity)
+}
+
+/// Replays a versioned mock artifact under one host profile.
+///
+/// # Errors
+///
+/// Returns [`ReproductionArtifactError`] when the artifact is malformed, the
+/// pinned identity does not match `expected_build_identity`, or the host fixture
+/// cannot execute the profile.
+pub fn reproduce_mock_reproduction_artifact_on_profile(
+    artifact: &ReproductionArtifact,
+    profile: HostAdversaryProfile,
+    expected_build_identity: &PinnedBuildIdentity,
+) -> Result<MachineReproductionRun, ReproductionArtifactError> {
+    artifact.validate()?;
+    verify_pinned_build_identity(&artifact.build_identity, expected_build_identity)?;
+    let task_pairs = run_profiled_producer_consumer_tasks(
+        profile,
+        artifact.schedule.decisions.len(),
+        |task| format!("producer:{}", task.index),
+        |task| format!("consumer:{}", task.index),
+    )
+    .map_err(|error| ReproductionArtifactError::HostAdversary {
+        reason: error.to_string(),
+    })?;
+    let canonical_log = machine_canonical_log_material(artifact, &task_pairs)?.into_bytes();
+    let producer_artifact_digest = producer_evidence_payload(
+        artifact,
+        PRODUCER_ARTIFACT_DIGEST_COMPONENT_NAME,
+        PRODUCER_ARTIFACT_DIGEST_MEDIA_TYPE,
+    )?;
+    let recomputed_artifact_digest = reconstructed_e2e_artifact_digest(artifact)?;
+    if producer_artifact_digest != recomputed_artifact_digest {
+        return Err(ReproductionArtifactError::ProducerArtifactDigestMismatch {
+            expected: recomputed_artifact_digest,
+            actual: producer_artifact_digest,
+        });
+    }
+    let fingerprint_material = format!(
+        "artifact={}\nlog={}\n",
+        e2e_hex_bytes(&recomputed_artifact_digest),
+        String::from_utf8_lossy(&canonical_log)
+    );
+    let final_fingerprint = e2e_stable_digest("crucible.e2e.fingerprint.v1", &fingerprint_material);
+
+    Ok(MachineReproductionRun {
+        profile: profile.name.to_string(),
+        canonical_log,
+        final_fingerprint,
+        artifact_digest: artifact.digest()?,
+    })
+}
+
 /// Converts a mock e2e source artifact into the versioned reproduction format.
 ///
 /// # Errors
@@ -693,22 +988,73 @@ pub fn reproduction_artifact_from_mock_e2e(
         &scenario_material,
     )?;
     let build_identity = pinned_identity_from_e2e(&source.build_identity);
-    let decisions = source
+    let decision_parts = source
         .schedule
         .decisions
         .iter()
         .enumerate()
-        .map(|(sequence, decision)| recorded_decision_from_e2e(sequence as u64, decision))
+        .map(|(sequence, decision)| recorded_decision_parts_from_e2e(sequence as u64, decision))
         .collect::<Vec<_>>();
-    let run =
-        reproduce_mock_e2e_artifact(source, &canonical_mock_build_identity()).map_err(|error| {
-            ReproductionArtifactError::SourceReplay {
-                reason: error.to_string(),
-            }
+    let decisions = decision_parts
+        .iter()
+        .map(|(decision, _payload)| decision.clone())
+        .collect::<Vec<_>>();
+    let source_run = reproduce_mock_e2e_artifact(source, &canonical_mock_build_identity())
+        .map_err(|error| ReproductionArtifactError::SourceReplay {
+            reason: error.to_string(),
         })?;
+    let mut components = vec![scenario.clone()];
+    let mut component_payloads = vec![ComponentPayload::from_bytes(&scenario_material)];
+    for (decision, payload) in &decision_parts {
+        let name = format!("decision-{}-payload", decision.sequence);
+        let component = ContentAddressedComponent::from_bytes(
+            ComponentKind::Other,
+            name,
+            RECORDED_DECISION_PAYLOAD_MEDIA_TYPE,
+            payload.as_bytes(),
+        )?;
+        components.push(component);
+        component_payloads.push(ComponentPayload::from_bytes(payload.as_bytes()));
+    }
+    let producer_artifact_digest_component = ContentAddressedComponent::from_bytes(
+        ComponentKind::Other,
+        PRODUCER_ARTIFACT_DIGEST_COMPONENT_NAME,
+        PRODUCER_ARTIFACT_DIGEST_MEDIA_TYPE,
+        &source_run.artifact_digest,
+    )?;
+    let producer_backend_build_id_component = ContentAddressedComponent::from_bytes(
+        ComponentKind::Other,
+        PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME,
+        PRODUCER_BACKEND_BUILD_ID_MEDIA_TYPE,
+        source.build_identity.backend_build_id.as_bytes(),
+    )?;
+    let producer_log_component = ContentAddressedComponent::from_bytes(
+        ComponentKind::Other,
+        PRODUCER_CANONICAL_LOG_COMPONENT_NAME,
+        PRODUCER_CANONICAL_LOG_MEDIA_TYPE,
+        &source_run.canonical_log,
+    )?;
+    let producer_fingerprint_component = ContentAddressedComponent::from_bytes(
+        ComponentKind::Other,
+        PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME,
+        PRODUCER_FINAL_FINGERPRINT_MEDIA_TYPE,
+        &source_run.final_fingerprint,
+    )?;
+    components.extend([
+        producer_artifact_digest_component,
+        producer_backend_build_id_component,
+        producer_log_component,
+        producer_fingerprint_component,
+    ]);
+    component_payloads.extend([
+        ComponentPayload::from_bytes(&source_run.artifact_digest),
+        ComponentPayload::from_bytes(source.build_identity.backend_build_id.as_bytes()),
+        ComponentPayload::from_bytes(&source_run.canonical_log),
+        ComponentPayload::from_bytes(&source_run.final_fingerprint),
+    ]);
     let fingerprint_tail = vec![FingerprintTailSample {
         index: source.schedule.len() as u64,
-        digest: content_address_bytes(&run.final_fingerprint),
+        digest: content_address_bytes(&source_run.final_fingerprint),
     }];
 
     ReproductionArtifact::from_parts(
@@ -716,8 +1062,8 @@ pub fn reproduction_artifact_from_mock_e2e(
         build_identity,
         scenario.clone(),
         decisions,
-        vec![scenario],
-        vec![ComponentPayload::from_bytes(&scenario_material)],
+        components,
+        component_payloads,
         fingerprint_tail,
         FingerprintSamplingConfig::mock_defaults(),
     )
@@ -887,7 +1233,506 @@ fn pinned_identity_from_e2e(source: &E2eBuildIdentity) -> PinnedBuildIdentity {
     }
 }
 
-fn recorded_decision_from_e2e(sequence: u64, decision: &E2eDecision) -> RecordedDecision {
+fn verify_pinned_build_identity(
+    actual: &PinnedBuildIdentity,
+    expected: &PinnedBuildIdentity,
+) -> Result<(), ReproductionArtifactError> {
+    expected.validate()?;
+    if actual != expected {
+        return Err(ReproductionArtifactError::BuildIdentityMismatch {
+            expected: expected.clone(),
+            actual: actual.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn producer_evidence_payload(
+    artifact: &ReproductionArtifact,
+    component_name: &str,
+    media_type: &str,
+) -> Result<Vec<u8>, ReproductionArtifactError> {
+    let component = artifact
+        .components
+        .iter()
+        .find(|component| {
+            component.kind == ComponentKind::Other
+                && component.name == component_name
+                && component.media_type == media_type
+        })
+        .ok_or_else(|| ReproductionArtifactError::MissingProducerEvidence {
+            component: component_name.to_string(),
+        })?;
+    let payload = artifact
+        .component_payloads
+        .iter()
+        .find(|payload| payload.digest == component.digest)
+        .ok_or_else(|| ReproductionArtifactError::MissingProducerEvidence {
+            component: component_name.to_string(),
+        })?;
+    Ok(payload.bytes.clone())
+}
+
+fn producer_evidence_text(
+    artifact: &ReproductionArtifact,
+    component_name: &str,
+    media_type: &str,
+) -> Result<String, ReproductionArtifactError> {
+    let bytes = producer_evidence_payload(artifact, component_name, media_type)?;
+    String::from_utf8(bytes).map_err(|error| ReproductionArtifactError::Decode {
+        reason: format!("producer evidence `{component_name}` is not UTF-8: {error}"),
+    })
+}
+
+fn compare_run_to_producer_evidence(
+    run: &MachineReproductionRun,
+    producer_canonical_log: &[u8],
+    producer_final_fingerprint: &[u8],
+) -> Result<(), ReproductionArtifactError> {
+    if run.canonical_log != producer_canonical_log {
+        return Err(ReproductionArtifactError::MachineReproductionMismatch {
+            baseline_profile: String::from("producer-artifact"),
+            divergent_profile: run.profile.clone(),
+            kind: MachineReproductionMismatchKind::CanonicalLog,
+            baseline: producer_canonical_log.to_vec(),
+            reproduced: run.canonical_log.clone(),
+        });
+    }
+    if run.final_fingerprint != producer_final_fingerprint {
+        return Err(ReproductionArtifactError::MachineReproductionMismatch {
+            baseline_profile: String::from("producer-artifact"),
+            divergent_profile: run.profile.clone(),
+            kind: MachineReproductionMismatchKind::FinalFingerprint,
+            baseline: producer_final_fingerprint.to_vec(),
+            reproduced: run.final_fingerprint.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn reconstructed_e2e_artifact_digest(
+    artifact: &ReproductionArtifact,
+) -> Result<Vec<u8>, ReproductionArtifactError> {
+    let scenario_material = scenario_payload(artifact)?;
+    let backend_build_id = producer_evidence_text(
+        artifact,
+        PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME,
+        PRODUCER_BACKEND_BUILD_ID_MEDIA_TYPE,
+    )?;
+    let qemu_build_id = content_address_bytes(backend_build_id.as_bytes());
+    if qemu_build_id != artifact.build_identity.qemu_build_id {
+        let mut actual = artifact.build_identity.clone();
+        actual.qemu_build_id = qemu_build_id;
+        return Err(ReproductionArtifactError::BuildIdentityMismatch {
+            expected: artifact.build_identity.clone(),
+            actual,
+        });
+    }
+    let backend = artifact
+        .build_identity
+        .plugin_abi
+        .strip_suffix("-plugin-abi")
+        .unwrap_or(&artifact.build_identity.plugin_abi);
+    let mut material = E2eCanonicalMaterial::new();
+    material.record("seed", &[E2eCanonicalField::U64(artifact.seed)]);
+    material.record(
+        "build",
+        &[
+            E2eCanonicalField::Str(&artifact.build_identity.engine_abi),
+            E2eCanonicalField::Str(backend),
+            E2eCanonicalField::Str(&backend_build_id),
+        ],
+    );
+    push_scenario_material(&mut material, &scenario_material)?;
+    for decision in &artifact.schedule.decisions {
+        let payload = decision_payload_for_digest(artifact, &decision.payload_digest)?;
+        push_recorded_decision_record(&mut material, decision, &payload)?;
+    }
+    Ok(e2e_stable_digest(
+        "crucible.e2e.artifact.v1",
+        &material.finish(),
+    ))
+}
+
+fn scenario_payload(artifact: &ReproductionArtifact) -> Result<String, ReproductionArtifactError> {
+    let payload = artifact
+        .component_payloads
+        .iter()
+        .find(|payload| payload.digest == artifact.scenario.digest)
+        .ok_or_else(|| ReproductionArtifactError::MissingProducerEvidence {
+            component: String::from("scenario payload"),
+        })?;
+    String::from_utf8(payload.bytes.clone()).map_err(|error| ReproductionArtifactError::Decode {
+        reason: format!(
+            "scenario payload `{}` is not UTF-8: {error}",
+            artifact.scenario.digest
+        ),
+    })
+}
+
+fn push_scenario_material(
+    material: &mut E2eCanonicalMaterial,
+    scenario_material: &str,
+) -> Result<(), ReproductionArtifactError> {
+    for (line_index, line_text) in scenario_material.lines().enumerate() {
+        let fields = parse_fields(line_text)?;
+        let Some(tag) = fields.first().map(String::as_str) else {
+            continue;
+        };
+        match tag {
+            "scenario" => {
+                require_field_count(line_index, tag, &fields, 2)?;
+                material.record("scenario", &[E2eCanonicalField::Str(&fields[1])]);
+            }
+            "node" => {
+                require_field_count(line_index, tag, &fields, 3)?;
+                material.record(
+                    "node",
+                    &[
+                        E2eCanonicalField::Str(&fields[1]),
+                        E2eCanonicalField::Str(&fields[2]),
+                    ],
+                );
+            }
+            "io-subnode" => {
+                require_field_count(line_index, tag, &fields, 4)?;
+                material.record(
+                    "io-subnode",
+                    &[
+                        E2eCanonicalField::Str(&fields[1]),
+                        E2eCanonicalField::Str(&fields[2]),
+                        E2eCanonicalField::Str(&fields[3]),
+                    ],
+                );
+            }
+            "link" => {
+                require_field_count(line_index, tag, &fields, 5)?;
+                material.record(
+                    "link",
+                    &[
+                        E2eCanonicalField::Str(&fields[1]),
+                        E2eCanonicalField::Str(&fields[2]),
+                        E2eCanonicalField::Str(&fields[3]),
+                        E2eCanonicalField::U64(parse_u64(line_index, tag, &fields[4])?),
+                    ],
+                );
+            }
+            "fault" => {
+                require_field_count(line_index, tag, &fields, 6)?;
+                material.record(
+                    "fault",
+                    &[
+                        E2eCanonicalField::Str(&fields[1]),
+                        E2eCanonicalField::Str(&fields[2]),
+                        E2eCanonicalField::Str(&fields[3]),
+                        E2eCanonicalField::U64(parse_u64(line_index, tag, &fields[4])?),
+                        E2eCanonicalField::Str(&fields[5]),
+                    ],
+                );
+            }
+            "property" => {
+                require_field_count(line_index, tag, &fields, 4)?;
+                material.record(
+                    "property",
+                    &[
+                        E2eCanonicalField::Str(&fields[1]),
+                        E2eCanonicalField::Str(&fields[2]),
+                        E2eCanonicalField::Str(&fields[3]),
+                    ],
+                );
+            }
+            _ => {
+                return Err(decode_line_error(
+                    line_index,
+                    tag,
+                    "unknown scenario line tag",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_different_machine_profile(
+    baseline: HostAdversaryProfile,
+    candidate: HostAdversaryProfile,
+) -> bool {
+    candidate.worker_count != baseline.worker_count
+        || candidate.task_order != baseline.task_order
+        || candidate.affinity != baseline.affinity
+        || candidate.load != baseline.load
+        || candidate.producer_consumer_skew != baseline.producer_consumer_skew
+}
+
+fn machine_canonical_log_material(
+    artifact: &ReproductionArtifact,
+    task_pairs: &[ProducerConsumerPair<String, String>],
+) -> Result<String, ReproductionArtifactError> {
+    let mut material = E2eCanonicalMaterial::new();
+    material.record("log", &[E2eCanonicalField::Str("crucible.e2e.mock.v1")]);
+    material.record(
+        "scenario",
+        &[E2eCanonicalField::Str(&artifact.scenario.name)],
+    );
+    material.record("seed", &[E2eCanonicalField::U64(artifact.seed)]);
+    for pair in task_pairs {
+        let decision = &artifact.schedule.decisions[pair.task.index];
+        let payload = decision_payload_for_digest(artifact, &decision.payload_digest)?;
+        material.record(
+            "event",
+            &[
+                E2eCanonicalField::U64(pair.task.index as u64),
+                E2eCanonicalField::Str(&pair.producer),
+                E2eCanonicalField::Str(&pair.consumer),
+            ],
+        );
+        push_recorded_decision_record(&mut material, decision, &payload)?;
+    }
+    Ok(material.finish())
+}
+
+fn decision_payload_for_digest(
+    artifact: &ReproductionArtifact,
+    digest: &str,
+) -> Result<String, ReproductionArtifactError> {
+    if !artifact.components.iter().any(|component| {
+        component.kind == ComponentKind::Other
+            && component.media_type == RECORDED_DECISION_PAYLOAD_MEDIA_TYPE
+            && component.digest == digest
+    }) {
+        return Err(ReproductionArtifactError::MissingProducerEvidence {
+            component: format!("decision payload {digest}"),
+        });
+    }
+    let payload = artifact
+        .component_payloads
+        .iter()
+        .find(|payload| payload.digest == digest)
+        .ok_or_else(|| ReproductionArtifactError::MissingProducerEvidence {
+            component: format!("decision payload {digest}"),
+        })?;
+    String::from_utf8(payload.bytes.clone()).map_err(|error| ReproductionArtifactError::Decode {
+        reason: format!("decision payload `{digest}` is not UTF-8: {error}"),
+    })
+}
+
+fn push_recorded_decision_record(
+    material: &mut E2eCanonicalMaterial,
+    decision: &RecordedDecision,
+    payload: &str,
+) -> Result<(), ReproductionArtifactError> {
+    let fields = parse_recorded_payload(decision.sequence, payload)?;
+    match decision.kind.as_str() {
+        "deliver" => material.record(
+            "decision.deliver",
+            &[
+                E2eCanonicalField::U64(decision.virtual_time_ticks),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "from")?),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "to")?),
+                E2eCanonicalField::U64(parse_payload_u64(
+                    decision.sequence,
+                    "sequence",
+                    required_payload(decision.sequence, &fields, "sequence")?,
+                )?),
+            ],
+        ),
+        "fault" => material.record(
+            "decision.fault",
+            &[
+                E2eCanonicalField::U64(decision.virtual_time_ticks),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "fault")?),
+                E2eCanonicalField::Bool(parse_payload_bool(
+                    decision.sequence,
+                    "fired",
+                    required_payload(decision.sequence, &fields, "fired")?,
+                )?),
+            ],
+        ),
+        "app_random" => material.record(
+            "decision.app-random",
+            &[
+                E2eCanonicalField::Str(&decision.node),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "stream")?),
+                E2eCanonicalField::U64(parse_payload_u64(
+                    decision.sequence,
+                    "request_id",
+                    required_payload(decision.sequence, &fields, "request_id")?,
+                )?),
+                E2eCanonicalField::U64(parse_payload_u64(
+                    decision.sequence,
+                    "value",
+                    required_payload(decision.sequence, &fields, "value")?,
+                )?),
+            ],
+        ),
+        "io_completion" => material.record(
+            "decision.io-completion",
+            &[
+                E2eCanonicalField::U64(decision.virtual_time_ticks),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "subnode")?),
+                E2eCanonicalField::U64(parse_payload_u64(
+                    decision.sequence,
+                    "request_id",
+                    required_payload(decision.sequence, &fields, "request_id")?,
+                )?),
+                E2eCanonicalField::U64(parse_payload_u64(
+                    decision.sequence,
+                    "bytes",
+                    required_payload(decision.sequence, &fields, "bytes")?,
+                )?),
+            ],
+        ),
+        "property_observation" => material.record(
+            "decision.property",
+            &[
+                E2eCanonicalField::U64(decision.virtual_time_ticks),
+                E2eCanonicalField::Str(required_payload(decision.sequence, &fields, "property")?),
+                E2eCanonicalField::Bool(parse_payload_bool(
+                    decision.sequence,
+                    "satisfied",
+                    required_payload(decision.sequence, &fields, "satisfied")?,
+                )?),
+            ],
+        ),
+        kind => {
+            return Err(ReproductionArtifactError::Decode {
+                reason: format!("decision {} has unknown kind `{kind}`", decision.sequence),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn parse_recorded_payload(
+    sequence: u64,
+    payload: &str,
+) -> Result<BTreeMap<String, String>, ReproductionArtifactError> {
+    let mut fields = BTreeMap::new();
+    for field in payload.split(';') {
+        let Some((name, value)) = field.split_once('=') else {
+            return Err(ReproductionArtifactError::Decode {
+                reason: format!("decision {sequence} payload field `{field}` is malformed"),
+            });
+        };
+        if fields.insert(name.to_string(), value.to_string()).is_some() {
+            return Err(ReproductionArtifactError::Decode {
+                reason: format!("decision {sequence} payload field `{name}` is duplicated"),
+            });
+        }
+    }
+    Ok(fields)
+}
+
+fn required_payload<'a>(
+    sequence: u64,
+    fields: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Result<&'a str, ReproductionArtifactError> {
+    fields
+        .get(name)
+        .map(String::as_str)
+        .ok_or_else(|| ReproductionArtifactError::Decode {
+            reason: format!("decision {sequence} payload is missing `{name}`"),
+        })
+}
+
+fn parse_payload_u64(
+    sequence: u64,
+    field: &str,
+    value: &str,
+) -> Result<u64, ReproductionArtifactError> {
+    value
+        .parse::<u64>()
+        .map_err(|error| ReproductionArtifactError::Decode {
+            reason: format!("decision {sequence} payload `{field}` is not a u64: {error}"),
+        })
+}
+
+fn parse_payload_bool(
+    sequence: u64,
+    field: &str,
+    value: &str,
+) -> Result<bool, ReproductionArtifactError> {
+    value
+        .parse::<bool>()
+        .map_err(|error| ReproductionArtifactError::Decode {
+            reason: format!("decision {sequence} payload `{field}` is not a bool: {error}"),
+        })
+}
+
+struct E2eCanonicalMaterial {
+    output: String,
+}
+
+impl E2eCanonicalMaterial {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+        }
+    }
+
+    fn record(&mut self, tag: &str, fields: &[E2eCanonicalField<'_>]) {
+        self.length_prefixed(tag);
+        self.output.push(' ');
+        self.output.push_str(&fields.len().to_string());
+        for field in fields {
+            self.output.push(' ');
+            match field {
+                E2eCanonicalField::Str(value) => self.length_prefixed(value),
+                E2eCanonicalField::U64(value) => self.length_prefixed(&value.to_string()),
+                E2eCanonicalField::Bool(value) => {
+                    self.length_prefixed(if *value { "true" } else { "false" });
+                }
+            }
+        }
+        self.output.push('\n');
+    }
+
+    fn finish(self) -> String {
+        self.output
+    }
+
+    fn length_prefixed(&mut self, value: &str) {
+        self.output.push_str(&value.len().to_string());
+        self.output.push(':');
+        self.output.push_str(value);
+    }
+}
+
+enum E2eCanonicalField<'a> {
+    Str(&'a str),
+    U64(u64),
+    Bool(bool),
+}
+
+fn e2e_stable_digest(domain: &str, material: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(32);
+    for lane in 0..4 {
+        let mut state = 0xcbf2_9ce4_8422_2325u64 ^ lane;
+        for byte in domain.bytes().chain([0xff]).chain(material.bytes()) {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            state ^= state.rotate_left(17);
+        }
+        bytes.extend_from_slice(&state.to_be_bytes());
+    }
+    bytes
+}
+
+fn e2e_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn recorded_decision_parts_from_e2e(
+    sequence: u64,
+    decision: &E2eDecision,
+) -> (RecordedDecision, String) {
     let (virtual_time_ticks, node, kind, payload) = match decision {
         E2eDecision::Deliver {
             at_tick,
@@ -944,13 +1789,16 @@ fn recorded_decision_from_e2e(sequence: u64, decision: &E2eDecision) -> Recorded
         ),
     };
 
-    RecordedDecision {
-        sequence,
-        virtual_time_ticks,
-        node,
-        kind,
-        payload_digest: content_address_bytes(payload.as_bytes()),
-    }
+    (
+        RecordedDecision {
+            sequence,
+            virtual_time_ticks,
+            node,
+            kind,
+            payload_digest: content_address_bytes(payload.as_bytes()),
+        },
+        payload,
+    )
 }
 
 fn e2e_scenario_material(source: &E2eReproductionArtifact) -> String {

@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
@@ -191,7 +191,7 @@ fn main() {
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     match &cli.command {
         Commands::Replay(args) => {
-            let report = replay_reproduction_artifact(args)?;
+            let report = replay_reproduction_artifact(cli, args)?;
             if !cli.quiet {
                 println!(
                     "crucible: replay artifact {} ({}) seed={} scenario={} digest={}",
@@ -206,7 +206,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Commands::Run(args) => {
             if args.emit_mock_failure_artifact {
-                let artifact = mock_failure_reproduction_artifact_bytes()?;
+                let artifact = mock_failure_reproduction_artifact_bytes(cli)?;
                 let report = write_failure_reproduction_artifact(cli, &artifact, "mock failure")?;
                 if !cli.quiet {
                     println!(
@@ -238,9 +238,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
 }
 
-fn replay_reproduction_artifact(args: &ReplayArgs) -> Result<ReplayArtifactReport, CliError> {
+fn replay_reproduction_artifact(
+    cli: &Cli,
+    args: &ReplayArgs,
+) -> Result<ReplayArtifactReport, CliError> {
     let bytes = fs::read(&args.artifact)?;
-    let artifact = decode_reproduction_artifact(&bytes)?;
+    let artifact = validate_replayable_reproduction_artifact(cli, &bytes)?;
     Ok(ReplayArtifactReport {
         path: args.artifact.clone(),
         digest: content_address_bytes(&bytes),
@@ -254,7 +257,7 @@ fn write_failure_reproduction_artifact(
     artifact_bytes: &[u8],
     failure_slug: &str,
 ) -> Result<FailureArtifactReport, CliError> {
-    decode_reproduction_artifact(artifact_bytes)?;
+    validate_replayable_reproduction_artifact(cli, artifact_bytes)?;
     let digest = content_address_bytes(artifact_bytes);
     fs::create_dir_all(&cli.artifact_dir)?;
     let file_name = format!(
@@ -317,13 +320,59 @@ struct CliReproductionArtifact {
     sampling: CliSamplingConfig,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CliIdentity {
     engine_version: String,
     engine_abi: String,
     artifact_abi: String,
     qemu_build_id: String,
     plugin_abi: String,
+}
+
+fn validate_replayable_reproduction_artifact(
+    cli: &Cli,
+    bytes: &[u8],
+) -> Result<CliReproductionArtifact, CliError> {
+    let artifact = decode_reproduction_artifact(bytes)?;
+    verify_replay_identity(&artifact.identity, &expected_replay_identity(cli)?)?;
+    Ok(artifact)
+}
+
+fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Result<(), CliError> {
+    if actual != expected {
+        return Err(CliError::Identity(format!(
+            "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` plugin `{}`",
+            expected.engine_version,
+            expected.engine_abi,
+            expected.artifact_abi,
+            expected.qemu_build_id,
+            expected.plugin_abi,
+            actual.engine_version,
+            actual.engine_abi,
+            actual.artifact_abi,
+            actual.qemu_build_id,
+            actual.plugin_abi
+        )));
+    }
+    Ok(())
+}
+
+fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
+    let qemu_build_id = match &cli.qemu {
+        Some(path) => content_address_file(path)?,
+        None => content_address_bytes(b"mock-backend-source-v1"),
+    };
+    let plugin_abi = match &cli.plugin {
+        Some(path) => format!("content-addressed-plugin:{}", content_address_file(path)?),
+        None => String::from("simdouble-mock-plugin-abi"),
+    };
+    Ok(CliIdentity {
+        engine_version: env!("CARGO_PKG_VERSION").to_string(),
+        engine_abi: String::from("crucible-harness-e2e-v1"),
+        artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
+        qemu_build_id,
+        plugin_abi,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -719,11 +768,11 @@ fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponen
     );
 }
 
-fn mock_failure_reproduction_artifact_bytes() -> Result<Vec<u8>, CliError> {
+fn mock_failure_reproduction_artifact_bytes(cli: &Cli) -> Result<Vec<u8>, CliError> {
     let seed = 0xe2e0_0010_u64;
     let scenario_material = b"scenario\tmock-failure\nnode\tnode-a\tserver\n";
     let scenario_digest = content_address_bytes(scenario_material);
-    let qemu_build_id = content_address_bytes(b"mock-qemu-build");
+    let identity = expected_replay_identity(cli)?;
     let payload_digest = content_address_bytes(b"mock-failure-decision");
     let fingerprint_digest = content_address_bytes(b"mock-failure-fingerprint");
     let decisions = vec![CliDecision {
@@ -746,11 +795,11 @@ fn mock_failure_reproduction_artifact_bytes() -> Result<Vec<u8>, CliError> {
         &mut text,
         &[
             "identity",
-            env!("CARGO_PKG_VERSION"),
-            "engine-abi:v1",
-            REPRODUCTION_ARTIFACT_SCHEMA,
-            &qemu_build_id,
-            "plugin-abi:v1",
+            &identity.engine_version,
+            &identity.engine_abi,
+            &identity.artifact_abi,
+            &identity.qemu_build_id,
+            &identity.plugin_abi,
         ],
     );
     artifact_line(
@@ -808,7 +857,7 @@ fn mock_failure_reproduction_artifact_bytes() -> Result<Vec<u8>, CliError> {
     );
 
     let bytes = text.into_bytes();
-    decode_reproduction_artifact(&bytes)?;
+    validate_replayable_reproduction_artifact(cli, &bytes)?;
     Ok(bytes)
 }
 
@@ -836,6 +885,10 @@ fn content_address_bytes(bytes: &[u8]) -> String {
         CONTENT_ADDRESS_PREFIX,
         hex_bytes(&stable_digest(bytes))
     )
+}
+
+fn content_address_file(path: &Path) -> Result<String, CliError> {
+    Ok(content_address_bytes(&fs::read(path)?))
 }
 
 fn stable_digest(material: &[u8]) -> [u8; 32] {
@@ -1054,6 +1107,7 @@ struct FailureArtifactReport {
 enum CliError {
     Io(io::Error),
     Artifact(String),
+    Identity(String),
 }
 
 impl CliError {
@@ -1061,6 +1115,7 @@ impl CliError {
         match self {
             Self::Io(_) => 5,
             Self::Artifact(_) => 5,
+            Self::Identity(_) => 3,
         }
     }
 }
@@ -1070,6 +1125,7 @@ impl fmt::Display for CliError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Artifact(error) => write!(formatter, "{error}"),
+            Self::Identity(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -1079,6 +1135,7 @@ impl Error for CliError {
         match self {
             Self::Io(error) => Some(error),
             Self::Artifact(_) => None,
+            Self::Identity(_) => None,
         }
     }
 }
@@ -1202,14 +1259,73 @@ mod tests {
         let artifact = mock_e2e_reproduction_artifact()?;
         fs::write(&path, artifact.encode()?)?;
 
-        let report = replay_reproduction_artifact(&ReplayArgs {
-            artifact: path.clone(),
-        })?;
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let report = replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: path.clone(),
+            },
+        )?;
 
         assert_eq!(report.path, path);
         assert_eq!(report.seed, artifact.seed);
         assert_eq!(report.scenario_digest, artifact.scenario.digest);
         assert_eq!(report.digest, artifact.digest()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_rejects_build_identity_mismatch_with_identity_exit() -> Result<(), Box<dyn Error>>
+    {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("identity-drift.crucible");
+        let mut artifact = mock_e2e_reproduction_artifact()?;
+        artifact.build_identity.qemu_build_id = content_address_bytes(b"different-qemu-build");
+        fs::write(&path, artifact.encode()?)?;
+
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let error = match replay_reproduction_artifact(&cli, &ReplayArgs { artifact: path }) {
+            Ok(_) => panic!("replay must reject artifacts from a different QEMU identity"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("QEMU"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_identity_exit()
+    -> Result<(), Box<dyn Error>> {
+        let temp = TempDir::new()?;
+        let artifact_path = temp.path().join("case.crucible");
+        let qemu_path = temp.path().join("qemu-system-x86_64");
+        fs::write(&qemu_path, b"different-local-qemu-binary")?;
+        let artifact = mock_e2e_reproduction_artifact()?;
+        fs::write(&artifact_path, artifact.encode()?)?;
+        let cli = Cli::parse_from([
+            "crucible",
+            "--qemu",
+            qemu_path.to_str().unwrap_or("."),
+            "run",
+        ]);
+
+        let error = match replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: artifact_path,
+            },
+        ) {
+            Ok(_) => panic!("replay must reject the selected QEMU identity mismatch"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, CliError::Identity(_)));
+        assert_eq!(error.exit_code(), 3);
+        assert!(error.to_string().contains("QEMU"));
 
         Ok(())
     }
@@ -1251,6 +1367,12 @@ mod tests {
             ReproductionArtifact::decode(&fs::read(&report.path)?)?,
             artifact
         );
+        replay_reproduction_artifact(
+            &cli,
+            &ReplayArgs {
+                artifact: report.path.clone(),
+            },
+        )?;
         assert_eq!(report.digest, artifact.digest()?);
 
         Ok(())
@@ -1265,7 +1387,8 @@ mod tests {
         encoded.push_str("seed\t9\n");
         fs::write(&path, encoded)?;
 
-        let error = match replay_reproduction_artifact(&ReplayArgs { artifact: path }) {
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let error = match replay_reproduction_artifact(&cli, &ReplayArgs { artifact: path }) {
             Ok(_) => panic!("duplicate singleton line must fail CLI replay validation"),
             Err(error) => error,
         };
@@ -1277,7 +1400,8 @@ mod tests {
 
     #[test]
     fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box<dyn Error>> {
-        let bytes = mock_failure_reproduction_artifact_bytes()?;
+        let cli = Cli::parse_from(["crucible", "run"]);
+        let bytes = mock_failure_reproduction_artifact_bytes(&cli)?;
         let artifact = ReproductionArtifact::decode(&bytes)?;
 
         assert_eq!(artifact.seed, 0xe2e0_0010);

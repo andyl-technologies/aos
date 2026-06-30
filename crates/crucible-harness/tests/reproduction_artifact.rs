@@ -4,10 +4,15 @@
 
 use std::error::Error;
 
+use crucible_harness::adversarial::{HostAdversaryProfile, canonical_host_adversary_matrix};
 use crucible_harness::reproduction::{
-    ComponentKind, ComponentPayload, ContentAddressedComponent, PinnedBuildIdentity,
-    RecordedDecision, ReproductionArtifact, ReproductionArtifactError, ReproductionSchedule,
-    mock_e2e_reproduction_artifact,
+    ComponentKind, ComponentPayload, ContentAddressedComponent,
+    PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME, PRODUCER_CANONICAL_LOG_COMPONENT_NAME,
+    PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME, PinnedBuildIdentity, RecordedDecision,
+    ReproductionArtifact, ReproductionArtifactError, ReproductionSchedule,
+    mock_e2e_reproduction_artifact, mock_reproduction_build_identity,
+    verify_mock_machine_independent_reproduction,
+    verify_mock_machine_independent_reproduction_bytes,
 };
 
 #[test]
@@ -53,6 +58,18 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
             .component_payloads
             .iter()
             .any(|payload| payload.digest == decoded.scenario.digest)
+    );
+    assert!(
+        decoded
+            .components
+            .iter()
+            .any(|component| component.name == PRODUCER_CANONICAL_LOG_COMPONENT_NAME)
+    );
+    assert!(
+        decoded
+            .components
+            .iter()
+            .any(|component| component.name == PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME)
     );
 
     Ok(())
@@ -265,6 +282,203 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
     assert!(matches!(
         error,
         ReproductionArtifactError::PayloadDigestMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_replays_identically_across_host_profiles()
+-> Result<(), Box<dyn Error>> {
+    let artifact = mock_e2e_reproduction_artifact()?;
+    let report = verify_mock_machine_independent_reproduction_bytes(
+        &artifact.encode()?,
+        canonical_host_adversary_matrix(),
+        &mock_reproduction_build_identity(),
+    )?;
+
+    assert_eq!(report.artifact_digest, artifact.digest()?);
+    assert_eq!(report.baseline.artifact_digest, report.artifact_digest);
+    assert!(report.reproduced_on_different_machine_profiles.len() >= 2);
+    for reproduced in &report.reproduced_on_different_machine_profiles {
+        assert_ne!(reproduced.profile, report.baseline.profile);
+        assert_eq!(reproduced.artifact_digest, report.artifact_digest);
+        assert_eq!(reproduced.canonical_log, report.baseline.canonical_log);
+        assert_eq!(
+            reproduced.final_fingerprint,
+            report.baseline.final_fingerprint
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_rejects_build_identity_drift()
+-> Result<(), Box<dyn Error>> {
+    let artifact = mock_e2e_reproduction_artifact()?;
+    let mut expected = mock_reproduction_build_identity();
+    expected.qemu_build_id =
+        crucible_harness::reproduction::content_address_bytes(b"different-qemu-build");
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        canonical_host_adversary_matrix(),
+        &expected,
+    ) {
+        Ok(_) => panic!("machine reproduction must reject QEMU identity drift"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReproductionArtifactError::BuildIdentityMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_requires_different_machine_profile()
+-> Result<(), Box<dyn Error>> {
+    let artifact = mock_e2e_reproduction_artifact()?;
+    let profiles = [HostAdversaryProfile::quiet_single_core()];
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        &profiles,
+        &mock_reproduction_build_identity(),
+    ) {
+        Ok(_) => panic!("machine reproduction must require a different profile"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error,
+        ReproductionArtifactError::MissingDifferentMachineProfile
+    );
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_rejects_producer_evidence_mismatch()
+-> Result<(), Box<dyn Error>> {
+    let mut artifact = mock_e2e_reproduction_artifact()?;
+    let replacement = ComponentPayload::from_bytes(b"not-the-produced-canonical-log");
+    let component = artifact
+        .components
+        .iter_mut()
+        .find(|component| component.name == PRODUCER_CANONICAL_LOG_COMPONENT_NAME)
+        .ok_or("producer log component missing")?;
+    let old_digest = component.digest.clone();
+    component.digest = replacement.digest.clone();
+    component.store_uri = format!("cas:{}", component.digest);
+    component.size_bytes = replacement.bytes.len() as u64;
+    let payload = artifact
+        .component_payloads
+        .iter_mut()
+        .find(|payload| payload.digest == old_digest)
+        .ok_or("producer log payload missing")?;
+    *payload = replacement;
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        canonical_host_adversary_matrix(),
+        &mock_reproduction_build_identity(),
+    ) {
+        Ok(_) => panic!("machine reproduction must compare against producer evidence"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReproductionArtifactError::MachineReproductionMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_rejects_scenario_payload_drift()
+-> Result<(), Box<dyn Error>> {
+    let mut artifact = mock_e2e_reproduction_artifact()?;
+    let old_digest = artifact.scenario.digest.clone();
+    let scenario_material = format!(
+        "scenario\t{}\nnode\tmutated-node\tserver\n",
+        artifact.scenario.name
+    );
+    let replacement = ComponentPayload::from_bytes(scenario_material.as_bytes());
+    artifact.scenario.digest = replacement.digest.clone();
+    artifact.scenario.store_uri = format!("cas:{}", artifact.scenario.digest);
+    artifact.scenario.size_bytes = replacement.bytes.len() as u64;
+    let component = artifact
+        .components
+        .iter_mut()
+        .find(|component| {
+            component.kind == ComponentKind::ScenarioDef && component.digest == old_digest
+        })
+        .ok_or("scenario component missing")?;
+    component.digest = artifact.scenario.digest.clone();
+    component.store_uri = artifact.scenario.store_uri.clone();
+    component.size_bytes = artifact.scenario.size_bytes;
+    let payload = artifact
+        .component_payloads
+        .iter_mut()
+        .find(|payload| payload.digest == old_digest)
+        .ok_or("scenario payload missing")?;
+    *payload = replacement;
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        canonical_host_adversary_matrix(),
+        &mock_reproduction_build_identity(),
+    ) {
+        Ok(_) => panic!("machine reproduction must bind producer digest to ScenarioDef payload"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReproductionArtifactError::ProducerArtifactDigestMismatch { .. }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn reproduction_artifact_machine_verification_rejects_backend_build_id_drift()
+-> Result<(), Box<dyn Error>> {
+    let mut artifact = mock_e2e_reproduction_artifact()?;
+    let replacement = ComponentPayload::from_bytes(b"different-backend-build-id");
+    let component = artifact
+        .components
+        .iter_mut()
+        .find(|component| component.name == PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME)
+        .ok_or("producer backend build id component missing")?;
+    let old_digest = component.digest.clone();
+    component.digest = replacement.digest.clone();
+    component.store_uri = format!("cas:{}", component.digest);
+    component.size_bytes = replacement.bytes.len() as u64;
+    let payload = artifact
+        .component_payloads
+        .iter_mut()
+        .find(|payload| payload.digest == old_digest)
+        .ok_or("producer backend build id payload missing")?;
+    *payload = replacement;
+
+    let error = match verify_mock_machine_independent_reproduction(
+        &artifact,
+        canonical_host_adversary_matrix(),
+        &mock_reproduction_build_identity(),
+    ) {
+        Ok(_) => panic!("machine reproduction must bind backend build id to pinned QEMU identity"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ReproductionArtifactError::BuildIdentityMismatch { .. }
     ));
 
     Ok(())
