@@ -862,7 +862,7 @@ fn validate_parse_cache_entry_key(
     parse_key: ParseCacheKey,
     entry: &ParseCacheEntry,
 ) -> Result<(), PersistParseArtifactMaterializationError> {
-    let expected = parse_key.to_hex();
+    let expected = parse_key.cache_dir_name();
     let matches = entry
         .dir()
         .file_name()

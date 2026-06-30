@@ -207,13 +207,11 @@ fn configured_import_cache_preserves_fetch_tarball_store_path_surface() {
         "fetchTarball canary import should materialize a persistent file-artifact mapping"
     );
 
-    let mut canaries = durable_hash_surface_canaries(
-        "root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
-    );
+    let mut canaries =
+        durable_hash_surface_canaries("root parse-cache BLAKE3", root_parse_key.as_durable_hash());
     canaries.extend(durable_hash_surface_canaries(
         "import parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+        imported_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",
@@ -718,13 +716,11 @@ fn configured_import_cache_preserves_path_store_path_surface() {
         "path canary import should materialize a persistent file-artifact mapping"
     );
 
-    let mut canaries = durable_hash_surface_canaries(
-        "root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
-    );
+    let mut canaries =
+        durable_hash_surface_canaries("root parse-cache BLAKE3", root_parse_key.as_durable_hash());
     canaries.extend(durable_hash_surface_canaries(
         "import parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+        imported_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import file-content BLAKE3",

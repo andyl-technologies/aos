@@ -37,7 +37,7 @@ impl PersistFileArtifactKey {
         hasher.update(PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION);
         update_persist_index_chunk(&mut hasher, realpath);
         hasher.update(&content_hash.as_durable_hash().as_bytes());
-        hasher.update(&parse_key.as_bytes());
+        hasher.update(&parse_key.as_durable_hash().as_bytes());
         Self {
             hash: DurableBlake3Hash::from_hasher(hasher),
         }

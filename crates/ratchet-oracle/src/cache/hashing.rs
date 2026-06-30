@@ -9,6 +9,7 @@
 //! HotXxh3Hash        -> evaluator-local map keys and cons-table probes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! LoweredIrFingerprint -> lowered-IR artifact/source-less module identities
+//! ParseCacheSourceHash -> parse-cache source-byte artifact keys
 //! ParseFileContentHash -> parse-file realpath/content memo keys
 //! PersistFileBlobHash -> persisted `files/` blob payload addresses
 //! NixSha256Digest    -> Nix-observed store path and `.drv` hash bytes
@@ -105,6 +106,26 @@ pub struct LoweredIrFingerprint(DurableBlake3Hash);
 
 impl LoweredIrFingerprint {
     /// Wraps a digest computed in the lowered-IR artifact fingerprint domain.
+    pub(in crate::cache) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 key for parse artifacts derived from source bytes.
+///
+/// This type separates parse-cache source identities from file-content memo
+/// keys, lowered-IR fingerprints, persisted artifact blob addresses, value
+/// hashes, and Nix-observed hash surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ParseCacheSourceHash(DurableBlake3Hash);
+
+impl ParseCacheSourceHash {
+    /// Wraps a digest computed in the parse-cache source-key domain.
     pub(in crate::cache) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
     }

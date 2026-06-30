@@ -1804,9 +1804,9 @@ alone (`M-1`/`Q-A`).
       this type from artifact payload bytes, `PersistBlobKey::for_file` requires it,
       and file/parse artifact index values store and return it while decoded
       persisted `files/` blob-key bytes cross through an explicit wrapper. This
-      type-enforces the current frontend artifact blob corridor only; parse-cache
-      source keys, full cache-value hashing, and the full differential
-      leak-invariant harness remain open (`S-15`). Gate:
+      type-enforces the current frontend artifact blob corridor only; full
+      cache-value hashing and the full differential leak-invariant harness
+      remain open (`S-15`). Gate:
       `format_tests`, `blob_sidecars`, `file_artifact_materialization`,
       `file_artifact_hydration`, `parse_artifact_entry_materialization`,
       `cache_io_tests`, plus `ratchet-oracle` and `aos-nix-harness` test-target
@@ -1819,9 +1819,9 @@ alone (`M-1`/`Q-A`).
       only at the stable persisted-index preimage. Existing leak-canary tests
       unwrap with `ParseFileContentHash::as_durable_hash()` only where they scan
       `.drv` surfaces for raw internal BLAKE3 renderings. This type-enforces the
-      current parse-file realpath/content memo corridor only; `ParseCacheKey`
-      source keys, full cache-value hashing, and the full differential
-      leak-invariant harness remain open (`S-15`). Gate:
+      current parse-file realpath/content memo corridor only; full cache-value
+      hashing and the full differential leak-invariant harness remain open
+      (`S-15`). Gate:
       `parse_file_content_hash_wraps_source_bytes`, `cache::parse`,
       `format_tests`, and `ratchet-oracle` test-target compile coverage.
 - [x] Current lowered-IR artifact fingerprint hash boundary:
@@ -1832,9 +1832,22 @@ alone (`M-1`/`Q-A`).
       `decode_ir_facts` traffic in that type, unwrapping only when framing the
       fact artifact bytes or feeding the source-less module identity hasher.
       This type-enforces the current lowered-IR artifact fingerprint corridor
-      only; `ParseCacheKey` source keys, full cache-value hashing, and the full
-      differential leak-invariant harness remain open (`S-15`). Gate:
+      only; full cache-value hashing and the full differential leak-invariant
+      harness remain open (`S-15`). Gate:
       `lowered_ir` tests and `ratchet-oracle` test-target compile coverage.
+- [x] Current parse-cache source key hash boundary:
+      `ParseCacheSourceHash` now marks source-byte digests that back
+      `ParseCacheKey`. `ParseCacheKey::for_source` computes this typed domain,
+      cache-entry path selection uses the explicitly named
+      `ParseCacheKey::cache_dir_name`, persistent parse-artifact and
+      file-artifact index preimages consume `ParseCacheKey::as_durable_hash()`
+      only at disk-format boundaries, and leak-canary tests unwrap through the
+      same typed accessor only where they scan `.drv` surfaces for raw internal
+      BLAKE3 renderings. This type-enforces the current parse-cache source
+      artifact key corridor only; full cache-value hashing and the full
+      differential leak-invariant harness remain open (`S-15`). Gate:
+      `cache::parse`, `format_tests`, and `ratchet-oracle`/`aos-nix`
+      test-target compile coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4254,8 +4267,8 @@ alone (`M-1`/`Q-A`).
       public cross-crate compatibility tests use typed `ValueHash` and
       `PersistFileBlobHash` constructors instead of the generic raw blob-key
       constructor. This closes the current semantic constructor leak for
-      frontend artifact blobs; parse-cache source keys, full cache-value hashing,
-      and the full internal-hash leak invariant remain open. Gate: `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`,
+      frontend artifact blobs; full cache-value hashing and the full
+      internal-hash leak invariant remain open. Gate: `cargo check --manifest-path crates/Cargo.toml -p ratchet-oracle --tests`,
       `cargo check --manifest-path crates/Cargo.toml -p aos-nix-harness --tests`,
       `format_tests`, `blob_sidecars`, `file_artifact_materialization`,
       `file_artifact_hydration`, `parse_artifact_entry_materialization`,
@@ -4268,9 +4281,8 @@ alone (`M-1`/`Q-A`).
       only at the stable persisted-index preimage. Existing leak-canary tests
       unwrap with `ParseFileContentHash::as_durable_hash()` only where they scan
       `.drv` surfaces for raw internal BLAKE3 renderings. This type-enforces the
-      current parse-file realpath/content memo corridor only; `ParseCacheKey`
-      source keys, full cache-value hashing, and the full internal-hash leak
-      invariant remain open. Gate:
+      current parse-file realpath/content memo corridor only; full cache-value
+      hashing and the full internal-hash leak invariant remain open. Gate:
       `parse_file_content_hash_wraps_source_bytes`, `cache::parse`,
       `format_tests`, and `ratchet-oracle` test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
@@ -4282,9 +4294,23 @@ alone (`M-1`/`Q-A`).
       `decode_ir_facts` traffic in that type, unwrapping only when framing the
       fact artifact bytes or feeding the source-less module identity hasher.
       This type-enforces the current lowered-IR artifact fingerprint corridor
-      only; `ParseCacheKey` source keys, full cache-value hashing, and the full
-      internal-hash leak invariant remain open. Gate: `lowered_ir` tests and
+      only; full cache-value hashing and the full internal-hash leak invariant
+      remain open. Gate: `lowered_ir` tests and
       `ratchet-oracle` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current parse-cache source key hash boundary:
+      `ParseCacheSourceHash` now marks source-byte digests that back
+      `ParseCacheKey`. `ParseCacheKey::for_source` computes this typed domain,
+      cache-entry path selection uses the explicitly named
+      `ParseCacheKey::cache_dir_name`, persistent parse-artifact and
+      file-artifact index preimages consume `ParseCacheKey::as_durable_hash()`
+      only at disk-format boundaries, and leak-canary tests unwrap through the
+      same typed accessor only where they scan `.drv` surfaces for raw internal
+      BLAKE3 renderings. This type-enforces the current parse-cache source
+      artifact key corridor only; full cache-value hashing and the full
+      internal-hash leak invariant remain open. Gate:
+      `cache::parse`, `format_tests`, and `ratchet-oracle`/`aos-nix`
+      test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

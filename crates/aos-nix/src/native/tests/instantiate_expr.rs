@@ -105,7 +105,7 @@ fn native_instantiation_expr_materializes_persistent_parse_cache() -> Result<()>
 
 #[test]
 fn native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closure() -> Result<()> {
-    use crate::cache::{DurableBlake3Hash, PersistCache, PersistParseArtifactKey};
+    use crate::cache::{PersistCache, PersistParseArtifactKey};
 
     let root = unique_temp_dir("native-instantiation-cache-parity");
     fs::create_dir_all(&root)?;
@@ -151,7 +151,7 @@ fn native_instantiation_expr_cache_off_on_and_persistent_hit_preserve_drv_closur
     let parse_key = first_parse_cache.key_for_source(source.as_bytes());
     let canaries = durable_hash_surface_canaries(
         "raw wrapper parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+        parse_key.as_durable_hash(),
     );
     assert!(first_parse_cache.entry_for_key(parse_key).is_complete());
     assert!(

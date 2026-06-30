@@ -28,6 +28,7 @@ use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
+use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
     Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
@@ -84,9 +85,9 @@ impl ParseCacheFlags {
     }
 }
 
-/// A BLAKE3 parse-cache key.
+/// A typed parse-cache source key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ParseCacheKey(DurableBlake3Hash);
+pub struct ParseCacheKey(ParseCacheSourceHash);
 
 impl ParseCacheKey {
     /// Computes a parse-cache key for source bytes.
@@ -96,24 +97,27 @@ impl ParseCacheKey {
         hasher.update(&schema_version.to_le_bytes());
         flags.update_hasher(&mut hasher);
         hasher.update(source);
-        Self(DurableBlake3Hash::from_hasher(hasher))
+        Self(ParseCacheSourceHash::from_durable_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
     }
 
-    /// Returns the raw 32-byte BLAKE3 digest.
-    pub const fn as_bytes(self) -> [u8; 32] {
-        self.0.as_bytes()
+    /// Returns the underlying durable BLAKE3 digest.
+    ///
+    /// This is used at explicit persistent-format and leak-canary boundaries.
+    pub const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0.as_durable_hash()
     }
 
-    /// Returns the lowercase hexadecimal representation used as the directory
-    /// name.
-    pub fn to_hex(self) -> String {
-        self.0.to_hex()
+    /// Returns the lowercase hexadecimal cache-entry directory name.
+    pub fn cache_dir_name(self) -> String {
+        self.as_durable_hash().to_hex()
     }
 }
 
 impl fmt::Display for ParseCacheKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.to_hex())
+        formatter.write_str(&self.cache_dir_name())
     }
 }
 
@@ -339,7 +343,7 @@ impl ParseCache {
 
     /// Returns the entry directory and file paths for a cache key.
     pub fn entry_for_key(&self, key: ParseCacheKey) -> ParseCacheEntry {
-        ParseCacheEntry::new(self.root.join(key.to_hex()))
+        ParseCacheEntry::new(self.root.join(key.cache_dir_name()))
     }
 
     /// Computes the cache key for source bytes and returns its entry paths.

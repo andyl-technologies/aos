@@ -121,7 +121,7 @@ fn keys_depend_on_source_schema_and_flags() {
             },
         )
     );
-    assert_eq!(key.to_hex().len(), 64);
+    assert_eq!(key.cache_dir_name().len(), 64);
 }
 
 #[test]

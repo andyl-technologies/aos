@@ -82,9 +82,7 @@ fn native_file_instantiation_materializes_persistent_root_parse_cache() -> Resul
 
 #[test]
 fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closure() -> Result<()> {
-    use crate::cache::{
-        DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
-    };
+    use crate::cache::{ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey};
 
     let root = unique_temp_dir("aos-nix-native-instantiate-file-cache-parity");
     fs::create_dir_all(&root)?;
@@ -142,10 +140,8 @@ fn native_file_instantiation_cache_off_on_and_persistent_hit_preserve_drv_closur
     let first_parse_cache = ParseCache::new(&first_parse_root);
     let parse_key = first_parse_cache.key_for_source(&source);
     let file_key = ParseFileKey::for_source(&realpath, &source);
-    let mut canaries = durable_hash_surface_canaries(
-        "file root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
-    );
+    let mut canaries =
+        durable_hash_surface_canaries("file root parse-cache BLAKE3", parse_key.as_durable_hash());
     canaries.extend(durable_hash_surface_canaries(
         "file root content BLAKE3",
         file_key.content_hash().as_durable_hash(),

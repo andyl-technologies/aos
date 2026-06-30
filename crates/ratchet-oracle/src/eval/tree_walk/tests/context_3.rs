@@ -422,17 +422,15 @@ fn configured_import_cache_preserves_to_file_store_path_surface() {
         contents_parse_key,
     );
 
-    let mut canaries = durable_hash_surface_canaries(
-        "root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
-    );
+    let mut canaries =
+        durable_hash_surface_canaries("root parse-cache BLAKE3", root_parse_key.as_durable_hash());
     canaries.extend(durable_hash_surface_canaries(
         "name import parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(name_parse_key.as_bytes()),
+        name_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "contents import parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(contents_parse_key.as_bytes()),
+        contents_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "name import file-content BLAKE3",

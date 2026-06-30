@@ -22,7 +22,7 @@ fn parse_artifact_index_keys_are_parse_identity_only() {
     let file_artifact = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
 
     assert_eq!(key, same);
-    assert_eq!(key.hash().as_bytes(), parse_key.as_bytes());
+    assert_eq!(key.hash(), parse_key.as_durable_hash());
     assert_eq!(
         key.index_bytes().len(),
         PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN

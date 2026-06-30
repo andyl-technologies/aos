@@ -289,7 +289,7 @@ fn configured_cache_preserves_guarded_hash_file_surface() {
     let changed_hot_big_endian_canary = changed_hot_canary.to_be_bytes();
     let mut canaries = durable_hash_surface_canaries(
         "synthetic root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(synthetic_root_parse_key.as_bytes()),
+        synthetic_root_parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "synthetic hashFile payload-content BLAKE3",

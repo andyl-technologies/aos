@@ -72,7 +72,7 @@ fn native_file_cache_parity_harness_covers_empty_foldl_update_regression() -> Re
     let file_key = ParseFileKey::for_source(&realpath, &source);
     let mut canaries = durable_hash_surface_canaries(
         "foldl update file-root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+        parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "foldl update file-root content BLAKE3",
@@ -1358,7 +1358,7 @@ fn file_parse_artifact_surface_canaries(
     let file_key = ParseFileKey::for_source(&realpath, &source);
     let mut canaries = durable_hash_surface_canaries(
         &format!("{label} parse-cache BLAKE3"),
-        DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+        parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         &format!("{label} content BLAKE3"),

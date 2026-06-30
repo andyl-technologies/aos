@@ -22,7 +22,7 @@ impl PersistParseArtifactKey {
     /// Creates a persistent parse-artifact index key from a parse-cache key.
     pub const fn from_parse_cache_key(parse_key: ParseCacheKey) -> Self {
         Self {
-            hash: DurableBlake3Hash::from_bytes(parse_key.as_bytes()),
+            hash: parse_key.as_durable_hash(),
         }
     }
 

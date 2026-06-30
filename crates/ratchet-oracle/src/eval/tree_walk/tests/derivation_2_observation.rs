@@ -3,8 +3,8 @@
 use super::derivation_2_support::*;
 use super::*;
 use crate::cache::{
-    DemandNodeId, DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags,
-    ParseCacheKey, ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
+    DemandNodeId, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
+    ParseFileKey, PersistCache, PersistFileArtifactKey, ValueHash,
 };
 use crate::string::NixString;
 
@@ -452,11 +452,11 @@ fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
     let mut canaries = Vec::new();
     canaries.extend(durable_hash_surface_canaries(
         "root parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(root_parse_key.as_bytes()),
+        root_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "import parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(imported_parse_key.as_bytes()),
+        imported_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "file-content BLAKE3",
@@ -597,7 +597,7 @@ fn configured_import_cache_preserves_drv_surfaces() {
     let import_file_key = ParseFileKey::for_source(&import_realpath, imported_source);
     let mut canaries = durable_hash_surface_canaries(
         "imported-file parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(import_parse_key.as_bytes()),
+        import_parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "imported-file content BLAKE3",

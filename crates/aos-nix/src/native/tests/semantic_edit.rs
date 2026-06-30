@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::cache::{
-    CachedExpressionValue, DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache,
-    PersistParseArtifactKey,
+    CachedExpressionValue, ParseCache, ParseFileKey, PersistCache, PersistParseArtifactKey,
 };
 
 #[test]
@@ -152,11 +151,11 @@ fn native_instantiation_expr_comment_only_edit_preserves_drv_closure() -> Result
 
     let mut canaries = durable_hash_surface_canaries(
         "initial raw comment parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+        first_parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "changed raw comment parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+        second_parse_key.as_durable_hash(),
     ));
     assert_native_closure_surfaces_do_not_contain_canaries(
         "uncached initial raw semantic-edit closure",
@@ -421,11 +420,11 @@ fn native_file_instantiation_comment_only_forced_leaf_edit_preserves_drv_closure
     canaries.extend(first_force_canaries);
     canaries.extend(durable_hash_surface_canaries(
         "initial forced comment leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+        first_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "changed forced comment leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+        second_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial forced comment leaf content BLAKE3",
@@ -637,11 +636,11 @@ fn native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure() -> R
     let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
     let mut canaries = durable_hash_surface_canaries(
         "initial comment leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+        first_parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "changed comment leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+        second_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial comment leaf content BLAKE3",
@@ -802,11 +801,11 @@ fn native_file_instantiation_unused_leaf_package_edit_preserves_drv_closure() ->
     let second_leaf_key = ParseFileKey::for_source(&leaf_realpath, second_leaf_source);
     let mut canaries = durable_hash_surface_canaries(
         "initial unused leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(first_parse_key.as_bytes()),
+        first_parse_key.as_durable_hash(),
     );
     canaries.extend(durable_hash_surface_canaries(
         "changed unused leaf parse-cache BLAKE3",
-        DurableBlake3Hash::from_bytes(second_parse_key.as_bytes()),
+        second_parse_key.as_durable_hash(),
     ));
     canaries.extend(durable_hash_surface_canaries(
         "initial unused leaf content BLAKE3",

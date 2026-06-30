@@ -60,11 +60,12 @@ fn configured_import_cache_preserves_hash_builtin_surface() {
         name: &str,
         key: ParseCacheKey,
     ) {
-        canaries.push((format!("{name} BLAKE3 hex"), key.to_hex().into_bytes()));
-        canaries.push((format!("{name} BLAKE3 raw bytes"), key.as_bytes().to_vec()));
+        let hash = key.as_durable_hash();
+        canaries.push((format!("{name} BLAKE3 hex"), hash.to_hex().into_bytes()));
+        canaries.push((format!("{name} BLAKE3 raw bytes"), hash.as_bytes().to_vec()));
         canaries.push((
             format!("{name} BLAKE3 Nix base32"),
-            nix_compat::nixbase32::encode(&key.as_bytes()).into_bytes(),
+            nix_compat::nixbase32::encode(&hash.as_bytes()).into_bytes(),
         ));
     }
 
