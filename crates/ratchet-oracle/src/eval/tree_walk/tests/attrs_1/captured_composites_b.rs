@@ -776,11 +776,32 @@ fn captured_static_select_thunk_for_attrs(
     selected_value: Value,
     unused_value: Value,
 ) -> Value {
+    captured_static_select_thunk_for_attrs_with_position(
+        evaluator,
+        ir,
+        used,
+        unused,
+        selected_value,
+        None,
+        unused_value,
+    )
+}
+
+fn captured_static_select_thunk_for_attrs_with_position(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    used: Symbol,
+    unused: Symbol,
+    selected_value: Value,
+    selected_position: Option<AttrPosition>,
+    unused_value: Value,
+) -> Value {
+    let selected_entry = match selected_position {
+        Some(position) => AttrEntry::with_position(used, selected_value, position),
+        None => AttrEntry::new(used, selected_value),
+    };
     let attrs = FlatAttrs::new(
-        vec![
-            AttrEntry::new(used, selected_value),
-            AttrEntry::new(unused, unused_value),
-        ],
+        vec![selected_entry, AttrEntry::new(unused, unused_value)],
         &evaluator.symbols,
     )
     .expect("captured receiver attrs build");
@@ -990,6 +1011,56 @@ fn captured_static_selects_hit_when_unselected_receiver_siblings_change() {
             evaluator.stats().force_cache_hits() > 0,
             expected_hit,
             "unselected captured receiver siblings should not dirty the selected path key"
+        );
+    }
+}
+
+#[test]
+fn captured_static_selects_miss_when_selected_binding_position_changes() {
+    let (ir, used, unused) = captured_static_select_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (position, expected_hit) in [(Span::new(2, 6), false), (Span::new(3, 7), false)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-position-change.nix",
+            "x.used",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_thunk_for_attrs_with_position(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Value::int(7),
+            Some(AttrPosition::new(EvalModuleId::ROOT.as_u32(), position)),
+            Value::int(1),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("positioned captured static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "positioned captured static selects should still project one selected-value hash"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 6), thunk_value)
+            .expect("positioned captured static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > 0,
+            expected_hit,
+            "changed selected binding positions must miss even when the selected value is unchanged"
         );
     }
 }

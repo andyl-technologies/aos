@@ -1925,6 +1925,20 @@ alone (`M-1`/`Q-A`).
       positioned-composite force-cache tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
       coverage.
+- [x] Current static-select binding position hash boundary:
+      `StaticSelectPositionHash` now marks the source-name/module and span
+      identity for retained binding positions that participate in static-select
+      captured-value projections. Static-select projection construction wraps
+      each selected binding position identity before sorting/deduplicating the
+      projection set, and unwraps only when appending those identities to the
+      stable `static-select` captured-value preimage. This type-enforces the
+      current selected-binding position projection corridor only; broader
+      static-select subject typing, remaining generic durable hash plumbing, and
+      the full differential leak-invariant harness remain open (`S-15`). Gate:
+      `captured_static_selects_miss_when_selected_binding_position_changes`,
+      captured static-select projection tests, captured positioned-composite
+      force-cache tests, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+      test-target compile coverage.
 - [ ] Remaining full P2 cache hashing split: demand-graph xxh3 keys, BLAKE3
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
@@ -4465,6 +4479,21 @@ alone (`M-1`/`Q-A`).
       remain open. Gate: `materialized_captures`, captured
       positioned-composite force-cache tests, and
       `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
+- [x] Current static-select binding position hash boundary:
+      `StaticSelectPositionHash` now marks the source-name/module and span
+      identity for retained binding positions that participate in static-select
+      captured-value projections. Static-select projection construction wraps
+      each selected binding position identity before sorting/deduplicating the
+      projection set, and unwraps only when appending those identities to the
+      stable `static-select` captured-value preimage. This type-enforces the
+      current selected-binding position projection corridor only; broader
+      static-select subject typing, remaining generic durable hash plumbing, and
+      the full internal-hash leak invariant remain open. Gate:
+      `captured_static_selects_miss_when_selected_binding_position_changes`,
+      captured static-select projection tests, captured positioned-composite
+      force-cache tests, and `ratchet-oracle`/`aos-nix`/`aos-nix-harness`
+      test-target compile coverage
       ([12](12-incremental-evaluation-cache.md) §5.2/§8.3).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,

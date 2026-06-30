@@ -10,6 +10,7 @@
 //! CacheExprSourceHash -> expression/artifact identity source components
 //! AttrPositionSourceHash -> positioned-payload source provenance
 //! ForceCapturePositionSourceHash -> positioned captured-value source salts
+//! StaticSelectPositionHash -> static-select binding position identities
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -167,6 +168,25 @@ pub(crate) struct ForceCapturePositionSourceHash(DurableBlake3Hash);
 
 impl ForceCapturePositionSourceHash {
     /// Wraps a digest computed from a tree-walk module source identity.
+    pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for static-select binding position identities.
+///
+/// This type marks selected binding source-name/module and span identities that
+/// are folded into static-select captured-value projections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct StaticSelectPositionHash(DurableBlake3Hash);
+
+impl StaticSelectPositionHash {
+    /// Wraps a digest computed from a static selected binding position.
     pub(crate) const fn from_durable_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
     }

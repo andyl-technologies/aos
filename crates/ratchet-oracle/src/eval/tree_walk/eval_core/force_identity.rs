@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cache::CacheExprSourceHash;
-use crate::cache::hashing::ForceCapturePositionSourceHash;
+use crate::cache::hashing::{ForceCapturePositionSourceHash, StaticSelectPositionHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturedFreeVariableDependency {
@@ -243,7 +243,7 @@ impl TreeWalk {
                 let len = u64::try_from(position_identities.len()).ok()?;
                 hasher.update(&len.to_le_bytes());
                 for identity in position_identities {
-                    hasher.update(&identity.as_bytes());
+                    hasher.update(&identity.as_durable_hash().as_bytes());
                 }
                 return Some(StaticSelectProjection::Present(
                     ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher)),
@@ -444,7 +444,7 @@ impl TreeWalk {
     fn force_cache_attr_position_identity_hash(
         &self,
         position: AttrPosition,
-    ) -> Option<DurableBlake3Hash> {
+    ) -> Option<StaticSelectPositionHash> {
         let module = self
             .modules
             .get(EvalModuleId::new(position.module).index())?;
@@ -463,7 +463,9 @@ impl TreeWalk {
         }
         hasher.update(&position.span.start.to_le_bytes());
         hasher.update(&position.span.end.to_le_bytes());
-        Some(DurableBlake3Hash::from_hasher(hasher))
+        Some(StaticSelectPositionHash::from_durable_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
     }
 
     fn force_cache_cached_or_capture_alias_non_thunk_value(
