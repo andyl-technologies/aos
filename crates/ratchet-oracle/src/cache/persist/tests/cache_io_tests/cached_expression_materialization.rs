@@ -616,9 +616,11 @@ fn cache_node_value_root_plan_resolves_latest_metadata_links() {
         .record_node_materialization_reuse(reuse_only_node_key, MaterializationReuse::new(3, 4))
         .expect("reuse-only metadata records");
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
     let plan = cache
         .plan_node_value_roots()
         .expect("node value root plan builds");
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
 
     assert!(plan.repair_needed());
     assert_eq!(plan.resolved_roots().len(), 1);
@@ -670,6 +672,7 @@ fn cache_node_value_root_plan_rejects_corrupt_indexed_value_blob() {
     file.write_all(b"X").expect("payload corrupts");
     file.flush().expect("payload corruption flushes");
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
     let error = cache
         .plan_node_value_roots()
         .expect_err("corrupt value root blocks plan");

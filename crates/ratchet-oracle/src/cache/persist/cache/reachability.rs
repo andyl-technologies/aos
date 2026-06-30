@@ -27,7 +27,7 @@ impl PersistCache {
     pub fn plan_node_value_roots(
         &self,
     ) -> Result<PersistNodeValueRootPlan, PersistNodeValueRootPlanError> {
-        let (_value_advisory_guard, _value_guard) = self.lock_node_value_root_plan_read()?;
+        let (value_advisory_guard, _value_guard) = self.lock_node_value_root_plan_read()?;
         let (_metadata_advisory_guard, _metadata_guard) = self
             .lock_node_metadata_read()
             .map_err(|source| PersistNodeValueRootPlanError::Metadata { source })?;
@@ -55,7 +55,7 @@ impl PersistCache {
                 continue;
             };
             self.value_pack
-                .verify_blob(location, blob_key.hash())
+                .verify_mapped_blob(&value_advisory_guard, location, blob_key.hash())
                 .map_err(|source| PersistNodeValueRootPlanError::Read { source })?;
             resolved_roots.push(PersistNodeValueRoot::new(entry.key(), value_hash, location));
         }

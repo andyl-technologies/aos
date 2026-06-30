@@ -1912,12 +1912,12 @@ alone (`M-1`/`Q-A`).
       corrupt value-pack payloads, and fail key mismatches before taking the
       files store lock. Blob-index rebuild, liveness, reachability, and
       repack-planning scan adapters also use scoped mapped metadata scans under
-      the selected store advisory lock. Value/file reachability,
-      liveness-plan, and tail-trim root verification also use scoped mapped
-      payload checks under the selected store advisory lock. Lower-level
-      `PersistBlobPack::read_blob`, node value-root root verification payload
-      checks, repack copy/apply paths, and public borrowed parse/value cache
-      results remain buffered or owned. This is scoped cooperating-writer mmap integration
+      the selected store advisory lock. Node value-root, value/file
+      reachability, liveness-plan, and tail-trim root verification also use
+      scoped mapped payload checks under the selected store advisory lock.
+      Lower-level `PersistBlobPack::read_blob`, repack copy/apply paths, and
+      public borrowed parse/value cache results remain buffered or owned. This
+      is scoped cooperating-writer mmap integration
       only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
       maintenance/repack paths, out-of-core rematerialization, cross-machine
       CAS-grade leases, and cached/uncached harness proof remain open
@@ -2151,15 +2151,16 @@ alone (`M-1`/`Q-A`).
 - [x] Current read-only node value-root plan:
       `PersistCache::plan_node_value_roots` snapshots latest node metadata,
       resolves materialized value hashes through the `values` blob index, and
-      verifies resolved value-pack records while reporting metadata links whose
-      value hash is missing from the blob index. The value-index snapshot and
-      value-pack verification run under the shared `values` store advisory lock
-      plus same-root store lock; the node-metadata snapshot holds the shared
+      verifies resolved value-pack records through scoped mapped payload checks
+      while reporting metadata links whose value hash is missing from the blob
+      index. The value-index snapshot and mapped value-pack verification run
+      under the shared `values` store advisory lock plus same-root store lock;
+      the node-metadata snapshot holds the shared
       node-metadata advisory lock plus same-root metadata lock. This is
       diagnostic node-to-value reachability only; retention windows, metadata
       pruning, pack rewriting/deletion, live-record relocation, automatic GC
-      policy, raw lower-level writer coordination, mmap reads, Attic transport,
-      and harness proof remain open (`C-13`/`R-14`).
+      policy, raw lower-level writer coordination, Attic transport, and harness
+      proof remain open (`C-13`/`R-14`).
 - [x] Current read-only value-pack reachability plan:
       `PersistCache::plan_value_blob_reachability` snapshots latest node
       metadata and `values` blob-index entries, verifies latest value-index
