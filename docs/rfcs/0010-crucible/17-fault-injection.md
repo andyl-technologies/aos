@@ -1174,8 +1174,20 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   `PlanFaultUnknownDevice`; block/9p per-kind effect execution remains the
   explicit device test-double scope of T-FAULT-16 until `World` carries device
   targets for `FaultPlan` validation.
-- [ ] **T-FAULT-16** Exercise every fault kind against the in-process test double
+- [x] **T-FAULT-16** Exercise every fault kind against the in-process test double
   (apply fault, drive request/frame sequence with a fixed seed, assert perturbed
   deliveries/drops/recorded decisions) with a per-kind run-twice determinism +
   divergence-localization test. — satisfies [FAULT-32]; spec §17.8; cross-ref 15
   §15.7, 24.
+  Completed by `checks.crucible.phase4.faultTestDoubleGate`: the in-process
+  double now drives every network-link, block, and 9p fault kind through a fixed
+  frame/request sequence, asserts the visible perturbation (drop, delay, duplicate
+  delivery, error reply/status, byte corruption, bandwidth serialization), checks
+  exact recorded `RngDraw` replay and `FaultFires` loss/duplicate/corrupt triples,
+  runs each case twice for byte-identical replay, and compares against a
+  fault-free run with pinned first-divergence fields. Network partition coverage
+  includes A-to-B drops, B-to-A unaffected direction, and bidirectional drops;
+  network corruption sub-kinds are split into bit-flip, field-mutation, and
+  truncation cases; reorder uses multi-frame/request batches so the observed
+  delivery order must change rather than merely delay; block failure covers both
+  error-status and drop modes.
