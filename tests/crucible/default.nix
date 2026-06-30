@@ -995,6 +995,11 @@ in rec {
       attrPath = "checks.crucible.phase4.guestHostBlackBoxSurface";
       taskIds = ["T-GHC-1"];
     };
+    guestHostOsAgnostic = import ./phase4-guest-host-os-agnostic.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostOsAgnostic";
+      taskIds = ["T-GHC-2"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
