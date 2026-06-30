@@ -818,9 +818,18 @@ verdict; it only shapes the next schedule the search tries.
   mismatches before identity validation, proves assertion predicates use the same
   `Condition` value accepted by triggers, and scans the Crucible assertion source
   for runtime model-checker or spec-language evaluator surfaces.
-- [ ] **T-ASRT-2** Make `Properties` part of the `ScenarioDef` content hash and
+- [x] **T-ASRT-2** Make `Properties` part of the `ScenarioDef` content hash and
   prove property declaration/removal/amendment never changes the run (fingerprint
   unchanged). — satisfies [ASRT-2], [ASRT-25]; spec §18.1, §18.9.
+  Completed by `checks.crucible.phase4.propertyFingerprintNeutrality`:
+  `ScenarioDef` canonical material includes the `properties_ref` component, so
+  declaring, removing, or amending a property changes the scenario content hash
+  while preserving the world, plan, and seed components. The gate's Rust proof
+  records the same seed-derived decision schedule under removed, declared, and
+  amended property sets, drives the `SimBackend` through the backend input,
+  horizon-advance, and fingerprint APIs for each scenario form, and includes
+  payload/horizon negative controls proving the fingerprint witness would move
+  for real node execution changes.
 - [ ] **T-ASRT-3** Implement per-quantifier configuration (stable id, message,
   Eventually deadline in virtual time, Reachable never-reached disposition) and
   reject non-deterministic / wall-clock-relative parameters at scenario
