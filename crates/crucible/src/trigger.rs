@@ -395,6 +395,28 @@ impl ObservableEvent {
         }
     }
 
+    /// Builds a causal assertion-evaluation observation.
+    #[must_use]
+    pub fn assertion_evaluated(
+        at: VirtualTime,
+        name: AssertionId,
+        flavor: AssertionQuantifierKind,
+        condition: bool,
+        message: impl Into<String>,
+        details: Vec<GuestAssertionDetail>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionEvaluated {
+                name,
+                flavor,
+                condition,
+                message: message.into(),
+                details,
+            },
+        }
+    }
+
     /// Builds an optional white-box guest-marker observation.
     #[must_use]
     pub fn guest_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self {
@@ -503,6 +525,19 @@ pub enum ObservableEventPayload {
         name: AssertionId,
         /// Terminal assertion state entered at this log point.
         state: AssertionPhase,
+    },
+    /// A named assertion was evaluated at this log point.
+    AssertionEvaluated {
+        /// Assertion whose predicate was evaluated.
+        name: AssertionId,
+        /// Assertion quantifier or marker flavor evaluated.
+        flavor: AssertionQuantifierKind,
+        /// Boolean condition value observed by the assertion fold.
+        condition: bool,
+        /// Human-readable assertion message.
+        message: String,
+        /// Structured assertion details retained for projections.
+        details: Vec<GuestAssertionDetail>,
     },
     /// An optional white-box doorbell marker was observed.
     GuestMarker {
@@ -3850,7 +3885,8 @@ fn event_icount(entry: Option<&SchedulerEventLogEntry>) -> Option<Icount> {
             | ObservableEventPayload::ConsoleOutput { .. }
             | ObservableEventPayload::IoCompletion { .. }
             | ObservableEventPayload::NodeState { .. }
-            | ObservableEventPayload::AssertionStateChanged { .. } => None,
+            | ObservableEventPayload::AssertionStateChanged { .. }
+            | ObservableEventPayload::AssertionEvaluated { .. } => None,
         },
         SchedulerEventLogPayload::EvaluationBoundary(_) => None,
         SchedulerEventLogPayload::ResolvedHappening(_)
@@ -3893,7 +3929,8 @@ fn observable_event_violation_site(
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => Some((None, Some(node.clone()))),
         ObservableEventPayload::NetworkDelivered { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. } => None,
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. } => None,
     }
 }
 
@@ -4299,7 +4336,8 @@ fn guest_marker_event_matches_policies(
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. } => false,
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. } => false,
     }
 }
 
@@ -4877,6 +4915,33 @@ fn external_observable_event_payload_material(observable: &ObservableEventPayloa
                 external_assertion_phase_label(*state)
             ));
         }
+        ObservableEventPayload::AssertionEvaluated {
+            name,
+            flavor,
+            condition,
+            message,
+            details,
+        } => {
+            lines.push(String::from("observable=assertion-evaluated"));
+            lines.push(external_assertion_id_material("observable.assertion", name));
+            lines.push(format!(
+                "observable.flavor={}",
+                external_assertion_quantifier_label(*flavor)
+            ));
+            lines.push(format!("observable.condition={condition}"));
+            lines.push(external_string_material("observable.message", message));
+            lines.push(format!("observable.details={}", details.len()));
+            for (index, detail) in details.iter().enumerate() {
+                lines.push(external_string_material(
+                    &format!("observable.detail.{index}.key"),
+                    &detail.key,
+                ));
+                lines.push(external_string_material(
+                    &format!("observable.detail.{index}.value"),
+                    &detail.value,
+                ));
+            }
+        }
         ObservableEventPayload::GuestMarker {
             retired_icount,
             node,
@@ -5317,6 +5382,20 @@ fn external_assertion_phase_label(phase: AssertionPhase) -> &'static str {
     match phase {
         AssertionPhase::Satisfied => "satisfied",
         AssertionPhase::Violated => "violated",
+    }
+}
+
+fn external_assertion_quantifier_label(flavor: AssertionQuantifierKind) -> &'static str {
+    match flavor {
+        AssertionQuantifierKind::Always => "always",
+        AssertionQuantifierKind::Sometimes => "sometimes",
+        AssertionQuantifierKind::Eventually => "eventually",
+        AssertionQuantifierKind::AfterQuiescence => "after-quiescence",
+        AssertionQuantifierKind::Reachable => "reachable",
+        AssertionQuantifierKind::GuestAlways => "guest-always",
+        AssertionQuantifierKind::GuestSometimes => "guest-sometimes",
+        AssertionQuantifierKind::GuestReachable => "guest-reachable",
+        AssertionQuantifierKind::GuestUnreachable => "guest-unreachable",
     }
 }
 
@@ -6444,7 +6523,8 @@ where
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. } => false,
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. } => false,
     }
 }
 

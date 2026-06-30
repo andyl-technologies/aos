@@ -302,6 +302,24 @@ fn observable_event_material(event: &ObservableEvent) -> String {
             event.at().ticks,
             name.name
         ),
+        ObservableEventPayload::AssertionEvaluated {
+            name,
+            flavor,
+            condition,
+            message,
+            details,
+        } => {
+            let details = details
+                .iter()
+                .map(|detail| format!("{}={}", detail.key, detail.value))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "observable:assertion-evaluated:at={}:assertion={}:flavor={flavor:?}:condition={condition}:message={message}:details={details}",
+                event.at().ticks,
+                name.name
+            )
+        }
         ObservableEventPayload::GuestMarker {
             retired_icount,
             node,

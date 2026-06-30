@@ -950,6 +950,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogDeterminism";
       taskIds = ["T-OBS-6"];
     };
+    eventLogAssertionFold = import ./phase4-event-log-assertion-fold.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogAssertionFold";
+      taskIds = ["T-OBS-7"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
