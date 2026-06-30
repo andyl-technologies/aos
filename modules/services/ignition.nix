@@ -831,22 +831,22 @@
     };
   };
 in {
-  options.aos.provisioning.ignition.enable =
-    lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Whether to provision the host at first boot with Ignition (the legacy
-        path). Default true. When false, the Ignition stage units stand down and
-        a new-path system provides the fetch/disks/files backends via the
-        `aos metadata` agent (`aos.metadata.enable`), the `systemd-repart`
-        substrate (`aos.provisioning.repart.enable`), and on-host config
-        evaluation (`aos.config.evalAtBoot.enable`). The neutral boot
-        infrastructure (mount-var, the /etc + /nix overlays, profile seeding,
-        machine-id) is emitted either way and orders against whichever backend
-        is active.
-      '';
-    };
+  options.aos.provisioning.ignition.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = ''
+      Whether to provision the host at first boot with Ignition (the legacy
+      path). Default false (RFC-0011): the Ignition stage units stand down and
+      the host is provisioned by the new substrate — the `aos metadata` agent
+      (`aos.provisioning.metadataAgent.enable`), the `systemd-repart` substrate
+      (`aos.provisioning.repart.enable`), and on-host config evaluation
+      (`aos.config.evalAtBoot.enable`), which default on for the disks/files
+      backends. The neutral boot infrastructure (mount-var, the /etc + /nix
+      overlays, profile seeding, machine-id) is emitted either way and orders
+      against whichever backend is active. This gate is transitional and will
+      be removed once the Ignition subsystem is deleted.
+    '';
+  };
 
   config = {
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
@@ -857,11 +857,10 @@ in {
     # into its own unit so they can be ordered around `sysroot.mount`
     # — disks happens before, mount/files after. Mirror that here.
     # See ignition/dracut/30ignition/*.service in the ignition repo.
-    boot.initrd.systemd.services =
-      lib.mkMerge [
-        neutralBootServices
-        (lib.mkIf ignitionEnabled ignitionStageServices)
-      ];
+    boot.initrd.systemd.services = lib.mkMerge [
+      neutralBootServices
+      (lib.mkIf ignitionEnabled ignitionStageServices)
+    ];
 
     # DHCP on every physical NIC in the initrd. Kind=!* excludes virtual
     # links (bridges/bonds/etc.); matching only physical ether devices
