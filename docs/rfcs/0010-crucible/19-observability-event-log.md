@@ -811,10 +811,14 @@ log, so they cannot disagree about what happened.
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
 > whose primary area is the unified event log, tracked by [PLAN-3].
 
-- [ ] **T-OBS-1** Implement the single unified `LogEntry`/`EventLog` with one
+- [x] **T-OBS-1** Implement the single unified `LogEntry`/`EventLog` with one
   append path, replacing any notion of separate determinism-trace / debug-log /
   assertion-stream / coverage-record; every consumer reads a projection. —
   satisfies [OBS-1], [OBS-2], [OBS-3], [OBS-4]; spec §19.1.
+  Completed by `checks.crucible.phase4.eventLogUnified`: `EventLog` now owns
+  exactly **one** event log per run, all scheduler append sites route through the
+  single append path `EventLog::append_entries`, and offset plus condition-log
+  consumers read projections from that one retained stream.
 - [ ] **T-OBS-2** Define the entry schema (`seq`, `at` virtual-time+icount,
   `source`, open-set typed `payload`, `level`, `EventClass`) with monotonic
   gap-free `seq`, icount stamping, and the closed `EventSource` set incl.

@@ -154,6 +154,9 @@ pub struct SchedulerEventLogEntry {
     provenance: SchedulerEventLogEntryProvenance,
 }
 
+/// Compatibility name for entries in the unified event log.
+pub type LogEntry = SchedulerEventLogEntry;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct SchedulerEventLogEntryProvenance;
 
@@ -175,7 +178,7 @@ impl SchedulerEventLogEntry {
 
     /// Builds a deterministic condition-evaluation boundary entry.
     #[must_use]
-    pub fn evaluation_boundary(
+    pub(crate) fn evaluation_boundary(
         sequence: u64,
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
@@ -244,6 +247,154 @@ impl SchedulerEventLogEntry {
         payload: SchedulerEventLogPayload,
     ) -> Self {
         scheduler_event_log_entry(sequence, at, payload)
+    }
+}
+
+/// The single unified event log for one run.
+///
+/// `EventLog` is the owner of append sequencing, prefix content-addressing, and
+/// the condition-evaluation prefix derived from the same retained entries. All
+/// observability consumers take projections of this one stream.
+#[derive(Clone, Debug)]
+pub struct EventLog {
+    prefix: ContentHash,
+    bytes: u64,
+    events: u64,
+    condition_entries: Vec<LogEntry>,
+    condition_prefix: ConditionEventLogPrefix,
+}
+
+impl EventLog {
+    /// Builds an empty unified event log.
+    #[must_use]
+    pub fn new() -> Self {
+        let prefix = scheduler_event_log_empty_prefix();
+        Self {
+            prefix,
+            bytes: 0,
+            events: 0,
+            condition_entries: Vec::new(),
+            condition_prefix: ConditionEventLogPrefix::genesis()
+                .with_event_log_offset(EventLogOffset::new(prefix, 0, 0)),
+        }
+    }
+
+    /// Returns the current shared-prefix offset.
+    #[must_use]
+    pub fn offset(&self) -> EventLogOffset {
+        EventLogOffset::new(self.prefix, self.bytes, self.events)
+    }
+
+    /// Returns the condition-evaluation projection over the retained log prefix.
+    #[must_use]
+    pub fn condition_prefix(&self) -> &ConditionEventLogPrefix {
+        &self.condition_prefix
+    }
+
+    /// Returns the next dense sequence number after `offset` pending entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the pending offset or
+    /// resulting event-log sequence cannot fit in `u64`.
+    pub fn next_sequence(&self, offset: usize) -> Result<u64, SchedulerError> {
+        scheduler_event_log_sequence(self.events, offset)
+    }
+
+    /// Appends entries through the unified event-log path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when an entry sequence is
+    /// not dense from the current log offset, segment byte counts, event counts,
+    /// or the derived condition prefix overflow or become invalid.
+    pub fn append_entries(
+        &mut self,
+        entries: Vec<LogEntry>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        if entries.is_empty() {
+            return Ok(SchedulerEventLogAppend {
+                entries,
+                segment_bytes: Vec::new(),
+                segment_hash: None,
+                offset: self.offset(),
+            });
+        }
+
+        for (offset, entry) in entries.iter().enumerate() {
+            let expected = self.next_sequence(offset)?;
+            if entry.sequence() != expected {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "event-log entry sequence {} does not match expected dense sequence {expected}",
+                        entry.sequence()
+                    ),
+                });
+            }
+        }
+
+        let segment_bytes = scheduler_event_log_segment_bytes(self.prefix, &entries);
+        let segment_hash = ContentHash::from_bytes(&segment_bytes);
+        let appended_bytes =
+            u64::try_from(segment_bytes.len()).map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("event-log segment length exceeds u64"),
+            })?;
+        let appended_events =
+            u64::try_from(entries.len()).map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from("event-log entry count exceeds u64"),
+            })?;
+        let bytes = self.bytes.checked_add(appended_bytes).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("event-log byte offset overflow"),
+            }
+        })?;
+        let events = self.events.checked_add(appended_events).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("event-log sequence overflow"),
+            }
+        })?;
+
+        let offset =
+            EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
+        let prefix_material = format!(
+            "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
+            self.prefix.to_hex(),
+            segment_hash.to_hex(),
+        );
+        let prefix = ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.prefix.v1",
+            &prefix_material,
+        );
+        let current_offset = EventLogOffset::new(prefix, bytes, events);
+        let mut condition_entries = self.condition_entries.clone();
+        condition_entries.extend(entries.iter().cloned());
+        let condition_prefix =
+            ConditionEventLogPrefix::from_scheduler_event_log_entries(condition_entries.clone())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "scheduler emitted invalid condition event-log prefix: {error:?}"
+                    ),
+                })?
+                .with_event_log_offset(current_offset);
+
+        self.prefix = prefix;
+        self.bytes = bytes;
+        self.events = events;
+        self.condition_entries = condition_entries;
+        self.condition_prefix = condition_prefix;
+
+        Ok(SchedulerEventLogAppend {
+            entries,
+            segment_bytes,
+            segment_hash: Some(segment_hash),
+            offset,
+        })
+    }
+}
+
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -4617,11 +4768,7 @@ pub struct SingleScheduler {
     broken_device_delivery_stamp: bool,
     control_inbox: Vec<ControlOperation>,
     decision_rng_cursor: DecisionRngState,
-    event_log_prefix: ContentHash,
-    event_log_bytes: u64,
-    event_log_events: u64,
-    condition_event_log_entries: Vec<SchedulerEventLogEntry>,
-    condition_event_log_prefix: ConditionEventLogPrefix,
+    event_log: EventLog,
     trigger_actions: TriggerActionState,
     trigger_static_topology: Option<WorldStaticTopology>,
     frontier: VirtualTime,
@@ -4667,7 +4814,7 @@ impl SingleScheduler {
         )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
-        let event_log_prefix = scheduler_event_log_empty_prefix();
+        let event_log = EventLog::new();
         let (trigger_actions, replay_fault_sequence) =
             trigger_action_state_from_control_fault_decisions(configuration.schedule.decisions());
 
@@ -4694,12 +4841,7 @@ impl SingleScheduler {
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
             decision_rng_cursor: DecisionRngState::empty(),
-            event_log_prefix,
-            event_log_bytes: 0,
-            event_log_events: 0,
-            condition_event_log_entries: Vec::new(),
-            condition_event_log_prefix: ConditionEventLogPrefix::genesis()
-                .with_event_log_offset(EventLogOffset::new(event_log_prefix, 0, 0)),
+            event_log,
             trigger_actions,
             trigger_static_topology: scenario.trigger_static_topology,
             frontier,
@@ -5048,17 +5190,13 @@ impl SingleScheduler {
     /// Returns the event-log offset reached by completed scheduler EMIT phases.
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
-        EventLogOffset::new(
-            self.event_log_prefix,
-            self.event_log_bytes,
-            self.event_log_events,
-        )
+        self.event_log.offset()
     }
 
     /// Returns the scheduler-owned condition-evaluation prefix.
     #[must_use]
     pub fn condition_event_log_prefix(&self) -> &ConditionEventLogPrefix {
-        &self.condition_event_log_prefix
+        self.event_log.condition_prefix()
     }
 
     /// Returns the scheduler-owned trigger action state.
@@ -5096,14 +5234,14 @@ impl SingleScheduler {
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let mut entries = Vec::new();
         for event in events {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
                 sequence,
                 event.at(),
                 SchedulerEventLogPayload::Observable(event.payload().clone()),
             ));
         }
-        self.append_event_log_entries(entries)
+        self.event_log.append_entries(entries)
     }
 
     /// Appends a deterministic trigger/assertion evaluation boundary.
@@ -5118,12 +5256,13 @@ impl SingleScheduler {
         at: VirtualTime,
         kind: SchedulerEvaluationBoundaryKind,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        let sequence = scheduler_event_log_sequence(self.event_log_events, 0)?;
-        self.append_event_log_entries(vec![scheduler_event_log_entry(
-            sequence,
-            at,
-            SchedulerEventLogPayload::EvaluationBoundary(kind),
-        )])
+        let sequence = self.event_log.next_sequence(0)?;
+        self.event_log
+            .append_entries(vec![scheduler_event_log_entry(
+                sequence,
+                at,
+                SchedulerEventLogPayload::EvaluationBoundary(kind),
+            )])
     }
 
     /// Evaluates an event graph over this scheduler's current condition prefix.
@@ -5141,7 +5280,7 @@ impl SingleScheduler {
         O: ConditionLeafOracle,
     {
         let mut pass = ConditionEvaluationPass::from_log_prefix(
-            self.condition_event_log_prefix.clone(),
+            self.event_log.condition_prefix().clone(),
             oracle,
         )
         .with_timer_fires(self.trigger_actions.armed_timers.clone());
@@ -5161,7 +5300,7 @@ impl SingleScheduler {
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         self.validate_trigger_firings(firings)?;
         let entries = self.trigger_firing_entries(firings)?;
-        self.append_event_log_entries(entries)
+        self.event_log.append_entries(entries)
     }
 
     /// Applies deterministic trigger firings and their action effects atomically.
@@ -5201,14 +5340,14 @@ impl SingleScheduler {
         })?;
         self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
         for application in action_entries {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
                 sequence,
                 application.at,
                 SchedulerEventLogPayload::TriggerActionApplied(application),
             ));
         }
-        let append = self.append_event_log_entries(entries)?;
+        let append = self.event_log.append_entries(entries)?;
         self.trigger_actions = trigger_actions;
         Ok(append)
     }
@@ -5449,7 +5588,7 @@ impl SingleScheduler {
     }
 
     fn validate_trigger_firings(&self, firings: &EventFirings) -> Result<(), SchedulerError> {
-        let current_point = self.condition_event_log_prefix.point();
+        let current_point = self.event_log.condition_prefix().point();
         let current_offset = self.event_log_offset();
         if firings.point() != current_point {
             return Err(SchedulerError::BoundaryViolation {
@@ -5485,7 +5624,7 @@ impl SingleScheduler {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let mut entries = Vec::with_capacity(firings.len());
         for firing in firings.iter() {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
                 sequence,
                 firing.at(),
@@ -7883,11 +8022,11 @@ impl SingleScheduler {
 
         let mut entries = Vec::with_capacity(payloads.len() + 1);
         for (entry_time, payload) in payloads {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(sequence, entry_time, payload));
         }
         if emit_boundary {
-            let sequence = scheduler_event_log_sequence(self.event_log_events, entries.len())?;
+            let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
                 sequence,
                 VirtualTime { ticks: at.nanos },
@@ -7897,82 +8036,7 @@ impl SingleScheduler {
             ));
         }
 
-        self.append_event_log_entries(entries)
-    }
-
-    fn append_event_log_entries(
-        &mut self,
-        entries: Vec<SchedulerEventLogEntry>,
-    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
-        if entries.is_empty() {
-            return Ok(SchedulerEventLogAppend {
-                entries,
-                segment_bytes: Vec::new(),
-                segment_hash: None,
-                offset: self.event_log_offset(),
-            });
-        }
-
-        let segment_bytes = scheduler_event_log_segment_bytes(self.event_log_prefix, &entries);
-        let segment_hash = ContentHash::from_bytes(&segment_bytes);
-        let appended_bytes =
-            u64::try_from(segment_bytes.len()).map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("scheduler event-log segment length exceeds u64"),
-            })?;
-        let appended_events =
-            u64::try_from(entries.len()).map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from("scheduler event-log entry count exceeds u64"),
-            })?;
-        let bytes = self
-            .event_log_bytes
-            .checked_add(appended_bytes)
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("scheduler event-log byte offset overflow"),
-            })?;
-        let events = self
-            .event_log_events
-            .checked_add(appended_events)
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("scheduler event-log sequence overflow"),
-            })?;
-
-        let offset = EventLogOffset::with_appended_segment(
-            self.event_log_prefix,
-            bytes,
-            events,
-            segment_hash,
-        );
-        let prefix_material = format!(
-            "previous_prefix={}\nappended_segment={}\nbytes={bytes}\nevents={events}",
-            self.event_log_prefix.to_hex(),
-            segment_hash.to_hex(),
-        );
-        let event_log_prefix = ContentHash::from_canonical_material(
-            "crucible.scheduler.event-log.prefix.v1",
-            &prefix_material,
-        );
-        let current_offset = EventLogOffset::new(event_log_prefix, bytes, events);
-        let mut condition_event_log_entries = self.condition_event_log_entries.clone();
-        condition_event_log_entries.extend(entries.iter().cloned());
-        let condition_event_log_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries(
-            condition_event_log_entries.clone(),
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
-        })?
-        .with_event_log_offset(current_offset);
-        self.event_log_prefix = event_log_prefix;
-        self.event_log_bytes = bytes;
-        self.event_log_events = events;
-        self.condition_event_log_entries = condition_event_log_entries;
-        self.condition_event_log_prefix = condition_event_log_prefix;
-
-        Ok(SchedulerEventLogAppend {
-            entries,
-            segment_bytes,
-            segment_hash: Some(segment_hash),
-            offset,
-        })
+        self.event_log.append_entries(entries)
     }
 
     fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
