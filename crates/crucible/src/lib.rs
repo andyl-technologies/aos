@@ -15,10 +15,11 @@
 //! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
 //! [`node_fault`] owns VM timing projection for slow and clock-skew faults,
-//! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
-//! boundary, [`trigger`] owns event-graph control flow, [`tracing_bridge`] owns
-//! opt-in host diagnostic mirroring to `tracing`, and `sim_backend` provides the
-//! gated in-process test double.
+//! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
+//! event-kind catalog, [`scheduler`] owns the quantum-loop boundary, [`trigger`]
+//! owns event-graph control flow, [`tracing_bridge`] owns opt-in host diagnostic
+//! mirroring to `tracing`, and `sim_backend` provides the gated in-process test
+//! double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -28,6 +29,7 @@ pub mod backend;
 pub mod decision;
 pub mod device;
 pub mod device_subnode;
+pub mod event_catalog;
 pub mod model;
 pub mod node_fault;
 pub mod scheduler;
@@ -52,6 +54,11 @@ pub use device::{
     ninep_faults_from_combined_ninep, record_device_fault, with_active_io_faults,
 };
 pub use device_subnode::{DeviceDelivery, DeviceSchedulingSubNode};
+pub use event_catalog::{
+    EVENT_KIND_CATALOG_VERSION, EventKindCatalogDependency, EventKindCatalogEntry,
+    event_kind_catalog, event_kind_catalog_canonical_bytes, event_kind_catalog_canonical_material,
+    event_kind_catalog_class, event_kind_catalog_dependency_map, event_kind_catalog_entry,
+};
 pub use model::{
     ActiveFaultTable, ActiveNetworkEdgeDirection, ActiveNetworkEdgeKey, AppRandomDecision,
     AssertionDef, AssertionId, AssertionPhase, BlockFault, Checkpoint, CheckpointKind,

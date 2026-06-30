@@ -4790,6 +4790,10 @@ fn event_payload_from_scheduler_payload(payload: &SchedulerEventLogPayload) -> E
                 EventAttributeValue::Event(firing.event().clone()),
             );
             attributes.insert(
+                String::from("condition"),
+                EventAttributeValue::String(firing.condition_summary().to_owned()),
+            );
+            attributes.insert(
                 String::from("at"),
                 EventAttributeValue::VirtualTime(firing.at()),
             );
@@ -5734,33 +5738,7 @@ fn event_kind_catalog_class_for_entry_construction(
 }
 
 fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogClass> {
-    match payload.kind() {
-        "backend_input"
-        | "io_completion"
-        | "fault_activation"
-        | "probabilistic_fault"
-        | "control"
-        | "delivery_order"
-        | "fault_fires"
-        | "rng_draw"
-        | "override"
-        | "preemption"
-        | "app_random"
-        | "control_fault"
-        | "evaluation_boundary"
-        | "trigger_fired"
-        | "trigger_action_applied" => Some(SchedulerEventLogClass::Causal),
-        "network_delivered"
-        | "console_output"
-        | "coverage"
-        | "memory_sample"
-        | "observed_io_completion"
-        | "node_state"
-        | "guest_marker"
-        | "diagnostic" => Some(SchedulerEventLogClass::Observational),
-        "assertion_evaluated" | "assertion_state_changed" => Some(SchedulerEventLogClass::Causal),
-        _ => None,
-    }
+    crate::event_catalog::event_kind_catalog_class(payload.kind())
 }
 
 fn trigger_action_application_material(application: &TriggerActionApplication) -> String {
@@ -5782,6 +5760,11 @@ fn trigger_firing_material(firing: &EventFiring) -> String {
     lines.push(format!("event_len={}", firing.event().name.len()));
     lines.push(format!("event={}", firing.event().name));
     lines.push(format!("fired_at_ticks={}", firing.at().ticks));
+    lines.push(format!(
+        "condition_summary_len={}",
+        firing.condition_summary().len()
+    ));
+    lines.push(format!("condition_summary={}", firing.condition_summary()));
     lines.push(trigger_action_material("action", firing.action()));
     lines.join("\n")
 }

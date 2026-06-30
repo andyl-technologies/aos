@@ -980,6 +980,11 @@ in rec {
       attrPath = "checks.crucible.phase4.eventLogTracingBridge";
       taskIds = ["T-OBS-12"];
     };
+    eventKindCatalogFreeze = import ./phase4-event-kind-catalog-freeze.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventKindCatalogFreeze";
+      taskIds = ["T-OBS-13"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
