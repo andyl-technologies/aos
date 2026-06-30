@@ -501,6 +501,16 @@ observational entry and **excluded from the determinism fingerprint comparison**
   [`18-assertions-properties.md`](18-assertions-properties.md),
   [`19-observability-event-log.md`](19-observability-event-log.md).
 
+Implementation note: `guest_host_marker_observability` exercises the
+`WhiteboxMarkerPayload` to `ObservableEvent` to `SchedulerEventLogEntry` path and
+asserts that every observational marker family appends with
+`SchedulerEventLogClass::Observational`, the marker's exact retired icount, and a
+guest source. The QEMU plugin test drives the real doorbell callback through an
+engine-backed `WhiteboxMarkerSink`, proving the decoded `WhiteboxMarker` sink
+path appends the same event-log entry. The run-material test compares schedule
+decisions, causal event-log projections, and backend fingerprints with marker
+content and interleaving changed.
+
 - **[GHC-25]** Because markers are observational, the host MUST evaluate
   assertion-flavored markers using the same Always/Sometimes/Reachable semantics
   as 18 (an `always` marker fails the run if its condition is ever false; a
@@ -809,9 +819,17 @@ the transport layer by construction.
   records decoded observational marker payloads, and rejects `random_request` on
   the observational marker path while preserving the existing app-random servicing
   path.
-- [ ] **T-GHC-9** Record every marker as an observational, icount-stamped
+- [x] **T-GHC-9** Record every marker as an observational, icount-stamped
   event-log entry excluded from the determinism comparison; prove markers do not
   move the fingerprint. — satisfies [GHC-24], [GHC-30]; spec §16.5.2, §16.7.
+  Completed by `checks.crucible.phase4.guestHostMarkerObservability`: decoded
+  white-box assertion, lifecycle, event, and coverage marker payloads now append
+  as observational scheduler event-log entries stamped with the exact marker
+  icount and guest source, including through a QEMU-plugin `WhiteboxMarkerSink`
+  fed by the real doorbell callback; schedule decisions, causal event-log
+  projections, and backend fingerprints remain identical when marker content or
+  interleaving changes, while causal decision and backend input changes still
+  move the corresponding run-material witness.
 - [ ] **T-GHC-10** Build `crucible-guest`, a minimal static guest emitter (CLI +
   thin library) mirroring the marker vocabulary, hermetically from source for each
   guest arch from the single-source ABI. — satisfies [GHC-26], [GHC-27], [GHC-29];
