@@ -3721,6 +3721,42 @@ mod tests {
     }
 
     #[test]
+    fn cache_validation_reproduction_args_insert_flag_before_file_separator() {
+        let config = repro_config();
+
+        let args = cache_validation_reproduction_args(
+            &config,
+            Path::new("path with spaces/default.nix"),
+            "pkgs.zlib",
+            DiffMode::Byte,
+        );
+        let args_as_str = args.iter().map(String::as_str).collect::<Vec<_>>();
+
+        assert_eq!(
+            args_as_str,
+            [
+                "aos",
+                "--impure-eval",
+                "nix-diff",
+                "--attr=pkgs.zlib",
+                "--mode=byte",
+                "--cache-validation",
+                "--",
+                "path with spaces/default.nix",
+            ]
+        );
+        assert_eq!(
+            cache_validation_reproduction_command(
+                &config,
+                Path::new("path with spaces/default.nix"),
+                "pkgs.zlib",
+                DiffMode::Byte,
+            ),
+            "aos --impure-eval nix-diff --attr=pkgs.zlib --mode=byte --cache-validation -- 'path with spaces/default.nix'"
+        );
+    }
+
+    #[test]
     fn report_json_renders_structural_divergence_details() {
         let report = DrvDiffReport {
             mode: DiffMode::Structural,

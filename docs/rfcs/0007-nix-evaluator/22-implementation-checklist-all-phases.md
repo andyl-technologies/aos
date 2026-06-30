@@ -4033,7 +4033,9 @@ alone (`M-1`/`Q-A`).
       `nix_diff_parses_cache_validation_smoke_hook_command`,
       `nix_diff_cache_validation_rejects_incompatible_modes`,
       `cache_validation_attr_report_compares_oracle_cache_off_and_cold_cache`,
-      `cache_validation_json_renders_full_closure_matrix_failures`, and
+      `cache_validation_json_renders_full_closure_matrix_failures`,
+      `cache_validation_reproduction_args_insert_flag_before_file_separator`,
+      and
       `cache_validation_full_closure_cleanup_removes_only_successful_cold_roots`
       ([12](12-incremental-evaluation-cache.md) §8.3).
 - [x] Current cache-validation full-closure matrix unit witness:
