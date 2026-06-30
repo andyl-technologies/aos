@@ -4890,20 +4890,50 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
         }
         ObservableEventPayload::AssertionStateChanged { name, state } => {
             attributes.insert(
-                String::from("assertion"),
+                String::from("id"),
                 EventAttributeValue::String(name.name.clone()),
             );
             attributes.insert(
-                String::from("state"),
+                String::from("new_state"),
                 EventAttributeValue::String(format!("{state:?}")),
             );
             EventPayload::new("assertion_state_changed", attributes)
+        }
+        ObservableEventPayload::AssertionEvaluated {
+            name,
+            flavor,
+            condition,
+            message,
+            details,
+        } => {
+            attributes.insert(
+                String::from("id"),
+                EventAttributeValue::String(name.name.clone()),
+            );
+            attributes.insert(
+                String::from("flavor"),
+                EventAttributeValue::String(format!("{flavor:?}")),
+            );
+            attributes.insert(
+                String::from("condition"),
+                EventAttributeValue::Bool(*condition),
+            );
+            attributes.insert(
+                String::from("message"),
+                EventAttributeValue::String(message.clone()),
+            );
+            insert_guest_assertion_details(&mut attributes, details);
+            EventPayload::new("assertion_evaluated", attributes)
         }
         ObservableEventPayload::GuestMarker {
             retired_icount,
             node,
             marker,
         } => {
+            attributes.insert(
+                String::from("marker_kind"),
+                EventAttributeValue::String(String::from("event")),
+            );
             attributes.insert(
                 String::from("node"),
                 EventAttributeValue::Node(node.clone()),
@@ -4924,6 +4954,10 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
             marker,
         } => {
             attributes.insert(
+                String::from("marker_kind"),
+                EventAttributeValue::String(String::from("assert")),
+            );
+            attributes.insert(
                 String::from("node"),
                 EventAttributeValue::Node(node.clone()),
             );
@@ -4932,11 +4966,56 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
                 EventAttributeValue::Icount(*retired_icount),
             );
             attributes.insert(
-                String::from("marker"),
-                EventAttributeValue::String(format!("{marker:?}")),
+                String::from("assertion"),
+                EventAttributeValue::String(marker.id.name.clone()),
             );
-            EventPayload::new("guest_assertion_marker", attributes)
+            attributes.insert(
+                String::from("flavor"),
+                EventAttributeValue::String(format!("{:?}", marker.kind)),
+            );
+            attributes.insert(
+                String::from("condition"),
+                EventAttributeValue::Bool(marker.condition),
+            );
+            attributes.insert(
+                String::from("must_hit"),
+                EventAttributeValue::Bool(marker.must_hit),
+            );
+            attributes.insert(
+                String::from("message"),
+                EventAttributeValue::String(marker.message.clone()),
+            );
+            attributes.insert(
+                String::from("location"),
+                EventAttributeValue::String(marker.location.clone()),
+            );
+            insert_guest_assertion_details(&mut attributes, &marker.details);
+            EventPayload::new("guest_marker", attributes)
         }
+    }
+}
+
+fn insert_guest_assertion_details(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    details: &[crate::trigger::GuestAssertionDetail],
+) {
+    let details_len = match u64::try_from(details.len()) {
+        Ok(details_len) => details_len,
+        Err(_) => u64::MAX,
+    };
+    attributes.insert(
+        String::from("details_len"),
+        EventAttributeValue::U64(details_len),
+    );
+    for (index, detail) in details.iter().enumerate() {
+        attributes.insert(
+            format!("detail.{index}.key"),
+            EventAttributeValue::String(detail.key.clone()),
+        );
+        attributes.insert(
+            format!("detail.{index}.value"),
+            EventAttributeValue::String(detail.value.clone()),
+        );
     }
 }
 
@@ -5075,7 +5154,8 @@ fn observable_payload_icount(
             icount: *retired_icount,
         },
         ObservableEventPayload::NetworkDelivered { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. } => boundary_icount(at),
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. } => boundary_icount(at),
     }
 }
 
@@ -5170,7 +5250,8 @@ fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource
             EventSource::Guest { node: node.clone() }
         }
         ObservableEventPayload::NetworkDelivered { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. } => EventSource::Engine,
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. } => EventSource::Engine,
     }
 }
 
@@ -5198,6 +5279,7 @@ fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
         | ObservableEventPayload::GuestAssertionMarker { .. } => EventLevel::Info,
     }
@@ -5417,10 +5499,9 @@ fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogC
         | "memory_sample"
         | "observed_io_completion"
         | "node_state"
-        | "assertion_state_changed"
         | "guest_marker"
-        | "guest_assertion_marker"
         | "diagnostic" => Some(SchedulerEventLogClass::Observational),
+        "assertion_evaluated" | "assertion_state_changed" => Some(SchedulerEventLogClass::Causal),
         _ => None,
     }
 }

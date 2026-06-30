@@ -869,10 +869,17 @@ log, so they cannot disagree about what happened.
   e2e-determinism gates compare its byte-identical binary serialization while
   excluding observational interleaving, and fat-checkpoint replay explicitly
   rejects inconsistent retained `event_log_offset` state.
-- [ ] **T-OBS-7** Wire assertion checking as a live-or-offline fold over the one
+- [x] **T-OBS-7** Wire assertion checking as a live-or-offline fold over the one
   log (assertion_evaluated/state_changed + watched transitions), folding white-box
   observational markers under the same Always/Sometimes/Reachable semantics. —
   satisfies [OBS-26], [OBS-27]; spec §19.6.1; cross-ref 16, 18.
+  Completed by `checks.crucible.phase4.eventLogAssertionFold`: assertion
+  checking reconstructs checked `ConditionEventLogPrefix` values from the stored
+  scheduler event log and feeds the same `HostAssertionEvaluator` fold live and
+  offline; `assertion_state_changed`/`assertion_evaluated` are fixed as causal
+  catalog kinds, and white-box assertion markers project through typed
+  `guest_marker` entries while preserving the same Always/Sometimes/Reachable
+  verdict semantics.
 - [ ] **T-OBS-8** Wire divergence bisection to localize a determinism failure to
   the first differing causal entry (node+icount, source, kind) with the log as the
   sole input. — satisfies [OBS-28]; spec §19.6.2; cross-ref 24.
