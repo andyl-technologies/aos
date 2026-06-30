@@ -406,6 +406,40 @@ impl PersistCache {
             .map_err(|source| PersistCachedExpressionNodeValueIndexedLoadError::Value { source })
     }
 
+    /// Visits a cached expression payload through one demand-node metadata key.
+    ///
+    /// Missing node metadata, metadata without a materialized value hash, and
+    /// missing indexed value blobs all return `Ok(None)`. Present value blobs
+    /// are mapped, decoded, and rehashed by
+    /// [`Self::with_cached_expression_value_indexed`]. The callback receives a
+    /// reference to the decoded owned value after node-metadata lookup, mapped
+    /// value payload access, and value-store locks have completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueIndexedLoadError`] if node
+    /// metadata cannot be read or the linked value payload cannot be loaded.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics on a node-linked hit.
+    pub fn with_cached_expression_node_value_indexed<R>(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        visit: impl FnOnce(&CachedExpressionValue) -> R,
+    ) -> Result<Option<R>, PersistCachedExpressionNodeValueIndexedLoadError> {
+        let Some(value_hash) =
+            self.lookup_node_materialized_value_hash(node_key)
+                .map_err(
+                    |source| PersistCachedExpressionNodeValueIndexedLoadError::Metadata { source },
+                )?
+        else {
+            return Ok(None);
+        };
+        self.with_cached_expression_value_indexed(value_hash, visit)
+            .map_err(|source| PersistCachedExpressionNodeValueIndexedLoadError::Value { source })
+    }
+
     /// Loads a node-linked payload after value-associated trace revalidation.
     ///
     /// This helper is for trace-backed durable hit selection. Missing node
@@ -434,6 +468,44 @@ impl PersistCache {
         Ok(self
             .load_cached_expression_node_value_trace_hit_with_revalidation(node_key, revalidator)?
             .map(PersistCachedExpressionNodeValueTraceHit::into_value))
+    }
+
+    /// Visits a node-linked payload after value-associated trace revalidation.
+    ///
+    /// This is the callback-shaped counterpart to
+    /// [`Self::load_cached_expression_node_value_with_trace_revalidation`].
+    /// Missing node metadata, missing or stale trace records, tombstone trace
+    /// records, stale input observations, dependency mismatches, and missing
+    /// indexed value blobs all return `Ok(None)`. The callback receives a
+    /// reference to the decoded owned value plus the sorted durable memo-read
+    /// dependency keys after node metadata, node-trace, and mapped value payload
+    /// reads have completed for the selected node and its memo-read
+    /// dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueTraceLoadError`] if node
+    /// metadata, the trace log, or the linked value payload cannot be read.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `revalidator` panics while revalidating persisted inputs, or if
+    /// `visit` panics on a trace-verified hit.
+    pub fn with_cached_expression_node_value_with_trace_revalidation<Revalidator, Output>(
+        &self,
+        node_key: PersistNodeMetadataKey,
+        revalidator: &mut Revalidator,
+        visit: impl FnOnce(&CachedExpressionValue, &[PersistNodeMetadataKey]) -> Output,
+    ) -> Result<Option<Output>, PersistCachedExpressionNodeValueTraceLoadError>
+    where
+        Revalidator: ImpureInputRevalidator + ?Sized,
+    {
+        let Some(hit) = self
+            .load_cached_expression_node_value_trace_hit_with_revalidation(node_key, revalidator)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(visit(&hit.value, hit.memo_read_dependencies())))
     }
 
     pub(crate) fn load_cached_expression_node_value_trace_hit_with_revalidation<R>(

@@ -562,6 +562,95 @@ fn cache_cached_expression_node_payload_materializes_and_loads_by_node_key() {
 }
 
 #[test]
+fn cache_cached_expression_node_payload_borrowed_load_visits_decoded_value_under_scoped_mapping() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let missing =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing"));
+    let reuse_only =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"reuse-only"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let value_store_lock_path = cache
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Values);
+    let node_metadata_lock_path = cache.layout().node_metadata_lock_path();
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("node payload materializes");
+    cache
+        .record_node_materialization_reuse(reuse_only, MaterializationReuse::new(2, 3))
+        .expect("reuse-only metadata records");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    let observed_hash = cache
+        .with_cached_expression_node_value_indexed(node_key, |value| {
+            assert_eq!(value, &payload);
+            let value_store_guard =
+                AdvisoryFileLock::try_lock(&value_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("node value visitor runs after the value-store lock is released");
+            drop(value_store_guard);
+            let node_metadata_guard = AdvisoryFileLock::try_lock(
+                &node_metadata_lock_path,
+                AdvisoryFileLockMode::Exclusive,
+            )
+            .expect("node value visitor runs after the node-metadata lock is released");
+            drop(node_metadata_guard);
+            assert_eq!(
+                cache
+                    .lookup_node_materialized_value_hash(node_key)
+                    .expect("node metadata lookup re-enters from visitor"),
+                Some(value_hash)
+            );
+            assert_eq!(
+                cache
+                    .load_cached_expression_value_indexed(value_hash)
+                    .expect("indexed value lookup re-enters from visitor")
+                    .expect("indexed value exists"),
+                payload
+            );
+            value.value_hash().expect("visited payload hashes")
+        })
+        .expect("borrowed node cached-expression load succeeds")
+        .expect("node-linked value exists");
+
+    assert_eq!(observed_hash, value_hash);
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        2,
+        "node-linked visitors and re-entrant value loads should both use scoped mapped reads"
+    );
+    assert_eq!(
+        cache
+            .with_cached_expression_node_value_indexed(missing, |_| {
+                panic!("missing node metadata should not visit payload")
+            })
+            .expect("missing node lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        cache
+            .with_cached_expression_node_value_indexed(reuse_only, |_| {
+                panic!("reuse-only node metadata should not visit payload")
+            })
+            .expect("reuse-only node lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        2,
+        "node-linked misses should not map the value pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_node_value_root_plan_acquires_value_store_advisory_lock() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

@@ -1902,7 +1902,13 @@ alone (`M-1`/`Q-A`).
       `PersistCache::with_cached_expression_value_indexed` decodes and rehashes
       cached-expression values through the scoped mapped callback before
       visiting the decoded value after the value-store locks are released, while
-      `load_cached_expression_value_indexed` remains an owned decoded-value wrapper;
+      `load_cached_expression_value_indexed` remains an owned decoded-value
+      wrapper; `PersistCache::with_cached_expression_node_value_indexed` and
+      `with_cached_expression_node_value_with_trace_revalidation` visit decoded
+      node-linked cached-expression values and trace-revalidated cached-expression
+      values plus memo-read dependency keys after node metadata, trace, mapped
+      value payload, and value-store locks are released,
+      while their load counterparts remain owned decoded-value wrappers;
       `PersistCache::with_file_artifact_bundle` and
       `PersistCache::with_parse_artifact_bundle` decode and validate
       parse-artifact bundles through the scoped mapped callback before visiting
@@ -1916,9 +1922,10 @@ alone (`M-1`/`Q-A`).
       decode. Focused cached-expression payload, lower-level blob-index, direct
       artifact-read, and artifact-hydration tests require indexed value/file
       reads, cache-level direct raw `read_blob`/`with_blob`,
-      decoded cached-expression value visits, decoded parse-artifact bundle visits,
-      raw file/parse artifact reads,
-      and direct/keyed/entry-shaped/indexed artifact hydration to enter the
+      decoded cached-expression value visits, node-linked decoded
+      cached-expression value visits, trace-revalidated decoded cached-expression
+      value/dependency visits, decoded parse-artifact bundle visits, raw file/parse artifact
+      reads, and direct/keyed/entry-shaped/indexed artifact hydration to enter the
       scoped mapped adapter, hold the selected store advisory lock, reject
       corrupt value-pack payloads, and fail key mismatches before taking the
       files store lock. Blob-index rebuild, liveness, reachability, and
@@ -1928,15 +1935,16 @@ alone (`M-1`/`Q-A`).
       scoped mapped payload checks under the selected store advisory lock, and
       value/file repack apply copies relocated live records through scoped mapped
       payload checks under that same selected store advisory lock. Lower-level
-      `PersistBlobPack::read_blob`, indexed parse-cache hit results, and
-      node/trace-linked cached-expression hit results remain buffered or owned. This
+      `PersistBlobPack::read_blob` and indexed parse-cache hit results remain
+      buffered or owned. This
       is scoped cooperating-writer mmap integration
-      only; public borrowed indexed parse-cache hit APIs, public borrowed
-      node/trace-linked value-hit APIs, LMDB/redb offset indexes, out-of-core
+      only; public borrowed indexed parse-cache hit APIs, LMDB/redb offset indexes, out-of-core
       rematerialization, cross-machine CAS-grade leases, and
       cached/uncached harness proof remain open
       (`C-13`/`R-14`). Gates include
       `cache_cached_expression_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`,
+      `cache_cached_expression_node_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`,
+      `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`,
       `cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_raw_blob_borrowed_read_uses_scoped_mapped_payload`,
@@ -2833,13 +2841,18 @@ alone (`M-1`/`Q-A`).
       `materialize_cached_expression_node_value_indexed`,
       `materialize_cached_expression_node_value_indexed_with_signals`, and
       `load_cached_expression_node_value_indexed` combine that link with the
-      indexed `values/` payload helpers. Skips do not hash, encode, write, or
-      record metadata, and node-key loads return `None` for missing metadata,
-      reuse-only metadata, cleared metadata, or missing value blobs. This is
+      indexed `values/` payload helpers, while
+      `with_cached_expression_node_value_indexed` exposes a callback-scoped
+      decoded value visit after metadata and value-pack locks are released.
+      Skips do not hash, encode, write, or record metadata, and node-key
+      loads/visits return `None` for missing metadata, reuse-only metadata,
+      cleared metadata, or missing value blobs. This is
       explicit cache-level linkage only; evaluator durable hit selection,
       node/value transactionality, lazy-element list or lazy-binding attrset
-      values, public borrowed node-linked value-hit APIs, cost measurement, GC/repack, and
-      cached/uncached harness proof remain open (`C-13`/`C-14`/`S-14`).
+      values, cost measurement, GC/repack, and cached/uncached harness proof
+      remain open (`C-13`/`C-14`/`S-14`). Gates include
+      `cache_cached_expression_node_payload_borrowed_load_visits_decoded_value_under_scoped_mapping`
+      and the existing node-value linkage tests.
 - [x] Current threshold-driven force-cache persistent value writeback:
       tree-walk `force_value` now materializes replayable forced-expression
       payloads through `PersistCache::node_materialization_signals` and
@@ -3065,14 +3078,19 @@ alone (`M-1`/`Q-A`).
       or the newest trace is a tombstone, revalidates each persisted cacheable
       impure input through caller-supplied `ImpureInputRevalidator`, and loads
       the indexed `values/` payload only after every fresh identity and
-      observation hash still matches. The trace lookup itself runs under the
+      observation hash still matches; `with_cached_expression_node_value_with_trace_revalidation`
+      exposes the same validated hit through a callback-scoped decoded value and
+      memo-read dependency visit after metadata, trace, and value-pack locks are
+      released. The trace lookup itself runs under the
       shared node-trace advisory lock and releases it before revalidation or
       value payload loading. This is cache-level durable-hit substrate only: no
       evaluator hit selection, in-memory demand-graph insertion, dirty
       propagation, transactionality with value materialization, currentTime
       taint propagation through persisted dependents, automatic compaction/GC,
-      mmap reads, and cached/uncached harness proof remain open
-      (`C-13`/`R-10`/`S-14`).
+      and cached/uncached harness proof remain open
+      (`C-13`/`R-10`/`S-14`). Gates include
+      `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`
+      and the existing trace-verified node-value load tests.
 - [x] Current force-cache durable hit selection:
       tree-walk forced-expression lookup now tries the trace-verified
       persistent node-value load after an in-memory force-cache miss; pure

@@ -197,6 +197,144 @@ fn cache_cached_expression_node_payload_load_with_trace_revalidation_hits_matchi
 }
 
 #[test]
+fn cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let node_key = PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"node"));
+    let dependency_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"dependency"));
+    let missing_trace_key =
+        PersistNodeMetadataKey::for_impure_input(DurableBlake3Hash::for_bytes(b"missing trace"));
+    let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
+    let dependency_payload =
+        CachedExpressionValue::immediate(Value::int(7)).expect("dependency payload builds");
+    let value_hash = payload.value_hash().expect("payload hashes");
+    let dependency_value_hash = dependency_payload
+        .value_hash()
+        .expect("dependency payload hashes");
+    let dependency_input = test_read_file_fingerprint(b"/tmp/dependency", 7);
+    let trace_payload = PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
+        CacheableInputFingerprint,
+    >())
+    .expect("trace builds")
+    .with_memo_read_dependency_records([(dependency_key, dependency_value_hash)])
+    .expect("trace dependency records");
+    let dependency_trace =
+        PersistNodeTracePayload::from_cacheable_inputs([dependency_input.clone()])
+            .expect("dependency trace builds");
+    let value_store_lock_path = cache
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Values);
+    let node_metadata_lock_path = cache.layout().node_metadata_lock_path();
+    let node_traces_lock_path = cache.layout().node_traces_lock_path();
+
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            node_key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("payload materializes");
+    cache
+        .record_node_trace(node_key, value_hash, &trace_payload)
+        .expect("trace records");
+    cache
+        .materialize_cached_expression_node_value_indexed(
+            dependency_key,
+            &dependency_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("dependency payload materializes");
+    cache
+        .record_node_trace(dependency_key, dependency_value_hash, &dependency_trace)
+        .expect("dependency trace records");
+    cache
+        .record_node_materialized_value_hash(missing_trace_key, value_hash)
+        .expect("missing-trace node value hash records");
+
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
+    let mut revalidator =
+        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(dependency_input)]);
+    let observed_hash = cache
+        .with_cached_expression_node_value_with_trace_revalidation(
+            node_key,
+            &mut revalidator,
+            |value, dependencies| {
+                assert_eq!(value, &payload);
+                assert_eq!(dependencies, &[dependency_key]);
+                let value_store_guard = AdvisoryFileLock::try_lock(
+                    &value_store_lock_path,
+                    AdvisoryFileLockMode::Exclusive,
+                )
+                .expect("trace visitor runs after the value-store lock is released");
+                drop(value_store_guard);
+                let node_metadata_guard = AdvisoryFileLock::try_lock(
+                    &node_metadata_lock_path,
+                    AdvisoryFileLockMode::Exclusive,
+                )
+                .expect("trace visitor runs after the node-metadata lock is released");
+                drop(node_metadata_guard);
+                let node_traces_guard = AdvisoryFileLock::try_lock(
+                    &node_traces_lock_path,
+                    AdvisoryFileLockMode::Exclusive,
+                )
+                .expect("trace visitor runs after the node-traces lock is released");
+                drop(node_traces_guard);
+                assert_eq!(
+                    cache
+                        .lookup_node_materialized_value_hash(node_key)
+                        .expect("node metadata lookup re-enters from trace visitor"),
+                    Some(value_hash)
+                );
+                assert_eq!(
+                    cache
+                        .lookup_node_trace(node_key)
+                        .expect("node trace lookup re-enters from trace visitor")
+                        .expect("node trace exists")
+                        .value_hash(),
+                    value_hash
+                );
+                assert_eq!(
+                    cache
+                        .load_cached_expression_value_indexed(value_hash)
+                        .expect("indexed value lookup re-enters from trace visitor")
+                        .expect("indexed value exists"),
+                    payload
+                );
+                value.value_hash().expect("visited payload hashes")
+            },
+        )
+        .expect("trace-verified borrowed payload lookup succeeds")
+        .expect("trace-verified node value exists");
+
+    assert_eq!(observed_hash, value_hash);
+    assert_eq!(revalidator.calls(), 1);
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        3,
+        "trace dependency, trace visitor, and re-entrant value lookup should all use scoped mapped reads"
+    );
+    let mut missing_trace_revalidator = StaticRevalidator::new(Vec::new());
+    assert_eq!(
+        cache
+            .with_cached_expression_node_value_with_trace_revalidation(
+                missing_trace_key,
+                &mut missing_trace_revalidator,
+                |_, _| panic!("missing trace should not visit payload"),
+            )
+            .expect("missing trace lookup succeeds"),
+        None
+    );
+    assert_eq!(
+        cache.value_pack().mapped_read_count_for_tests(),
+        3,
+        "trace misses should not map the value pack"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_cached_expression_node_payload_trace_revalidation_checks_memo_read_dependencies() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
