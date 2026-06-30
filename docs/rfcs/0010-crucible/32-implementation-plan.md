@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:1b0384b670799d84`
+Checklist sync digest: `rfc0010-checklist-v1:c9b1987ab7751899`
 
 ## The phase ladder
 
@@ -52,8 +52,9 @@ Checklist sync digest: `rfc0010-checklist-v1:1b0384b670799d84`
   Phase 1  Determinism core L0 runtime, decision RNG, time, harness  gate:harness-lint, gate:layer0-determinism,
                             content-addressed store, the test double        gate:content-address, gate:replay-oracle (sim),
                                                                             gate:single-vm-fingerprint (double), gate:divergence-bisect
-  Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:qemu-inert,
-                            host QEMU + plugin, single-VM determinism       gate:patch-microtests, gate:single-vm-fingerprint (real QEMU)
+  Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:layer1-injection,
+                            host QEMU + plugin, single-VM determinism       gate:patch-microtests, gate:qemu-inert,
+                                                                            gate:single-vm-fingerprint (real QEMU)
   Phase 3  Scheduling+I/O   scheduler, I/O sub-nodes, cross-VM        gate:layer1-injection, gate:scheduler-liveness,
                             injection determinism                           gate:adversarial-determinism (2-VM)
   Phase 4  Engine           spatial+temporal graph, faults,           gate:replay-oracle (full), gate:e2e-determinism (mock)
@@ -138,7 +139,8 @@ makes an N-vCPU guest bit-identical (G-10).
 - In-VM plugin (incl. the per-vCPU plugin tasks `T-PLUG-24 … T-PLUG-27`): `T-PLUG-1 … T-PLUG-27` ([`12`](12-qemu-plugin.md)).
 - Patterns realized here: `T-PAT-3, T-PAT-8` ([`29`](29-patterns-and-sketches.md)).
 
-**Exit gates.** `gate:abi-conformance`, `gate:qemu-inert`, `gate:patch-microtests`,
+**Exit gates.** `gate:abi-conformance`, `gate:layer1-injection` (L1 injection
+preflight before L2 gates), `gate:patch-microtests`, `gate:qemu-inert`,
 `gate:single-vm-fingerprint` (real QEMU — Contract A proven, now covering an
 N-vCPU guest), `gate:any-guest` (an unmodified guest boots deterministically, no
 image mutation).

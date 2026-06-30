@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
   taskIds ? ["T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
+  dependencies ? [],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   series = import ../../pkgs/emulation/qemu-patches/_series.nix;
@@ -245,9 +246,11 @@
     && hasInfix "dependencies = [patchMicrotestsCheck];" defaultNix
     && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
   qemuInertImplementedGateWired =
-    hasInfix "qemuInert = import ./phase2-qemu-inert.nix" defaultNix
+    hasInfix "qemuInert = greenBeforeAdvance {" defaultNix
     && hasInfix ''attrPath = "checks.crucible.phase2.gates.qemuInert";'' defaultNix
-    && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
+    && hasInfix "gate = import ./phase2-qemu-inert.nix" defaultNix
+    && hasInfix "patchMicrotests = patchMicrotests.rawGate;" defaultNix
+    && hasInfix "dependencies = [patchMicrotests.rawGate];" defaultNix;
   qemuInertGateUnwired = !(qemuInertRedGateWired || qemuInertImplementedGateWired);
 
   staticFailures =
@@ -293,7 +296,7 @@ in
         pkgs.patch
         pkgs.tar
         pkgs.xz
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

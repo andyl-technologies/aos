@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase4.gates.replayOracle",
   taskIds ? ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -323,7 +324,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

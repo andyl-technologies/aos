@@ -3,9 +3,42 @@
   lib,
 }: let
   redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
-in {
+  greenBeforeAdvance = {
+    attrPath,
+    gate,
+    dependencies,
+  }: let
+    gateSlug = builtins.replaceStrings [":" "." "/"] ["-" "-" "-"] attrPath;
+  in
+    (builtins.derivation {
+      name = "crucible-green-before-advance-${gateSlug}-0";
+      system = lib.system;
+      builder = "${pkgs.bash}/bin/bash";
+      args = [
+        "-c"
+        ''
+          set -eu
+          : "$GATE"
+          mkdir -p "$out"
+          {
+            printf 'PASS\n'
+            printf 'green_before_advance=%s\n' "$ATTR_PATH"
+            printf 'green_before_advance_dependency_count=%s\n' "$DEPENDENCY_COUNT"
+          } > "$out/result"
+        ''
+      ];
+      PATH = "${pkgs.coreutils}/bin";
+      ATTR_PATH = attrPath;
+      DEPENDENCY_COUNT = toString (builtins.length dependencies);
+      GATE = gate;
+    })
+    // {
+      rawGate = gate;
+      passthru.rawGate = gate;
+    };
+in rec {
   phase0 = {
-    gates = {
+    gates = rec {
       blockers = import ./phase0-blockers.nix {
         inherit pkgs;
         attrPath = "checks.crucible.phase0.gates.blockers";
@@ -17,9 +50,15 @@ in {
           (import ./phase0-s11.nix {inherit pkgs lib;})
         ];
       };
-      harnessLint = import ./phase1-harness-lint.nix {
-        inherit pkgs lib;
+      harnessLint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase0.gates.harnessLint";
+        # lint needle: harnessLint = import ./phase1-harness-lint.nix
+        gate = import ./phase1-harness-lint.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase0.gates.harnessLint";
+          dependencies = [blockers];
+        };
+        dependencies = [blockers];
       };
     };
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
@@ -119,6 +158,7 @@ in {
     pluginTimeAdvance = import ./phase1-plugin-time-advance.nix {inherit pkgs lib;};
     pluginRuntimeApis = import ./phase1-plugin-runtime-apis.nix {inherit pkgs lib;};
     rrFingerprintHelpers = import ./phase1-rr-fingerprint-helpers.nix {inherit pkgs lib;};
+    phaseGateOrdering = import ./phase1-phase-gate-ordering.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};
@@ -154,82 +194,124 @@ in {
     timeAdvanceCeiling = import ./phase1-time-advance-ceiling.nix {inherit pkgs lib;};
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
-    gates = {
-      harnessLint = import ./phase1-harness-lint.nix {
-        inherit pkgs lib;
+    gates = rec {
+      harnessLint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.harnessLint";
+        # lint needle: harnessLint = import ./phase1-harness-lint.nix
+        gate = import ./phase1-harness-lint.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.harnessLint";
+          dependencies = [phase0.gates.blockers phase0.gates.harnessLint.rawGate];
+        };
+        dependencies = [phase0.gates.blockers phase0.gates.harnessLint];
       };
-      hostObservableSchedule = import ./phase1-host-observable-schedule.nix {
-        inherit pkgs lib;
+      hostObservableSchedule = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
-        taskIds = ["T-HARN-4"];
+        # lint needle: hostObservableSchedule = import ./phase1-host-observable-schedule.nix
+        gate = import ./phase1-host-observable-schedule.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
+          taskIds = ["T-HARN-4"];
+          dependencies = [harnessLint.rawGate];
+        };
+        dependencies = [harnessLint];
       };
-      layer0Determinism = import ./phase1-layer0-determinism.nix {
-        inherit pkgs lib;
+      layer0Determinism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
-        taskIds = [
-          "T-PLAN-3"
-          "T-HARN-5"
-          "T-DET-1"
-          "T-DET-2"
-          "T-DET-3"
-          "T-DET-4"
-          "T-DET-5"
-          "T-DET-6"
-          "T-DET-7"
-          "T-DET-28"
-          "T-DET-29"
-          "T-DET-30"
-          "T-DET-31"
-          "T-DET-8"
-          "T-DET-9"
-          "T-DET-10"
-          "T-TIME-8"
-          "T-TIME-9"
-        ];
+        # lint needle: layer0Determinism = import ./phase1-layer0-determinism.nix
+        gate = import ./phase1-layer0-determinism.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.layer0Determinism";
+          dependencies = [harnessLint.rawGate];
+          taskIds = [
+            "T-PLAN-3"
+            "T-HARN-5"
+            "T-DET-1"
+            "T-DET-2"
+            "T-DET-3"
+            "T-DET-4"
+            "T-DET-5"
+            "T-DET-6"
+            "T-DET-7"
+            "T-DET-28"
+            "T-DET-29"
+            "T-DET-30"
+            "T-DET-31"
+            "T-DET-8"
+            "T-DET-9"
+            "T-DET-10"
+            "T-TIME-8"
+            "T-TIME-9"
+          ];
+        };
+        dependencies = [harnessLint];
       };
-      contentAddress = import ./phase1-content-address.nix {
-        inherit pkgs lib;
+      contentAddress = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.contentAddress";
-        taskIds = ["T-PLAN-3" "T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
+        # lint needle: contentAddress = import ./phase1-content-address.nix
+        gate = import ./phase1-content-address.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.contentAddress";
+          taskIds = ["T-PLAN-3" "T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
+          dependencies = [layer0Determinism.rawGate];
+        };
+        dependencies = [layer0Determinism];
       };
-      replayOracle = import ./phase1-replay-oracle.nix {
-        inherit pkgs lib;
+      replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.replayOracle";
-        taskIds = [
-          "T-PLAN-3"
-          "T-DET-18"
-          "T-DET-21"
-          "T-DET-27"
-          "T-HARN-12"
-          "T-HARN-13"
-          "T-EXEC-4"
-          "T-EXEC-11"
-          "T-PAT-4"
-          "T-TEMP-3"
-          "T-TEMP-4"
-          "T-TEMP-5"
-          "T-TEMP-7"
-          "T-TEMP-9"
-          "T-TEMP-11"
-        ];
+        # lint needle: replayOracle = import ./phase1-replay-oracle.nix
+        gate = import ./phase1-replay-oracle.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.replayOracle";
+          dependencies = [contentAddress.rawGate phase1.simDouble];
+          taskIds = [
+            "T-PLAN-3"
+            "T-DET-18"
+            "T-DET-21"
+            "T-DET-27"
+            "T-HARN-12"
+            "T-HARN-13"
+            "T-EXEC-4"
+            "T-EXEC-11"
+            "T-PAT-4"
+            "T-TEMP-3"
+            "T-TEMP-4"
+            "T-TEMP-5"
+            "T-TEMP-7"
+            "T-TEMP-9"
+            "T-TEMP-11"
+          ];
+        };
+        dependencies = [contentAddress phase1.simDouble];
       };
-      singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
-        inherit pkgs lib;
+      singleVmFingerprint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
-        taskIds = ["T-PLAN-3" "T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
+        # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
+        gate = import ./phase1-single-vm-fingerprint-gate.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
+          taskIds = ["T-PLAN-3" "T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
+          dependencies = [replayOracle.rawGate phase1.simDouble];
+        };
+        dependencies = [replayOracle phase1.simDouble];
       };
-      divergenceBisect = import ./phase1-divergence-bisect.nix {
-        inherit pkgs lib;
+      divergenceBisect = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.divergenceBisect";
-        taskIds = [
-          "T-PLAN-3"
-          "T-DET-20"
-          "T-HARN-9"
-          "T-HARN-10"
-          "T-HARN-13"
-          "T-EXEC-12"
-        ];
+        # lint needle: divergenceBisect = import ./phase1-divergence-bisect.nix
+        gate = import ./phase1-divergence-bisect.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.divergenceBisect";
+          dependencies = [singleVmFingerprint.rawGate phase1.simDouble];
+          taskIds = [
+            "T-PLAN-3"
+            "T-DET-20"
+            "T-HARN-9"
+            "T-HARN-10"
+            "T-HARN-13"
+            "T-EXEC-12"
+          ];
+        };
+        dependencies = [singleVmFingerprint phase1.simDouble];
       };
     };
   };
@@ -306,34 +388,87 @@ in {
     shmemMultiVcpuNodeSlot = import ./phase2-shmem-multi-vcpu-node-slot.nix {inherit pkgs lib;};
     shmemDeliverability = import ./phase2-shmem-deliverability.nix {inherit pkgs lib;};
     abiConformance = import ./phase2-abi-conformance.nix {inherit pkgs lib;};
-    gates = let
-      patchMicrotestsCheck = import ./phase2-patch-microtests.nix {
-        inherit pkgs lib;
-        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-      };
-    in {
-      abiConformance = import ./phase2-abi-conformance.nix {
-        inherit pkgs lib;
+    gates = rec {
+      abiConformance = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.abiConformance";
-        taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
+        # lint needle: abiConformance = import ./phase2-abi-conformance.nix
+        gate = import ./phase2-abi-conformance.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.abiConformance";
+          taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
+          dependencies = [
+            phase1.gates.harnessLint.rawGate
+            phase1.gates.layer0Determinism.rawGate
+            phase1.gates.contentAddress.rawGate
+            phase1.gates.replayOracle.rawGate
+            phase1.gates.singleVmFingerprint.rawGate
+            phase1.gates.divergenceBisect.rawGate
+          ];
+        };
+        dependencies = [
+          phase1.gates.harnessLint
+          phase1.gates.layer0Determinism
+          phase1.gates.contentAddress
+          phase1.gates.replayOracle
+          phase1.gates.singleVmFingerprint
+          phase1.gates.divergenceBisect
+        ];
       };
-      qemuInert = import ./phase2-qemu-inert.nix {
-        inherit pkgs lib;
+      layer1Injection = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase2.gates.layer1Injection";
+        # lint needle: layer1Injection = import ./phase1-layer1-injection.nix
+        gate = import ./phase1-layer1-injection.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.layer1Injection";
+          taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
+          dependencies = [abiConformance.rawGate];
+        };
+        dependencies = [abiConformance];
+      };
+      patchMicrotests = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
+        # lint needle: patchMicrotests = import ./phase2-patch-microtests.nix
+        gate = import ./phase2-patch-microtests.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.patchMicrotests";
+          taskIds = ["T-PLAN-3" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          dependencies = [layer1Injection.rawGate];
+        };
+        dependencies = [layer1Injection];
+      };
+      qemuInert = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.qemuInert";
-        taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
-        patchMicrotests = patchMicrotestsCheck;
+        # lint needle: qemuInert = import ./phase2-qemu-inert.nix
+        gate = import ./phase2-qemu-inert.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.qemuInert";
+          taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
+          patchMicrotests = patchMicrotests.rawGate;
+          dependencies = [patchMicrotests.rawGate];
+        };
+        dependencies = [patchMicrotests];
       };
-      patchMicrotests = patchMicrotestsCheck;
-      singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
-        inherit pkgs lib;
+      singleVmFingerprint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
-        taskIds = ["T-PLAN-3" "T-HARN-7"];
+        # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
+        gate = import ./phase1-single-vm-fingerprint-gate.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
+          taskIds = ["T-PLAN-3" "T-HARN-7"];
+          dependencies = [qemuInert.rawGate];
+        };
+        dependencies = [qemuInert];
       };
-      anyGuest = import ./phase2-any-guest.nix {
-        inherit pkgs lib;
+      anyGuest = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.anyGuest";
-        taskIds = ["T-PLAN-3" "T-DET-22" "T-HARN-16"];
+        # lint needle: anyGuest = import ./phase2-any-guest.nix
+        gate = import ./phase2-any-guest.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase2.gates.anyGuest";
+          taskIds = ["T-PLAN-3" "T-DET-22" "T-HARN-16"];
+          dependencies = [singleVmFingerprint.rawGate];
+        };
+        dependencies = [singleVmFingerprint];
       };
     };
   };
@@ -488,21 +623,39 @@ in {
       attrPath = "checks.crucible.phase3.blockWireAbi";
       taskIds = ["T-IO-3"];
     };
-    gates = {
-      layer1Injection = import ./phase1-layer1-injection.nix {
-        inherit pkgs lib;
+    gates = rec {
+      layer1Injection = greenBeforeAdvance {
         attrPath = "checks.crucible.phase3.gates.layer1Injection";
-        taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
+        # lint needle: layer1Injection = import ./phase1-layer1-injection.nix
+        gate = import ./phase1-layer1-injection.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase3.gates.layer1Injection";
+          taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
+          dependencies = [phase2.gates.anyGuest.rawGate];
+        };
+        dependencies = [phase2.gates.anyGuest];
       };
-      schedulerLiveness = import ./phase3-scheduler-liveness.nix {
-        inherit pkgs lib;
+      schedulerLiveness = greenBeforeAdvance {
         attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
-        taskIds = ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"];
+        # lint needle: schedulerLiveness = import ./phase3-scheduler-liveness.nix
+        gate = import ./phase3-scheduler-liveness.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
+          taskIds = ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"];
+          dependencies = [layer1Injection.rawGate];
+        };
+        dependencies = [layer1Injection];
       };
-      adversarialDeterminism = import ./phase3-adversarial-determinism.nix {
-        inherit pkgs lib;
+      adversarialDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";
-        taskIds = ["T-PLAN-3" "T-HARN-22"];
+        # lint needle: adversarialDeterminism = import ./phase3-adversarial-determinism.nix
+        gate = import ./phase3-adversarial-determinism.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";
+          taskIds = ["T-PLAN-3" "T-HARN-22"];
+          dependencies = [schedulerLiveness.rawGate];
+        };
+        dependencies = [schedulerLiveness];
       };
     };
   };
@@ -762,16 +915,28 @@ in {
       attrPath = "checks.crucible.phase4.assertionProximityGradient";
       taskIds = ["T-ASRT-18"];
     };
-    gates = {
-      replayOracle = import ./phase4-event-graph-replay-oracle.nix {
-        inherit pkgs lib;
+    gates = rec {
+      replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
-        taskIds = ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"];
+        # lint needle: replayOracle = import ./phase4-event-graph-replay-oracle.nix
+        gate = import ./phase4-event-graph-replay-oracle.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.replayOracle";
+          taskIds = ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"];
+          dependencies = [phase3.gates.adversarialDeterminism.rawGate];
+        };
+        dependencies = [phase3.gates.adversarialDeterminism];
       };
-      e2eDeterminism = import ./phase4-e2e-determinism.nix {
-        inherit pkgs lib;
+      e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
-        taskIds = ["T-PLAN-3" "T-DET-26" "T-ASRT-16"];
+        # lint needle: e2eDeterminism = import ./phase4-e2e-determinism.nix
+        gate = import ./phase4-e2e-determinism.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
+          taskIds = ["T-PLAN-3" "T-DET-26" "T-ASRT-16"];
+          dependencies = [replayOracle.rawGate phase1.simDouble];
+        };
+        dependencies = [replayOracle phase1.simDouble];
       };
     };
   };
@@ -782,22 +947,33 @@ in {
       taskIds = ["T-CLI-1"];
     };
     gates = {
-      controlResponsive = import ./phase5-control-responsive.nix {
-        inherit pkgs lib;
+      controlResponsive = greenBeforeAdvance {
         attrPath = "checks.crucible.phase5.gates.controlResponsive";
-        taskIds = ["T-PLAN-3" "T-HARN-15"];
+        # lint needle: controlResponsive = import ./phase5-control-responsive.nix
+        gate = import ./phase5-control-responsive.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase5.gates.controlResponsive";
+          taskIds = ["T-PLAN-3" "T-HARN-15"];
+          dependencies = [phase4.gates.e2eDeterminism.rawGate];
+        };
+        dependencies = [phase4.gates.e2eDeterminism];
       };
     };
   };
   phase6 = {
     gates = {
-      replayOracle = redGate {
+      replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
-        gateName = "gate:replay-oracle";
-        owner = "crucible";
-        phase = "phase6";
-        taskIds = ["T-PLAN-3" "T-HARN-12"];
-        reason = "advanced replay oracle workload gate is intentionally pending";
+        gate = redGate {
+          attrPath = "checks.crucible.phase6.gates.replayOracle";
+          gateName = "gate:replay-oracle";
+          owner = "crucible";
+          phase = "phase6";
+          taskIds = ["T-PLAN-3" "T-HARN-12"];
+          reason = "advanced replay oracle workload gate is intentionally pending";
+          dependencies = [phase5.gates.controlResponsive.rawGate];
+        };
+        dependencies = [phase5.gates.controlResponsive];
       };
     };
   };
@@ -812,35 +988,56 @@ in {
       attrPath = "checks.crucible.phase7.machineIndependentReproduction";
       taskIds = ["T-HARN-25"];
     };
-    gates = {
-      perfBench = redGate {
+    gates = rec {
+      perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
-        gateName = "gate:perf-bench";
-        owner = "crucible-harness";
-        phase = "phase7";
-        taskIds = ["T-PLAN-3" "T-PERF-1"];
-        reason = "performance benchmark gate is intentionally pending";
+        gate = redGate {
+          attrPath = "checks.crucible.phase7.gates.perfBench";
+          gateName = "gate:perf-bench";
+          owner = "crucible-harness";
+          phase = "phase7";
+          taskIds = ["T-PLAN-3" "T-PERF-1"];
+          reason = "performance benchmark gate is intentionally pending";
+          dependencies = [phase6.gates.replayOracle.rawGate];
+        };
+        dependencies = [phase6.gates.replayOracle];
       };
-      e2eDeterminism = import ./phase7-e2e-determinism.nix {
-        inherit pkgs lib;
+      e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-        taskIds = ["T-PLAN-3" "T-HARN-23"];
+        # lint needle: e2eDeterminism = import ./phase7-e2e-determinism.nix
+        gate = import ./phase7-e2e-determinism.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
+          taskIds = ["T-PLAN-3" "T-HARN-23"];
+          dependencies = [perfBench.rawGate];
+        };
+        dependencies = [perfBench];
       };
-      fleetEquivalence = redGate {
+      fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
-        gateName = "gate:fleet-equivalence";
-        owner = "crucible-harness";
-        phase = "phase7";
-        taskIds = ["T-PLAN-3" "T-DCE-7"];
-        reason = "fleet equivalence gate is intentionally pending";
+        gate = redGate {
+          attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
+          gateName = "gate:fleet-equivalence";
+          owner = "crucible-harness";
+          phase = "phase7";
+          taskIds = ["T-PLAN-3" "T-DCE-7"];
+          reason = "fleet equivalence gate is intentionally pending";
+          dependencies = [e2eDeterminism.rawGate];
+        };
+        dependencies = [e2eDeterminism];
       };
-      campaignContinuity = redGate {
+      campaignContinuity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.campaignContinuity";
-        gateName = "gate:campaign-continuity";
-        owner = "crucible-harness";
-        phase = "phase7";
-        taskIds = ["T-PLAN-3" "T-DCE-9"];
-        reason = "campaign continuity gate is intentionally pending";
+        gate = redGate {
+          attrPath = "checks.crucible.phase7.gates.campaignContinuity";
+          gateName = "gate:campaign-continuity";
+          owner = "crucible-harness";
+          phase = "phase7";
+          taskIds = ["T-PLAN-3" "T-DCE-9"];
+          reason = "campaign continuity gate is intentionally pending";
+          dependencies = [fleetEquivalence.rawGate];
+        };
+        dependencies = [fleetEquivalence];
       };
     };
   };

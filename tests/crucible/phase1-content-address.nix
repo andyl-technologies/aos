@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
   taskIds ? ["T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -1267,7 +1268,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

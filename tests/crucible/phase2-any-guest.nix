@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.anyGuest",
   taskIds ? ["T-DET-22" "T-HARN-16"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -412,7 +413,7 @@ in
         pkgs.rust
         pkgs.sed
         pkgs.socat
-      ];
+      ] ++ dependencies;
 
       INITRAMFS = "${initramfs}/initrd.img";
       KERNEL = builtins.toString pkgs.linux;

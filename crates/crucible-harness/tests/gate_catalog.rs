@@ -116,7 +116,7 @@ fn architecture_red_placeholder_gates_are_wired() {
         ("gate:harness-lint", GatePhase::Always),
         ("gate:layer0-determinism", GatePhase::Phase1),
         ("gate:single-vm-fingerprint", GatePhase::Phase1),
-        ("gate:layer1-injection", GatePhase::Phase3),
+        ("gate:layer1-injection", GatePhase::Phase2),
         ("gate:content-address", GatePhase::Phase1),
         ("gate:replay-oracle", GatePhase::Phase1),
         ("gate:divergence-bisect", GatePhase::Phase1),

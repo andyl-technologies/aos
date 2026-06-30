@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.hostObservableSchedule",
   taskIds ? ["T-HARN-4"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -246,7 +247,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

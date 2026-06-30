@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase4.gates.e2eDeterminism",
   taskIds ? ["T-DET-26" "T-ASRT-16"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -296,11 +297,11 @@
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase4 e2e gate green check";
-        needle = "e2eDeterminism = import ./phase4-e2e-determinism.nix";
+        needle = "gate = import ./phase4-e2e-determinism.nix";
       }
       {
         label = "phase7 e2e final acceptance green check";
-        needle = "e2eDeterminism = import ./phase7-e2e-determinism.nix";
+        needle = "gate = import ./phase7-e2e-determinism.nix";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
@@ -340,7 +341,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

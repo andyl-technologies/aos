@@ -250,7 +250,8 @@ are likewise canonical.
   emitted artifact on a *different* machine profile.
 - **Pass/fail:** bit-identical canonical logs/fingerprints across adversarial
   runs **and** bit-identical reproduction from the artifact.
-- **Guards:** final acceptance; the last gate in the phase plan
+- **Guards:** final acceptance; the terminal Phase 7 final-acceptance
+  determinism gate
   ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
   §Acceptance). **Enforces:** the whole headline contract.
 
@@ -738,10 +739,10 @@ AOS build system, no upstream binaries.
 
 ## 11. The end-to-end determinism gate
 
-`gate:e2e-determinism` is the **final acceptance gate** (the last gate in the
-phase plan, [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
+`gate:e2e-determinism` is the **final acceptance determinism gate** (part of the
+terminal Phase 7 gate set, [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)
 §Acceptance). It is the only gate that exercises the whole system end to end and
-is the concrete meaning of "Crucible is done to this RFC."
+is the concrete meaning of "Crucible is deterministic to this RFC."
 
 - **[HARN-22]** `gate:e2e-determinism` MUST run a **representative multi-VM,
   fault-injected scenario** (several VM nodes + I/O sub-nodes, a fault plan
@@ -822,8 +823,9 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase1  gate:single-vm-fingerprint         (double-backed fingerprint)
   phase1  gate:divergence-bisect             (diagnostic, exercised on doubles)
   phase2  gate:abi-conformance               (L1 ABIs)
-  phase2  gate:qemu-inert                    (sim-off QEMU behavior)
+  phase2  gate:layer1-injection              (L1 injection preflight)
   phase2  gate:patch-microtests              (patch series)
+  phase2  gate:qemu-inert                    (sim-off QEMU behavior)
   phase2  gate:single-vm-fingerprint         (Contract A, real QEMU)
   phase2  gate:any-guest                     (unmodified guest)
   phase3  gate:layer1-injection              (Contract B)
@@ -1061,8 +1063,24 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   from the selected local replay identity with exit code 3, including QEMU build
   identity drift. This closes the shared mock artifact machine-profile route;
   physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
-- [ ] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
+- [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
-</content>
-</invoke>
+  Completed by `checks.crucible.phase1.phaseGateOrdering`:
+  `crucible_harness::phase_plan` now records every ordered phase-gate
+  occurrence from §13 separately from the one-row canonical gate catalog,
+  including repeated gates such as `gate:replay-oracle` and
+  `gate:e2e-determinism`. The model exposes green-before-advance validation by
+  Nix attr path, validates the canonical plan against unknown catalog gates,
+  duplicate attr paths, out-of-order phases, missing phase exits, bad terminal
+  markers, and SimDouble-before-Phase-1 dependencies, and marks the Phase 7
+  `gate:e2e-determinism` occurrence as the terminal final-acceptance
+  determinism gate. `tests/crucible/default.nix` now wraps gate attrs with
+  green-before-advance derivations so later gate occurrences build only after
+  prior gate occurrences and the required Phase 1 `SimDouble` check are green.
+  The `phase_plan` integration test cross-checks the Rust ordering against this
+  section's table and `tests/crucible/default.nix`, proves Phase 1 exposes the
+  `SimDouble` check before double-backed Phase 1 and Phase 4 gates depend on it,
+  verifies HARN-3 lower-layer-before-higher-layer gate precedences, and carries
+  synthetic negative controls for missing terminal e2e, invalid terminal
+  placement, early SimDouble dependency, unknown gates, and layer-order drift.

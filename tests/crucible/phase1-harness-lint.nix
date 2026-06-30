@@ -2,6 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase0.gates.harnessLint",
+  dependencies ? [],
 }: let
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
@@ -1413,22 +1414,20 @@
     ];
     requiredDefaultCheckBlocks = [
       {
-        label = "phase0 gate:harness-lint";
-        text = ''
-          harnessLint = import ./phase1-harness-lint.nix {
-            inherit pkgs lib;
-            attrPath = "checks.crucible.phase0.gates.harnessLint";
-          };
-        '';
+        label = "phase0 gate:harness-lint attr path";
+        text = ''attrPath = "checks.crucible.phase0.gates.harnessLint";'';
       }
       {
-        label = "phase1 gate:harness-lint";
-        text = ''
-          harnessLint = import ./phase1-harness-lint.nix {
-            inherit pkgs lib;
-            attrPath = "checks.crucible.phase1.gates.harnessLint";
-          };
-        '';
+        label = "phase0 gate:harness-lint import";
+        text = "gate = import ./phase1-harness-lint.nix";
+      }
+      {
+        label = "phase1 gate:harness-lint attr path";
+        text = ''attrPath = "checks.crucible.phase1.gates.harnessLint";'';
+      }
+      {
+        label = "phase1 gate:harness-lint import";
+        text = "gate = import ./phase1-harness-lint.nix";
       }
     ];
     harnessFailures =
@@ -1527,7 +1526,7 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [pkgs.coreutils pkgs.crucible];
+      buildDeps = [pkgs.coreutils pkgs.crucible] ++ dependencies;
 
       phases = [
         {

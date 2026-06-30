@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
   taskIds ? ["T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -656,7 +657,7 @@ in
         pkgs.rust
         pkgs.sed
         s1Fingerprint
-      ];
+      ] ++ dependencies;
 
       phases = [
         {

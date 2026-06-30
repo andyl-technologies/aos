@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
   taskIds ? ["T-HARN-23"],
+  dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -148,7 +149,7 @@
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase7 e2e gate imported";
-        needle = "e2eDeterminism = import ./phase7-e2e-determinism.nix";
+        needle = "gate = import ./phase7-e2e-determinism.nix";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
@@ -180,7 +181,7 @@ in
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
-      ];
+      ] ++ dependencies;
 
       phases = [
         {
