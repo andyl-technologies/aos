@@ -61,6 +61,120 @@ fn cache_file_artifact_hydrates_parse_entry_from_materialized_bundle() {
 }
 
 #[test]
+fn cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let meta = bundle.decode_meta().expect("bundle metadata decodes");
+    let payload = bundle.encode().expect("bundle encodes");
+    let file_key = ParseFileKey::for_source("/src/default.nix", source);
+    let materialized = persist
+        .materialize_file_artifact(
+            &file_key,
+            parsed.key,
+            &payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("bundle materializes");
+    let Some(index_value) = materialized.index_value() else {
+        panic!("bundle should materialize");
+    };
+    let files_store_lock_path = persist
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Files);
+
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
+    let observed_node_count = persist
+        .with_file_artifact_bundle(index_value, |observed| {
+            assert_eq!(observed, &bundle);
+            let files_store_guard =
+                AdvisoryFileLock::try_lock(&files_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("file-artifact visitor runs after the files-store lock is released");
+            drop(files_store_guard);
+            assert_eq!(
+                persist
+                    .read_file_artifact(index_value)
+                    .expect("same-root file-artifact read can re-enter from visitor"),
+                payload
+            );
+            observed
+                .decode_meta()
+                .expect("visited bundle metadata decodes")
+                .node_count
+        })
+        .expect("bundle visit succeeds");
+
+    assert_eq!(observed_node_count, meta.node_count);
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 2);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping() {
+    use crate::cache::parse::ParseCache;
+
+    let root = temp_root();
+    let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+    let parse_cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = parse_cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let meta = bundle.decode_meta().expect("bundle metadata decodes");
+    let payload = bundle.encode().expect("bundle encodes");
+    let materialized = persist
+        .materialize_parse_artifact(parsed.key, &payload, MaterializationDecision::Materialize)
+        .expect("bundle materializes");
+    let Some(index_value) = materialized.index_value() else {
+        panic!("bundle should materialize");
+    };
+    let files_store_lock_path = persist
+        .layout()
+        .blob_store_lock_path(PersistBlobStore::Files);
+
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 0);
+    let observed_symbol_count = persist
+        .with_parse_artifact_bundle(index_value, |observed| {
+            assert_eq!(observed, &bundle);
+            let files_store_guard =
+                AdvisoryFileLock::try_lock(&files_store_lock_path, AdvisoryFileLockMode::Exclusive)
+                    .expect("parse-artifact visitor runs after the files-store lock is released");
+            drop(files_store_guard);
+            assert_eq!(
+                persist
+                    .read_parse_artifact(index_value)
+                    .expect("same-root parse-artifact read can re-enter from visitor"),
+                payload
+            );
+            observed
+                .decode_meta()
+                .expect("visited bundle metadata decodes")
+                .symbol_count
+        })
+        .expect("bundle visit succeeds");
+
+    assert_eq!(observed_symbol_count, meta.symbol_count);
+    assert_eq!(persist.file_pack().mapped_read_count_for_tests(), 2);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_file_artifact_hydration_validates_bundle_before_write() {
     use crate::cache::parse::{ParseCache, ParseCacheMeta};
 
