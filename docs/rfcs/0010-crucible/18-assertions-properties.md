@@ -800,13 +800,24 @@ verdict; it only shapes the next schedule the search tries.
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
 > whose primary area is assertions & properties, tracked by [PLAN-3].
 
-- [ ] **T-ASRT-1** Define the closed, versioned five-quantifier property
+- [x] **T-ASRT-1** Define the closed, versioned five-quantifier property
   vocabulary (Always, Sometimes, Eventually-with-deadline, AfterQuiescence,
   Reachable + unreachable dual) with precise temporal semantics, and forbid a
   model checker / spec-language evaluator in the assertion layer; make an
   assertion's predicate the single shared 17a `Condition` vocabulary (one
   predicate type, two consumers: assertion vs trigger). — satisfies
   [ASRT-1], [ASRT-3], [ASRT-30], [NG-3]; spec §18.1, §18.2, §18.12.1.
+  Completed by `checks.crucible.phase4.propertyVocabulary`: `Property` is the
+  closed five-kind quantifier enum over the shared 17a `Predicate`/`Condition`
+  type, with versioned schema metadata (`PROPERTY_SCHEMA_VERSION = 1`, the
+  `crucible.model.properties.v1` domain, binary tags 0..4, canonical labels, and
+  TOML `kind` strings) and `PropertyKind` as the single tag source for
+  binary/material/TOML encoding. The gate round-trips all five quantifiers plus
+  the Reachable warn/fail and unreachable-dual configurations through TOML and
+  compact binary, rejects unknown TOML quantifiers and quantifier-specific field
+  mismatches before identity validation, proves assertion predicates use the same
+  `Condition` value accepted by triggers, and scans the Crucible assertion source
+  for runtime model-checker or spec-language evaluator surfaces.
 - [ ] **T-ASRT-2** Make `Properties` part of the `ScenarioDef` content hash and
   prove property declaration/removal/amendment never changes the run (fingerprint
   unchanged). — satisfies [ASRT-2], [ASRT-25]; spec §18.1, §18.9.
