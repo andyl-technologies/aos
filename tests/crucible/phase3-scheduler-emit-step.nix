@@ -169,8 +169,8 @@
         needle = "EventLogOffset::with_appended_segment";
       }
       {
-        label = "event-log sequence state";
-        needle = "self.event_log_events";
+        label = "event-log sequence owner";
+        needle = "self.event_log.next_sequence";
       }
       {
         label = "STEP helper";
@@ -268,7 +268,7 @@
       }
       {
         label = "dense sequence assertion";
-        needle = "vec![0, 1, 2, 3, 4]";
+        needle = "vec![0, 1, 2, 3, 4, 5]";
       }
       {
         label = "segment assertion";

@@ -920,6 +920,11 @@ in rec {
       attrPath = "checks.crucible.phase4.assertionProximityGradient";
       taskIds = ["T-ASRT-18"];
     };
+    eventLogUnified = import ./phase4-event-log-unified.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.eventLogUnified";
+      taskIds = ["T-OBS-1"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

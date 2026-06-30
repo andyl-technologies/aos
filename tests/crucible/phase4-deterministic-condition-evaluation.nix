@@ -184,8 +184,8 @@
         needle = "pub fn content_hash(&self) -> ContentHash";
       }
       {
-        label = "scheduler-owned condition event-log prefix storage";
-        needle = "condition_event_log_prefix: ConditionEventLogPrefix";
+        label = "scheduler-owned condition prefix projection";
+        needle = "self.event_log.condition_prefix()";
       }
       {
         label = "scheduler-owned condition event-log prefix accessor";
