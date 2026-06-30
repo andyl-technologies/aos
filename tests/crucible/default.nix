@@ -802,6 +802,11 @@ in {
     };
   };
   phase7 = {
+    reproductionArtifactFormat = import ./phase7-reproduction-artifact-format.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.reproductionArtifactFormat";
+      taskIds = ["T-HARN-24"];
+    };
     gates = {
       perfBench = redGate {
         attrPath = "checks.crucible.phase7.gates.perfBench";

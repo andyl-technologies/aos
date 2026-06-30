@@ -16,7 +16,8 @@
 //! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
 //! mock end-to-end determinism gate, [`fingerprint`] compares fingerprint
 //! streams, [`gate_targets`] indexes Cargo gate targets, [`replay_oracle`]
-//! compares replay hashes, and [`spec_index`] owns the crate-to-RFC map.
+//! compares replay hashes, [`reproduction`] owns the versioned reproduction
+//! artifact format, and [`spec_index`] owns the crate-to-RFC map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -29,6 +30,7 @@ pub mod e2e;
 pub mod fingerprint;
 pub mod gate_targets;
 pub mod replay_oracle;
+pub mod reproduction;
 pub mod spec_index;
 
 /// A cross-crate harness component hosted by `crucible-harness`.
