@@ -10,7 +10,7 @@ use ratchet_cache::blob_pack::{
     BlobPackFileReadLease, BlobPackFormatError, BlobPackHash, BlobPackLocation,
     BlobPackPayloadWindow, BlobPackReadError, BlobPackReadLeaseError, BlobPackReader,
     BlobPackRecord, BlobPackRecordRelocation, BlobPackRewriteError, BlobPackTrimError,
-    MappedBlobPack, MappedBlobPackError,
+    MappedBlobPack, MappedBlobPackError, blob_pack_rewrite_paths_alias, write_staged_blob_pack,
 };
 use ratchet_cache::file_lock::AdvisoryFileLock;
 use ratchet_cache::store::ReadOnlyMmapError;
@@ -292,6 +292,12 @@ fn engine_rewrite_error_to_persist(error: BlobPackRewriteError) -> PersistBlobPa
                 actual: engine_location_to_persist(actual),
             }
         }
+    }
+}
+
+impl From<BlobPackRewriteError> for PersistBlobPackError {
+    fn from(error: BlobPackRewriteError) -> Self {
+        engine_rewrite_error_to_persist(error)
     }
 }
 
@@ -839,12 +845,11 @@ impl PersistBlobPack {
 
     /// Writes a compacted mapped copy of the supplied records to `tmp_path`.
     ///
-    /// The temporary pack is staged through the same rewrite primitive as
-    /// [`Self::write_relocated_records_to`] so source/temp alias rejection and
-    /// stale temporary cleanup stay centralized. Each relocated source record is
-    /// then verified through a scoped mapped payload read while `read_lease` is
-    /// held, appended to the temporary pack, and checked against the planned new
-    /// location.
+    /// The temporary pack is staged through the shared engine rewrite helper so
+    /// source/temp alias rejection and stale temporary cleanup stay centralized.
+    /// Each relocated source record is then verified through a scoped mapped
+    /// payload read while `read_lease` is held, appended to the temporary pack,
+    /// and checked against the planned new location.
     ///
     /// # Errors
     ///
@@ -860,43 +865,38 @@ impl PersistBlobPack {
         relocations: &[PersistBlobRecordRelocation],
     ) -> Result<PersistBlobPack, PersistBlobPackError> {
         let tmp_path = tmp_path.into();
-        open_engine_blob_pack_appender(&self.path)?;
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        let tmp_reader = reader
-            .write_relocated_records_to(tmp_path, &[])
-            .map_err(engine_rewrite_error_to_persist)?;
-        let path = tmp_reader.path().to_path_buf();
-        let tmp_appender = open_engine_blob_pack_appender(&path)?;
-        let copy_result = (|| {
-            for relocation in relocations {
-                let hash = relocation.key().hash();
-                let copied = self.with_mapped_blob(
-                    read_lease,
-                    relocation.old_location(),
-                    hash,
-                    |payload| {
-                        tmp_appender
-                            .append_payload(durable_hash_to_engine(hash), payload)
-                            .map_err(engine_append_error_to_persist)
-                    },
-                )??;
-                let copied = engine_location_to_persist(copied);
-                if copied != relocation.new_location() {
-                    return Err(PersistBlobPackError::RecordLocationMismatch {
-                        expected: relocation.new_location(),
-                        actual: copied,
-                    });
-                }
-            }
-            Ok(())
-        })();
-        if let Err(error) = copy_result {
-            let _ = fs::remove_file(&path);
-            return Err(error);
+        if blob_pack_rewrite_paths_alias(&self.path, &tmp_path) {
+            return Err(PersistBlobPackError::SourceEqualsTemp {
+                source_path: self.path.clone(),
+                tmp_path,
+            });
         }
-
-        let reader = open_engine_blob_pack_reader(&path)?;
-        reader.len().map_err(engine_read_error_to_persist)?;
+        open_engine_blob_pack_appender(&self.path)?;
+        let (tmp_appender, tmp_reader, ()) =
+            write_staged_blob_pack(&self.path, tmp_path, |tmp_appender| {
+                for relocation in relocations {
+                    let hash = relocation.key().hash();
+                    let copied = self.with_mapped_blob(
+                        read_lease,
+                        relocation.old_location(),
+                        hash,
+                        |payload| {
+                            tmp_appender
+                                .append_payload(durable_hash_to_engine(hash), payload)
+                                .map_err(engine_append_error_to_persist)
+                        },
+                    )??;
+                    let copied = engine_location_to_persist(copied);
+                    if copied != relocation.new_location() {
+                        return Err(PersistBlobPackError::RecordLocationMismatch {
+                            expected: relocation.new_location(),
+                            actual: copied,
+                        });
+                    }
+                }
+                Ok(())
+            })?;
+        let path = tmp_reader.path().to_path_buf();
         Ok(Self {
             appender: tmp_appender,
             path,

@@ -569,6 +569,56 @@ fn cache_value_blob_pack_repack_rejects_source_path_as_stage_pack() {
 }
 
 #[test]
+fn cache_value_blob_pack_repack_mapped_copy_rejects_source_path_as_stage_pack() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let payload = b"mapped source path as repack stage";
+    let key = PersistBlobKey::new(
+        PersistBlobStore::Values,
+        DurableBlake3Hash::for_bytes(payload),
+    );
+    let entry = cache
+        .append_blob_indexed(key, payload)
+        .expect("indexed value blob appends");
+    let location = entry.location();
+    let plan = cache
+        .plan_blob_pack_repack(PersistBlobStore::Values)
+        .expect("value repack plan builds");
+    let source_path = cache.value_pack().path().to_path_buf();
+    // Alias rejection must return before the mapped read lease is inspected.
+    let advisory_guard = AdvisoryFileLock::lock(
+        cache.layout().locks_dir().join("mapped-alias-unused.lock"),
+        AdvisoryFileLockMode::Exclusive,
+    )
+    .expect("unused advisory lock acquires");
+
+    let error = cache
+        .value_pack()
+        .write_relocated_records_mapped_to(
+            &advisory_guard,
+            source_path.clone(),
+            plan.record_relocations(),
+        )
+        .expect_err("source path as mapped stage pack errors");
+
+    assert!(matches!(
+        error,
+        PersistBlobPackError::SourceEqualsTemp {
+            source_path: actual_source,
+            tmp_path,
+        } if actual_source == source_path && tmp_path == source_path
+    ));
+    assert_eq!(
+        cache
+            .read_blob(key, location)
+            .expect("source pack remains readable"),
+        payload
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cache_value_blob_pack_repack_mapped_copy_removes_stage_pack_on_corrupt_source() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

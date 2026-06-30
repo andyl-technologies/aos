@@ -2,9 +2,9 @@
 //!
 //! RFC-0007 stores immutable `values/` and `files/` payloads in append-only
 //! packfiles. This module owns the stable pack header and record format,
-//! append-only buffered writes, tail trimming, buffered integrity reads that
-//! return owned payload bytes, and memory-mapped reads that return borrowed
-//! payload slices.
+//! append-only buffered writes, tail trimming, rewrite staging, buffered
+//! integrity reads that return owned payload bytes, and memory-mapped reads
+//! that return borrowed payload slices.
 //!
 //! ```text
 //! pack = header || record*
@@ -285,27 +285,7 @@ impl BlobPackReader {
         tmp_path: impl Into<PathBuf>,
         relocations: &[BlobPackRecordRelocation],
     ) -> Result<BlobPackReader, BlobPackRewriteError> {
-        let tmp_path = tmp_path.into();
-        if blob_pack_paths_alias(&self.path, &tmp_path) {
-            return Err(BlobPackRewriteError::SourceEqualsTemp {
-                source_path: self.path.clone(),
-                tmp_path,
-            });
-        }
-        match fs::remove_file(&tmp_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(BlobPackRewriteError::RemoveTemp {
-                    path: tmp_path,
-                    source,
-                });
-            }
-        }
-
-        let tmp_pack = BlobPackAppender::open(tmp_path.clone())
-            .map_err(|source| BlobPackRewriteError::OpenTemp { source })?;
-        let copy_result = (|| {
+        let (_tmp_pack, reader, ()) = write_staged_blob_pack(&self.path, tmp_path, |tmp_pack| {
             for relocation in relocations {
                 let payload = self
                     .read_payload(relocation.old_location(), relocation.hash())
@@ -321,17 +301,7 @@ impl BlobPackReader {
                 }
             }
             Ok(())
-        })();
-        if let Err(error) = copy_result {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(error);
-        }
-
-        let reader = BlobPackReader::open(tmp_path)
-            .map_err(|source| BlobPackRewriteError::ValidateTemp { source })?;
-        reader
-            .len()
-            .map_err(|source| BlobPackRewriteError::ValidateTemp { source })?;
+        })?;
         Ok(reader)
     }
 
@@ -515,7 +485,73 @@ impl BlobPackReader {
     }
 }
 
-fn blob_pack_paths_alias(source_path: &Path, tmp_path: &Path) -> bool {
+/// Writes a staged blob-pack rewrite through a caller-provided append closure.
+///
+/// This helper owns the common rewrite protocol: source/temp alias rejection,
+/// stale temp removal, fresh temporary pack initialization, cleanup when
+/// `write_records` fails, and final temporary-pack validation. The caller owns
+/// the actual relocation strategy and appends records through the supplied
+/// [`BlobPackAppender`].
+///
+/// # Errors
+///
+/// Returns `E` when the staging protocol fails or when `write_records`
+/// returns an error. Staging failures are converted from
+/// [`BlobPackRewriteError`] through `E::from`.
+pub fn write_staged_blob_pack<R, E>(
+    source_path: impl AsRef<Path>,
+    tmp_path: impl Into<PathBuf>,
+    write_records: impl FnOnce(&BlobPackAppender) -> Result<R, E>,
+) -> Result<(BlobPackAppender, BlobPackReader, R), E>
+where
+    E: From<BlobPackRewriteError>,
+{
+    let source_path = source_path.as_ref();
+    let tmp_path = tmp_path.into();
+    if blob_pack_rewrite_paths_alias(source_path, &tmp_path) {
+        return Err(BlobPackRewriteError::SourceEqualsTemp {
+            source_path: source_path.to_path_buf(),
+            tmp_path,
+        }
+        .into());
+    }
+    match fs::remove_file(&tmp_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(BlobPackRewriteError::RemoveTemp {
+                path: tmp_path,
+                source,
+            }
+            .into());
+        }
+    }
+
+    let tmp_pack = BlobPackAppender::open(tmp_path.clone())
+        .map_err(|source| BlobPackRewriteError::OpenTemp { source })?;
+    let output = match write_records(&tmp_pack) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+    };
+    let reader = BlobPackReader::open(tmp_path.clone()).map_err(|source| {
+        let _ = fs::remove_file(&tmp_path);
+        BlobPackRewriteError::ValidateTemp { source }
+    })?;
+    reader.len().map_err(|source| {
+        let _ = fs::remove_file(&tmp_path);
+        BlobPackRewriteError::ValidateTemp { source }
+    })?;
+    Ok((tmp_pack, reader, output))
+}
+
+/// Returns whether a blob-pack rewrite source and temporary path alias.
+///
+/// The check first compares the path strings directly, then falls back to
+/// canonicalized filesystem paths when both paths currently exist.
+pub fn blob_pack_rewrite_paths_alias(source_path: &Path, tmp_path: &Path) -> bool {
     if source_path == tmp_path {
         return true;
     }
