@@ -1909,15 +1909,15 @@ alone (`M-1`/`Q-A`).
       direct/keyed/entry-shaped/indexed artifact hydration to enter the scoped
       mapped adapter, hold the selected store advisory lock, reject corrupt
       value-pack payloads, and fail key mismatches before taking the files store
-      lock. The blob-index rebuild scan adapters also use scoped mapped
-      metadata scans under the selected store advisory lock. Direct raw
-      `read_blob`, reachability pack scans, repack copy/apply paths, and public
-      borrowed parse/value cache results remain buffered or owned. This
-      is scoped cooperating-writer mmap
-      integration only; public borrowed payload APIs, LMDB/redb offset indexes,
-      full mmap maintenance/repack paths, out-of-core rematerialization,
-      cross-machine CAS-grade leases, and cached/uncached harness proof remain
-      open (`C-13`/`R-14`). Gates include
+      lock. Blob-index rebuild, liveness, reachability, and repack-planning
+      scan adapters also use scoped mapped metadata scans under the selected
+      store advisory lock. Direct raw `read_blob`, reachability root
+      verification payload checks, repack copy/apply paths, and public borrowed
+      parse/value cache results remain buffered or owned. This is scoped
+      cooperating-writer mmap integration only; public borrowed payload APIs,
+      LMDB/redb offset indexes, full mmap maintenance/repack paths,
+      out-of-core rematerialization, cross-machine CAS-grade leases, and
+      cached/uncached harness proof remain open (`C-13`/`R-14`). Gates include
       `cache_blob_indexed_io_updates_index_and_reads_by_key`,
       `cache_cached_expression_payload_load_uses_scoped_mapped_value_pack`,
       `cache_cached_expression_payload_load_acquires_value_store_advisory_lock`,
@@ -2151,31 +2151,37 @@ alone (`M-1`/`Q-A`).
       and harness proof remain open (`C-13`/`R-14`).
 - [x] Current read-only value-pack reachability plan:
       `PersistCache::plan_value_blob_reachability` snapshots latest node
-      metadata and `values` blob-index entries, verifies node-rooted records,
-      scans the value pack, and classifies physical records as node-rooted,
-      indexed-without-node-root, or absent from latest index roots while
-      reporting missing node metadata links. The value-index snapshot and
-      value-pack verification/scan run under the shared `values` store advisory
-      lock plus same-root store lock; the node-metadata snapshot holds the
-      shared node-metadata advisory lock plus same-root metadata lock only
-      while collecting metadata entries. This is diagnostic classification only;
-      retention windows, metadata pruning, sidecar repair, pack
-      rewriting/deletion, live-record relocation, automatic GC policy, raw
-      lower-level writer coordination, mmap reads, Attic transport, and harness
-      proof remain open (`C-13`/`R-14`).
+      metadata and `values` blob-index entries, verifies node-rooted records
+      through the existing payload verifier, scans value pack records through
+      scoped mapped metadata under the `values` store advisory lock, and
+      classifies physical records as node-rooted, indexed-without-node-root, or
+      absent from latest index roots while reporting missing node metadata
+      links. The value-index snapshot, root verification, and value-pack scan
+      run under the shared `values` store advisory lock plus same-root store
+      lock; the node-metadata snapshot holds the shared node-metadata advisory
+      lock plus same-root metadata lock only while collecting metadata entries.
+      This is diagnostic classification only; retention windows, metadata
+      pruning, sidecar repair, pack rewriting/deletion, live-record relocation,
+      automatic GC policy, raw lower-level writer coordination, mapped root
+      verification, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`). Gates include
+      `cache_value_blob_reachability_plan_classifies_value_records`.
 - [x] Current read-only file-pack reachability plan:
       `PersistCache::plan_file_blob_reachability` snapshots latest
       file-artifact, parse-artifact, `files` blob-index, and same-process
-      pending artifact roots, verifies captured roots, scans the file pack, and
-      classifies physical records as file-artifact-rooted,
+      pending artifact roots, verifies captured roots through the existing
+      payload verifier, scans file pack records through scoped mapped metadata
+      under the `files` store advisory lock, and classifies physical records as
+      file-artifact-rooted,
       parse-artifact-rooted, pending-artifact-rooted, indexed-without-artifact,
       or absent from all captured roots while holding the shared `files` store
       advisory lock plus same-root store lock. File/parse artifact sidecar
       snapshots also hold shared mapping advisory locks plus the same-root
       mapping locks. This is diagnostic classification only; retention windows,
       sidecar repair, pack rewriting/deletion, live-record relocation, automatic
-      GC policy, raw lower-level writer coordination, mmap reads, Attic
-      transport, and harness proof remain open (`C-13`/`R-14`).
+      GC policy, raw lower-level writer coordination, mapped root verification,
+      Attic transport, and harness proof remain open (`C-13`/`R-14`). Gates
+      include `cache_file_blob_reachability_plan_classifies_file_records`.
 - [x] Current `ratchet-cache` staged file-replacement primitive:
       `ratchet-cache::file_replace::FileReplacementSet` owns ordered staged
       file replacement with stale-backup removal, target-to-backup moves,

@@ -123,9 +123,11 @@ fn cache_value_blob_reachability_plan_classifies_value_records() {
         .expect("value pack metadata before reachability plan")
         .len();
 
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 0);
     let plan = cache
         .plan_value_blob_reachability()
         .expect("value reachability plan builds");
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
 
     assert!(plan.repair_needed());
     assert_eq!(plan.bytes_before(), bytes_before);
@@ -358,9 +360,11 @@ fn cache_file_blob_reachability_plan_classifies_file_records() {
         .expect("file pack metadata before reachability plan")
         .len();
 
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 0);
     let plan = cache
         .plan_file_blob_reachability()
         .expect("file reachability plan builds");
+    assert_eq!(cache.file_pack().mapped_read_count_for_tests(), 1);
 
     assert_eq!(plan.bytes_before(), bytes_before);
     assert_eq!(plan.file_artifact_roots().len(), 1);

@@ -86,8 +86,7 @@ impl PersistCache {
     pub fn plan_value_blob_reachability(
         &self,
     ) -> Result<PersistValueBlobReachabilityPlan, PersistValueBlobReachabilityPlanError> {
-        let (_value_advisory_guard, _value_guard) =
-            self.lock_value_blob_reachability_plan_read()?;
+        let (value_advisory_guard, _value_guard) = self.lock_value_blob_reachability_plan_read()?;
         let metadata_entries = {
             let (_metadata_advisory_guard, _metadata_guard) = self
                 .lock_node_metadata_read()
@@ -137,7 +136,7 @@ impl PersistCache {
             .map_err(|source| PersistValueBlobReachabilityPlanError::Pack { source })?;
         let records = self
             .value_pack
-            .records()
+            .with_mapped_records(&value_advisory_guard, |records| records)
             .map_err(|source| PersistValueBlobReachabilityPlanError::Pack { source })?;
         let mut node_rooted_records = Vec::new();
         let mut indexed_unrooted_records = Vec::new();
@@ -199,7 +198,7 @@ impl PersistCache {
     pub fn plan_file_blob_reachability(
         &self,
     ) -> Result<PersistFileBlobReachabilityPlan, PersistFileBlobReachabilityPlanError> {
-        let (_file_advisory_guard, _file_guard) = self.lock_file_blob_reachability_plan_read()?;
+        let (file_advisory_guard, _file_guard) = self.lock_file_blob_reachability_plan_read()?;
         let pending_artifact_roots = self
             .root_locks
             .pending_file_roots()
@@ -299,7 +298,7 @@ impl PersistCache {
             .map_err(|source| PersistFileBlobReachabilityPlanError::Pack { source })?;
         let records = self
             .file_pack
-            .records()
+            .with_mapped_records(&file_advisory_guard, |records| records)
             .map_err(|source| PersistFileBlobReachabilityPlanError::Pack { source })?;
         let mut file_artifact_rooted_records = Vec::new();
         let mut parse_artifact_rooted_records = Vec::new();
