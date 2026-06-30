@@ -1912,12 +1912,12 @@ alone (`M-1`/`Q-A`).
       corrupt value-pack payloads, and fail key mismatches before taking the
       files store lock. Blob-index rebuild, liveness, reachability, and
       repack-planning scan adapters also use scoped mapped metadata scans under
-      the selected store advisory lock. Value/file reachability root
-      verification also uses scoped mapped payload checks under the selected
-      store advisory lock. Lower-level `PersistBlobPack::read_blob`, node
-      value-root and liveness/tail-trim root verification payload checks, repack
-      copy/apply paths, and public borrowed parse/value cache results remain
-      buffered or owned. This is scoped cooperating-writer mmap integration
+      the selected store advisory lock. Value/file reachability,
+      liveness-plan, and tail-trim root verification also use scoped mapped
+      payload checks under the selected store advisory lock. Lower-level
+      `PersistBlobPack::read_blob`, node value-root root verification payload
+      checks, repack copy/apply paths, and public borrowed parse/value cache
+      results remain buffered or owned. This is scoped cooperating-writer mmap integration
       only; public borrowed payload APIs, LMDB/redb offset indexes, full mmap
       maintenance/repack paths, out-of-core rematerialization, cross-machine
       CAS-grade leases, and cached/uncached harness proof remain open
@@ -2111,20 +2111,22 @@ alone (`M-1`/`Q-A`).
       blob/file-artifact/parse-artifact index entries plus same-process pending
       file/parse artifact roots) while holding the selected store's advisory
       file lock and same-process same-root blob lock plus the file/parse mapping
-      locks for `files/` trims, verifies each referenced pack record, and
+      locks for `files/` trims, verifies each referenced pack record through
+      scoped mapped payload checks under the selected store advisory lock, and
       truncates only unindexed bytes after the highest live record through
       `ratchet-cache::blob_pack::BlobPackAppender::trim_tail`, returning
       `PersistBlobPackTrim` byte/count stats. This is tail-only maintenance for
       unindexed trailing records; applied full-pack repack is covered by the
       explicit helpers below, while raw lower-level pack/sidecar coordination,
-      unrelated maintenance-writer coordination, automatic GC policy, mmap
-      reads, Attic transport, and harness proof remain open (`C-13`/`R-14`).
+      unrelated maintenance-writer coordination, automatic GC policy, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [x] Current read-only blob-pack liveness plan:
-      `PersistCache::plan_blob_pack_liveness` snapshots and verifies the same
-      latest live roots used by tail trimming plus same-process pending
-      file/parse artifact roots, scans selected pack records through scoped
-      mapped metadata under the selected store advisory lock, and classifies
-      verified physical records as rooted or sidecar-unrooted with byte counts
+      `PersistCache::plan_blob_pack_liveness` snapshots the same latest live
+      roots used by tail trimming plus same-process pending file/parse artifact
+      roots, verifies those roots through scoped mapped payload checks, scans
+      selected pack records through scoped mapped metadata under the selected
+      store advisory lock, and classifies verified physical records as rooted or
+      sidecar-unrooted with byte counts
       for current tail-trim candidates while holding the same-root store lock.
       For `files`, file/parse artifact sidecar snapshots also hold shared
       mapping advisory locks plus the same-root mapping locks. This is

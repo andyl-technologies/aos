@@ -225,7 +225,7 @@ fn cache_blob_pack_liveness_plan_classifies_value_records() {
     let plan = cache
         .plan_blob_pack_liveness(PersistBlobStore::Values)
         .expect("value liveness plan builds");
-    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 3);
 
     assert_eq!(plan.live_roots().len(), 2);
     assert!(plan.live_roots().iter().all(|root| {
@@ -330,7 +330,7 @@ fn cache_blob_pack_repack_plan_maps_value_live_records_to_compacted_offsets() {
     let plan = cache
         .plan_blob_pack_repack(PersistBlobStore::Values)
         .expect("value repack plan builds");
-    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 3);
 
     let first_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + first_payload.len() as u64;
     let second_bytes = PERSIST_BLOB_RECORD_HEADER_LEN as u64 + second_payload.len() as u64;
@@ -458,7 +458,7 @@ fn cache_value_blob_pack_repack_relocates_live_values_and_rewrites_index() {
     let plan = cache
         .repack_value_blob_pack()
         .expect("value blob pack repacks");
-    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 1);
+    assert_eq!(cache.value_pack().mapped_read_count_for_tests(), 3);
 
     assert!(plan.reclaimable_bytes() > 0);
     assert_eq!(plan.bytes_before(), bytes_before);

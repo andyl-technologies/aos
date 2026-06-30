@@ -83,7 +83,7 @@ impl PersistCache {
         &self,
         store: PersistBlobStore,
     ) -> Result<PersistBlobPackTrim, PersistBlobPackTrimError> {
-        let (_advisory_guard, _blob_guard) = self.lock_blob_pack_tail_trim(store)?;
+        let (advisory_guard, _blob_guard) = self.lock_blob_pack_tail_trim(store)?;
         let _file_artifact_guard = if store == PersistBlobStore::Files {
             Some(
                 self.lock_file_artifact_write()
@@ -107,7 +107,7 @@ impl PersistCache {
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
         for root in &roots {
             let window = pack
-                .verify_blob(root.location(), root.key().hash())
+                .verify_mapped_blob(&advisory_guard, root.location(), root.key().hash())
                 .map_err(|source| PersistBlobPackTrimError::Read { source })?;
             live_end = live_end.max(window.payload_end());
         }
@@ -201,7 +201,7 @@ impl PersistCache {
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
         for root in &roots {
             let window = pack
-                .verify_blob(root.location(), root.key().hash())
+                .verify_mapped_blob(advisory_guard, root.location(), root.key().hash())
                 .map_err(|source| PersistBlobPackLivenessPlanError::Read { source })?;
             live_end = live_end.max(window.payload_end());
             rooted_identities.insert(blob_record_identity(root.key(), root.location()));
