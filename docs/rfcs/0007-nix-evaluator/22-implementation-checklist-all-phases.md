@@ -865,6 +865,10 @@ alone (`M-1`/`Q-A`).
       free-variable scans also project simple static selects from captured
       lexical slots to selected-value hashes, falling back to the prior
       whole-slot hash when projection cannot be resolved without adding demand.
+      Default-bearing captured static selects now use branch-separated hashes:
+      present branches hash the selected path value and ignore the unused
+      default, while missing branches hash a missing-branch marker plus the
+      default expression's captured free-variable dependencies.
       This lets derivation side-record keys ignore unselected imported attrset
       siblings while preserving positioned-source identity.
       Static `hasAttr` paths over captured lexical slots now use a
@@ -919,7 +923,8 @@ alone (`M-1`/`Q-A`).
       synthetic static-select selected-value/path/site hit/miss,
       unselected-sibling hit, and dynamic-path/unhashable-receiver/
       unhashable-selected-value skip canaries, captured static-select
-      projection hit/miss and suspended-receiver fallback canaries, captured root/imported
+      projection hit/miss, default present/missing branch, and
+      suspended-receiver fallback canaries, captured root/imported
       positioned attrset source-salted
       admission and hit/miss canaries, source-order attrset admission canaries, captured closed-literal lazy-element list and
       lazy-binding attrset admission canaries, captured computed lazy-element list

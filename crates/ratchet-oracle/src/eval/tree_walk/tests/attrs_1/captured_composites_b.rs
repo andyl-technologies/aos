@@ -797,6 +797,154 @@ fn captured_static_select_thunk_for_attrs(
         .expect("captured static select thunk allocates")
 }
 
+fn captured_static_select_default_projection_ir() -> (Ir, Symbol, Symbol) {
+    let mut symbols = SymbolTable::new();
+    let used = symbols.intern(b"used").expect("used interns");
+    let unused = symbols.intern(b"unused").expect("unused interns");
+    let path = IrAttrPathId::new(0);
+    let ir = manual_ir_with_attr_paths(
+        IrId::new(2),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::LocalVar,
+                Span::new(10, 17),
+                IrData::Local { slot: 1 },
+            ),
+            pure_node(
+                IrKind::Select,
+                Span::new(0, 17),
+                IrData::Select {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver: IrId::new(0),
+                    path,
+                    default: Some(IrId::new(1)),
+                },
+            ),
+        ],
+        symbols,
+        vec![Box::new([IrAttrPathSegment::Static(used)])],
+    );
+    (ir, used, unused)
+}
+
+fn captured_static_select_default_nested_let_projection_ir() -> (Ir, Symbol, Symbol) {
+    let mut symbols = SymbolTable::new();
+    let used = symbols.intern(b"used").expect("used interns");
+    let unused = symbols.intern(b"unused").expect("unused interns");
+    let default = symbols.intern(b"default").expect("default interns");
+    let path = IrAttrPathId::new(0);
+    let nodes = vec![
+        pure_node(
+            IrKind::UpvalVar,
+            Span::new(0, 1),
+            IrData::Upval { depth: 1, slot: 0 },
+        ),
+        pure_node(
+            IrKind::UpvalVar,
+            Span::new(10, 17),
+            IrData::Upval { depth: 1, slot: 1 },
+        ),
+        pure_node(
+            IrKind::LocalVar,
+            Span::new(27, 34),
+            IrData::Local { slot: 0 },
+        ),
+        pure_node(
+            IrKind::Select,
+            Span::new(20, 34),
+            IrData::Select {
+                site: IrInlineCacheSiteId::new(0),
+                receiver: IrId::new(0),
+                path,
+                default: Some(IrId::new(2)),
+            },
+        ),
+        pure_node(
+            IrKind::Let,
+            Span::new(0, 34),
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: IrId::new(3),
+                frame: Some(FrameId::new(0)),
+            },
+        ),
+    ];
+    let arena = IrArena::from_raw_parts(nodes, Vec::new());
+    let facts = IrFacts::conservative(arena.nodes().len());
+    let ir = Ir {
+        root: IrId::new(4),
+        arena,
+        facts,
+        symbols,
+        frames: vec![FrameInfo {
+            slot_count: 1,
+            captures: Vec::new().into_boxed_slice(),
+            rec: true,
+            has_with: false,
+        }]
+        .into_boxed_slice(),
+        with_chains: Vec::new().into_boxed_slice(),
+        attr_paths: vec![Box::new([IrAttrPathSegment::Static(used)]) as Box<[IrAttrPathSegment]>]
+            .into_boxed_slice(),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(default),
+            position: Some(Span::new(4, 11)),
+            value: IrId::new(1),
+        }]
+        .into_boxed_slice(),
+        shapes: Vec::new().into_boxed_slice(),
+    };
+    (ir, used, unused)
+}
+
+fn captured_static_select_default_thunk_for_attrs(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    used: Symbol,
+    unused: Symbol,
+    selected_value: Option<Value>,
+    unused_value: Value,
+    default_value: Value,
+) -> Value {
+    let mut entries = Vec::new();
+    if let Some(selected_value) = selected_value {
+        entries.push(AttrEntry::new(used, selected_value));
+    }
+    entries.push(AttrEntry::new(unused, unused_value));
+    let attrs = FlatAttrs::new(entries, &evaluator.symbols).expect("captured receiver attrs build");
+    let captured = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("captured receiver attrs allocate");
+    let frame = EvalFrame::new(2).expect("capture frame allocates");
+    frame
+        .set(0, captured)
+        .expect("receiver capture frame slot sets");
+    frame
+        .set(1, default_value)
+        .expect("default capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("captured defaulted static select thunk allocates")
+}
+
+fn unhashable_apply_thunk(evaluator: &mut TreeWalk, id: IrId) -> Value {
+    evaluator
+        .alloc_apply_thunk(
+            id,
+            Span::new(20, 21),
+            id,
+            Span::new(20, 21),
+            Value::int(1),
+            id,
+            Value::int(2),
+        )
+        .expect("unhashable apply thunk allocates")
+}
+
 #[test]
 fn captured_static_selects_hit_when_unselected_receiver_siblings_change() {
     let (ir, used, unused) = captured_static_select_projection_ir();
@@ -842,6 +990,433 @@ fn captured_static_selects_hit_when_unselected_receiver_siblings_change() {
             evaluator.stats().force_cache_hits() > 0,
             expected_hit,
             "unselected captured receiver siblings should not dirty the selected path key"
+        );
+    }
+}
+
+#[test]
+fn captured_static_select_defaults_hit_when_present_branch_ignores_default_and_siblings() {
+    let (ir, used, unused) = captured_static_select_default_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (offset, expected_hit) in [(0, false), (10, true)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-default-present.nix",
+            "x.used or default",
+            cache.clone(),
+        );
+        let default_value = unhashable_apply_thunk(&mut evaluator, IrId::new(3 + offset));
+        let unused_value = unhashable_apply_thunk(&mut evaluator, IrId::new(4 + offset));
+        let thunk_value = captured_static_select_default_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Some(Value::int(7)),
+            unused_value,
+            default_value,
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured defaulted static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("present defaulted static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "present defaulted selects should hash only the selected branch"
+        );
+
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 17), thunk_value)
+            .expect("captured defaulted static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "unused defaults and siblings should not dirty a present selected path"
+        );
+        for lazy in [default_value, unused_value] {
+            assert_eq!(
+                evaluator
+                    .heap()
+                    .get_thunk(lazy)
+                    .expect("lazy fixture thunk remains heap-owned")
+                    .cell()
+                    .state(),
+                Ok(ThunkState::Suspended),
+                "present select-default branch must not force unused inputs"
+            );
+        }
+    }
+}
+
+#[test]
+fn captured_static_select_defaults_present_nested_let_ignores_bound_default_capture() {
+    let (ir, used, unused) = captured_static_select_default_nested_let_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (default_value, expected_hit) in [(11, false), (12, true)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-default-present-nested-let.nix",
+            "let default = captured; in x.used or default",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_default_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Some(Value::int(7)),
+            Value::int(1),
+            Value::int(default_value),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured nested-let defaulted static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("present nested-let defaulted static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "present nested-let defaults should hash only the selected branch"
+        );
+
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 34), thunk_value)
+            .expect("captured nested-let defaulted static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(7));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "bound default captures should not dirty a present selected path"
+        );
+    }
+}
+
+#[test]
+fn captured_static_select_defaults_miss_when_present_selected_values_change() {
+    let (ir, used, unused) = captured_static_select_default_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for selected_value in [7, 8] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-default-present-change.nix",
+            "x.used or default",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_default_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            Some(Value::int(selected_value)),
+            Value::int(1),
+            Value::int(99),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured defaulted static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("present defaulted static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            1,
+            "present defaulted selects should hash the selected value"
+        );
+
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 17), thunk_value)
+            .expect("captured defaulted static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(selected_value));
+        assert_eq!(
+            evaluator.stats().force_cache_hits(),
+            0,
+            "changed selected values must not false-hit defaulted select payloads"
+        );
+    }
+}
+
+#[test]
+fn captured_static_select_defaults_separate_present_and_missing_equal_values() {
+    let (ir, used, unused) = captured_static_select_default_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut present = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-static-select-default-branch-separation.nix",
+        "x.used or default",
+        cache.clone(),
+    );
+    let present_thunk = captured_static_select_default_thunk_for_attrs(
+        &mut present,
+        &ir,
+        used,
+        unused,
+        Some(Value::int(7)),
+        Value::int(1),
+        Value::int(99),
+    );
+    let present_forced = present
+        .force_admitted_value(ir.root, Span::new(0, 17), present_thunk)
+        .expect("present defaulted select force succeeds");
+    assert_eq!(present_forced.as_int(), Ok(7));
+
+    let mut missing = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-static-select-default-branch-separation.nix",
+        "x.used or default",
+        cache.clone(),
+    );
+    let missing_thunk = captured_static_select_default_thunk_for_attrs(
+        &mut missing,
+        &ir,
+        used,
+        unused,
+        None,
+        Value::int(1),
+        Value::int(7),
+    );
+    let subject = {
+        let thunk = missing
+            .heap()
+            .get_thunk(missing_thunk)
+            .expect("missing defaulted static select thunk is heap-owned");
+        missing
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("missing defaulted static select subject builds")
+    };
+    assert_eq!(
+        subject.free_var_value_hashes.len(),
+        2,
+        "missing branch should hash the branch marker and default capture"
+    );
+    let missing_forced = missing
+        .force_admitted_value(ir.root, Span::new(0, 17), missing_thunk)
+        .expect("missing defaulted select force succeeds");
+    assert_eq!(missing_forced.as_int(), Ok(7));
+    assert_eq!(
+        missing.stats().force_cache_hits(),
+        0,
+        "present and missing branches must not share a payload even with equal results"
+    );
+}
+
+#[test]
+fn captured_static_select_present_defaults_do_not_scan_unused_unsupported_defaults() {
+    let mut symbols = SymbolTable::new();
+    let used = symbols.intern(b"used").expect("used interns");
+    let path = IrAttrPathId::new(0);
+    let ir = manual_ir_with_attr_paths(
+        IrId::new(2),
+        vec![
+            pure_node(IrKind::LocalVar, Span::new(0, 1), IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::AttrSet,
+                Span::new(10, 15),
+                IrData::AttrSet {
+                    shape: IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 0),
+                    recursive: true,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+            pure_node(
+                IrKind::Select,
+                Span::new(0, 15),
+                IrData::Select {
+                    site: IrInlineCacheSiteId::new(0),
+                    receiver: IrId::new(0),
+                    path,
+                    default: Some(IrId::new(1)),
+                },
+            ),
+        ],
+        symbols,
+        vec![Box::new([IrAttrPathSegment::Static(used)])],
+    );
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "captured-static-select-default-unsupported-present.nix",
+        "x.used or rec {}",
+        cache.clone(),
+    );
+    let attrs = FlatAttrs::new(
+        vec![AttrEntry::new(used, Value::int(7))],
+        &evaluator.symbols,
+    )
+    .expect("captured receiver attrs build");
+    let captured = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("captured receiver attrs allocate");
+    let frame = EvalFrame::new(1).expect("capture frame allocates");
+    frame
+        .set(0, captured)
+        .expect("receiver capture frame slot sets");
+    let env = EvalEnv::capture(&[frame]).expect("capture env allocates");
+    let thunk_value = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::with_env(EvalModuleId::ROOT, ir.root, env))
+        .expect("captured defaulted static select thunk allocates");
+    let subject = {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(thunk_value)
+            .expect("present defaulted static select thunk is heap-owned");
+        evaluator
+            .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+            .expect("present branch should not scan the unused unsupported default")
+    };
+    assert_eq!(
+        subject.free_var_value_hashes.len(),
+        1,
+        "present branch should key only on selected value plus branch marker"
+    );
+
+    let forced = evaluator
+        .force_admitted_value(ir.root, Span::new(0, 15), thunk_value)
+        .expect("present defaulted static select force succeeds");
+    assert_eq!(forced.as_int(), Ok(7));
+}
+
+#[test]
+fn captured_static_select_defaults_missing_branch_hashes_default_capture() {
+    let (ir, used, unused) = captured_static_select_default_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (offset, default_value, expected_hit) in [(0, 11, false), (10, 11, true), (20, 12, false)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-default-missing.nix",
+            "x.used or default",
+            cache.clone(),
+        );
+        let unused_value = unhashable_apply_thunk(&mut evaluator, IrId::new(3 + offset));
+        let thunk_value = captured_static_select_default_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            None,
+            unused_value,
+            Value::int(default_value),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured defaulted static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("missing defaulted static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            2,
+            "missing defaulted selects should hash the missing branch and default capture"
+        );
+
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 17), thunk_value)
+            .expect("captured defaulted static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(default_value));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "missing defaulted selects should hit only when the default capture matches"
+        );
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_thunk(unused_value)
+                .expect("unselected sibling remains heap-owned")
+                .cell()
+                .state(),
+            Ok(ThunkState::Suspended),
+            "missing defaulted selects should not force unselected receiver siblings"
+        );
+    }
+}
+
+#[test]
+fn captured_static_select_defaults_missing_nested_let_hashes_bound_default_capture() {
+    let (ir, used, unused) = captured_static_select_default_nested_let_projection_ir();
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    for (default_value, expected_hit) in [(11, false), (11, true), (12, false)] {
+        let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+            &ir,
+            TreeWalkOptions::new(),
+            "captured-static-select-default-missing-nested-let.nix",
+            "let default = captured; in x.used or default",
+            cache.clone(),
+        );
+        let thunk_value = captured_static_select_default_thunk_for_attrs(
+            &mut evaluator,
+            &ir,
+            used,
+            unused,
+            None,
+            Value::int(1),
+            Value::int(default_value),
+        );
+        let subject = {
+            let thunk = evaluator
+                .heap()
+                .get_thunk(thunk_value)
+                .expect("captured nested-let defaulted static select thunk is heap-owned");
+            evaluator
+                .force_cache_subject_for_thunk(EvalNodeRef::new(EvalModuleId::ROOT, ir.root), thunk)
+                .expect("missing nested-let defaulted static select subject builds")
+        };
+        assert_eq!(
+            subject.free_var_value_hashes.len(),
+            2,
+            "missing nested-let defaults should hash the missing branch and bound default capture"
+        );
+
+        let hits_before = evaluator.stats().force_cache_hits();
+        let forced = evaluator
+            .force_admitted_value(ir.root, Span::new(0, 34), thunk_value)
+            .expect("captured nested-let defaulted static select force succeeds");
+
+        assert_eq!(forced.as_int(), Ok(default_value));
+        assert_eq!(
+            evaluator.stats().force_cache_hits() > hits_before,
+            expected_hit,
+            "missing nested-let defaults should hit only when the bound default capture matches"
         );
     }
 }

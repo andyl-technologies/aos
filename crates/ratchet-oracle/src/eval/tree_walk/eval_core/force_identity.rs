@@ -2,7 +2,7 @@
 
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum CapturedFreeVariableDependency {
     Slot {
         frame_index: usize,
@@ -17,7 +17,41 @@ enum CapturedFreeVariableDependency {
         frame_index: usize,
         slot: u32,
         path: u32,
+        default: Option<DefaultSelectDependency>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DefaultSelectDependency {
+    node: u32,
+    nested_frame_count: usize,
+    static_scopes: Box<[StaticBindingScope]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct StaticBindingScope {
+    start: u32,
+    len: u32,
+}
+
+impl From<IrBindingSlice> for StaticBindingScope {
+    fn from(slice: IrBindingSlice) -> Self {
+        Self {
+            start: slice.start,
+            len: slice.len,
+        }
+    }
+}
+
+impl StaticBindingScope {
+    fn as_binding_slice(self) -> IrBindingSlice {
+        IrBindingSlice::new(self.start, self.len)
+    }
+}
+
+enum StaticSelectProjection {
+    Present(ValueHash),
+    Missing,
 }
 
 impl TreeWalk {
@@ -73,14 +107,29 @@ impl TreeWalk {
                     frame_index,
                     slot,
                     path,
+                    default,
                 } => {
                     let receiver = frames.get(frame_index)?.get(slot).ok()?;
-                    self.force_cache_static_select_value_hash(
-                        body.module(),
-                        receiver,
-                        IrAttrPathId::new(path),
-                    )
-                    .or_else(|| self.force_cache_free_var_value_hash(receiver))?
+                    match default {
+                        Some(default) => {
+                            self.force_cache_static_select_default_value_hashes(
+                                body.module(),
+                                frames,
+                                receiver,
+                                IrAttrPathId::new(path),
+                                &default,
+                                &mut hashes,
+                            )?;
+                            continue;
+                        }
+                        None => self
+                            .force_cache_static_select_value_hash(
+                                body.module(),
+                                receiver,
+                                IrAttrPathId::new(path),
+                            )
+                            .or_else(|| self.force_cache_free_var_value_hash(receiver))?,
+                    }
                 }
             };
             hashes.push(hash);
@@ -139,6 +188,18 @@ impl TreeWalk {
         receiver: Value,
         path: IrAttrPathId,
     ) -> Option<ValueHash> {
+        match self.force_cache_static_select_projection(module_id, receiver, path)? {
+            StaticSelectProjection::Present(hash) => Some(hash),
+            StaticSelectProjection::Missing => None,
+        }
+    }
+
+    fn force_cache_static_select_projection(
+        &self,
+        module_id: EvalModuleId,
+        receiver: Value,
+        path: IrAttrPathId,
+    ) -> Option<StaticSelectProjection> {
         let module = self.modules.get(module_id.index())?;
         let segments = module.ir.attr_paths.get(path.index())?;
         if segments.is_empty() {
@@ -155,11 +216,13 @@ impl TreeWalk {
             let current_value = self
                 .force_cache_cached_or_capture_alias_non_thunk_value(current, &mut seen_thunks)?;
             if current_value.tag() != ValueTag::Attrs {
-                return None;
+                return Some(StaticSelectProjection::Missing);
             }
             let selected = {
                 let attrs = self.heap.get_attrs(current_value).ok()?;
-                let entry = attrs.get_entry(symbol)?;
+                let Some(entry) = attrs.get_entry(symbol) else {
+                    return Some(StaticSelectProjection::Missing);
+                };
                 if let Some(position) = entry.position {
                     position_identities
                         .insert(self.force_cache_attr_position_identity_hash(position)?);
@@ -169,7 +232,7 @@ impl TreeWalk {
             if index + 1 == segments.len() {
                 let selected_hash = self.force_cache_free_var_value_hash(selected)?;
                 if position_identities.is_empty() {
-                    return Some(selected_hash);
+                    return Some(StaticSelectProjection::Present(selected_hash));
                 }
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
@@ -180,14 +243,151 @@ impl TreeWalk {
                 for identity in position_identities {
                     hasher.update(&identity.as_bytes());
                 }
-                return Some(ValueHash::from_canonical_value_hash(
-                    DurableBlake3Hash::from_hasher(hasher),
+                return Some(StaticSelectProjection::Present(
+                    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher)),
                 ));
             }
             current = selected;
         }
 
         None
+    }
+
+    fn force_cache_static_select_default_value_hashes(
+        &self,
+        module_id: EvalModuleId,
+        frames: &[Rc<EvalFrame>],
+        receiver: Value,
+        path: IrAttrPathId,
+        default: &DefaultSelectDependency,
+        hashes: &mut Vec<ValueHash>,
+    ) -> Option<()> {
+        match self.force_cache_static_select_projection(module_id, receiver, path) {
+            Some(StaticSelectProjection::Present(selected_hash)) => {
+                hashes.push(Self::force_cache_static_select_default_branch_hash(
+                    b"present",
+                    Some(selected_hash),
+                )?);
+                Some(())
+            }
+            Some(StaticSelectProjection::Missing) => {
+                hashes.push(Self::force_cache_static_select_default_branch_hash(
+                    b"missing", None,
+                )?);
+                let default_dependencies =
+                    self.captured_static_select_default_dependencies(module_id, frames, default)?;
+                for dependency in default_dependencies {
+                    self.push_captured_free_variable_dependency_hash(
+                        module_id,
+                        frames,
+                        &dependency,
+                        hashes,
+                    )?;
+                }
+                Some(())
+            }
+            None => {
+                hashes.push(self.force_cache_free_var_value_hash(receiver)?);
+                let default_dependencies =
+                    self.captured_static_select_default_dependencies(module_id, frames, default)?;
+                for dependency in default_dependencies {
+                    self.push_captured_free_variable_dependency_hash(
+                        module_id,
+                        frames,
+                        &dependency,
+                        hashes,
+                    )?;
+                }
+                Some(())
+            }
+        }
+    }
+
+    fn captured_static_select_default_dependencies(
+        &self,
+        module_id: EvalModuleId,
+        frames: &[Rc<EvalFrame>],
+        default: &DefaultSelectDependency,
+    ) -> Option<BTreeSet<CapturedFreeVariableDependency>> {
+        let module = self.modules.get(module_id.index())?;
+        Self::captured_free_variable_dependencies_from_with_static_scopes(
+            &module.ir,
+            IrId::new(default.node),
+            frames.len(),
+            default.nested_frame_count,
+            &default.static_scopes,
+        )
+    }
+
+    fn push_captured_free_variable_dependency_hash(
+        &self,
+        module_id: EvalModuleId,
+        frames: &[Rc<EvalFrame>],
+        dependency: &CapturedFreeVariableDependency,
+        hashes: &mut Vec<ValueHash>,
+    ) -> Option<()> {
+        let hash = match dependency {
+            CapturedFreeVariableDependency::Slot { frame_index, slot } => {
+                let value = frames.get(*frame_index)?.get(*slot).ok()?;
+                self.force_cache_free_var_value_hash(value)?
+            }
+            CapturedFreeVariableDependency::StaticHasAttr {
+                frame_index,
+                slot,
+                path,
+            } => {
+                let receiver = frames.get(*frame_index)?.get(*slot).ok()?;
+                self.force_cache_static_has_attr_value_hash(
+                    module_id,
+                    receiver,
+                    IrAttrPathId::new(*path),
+                )
+                .or_else(|| self.force_cache_free_var_value_hash(receiver))?
+            }
+            CapturedFreeVariableDependency::StaticSelect {
+                frame_index,
+                slot,
+                path,
+                default,
+            } => {
+                let receiver = frames.get(*frame_index)?.get(*slot).ok()?;
+                if let Some(default) = default {
+                    self.force_cache_static_select_default_value_hashes(
+                        module_id,
+                        frames,
+                        receiver,
+                        IrAttrPathId::new(*path),
+                        default,
+                        hashes,
+                    )?;
+                    return Some(());
+                }
+                self.force_cache_static_select_value_hash(
+                    module_id,
+                    receiver,
+                    IrAttrPathId::new(*path),
+                )
+                .or_else(|| self.force_cache_free_var_value_hash(receiver))?
+            }
+        };
+        hashes.push(hash);
+        Some(())
+    }
+
+    fn force_cache_static_select_default_branch_hash(
+        branch: &[u8],
+        selected_hash: Option<ValueHash>,
+    ) -> Option<ValueHash> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION);
+        hasher.update(b"static-select-default");
+        Self::update_cache_identity_chunk(&mut hasher, branch)?;
+        if let Some(selected_hash) = selected_hash {
+            hasher.update(&selected_hash.as_durable_hash().as_bytes());
+        }
+        Some(ValueHash::from_canonical_value_hash(
+            DurableBlake3Hash::from_hasher(hasher),
+        ))
     }
 
     fn force_cache_static_has_attr_value_hash(
@@ -691,17 +891,48 @@ impl TreeWalk {
         root: IrId,
         captured_frame_count: usize,
     ) -> Option<BTreeSet<CapturedFreeVariableDependency>> {
+        Self::captured_free_variable_dependencies_from(ir, root, captured_frame_count, 0)
+    }
+
+    fn captured_free_variable_dependencies_from(
+        ir: &Ir,
+        root: IrId,
+        captured_frame_count: usize,
+        initial_nested_frame_count: usize,
+    ) -> Option<BTreeSet<CapturedFreeVariableDependency>> {
+        Self::captured_free_variable_dependencies_from_with_static_scopes(
+            ir,
+            root,
+            captured_frame_count,
+            initial_nested_frame_count,
+            &[],
+        )
+    }
+
+    fn captured_free_variable_dependencies_from_with_static_scopes(
+        ir: &Ir,
+        root: IrId,
+        captured_frame_count: usize,
+        initial_nested_frame_count: usize,
+        initial_static_scopes: &[StaticBindingScope],
+    ) -> Option<BTreeSet<CapturedFreeVariableDependency>> {
         let mut visited = BTreeSet::new();
         let mut dependencies = BTreeSet::new();
-        let mut stack = vec![(root, 0usize)];
-        while let Some((id, nested_frame_count)) = stack.pop() {
-            if !visited.insert((id.as_u32(), nested_frame_count)) {
+        let mut stack = vec![(
+            root,
+            initial_nested_frame_count,
+            initial_static_scopes.to_vec(),
+        )];
+        while let Some((id, nested_frame_count, static_scopes)) = stack.pop() {
+            if !visited.insert((id.as_u32(), nested_frame_count, static_scopes.clone())) {
                 continue;
             }
             let node = ir.arena.node(id)?;
             match node.data {
                 IrData::Local { slot } => {
                     if nested_frame_count > 0 {
+                        let binding = Self::static_scope_binding(ir, &static_scopes, 0, slot)?;
+                        stack.push((binding.value, nested_frame_count, static_scopes));
                         continue;
                     }
                     let frame_index = captured_frame_count.checked_sub(1)?;
@@ -710,6 +941,10 @@ impl TreeWalk {
                 IrData::Upval { depth, slot } => {
                     let depth = depth as usize;
                     if depth < nested_frame_count {
+                        let binding = Self::static_scope_binding(ir, &static_scopes, depth, slot)?;
+                        let nested_frame_count = nested_frame_count.checked_sub(depth)?;
+                        let static_scopes = static_scopes.get(depth..)?.to_vec();
+                        stack.push((binding.value, nested_frame_count, static_scopes));
                         continue;
                     }
                     let captured_depth = depth - nested_frame_count;
@@ -727,26 +962,27 @@ impl TreeWalk {
                     default,
                     ..
                 } => {
-                    if default.is_none()
-                        && let Some(dependency) = Self::captured_static_select_dependency(
-                            ir,
-                            receiver,
-                            path,
-                            captured_frame_count,
-                            nested_frame_count,
-                        )
-                    {
+                    if let Some(dependency) = Self::captured_static_select_dependency(
+                        ir,
+                        receiver,
+                        path,
+                        default,
+                        captured_frame_count,
+                        nested_frame_count,
+                        &static_scopes,
+                    ) {
                         dependencies.insert(dependency);
                         continue;
                     }
 
                     let mut children = Vec::new();
                     Self::push_ir_children(ir, node, &mut children).then_some(())?;
-                    stack.extend(
-                        children
-                            .into_iter()
-                            .map(|child| (child, nested_frame_count)),
-                    );
+                    Self::extend_dependency_walk_stack(
+                        &mut stack,
+                        children,
+                        nested_frame_count,
+                        &static_scopes,
+                    )?;
                 }
                 IrData::HasAttr { receiver, path, .. } => {
                     if let Some(dependency) = Self::captured_static_has_attr_dependency(
@@ -762,20 +998,23 @@ impl TreeWalk {
 
                     let mut children = Vec::new();
                     Self::push_ir_children(ir, node, &mut children).then_some(())?;
-                    stack.extend(
-                        children
-                            .into_iter()
-                            .map(|child| (child, nested_frame_count)),
-                    );
+                    Self::extend_dependency_walk_stack(
+                        &mut stack,
+                        children,
+                        nested_frame_count,
+                        &static_scopes,
+                    )?;
                 }
                 IrData::Let { bindings, body, .. } => {
                     let nested_frame_count = nested_frame_count.checked_add(1)?;
-                    stack.push((body, nested_frame_count));
-                    Self::push_reachable_static_binding_values_with_scope(
+                    let static_scopes = Self::static_scopes_with_scope(&static_scopes, bindings)?;
+                    stack.push((body, nested_frame_count, static_scopes.clone()));
+                    Self::push_reachable_static_binding_values_with_dependency_scope(
                         ir,
                         bindings,
                         body,
                         nested_frame_count,
+                        &static_scopes,
                         &mut stack,
                     )
                     .then_some(())?;
@@ -809,11 +1048,12 @@ impl TreeWalk {
                 } => {
                     let mut children = Vec::new();
                     Self::push_ir_children(ir, node, &mut children).then_some(())?;
-                    stack.extend(
-                        children
-                            .into_iter()
-                            .map(|child| (child, nested_frame_count)),
-                    );
+                    Self::extend_dependency_walk_stack(
+                        &mut stack,
+                        children,
+                        nested_frame_count,
+                        &static_scopes,
+                    )?;
                 }
             }
         }
@@ -852,8 +1092,10 @@ impl TreeWalk {
         ir: &Ir,
         receiver: IrId,
         path: IrAttrPathId,
+        default: Option<IrId>,
         captured_frame_count: usize,
         nested_frame_count: usize,
+        static_scopes: &[StaticBindingScope],
     ) -> Option<CapturedFreeVariableDependency> {
         let segments = ir.attr_paths.get(path.index())?;
         if segments.is_empty()
@@ -869,10 +1111,16 @@ impl TreeWalk {
             captured_frame_count,
             nested_frame_count,
         )?;
+        let default = default.map(|default| DefaultSelectDependency {
+            node: default.as_u32(),
+            nested_frame_count,
+            static_scopes: static_scopes.to_vec().into_boxed_slice(),
+        });
         Some(CapturedFreeVariableDependency::StaticSelect {
             frame_index,
             slot,
             path: path.as_u32(),
+            default,
         })
     }
 
@@ -1509,6 +1757,79 @@ impl TreeWalk {
         true
     }
 
+    fn extend_dependency_walk_stack(
+        stack: &mut Vec<(IrId, usize, Vec<StaticBindingScope>)>,
+        children: Vec<IrId>,
+        nested_frame_count: usize,
+        static_scopes: &[StaticBindingScope],
+    ) -> Option<()> {
+        stack.try_reserve_exact(children.len()).ok()?;
+        for child in children {
+            stack.push((child, nested_frame_count, static_scopes.to_vec()));
+        }
+        Some(())
+    }
+
+    fn static_scopes_with_scope(
+        parent: &[StaticBindingScope],
+        bindings: IrBindingSlice,
+    ) -> Option<Vec<StaticBindingScope>> {
+        let mut scopes = Vec::new();
+        scopes
+            .try_reserve_exact(parent.len().checked_add(1)?)
+            .ok()?;
+        scopes.push(StaticBindingScope::from(bindings));
+        scopes.extend_from_slice(parent);
+        Some(scopes)
+    }
+
+    fn static_scope_binding<'a>(
+        ir: &'a Ir,
+        static_scopes: &[StaticBindingScope],
+        depth: usize,
+        slot: u32,
+    ) -> Option<&'a IrBinding> {
+        let scope = static_scopes.get(depth)?.as_binding_slice();
+        let bindings = Self::binding_slice(ir, scope)?;
+        bindings.get(slot as usize)
+    }
+
+    fn push_reachable_static_binding_values_with_dependency_scope(
+        ir: &Ir,
+        bindings: IrBindingSlice,
+        body: IrId,
+        nested_frame_count: usize,
+        static_scopes: &[StaticBindingScope],
+        stack: &mut Vec<(IrId, usize, Vec<StaticBindingScope>)>,
+    ) -> bool {
+        let Some(binding_values) = Self::binding_slice(ir, bindings) else {
+            return false;
+        };
+        if !binding_values
+            .iter()
+            .all(|binding| matches!(binding.key, IrAttrPathSegment::Static(_)))
+        {
+            return false;
+        }
+        let Some(reachable) =
+            Self::reachable_let_binding_slots_for_dependencies(ir, body, binding_values)
+        else {
+            stack.extend(
+                binding_values
+                    .iter()
+                    .map(|binding| (binding.value, nested_frame_count, static_scopes.to_vec())),
+            );
+            return true;
+        };
+        for slot in reachable {
+            let Some(binding) = binding_values.get(slot) else {
+                return false;
+            };
+            stack.push((binding.value, nested_frame_count, static_scopes.to_vec()));
+        }
+        true
+    }
+
     fn push_reachable_static_binding_values_with_scope(
         ir: &Ir,
         bindings: IrBindingSlice,
@@ -1584,6 +1905,71 @@ impl TreeWalk {
             }
         }
         Some(reachable)
+    }
+
+    fn reachable_let_binding_slots_for_dependencies(
+        ir: &Ir,
+        body: IrId,
+        bindings: &[IrBinding],
+    ) -> Option<BTreeSet<usize>> {
+        let mut reachable = BTreeSet::new();
+        let mut visited_nodes = BTreeSet::new();
+        let mut stack = vec![body];
+        while let Some(id) = stack.pop() {
+            if !visited_nodes.insert(id.as_u32()) {
+                continue;
+            }
+            let node = ir.arena.node(id)?;
+            match node.data {
+                IrData::Local { slot } => {
+                    let slot = slot as usize;
+                    if slot >= bindings.len() {
+                        return None;
+                    }
+                    if reachable.insert(slot) {
+                        stack.push(bindings.get(slot)?.value);
+                    }
+                }
+                IrData::Select {
+                    receiver,
+                    path,
+                    default: Some(_),
+                    ..
+                } if Self::attr_path_is_static(ir, path)? => {
+                    stack.push(receiver);
+                    if !Self::push_attr_path_children(ir, path, &mut stack) {
+                        return None;
+                    }
+                }
+                IrData::Let { .. }
+                | IrData::Lambda { .. }
+                | IrData::FormalSet { .. }
+                | IrData::Formal { .. }
+                | IrData::AttrSet {
+                    recursive: true, ..
+                } => {
+                    return None;
+                }
+                _ => {
+                    let mut children = Vec::new();
+                    if !Self::push_ir_children(ir, node, &mut children) {
+                        return None;
+                    }
+                    stack.extend(children);
+                }
+            }
+        }
+        Some(reachable)
+    }
+
+    fn attr_path_is_static(ir: &Ir, path: IrAttrPathId) -> Option<bool> {
+        let segments = ir.attr_paths.get(path.index())?;
+        Some(
+            !segments.is_empty()
+                && segments
+                    .iter()
+                    .all(|segment| matches!(segment, IrAttrPathSegment::Static(_))),
+        )
     }
 
     fn binding_slice(ir: &Ir, bindings: IrBindingSlice) -> Option<&[IrBinding]> {
