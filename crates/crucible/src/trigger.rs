@@ -15,13 +15,13 @@ use std::ops::Deref;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, BlockFault, CodePoint, ContentHash,
-    ControlFaultAction, Decision, DeviceId, EventKey, EventLogOffset, Fault, FaultId,
+    ControlFaultAction, Decision, DeviceId, EngineError, EventKey, EventLogOffset, Fault, FaultId,
     FaultPlanEntry, FaultTag, FramePredicate, Icount, IoEventKind, LinkDef, LinkId, MarkerId,
     MemPlace, MembershipFault, MemoryCmp, NetworkFault, NinePFault, NodeFault, NodeId,
     NodeLifecycle, PartitionDirection, Plan, PlanEntry, Predicate, PreemptionKind, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, RegexProgram, RestartPolicy,
-    RngStreamId, SchedulerNodeId, SchedulingNodeKind, SimDuration, TimerId, VirtualTime,
-    WhiteBoxPolicy, World, WorldStaticTopology,
+    Property, ReachabilityExpectation, ReachableDisposition, RegexProgram, ReproductionArtifact,
+    ReproductionReplay, RestartPolicy, RngStreamId, Schedule, SchedulerNodeId, SchedulingNodeKind,
+    SimDuration, TimerId, VirtualTime, WhiteBoxPolicy, World, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, ScheduledEvent,
@@ -1615,6 +1615,196 @@ pub struct HostAssertionViolation {
     pub reproduction_artifact: ContentHash,
 }
 
+/// Assertion event log produced while replaying one reproduction artifact.
+///
+/// This value binds the retained assertion log to the reduction-oracle replay of
+/// the same self-contained `(seed, scenario, schedule)` artifact. Callers cannot
+/// construct it from raw fields; they must reduce a [`ReproductionArtifact`] and
+/// supply the assertion log emitted by that replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssertionViolationArtifactReplay {
+    replay: ReproductionReplay,
+    assertion_log: RecordedAssertionLog,
+}
+
+impl AssertionViolationArtifactReplay {
+    /// Binds `assertion_log` to a replay of `artifact`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the artifact's embedded scenario and schedule
+    /// cannot be reduced by the replay oracle.
+    pub fn from_artifact(
+        artifact: &ReproductionArtifact,
+        assertion_log: RecordedAssertionLog,
+    ) -> Result<Self, EngineError> {
+        Ok(Self {
+            replay: artifact.replay()?,
+            assertion_log,
+        })
+    }
+
+    /// Returns the reduction-oracle replay that produced this assertion log.
+    #[must_use]
+    pub fn replay(&self) -> &ReproductionReplay {
+        &self.replay
+    }
+
+    /// Returns the retained assertion log emitted by the artifact replay.
+    #[must_use]
+    pub fn assertion_log(&self) -> &RecordedAssertionLog {
+        &self.assertion_log
+    }
+}
+
+/// Bisection handoff requested for a non-reproduced assertion violation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssertionViolationBisectionRequest {
+    /// Self-contained reproduction artifact whose replay diverged.
+    pub artifact: ContentHash,
+    /// Last event-log prefix length known to be identical.
+    pub last_matching_event_prefix_len: usize,
+    /// First event-log prefix length known to differ, or the terminal prefix for
+    /// report-only divergences where event logs match but assertion reports do not.
+    pub first_different_event_prefix_len: usize,
+    /// Number of decisions in the replayed artifact schedule.
+    pub schedule_decision_count: usize,
+    /// First differing schedule-decision prefix length, when the logs expose one.
+    pub first_different_decision_prefix_len: Option<usize>,
+    /// Stable reason for invoking `gate:divergence-bisect`.
+    pub reason: &'static str,
+}
+
+/// Successful replay check for a violation-bearing assertion report.
+///
+/// The `expected` and `reproduced` reports have all violation artifact links
+/// rebound to [`Self::artifact`], not to the retained-log trace hash used while
+/// a live run is still being folded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssertionViolationReplayReport {
+    /// Self-contained `(seed, scenario, schedule)` artifact that was replayed.
+    pub artifact: ContentHash,
+    /// Result of replaying the artifact through the reduction oracle.
+    pub replay: ReproductionReplay,
+    /// Assertion report produced from the originally recorded deterministic log.
+    pub expected: HostAssertionReport,
+    /// Assertion report produced from the replayed deterministic log.
+    pub reproduced: HostAssertionReport,
+}
+
+/// Localized mismatch between a recorded assertion violation and its replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssertionViolationDivergence {
+    /// Self-contained reproduction artifact whose replay diverged.
+    pub artifact: ContentHash,
+    /// First deterministic event-log prefix length whose replay no longer matches.
+    pub first_different_prefix_len: usize,
+    /// Icount associated with the first differing event or violation, when known.
+    pub first_different_icount: Option<Icount>,
+    /// Recorded event-log entry at the first differing prefix position.
+    pub expected_event: Option<SchedulerEventLogEntry>,
+    /// Replayed event-log entry at the first differing prefix position.
+    pub reproduced_event: Option<SchedulerEventLogEntry>,
+    /// Recorded violation at the first differing violation slot.
+    pub expected_violation: Option<HostAssertionViolation>,
+    /// Replayed violation at the first differing violation slot.
+    pub reproduced_violation: Option<HostAssertionViolation>,
+    /// Required `gate:divergence-bisect` handoff for this non-reproduction.
+    pub bisection: AssertionViolationBisectionRequest,
+}
+
+/// Error returned when assertion violation reproduction fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssertionViolationReplayError {
+    /// The artifact's embedded scenario and schedule could not be reduced.
+    ArtifactReplay {
+        /// Artifact whose reduction failed.
+        artifact: ContentHash,
+        /// Stable error text from the reduction oracle.
+        reason: String,
+    },
+    /// Replay evidence was reduced from a different artifact tuple.
+    ReplayArtifactMismatch {
+        /// Artifact replay expected from the checked reproduction artifact.
+        expected: ReproductionReplay,
+        /// Artifact replay supplied with the reproduced assertion log.
+        reproduced: ReproductionReplay,
+    },
+    /// The original retained log did not contain an assertion violation.
+    MissingRecordedViolation {
+        /// Artifact checked for a violation reproduction.
+        artifact: ContentHash,
+    },
+    /// The original retained log could not be assertion-checked.
+    RecordedAssertionCheck(OfflineAssertionCheckError),
+    /// The replayed retained log could not be assertion-checked.
+    ReproducedAssertionCheck(OfflineAssertionCheckError),
+    /// The replay completed but did not reproduce the same violation report.
+    Divergence {
+        /// Localized assertion-replay divergence.
+        divergence: Box<AssertionViolationDivergence>,
+    },
+}
+
+impl fmt::Display for AssertionViolationReplayError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArtifactReplay { reason, .. } => {
+                write!(
+                    formatter,
+                    "assertion violation artifact replay failed: {reason}"
+                )
+            }
+            Self::ReplayArtifactMismatch {
+                expected,
+                reproduced,
+            } => write!(
+                formatter,
+                "assertion violation replay artifact mismatch: expected state {} reproduced state {}",
+                expected.state.to_hex(),
+                reproduced.state.to_hex()
+            ),
+            Self::MissingRecordedViolation { .. } => {
+                write!(
+                    formatter,
+                    "recorded assertion log did not contain a violation"
+                )
+            }
+            Self::RecordedAssertionCheck(error) => {
+                write!(
+                    formatter,
+                    "recorded assertion log could not be checked: {error}"
+                )
+            }
+            Self::ReproducedAssertionCheck(error) => {
+                write!(
+                    formatter,
+                    "reproduced assertion log could not be checked: {error}"
+                )
+            }
+            Self::Divergence { divergence } => write!(
+                formatter,
+                "assertion violation replay diverged at prefix {}",
+                divergence.first_different_prefix_len
+            ),
+        }
+    }
+}
+
+impl Error for AssertionViolationReplayError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RecordedAssertionCheck(error) | Self::ReproducedAssertionCheck(error) => {
+                Some(error)
+            }
+            Self::ArtifactReplay { .. }
+            | Self::ReplayArtifactMismatch { .. }
+            | Self::MissingRecordedViolation { .. }
+            | Self::Divergence { .. } => None,
+        }
+    }
+}
+
 /// Final host-side assertion report for one run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostAssertionReport {
@@ -1641,6 +1831,124 @@ impl HostAssertionReport {
     pub fn verdict(&self) -> &AssertionRunVerdict {
         &self.verdict
     }
+}
+
+/// Replays an assertion violation artifact and verifies bit-identical violations.
+///
+/// `reproduced` is the execution-layer bridge: it carries the deterministic
+/// assertion event log emitted by replaying `artifact`, plus the reduction-oracle
+/// replay that proves the same embedded scenario and schedule were reduced. This
+/// function verifies the artifact with the reduction oracle, re-grades the
+/// original and reproduced logs against the scenario's embedded properties, and
+/// treats any event-log or assertion-report mismatch as a localized divergence.
+///
+/// # Errors
+///
+/// Returns [`AssertionViolationReplayError`] when artifact reduction fails, the
+/// reproduced log was not reduced from the same artifact tuple, the recorded log
+/// contains no violation, either retained assertion log is invalid, or the replay
+/// does not reproduce the same assertion report.
+pub fn check_assertion_violation_reproduction(
+    artifact: &ReproductionArtifact,
+    recorded_log: &RecordedAssertionLog,
+    reproduced: &AssertionViolationArtifactReplay,
+) -> Result<AssertionViolationReplayReport, AssertionViolationReplayError> {
+    let mut expected_oracle = BlackBoxHostOracle;
+    let mut reproduced_oracle = BlackBoxHostOracle;
+    check_assertion_violation_reproduction_with_oracles(
+        artifact,
+        recorded_log,
+        reproduced,
+        &mut expected_oracle,
+        &mut reproduced_oracle,
+    )
+}
+
+/// Replays an assertion violation artifact with caller-supplied host oracles.
+///
+/// This is the offset-preserving variant for linted named host predicates. The
+/// supplied oracles grade the recorded and reproduced retained logs respectively;
+/// both logs must carry exact segment offsets for every observed prefix the
+/// oracle can inspect.
+///
+/// # Errors
+///
+/// Returns [`AssertionViolationReplayError`] when artifact reduction fails, the
+/// reproduced log was not reduced from the same artifact tuple, the recorded log
+/// contains no violation, either retained assertion log is invalid for its oracle,
+/// or the replay does not reproduce the same assertion report.
+pub fn check_assertion_violation_reproduction_with_oracles<ExpectedOracle, ReproducedOracle>(
+    artifact: &ReproductionArtifact,
+    recorded_log: &RecordedAssertionLog,
+    reproduced: &AssertionViolationArtifactReplay,
+    expected_oracle: &mut ExpectedOracle,
+    reproduced_oracle: &mut ReproducedOracle,
+) -> Result<AssertionViolationReplayReport, AssertionViolationReplayError>
+where
+    ExpectedOracle: HostAssertionOracle + ?Sized,
+    ReproducedOracle: HostAssertionOracle + ?Sized,
+{
+    let artifact_id = artifact.id();
+    let replay =
+        artifact
+            .replay()
+            .map_err(|source| AssertionViolationReplayError::ArtifactReplay {
+                artifact: artifact_id,
+                reason: engine_error_message(&source),
+            })?;
+    if reproduced.replay() != &replay {
+        return Err(AssertionViolationReplayError::ReplayArtifactMismatch {
+            expected: replay,
+            reproduced: reproduced.replay().clone(),
+        });
+    }
+    let properties = artifact.scenario_form().properties();
+    let world = artifact.scenario_form().world();
+    let expected = assertion_replay_report_for_log_with_oracle(
+        artifact_id,
+        properties,
+        world,
+        recorded_log,
+        expected_oracle,
+    )
+    .map_err(AssertionViolationReplayError::RecordedAssertionCheck)?;
+    if expected.violations().is_empty() {
+        return Err(AssertionViolationReplayError::MissingRecordedViolation {
+            artifact: artifact_id,
+        });
+    }
+
+    let reproduced_log = reproduced.assertion_log();
+    let reproduced = assertion_replay_report_for_log_with_oracle(
+        artifact_id,
+        properties,
+        world,
+        reproduced_log,
+        reproduced_oracle,
+    )
+    .map_err(AssertionViolationReplayError::ReproducedAssertionCheck)?;
+
+    if recorded_log.entries() != reproduced_log.entries() || expected != reproduced {
+        return Err(AssertionViolationReplayError::Divergence {
+            divergence: Box::new(assertion_violation_replay_divergence(
+                artifact_id,
+                artifact.schedule(),
+                properties,
+                world,
+                recorded_log,
+                reproduced_log,
+                &expected,
+                &reproduced,
+            )),
+        });
+    }
+
+    Ok(AssertionViolationReplayReport {
+        artifact: artifact_id,
+        replay,
+        expected,
+        reproduced,
+    })
 }
 
 /// Deterministic trace artifact intended for external formal tooling.
@@ -3001,6 +3309,251 @@ fn host_assertion_violations_from_outcomes(
             .then_with(|| left.reproduction_artifact.cmp(&right.reproduction_artifact))
     });
     violations
+}
+
+fn assertion_replay_report_for_log_with_oracle<O>(
+    artifact: ContentHash,
+    properties: &Properties,
+    world: &World,
+    recorded_log: &RecordedAssertionLog,
+    oracle: &mut O,
+) -> Result<HostAssertionReport, OfflineAssertionCheckError>
+where
+    O: HostAssertionOracle + ?Sized,
+{
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(world)
+        .check_run_with_oracle(properties, recorded_log, oracle)?;
+    Ok(host_assertion_report_with_reproduction_artifact(
+        report, artifact,
+    ))
+}
+
+fn host_assertion_report_with_reproduction_artifact(
+    mut report: HostAssertionReport,
+    artifact: ContentHash,
+) -> HostAssertionReport {
+    for violation in &mut report.violations {
+        violation.reproduction_artifact = artifact;
+    }
+    report
+}
+
+fn assertion_violation_replay_divergence(
+    artifact: ContentHash,
+    schedule: &Schedule,
+    properties: &Properties,
+    world: &World,
+    expected_log: &RecordedAssertionLog,
+    reproduced_log: &RecordedAssertionLog,
+    expected_report: &HostAssertionReport,
+    reproduced_report: &HostAssertionReport,
+) -> AssertionViolationDivergence {
+    let event_logs_differ = expected_log.entries() != reproduced_log.entries();
+    let prefix_len = if event_logs_differ {
+        first_different_assertion_replay_prefix(expected_log, reproduced_log)
+    } else {
+        expected_log.entries().len()
+    };
+    let bisection = AssertionViolationBisectionRequest {
+        artifact,
+        last_matching_event_prefix_len: if event_logs_differ {
+            prefix_len.saturating_sub(1)
+        } else {
+            prefix_len
+        },
+        first_different_event_prefix_len: prefix_len,
+        schedule_decision_count: schedule.len(),
+        first_different_decision_prefix_len: first_different_decision_prefix_len(
+            expected_log,
+            reproduced_log,
+        ),
+        reason: "assertion violation did not reproduce bit-identically",
+    };
+    let expected_prefix_report =
+        assertion_replay_report_for_prefix(artifact, properties, world, expected_log, prefix_len)
+            .unwrap_or_else(|_| expected_report.clone());
+    let reproduced_prefix_report =
+        assertion_replay_report_for_prefix(artifact, properties, world, reproduced_log, prefix_len)
+            .unwrap_or_else(|_| reproduced_report.clone());
+    let (expected_violation, reproduced_violation) = first_differing_violation(
+        expected_prefix_report.violations(),
+        reproduced_prefix_report.violations(),
+    )
+    .unwrap_or_else(|| {
+        first_differing_violation(expected_report.violations(), reproduced_report.violations())
+            .unwrap_or((None, None))
+    });
+    let expected_event = event_logs_differ
+        .then(|| {
+            expected_log
+                .entries()
+                .get(prefix_len.saturating_sub(1))
+                .cloned()
+        })
+        .flatten();
+    let reproduced_event = event_logs_differ
+        .then(|| {
+            reproduced_log
+                .entries()
+                .get(prefix_len.saturating_sub(1))
+                .cloned()
+        })
+        .flatten();
+    let first_different_icount = expected_violation
+        .as_ref()
+        .and_then(|violation| violation.at_icount)
+        .or_else(|| {
+            reproduced_violation
+                .as_ref()
+                .and_then(|violation| violation.at_icount)
+        })
+        .or_else(|| event_icount(expected_event.as_ref()))
+        .or_else(|| event_icount(reproduced_event.as_ref()));
+
+    AssertionViolationDivergence {
+        artifact,
+        first_different_prefix_len: prefix_len,
+        first_different_icount,
+        expected_event,
+        reproduced_event,
+        expected_violation,
+        reproduced_violation,
+        bisection,
+    }
+}
+
+fn first_different_assertion_replay_prefix(
+    expected_log: &RecordedAssertionLog,
+    reproduced_log: &RecordedAssertionLog,
+) -> usize {
+    let max_len = expected_log
+        .entries()
+        .len()
+        .max(reproduced_log.entries().len());
+    if max_len == 0 {
+        return 0;
+    }
+    let mut low = 0;
+    let mut high = max_len;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if event_log_prefixes_match(expected_log, reproduced_log, middle) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    low
+}
+
+fn event_log_prefixes_match(
+    expected_log: &RecordedAssertionLog,
+    reproduced_log: &RecordedAssertionLog,
+    prefix_len: usize,
+) -> bool {
+    let Some(expected_entries) = expected_log.entries().get(..prefix_len) else {
+        return false;
+    };
+    let Some(reproduced_entries) = reproduced_log.entries().get(..prefix_len) else {
+        return false;
+    };
+    if expected_entries != reproduced_entries {
+        return false;
+    }
+    true
+}
+
+fn assertion_replay_report_for_prefix(
+    artifact: ContentHash,
+    properties: &Properties,
+    world: &World,
+    recorded_log: &RecordedAssertionLog,
+    prefix_len: usize,
+) -> Result<HostAssertionReport, OfflineAssertionCheckError> {
+    let prefix_len = prefix_len.min(recorded_log.entries().len());
+    let prefix_log =
+        RecordedAssertionLog::from_entries(recorded_log.entries()[..prefix_len].to_vec());
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(world)
+        .check_run(properties, prefix_log.entries())?;
+    Ok(host_assertion_report_with_reproduction_artifact(
+        report, artifact,
+    ))
+}
+
+fn first_differing_violation(
+    expected: &[HostAssertionViolation],
+    reproduced: &[HostAssertionViolation],
+) -> Option<(
+    Option<HostAssertionViolation>,
+    Option<HostAssertionViolation>,
+)> {
+    let max_len = expected.len().max(reproduced.len());
+    (0..max_len).find_map(|index| {
+        let expected = expected.get(index).cloned();
+        let reproduced = reproduced.get(index).cloned();
+        (expected != reproduced).then_some((expected, reproduced))
+    })
+}
+
+fn first_different_decision_prefix_len(
+    expected_log: &RecordedAssertionLog,
+    reproduced_log: &RecordedAssertionLog,
+) -> Option<usize> {
+    let expected = scheduler_decisions(expected_log);
+    let reproduced = scheduler_decisions(reproduced_log);
+    let max_len = expected.len().max(reproduced.len());
+    (0..max_len).find_map(|index| {
+        let expected = expected.get(index);
+        let reproduced = reproduced.get(index);
+        (expected != reproduced).then_some(index + 1)
+    })
+}
+
+fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
+    recorded_log
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry.payload() {
+            SchedulerEventLogPayload::Decision(decision) => Some(decision.clone()),
+            SchedulerEventLogPayload::ResolvedHappening(_)
+            | SchedulerEventLogPayload::Observable(_)
+            | SchedulerEventLogPayload::EvaluationBoundary(_)
+            | SchedulerEventLogPayload::TriggerFired(_)
+            | SchedulerEventLogPayload::TriggerActionApplied(_) => None,
+        })
+        .collect()
+}
+
+fn event_icount(entry: Option<&SchedulerEventLogEntry>) -> Option<Icount> {
+    let entry = entry?;
+    match entry.payload() {
+        SchedulerEventLogPayload::Observable(observable) => match observable {
+            ObservableEventPayload::CoverageBlock {
+                execution_icount, ..
+            } => Some(*execution_icount),
+            ObservableEventPayload::MemorySample { sample_icount, .. } => Some(*sample_icount),
+            ObservableEventPayload::GuestMarker { retired_icount, .. }
+            | ObservableEventPayload::GuestAssertionMarker { retired_icount, .. } => {
+                Some(*retired_icount)
+            }
+            ObservableEventPayload::NetworkDelivered { .. }
+            | ObservableEventPayload::ConsoleOutput { .. }
+            | ObservableEventPayload::IoCompletion { .. }
+            | ObservableEventPayload::NodeState { .. }
+            | ObservableEventPayload::AssertionStateChanged { .. } => None,
+        },
+        SchedulerEventLogPayload::EvaluationBoundary(_) => None,
+        SchedulerEventLogPayload::ResolvedHappening(_)
+        | SchedulerEventLogPayload::Decision(_)
+        | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::TriggerActionApplied(_) => None,
+    }
+}
+
+fn engine_error_message(error: &EngineError) -> String {
+    error.to_string()
 }
 
 fn observable_event_violation_site(

@@ -139,11 +139,13 @@ pub use sim_backend::{
     SimInstructionStep, SimOutboundFrame,
 };
 pub use trigger::{
-    Action, AssertionQuantifierKind, BlackBoxHostOracle, Condition, ConditionEvaluation,
-    ConditionEvaluationError, ConditionEvaluationPass, ConditionEvaluator, ConditionEventLogPrefix,
-    ConditionLeaf, ConditionLeafOracle, Event, EventEvaluationKind, EventEvaluationPoint,
-    EventFiring, EventFirings, EventGraph, EventGraphBuilder, EventGraphError,
-    EventGraphEventBuilder, EventGraphState, ExternalFormalTraceExport,
+    Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
+    AssertionViolationBisectionRequest, AssertionViolationDivergence,
+    AssertionViolationReplayError, AssertionViolationReplayReport, BlackBoxHostOracle, Condition,
+    ConditionEvaluation, ConditionEvaluationError, ConditionEvaluationPass, ConditionEvaluator,
+    ConditionEventLogPrefix, ConditionLeaf, ConditionLeafOracle, Event, EventEvaluationKind,
+    EventEvaluationPoint, EventFiring, EventFirings, EventGraph, EventGraphBuilder,
+    EventGraphError, EventGraphEventBuilder, EventGraphState, ExternalFormalTraceExport,
     ExternalFormalTraceExporter, FirePolicy, GuestAssertionDetail, GuestAssertionKind,
     GuestAssertionMarker, HostAssertionEvaluator, HostAssertionHarnessLint,
     HostAssertionHarnessLintError, HostAssertionHarnessLintViolation, HostAssertionLifecycle,
@@ -152,6 +154,7 @@ pub use trigger::{
     LoweredPlanEventGraph, ObservableEvent, ObservableEventPayload, ObservedFaultFact,
     ObservedOrderingFact, ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker,
     PropertyLifecycleState, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace,
+    check_assertion_violation_reproduction, check_assertion_violation_reproduction_with_oracles,
     lint_host_assertion_harness_source,
 };
 

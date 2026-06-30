@@ -998,9 +998,22 @@ verdict; it only shapes the next schedule the search tries.
   content-addressed retained-log trace hash. The gate covers online/offline
   equality over an icount-stamped guest marker violation, including a same-time
   decoy event that would make timestamp-only attribution choose the wrong node.
-- [ ] **T-ASRT-15** Wire violation reproduction to bit-identical replay and treat
+- [x] **T-ASRT-15** Wire violation reproduction to bit-identical replay and treat
   non-reproduction as a divergence localized by bisection. — satisfies [ASRT-28],
   [ASRT-29]; spec §18.10.
+  Completed by `checks.crucible.phase4.assertionViolationReproduction`:
+  `check_assertion_violation_reproduction` now requires replay evidence sealed
+  by `AssertionViolationArtifactReplay::from_artifact`, verifies that evidence
+  against the self-contained `(seed, scenario, schedule)` `ReproductionArtifact`
+  through the reduction oracle, re-grades the recorded and replayed deterministic
+  assertion logs with retained offset metadata against the artifact's embedded
+  scenario properties, exposes an oracle-aware variant for linted named host
+  predicates, rebinds violation links to the artifact id, and reports a localized
+  `AssertionViolationDivergence` with a `gate:divergence-bisect` request at the
+  first differing event-log prefix when replay fails to reproduce the same
+  violation. The gate covers exact replay of the same violation, a deliberately
+  altered replay log that localizes to the first changed icount, missing recorded
+  violations, and replay evidence reduced from a different artifact schedule.
 - [ ] **T-ASRT-16** Wire `gate:e2e-determinism` and `gate:replay-oracle` to cover
   assertions: identical outcome sets online vs offline, idempotent re-grading of a
   recorded corpus, and bit-identical violation reproduction. — satisfies [ASRT-4],
