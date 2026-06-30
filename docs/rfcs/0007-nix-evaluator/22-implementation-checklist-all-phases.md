@@ -1829,14 +1829,15 @@ alone (`M-1`/`Q-A`).
       plus payload length as stable little-endian metadata. This is format
       metadata only; file creation, append/read, mmap, payload verification,
       offset-index writes, GC/repack, and harness proof remain open (`C-13`).
-- [x] Current buffered blob pack append/read substrate: `PersistBlobPack`
+- [x] Current buffered blob pack append/validation substrate: `PersistBlobPack`
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
-      offsets plus lengths, and reads payloads back with record and payload hash
-      verification. This is ordinary `std::fs` IO for the direct owned-byte
-      APIs; scoped mmap reads are covered below, while LMDB/redb index
-      integration, batched writing, crash-durability policy, GC/repack, Attic
-      transport, and harness proof remain open (`C-13`).
+      offsets plus lengths, and keeps buffered record-scan, payload-window,
+      streaming verification, and payload-comparison helpers for maintenance
+      paths. Owned direct payload reads now route through the scoped mmap row
+      below. This is ordinary `std::fs` append plus buffered validation only;
+      LMDB/redb index integration, batched writing, crash-durability policy,
+      GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:
       `ratchet-cache` now exists as the RFC engine-band unsafe crate with
       `#![deny(unsafe_op_in_unsafe_fn)]`, and `store::ReadOnlyMmap` wraps Unix
@@ -1857,11 +1858,10 @@ alone (`M-1`/`Q-A`).
       empty-payload fixture that pins magic/version/header-length, record hash,
       and little-endian payload length bytes. This covers the current
       compatibility format inside the unsafe engine crate only; construction
-      remains `unsafe`, and oracle integration beyond the scoped indexed-read
-      adapter, append writing, LMDB/redb offset indexes, full mmap
-      maintenance/repack paths, out-of-core rematerialization, cross-process
-      writer coordination, and harness proof remain open
-      (`C-13`/`R-14`).
+      remains `unsafe`, and safe oracle integration is covered by the scoped
+      mmap adapter below. LMDB/redb offset indexes, out-of-core
+      rematerialization, cross-process writer coordination, and harness proof
+      remain open (`C-13`/`R-14`).
 - [x] Current lease-shaped mmap blob-pack API:
       `blob_pack::BlobPackReadLease` is an unsafe-to-implement trait whose
       `covers_file` contract states that a file is immutable for the borrowed
@@ -1878,23 +1878,24 @@ alone (`M-1`/`Q-A`).
 - [x] Current oracle-writer/mapped-reader compatibility canary:
       `aos-nix-harness` has an integration test that writes blob-pack records
       through the existing safe `ratchet-oracle::cache::PersistBlobPack`
-      buffered writer, maps the resulting file through
+      writer, maps the resulting file through
       `ratchet-cache::blob_pack::MappedBlobPack`, and verifies the borrowed
       mapped payload slices match the original bytes. The unsafe mmap call
       stays in harness test code rather than the safe oracle crate. This is
-      format compatibility coverage only; production mmap-read integration
-      beyond scoped indexed hits, LMDB/redb offset indexes, out-of-core
+      format compatibility coverage only; LMDB/redb offset indexes, out-of-core
       rematerialization, cross-process writer coordination, and harness proof
       remain open (`C-13`/`R-14`).
-- [x] Current scoped oracle mmap indexed-read adapter:
+- [x] Current scoped oracle mmap read adapter:
       `ratchet-cache::blob_pack::BlobPackFileReadLease` ties
       `MappedBlobPack::map_file_with_lease` to a shared lock on the pack
       descriptor plus descriptor identity check, while safe `ratchet-cache`
       pack initialization, append, and tail-trim paths acquire the
       corresponding exclusive descriptor lock.
-      `ratchet-oracle::cache::PersistBlobPack::with_mapped_blob` opens, leases,
-      maps, verifies, and decodes a payload inside a callback so borrowed mmap
-      bytes never escape `ratchet-oracle`'s safe API.
+      `ratchet-oracle::cache::PersistBlobPack::with_blob` and
+      `with_mapped_blob` open, lease, map, verify, and visit payload bytes inside
+      a callback so borrowed mmap bytes never escape `ratchet-oracle`'s safe
+      API. `PersistBlobPack::read_blob` remains an owned-byte wrapper around
+      that lower-level visitor.
       `PersistCache::with_blob` and `PersistCache::with_blob_indexed` expose
       public callback-scoped borrowed payload visits through that scoped mapped
       callback, while `PersistCache::read_blob` and
@@ -1940,8 +1941,7 @@ alone (`M-1`/`Q-A`).
       reachability, liveness-plan, and tail-trim root verification also use
       scoped mapped payload checks under the selected store advisory lock, and
       value/file repack apply copies relocated live records through scoped mapped
-      payload checks under that same selected store advisory lock. Lower-level
-      `PersistBlobPack::read_blob` remains buffered. This
+      payload checks under that same selected store advisory lock. This
       is scoped cooperating-writer mmap integration
       only; LMDB/redb offset indexes, out-of-core rematerialization,
       cross-machine CAS-grade leases, and
@@ -1952,6 +1952,7 @@ alone (`M-1`/`Q-A`).
       `cache_cached_expression_node_trace_borrowed_visit_decodes_after_scoped_mapping`,
       `cache_file_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
+      `blob_pack_borrowed_read_uses_scoped_mapped_payload`,
       `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_source_index_borrowed_load_visits_cached_parse_after_hydration`,
       `cache_file_index_borrowed_load_visits_cached_parse_after_hydration`,

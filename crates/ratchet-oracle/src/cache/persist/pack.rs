@@ -605,25 +605,52 @@ impl PersistBlobPack {
     /// Reads and verifies a blob at `location`.
     ///
     /// The record header's hash and length must match `expected_hash` and
-    /// `location`, and the payload bytes must hash to `expected_hash`.
+    /// `location`, and the payload bytes must hash to `expected_hash`. This is
+    /// an owned-byte wrapper around [`Self::with_blob`].
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
-    /// read, if `location` is invalid, if record metadata does not match the
-    /// expected lookup, or if the payload hash does not verify.
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if `location` is invalid, if record metadata does not match the expected
+    /// lookup, if the payload hash does not verify, or if cloning the mapped
+    /// payload cannot reserve enough memory.
     pub fn read_blob(
         &self,
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader
-            .read_payload(
-                persist_location_to_engine(location),
-                durable_hash_to_engine(expected_hash),
-            )
-            .map_err(engine_read_error_to_persist)
+        self.with_blob(location, expected_hash, clone_mapped_blob_payload)?
+    }
+
+    /// Maps, verifies, and visits a blob payload.
+    ///
+    /// The callback receives a borrowed payload slice from a memory-mapped
+    /// packfile. The borrowed slice cannot escape this method, and the pack
+    /// descriptor read lease is held for the duration of the callback. This is a
+    /// lower-level pack API; cache-level readers that need the cache-root
+    /// advisory store lock should use [`PersistCache::with_blob`] instead.
+    /// Callbacks must not re-enter same-pack operations that need the exclusive
+    /// descriptor lock, such as append or tail-trim operations, because those
+    /// operations wait for this method's read lease to be released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if `location` is invalid, or if record/payload hashes do not match
+    /// `expected_hash`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `visit` panics.
+    pub fn with_blob<R>(
+        &self,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, PersistBlobPackError> {
+        self.with_mapped_blob_unlocked(location, expected_hash, visit)
     }
 
     /// Maps, verifies, and visits a blob payload while a caller-owned read lease is held.
@@ -642,6 +669,15 @@ impl PersistBlobPack {
     pub(super) fn with_mapped_blob<R>(
         &self,
         _read_lease: &AdvisoryFileLock,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+        visit: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, PersistBlobPackError> {
+        self.with_mapped_blob_unlocked(location, expected_hash, visit)
+    }
+
+    fn with_mapped_blob_unlocked<R>(
+        &self,
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
         visit: impl FnOnce(&[u8]) -> R,
@@ -869,4 +905,15 @@ impl PersistBlobPack {
             .trim_tail(end_offset)
             .map_err(engine_trim_error_to_persist)
     }
+}
+
+fn clone_mapped_blob_payload(payload: &[u8]) -> Result<Vec<u8>, PersistBlobPackError> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(payload.len())
+        .map_err(|_| PersistBlobPackError::PayloadTooLarge {
+            payload_len: payload.len() as u128,
+        })?;
+    owned.extend_from_slice(payload);
+    Ok(owned)
 }

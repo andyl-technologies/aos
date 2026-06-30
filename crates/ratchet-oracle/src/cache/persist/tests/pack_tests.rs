@@ -202,6 +202,44 @@ fn blob_pack_appends_and_reads_verified_payloads() {
 }
 
 #[test]
+fn blob_pack_borrowed_read_uses_scoped_mapped_payload() {
+    let path = temp_root().join("values").join("pack.blob");
+    let pack = PersistBlobPack::open(&path).expect("pack opens");
+    let payload = b"mapped payload";
+    let hash = DurableBlake3Hash::for_bytes(payload);
+    let location = pack.append_blob(hash, payload).expect("blob appends");
+
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
+    let observed_len = pack
+        .with_blob(location, hash, |mapped| {
+            assert_eq!(mapped, payload);
+            assert_eq!(
+                pack.mapped_read_count_for_tests(),
+                1,
+                "mapped read should be counted before the visitor runs"
+            );
+            mapped.len()
+        })
+        .expect("borrowed payload visit succeeds");
+
+    assert_eq!(observed_len, payload.len());
+    assert_eq!(pack.mapped_read_count_for_tests(), 1);
+    assert_eq!(
+        pack.read_blob(location, hash)
+            .expect("owned blob read succeeds")
+            .as_slice(),
+        payload
+    );
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        2,
+        "owned lower-level reads should clone through the mapped visitor"
+    );
+
+    let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
+}
+
+#[test]
 fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
     let path = temp_root().join("values").join("pack.blob");
     let pack = PersistBlobPack::open(&path).expect("pack opens");
@@ -534,6 +572,17 @@ fn blob_pack_read_rejects_mismatched_lookup_metadata() {
         PersistBlobPackError::RecordHashMismatch { .. }
     ));
     let error = pack
+        .with_blob(
+            location,
+            DurableBlake3Hash::for_bytes(b"other payload"),
+            |_| panic!("wrong hash must not call the borrowed visitor"),
+        )
+        .expect_err("wrong borrowed hash errors");
+    assert!(matches!(
+        error,
+        PersistBlobPackError::RecordHashMismatch { .. }
+    ));
+    let error = pack
         .payload_window(location, DurableBlake3Hash::for_bytes(b"other payload"))
         .expect_err("wrong window hash errors");
     assert!(matches!(
@@ -743,6 +792,15 @@ fn blob_pack_read_rejects_corrupt_payload() {
         .read_blob(location, hash)
         .expect_err("corrupt payload errors");
 
+    assert!(matches!(
+        error,
+        PersistBlobPackError::PayloadHashMismatch { .. }
+    ));
+    let error = pack
+        .with_blob(location, hash, |_| {
+            panic!("corrupt payload must not call the borrowed visitor")
+        })
+        .expect_err("corrupt borrowed payload errors");
     assert!(matches!(
         error,
         PersistBlobPackError::PayloadHashMismatch { .. }
