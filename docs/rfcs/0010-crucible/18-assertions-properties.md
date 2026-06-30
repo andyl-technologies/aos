@@ -987,9 +987,17 @@ verdict; it only shapes the next schedule the search tries.
   network, host I/O, threading/scheduling, shared mutable state, interior
   mutability, and unsafe-code access in harness predicate source; the gate also
   statically rejects those patterns in the assertion evaluator path.
-- [ ] **T-ASRT-14** Implement the violation record (id, icount/virtual-time, node,
+- [x] **T-ASRT-14** Implement the violation record (id, icount/virtual-time, node,
   detail, content-addressed reproduction-artifact link) read entirely from the
   deterministic log. — satisfies [ASRT-27], [ASRT-28]; spec §18.10.
+  Completed by `checks.crucible.phase4.assertionViolationRecords`: terminal
+  assertion reports now expose `HostAssertionViolation` records with assertion id,
+  message, quantifier, virtual-time site, optional icount/node site metadata
+  captured from the exact predicate evidence that made the assertion terminal,
+  expected-vs-observed detail drawn from recorded observed state, and a
+  content-addressed retained-log trace hash. The gate covers online/offline
+  equality over an icount-stamped guest marker violation, including a same-time
+  decoy event that would make timestamp-only attribution choose the wrong node.
 - [ ] **T-ASRT-15** Wire violation reproduction to bit-identical replay and treat
   non-reproduction as a divergence localized by bisection. — satisfies [ASRT-28],
   [ASRT-29]; spec §18.10.
