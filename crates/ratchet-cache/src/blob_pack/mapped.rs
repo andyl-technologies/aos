@@ -7,8 +7,8 @@ use std::ops::Range;
 use super::locking::{BlobPackFileLockMode, lock_blob_pack_file, unlock_blob_pack_file};
 use super::{
     BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackFileIdentity, BlobPackFormatError,
-    BlobPackHash, BlobPackHeader, BlobPackLocation, BlobPackReadLeaseError, BlobPackRecord,
-    BlobRecordHeader, MappedBlobPackError,
+    BlobPackHash, BlobPackHeader, BlobPackLocation, BlobPackPayloadWindow, BlobPackReadLeaseError,
+    BlobPackRecord, BlobRecordHeader, MappedBlobPackError,
 };
 use crate::store::ReadOnlyMmap;
 
@@ -147,6 +147,24 @@ impl<'lease> LeasedMappedBlobPack<'lease> {
         expected_hash: BlobPackHash,
     ) -> Result<MappedBlobPayload<'_>, MappedBlobPackError> {
         self.pack.payload(location, expected_hash)
+    }
+
+    /// Validates record metadata and returns the mapped payload byte window.
+    ///
+    /// This checks the record header, lookup hash, declared length, and mapped
+    /// pack bounds, but does not read or hash the payload bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if the record offset is invalid, record
+    /// metadata does not match the expected lookup, or the payload window falls
+    /// outside the mapping.
+    pub fn payload_window(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<BlobPackPayloadWindow, MappedBlobPackError> {
+        self.pack.payload_window(location, expected_hash)
     }
 
     /// Returns all verified blob records in packfile order.
@@ -301,6 +319,54 @@ impl MappedBlobPack {
             location,
             bytes,
         })
+    }
+
+    /// Validates record metadata and returns this payload's mapped byte window.
+    ///
+    /// The record header at `location` must declare `expected_hash` and the
+    /// same payload length as `location`, and the declared payload window must
+    /// fit inside the mapped pack. This is a metadata-only helper: it does not
+    /// read or hash payload bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedBlobPackError`] if the record offset is invalid, record
+    /// metadata does not match the expected lookup, or the payload window falls
+    /// outside the mapping.
+    pub fn payload_window(
+        &self,
+        location: BlobPackLocation,
+        expected_hash: BlobPackHash,
+    ) -> Result<BlobPackPayloadWindow, MappedBlobPackError> {
+        let record = self.record_header(location)?;
+        if record.hash() != expected_hash {
+            return Err(MappedBlobPackError::RecordHashMismatch {
+                expected: expected_hash,
+                actual: record.hash(),
+            });
+        }
+        if record.payload_len() != location.payload_len() {
+            return Err(MappedBlobPackError::RecordLengthMismatch {
+                expected: location.payload_len(),
+                actual: record.payload_len(),
+            });
+        }
+        let range = self.payload_range(location, record.payload_len())?;
+        let payload_start =
+            u64::try_from(range.start).map_err(|_| MappedBlobPackError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            })?;
+        let payload_end =
+            u64::try_from(range.end).map_err(|_| MappedBlobPackError::RecordBoundsOverflow {
+                record_offset: location.record_offset(),
+                payload_len: record.payload_len(),
+            })?;
+        Ok(BlobPackPayloadWindow::new(
+            BlobPackRecord::new(expected_hash, location),
+            payload_start,
+            payload_end,
+        ))
     }
 
     /// Returns all verified blob records in packfile order.

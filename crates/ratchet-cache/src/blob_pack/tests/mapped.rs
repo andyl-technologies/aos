@@ -40,6 +40,13 @@ fn mapped_blob_pack_with_read_lease_returns_payload_slices() {
 
     assert_eq!(pack.len(), pack.as_mapped_pack().len());
     assert_eq!(
+        pack.payload_window(locations[0], BlobPackHash::for_bytes(payload))
+            .expect("leased payload window validates")
+            .payload_range(),
+        (locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64)
+            ..(locations[0].record_offset() + BLOB_RECORD_HEADER_LEN as u64 + payload.len() as u64)
+    );
+    assert_eq!(
         pack.records().expect("leased records scan"),
         [BlobPackRecord::new(
             BlobPackHash::for_bytes(payload),
@@ -253,6 +260,49 @@ fn mapped_blob_pack_records_returns_empty_for_header_only_pack() {
 }
 
 #[test]
+fn mapped_blob_pack_returns_metadata_payload_window_without_hashing_payload() {
+    let path = temp_path("payload-window-no-hash");
+    let declared = BlobPackHash::for_bytes(b"declared");
+    let actual = b"actual!!".as_slice();
+    let location = BlobPackLocation::new(BLOB_PACK_HEADER_LEN as u64, actual.len() as u64);
+    let payload_start = location.record_offset() + BLOB_RECORD_HEADER_LEN as u64;
+    let payload_end = payload_start + actual.len() as u64;
+    {
+        let mut file = fs::File::create(&path).expect("pack file creates");
+        file.write_all(&BlobPackHeader::current().encode())
+            .expect("pack header writes");
+        file.write_all(&BlobRecordHeader::new(declared, actual.len() as u64).encode())
+            .expect("record header writes");
+        file.write_all(actual).expect("payload writes");
+        file.sync_all().expect("pack file syncs");
+    }
+    let pack = map_pack(&path);
+
+    let window = pack
+        .payload_window(location, declared)
+        .expect("metadata payload window validates");
+
+    assert_eq!(window.record(), BlobPackRecord::new(declared, location));
+    assert_eq!(window.hash(), declared);
+    assert_eq!(window.location(), location);
+    assert_eq!(window.payload_start(), payload_start);
+    assert_eq!(window.payload_end(), payload_end);
+    assert_eq!(window.payload_len(), actual.len() as u64);
+    assert_eq!(window.payload_range(), payload_start..payload_end);
+    let error = pack
+        .payload(location, declared)
+        .expect_err("payload hash mismatch still fails full payload read");
+    assert!(matches!(
+        error,
+        MappedBlobPackError::PayloadHashMismatch { expected, actual: observed }
+            if expected == declared && observed == BlobPackHash::for_bytes(actual)
+    ));
+
+    drop(pack);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn mapped_blob_pack_rejects_wrong_lookup_hash() {
     let path = temp_path("wrong-hash");
     let payload = b"payload".as_slice();
@@ -268,6 +318,28 @@ fn mapped_blob_pack_rejects_wrong_lookup_hash() {
         error,
         MappedBlobPackError::RecordHashMismatch { expected, actual }
             if expected == other && actual == BlobPackHash::for_bytes(payload)
+    ));
+    let error = pack
+        .payload_window(locations[0], other)
+        .expect_err("wrong lookup hash fails metadata window");
+
+    assert!(matches!(
+        error,
+        MappedBlobPackError::RecordHashMismatch { expected, actual }
+            if expected == other && actual == BlobPackHash::for_bytes(payload)
+    ));
+
+    let error = pack
+        .payload_window(
+            BlobPackLocation::new(locations[0].record_offset(), payload.len() as u64 + 1),
+            BlobPackHash::for_bytes(payload),
+        )
+        .expect_err("wrong lookup length fails metadata window");
+
+    assert!(matches!(
+        error,
+        MappedBlobPackError::RecordLengthMismatch { expected, actual }
+            if expected == payload.len() as u64 + 1 && actual == payload.len() as u64
     ));
 
     drop(pack);
@@ -352,6 +424,14 @@ fn mapped_blob_pack_rejects_truncated_payload_window() {
     let error = pack
         .payload(location, hash)
         .expect_err("truncated payload fails");
+
+    assert!(matches!(
+        error,
+        MappedBlobPackError::RecordExtendsPastEnd { .. }
+    ));
+    let error = pack
+        .payload_window(location, hash)
+        .expect_err("truncated payload window fails");
 
     assert!(matches!(
         error,

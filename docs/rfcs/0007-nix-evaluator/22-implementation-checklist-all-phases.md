@@ -1832,11 +1832,11 @@ alone (`M-1`/`Q-A`).
 - [x] Current buffered blob pack append/validation substrate: `PersistBlobPack`
       initializes headers without replacing corrupt non-empty files, appends
       only payloads matching the caller's `DurableBlake3Hash`, returns record
-      offsets plus lengths, and keeps the buffered payload-window helper for
-      metadata-only validation plus relocation staging. Owned direct payload
-      reads, record scans, payload verification, and payload comparisons now
-      route through the scoped mmap row below. This is ordinary `std::fs` append
-      plus buffered validation only;
+      offsets plus lengths, and keeps buffered relocation staging for compacted
+      temporary packs. Owned direct payload reads, metadata-only payload-window
+      validation, record scans, payload verification, and payload comparisons
+      now route through the scoped mmap row below. This is ordinary `std::fs`
+      append plus buffered validation only;
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
 - [x] Current `ratchet-cache` unsafe crate and mmap primitive:
@@ -1853,14 +1853,16 @@ alone (`M-1`/`Q-A`).
 - [x] Current `ratchet-cache` mmap blob-pack payload reader:
       `blob_pack::MappedBlobPack` validates the current pack header and record
       format from a `ReadOnlyMmap`, checks lookup hash/length and payload
-      bounds, rehashes mapped payload bytes with BLAKE3, and returns
-      `MappedBlobPayload<'_>` as a borrowed zero-copy slice. Unit coverage
-      includes generated packs plus a frozen literal `AOS-NIX-BLOBPACK`
-      empty-payload fixture that pins magic/version/header-length, record hash,
-      and little-endian payload length bytes. This covers the current
-      compatibility format inside the unsafe engine crate only; construction
-      remains `unsafe`, and safe oracle integration is covered by the scoped
-      mmap adapter below. LMDB/redb offset indexes, out-of-core
+      bounds, exposes metadata-only `payload_window` validation without hashing
+      payload bytes, rehashes mapped payload bytes with BLAKE3 for full
+      `payload` reads, and returns `MappedBlobPayload<'_>` as a borrowed
+      zero-copy slice. Unit coverage includes generated packs, a
+      metadata-window corrupt-payload canary, and a frozen literal
+      `AOS-NIX-BLOBPACK` empty-payload fixture that pins magic/version/header-length,
+      record hash, and little-endian payload length bytes. This covers the
+      current compatibility format inside the unsafe engine crate only;
+      construction remains `unsafe`, and safe oracle integration is covered by
+      the scoped mmap adapter below. LMDB/redb offset indexes, out-of-core
       rematerialization, cross-process writer coordination, and harness proof
       remain open (`C-13`/`R-14`).
 - [x] Current lease-shaped mmap blob-pack API:
@@ -1896,11 +1898,13 @@ alone (`M-1`/`Q-A`).
       `with_mapped_blob` open, lease, map, verify, and visit payload bytes inside
       a callback so borrowed mmap bytes never escape `ratchet-oracle`'s safe
       API. `PersistBlobPack::read_blob` remains an owned-byte wrapper around
-      that lower-level visitor. `PersistBlobPack::records` and
-      `with_mapped_records` perform verified pack-record metadata scans through
-      scoped mappings, while `PersistBlobPack::verify_blob` and
-      `payload_matches` verify payloads through scoped mappings and return only
-      owned payload-window metadata or booleans.
+      that lower-level visitor. `PersistBlobPack::payload_window` validates
+      metadata-only payload windows through scoped mappings without hashing
+      payload bytes. `PersistBlobPack::records` and `with_mapped_records`
+      perform verified pack-record metadata scans through scoped mappings, while
+      `PersistBlobPack::verify_blob` and `payload_matches` verify payloads
+      through scoped mappings and return only owned payload-window metadata or
+      booleans.
       `PersistCache::with_blob` and `PersistCache::with_blob_indexed` expose
       public callback-scoped borrowed payload visits through that scoped mapped
       callback, while `PersistCache::read_blob` and
@@ -1961,6 +1965,7 @@ alone (`M-1`/`Q-A`).
       `cache_parse_artifact_borrowed_bundle_visit_decodes_after_scoped_mapping`,
       `blob_pack_records_scans_verified_records_in_pack_order`,
       `blob_pack_borrowed_read_uses_scoped_mapped_payload`,
+      `blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload`,
       `blob_pack_verify_blob_uses_scoped_mapped_payload_without_materializing`,
       `blob_pack_payload_matches_compares_verified_payload_bytes`,
       `cache_parse_index_borrowed_load_visits_cached_parse_after_hydration`,

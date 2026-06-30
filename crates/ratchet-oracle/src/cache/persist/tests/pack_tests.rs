@@ -249,6 +249,7 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
     let payload_start = location.record_offset() + PERSIST_BLOB_RECORD_HEADER_LEN as u64;
     let payload_end = payload_start + payload.len() as u64;
 
+    assert_eq!(pack.mapped_read_count_for_tests(), 0);
     let window = pack
         .payload_window(location, hash)
         .expect("payload window validates");
@@ -265,6 +266,11 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
     assert_eq!(window.payload_end(), payload_end);
     assert_eq!(window.payload_len(), payload.len() as u64);
     assert_eq!(window.payload_range(), payload_start..payload_end);
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        1,
+        "payload windows should validate through the scoped mapping"
+    );
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -277,6 +283,11 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
 
     pack.payload_window(location, hash)
         .expect("payload window ignores payload bytes");
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        2,
+        "metadata-only payload window should still use the mapped adapter"
+    );
     let error = pack
         .read_blob(location, hash)
         .expect_err("corrupt payload errors");
@@ -284,6 +295,11 @@ fn blob_pack_payload_window_validates_lookup_bounds_without_hashing_payload() {
         error,
         PersistBlobPackError::PayloadHashMismatch { .. }
     ));
+    assert_eq!(
+        pack.mapped_read_count_for_tests(),
+        2,
+        "failed mapped payload verification should not count as a successful mapped read"
+    );
 
     let _ = fs::remove_dir_all(path.parent().expect("pack parent exists"));
 }

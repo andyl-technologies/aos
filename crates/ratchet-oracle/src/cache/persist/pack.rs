@@ -519,23 +519,16 @@ impl PersistBlobPack {
     ///
     /// # Errors
     ///
-    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
-    /// inspected, seeked, or read, if `location` is invalid, if record metadata
-    /// does not match the expected lookup, or if the declared payload window
-    /// falls outside the current packfile.
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened or
+    /// mapped, if the descriptor read lease does not cover the opened packfile,
+    /// if `location` is invalid, if record metadata does not match the expected
+    /// lookup, or if the declared payload window falls outside the mapping.
     pub fn payload_window(
         &self,
         location: PersistBlobLocation,
         expected_hash: DurableBlake3Hash,
     ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
-        let reader = open_engine_blob_pack_reader(&self.path)?;
-        reader
-            .payload_window(
-                persist_location_to_engine(location),
-                durable_hash_to_engine(expected_hash),
-            )
-            .map(engine_payload_window_to_persist)
-            .map_err(engine_read_error_to_persist)
+        self.mapped_payload_window_unlocked(location, expected_hash)
     }
 
     /// Maps and verifies the payload at `location` without materializing it.
@@ -691,6 +684,31 @@ impl PersistBlobPack {
         self.mapped_read_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(visit(payload.as_bytes()))
+    }
+
+    fn mapped_payload_window_unlocked(
+        &self,
+        location: PersistBlobLocation,
+        expected_hash: DurableBlake3Hash,
+    ) -> Result<PersistBlobPayloadWindow, PersistBlobPackError> {
+        let file = fs::File::open(&self.path).map_err(|source| PersistBlobPackError::Open {
+            path: self.path.clone(),
+            source,
+        })?;
+        let lease = BlobPackFileReadLease::new(&file)
+            .map_err(|source| engine_read_lease_error_to_persist(&self.path, source))?;
+        let pack = MappedBlobPack::map_file_with_lease(&file, &lease)
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        let window = pack
+            .payload_window(
+                persist_location_to_engine(location),
+                durable_hash_to_engine(expected_hash),
+            )
+            .map_err(|source| engine_mapped_error_to_persist(&self.path, source))?;
+        #[cfg(test)]
+        self.mapped_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(engine_payload_window_to_persist(window))
     }
 
     /// Maps and verifies a blob payload while returning only owned window metadata.
