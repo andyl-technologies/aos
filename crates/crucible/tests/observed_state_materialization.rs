@@ -324,7 +324,10 @@ fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
     let observed_state_block = trigger_source
         .split("pub struct ObservedState")
         .nth(1)
-        .and_then(|tail| tail.split("pub(crate) fn evaluate_condition").next())
+        .and_then(|tail| {
+            tail.split("pub fn lint_host_assertion_harness_source")
+                .next()
+        })
         .expect("observed-state implementation block should be present");
 
     for forbidden in [

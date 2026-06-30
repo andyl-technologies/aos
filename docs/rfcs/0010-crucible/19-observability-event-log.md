@@ -915,10 +915,16 @@ log, so they cannot disagree about what happened.
   that do not enqueue commands, advance the scheduler, or mutate the live
   snapshot. Future cursors clamp to the live tail, and retained replay is served
   in bounded batches before the stream follows the broadcast tail.
-- [ ] **T-OBS-12** Implement the `tracing` bridge as observational, opt-in, off by
+- [x] **T-OBS-12** Implement the `tracing` bridge as observational, opt-in, off by
   default, off all ordering-significant paths, with the causal subsequence
   identical under no/capturing/filtering subscribers. — satisfies [OBS-32],
   [OBS-33]; spec §19.6.6.
+  Completed by `checks.crucible.phase4.eventLogTracingBridge`: `crucible` now
+  exposes an opt-in `TracingBridge`/`TracingBridgeConfig` that is disabled by
+  default, mirrors only observational diagnostic entries, ignores subscriber
+  capture/filtering/panics as host-output concerns, and keeps the causal
+  subsequence byte-identical with no subscriber, capturing subscriber, and
+  filtering subscriber modes.
 - [ ] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
   with each kind's fixed class, as the single source of truth referenced by
   18/20/21/22/24; golden-vector the canonical serialization of each kind; record a

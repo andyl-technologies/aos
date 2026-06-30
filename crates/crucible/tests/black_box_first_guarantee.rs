@@ -423,6 +423,7 @@ fn predicate_has_guest_marker(predicate: &Predicate) -> bool {
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
         | Predicate::Quiescent
+        | Predicate::FaultActive { .. }
         | Predicate::Named { .. } => false,
     }
 }

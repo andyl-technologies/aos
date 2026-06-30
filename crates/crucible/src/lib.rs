@@ -16,8 +16,9 @@
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
 //! [`node_fault`] owns VM timing projection for slow and clock-skew faults,
 //! [`backend`] owns the VM backend boundary, [`scheduler`] owns the quantum-loop
-//! boundary, [`trigger`] owns event-graph control flow, and `sim_backend`
-//! provides the gated in-process test double.
+//! boundary, [`trigger`] owns event-graph control flow, [`tracing_bridge`] owns
+//! opt-in host diagnostic mirroring to `tracing`, and `sim_backend` provides the
+//! gated in-process test double.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -32,6 +33,7 @@ pub mod node_fault;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
 mod sim_backend;
+pub mod tracing_bridge;
 pub mod trigger;
 
 pub use backend::{
@@ -145,6 +147,7 @@ pub use sim_backend::{
     SimDoubleControlEvent, SimDoubleError, SimDoubleHostScheduleEvent, SimInstructionScript,
     SimInstructionStep, SimOutboundFrame,
 };
+pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
 pub use trigger::{
     Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationBisectionRequest, AssertionViolationDivergence,
@@ -4072,7 +4075,9 @@ tag = "negative-time"
             Ok(plan) => plan,
             Err(error) => panic!("partition plan should be valid: {error}"),
         };
-        let no_link_world = world_from_nodes_and_links(two_ready_nodes(), Vec::new());
+        let mut no_link_world_nodes = two_ready_nodes();
+        no_link_world_nodes[0].white_box = WhiteBoxPolicy::Enabled;
+        let no_link_world = world_from_nodes_and_links(no_link_world_nodes, Vec::new());
 
         assert_eq!(properties.content_hash(), same_properties.content_hash());
         assert_eq!(properties.assertions(), same_properties.assertions());
