@@ -13,6 +13,7 @@
 //! StaticSelectPositionHash -> static-select binding position identities
 //! ForceCapturedValueHash -> force-cache captured free-variable fingerprints
 //! DerivationSidePayloadValueHash -> derivation side-record payload hashes
+//! CachedExpressionPayloadValueHash -> cached expression payload hashes
 //! DurableBlake3Hash  -> evaluator cache digests and confirmation hashes
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
@@ -236,6 +237,31 @@ impl DerivationSidePayloadValueHash {
     /// Finalizes a BLAKE3 hasher in a derivation side-payload value domain.
     pub(crate) fn from_hasher(hasher: blake3::Hasher) -> Self {
         Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+/// A durable BLAKE3 hash for cached expression payload bytes.
+///
+/// This type marks the value-hash identity for canonical cached-expression
+/// persistent payload preimages before they are intentionally adapted into
+/// [`crate::cache::ValueHash`] graph and value-blob material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct CachedExpressionPayloadValueHash(DurableBlake3Hash);
+
+impl CachedExpressionPayloadValueHash {
+    /// Finalizes a BLAKE3 hasher in a cached-expression payload value domain.
+    pub(crate) fn from_hasher(hasher: blake3::Hasher) -> Self {
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Wraps a precomputed cached-expression payload digest for const constructors.
+    pub(in crate::cache) const fn from_precomputed_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
     }
 
     /// Returns the underlying durable BLAKE3 digest.

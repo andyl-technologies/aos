@@ -1,20 +1,23 @@
 //! Cached expression payload wrapper and replay accessors.
 
 use super::*;
+use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
 // Precomputed BLAKE3 hashes of the canonical empty payload preimages keep the
 // public empty constructors const while every cached value carries a hash field.
-const EMPTY_LIST_VALUE_HASH: ValueHash =
-    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes([
+const EMPTY_LIST_VALUE_HASH: ValueHash = ValueHash::from_cached_expression_payload_hash(
+    CachedExpressionPayloadValueHash::from_precomputed_hash(DurableBlake3Hash::from_bytes([
         54, 154, 29, 29, 98, 143, 209, 209, 178, 225, 27, 65, 134, 247, 216, 4, 24, 162, 28, 201,
         95, 112, 180, 91, 27, 211, 47, 234, 71, 240, 246, 20,
-    ]));
+    ])),
+);
 
-const EMPTY_ATTRS_VALUE_HASH: ValueHash =
-    ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_bytes([
+const EMPTY_ATTRS_VALUE_HASH: ValueHash = ValueHash::from_cached_expression_payload_hash(
+    CachedExpressionPayloadValueHash::from_precomputed_hash(DurableBlake3Hash::from_bytes([
         208, 38, 121, 20, 160, 193, 6, 66, 13, 195, 48, 174, 248, 48, 164, 106, 51, 179, 197, 106,
         209, 182, 57, 99, 242, 188, 73, 48, 52, 151, 114, 248,
-    ]));
+    ])),
+);
 
 /// A memoized force-cache payload that can be replayed by an evaluator.
 ///
@@ -649,6 +652,8 @@ impl CachedExpressionValue {
         hasher.update(&source_hash.as_durable_hash().as_bytes());
         hasher.update(&payload.persistent_payload_len().to_le_bytes());
         payload.update_persistent_payload_preimage(&mut hasher);
-        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+        ValueHash::from_cached_expression_payload_hash(
+            CachedExpressionPayloadValueHash::from_hasher(hasher),
+        )
     }
 }

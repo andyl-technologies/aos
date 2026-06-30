@@ -1,6 +1,7 @@
 //! Inline cached expression payload representation and codec helpers.
 
 use super::*;
+use crate::cache::hashing::CachedExpressionPayloadValueHash;
 
 mod payload_cursor;
 
@@ -179,7 +180,9 @@ impl InlineValuePayload {
     pub(super) fn value_hash_from_persistent_payload(&self) -> ValueHash {
         let mut hasher = blake3::Hasher::new();
         self.update_persistent_payload_preimage(&mut hasher);
-        ValueHash::from_canonical_value_hash(DurableBlake3Hash::from_hasher(hasher))
+        ValueHash::from_cached_expression_payload_hash(
+            CachedExpressionPayloadValueHash::from_hasher(hasher),
+        )
     }
 
     pub(super) fn update_persistent_payload_preimage(&self, hasher: &mut blake3::Hasher) {

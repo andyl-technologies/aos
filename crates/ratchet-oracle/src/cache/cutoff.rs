@@ -8,8 +8,8 @@
 use thiserror::Error;
 
 use super::hashing::{
-    DerivationSidePayloadValueHash, DurableBlake3Hash, ForceCapturedValueHash,
-    ImpureInputObservationHash,
+    CachedExpressionPayloadValueHash, DerivationSidePayloadValueHash, DurableBlake3Hash,
+    ForceCapturedValueHash, ImpureInputObservationHash,
 };
 use crate::string::{ContextKind, StringContext};
 use crate::value::{Value, ValueError, ValueTag};
@@ -228,6 +228,16 @@ impl ValueHash {
     /// derivationStrict side records, not a canonical Nix value.
     pub(crate) const fn from_derivation_side_payload_hash(
         hash: DerivationSidePayloadValueHash,
+    ) -> Self {
+        Self(hash.as_durable_hash())
+    }
+
+    /// Wraps a durable BLAKE3 hash of a cached expression payload.
+    ///
+    /// This constructor is for the canonical bytes stored in the persistent
+    /// `values/` pack and replayed through [`crate::cache::CachedExpressionValue`].
+    pub(crate) const fn from_cached_expression_payload_hash(
+        hash: CachedExpressionPayloadValueHash,
     ) -> Self {
         Self(hash.as_durable_hash())
     }

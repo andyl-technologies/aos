@@ -1722,6 +1722,22 @@ alone (`M-1`/`Q-A`).
       `derivation_payload`, derivation side-record runtime tests, derivation
       path-reuse surface tests, and
       `internal_cache_hash_canaries_do_not_reach_drv_surfaces`.
+- [x] Current cached-expression payload value hash boundary:
+      `CachedExpressionPayloadValueHash` now marks BLAKE3 value hashes for
+      canonical `CachedExpressionValue` persistent payload bytes, including
+      source-provenance envelopes for positioned attrsets.
+      `InlineValuePayload::value_hash_from_persistent_payload`,
+      `CachedExpressionValue::value_hash_for_attr_position_source`, and the
+      precomputed empty-list/empty-attrset const hashes finalize through this
+      type before `ValueHash::from_cached_expression_payload_hash` adapts them
+      into graph and value-blob material. This type-enforces current
+      cached-expression payload BLAKE3 finalization only; the general canonical
+      value serializer, broader value-store hashing, persistent graph
+      serialization, and the full differential `.drv` harness remain open
+      (`S-15`). Gate: inline-payload encoding tests, cached-expression
+      materialization and payload rehydration tests, positioned-payload tests,
+      and `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile
+      coverage.
 - [x] Current store-path SHA-256 preimage type boundary: derivation, text,
       fixed-output, and source store-path constructors now carry
       `NixSha256Digest` through `build_store_path_from_fingerprint_parts`,
@@ -4563,6 +4579,22 @@ alone (`M-1`/`Q-A`).
       path-reuse surface tests, and
       `internal_cache_hash_canaries_do_not_reach_drv_surfaces`
       ([12](12-incremental-evaluation-cache.md) §5.2/§4.3).
+- [x] Current cached-expression payload value hash boundary:
+      `CachedExpressionPayloadValueHash` now marks BLAKE3 value hashes for
+      canonical `CachedExpressionValue` persistent payload bytes, including
+      source-provenance envelopes for positioned attrsets.
+      `InlineValuePayload::value_hash_from_persistent_payload`,
+      `CachedExpressionValue::value_hash_for_attr_position_source`, and the
+      precomputed empty-list/empty-attrset const hashes finalize through this
+      type before `ValueHash::from_cached_expression_payload_hash` adapts them
+      into graph and value-blob material. This type-enforces current
+      cached-expression payload BLAKE3 finalization only; the general canonical
+      value serializer, broader value-store hashing, persistent graph
+      serialization, and the full internal-hash leak invariant remain open.
+      Gate: inline-payload encoding tests, cached-expression materialization
+      and payload rehydration tests, positioned-payload tests, and
+      `ratchet-oracle`/`aos-nix`/`aos-nix-harness` test-target compile coverage
+      ([12](12-incremental-evaluation-cache.md) §5.2).
 - [x] Current native semantic-no-op source edit closure canaries:
       `native_instantiation_expr_comment_only_edit_preserves_drv_closure`,
       `native_file_instantiation_comment_only_leaf_edit_preserves_drv_closure`,
