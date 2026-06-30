@@ -127,7 +127,7 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         kind: "assertion_proximity",
         class: SchedulerEventLogClass::Observational,
         sources: &["engine"],
-        attributes: &["distance", "id", "node"],
+        attributes: &["distance", "id", "node", "quantifier"],
     },
     EventKindCatalogEntry {
         kind: "assertion_state_changed",

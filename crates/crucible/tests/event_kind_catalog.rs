@@ -15,7 +15,7 @@ event_kind_catalog.version=1
 event_kind_catalog.entries=41
 entry kind=app_random class=causal sources=guest,node attributes=node,request_id,stream_domain,stream_name,value,width
 entry kind=assertion_evaluated class=causal sources=engine,guest attributes=condition,detail.*.key,detail.*.value,details_len,flavor,id,message
-entry kind=assertion_proximity class=observational sources=engine attributes=distance,id,node
+entry kind=assertion_proximity class=observational sources=engine attributes=distance,id,node,quantifier
 entry kind=assertion_state_changed class=causal sources=engine attributes=id,new_state
 entry kind=backend_input class=causal sources=engine,node attributes=consumer,node,payload,producer,sequence,virtual_time
 entry kind=console_output class=observational sources=node attributes=bytes,node

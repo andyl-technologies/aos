@@ -700,7 +700,7 @@ the per-point truth of every standing condition is not itself a log entry.
 | `tick` | Causal | Engine | `virtual_time`, per-node `icount` (one scheduler quantum, 08) |
 | `diagnostic` | Observational | Engine, Node, Command | `name`, typed key/value `details` (the escape hatch, §19.2.2) |
 | `coverage` | Observational | Engine, Guest | `kind` (basic_block / named), `id`/`block`, `node` (22, [GHC-7]/[GHC-22]) |
-| `assertion_proximity` | Observational | Engine | `id`, `distance` (non-negative, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
+| `assertion_proximity` | Observational | Engine | `id`, `quantifier`, `distance` (non-negative u128, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
 | `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage/random_request), typed body (16 §16.5) |
 
 ```rust,illustrative
@@ -734,7 +734,7 @@ pub enum EventPayload {
     // ── Observational: descriptive, excluded from the comparison (§19.3) ──
     Diagnostic { name: Str, details: Attrs },
     Coverage { kind: CoverageKind, id: CoverageId, node: NodeId },
-    AssertionProximity { id: AssertionId, distance: u64, node: Option<NodeId> }, // 18 §18.13, steering-only
+    AssertionProximity { id: AssertionId, quantifier: AssertionFlavor, distance: u128, node: Option<NodeId> }, // 18 §18.13, steering-only
     GuestMarker { node: NodeId, marker_kind: MarkerKind, body: Attrs }, // from 16 §16.5
 }
 ```
@@ -938,9 +938,15 @@ log, so they cannot disagree about what happened.
   canonical serialization, and regresses that `trigger_fired` entries remain causal
   event-log entries rather than `Schedule` `Decision`s while condition truth stays
   evaluated rather than logged.
-- [ ] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
+- [x] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
   observational `assertion_proximity` event-log kind, excluded from the determinism
   comparison; derive its per-checkpoint **minimum** as a deterministic digest of the
   projection (analogous to `coverage_fingerprint`) consumed by guided search; forbid
   any proximity record parallel to the log. — satisfies [OBS-37]; spec §19.6.3,
   §19.7; cross-ref 18 §18.13, 22.
+  Completed by `checks.crucible.phase4.eventLogAssertionProximity`: `crucible` now
+  emits typed observational `assertion_proximity` entries, excludes them from the
+  causal determinism projection, derives a minimum-distance assertion-proximity
+  projection fingerprint from the unified log, and threads that digest through
+  checkpoint and temporal-graph cache feedback for guided-search consumers without
+  introducing a second proximity record parallel to the log.

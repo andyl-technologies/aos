@@ -7766,6 +7766,8 @@ pub struct Checkpoint {
     pub state: Option<MaterializedState>,
     /// Observation-only coverage fingerprint for this checkpoint.
     pub coverage_fingerprint: ContentHash,
+    /// Observation-only assertion-proximity fingerprint for guided search.
+    pub assertion_proximity_fingerprint: ContentHash,
     /// Identity-irrelevant metadata for humans and cache policy.
     pub metadata: CheckpointMeta,
     /// Per-node VM-state blob references.
@@ -7819,6 +7821,7 @@ impl Checkpoint {
             state,
             node_icounts,
             coverage_fingerprint: ContentHash::default(),
+            assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
             kind,
@@ -7843,6 +7846,7 @@ impl Checkpoint {
             node_icounts: BTreeMap::new(),
             state: materialized_state_for_kind(kind, &BTreeMap::new(), &node_blobs),
             coverage_fingerprint: ContentHash::default(),
+            assertion_proximity_fingerprint: ContentHash::default(),
             metadata: CheckpointMeta::empty(),
             node_blobs,
             kind,
@@ -7880,6 +7884,21 @@ impl Checkpoint {
         entries: &[crate::scheduler::SchedulerEventLogEntry],
     ) -> Self {
         self.coverage_fingerprint = crate::scheduler::coverage_fingerprint_from_event_log(entries);
+        self
+    }
+
+    /// Derives assertion-proximity feedback from the event log without changing identity.
+    ///
+    /// The checkpoint stores only the deterministic minimum-distance projection
+    /// digest. The proximity records themselves remain unified event-log entries,
+    /// avoiding a second steering record parallel to the log.
+    #[must_use]
+    pub fn with_assertion_proximity_from_event_log(
+        mut self,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+    ) -> Self {
+        self.assertion_proximity_fingerprint =
+            crate::scheduler::assertion_proximity_fingerprint_from_event_log(entries);
         self
     }
 
@@ -8289,6 +8308,33 @@ impl TemporalGraph {
         )?;
         if let Some(checkpoint) = self.checkpoint_nodes.get_mut(&configuration.id()) {
             checkpoint.coverage_fingerprint = fingerprint;
+        }
+        Ok(())
+    }
+
+    /// Registers a loadable snapshot with assertion-proximity feedback from event-log entries.
+    ///
+    /// Guided search consumers read the resulting
+    /// [`Checkpoint::assertion_proximity_fingerprint`] through the normal
+    /// checkpoint/cache path. The graph stores the deterministic projection digest
+    /// only; the source distances stay in the unified event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::cache_snapshot`].
+    pub fn cache_snapshot_with_event_log_assertion_proximity(
+        &mut self,
+        configuration: &Configuration,
+        checkpoint: Checkpoint,
+        entries: &[crate::scheduler::SchedulerEventLogEntry],
+    ) -> Result<(), EngineError> {
+        let fingerprint = crate::scheduler::assertion_proximity_fingerprint_from_event_log(entries);
+        self.cache_snapshot(
+            configuration,
+            checkpoint.with_assertion_proximity_from_event_log(entries),
+        )?;
+        if let Some(checkpoint) = self.checkpoint_nodes.get_mut(&configuration.id()) {
+            checkpoint.assertion_proximity_fingerprint = fingerprint;
         }
         Ok(())
     }
@@ -9815,6 +9861,7 @@ impl TemporalGraph {
         )?;
         if let Some(snapshot) = self.cached_snapshots.get(&configuration.id()) {
             checkpoint.coverage_fingerprint = snapshot.coverage_fingerprint;
+            checkpoint.assertion_proximity_fingerprint = snapshot.assertion_proximity_fingerprint;
         }
         self.record_configuration(configuration.clone());
         self.checkpoint_nodes.insert(configuration.id(), checkpoint);
@@ -19410,6 +19457,10 @@ fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
         format!(
             "coverage_fingerprint={}",
             content_hash_hex(checkpoint.coverage_fingerprint)
+        ),
+        format!(
+            "assertion_proximity_fingerprint={}",
+            content_hash_hex(checkpoint.assertion_proximity_fingerprint)
         ),
     ];
 
