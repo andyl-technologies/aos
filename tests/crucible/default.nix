@@ -1056,6 +1056,11 @@ in rec {
       taskIds = ["T-GHC-13"];
       phase0S5 = phase0.s5VirtualMemory;
     };
+    guestHostDecoderHardening = import ./phase4-guest-host-decoder-hardening.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostDecoderHardening";
+      taskIds = ["T-GHC-14"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

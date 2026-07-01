@@ -11,9 +11,10 @@ use crucible_protocol::{
     ControlTag, GOLDEN_CONTROL_VECTORS, GOLDEN_VECTOR_PROTOCOL_VERSION,
     GOLDEN_VECTOR_REGENERATION_RULE, GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS,
     GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS, HostMsg, PluginMsg,
-    WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
-    WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
-    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame,
+    WHITEBOX_DOORBELL_ASSERTION_FLAVOR_COUNT, WHITEBOX_DOORBELL_FRAME_MAGIC,
+    WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT,
+    WHITEBOX_DOORBELL_MARKER_KIND_COUNT, WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+    WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
     WhiteboxDoorbellMarkerKind, WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayloadDecodeError,
     control_decode_host_msg, control_decode_plugin_msg, control_encode_host_msg,
     control_encode_plugin_msg, decode_whitebox_marker_payload, encode_whitebox_doorbell_frame,
@@ -30,6 +31,7 @@ fn protocol_abi_conformance_runs_named_checks() {
     assert_doorbell_marker_payload_golden_vectors();
     assert_doorbell_marker_kind_vocabulary();
     assert_doorbell_marker_subvocabularies();
+    assert_doorbell_decoder_fuzz_corpus();
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
 }
@@ -262,6 +264,127 @@ fn assert_doorbell_marker_subvocabularies() {
 }
 
 #[test]
+fn protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded() {
+    assert_doorbell_decoder_fuzz_corpus();
+}
+
+fn assert_doorbell_decoder_fuzz_corpus() {
+    let cases = doorbell_fuzz_corpus();
+    assert!(
+        cases.len() >= 8,
+        "doorbell fuzz corpus must cover malformed and adversarial frame shapes"
+    );
+
+    for case in cases {
+        let first = assert_doorbell_decode_does_not_panic(case.name, &case.frame, 8);
+        let second = WhiteboxDoorbellFrame::decode_bounded(&case.frame, 8);
+        assert_eq!(first, second, "doorbell fuzz case `{}` drifted", case.name);
+        if case.name != "well-formed-empty-assertion" {
+            assert!(
+                first.is_err(),
+                "doorbell fuzz case `{}` must exercise a typed rejection",
+                case.name
+            );
+        }
+    }
+
+    let unknown_kind =
+        match WhiteboxDoorbellFrame::decode_bounded(&doorbell_frame_with_header(0xffff, &[]), 8) {
+            Ok(frame) => frame,
+            Err(error) => panic!("unknown-kind doorbell frame header should decode: {error}"),
+        };
+    assert_eq!(
+        decode_whitebox_marker_payload(&unknown_kind),
+        Err(WhiteboxMarkerPayloadDecodeError::UnknownKind { kind: 0xffff })
+    );
+}
+
+fn assert_doorbell_decode_does_not_panic(
+    name: &str,
+    frame: &[u8],
+    max_payload_len: usize,
+) -> Result<WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        WhiteboxDoorbellFrame::decode_bounded(frame, max_payload_len)
+    })) {
+        Ok(result) => result,
+        Err(_) => panic!("doorbell decoder fuzz case `{name}` panicked for frame {frame:?}"),
+    }
+}
+
+struct DoorbellFuzzCase {
+    name: &'static str,
+    frame: Vec<u8>,
+}
+
+fn doorbell_fuzz_corpus() -> Vec<DoorbellFuzzCase> {
+    vec![
+        DoorbellFuzzCase {
+            name: "empty",
+            frame: Vec::new(),
+        },
+        DoorbellFuzzCase {
+            name: "truncated-header",
+            frame: vec![0x43, 0x52, 0x42],
+        },
+        DoorbellFuzzCase {
+            name: "bad-magic",
+            frame: doorbell_frame_with_custom_header(
+                0,
+                WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                1,
+                0,
+                &[],
+            ),
+        },
+        DoorbellFuzzCase {
+            name: "bad-version",
+            frame: doorbell_frame_with_custom_header(
+                WHITEBOX_DOORBELL_FRAME_MAGIC,
+                WHITEBOX_DOORBELL_PROTOCOL_VERSION.wrapping_add(1),
+                1,
+                0,
+                &[],
+            ),
+        },
+        DoorbellFuzzCase {
+            name: "declared-length-exceeds-bound",
+            frame: doorbell_frame_with_custom_header(
+                WHITEBOX_DOORBELL_FRAME_MAGIC,
+                WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                1,
+                9,
+                &[],
+            ),
+        },
+        DoorbellFuzzCase {
+            name: "declared-length-short",
+            frame: doorbell_frame_with_custom_header(
+                WHITEBOX_DOORBELL_FRAME_MAGIC,
+                WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                1,
+                4,
+                &[0xa5],
+            ),
+        },
+        DoorbellFuzzCase {
+            name: "declared-length-trailing",
+            frame: doorbell_frame_with_custom_header(
+                WHITEBOX_DOORBELL_FRAME_MAGIC,
+                WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                1,
+                0,
+                &[0xa5],
+            ),
+        },
+        DoorbellFuzzCase {
+            name: "well-formed-empty-assertion",
+            frame: doorbell_frame_with_header(1, &[]),
+        },
+    ]
+}
+
+#[test]
 fn protocol_codec_fuzz_regression_corpus_is_clean_and_deterministic() {
     assert_structure_aware_fuzz_corpus();
     assert_protocol_codec_fuzz_corpus();
@@ -407,4 +530,30 @@ fn assert_doorbell_vector_bytes(name: &str, expected: &[u8]) {
         }
     }
     panic!("missing doorbell frame golden vector {name}");
+}
+
+fn doorbell_frame_with_header(kind: u16, body: &[u8]) -> Vec<u8> {
+    doorbell_frame_with_custom_header(
+        WHITEBOX_DOORBELL_FRAME_MAGIC,
+        WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+        kind,
+        body.len() as u32,
+        body,
+    )
+}
+
+fn doorbell_frame_with_custom_header(
+    magic: u32,
+    version: u16,
+    kind: u16,
+    declared_len: u32,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&magic.to_le_bytes());
+    frame.extend_from_slice(&version.to_le_bytes());
+    frame.extend_from_slice(&kind.to_le_bytes());
+    frame.extend_from_slice(&declared_len.to_le_bytes());
+    frame.extend_from_slice(body);
+    frame
 }

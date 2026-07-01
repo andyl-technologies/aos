@@ -901,9 +901,20 @@ the transport layer by construction.
   source. The app-random reply path is covered as a second client of the same
   guest-memory addressing decision. The physical / pinned identity-mapped shared-page fallback
   remains retained if that evidence is absent or invalidated.
-- [ ] **T-GHC-14** Harden the host decoder against untrusted guest input
+- [x] **T-GHC-14** Harden the host decoder against untrusted guest input
   (bad magic/version/len/kind): defensive decode diagnostic, bounded allocation,
   fuzzed under conformance. — satisfies [GHC-23], [GHC-35]; spec §16.5, §16.7.
+  Completed by `checks.crucible.phase4.guestHostDecoderHardening`: the shared
+  doorbell frame decoder now exposes `WhiteboxDoorbellFrame::decode_bounded`,
+  which rejects a header-declared payload length above the caller's trap-time
+  budget before copying payload bytes. The protocol codec and
+  `gate:abi-conformance` tests cover bad magic, bad version, bounded declared
+  length, length mismatch, and wrong-kind/unknown-kind cases with no-panic fuzz
+  regression coverage. The plugin marker and app-random paths use the bounded
+  decoder; malformed marker-path frames record
+  `WhiteboxDoorbellDecodeDiagnostic` before being dropped, while malformed
+  app-random frames are turned into typed decode diagnostics and dropped without
+  drawing a decision or writing a reply.
 - [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
   with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30], [G-3]; spec
