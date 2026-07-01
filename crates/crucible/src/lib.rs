@@ -92,16 +92,18 @@ pub use model::{
     DagStoreReproductionArtifact, DebugAttachChannelKind, DebugAttachChannelSet, DebugAttachReport,
     DebugAttachRequest, DebugBreakpointClientKind, DebugBreakpointMechanism, DebugBreakpointReport,
     DebugBreakpointRequest, DebugBreakpointTarget, DebugCheckpointCadenceReport,
-    DebugCheckpointCadenceRequest, DebugCheckpointStride, DebugCoordinate, DebugGdbEndpoint,
-    DebugGdbstubChannel, DebugGotoReport, DebugGotoRequest, DebugGuestEdit, DebugGuestEditKind,
-    DebugNonCanonicalBranch, DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport,
-    DebugNonCanonicalBranchRequest, DebugNonCanonicalBranchTrigger, DebugNonCanonicalForkMarker,
-    DebugNonCanonicalLiveStatus, DebugOperatorControlKind, DebugPerNodeGotoReport,
-    DebugPerNodeTimeTravelReport, DebugPerNodeTimeTravelRequest, DebugReadOnlyCheckpointFootprint,
+    DebugCheckpointCadenceRequest, DebugCheckpointStride, DebugCoordinate,
+    DebugDivergenceCoordinate, DebugFailureFooterCommand, DebugGdbEndpoint, DebugGdbstubChannel,
+    DebugGotoReport, DebugGotoRequest, DebugGuestEdit, DebugGuestEditKind, DebugNonCanonicalBranch,
+    DebugNonCanonicalBranchAction, DebugNonCanonicalBranchReport, DebugNonCanonicalBranchRequest,
+    DebugNonCanonicalBranchTrigger, DebugNonCanonicalForkMarker, DebugNonCanonicalLiveStatus,
+    DebugOperatorControlKind, DebugPerNodeGotoReport, DebugPerNodeTimeTravelReport,
+    DebugPerNodeTimeTravelRequest, DebugReadOnlyCheckpointFootprint,
     DebugReadOnlyInspectionFootprint, DebugReadOnlyInspectionKind, DebugReadOnlyInspectionReport,
     DebugReadOnlyInspectionRequest, DebugReplayOracleBisectionRequest, DebugReverseContinueMatch,
     DebugReverseContinueReport, DebugReverseContinueRequest, DebugReverseStepGrain,
-    DebugReverseStepReport, DebugReverseStepRequest, DebugWholeWorldTarget,
+    DebugReverseStepReport, DebugReverseStepRequest, DebugTargetResolverReport,
+    DebugTargetResolverRequest, DebugTargetSelector, DebugWholeWorldTarget,
     DebugWholeWorldTimeTravelReport, DebugWholeWorldTimeTravelRequest, Decision, DecisionRngState,
     DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState, EngineError, EventId,
     EventKey, EventLogOffset, EventSequenceKey, EventSequenceState, FamilyParams, FamilySpace,
@@ -249,10 +251,10 @@ pub mod test_support {
     //! Debug-build helpers for integration tests.
 
     use crate::{
-        ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, HostAssertionPredicate,
-        Icount, LintedHostAssertionOracle, NodeId, ObservableEvent,
-        SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-        VirtualTime,
+        ConditionEvaluationError, ConditionEventLogPrefix, ContentHash, EventPayload,
+        HostAssertionPredicate, Icount, LintedHostAssertionOracle, NodeId, ObservableEvent,
+        SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+        SchedulerEventLogPayload, VirtualTime,
     };
 
     /// Wraps a host assertion predicate for tests that inspect evaluator behavior.
@@ -294,6 +296,24 @@ pub mod test_support {
         payload: SchedulerEventLogPayload,
     ) -> SchedulerEventLogEntry {
         SchedulerEventLogEntry::with_payload_for_test(sequence, at, payload)
+    }
+
+    /// Builds a scheduler event-log entry with a caller-supplied open payload for tests.
+    #[must_use]
+    pub fn condition_open_payload_entry_for_test(
+        sequence: u64,
+        at: VirtualTime,
+        class: SchedulerEventLogClass,
+        event_payload: EventPayload,
+        payload: SchedulerEventLogPayload,
+    ) -> SchedulerEventLogEntry {
+        SchedulerEventLogEntry::with_open_payload_for_test(
+            sequence,
+            at,
+            class,
+            event_payload,
+            payload,
+        )
     }
 
     /// Returns a test entry with an intentionally replaced content hash.

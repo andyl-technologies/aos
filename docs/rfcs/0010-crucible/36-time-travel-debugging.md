@@ -998,11 +998,19 @@ touching the canonical run.
   non-canonical, and live status, and keeps the branch inside virtual time plus the
   single execution path while excluding it from replay-oracle and
   `(seed, scenario, schedule)` artifacts.
-- [ ] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
+- [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
   and emit a copy-pasteable `crucible debug <artifact> --at-failure` in the failure
   footer (23 §4). — satisfies [DBG-27], [DBG-28], [DBG-29]; spec §36.6.
+  Completed by `checks.crucible.phase6.debugTargetResolver`:
+  `TemporalGraph::debug_resolve_target` accepts direct `--at` coordinates,
+  event-log `--at-event` sequences, `--at-failure` by scanning for the first
+  assertion-state violation, `--at-checkpoint` content addresses, and node-local
+  divergence-bisection coordinates, then returns the `DebugGotoRequest` consumed by
+  restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
+  copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
+  artifact writer uses it.
 - [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,

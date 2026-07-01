@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:77fd6a7c776a5ef7`
+Checklist sync digest: `rfc0010-checklist-v1:7b5e14887566de67`
 
 ## The phase ladder
 
@@ -243,7 +243,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   attach runtime, preserves the canonical graph and canonical-run causal log, emits a
   causal catalog-kind `fork` marker flagged non-canonical, excludes the branch from
   replay-oracle and `(seed, scenario, schedule)` artifacts, and stores arbitrary guest
-  edits only in a never-model-reproducible debug-edit script.
+  edits only in a never-model-reproducible debug-edit script; `T-DBG-7` is green
+  through `checks.crucible.phase6.debugTargetResolver`, which resolves `--at`,
+  `--at-event`, `--at-failure`, `--at-checkpoint`, and divergence-bisection targets
+  into replay-checked debug `goto` requests and centralizes the copy-pasteable
+  `crucible debug <artifact> --at-failure` failure footer command.
 - Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
