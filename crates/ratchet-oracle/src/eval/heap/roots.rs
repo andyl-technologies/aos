@@ -43,6 +43,7 @@ const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
+const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 
 /// A precise root slot and the heap value stored in it.
 #[derive(Clone, Debug)]
@@ -1228,6 +1229,110 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     }
 }
 
+/// One heap-field-backed reference that must be rewritten after minor GC.
+///
+/// Remembered-source fields are validated and rewritten in the same
+/// old/permanent object. Nursery fields are validated against the current
+/// from-space object but name the relocated destination object that a mutating
+/// collector would update after copying bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollHeapFieldWriteback {
+    slot: usize,
+    validation_object: GcHeapAddress,
+    writeback_object: GcHeapAddress,
+    field_index: usize,
+    source: HeapEdgeSource,
+    expected: ResolvedValueGeneration,
+    replacement: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollHeapFieldWriteback {
+    fn new(
+        slot: usize,
+        validation_object: GcHeapAddress,
+        writeback_object: GcHeapAddress,
+        field_index: usize,
+        source: HeapEdgeSource,
+        expected: ResolvedValueGeneration,
+        replacement: ResolvedValueGeneration,
+    ) -> Self {
+        Self {
+            slot,
+            validation_object,
+            writeback_object,
+            field_index,
+            source,
+            expected,
+            replacement,
+        }
+    }
+
+    /// Returns the copied reference slot that produced this writeback.
+    pub const fn slot(&self) -> usize {
+        self.slot
+    }
+
+    /// Returns the current heap object read to validate the saved field label.
+    pub const fn validation_object(&self) -> GcHeapAddress {
+        self.validation_object
+    }
+
+    /// Returns the object whose field must receive [`Self::replacement`].
+    ///
+    /// This matches [`Self::validation_object`] for remembered-source fields and
+    /// names the relocated object for copied nursery fields.
+    pub const fn writeback_object(&self) -> GcHeapAddress {
+        self.writeback_object
+    }
+
+    /// Returns the field index in the validation object's precise scanner order.
+    pub const fn field_index(&self) -> usize {
+        self.field_index
+    }
+
+    /// Returns the precise source label expected on the validation object.
+    pub const fn source(&self) -> &HeapEdgeSource {
+        &self.source
+    }
+
+    /// Returns the young from-space value expected in the field.
+    pub const fn expected(&self) -> ResolvedValueGeneration {
+        self.expected
+    }
+
+    /// Returns the relocated value that must replace [`Self::expected`].
+    pub const fn replacement(&self) -> ResolvedValueGeneration {
+        self.replacement
+    }
+}
+
+/// Heap-field writebacks derived from an allocation-poll minor-GC commit plan.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollHeapFieldWritebackPlan {
+    writebacks: Vec<AllocationCollectorPollHeapFieldWriteback>,
+}
+
+impl AllocationCollectorPollHeapFieldWritebackPlan {
+    fn new(writebacks: Vec<AllocationCollectorPollHeapFieldWriteback>) -> Self {
+        Self { writebacks }
+    }
+
+    /// Returns planned heap-field writebacks in reference-rewrite order.
+    pub fn writebacks(&self) -> &[AllocationCollectorPollHeapFieldWriteback] {
+        &self.writebacks
+    }
+
+    /// Returns the number of heap-field writebacks.
+    pub fn len(&self) -> usize {
+        self.writebacks.len()
+    }
+
+    /// Returns whether there are no heap-field writebacks.
+    pub fn is_empty(&self) -> bool {
+        self.writebacks.is_empty()
+    }
+}
+
 /// Caller-owned buffers for applying an allocation-poll minor-GC commit plan.
 pub struct AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
     object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
@@ -1489,6 +1594,100 @@ impl EvalHeap {
             references.push(self.current_heap_field_reference_value(index, slot.source())?);
         }
         Ok(references)
+    }
+
+    /// Derives writeback metadata for heap-field-backed minor-GC rewrites.
+    ///
+    /// The returned plan contains only remembered-source and nursery-field slots
+    /// that the lower-level commit plan will rewrite. Root slots are skipped
+    /// because their mutable storage is owned by the active tree-walk/JIT
+    /// safepoint machinery, not by [`EvalHeap`]. Every heap-field slot is
+    /// re-read from the current typed side table before it is admitted so stale
+    /// field labels or changed field values fail before a future mutating writeback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if writeback storage cannot be reserved, if a
+    /// saved field object no longer belongs to the heap, if a saved field index or
+    /// label is stale, if a copied slot no longer matches its lower-level rewrite,
+    /// or if the current field value no longer matches the copied poll slot value.
+    pub fn collector_poll_minor_gc_heap_field_writeback_plan(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+    ) -> Result<AllocationCollectorPollHeapFieldWritebackPlan, EvalHeapError> {
+        let rewrites = commit_plan.commit_plan().reference_rewrites().rewrites();
+        let reference_slots = commit_plan.reference_slots();
+        let mut writebacks = Vec::new();
+        writebacks.try_reserve_exact(rewrites.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                entries: rewrites.len(),
+            }
+        })?;
+
+        for rewrite in rewrites {
+            let slot_index = rewrite.slot();
+            let Some(slot) = reference_slots.get(slot_index) else {
+                let expected =
+                    slot_index
+                        .checked_add(1)
+                        .ok_or(EvalHeapError::RootScanLengthOverflow {
+                            table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                        })?;
+                return Err(
+                    EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
+                        expected,
+                        actual: reference_slots.len(),
+                    },
+                );
+            };
+            let Some((validation_object, writeback_object, field_index, source)) =
+                heap_field_writeback_source(
+                    slot.source(),
+                    commit_plan.commit_plan().object_copies(),
+                )?
+            else {
+                continue;
+            };
+            let expected = slot.value();
+            let rewrite_source = ResolvedValueGeneration::Heap {
+                address: rewrite.source(),
+                generation: HeapGeneration::Young,
+            };
+            if expected != rewrite_source {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index: slot_index,
+                    expected,
+                    actual: rewrite_source,
+                });
+            }
+            let actual = self.current_heap_field_reference_value_at(
+                slot_index,
+                validation_object,
+                field_index,
+                source,
+            )?;
+            if actual != expected {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index: slot_index,
+                    expected,
+                    actual,
+                });
+            }
+            writebacks.push(AllocationCollectorPollHeapFieldWriteback::new(
+                slot_index,
+                validation_object,
+                writeback_object,
+                field_index,
+                source.clone(),
+                expected,
+                rewrite.replacement(),
+            ));
+        }
+
+        Ok(AllocationCollectorPollHeapFieldWritebackPlan::new(
+            writebacks,
+        ))
     }
 
     fn push_interned_table_roots<'a>(
@@ -2049,6 +2248,44 @@ fn remembered_set_from_snapshot(
         remembered_set.record(*edge)?;
     }
     Ok(remembered_set)
+}
+
+fn heap_field_writeback_source<'a>(
+    source: &'a AllocationCollectorPollReferenceSource,
+    object_copies: &MinorGcObjectCopyPlan,
+) -> Result<Option<(GcHeapAddress, GcHeapAddress, usize, &'a HeapEdgeSource)>, EvalHeapError> {
+    match source {
+        AllocationCollectorPollReferenceSource::Root { .. } => Ok(None),
+        AllocationCollectorPollReferenceSource::RememberedEdge {
+            edge,
+            field_index,
+            source,
+        } => Ok(Some((edge.source(), edge.source(), *field_index, source))),
+        AllocationCollectorPollReferenceSource::NurseryField {
+            object,
+            field_index,
+            source,
+        } => Ok(Some((
+            *object,
+            minor_gc_writeback_object_for_nursery_field(object_copies, *object)?,
+            *field_index,
+            source,
+        ))),
+    }
+}
+
+fn minor_gc_writeback_object_for_nursery_field(
+    object_copies: &MinorGcObjectCopyPlan,
+    object: GcHeapAddress,
+) -> Result<GcHeapAddress, EvalHeapError> {
+    object_copies
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == object)
+        .map(|copy| copy.destination())
+        .ok_or(EvalHeapError::GenerationalGc(
+            GenerationalGcError::MissingMinorGcRelocationDestination { address: object },
+        ))
 }
 
 fn push_reference_slot(

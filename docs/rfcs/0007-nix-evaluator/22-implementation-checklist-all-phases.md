@@ -5290,14 +5290,23 @@ and helps the oracle directly.
       installation, reference rewrites, and remembered-set publication to the
       already validated lower-level `MinorGcCommitPlan`. `EvalHeap` can derive a
       live reference buffer for heap-field-backed slots by re-reading
-      remembered-source and nursery-field labels from the side table, while
-      rejecting copied root slots that still need external mutable storage. Unit
-      tests cover successful empty-remembered-set application, retained
-      copied-young remembered-edge publication, heap-field reference-buffer
-      derivation, root-slot rejection, stale field-label rejection, incomplete or
-      mismatched reference-buffer rejection before lower-level mutation, and
-      lower-level stale-buffer error mapping without partial mutation. This
-      remains a caller-buffer application surface only; destination storage
+      remembered-source and nursery-field labels from the side table while
+      rejecting copied root slots, and can derive heap-field writeback metadata
+      from lower-level rewrites by revalidating each remembered-source or nursery
+      field's label, copied value, and lower-level rewrite source before
+      returning the planned replacement. Remembered fields write back through
+      their existing source object, while nursery fields name the relocated
+      destination object that would receive the rewritten field. Root rewrites are
+      skipped by that heap-field writeback view because their mutable storage
+      remains external to `EvalHeap`. Unit tests cover successful
+      empty-remembered-set application, retained copied-young remembered-edge
+      publication, heap-field reference-buffer derivation, heap-field writeback
+      derivation for copied and promoted nursery owners, root-slot
+      rejection/empty root-only writebacks, stale field-label rejection, stale
+      same-label field-value rejection, incomplete or mismatched reference-buffer
+      rejection before lower-level mutation, and lower-level stale-buffer error
+      mapping without partial mutation. This remains a
+      caller-buffer/writeback-metadata surface only; destination storage
       allocation, binding byte buffers to live heap objects or object headers,
       tree-walk root/object-field mutation, remembered-source field mutation, and
       semispace management remain open.
@@ -5422,10 +5431,15 @@ and helps the oracle directly.
       forwarding slots, reference values, and remembered-set state.
       `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
       remembered-source and nursery-field slots back to current side-table fields
-      for the reference buffer while rejecting copied root slots. This connects
-      the roots bridge to commit-buffer preflight/application tests, but still
-      does not provide live tree-walk root writeback, object-field writeback,
-      old/permanent field mutation, or JIT stack-map writeback slots.
+      for the reference buffer while rejecting copied root slots, and
+      `EvalHeap::collector_poll_minor_gc_heap_field_writeback_plan` filters
+      lower-level rewrites to heap-field-backed slots, revalidates their current
+      labels/values plus slot-to-rewrite source binding, and returns the
+      writeback object plus replacement value that a future mutating field writer
+      would store. This connects the roots bridge to commit-buffer
+      preflight/application tests, but still does not provide live tree-walk root
+      writeback, object-field mutation, old/permanent field mutation, or JIT
+      stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

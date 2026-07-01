@@ -60,6 +60,16 @@ fn static_gc_address(address_bits: usize) -> GcHeapAddress {
     GcHeapAddress::new(address_bits).expect("test address is a valid GC address")
 }
 
+fn replace_list_record(heap: &mut EvalHeap, value: Value, list: NixList) {
+    let address = gc_address(value);
+    let record = heap
+        .records
+        .iter_mut()
+        .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+        .expect("heap record exists");
+    record.object = HeapObjectValue::List(list);
+}
+
 #[test]
 fn default_heap_uses_tier_a_runtime_allocator() {
     let heap = EvalHeap::new();
@@ -2253,6 +2263,34 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         commit.commit_plan().next_remembered_set().edges(),
         &[RememberedEdge::new(gc_address(root), child_destination)]
     );
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("heap-field writeback plan derives");
+    assert_eq!(writeback_plan.len(), 1);
+    assert!(!writeback_plan.is_empty());
+    let writeback = &writeback_plan.writebacks()[0];
+    assert_eq!(writeback.slot(), 1);
+    assert_eq!(writeback.validation_object(), gc_address(root));
+    assert_eq!(writeback.writeback_object(), gc_address(root));
+    assert_eq!(writeback.field_index(), 0);
+    assert_eq!(
+        writeback.source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(
+        writeback.expected(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        writeback.replacement(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
 
     let mismatch_commit = planned
         .commit_plan(&destinations)
@@ -2514,6 +2552,165 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_reads_remembered_fields()
 }
 
 #[test]
+fn collector_poll_minor_gc_heap_field_writeback_plan_rejects_stale_same_label_value() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let sibling = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("sibling thunk allocates");
+    let root = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let roots = EvalRootSet::new();
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(gc_address(root), gc_address(child)))
+        .expect("remembered edge records");
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+
+    replace_list_record(&mut heap, root, NixList::new(vec![sibling]));
+
+    assert_eq!(
+        heap.collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+            .expect_err("same-label value drift rejects writeback plan"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 0,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Heap {
+                address: gc_address(sibling),
+                generation: HeapGeneration::Young,
+            },
+        }
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_heap_field_writeback_plan_uses_promoted_nursery_owner() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let grandchild = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(11)))
+        .expect("grandchild thunk allocates");
+    let child = heap
+        .alloc_thunk(EvalThunk::select(
+            EvalModuleId::ROOT,
+            IrId::new(7),
+            grandchild,
+            IrAttrPathId::new(0),
+        ))
+        .expect("child thunk allocates");
+    let root = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let roots = EvalRootSet::new();
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(gc_address(root), gc_address(child)))
+        .expect("remembered edge records");
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("promoting minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x3000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+    let child_copy = commit
+        .commit_plan()
+        .object_copies()
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == gc_address(child))
+        .expect("child survivor copy is planned");
+    let grandchild_copy = commit
+        .commit_plan()
+        .object_copies()
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == gc_address(grandchild))
+        .expect("grandchild survivor copy is planned");
+    assert_eq!(child_copy.destination_generation(), HeapGeneration::Old);
+    assert_eq!(
+        grandchild_copy.destination_generation(),
+        HeapGeneration::Old
+    );
+
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("promoted heap-field writeback plan derives");
+    assert_eq!(writeback_plan.len(), 2);
+    let nursery_writeback = &writeback_plan.writebacks()[1];
+    assert_eq!(nursery_writeback.slot(), 1);
+    assert_eq!(nursery_writeback.validation_object(), gc_address(child));
+    assert_eq!(
+        nursery_writeback.writeback_object(),
+        child_copy.destination()
+    );
+    assert_eq!(
+        nursery_writeback.source(),
+        &HeapEdgeSource::ThunkSelectReceiver
+    );
+    assert_eq!(
+        nursery_writeback.replacement(),
+        ResolvedValueGeneration::Heap {
+            address: grandchild_copy.destination(),
+            generation: HeapGeneration::Old,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_root_slots() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
@@ -2561,6 +2758,11 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_root_slots() {
             root_source: EvalRootSource::ValueStack { slot: 0 },
         }
     );
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("root-only rewrite has no heap-field writebacks");
+    assert!(writeback_plan.is_empty());
+    assert_eq!(writeback_plan.len(), 0);
 }
 
 #[test]
@@ -2613,6 +2815,26 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_stale_nursery_fie
     let commit = planned
         .commit_plan(&destinations)
         .expect("commit plan builds");
+    let child_destination = commit
+        .commit_plan()
+        .object_copies()
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == gc_address(child))
+        .expect("child survivor copy is planned")
+        .destination();
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("heap-field writeback plan derives before field changes");
+    assert_eq!(writeback_plan.len(), 2);
+    let nursery_writeback = &writeback_plan.writebacks()[1];
+    assert_eq!(nursery_writeback.slot(), 1);
+    assert_eq!(nursery_writeback.validation_object(), gc_address(child));
+    assert_eq!(nursery_writeback.writeback_object(), child_destination);
+    assert_eq!(
+        nursery_writeback.source(),
+        &HeapEdgeSource::ThunkSelectReceiver
+    );
 
     let child_thunk = heap.clone_thunk(child).expect("child thunk clones");
     let claim = child_thunk
@@ -2627,6 +2849,15 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_stale_nursery_fie
     assert_eq!(
         heap.collector_poll_minor_gc_heap_field_reference_buffer(&commit)
             .expect_err("stale nursery field label is rejected"),
+        EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+            index: 1,
+            expected: HeapEdgeSource::ThunkSelectReceiver,
+            actual: Some(HeapEdgeSource::ThunkCachedResult),
+        }
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+            .expect_err("stale nursery field label rejects writeback plan"),
         EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
             index: 1,
             expected: HeapEdgeSource::ThunkSelectReceiver,
