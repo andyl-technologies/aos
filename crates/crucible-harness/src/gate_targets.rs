@@ -136,6 +136,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     },
     GateTargetSpec {
         gate: "gate:abi-conformance",
+        package: "crucible-guest",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
         package: "crucible",
         test_target: "gate_abi_conformance",
         required_features: &["test-double"],

@@ -9,4 +9,9 @@ workspace = true
 
 [dependencies]
 crucible-protocol = { path = "../crucible-protocol" }
+libc = { workspace = true }
 thiserror = { workspace = true }
+
+[[bin]]
+name = "crucible-guest"
+path = "src/main.rs"
