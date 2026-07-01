@@ -1068,10 +1068,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       permanent references, maps copied survivors back to young destinations,
       maps promoted survivors to old destinations, preserves duplicate young
       references as distinct slot rewrites, and rejects any young reference
-      missing from the relocation map. Tests cover copied/promoted generation
-      mapping, duplicate-slot preservation, non-young filtering, and missing
-      relocation rejection. This is metadata only: no root slot, object field,
-      forwarding pointer, remembered set, or semispace is mutated.
+      missing from the relocation map. `apply_to_references` can apply the plan
+      to a caller-owned slot buffer after validating every planned slot still
+      contains the expected young from-space reference; validation failures leave
+      the buffer unchanged. Tests cover copied/promoted generation mapping,
+      duplicate-slot preservation, non-young filtering, missing relocation
+      rejection, successful slot-buffer rewrite, stale-slot rejection, out-of
+      bounds rejection, and no-partial-write behavior. This still does not wire
+      into evaluator roots, object fields, forwarding pointers, remembered sets,
+      or semispace management.
 - [x] Current minor-GC remembered-set refresh precursor:
       `ratchet-value::heap::gc::MinorGcRememberedSetRefreshPlan` classifies a
       remembered-set snapshot against a validated relocation map for the next

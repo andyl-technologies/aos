@@ -1380,6 +1380,30 @@ impl MinorGcReferenceRewritePlan {
         Ok(Self { rewrites })
     }
 
+    /// Applies planned rewrites to caller-owned reference slots.
+    ///
+    /// The method first validates that every planned slot exists and still
+    /// contains the expected young from-space reference. If validation fails, no
+    /// slot is rewritten. This helper mutates only the supplied slice; it does
+    /// not know whether those slots are roots, object fields, or a test buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if a planned slot is out of bounds or no
+    /// longer contains the expected young from-space reference.
+    pub fn apply_to_references(
+        &self,
+        references: &mut [ResolvedValueGeneration],
+    ) -> Result<(), GenerationalGcError> {
+        for rewrite in &self.rewrites {
+            validate_reference_rewrite_slot(*rewrite, references)?;
+        }
+        for rewrite in &self.rewrites {
+            references[rewrite.slot()] = rewrite.replacement();
+        }
+        Ok(())
+    }
+
     /// Returns rewrites in caller-supplied reference order.
     pub fn rewrites(&self) -> &[MinorGcReferenceRewrite] {
         &self.rewrites
@@ -2054,6 +2078,27 @@ fn optional_relocation_for(
         .find(|relocation| relocation.source() == address)
 }
 
+fn validate_reference_rewrite_slot(
+    rewrite: MinorGcReferenceRewrite,
+    references: &[ResolvedValueGeneration],
+) -> Result<(), GenerationalGcError> {
+    let actual = references.get(rewrite.slot()).copied().ok_or(
+        GenerationalGcError::MinorGcReferenceRewriteSlotOutOfBounds {
+            slot: rewrite.slot(),
+            slots: references.len(),
+        },
+    )?;
+    let expected = ResolvedValueGeneration::young(rewrite.source());
+    if actual != expected {
+        return Err(GenerationalGcError::MinorGcReferenceRewriteSlotMismatch {
+            slot: rewrite.slot(),
+            expected: rewrite.source(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
 fn remembered_set_refresh_action(
     edge: RememberedEdge,
     relocation_plan: &MinorGcRelocationPlan,
@@ -2347,6 +2392,24 @@ pub enum GenerationalGcError {
     /// The caller-supplied reference slot index overflowed.
     #[error("minor-GC reference slot index overflow")]
     MinorGcReferenceSlotIndexOverflow,
+    /// A planned reference rewrite targeted a slot outside the supplied buffer.
+    #[error("minor-GC reference rewrite slot {slot} is out of bounds for {slots} slots")]
+    MinorGcReferenceRewriteSlotOutOfBounds {
+        /// The planned slot index.
+        slot: usize,
+        /// The number of caller-supplied reference slots.
+        slots: usize,
+    },
+    /// A planned reference rewrite found different slot contents.
+    #[error("minor-GC reference rewrite slot {slot} expected young 0x{expected:x}, found {actual:?}", expected = expected.address_bits())]
+    MinorGcReferenceRewriteSlotMismatch {
+        /// The planned slot index.
+        slot: usize,
+        /// The expected young from-space address.
+        expected: GcHeapAddress,
+        /// The actual slot contents.
+        actual: ResolvedValueGeneration,
+    },
     /// The minor-GC remembered-set refresh plan length overflowed.
     #[error("minor-GC remembered-set refresh length overflow")]
     MinorGcRememberedSetRefreshLengthOverflow,
@@ -3997,6 +4060,125 @@ mod tests {
             rewrite_plan.rewrites()[2].replacement(),
             ResolvedValueGeneration::young(copy_destination)
         );
+    }
+
+    #[test]
+    fn minor_gc_reference_rewrite_plan_applies_to_reference_slots() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let mut references = vec![
+            ResolvedValueGeneration::Inline,
+            ResolvedValueGeneration::young(copy),
+            ResolvedValueGeneration::old(address(0x3000)),
+            ResolvedValueGeneration::young(promote),
+            ResolvedValueGeneration::young(copy),
+        ];
+        let rewrite_plan =
+            MinorGcReferenceRewritePlan::from_references(&relocation_plan, references.clone())
+                .expect("rewrite plan builds");
+
+        rewrite_plan
+            .apply_to_references(&mut references)
+            .expect("rewrites apply");
+
+        assert_eq!(
+            references,
+            [
+                ResolvedValueGeneration::Inline,
+                ResolvedValueGeneration::young(copy_destination),
+                ResolvedValueGeneration::old(address(0x3000)),
+                ResolvedValueGeneration::old(promote_destination),
+                ResolvedValueGeneration::young(copy_destination),
+            ]
+        );
+    }
+
+    #[test]
+    fn minor_gc_reference_rewrite_plan_rejects_stale_or_missing_slots() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let original_references = vec![
+            ResolvedValueGeneration::young(first),
+            ResolvedValueGeneration::young(second),
+        ];
+        let rewrite_plan = MinorGcReferenceRewritePlan::from_references(
+            &relocation_plan,
+            original_references.clone(),
+        )
+        .expect("rewrite plan builds");
+
+        let mut stale_references = original_references.clone();
+        stale_references[1] = ResolvedValueGeneration::Inline;
+        assert_eq!(
+            rewrite_plan.apply_to_references(&mut stale_references),
+            Err(GenerationalGcError::MinorGcReferenceRewriteSlotMismatch {
+                slot: 1,
+                expected: second,
+                actual: ResolvedValueGeneration::Inline,
+            })
+        );
+        assert_eq!(
+            stale_references,
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::Inline,
+            ]
+        );
+
+        let mut short_references = vec![ResolvedValueGeneration::young(first)];
+        assert_eq!(
+            rewrite_plan.apply_to_references(&mut short_references),
+            Err(GenerationalGcError::MinorGcReferenceRewriteSlotOutOfBounds { slot: 1, slots: 1 })
+        );
+        assert_eq!(short_references, [ResolvedValueGeneration::young(first)]);
     }
 
     #[test]

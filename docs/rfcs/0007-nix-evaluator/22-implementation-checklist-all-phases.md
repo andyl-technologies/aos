@@ -5071,10 +5071,15 @@ and helps the oracle directly.
       permanent references, maps copied survivors to young destination values,
       maps promoted survivors to old destination values, keeps duplicate young
       references as separate slot rewrites, and rejects any young reference not
-      present in the relocation map. Unit tests cover copied/promoted generation
-      mapping, duplicate-slot preservation, non-young filtering, and missing
-      relocation rejection. This remains metadata only; mutating roots, fields,
-      forwarding pointers, remembered sets, and semispaces remains open.
+      present in the relocation map. `apply_to_references` can apply the plan to
+      a caller-owned slot buffer after validating every planned slot still
+      contains the expected young from-space reference; validation failures leave
+      the buffer unchanged. Unit tests cover copied/promoted generation mapping,
+      duplicate-slot preservation, non-young filtering, missing relocation
+      rejection, successful slot-buffer rewrite, stale-slot rejection,
+      out-of-bounds rejection, and no-partial-write behavior. Live evaluator
+      root/object-field integration, forwarding pointers, remembered sets, and
+      semispace management remain open.
 - [x] Current minor-GC remembered-set refresh precursor:
       `ratchet-value::heap::gc::MinorGcRememberedSetRefreshPlan` classifies a
       remembered-set snapshot against a validated relocation map. It retains
