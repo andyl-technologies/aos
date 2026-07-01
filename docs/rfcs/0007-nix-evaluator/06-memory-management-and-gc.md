@@ -870,6 +870,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       process-wide daemon lifetime, worker-arena reset/drop admission policy,
       and Tier-B collector integration remain open in the rows above and below.
 - [ ] Configurable high-water memory budget (one knob) driving the three escalating responses (§3.6) — **P3**, `C-17`.
+- [x] Current high-water budget policy precursor:
+      `ratchet-value::heap::budget` defines the single-knob decision table for
+      resident memory pressure: remain in Tier A below the derived soft limit,
+      request cold/dead-page spill or advice near/above the budget when cheap
+      reclaim can restore residency, and request Tier B only when projected
+      residency stays above the hard budget after known cheap reclaim. Tests pin
+      zero-budget rejection, derived headroom, cheap-reclaim saturation, and the
+      Tier-A-vs-Tier-B boundary. No CLI/env/daemon configuration, actual CA-store
+      spill, `madvise` call, live RSS sampler, or collector installation is wired
+      yet, so the full row above remains open.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 

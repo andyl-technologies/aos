@@ -4970,6 +4970,16 @@ and helps the oracle directly.
       daemon lifetime model, worker-arena reset/drop admission policy, exported
       ABI, and Tier-B collector integration remain open under the broader
       heap/GC rows.
+- [x] Current high-water budget policy precursor:
+      `ratchet-value::heap::budget` provides the single configurable-budget
+      classifier for memory pressure: below the derived soft limit it keeps Tier
+      A, near/above the budget it asks for cold/dead-page reclaim when that can
+      bring projected residency under the hard budget, and it asks for Tier B
+      only when known cheap reclaim is insufficient. Tests cover zero-budget
+      rejection, headroom derivation, spill-before-collector ordering, and
+      saturating reclaim accounting. CLI/env/daemon configuration, live RSS
+      sampling, CA-store spill, `madvise`, and collector installation remain
+      open under the full memory-management rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

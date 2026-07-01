@@ -6,12 +6,17 @@
 //! allocation entry-point shape.
 
 pub mod arena;
+pub mod budget;
 pub mod concurrent_gc;
 pub mod gc;
 pub mod region;
 
 pub use arena::{
     ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
+};
+pub use budget::{
+    DEFAULT_BUDGET_HEADROOM_DENOMINATOR, HeapMemoryBudget, HeapMemoryBudgetError,
+    HeapMemoryBudgetResponse, HeapMemorySample,
 };
 pub use concurrent_gc::{
     BarrierAddress, ConcurrentGcError, ConcurrentGcTier, GcColor, LoadBarrierAction,
