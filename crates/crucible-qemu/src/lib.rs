@@ -11,7 +11,8 @@
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
 //! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
-//! `setup_failure` owns setup-abort classification and teardown; `inertness`
+//! `setup_failure` owns setup-abort classification and teardown; `coverage`
+//! owns host-side plugin coverage observation bridging; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
 //! boundary assertion; `async_driver` owns the bounded host-I/O bridge between
@@ -32,6 +33,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod async_driver;
+mod coverage;
 mod crash_detection;
 mod determinism_boundary;
 mod inertness;
@@ -54,6 +56,10 @@ pub use async_driver::{
     QemuAsyncNodeStepReport, QemuAsyncNodeStepTarget, QemuAsyncQuantumCompletion, QemuAsyncWait,
     QemuAsyncWaitOutcome, QemuHostIoRuntime, assert_async_driver_quantum_hot_path_is_shmem_only,
     await_bounded_lifecycle_event, run_bounded_qemu_node_step,
+};
+pub use coverage::{
+    QemuBasicBlockCoverageBridge, QemuCoverageError, QemuCoverageFingerprintReport,
+    QemuCoverageFingerprintRun, compare_coverage_opt_in_fingerprint_streams,
 };
 pub use crash_detection::{
     QemuBoundedAwaitTimeout, QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError,

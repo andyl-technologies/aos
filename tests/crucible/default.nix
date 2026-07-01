@@ -1312,6 +1312,32 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
+    basicBlockCoverage = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.basicBlockCoverage";
+      gate = import ./phase6-basic-block-coverage.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.basicBlockCoverage";
+        taskIds = ["T-ADV-10"];
+        dependencies = [
+          phase2.gates.singleVmFingerprint.rawGate
+          phase2.gates.anyGuest.rawGate
+          phase2.qemuPluginCoverage
+          phase4.gates.e2eDeterminism.rawGate
+          phase4.eventLogCoverage
+          phase6.stateSpaceSearch.rawGate
+          phase6.searchReductions.rawGate
+        ];
+      };
+      dependencies = [
+        phase2.gates.singleVmFingerprint
+        phase2.gates.anyGuest
+        phase2.qemuPluginCoverage
+        phase4.gates.e2eDeterminism
+        phase4.eventLogCoverage
+        phase6.stateSpaceSearch
+        phase6.searchReductions
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

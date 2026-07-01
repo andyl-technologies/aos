@@ -233,6 +233,93 @@ impl PluginRoundRobinCursorSnapshot {
     }
 }
 
+/// One plugin-to-host black-box basic-block coverage observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginBasicBlockCoverageObservation {
+    current_icount: u64,
+    vcpu_index: u32,
+    guest_pc: u64,
+    block_len: u32,
+    map_index: u64,
+    was_new: bool,
+}
+
+impl PluginBasicBlockCoverageObservation {
+    /// Builds one validated plugin basic-block coverage observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginBasicBlockCoverageObservationError::InvalidBlockLength`]
+    /// when QEMU reports a zero-length translated block.
+    pub const fn new(
+        current_icount: u64,
+        vcpu_index: u32,
+        guest_pc: u64,
+        block_len: u32,
+        map_index: u64,
+        was_new: bool,
+    ) -> Result<Self, PluginBasicBlockCoverageObservationError> {
+        if block_len == 0 {
+            return Err(PluginBasicBlockCoverageObservationError::InvalidBlockLength { block_len });
+        }
+        Ok(Self {
+            current_icount,
+            vcpu_index,
+            guest_pc,
+            block_len,
+            map_index,
+            was_new,
+        })
+    }
+
+    /// Returns the aggregate instruction count at which QEMU reported the block.
+    #[must_use]
+    pub const fn current_icount(self) -> u64 {
+        self.current_icount
+    }
+
+    /// Returns the vCPU that executed the translated block.
+    #[must_use]
+    pub const fn vcpu_index(self) -> u32 {
+        self.vcpu_index
+    }
+
+    /// Returns the guest program counter for the translated block.
+    #[must_use]
+    pub const fn guest_pc(self) -> u64 {
+        self.guest_pc
+    }
+
+    /// Returns the translated block length supplied by QEMU.
+    #[must_use]
+    pub const fn block_len(self) -> u32 {
+        self.block_len
+    }
+
+    /// Returns the plugin coverage-map index touched by this block.
+    #[must_use]
+    pub const fn map_index(self) -> u64 {
+        self.map_index
+    }
+
+    /// Returns whether this block touched a previously empty coverage-map entry.
+    #[must_use]
+    pub const fn was_new(self) -> bool {
+        self.was_new
+    }
+}
+
+/// An invalid plugin basic-block coverage observation.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PluginBasicBlockCoverageObservationError {
+    /// QEMU reported an impossible basic-block length.
+    #[error("plugin basic-block coverage length {block_len} is invalid")]
+    InvalidBlockLength {
+        /// Rejected block length.
+        block_len: u32,
+    },
+}
+
 /// Validated plugin-to-host N-vCPU fingerprint snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginNvcpuFingerprintSnapshot {

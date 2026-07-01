@@ -1079,10 +1079,22 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   symmetry representatives at graph scope outside the current candidate set via
   canonical relabeling keys, and gates the behavior as DAG node deduplication
   rather than model checking or spec-language evaluation.
-- [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
+- [x] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec
   §22.6.1; cross-ref 12 §12.8.
+  Completed by `checks.crucible.phase6.basicBlockCoverage`: the engine now exposes
+  a registration-time `BasicBlockCoverageConfig` that defaults off, creates no
+  engine coverage consumer in off mode, rejects invalid enabled maps, and
+  produces a consumer token only for enabled coverage. The plugin exports
+  validated TCG-exec coverage observations through the protocol boundary, and the
+  QEMU host bridge maps those `(icount, guest_pc, block_len, map_index)` payloads
+  into black-box `ObservableEvent::coverage_block` entries with no guest source,
+  symbols, or in-guest agent. The gate proves the event is sourced from the
+  external execution trace surface, remains observational in the unified event
+  log, is excluded from the determinism comparison, and compares coverage-off and
+  coverage-on single-VM fingerprint streams so the coverage opt-in has no
+  execution-fingerprint effect.
 - [ ] **T-ADV-11** Record coverage as observational `coverage` event-log entries
   (19) excluded from the determinism comparison, feeding search/fuzzing and the
   per-checkpoint coverage fingerprint; assert coverage never affects `reduce`. —
