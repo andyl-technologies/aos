@@ -3,8 +3,15 @@
 //! The safe tree-walk evaluator routes thunk resolution through direct Rust
 //! helpers today. Future native tiers still need one frozen helper symbol for
 //! the GC-visible mutation wall: publishing a forced value into a thunk's state
-//! slot. This module pins that symbol and its machine-level signature without
-//! exporting FFI functions or performing barrier work itself.
+//! slot. This module pins that symbol and its machine-level signature, and also
+//! owns the current safe Rust dispatch table that selects the one-shot no-op or
+//! heap-backed generational barrier body. It does not export FFI functions or
+//! register native symbols.
+
+use crate::eval::heap::{EvalHeap, EvalHeapError, EvalHeapThunkResolveBarrier};
+use crate::eval::thunk::{DisabledThunkResolveBarrier, ForceError, ThunkResolveBarrier};
+use crate::heap::{GenerationalGcTier, RememberedSet};
+use crate::value::Value;
 
 /// The write-barrier entry point owned by the runtime ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +49,162 @@ pub const fn runtime_write_barrier_entrypoints() -> &'static [RuntimeWriteBarrie
 /// Returns the frozen write-barrier ABI signature inventory.
 pub const fn runtime_write_barrier_abi_signatures() -> &'static [RuntimeWriteBarrierAbiSignature] {
     RUNTIME_WRITE_BARRIER_ABI_SIGNATURES
+}
+
+type RuntimeThunkResolveWriteBarrierFn =
+    for<'a> fn(
+        &'a EvalHeap,
+        GenerationalGcTier,
+        Value,
+        &'a mut RememberedSet,
+    ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError>;
+
+/// A selected safe write-barrier dispatch table for one evaluator GC tier.
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeWriteBarrierVTable {
+    tier: GenerationalGcTier,
+    entrypoints: &'static [RuntimeWriteBarrierEntryPoint],
+    abi_signatures: &'static [RuntimeWriteBarrierAbiSignature],
+    thunk_resolve: RuntimeThunkResolveWriteBarrierFn,
+}
+
+impl RuntimeWriteBarrierVTable {
+    /// Returns the generational tier served by this dispatch table.
+    pub(crate) const fn tier(&self) -> GenerationalGcTier {
+        self.tier
+    }
+
+    /// Returns the write-barrier entry points implemented by this table.
+    pub(crate) const fn entrypoints(&self) -> &'static [RuntimeWriteBarrierEntryPoint] {
+        self.entrypoints
+    }
+
+    /// Returns the frozen ABI signatures implemented by this table.
+    pub(crate) const fn abi_signatures(&self) -> &'static [RuntimeWriteBarrierAbiSignature] {
+        self.abi_signatures
+    }
+
+    /// Creates the thunk-resolution write barrier selected by this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the selected heap-backed barrier cannot be
+    /// created for `source_thunk`.
+    pub(crate) fn aos_gc_write_barrier<'a>(
+        &self,
+        heap: &'a EvalHeap,
+        source_thunk: Value,
+        remembered_set: &'a mut RememberedSet,
+    ) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+        (self.thunk_resolve)(heap, self.tier, source_thunk, remembered_set)
+    }
+}
+
+const ONE_SHOT_WRITE_BARRIER_VTABLE: RuntimeWriteBarrierVTable = RuntimeWriteBarrierVTable {
+    tier: GenerationalGcTier::OneShotArena,
+    entrypoints: RUNTIME_WRITE_BARRIER_ENTRYPOINTS,
+    abi_signatures: RUNTIME_WRITE_BARRIER_ABI_SIGNATURES,
+    thunk_resolve: one_shot_aos_gc_write_barrier,
+};
+
+const DAEMON_GENERATIONAL_WRITE_BARRIER_VTABLE: RuntimeWriteBarrierVTable =
+    RuntimeWriteBarrierVTable {
+        tier: GenerationalGcTier::DaemonGenerational,
+        entrypoints: RUNTIME_WRITE_BARRIER_ENTRYPOINTS,
+        abi_signatures: RUNTIME_WRITE_BARRIER_ABI_SIGNATURES,
+        thunk_resolve: daemon_generational_aos_gc_write_barrier,
+    };
+
+/// Returns the safe write-barrier dispatch table for a generational GC tier.
+pub(crate) fn runtime_write_barrier_vtable(
+    tier: GenerationalGcTier,
+) -> &'static RuntimeWriteBarrierVTable {
+    let vtable = match tier {
+        GenerationalGcTier::OneShotArena => &ONE_SHOT_WRITE_BARRIER_VTABLE,
+        GenerationalGcTier::DaemonGenerational => &DAEMON_GENERATIONAL_WRITE_BARRIER_VTABLE,
+    };
+    debug_assert_eq!(vtable.tier(), tier);
+    debug_assert_eq!(vtable.entrypoints(), runtime_write_barrier_entrypoints());
+    debug_assert_eq!(
+        vtable.abi_signatures(),
+        runtime_write_barrier_abi_signatures()
+    );
+    vtable
+}
+
+/// Creates the safe runtime thunk-resolution barrier for the selected GC tier.
+///
+/// # Errors
+///
+/// Returns [`EvalHeapError`] if the selected heap-backed barrier cannot be
+/// created for `source_thunk`.
+pub(crate) fn runtime_thunk_resolve_write_barrier<'a>(
+    tier: GenerationalGcTier,
+    heap: &'a EvalHeap,
+    source_thunk: Value,
+    remembered_set: &'a mut RememberedSet,
+) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+    runtime_write_barrier_vtable(tier).aos_gc_write_barrier(heap, source_thunk, remembered_set)
+}
+
+/// The active safe thunk-resolution barrier selected by runtime dispatch.
+#[derive(Debug)]
+pub(crate) enum RuntimeThunkResolveBarrier<'a> {
+    /// The one-shot arena tier does not maintain a remembered set.
+    Disabled(DisabledThunkResolveBarrier),
+    /// The daemon generational tier records heap-backed remembered edges.
+    Heap(EvalHeapThunkResolveBarrier<'a>),
+}
+
+#[cfg(test)]
+impl RuntimeThunkResolveBarrier<'_> {
+    /// Returns the generational tier served by this active barrier.
+    pub(crate) fn tier(&self) -> GenerationalGcTier {
+        match self {
+            Self::Disabled(_) => GenerationalGcTier::OneShotArena,
+            Self::Heap(barrier) => barrier.tier(),
+        }
+    }
+
+    /// Returns the heap-backed barrier when the daemon tier is active.
+    pub(crate) fn heap_barrier(&self) -> Option<&EvalHeapThunkResolveBarrier<'_>> {
+        match self {
+            Self::Disabled(_) => None,
+            Self::Heap(barrier) => Some(barrier),
+        }
+    }
+}
+
+impl ThunkResolveBarrier for RuntimeThunkResolveBarrier<'_> {
+    fn before_publish_forced(&mut self, value: Value) -> Result<(), ForceError> {
+        match self {
+            Self::Disabled(barrier) => barrier.before_publish_forced(value),
+            Self::Heap(barrier) => barrier.before_publish_forced(value),
+        }
+    }
+}
+
+fn one_shot_aos_gc_write_barrier<'a>(
+    _heap: &'a EvalHeap,
+    tier: GenerationalGcTier,
+    _source_thunk: Value,
+    _remembered_set: &'a mut RememberedSet,
+) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+    debug_assert_eq!(tier, GenerationalGcTier::OneShotArena);
+    Ok(RuntimeThunkResolveBarrier::Disabled(
+        DisabledThunkResolveBarrier,
+    ))
+}
+
+fn daemon_generational_aos_gc_write_barrier<'a>(
+    heap: &'a EvalHeap,
+    tier: GenerationalGcTier,
+    source_thunk: Value,
+    remembered_set: &'a mut RememberedSet,
+) -> Result<RuntimeThunkResolveBarrier<'a>, EvalHeapError> {
+    debug_assert_eq!(tier, GenerationalGcTier::DaemonGenerational);
+    heap.thunk_resolve_write_barrier(tier, source_thunk, remembered_set)
+        .map(RuntimeThunkResolveBarrier::Heap)
 }
 
 impl RuntimeWriteBarrierEntryPoint {
@@ -165,7 +328,11 @@ pub enum RuntimeWriteBarrierAbiReturnKind {
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::compile::IrId;
     use crate::compile::{RuntimeHelperRole, runtime_helper_symbols};
+    use crate::eval::heap::{EvalHeap, EvalThunk};
+    use crate::heap::{GenerationalGcTier, RememberedSet, ThunkResolveWriteBarrier};
+    use crate::value::Value;
 
     use super::*;
 
@@ -269,5 +436,73 @@ mod tests {
             signature.return_kind(),
             RuntimeWriteBarrierAbiReturnKind::Unit
         );
+    }
+
+    #[test]
+    fn runtime_write_barrier_vtable_selects_every_gc_tier() {
+        for tier in [
+            GenerationalGcTier::OneShotArena,
+            GenerationalGcTier::DaemonGenerational,
+        ] {
+            let vtable = runtime_write_barrier_vtable(tier);
+
+            assert_eq!(vtable.tier(), tier);
+            assert_eq!(vtable.entrypoints(), runtime_write_barrier_entrypoints());
+            assert_eq!(
+                vtable.abi_signatures(),
+                runtime_write_barrier_abi_signatures()
+            );
+        }
+    }
+
+    #[test]
+    fn one_shot_write_barrier_vtable_routes_to_disabled_adapter() {
+        let heap = EvalHeap::new();
+        let mut remembered_set = RememberedSet::new();
+        let mut barrier = runtime_thunk_resolve_write_barrier(
+            GenerationalGcTier::OneShotArena,
+            &heap,
+            Value::int(7),
+            &mut remembered_set,
+        )
+        .expect("one-shot barrier creates");
+
+        assert_eq!(barrier.tier(), GenerationalGcTier::OneShotArena);
+        assert!(barrier.heap_barrier().is_none());
+        barrier
+            .before_publish_forced(Value::int(11))
+            .expect("disabled barrier allows publish");
+        drop(barrier);
+        assert!(remembered_set.is_empty());
+    }
+
+    #[test]
+    fn daemon_write_barrier_vtable_routes_to_heap_adapter() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        let source = heap
+            .alloc_thunk(EvalThunk::new(IrId::new(1)))
+            .expect("source thunk allocates");
+        let mut remembered_set = RememberedSet::new();
+        let mut barrier = runtime_thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            &heap,
+            source,
+            &mut remembered_set,
+        )
+        .expect("daemon barrier creates");
+
+        assert_eq!(barrier.tier(), GenerationalGcTier::DaemonGenerational);
+        assert!(barrier.heap_barrier().is_some());
+        barrier
+            .before_publish_forced(Value::int(11))
+            .expect("heap adapter allows inline publish");
+        assert_eq!(
+            barrier
+                .heap_barrier()
+                .and_then(|barrier| barrier.last_action()),
+            Some(ThunkResolveWriteBarrier::NotRequired)
+        );
+        drop(barrier);
+        assert!(remembered_set.is_empty());
     }
 }

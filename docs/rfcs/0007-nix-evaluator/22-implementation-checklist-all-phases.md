@@ -5221,6 +5221,20 @@ and helps the oracle directly.
       text, and rejects non-barrier helpers. This is ABI metadata only; it does
       not export the `unsafe extern "C"` function, register Cranelift symbols,
       or wire compiled code to the heap-backed thunk-resolve barrier.
+- [x] Current write-barrier vtable precursor:
+      internal `RuntimeWriteBarrierVTable` dispatch is selected from the
+      configured `GenerationalGcTier` and carries the frozen
+      `aos_gc_write_barrier` entry-point/signature inventory plus a safe Rust
+      function pointer for thunk-result publication. The one-shot table returns
+      a disabled `ThunkResolveBarrier`, while the daemon-generational table
+      creates the existing heap-backed `EvalHeapThunkResolveBarrier`. Tree-walk
+      thunk publication now enters this runtime dispatch wall before calling
+      `ForceGuard::finish_with_barrier`, and tests cover tier selection, the
+      disabled route, the daemon heap-adapter route, and the existing
+      end-to-end remembered-edge behavior. This is internal safe Rust dispatch
+      only; it does not export the `unsafe extern "C"` function, register
+      Cranelift symbols, implement a daemon card table, mutate object
+      generations, or install the Tier-B collector table.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared
@@ -5229,8 +5243,8 @@ and helps the oracle directly.
       one safepoint for `thunk`, `lambda`, `attrs`, `cons`, `list`, `string`,
       and `raw` worker allocations plus permanent `attrs`, `list`, and
       `string` allocations. This remains metadata only; collector invocation,
-      live-root construction, GC-stress execution, exported C ABI symbols, and
-      write-barrier dispatch integration remain open.
+      live-root construction, GC-stress execution, and exported C ABI symbols
+      remain open.
 - [x] Current allocation collector-poll request precursor:
       `AllocationSafepoint::collector_poll` and
       `AllocationSafepointState::last_safepoint_collector_poll` expose a typed
@@ -5430,8 +5444,7 @@ and helps the oracle directly.
       promotion policy; tests cover worker young-survivor planning,
       permanent-root/no-survivor planning, and empty reports when stress is
       disabled. Invoking the collector, actually collecting at every safepoint,
-      exported C ABI symbols, and write-barrier dispatch integration remain
-      open.
+      and exported C ABI symbols remain open.
 - [x] Current permanent-shared allocation closure:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
@@ -5761,7 +5774,7 @@ and helps the oracle directly.
       barrier for `Blackhole -> Forced(value)`, records only
       old/permanent-to-young edges in a deduplicating remembered set, and leaves
       one-shot arena mode disabled. `ratchet-oracle::eval::thunk::ForceGuard`
-      now exposes `finish_with_barrier`, while the default tree-walk `finish`
+      now exposes `finish_with_barrier`, while the default `ForceGuard::finish`
       uses the disabled barrier; tests pin that custom barriers run while the
       thunk is still blackholed and can reject publication without leaving a
       forced result. `EvalHeap::thunk_resolve_write_barrier` now builds a
@@ -5778,7 +5791,10 @@ and helps the oracle directly.
       results through the heap-backed barrier when daemon mode is selected, and
       exposes the tree-walk-owned `RememberedSet` on `TreeWalk`/`EvalOutcome`.
       Required old/permanent-to-young edges are recorded there; replayed
-      permanent-shared payloads remain no-op barrier writes. The actual daemon
+      permanent-shared payloads remain no-op barrier writes. The tree-walk
+      publish path now enters the `runtime::barrier` vtable first, selecting
+      the one-shot disabled adapter or daemon heap-backed adapter from the
+      configured tier. The actual daemon
       card table, mutable generation updates, and Tier-B collector integration
       remain open
       under `heap/gc.rs`.

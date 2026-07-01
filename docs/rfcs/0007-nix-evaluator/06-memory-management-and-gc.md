@@ -877,6 +877,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       text, and rejects non-barrier helpers. This is ABI metadata only; it does
       not export the `unsafe extern "C"` function, register Cranelift symbols,
       or wire compiled code to the heap-backed thunk-resolve barrier.
+- [x] Current write-barrier vtable precursor:
+      internal `RuntimeWriteBarrierVTable` dispatch is selected from the
+      configured `GenerationalGcTier` and carries the frozen
+      `aos_gc_write_barrier` entry-point/signature inventory plus a safe Rust
+      function pointer for thunk-result publication. The one-shot table returns
+      a disabled `ThunkResolveBarrier`, while the daemon-generational table
+      creates the existing heap-backed `EvalHeapThunkResolveBarrier`. Tree-walk
+      thunk publication now enters this runtime dispatch wall before calling
+      `ForceGuard::finish_with_barrier`, and tests cover tier selection, the
+      disabled route, the daemon heap-adapter route, and the existing
+      end-to-end remembered-edge behavior. This is internal safe Rust dispatch
+      only; it does not export the `unsafe extern "C"` function, register
+      Cranelift symbols, implement a daemon card table, mutate object
+      generations, or install the Tier-B collector table.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
@@ -894,8 +908,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       `attrs`, `cons`, `list`, `string`, `raw`) and every permanent route
       (`attrs`, `list`, `string`) records exactly one safepoint. This is
       metadata only: it does not yet invoke a collector, build a live root set,
-      run GC-stress collection, export C ABI symbols, or integrate the
-      thunk-resolve write barrier with allocation dispatch.
+      run GC-stress collection, or export C ABI symbols.
 - [x] Current allocation collector-poll request precursor:
       `AllocationSafepoint::collector_poll` and
       `AllocationSafepointState::last_safepoint_collector_poll` turn GC-stress
@@ -1572,7 +1585,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       resolution edges in a deduplicating `RememberedSet`, and disables the
       barrier in one-shot arena mode. `ratchet-oracle::eval::thunk` routes
       `ForceGuard` publication through `finish_with_barrier`, with the default
-      tree-walk `finish` using a disabled barrier and tests proving barrier
+      `ForceGuard::finish` using a disabled barrier and tests proving barrier
       execution happens while the thunk is still blackholed and before the
       forced result is published. `EvalHeap::thunk_resolve_write_barrier` now
       builds a heap-backed adapter that validates the source thunk against the
@@ -1589,7 +1602,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       selected. Required old/permanent-to-young edges are recorded into a
       tree-walk-owned `RememberedSet` exposed on `TreeWalk` and `EvalOutcome`
       for diagnostics and tests; replayed permanent-shared payloads remain
-      no-op barrier writes. The real daemon card table, mutable runtime
+      no-op barrier writes. The tree-walk publish path now enters the
+      `runtime::barrier` vtable first, selecting the one-shot disabled adapter
+      or daemon heap-backed adapter from the configured tier. The real daemon
+      card table, mutable runtime
       generation updates, and full Tier-B collector integration remain open
       in the row above.
 - [x] Hash-consed values allocated in non-collected permanent space, bypassing
