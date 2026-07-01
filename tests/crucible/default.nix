@@ -1489,6 +1489,26 @@ in rec {
         phase6.appRandomBranching
       ];
     };
+    coverageGuidedCorpus = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.coverageGuidedCorpus";
+      gate = import ./phase6-coverage-guided-corpus.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.coverageGuidedCorpus";
+        taskIds = ["T-ADV-13"];
+        dependencies = [
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.coverageGuidedFuzzing.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.coverageGuidedFuzzing
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
