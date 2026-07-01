@@ -21,6 +21,7 @@ use crucible_sim::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::scheduler::{EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer};
 use crate::trigger::{Action, Event, EventGraph, EventGraphError, FirePolicy, LogLevel};
 
 mod canonical;
@@ -54,6 +55,10 @@ const FNV_PRIME: u64 = 0x00000100000001b3;
 const EVENT_GRAPH_PLAN_BINARY_SENTINEL: u64 = u64::MAX;
 const FAULT_PLAN_BINARY_SENTINEL: u64 = u64::MAX - 1;
 const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.v1";
+const COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN: &str = "crucible.coverage-guided-fuzz.sample.v1";
+const COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN: &str = "crucible.coverage-guided-fuzz.override.v1";
+const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
+const ADAPTIVE_CONFIRMED_FAILURE_REWARD: u64 = 1_000_000_000_000;
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -3363,6 +3368,28 @@ impl ScenarioFamily {
     pub fn instantiate_sample(&self, index: u64) -> Result<PinnedScenario, EngineError> {
         let params = self.space.sample(index)?;
         self.instantiate(params)
+    }
+
+    /// Samples and mutates concrete scenarios using event-log coverage feedback.
+    ///
+    /// Each iteration chooses one family parameter point, pins that point to a
+    /// concrete [`ScenarioDef`], and appends a schedule mutation encoded as
+    /// [`Decision::Override`]. Coverage influences only which deterministic
+    /// samples are explored and how the returned candidates are ordered; it never
+    /// changes the reduced execution semantics of a candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when the family space
+    /// cannot be counted, [`EngineError::ScenarioFamilyParameterOutOfSpace`] when
+    /// a sampled point is invalid, or any validation error from
+    /// [`Self::instantiate`] or [`try_step`].
+    pub fn fuzz_coverage_guided(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        feedback: &[EventLogCoverageFeedback],
+    ) -> Result<CoverageGuidedFuzzRun, EngineError> {
+        run_coverage_guided_fuzz(self, config, feedback)
     }
 
     fn build_world(&self, params: FamilyParams) -> Result<World, EngineError> {
@@ -10315,6 +10342,63 @@ impl TemporalGraph {
         )
     }
 
+    /// Branches one frontier over bounded preemption decisions.
+    ///
+    /// Generated children are ordinary content-addressed temporal-graph nodes.
+    /// Explored children are materialized through the replay-oracle-checked fat
+    /// checkpoint path, while `reduction_policy` can cover commuting preemption
+    /// branches before materialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the frontier or an explored child cannot be
+    /// recorded or materialized.
+    pub fn branch_preemptions(
+        &mut self,
+        frontier: &Configuration,
+        config: &PreemptionBranchConfig,
+        reduction_policy: FrontierReductionPolicy,
+    ) -> Result<PreemptionBranchRun, EngineError> {
+        let decisions = preemption_branch_decisions(config);
+        let report =
+            self.enumerate_frontier_reduced(frontier, decisions.clone(), reduction_policy)?;
+        let mut materialized = Vec::new();
+        for child in &report.explored {
+            materialized.push(self.materialize_checkpoint(&child.configuration)?);
+        }
+        Ok(PreemptionBranchRun {
+            decisions,
+            report,
+            materialized,
+        })
+    }
+
+    /// Branches one frontier over deterministic app-random served values.
+    ///
+    /// Each branch appends one [`Decision::AppRandom`] value sampled from an
+    /// observed draw site in `config`. A scenario with no observed draw sites,
+    /// or with `samples == 0`, generates no children and therefore leaves the
+    /// explored graph unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::AppRandomDrawCapExceeded`] when a sampled branch
+    /// would exceed the scenario's per-run draw cap, or another [`EngineError`]
+    /// if the child cannot be recorded.
+    pub fn branch_app_random(
+        &mut self,
+        frontier: &Configuration,
+        config: &AppRandomBranchConfig,
+    ) -> Result<AppRandomBranchRun, EngineError> {
+        let decisions = app_random_branch_decisions(config);
+        let report = self.enumerate_frontier_reduced(
+            frontier,
+            decisions.clone(),
+            FrontierReductionPolicy::none(),
+        )?;
+        Ok(AppRandomBranchRun { decisions, report })
+    }
+
     /// Searches a graph by repeatedly expanding frontiers selected by `strategy`.
     ///
     /// Strategy selection is deterministic: breadth-first and depth-first use
@@ -11862,6 +11946,435 @@ impl SearchBudget {
     }
 }
 
+/// Configuration for a single-host coverage-guided fuzzing pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedFuzzConfig {
+    /// Root seed for sampling, mutation, and deterministic candidate ordering.
+    pub meta_seed: Seed,
+    /// Maximum number of fuzz iterations to generate.
+    pub iterations: u64,
+}
+
+impl CoverageGuidedFuzzConfig {
+    /// Builds a coverage-guided fuzzing configuration.
+    #[must_use]
+    pub const fn new(meta_seed: Seed, iterations: u64) -> Self {
+        Self {
+            meta_seed,
+            iterations,
+        }
+    }
+}
+
+/// Result of a deterministic coverage-guided fuzzing pass.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedFuzzRun {
+    /// Configuration used by the pass.
+    pub config: CoverageGuidedFuzzConfig,
+    /// Iterations in generation order.
+    pub iterations: Vec<CoverageGuidedFuzzIteration>,
+    /// Candidate configuration ids ordered by coverage-guided priority.
+    ///
+    /// This is not corpus admission or pruning; T-ADV-13 owns durable corpus
+    /// management. The order records the single-host bias T-ADV-12 uses before a
+    /// real corpus is stored.
+    pub coverage_biased_order: Vec<ContentHash>,
+}
+
+/// One generated coverage-guided fuzzing candidate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedFuzzIteration {
+    /// Zero-based deterministic iteration sequence.
+    pub sequence: u64,
+    /// Finite family-space sample index selected for this iteration.
+    pub sample_index: u64,
+    /// Concrete family parameter point pinned for this iteration.
+    pub params: FamilyParams,
+    /// Concrete pinned scenario; fuzzing never executes the family directly.
+    pub scenario: PinnedScenario,
+    /// Corpus entry selected as the mutation parent for this iteration.
+    pub selected_corpus_entry: ContentHash,
+    /// Deterministic energy assigned to the selected mutation.
+    pub energy: u64,
+    /// Candidate configuration after schedule mutation.
+    pub configuration: Configuration,
+    /// Schedule mutation appended by this iteration.
+    pub mutation: Decision,
+    /// Coverage feedback fingerprint read by the fuzzing consumer.
+    pub coverage_fingerprint: ContentHash,
+    /// Whether this iteration is the first one in the run to see this coverage.
+    pub new_coverage: bool,
+}
+
+impl CoverageGuidedFuzzIteration {
+    /// Returns the content-addressed candidate id.
+    #[must_use]
+    pub fn configuration_id(&self) -> ContentHash {
+        self.configuration.id()
+    }
+
+    /// Returns the complete reproduction schedule for this candidate.
+    #[must_use]
+    pub fn schedule(&self) -> &Schedule {
+        &self.configuration.schedule
+    }
+}
+
+/// Built-in deterministic guidance signal identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuidanceSignalKind {
+    /// Coverage projection feedback from the unified event log.
+    Coverage,
+    /// Inverse-frequency novelty over a deterministic rarity table.
+    NoveltyRarity,
+    /// Assertion-proximity progress from observational event-log entries.
+    AssertionProximity,
+}
+
+/// Input material read by guidance signals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct GuidanceSignalInput {
+    /// Coverage projection fingerprint for the candidate checkpoint.
+    pub coverage_fingerprint: ContentHash,
+    /// Number of times the candidate's novelty key has already appeared.
+    pub rarity_count: u64,
+    /// Best remaining assertion-proximity distance, if known.
+    pub assertion_proximity_distance: Option<u64>,
+}
+
+/// A deterministic fixed-point guidance score.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuidanceScore {
+    /// Integer micro-units; guidance never uses floating-point scores.
+    pub micros: u64,
+}
+
+/// Read-only scoring signal for guided exploration.
+pub trait GuidanceSignal {
+    /// Returns the stable built-in signal identity.
+    fn kind(&self) -> GuidanceSignalKind;
+
+    /// Returns the deterministic fixed-point score for `input`.
+    fn score(&self, input: GuidanceSignalInput) -> GuidanceScore;
+}
+
+/// Coverage-only guidance signal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CoverageGuidanceSignal;
+
+impl GuidanceSignal for CoverageGuidanceSignal {
+    fn kind(&self) -> GuidanceSignalKind {
+        GuidanceSignalKind::Coverage
+    }
+
+    fn score(&self, input: GuidanceSignalInput) -> GuidanceScore {
+        if input.coverage_fingerprint == ContentHash::default() {
+            return GuidanceScore { micros: 0 };
+        }
+
+        GuidanceScore {
+            micros: u64::MAX - content_hash_low_u64(input.coverage_fingerprint),
+        }
+    }
+}
+
+impl CoverageGuidanceSignal {
+    /// Returns the exact ordering key used by existing coverage-guided search.
+    #[must_use]
+    pub fn search_order_key(&self, input: GuidanceSignalInput) -> (u8, ContentHash) {
+        let unknown_coverage = u8::from(input.coverage_fingerprint == ContentHash::default());
+        (unknown_coverage, input.coverage_fingerprint)
+    }
+}
+
+/// Novelty/rarity guidance signal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct NoveltyRarityGuidanceSignal;
+
+impl GuidanceSignal for NoveltyRarityGuidanceSignal {
+    fn kind(&self) -> GuidanceSignalKind {
+        GuidanceSignalKind::NoveltyRarity
+    }
+
+    fn score(&self, input: GuidanceSignalInput) -> GuidanceScore {
+        GuidanceScore {
+            micros: GUIDANCE_SCORE_ONE_MICRO / input.rarity_count.saturating_add(1),
+        }
+    }
+}
+
+/// Assertion-proximity guidance signal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AssertionProximityGuidanceSignal;
+
+impl GuidanceSignal for AssertionProximityGuidanceSignal {
+    fn kind(&self) -> GuidanceSignalKind {
+        GuidanceSignalKind::AssertionProximity
+    }
+
+    fn score(&self, input: GuidanceSignalInput) -> GuidanceScore {
+        let Some(distance) = input.assertion_proximity_distance else {
+            return GuidanceScore { micros: 0 };
+        };
+        GuidanceScore {
+            micros: GUIDANCE_SCORE_ONE_MICRO / distance.saturating_add(1),
+        }
+    }
+}
+
+/// Fixed-point weight for one built-in guidance signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuidanceSignalWeight {
+    /// Signal receiving this weight.
+    pub signal: GuidanceSignalKind,
+    /// Integer micro-weight used in deterministic weighted sums.
+    pub weight_micros: u64,
+}
+
+/// Deterministic fixed-order guidance signal composition.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GuidanceSignalComposition {
+    weights: Vec<GuidanceSignalWeight>,
+}
+
+impl GuidanceSignalComposition {
+    /// Builds the default coverage-only guidance composition.
+    #[must_use]
+    pub fn coverage_only() -> Self {
+        Self {
+            weights: vec![GuidanceSignalWeight {
+                signal: GuidanceSignalKind::Coverage,
+                weight_micros: GUIDANCE_SCORE_ONE_MICRO,
+            }],
+        }
+    }
+
+    /// Builds a deterministic composition from `weights`.
+    ///
+    /// Weights are sorted by signal identity so authoring order cannot change the
+    /// fixed-point accumulation order.
+    #[must_use]
+    pub fn new(weights: Vec<GuidanceSignalWeight>) -> Self {
+        let mut weights = weights;
+        weights.sort();
+        Self { weights }
+    }
+
+    /// Returns the fixed ordered weights.
+    #[must_use]
+    pub fn weights(&self) -> &[GuidanceSignalWeight] {
+        &self.weights
+    }
+
+    /// Scores `input` with a deterministic fixed-point weighted sum.
+    #[must_use]
+    pub fn score(&self, input: GuidanceSignalInput) -> GuidanceScore {
+        let mut total = 0u128;
+        for weight in &self.weights {
+            let score = guidance_signal_score(weight.signal, input);
+            total = total.saturating_add(
+                u128::from(score.micros).saturating_mul(u128::from(weight.weight_micros)),
+            );
+        }
+        GuidanceScore {
+            micros: (total / u128::from(GUIDANCE_SCORE_ONE_MICRO)).min(u128::from(u64::MAX)) as u64,
+        }
+    }
+}
+
+/// One adaptive strategy arm in deterministic order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AdaptiveStrategyArm {
+    /// Breadth-first exploration floor.
+    BreadthFirst,
+    /// Coverage-guided frontier ordering.
+    CoverageGuided,
+    /// Seeded priority frontier ordering.
+    Priority,
+}
+
+/// Optional deterministic adaptive strategy-selection configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AdaptiveStrategyConfig {
+    /// Root seed for deterministic tie-breaking and exploration bonuses.
+    pub seed: Seed,
+    /// Fixed ordered expansion arms.
+    pub arms: Vec<AdaptiveStrategyArm>,
+    /// Every Nth expansion is forced to breadth-first when nonzero.
+    pub breadth_first_floor_interval: u64,
+    /// Whether adaptive selection is enabled.
+    pub enabled: bool,
+}
+
+impl AdaptiveStrategyConfig {
+    /// Builds the off-by-default adaptive strategy configuration.
+    #[must_use]
+    pub fn disabled(seed: Seed) -> Self {
+        Self {
+            seed,
+            arms: vec![AdaptiveStrategyArm::BreadthFirst],
+            breadth_first_floor_interval: 1,
+            enabled: false,
+        }
+    }
+
+    /// Builds an enabled deterministic adaptive strategy configuration.
+    #[must_use]
+    pub fn enabled(
+        seed: Seed,
+        arms: Vec<AdaptiveStrategyArm>,
+        breadth_first_floor_interval: u64,
+    ) -> Self {
+        let mut arms = arms;
+        arms.sort();
+        arms.dedup();
+        if arms.is_empty() {
+            arms.push(AdaptiveStrategyArm::BreadthFirst);
+        }
+        Self {
+            seed,
+            arms,
+            breadth_first_floor_interval,
+            enabled: true,
+        }
+    }
+
+    /// Computes the content-addressed campaign identity component for this config.
+    #[must_use]
+    pub fn campaign_identity(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            "crucible.adaptive-strategy.config.v1",
+            &adaptive_strategy_config_material(self),
+        )
+    }
+}
+
+/// Deterministic reward credited to an adaptive strategy arm.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AdaptiveStrategyReward {
+    /// Reward for new coverage.
+    pub new_coverage: u64,
+    /// Reward for rarity/novelty gain.
+    pub novelty_gain: u64,
+    /// Reward for assertion-proximity progress.
+    pub assertion_proximity_progress: u64,
+    /// Dominant reward for a confirmed failure.
+    pub confirmed_failure: bool,
+}
+
+/// One deterministic adaptive reward credit from a realized graph node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AdaptiveStrategyCredit {
+    /// Arm that produced the credited node.
+    pub arm: AdaptiveStrategyArm,
+    /// Content-addressed node receiving the reward.
+    pub configuration: ContentHash,
+    /// Reward observed for the node.
+    pub reward: AdaptiveStrategyReward,
+}
+
+/// One deterministic adaptive arm selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AdaptiveStrategySelection {
+    /// Zero-based selection sequence.
+    pub sequence: u64,
+    /// Selected arm.
+    pub arm: AdaptiveStrategyArm,
+    /// Integer score used for selection.
+    pub score: u64,
+}
+
+/// Result of deterministic adaptive strategy selection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AdaptiveStrategyRun {
+    /// Campaign identity including the adaptive configuration.
+    pub campaign_identity: ContentHash,
+    /// Content-addressed graph fingerprint used as deterministic campaign input.
+    pub graph_fingerprint: ContentHash,
+    /// Ordered arm selections.
+    pub selections: Vec<AdaptiveStrategySelection>,
+}
+
+/// Configuration for preemption branch generation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PreemptionBranchConfig {
+    /// Node whose vCPU is preempted.
+    pub node: NodeId,
+    /// First eligible retired-instruction count.
+    pub deadline: Icount,
+    /// Last eligible retired-instruction count.
+    pub horizon: Icount,
+    /// Positive retired-instruction stride between branches.
+    pub step: u64,
+    /// vCPU currently running before a switch branch.
+    pub switch_from_vcpu: VcpuId,
+    /// vCPU selected by a switch branch.
+    pub switch_to_vcpu: VcpuId,
+    /// Target vCPU for the interrupt.
+    pub target_vcpu: VcpuId,
+    /// Interrupt vector to deliver.
+    pub irq: IrqVector,
+}
+
+/// Result of preemption branch expansion.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PreemptionBranchRun {
+    /// Decisions considered for branching.
+    pub decisions: Vec<Decision>,
+    /// Reduced frontier report for the generated children.
+    pub report: FrontierReductionReport,
+    /// Replay-oracle-validated materialized checkpoints for explored children.
+    pub materialized: Vec<Checkpoint>,
+}
+
+/// Configuration for app-random branch generation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AppRandomBranchConfig {
+    /// App-random draw sites observed in the candidate run.
+    pub draw_sites: Vec<AppRandomDrawSite>,
+    /// Number of alternative served values to sample.
+    pub samples: u64,
+    /// Seed for deterministic value sampling.
+    pub seed: Seed,
+}
+
+/// One app-random request site available for branch exploration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AppRandomDrawSite {
+    /// Node requesting random data.
+    pub node: NodeId,
+    /// Decision stream serving the request.
+    pub stream: RngStreamId,
+    /// Per-stream request identifier.
+    pub request_id: u64,
+    /// Requested bit width, capped at 64.
+    pub width: u8,
+}
+
+/// Result of app-random branch expansion.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AppRandomBranchRun {
+    /// Decisions considered for branching.
+    pub decisions: Vec<Decision>,
+    /// Frontier report for the generated children.
+    pub report: FrontierReductionReport,
+}
+
+/// Result of the guidance determinism source lint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct GuidanceDeterminismLintReport {
+    /// Forbidden floating-point ordering tokens found in the inspected source.
+    pub forbidden_hits: Vec<String>,
+}
+
+impl GuidanceDeterminismLintReport {
+    /// Returns whether the lint found no forbidden tokens.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.forbidden_hits.is_empty()
+    }
+}
+
 /// One frontier expansion in a strategy-driven graph search.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SearchExpansion {
@@ -12173,6 +12686,477 @@ fn count_app_random_decisions(schedule: &Schedule) -> u64 {
         .count() as u64
 }
 
+/// Selects adaptive exploration arms deterministically for `budget` steps.
+#[must_use]
+pub fn run_adaptive_strategy_selection(
+    config: &AdaptiveStrategyConfig,
+    graph: &BTreeSet<ContentHash>,
+    credits: &[AdaptiveStrategyCredit],
+    budget: SearchBudget,
+) -> AdaptiveStrategyRun {
+    let rewards = adaptive_strategy_rewards_from_credits(credits);
+    let graph_fingerprint = adaptive_strategy_graph_fingerprint(graph);
+    let mut pulls = BTreeMap::<AdaptiveStrategyArm, u64>::new();
+    let mut selections = Vec::new();
+    for sequence in 0..budget.max_expansions {
+        let arm =
+            select_adaptive_strategy_arm(config, graph_fingerprint, &rewards, &pulls, sequence);
+        let score =
+            adaptive_strategy_arm_score(config, graph_fingerprint, &rewards, &pulls, sequence, arm);
+        pulls
+            .entry(arm)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+        selections.push(AdaptiveStrategySelection {
+            sequence,
+            arm,
+            score,
+        });
+    }
+    AdaptiveStrategyRun {
+        campaign_identity: config.campaign_identity(),
+        graph_fingerprint,
+        selections,
+    }
+}
+
+/// Lints guidance/adaptive ordering source for forbidden floating-point tokens.
+#[must_use]
+pub fn lint_guidance_determinism_source(source: &str) -> GuidanceDeterminismLintReport {
+    let forbidden_hits = ["f64"]
+        .iter()
+        .filter(|token| source.contains(**token))
+        .map(|token| (*token).to_string())
+        .collect();
+    GuidanceDeterminismLintReport { forbidden_hits }
+}
+
+/// Generates bounded preemption branch decisions.
+#[must_use]
+pub fn preemption_branch_decisions(config: &PreemptionBranchConfig) -> Vec<Decision> {
+    if config.step == 0 || config.deadline.retired > config.horizon.retired {
+        return Vec::new();
+    }
+
+    let mut retired = config.deadline.retired;
+    let mut decisions = Vec::new();
+    while retired <= config.horizon.retired {
+        decisions.push(Decision::Preemption(PreemptionDecision {
+            node: config.node.clone(),
+            at: Icount { retired },
+            kind: PreemptionKind::VcpuSwitch {
+                from_vcpu: config.switch_from_vcpu,
+                to_vcpu: config.switch_to_vcpu,
+            },
+        }));
+        decisions.push(Decision::Preemption(PreemptionDecision {
+            node: config.node.clone(),
+            at: Icount { retired },
+            kind: PreemptionKind::InterruptAt {
+                target_vcpu: config.target_vcpu,
+                irq: config.irq,
+            },
+        }));
+        let Some(next) = retired.checked_add(config.step) else {
+            break;
+        };
+        if next == retired {
+            break;
+        }
+        retired = next;
+    }
+    decisions
+}
+
+/// Generates deterministic app-random served-value branch decisions.
+#[must_use]
+pub fn app_random_branch_decisions(config: &AppRandomBranchConfig) -> Vec<Decision> {
+    let mut decisions = Vec::new();
+    for site in &config.draw_sites {
+        let width = site.width.min(64);
+        let mask = if width == 64 {
+            u64::MAX
+        } else if width == 0 {
+            0
+        } else {
+            (1u64 << width) - 1
+        };
+        for sample in 0..config.samples {
+            let material = format!(
+                "seed={}\nnode={}\nstream_domain={}\nstream_name={}\nrequest_id={}\nwidth={width}\nsample={sample}",
+                config.seed.to_hex(),
+                site.node.name,
+                site.stream.domain,
+                site.stream.name,
+                site.request_id
+            );
+            let value = content_hash_low_u64(ContentHash::from_canonical_material(
+                "crucible.app-random.branch.v1",
+                &material,
+            )) & mask;
+            decisions.push(Decision::AppRandom(AppRandomDecision {
+                node: site.node.clone(),
+                stream: site.stream.clone(),
+                request_id: site.request_id,
+                width,
+                value,
+            }));
+        }
+    }
+    decisions
+}
+
+fn run_coverage_guided_fuzz(
+    family: &ScenarioFamily,
+    config: CoverageGuidedFuzzConfig,
+    feedback: &[EventLogCoverageFeedback],
+) -> Result<CoverageGuidedFuzzRun, EngineError> {
+    let cardinality = family.space().cardinality()?;
+    let mut iterations = Vec::new();
+    let mut seen_coverage = BTreeSet::new();
+    let mut corpus = vec![coverage_guided_fuzz_seed_corpus_entry(config, cardinality)];
+
+    for sequence in 0..config.iterations {
+        let coverage_fingerprint = coverage_guided_fuzz_feedback_fingerprint(feedback, sequence);
+        let selected_corpus_entry = coverage_guided_fuzz_select_corpus_entry(
+            config,
+            sequence,
+            coverage_fingerprint,
+            &corpus,
+        );
+        let energy = coverage_guided_fuzz_energy(config, sequence, coverage_fingerprint);
+        let sample_index =
+            coverage_guided_fuzz_sample_index(config, sequence, coverage_fingerprint, cardinality);
+        let scenario = family.instantiate_sample(sample_index)?;
+        let params = scenario.params();
+        let root = scenario.genesis_configuration();
+        let mutation =
+            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let configuration = try_step(root.configuration(), mutation.clone())?;
+        let new_coverage = coverage_fingerprint != ContentHash::default()
+            && seen_coverage.insert(coverage_fingerprint);
+        if new_coverage {
+            corpus.push(configuration.id());
+        }
+        iterations.push(CoverageGuidedFuzzIteration {
+            sequence,
+            sample_index,
+            params,
+            scenario,
+            selected_corpus_entry,
+            energy,
+            configuration,
+            mutation,
+            coverage_fingerprint,
+            new_coverage,
+        });
+    }
+
+    let coverage_biased_order = coverage_guided_fuzz_order(&iterations);
+    Ok(CoverageGuidedFuzzRun {
+        config,
+        iterations,
+        coverage_biased_order,
+    })
+}
+
+fn coverage_guided_fuzz_feedback_fingerprint(
+    feedback: &[EventLogCoverageFeedback],
+    sequence: u64,
+) -> ContentHash {
+    if feedback.is_empty() {
+        return ContentHash::default();
+    }
+
+    let index = (sequence % feedback.len() as u64) as usize;
+    feedback[index].fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing)
+}
+
+fn coverage_guided_fuzz_seed_corpus_entry(
+    config: CoverageGuidedFuzzConfig,
+    cardinality: u64,
+) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.coverage-guided-fuzz.seed-corpus-entry.v1",
+        &format!(
+            "meta_seed={}\ncardinality={cardinality}",
+            config.meta_seed.to_hex()
+        ),
+    )
+}
+
+fn coverage_guided_fuzz_select_corpus_entry(
+    config: CoverageGuidedFuzzConfig,
+    sequence: u64,
+    coverage_fingerprint: ContentHash,
+    corpus: &[ContentHash],
+) -> ContentHash {
+    let material = format!(
+        "meta_seed={}\nsequence={sequence}\ncoverage={}\ncorpus_len={}",
+        config.meta_seed.to_hex(),
+        coverage_fingerprint.to_hex(),
+        corpus.len()
+    );
+    let index = content_hash_low_u64(ContentHash::from_canonical_material(
+        "crucible.coverage-guided-fuzz.corpus-selection.v1",
+        &material,
+    )) as usize
+        % corpus.len();
+    corpus[index]
+}
+
+fn coverage_guided_fuzz_energy(
+    config: CoverageGuidedFuzzConfig,
+    sequence: u64,
+    coverage_fingerprint: ContentHash,
+) -> u64 {
+    let material = format!(
+        "meta_seed={}\nsequence={sequence}\ncoverage={}",
+        config.meta_seed.to_hex(),
+        coverage_fingerprint.to_hex()
+    );
+    let base = content_hash_low_u64(ContentHash::from_canonical_material(
+        "crucible.coverage-guided-fuzz.energy.v1",
+        &material,
+    ));
+    1 + (base % 1024)
+}
+
+fn coverage_guided_fuzz_sample_index(
+    config: CoverageGuidedFuzzConfig,
+    sequence: u64,
+    coverage_fingerprint: ContentHash,
+    cardinality: u64,
+) -> u64 {
+    let material = format!(
+        "meta_seed={}\ncoverage={}",
+        config.meta_seed.to_hex(),
+        coverage_fingerprint.to_hex()
+    );
+    let bias = content_hash_low_u64(ContentHash::from_canonical_material(
+        COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN,
+        &material,
+    ));
+    bias.wrapping_add(sequence) % cardinality
+}
+
+fn coverage_guided_fuzz_override_decision(
+    config: CoverageGuidedFuzzConfig,
+    sequence: u64,
+    sample_index: u64,
+    params: FamilyParams,
+) -> Decision {
+    let material = format!(
+        "meta_seed={}\nsequence={sequence}\nsample_index={sample_index}\nseed={}\nfault_density={}\ntopology_size={}\ntopology_shape={:?}",
+        config.meta_seed.to_hex(),
+        params.seed.to_hex(),
+        params.fault_density.millionths(),
+        params.topology_size,
+        params.topology_shape
+    );
+    let choice = content_hash_low_u64(ContentHash::from_canonical_material(
+        COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN,
+        &material,
+    ));
+    Decision::Override(OverrideDecision {
+        point: SchedulingPoint {
+            key: format!("coverage-guided-fuzz/{sequence:016}"),
+        },
+        choice: ChoiceTag {
+            name: format!("mutant-{choice:016x}"),
+        },
+    })
+}
+
+fn coverage_guided_fuzz_order(iterations: &[CoverageGuidedFuzzIteration]) -> Vec<ContentHash> {
+    let mut ordered = iterations.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        coverage_guided_fuzz_iteration_key(left)
+            .cmp(&coverage_guided_fuzz_iteration_key(right))
+            .then_with(|| left.configuration_id().cmp(&right.configuration_id()))
+    });
+    ordered
+        .into_iter()
+        .map(CoverageGuidedFuzzIteration::configuration_id)
+        .collect()
+}
+
+fn coverage_guided_fuzz_iteration_key(
+    iteration: &CoverageGuidedFuzzIteration,
+) -> (u8, u8, ContentHash) {
+    let old_coverage = u8::from(!iteration.new_coverage);
+    let unknown_coverage = u8::from(iteration.coverage_fingerprint == ContentHash::default());
+    (
+        old_coverage,
+        unknown_coverage,
+        iteration.coverage_fingerprint,
+    )
+}
+
+fn content_hash_low_u64(hash: ContentHash) -> u64 {
+    u64::from_le_bytes([
+        hash.bytes[0],
+        hash.bytes[1],
+        hash.bytes[2],
+        hash.bytes[3],
+        hash.bytes[4],
+        hash.bytes[5],
+        hash.bytes[6],
+        hash.bytes[7],
+    ])
+}
+
+fn guidance_signal_score(signal: GuidanceSignalKind, input: GuidanceSignalInput) -> GuidanceScore {
+    match signal {
+        GuidanceSignalKind::Coverage => CoverageGuidanceSignal.score(input),
+        GuidanceSignalKind::NoveltyRarity => NoveltyRarityGuidanceSignal.score(input),
+        GuidanceSignalKind::AssertionProximity => AssertionProximityGuidanceSignal.score(input),
+    }
+}
+
+fn select_adaptive_strategy_arm(
+    config: &AdaptiveStrategyConfig,
+    graph_fingerprint: ContentHash,
+    rewards: &BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward>,
+    pulls: &BTreeMap<AdaptiveStrategyArm, u64>,
+    sequence: u64,
+) -> AdaptiveStrategyArm {
+    if !config.enabled {
+        return AdaptiveStrategyArm::BreadthFirst;
+    }
+    if config.breadth_first_floor_interval != 0
+        && sequence % config.breadth_first_floor_interval == 0
+        && config.arms.contains(&AdaptiveStrategyArm::BreadthFirst)
+    {
+        return AdaptiveStrategyArm::BreadthFirst;
+    }
+
+    config
+        .arms
+        .iter()
+        .copied()
+        .max_by_key(|arm| {
+            (
+                adaptive_strategy_arm_score(
+                    config,
+                    graph_fingerprint,
+                    rewards,
+                    pulls,
+                    sequence,
+                    *arm,
+                ),
+                std::cmp::Reverse(*arm),
+            )
+        })
+        .unwrap_or(AdaptiveStrategyArm::BreadthFirst)
+}
+
+fn adaptive_strategy_arm_score(
+    config: &AdaptiveStrategyConfig,
+    graph_fingerprint: ContentHash,
+    rewards: &BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward>,
+    pulls: &BTreeMap<AdaptiveStrategyArm, u64>,
+    sequence: u64,
+    arm: AdaptiveStrategyArm,
+) -> u64 {
+    let reward = rewards.get(&arm).copied().unwrap_or_default();
+    let reward_total = adaptive_strategy_reward_total(reward);
+    let pull_count = pulls.get(&arm).copied().unwrap_or(0).saturating_add(1);
+    let exploitation = reward_total / pull_count;
+    let exploration =
+        adaptive_strategy_exploration_bonus(config.seed, graph_fingerprint, sequence, arm)
+            / pull_count;
+    exploitation.saturating_add(exploration)
+}
+
+fn adaptive_strategy_reward_total(reward: AdaptiveStrategyReward) -> u64 {
+    let failure = if reward.confirmed_failure {
+        ADAPTIVE_CONFIRMED_FAILURE_REWARD
+    } else {
+        0
+    };
+    reward
+        .new_coverage
+        .saturating_add(reward.novelty_gain)
+        .saturating_add(reward.assertion_proximity_progress)
+        .saturating_add(failure)
+}
+
+fn adaptive_strategy_exploration_bonus(
+    seed: Seed,
+    graph_fingerprint: ContentHash,
+    sequence: u64,
+    arm: AdaptiveStrategyArm,
+) -> u64 {
+    let material = format!(
+        "seed={}\ngraph={}\nsequence={sequence}\narm={arm:?}",
+        seed.to_hex(),
+        graph_fingerprint.to_hex()
+    );
+    content_hash_low_u64(ContentHash::from_canonical_material(
+        "crucible.adaptive-strategy.exploration-bonus.v1",
+        &material,
+    )) % GUIDANCE_SCORE_ONE_MICRO
+}
+
+fn adaptive_strategy_rewards_from_credits(
+    credits: &[AdaptiveStrategyCredit],
+) -> BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward> {
+    let mut ordered = credits.to_vec();
+    ordered.sort_by_key(|credit| (credit.configuration, credit.arm));
+    let mut rewards = BTreeMap::<AdaptiveStrategyArm, AdaptiveStrategyReward>::new();
+    for credit in ordered {
+        rewards
+            .entry(credit.arm)
+            .and_modify(|reward| {
+                *reward = combine_adaptive_strategy_rewards(*reward, credit.reward);
+            })
+            .or_insert(credit.reward);
+    }
+    rewards
+}
+
+fn combine_adaptive_strategy_rewards(
+    left: AdaptiveStrategyReward,
+    right: AdaptiveStrategyReward,
+) -> AdaptiveStrategyReward {
+    AdaptiveStrategyReward {
+        new_coverage: left.new_coverage.saturating_add(right.new_coverage),
+        novelty_gain: left.novelty_gain.saturating_add(right.novelty_gain),
+        assertion_proximity_progress: left
+            .assertion_proximity_progress
+            .saturating_add(right.assertion_proximity_progress),
+        confirmed_failure: left.confirmed_failure || right.confirmed_failure,
+    }
+}
+
+fn adaptive_strategy_graph_fingerprint(graph: &BTreeSet<ContentHash>) -> ContentHash {
+    if graph.is_empty() {
+        return ContentHash::default();
+    }
+    let material = graph
+        .iter()
+        .map(|hash| hash.to_hex())
+        .collect::<Vec<_>>()
+        .join("\n");
+    ContentHash::from_canonical_material("crucible.adaptive-strategy.graph.v1", &material)
+}
+
+fn adaptive_strategy_config_material(config: &AdaptiveStrategyConfig) -> String {
+    let arms = config
+        .arms
+        .iter()
+        .map(|arm| format!("{arm:?}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "seed={}\nenabled={}\nfairness_floor={}\narms={arms}",
+        config.seed.to_hex(),
+        config.enabled,
+        config.breadth_first_floor_interval
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchFrontierCandidate {
     configuration: Configuration,
@@ -12243,8 +13227,10 @@ fn search_coverage_guided_key(
     candidate: &SearchFrontierCandidate,
 ) -> (u8, ContentHash) {
     let coverage = search_candidate_coverage_fingerprint(graph, &candidate.configuration);
-    let unknown_coverage = u8::from(coverage == ContentHash::default());
-    (unknown_coverage, coverage)
+    CoverageGuidanceSignal.search_order_key(GuidanceSignalInput {
+        coverage_fingerprint: coverage,
+        ..GuidanceSignalInput::default()
+    })
 }
 
 fn search_candidate_coverage_fingerprint(

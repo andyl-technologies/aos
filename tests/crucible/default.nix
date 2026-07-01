@@ -1312,6 +1312,44 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
+    preemptionBranching = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.preemptionBranching";
+      gate = import ./phase6-guided-adaptive-exploration.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.preemptionBranching";
+        taskIds = ["T-ADV-20"];
+        gateName = "gate:preemption-branching";
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.searchReductions.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.searchReductions
+      ];
+    };
+    appRandomBranching = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.appRandomBranching";
+      gate = import ./phase6-guided-adaptive-exploration.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.appRandomBranching";
+        taskIds = ["T-ADV-21"];
+        gateName = "gate:app-random-branching";
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.preemptionBranching.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.preemptionBranching
+      ];
+    };
     basicBlockCoverage = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.basicBlockCoverage";
       gate = import ./phase6-basic-block-coverage.nix {
@@ -1360,6 +1398,95 @@ in rec {
         phase4.eventLogCoverage
         phase6.searchStrategies
         phase6.basicBlockCoverage
+      ];
+    };
+    guidanceSignals = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.guidanceSignals";
+      gate = import ./phase6-guided-adaptive-exploration.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.guidanceSignals";
+        taskIds = ["T-ADV-17"];
+        gateName = "gate:guidance-signals";
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.searchStrategies.rawGate
+          phase6.coverageFeedback.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.searchStrategies
+        phase6.coverageFeedback
+      ];
+    };
+    adaptiveStrategies = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.adaptiveStrategies";
+      gate = import ./phase6-guided-adaptive-exploration.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.adaptiveStrategies";
+        taskIds = ["T-ADV-18"];
+        gateName = "gate:adaptive-strategies";
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.guidanceSignals.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.guidanceSignals
+      ];
+    };
+    guidanceDeterminismLint = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
+      gate = import ./phase6-guided-adaptive-exploration.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
+        taskIds = ["T-ADV-19"];
+        gateName = "gate:guidance-determinism-lint";
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.adaptiveStrategies.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.adaptiveStrategies
+      ];
+    };
+    coverageGuidedFuzzing = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
+      gate = import ./phase6-coverage-guided-fuzzing.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
+        taskIds = ["T-ADV-12"];
+        dependencies = [
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.stateSpaceSearch.rawGate
+          phase6.searchStrategies.rawGate
+          phase6.basicBlockCoverage.rawGate
+          phase6.coverageFeedback.rawGate
+          phase6.guidanceDeterminismLint.rawGate
+          phase6.appRandomBranching.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.stateSpaceSearch
+        phase6.searchStrategies
+        phase6.basicBlockCoverage
+        phase6.coverageFeedback
+        phase6.guidanceDeterminismLint
+        phase6.appRandomBranching
       ];
     };
     gates = {
