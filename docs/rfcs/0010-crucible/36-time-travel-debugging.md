@@ -923,12 +923,22 @@ touching the canonical run.
   with and without the API-generated debugger observations, proves it is
   byte-identical, and asserts that register, memory, backtrace, thread/vCPU, and
   watchpoint reads append no causal entry and advance no virtual time.
-- [ ] **T-DBG-3** Implement canonical breakpoints as hardware/out-of-band (17a
+- [x] **T-DBG-3** Implement canonical breakpoints as hardware/out-of-band (17a
   `Condition` predicate or QEMU hardware breakpoint), transparently satisfying a
   client software-breakpoint request where a mechanism exists and **refusing**
   (typed error → `--allow-mutate`) a memory-write-only breakpoint on a canonical
   attach; never patch a trap into guest memory. — satisfies [DBG-11], [DBG-12],
   [DBG-13]; spec §36.3.2.
+  Completed by `checks.crucible.phase6.canonicalDebugBreakpoint`:
+  `TemporalGraph::canonical_debug_breakpoint` resolves canonical breakpoint requests
+  only to out-of-band mechanisms (`EngineCondition` or `QemuHardwareBreakpoint`),
+  transparently satisfies a client software-breakpoint request through the mediated
+  gdbstub as a QEMU hardware breakpoint when available, and returns
+  `EngineError::DebugBreakpointRequiresAllowMutate` with `--allow-mutate` guidance
+  when the request has no canonical mechanism. The gate asserts the report never
+  mutates guest memory, never uses a memory patch, the proxy rewrites real `Z0`
+  software-breakpoint packets to `Z1` hardware-breakpoint packets, and the proxy
+  refuses `Z0` locally when no hardware breakpoint mechanism is available.
 - [ ] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
   ancestor-replay branch of `instantiate`), reverse-step grains mirroring the forward
   StepMode set, and reverse-continue as the latest-log-coordinate-≤-now-where-a-17a-

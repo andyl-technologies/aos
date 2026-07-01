@@ -1605,6 +1605,26 @@ in rec {
         phase6.debugAttach
       ];
     };
+    canonicalDebugBreakpoint = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
+      gate = import ./phase6-canonical-debug-breakpoint.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
+        taskIds = ["T-DBG-3"];
+        dependencies = [
+          phase1.layer0Determinism
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.readOnlyDebugInspection.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.layer0Determinism
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.readOnlyDebugInspection
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

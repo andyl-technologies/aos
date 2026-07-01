@@ -10789,6 +10789,63 @@ impl TemporalGraph {
         }
     }
 
+    /// Resolves a canonical debugger breakpoint without guest-memory mutation.
+    ///
+    /// Software breakpoint requests are translated to an out-of-band mechanism
+    /// when one is available. If the request would require patching a trap into
+    /// guest memory, the operation returns a typed `--allow-mutate` error rather
+    /// than modifying the canonical run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DebugAttachUnknownNode`] when the request names a
+    /// node outside the attached runtime. Returns
+    /// [`EngineError::DebugBreakpointRequiresAllowMutate`] when no canonical
+    /// out-of-band mechanism can satisfy the request.
+    pub fn canonical_debug_breakpoint(
+        &self,
+        attach: &DebugAttachReport,
+        request: &DebugBreakpointRequest,
+    ) -> Result<DebugBreakpointReport, EngineError> {
+        if request.node != attach.gdbstub.node
+            || !attach
+                .runtime
+                .runtime
+                .node_blobs
+                .contains_key(&request.node)
+            || !attach
+                .runtime
+                .runtime
+                .node_icounts
+                .contains_key(&request.node)
+        {
+            return Err(EngineError::DebugAttachUnknownNode {
+                node: request.node.clone(),
+                configuration: attach.configuration,
+            });
+        }
+        let mechanism = request.canonical_mechanism().ok_or_else(|| {
+            EngineError::DebugBreakpointRequiresAllowMutate {
+                node: request.node.clone(),
+                target: request.target.clone(),
+                requested_client_kind: request.client_kind,
+            }
+        })?;
+
+        Ok(DebugBreakpointReport {
+            configuration: attach.configuration,
+            checkpoint: attach.checkpoint,
+            node: request.node.clone(),
+            requested_client_kind: request.client_kind,
+            target: request.target.clone(),
+            mechanism,
+            canonical: true,
+            mutates_guest_memory: false,
+            memory_patch_used: false,
+            requires_allow_mutate: false,
+        })
+    }
+
     /// Forks from `base` by instantiating it and appending `decisions`.
     ///
     /// The returned branch is recorded as a thin checkpoint in the same DAG.
@@ -14777,6 +14834,150 @@ fn debug_read_only_observation_entry(
     )
 }
 
+/// Client-visible breakpoint request flavor at the debug protocol boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugBreakpointClientKind {
+    /// A gdb-protocol software-breakpoint request.
+    Software,
+    /// A gdb-protocol hardware-breakpoint request.
+    Hardware,
+    /// A Crucible event-graph condition breakpoint request.
+    EngineCondition,
+}
+
+/// Canonical out-of-band breakpoint mechanism available to a debug session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugBreakpointMechanism {
+    /// A 17a condition evaluated by Crucible at deterministic boundaries.
+    EngineCondition,
+    /// A QEMU/gdbstub hardware breakpoint or debug-register trap.
+    QemuHardwareBreakpoint,
+}
+
+/// Breakpoint target requested by the operator or gdb-protocol client.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugBreakpointTarget {
+    /// Guest instruction address for a PC breakpoint.
+    GuestAddress {
+        /// Guest virtual or physical address as interpreted by the backend.
+        address: u64,
+    },
+    /// Guest address that has no hardware/out-of-band mechanism in this session.
+    GuestMemoryPatchOnly {
+        /// Guest virtual or physical address that would require a trap patch.
+        address: u64,
+    },
+    /// Named 17a condition breakpoint.
+    EngineCondition {
+        /// Stable condition identifier or predicate label.
+        condition: String,
+    },
+}
+
+/// A canonical breakpoint request on an attached debug session.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugBreakpointRequest {
+    /// Node where the breakpoint should be installed.
+    pub node: NodeId,
+    /// Breakpoint kind requested by the client.
+    pub client_kind: DebugBreakpointClientKind,
+    /// Target being broken on.
+    pub target: DebugBreakpointTarget,
+}
+
+impl DebugBreakpointRequest {
+    /// Builds a canonical breakpoint request.
+    #[must_use]
+    pub fn new(
+        node: NodeId,
+        client_kind: DebugBreakpointClientKind,
+        target: DebugBreakpointTarget,
+    ) -> Self {
+        Self {
+            node,
+            client_kind,
+            target,
+        }
+    }
+
+    /// Builds a gdb software-breakpoint request for a guest address.
+    #[must_use]
+    pub fn software_guest_address(node: NodeId, address: u64) -> Self {
+        Self::new(
+            node,
+            DebugBreakpointClientKind::Software,
+            DebugBreakpointTarget::GuestAddress { address },
+        )
+    }
+
+    /// Builds a software breakpoint request known to require a guest-memory patch.
+    #[must_use]
+    pub fn software_memory_patch_only_guest_address(node: NodeId, address: u64) -> Self {
+        Self::new(
+            node,
+            DebugBreakpointClientKind::Software,
+            DebugBreakpointTarget::GuestMemoryPatchOnly { address },
+        )
+    }
+
+    fn canonical_mechanism(&self) -> Option<DebugBreakpointMechanism> {
+        match &self.target {
+            DebugBreakpointTarget::EngineCondition { .. } => {
+                Some(DebugBreakpointMechanism::EngineCondition)
+            }
+            DebugBreakpointTarget::GuestAddress { .. } => {
+                Some(DebugBreakpointMechanism::QemuHardwareBreakpoint)
+            }
+            DebugBreakpointTarget::GuestMemoryPatchOnly { .. } => None,
+        }
+    }
+}
+
+/// Resolution of a canonical breakpoint request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugBreakpointReport {
+    /// Configuration being debugged.
+    pub configuration: ContentHash,
+    /// Checkpoint being debugged.
+    pub checkpoint: ContentHash,
+    /// Node where the breakpoint is installed.
+    pub node: NodeId,
+    /// Breakpoint kind requested by the client.
+    pub requested_client_kind: DebugBreakpointClientKind,
+    /// Target being broken on.
+    pub target: DebugBreakpointTarget,
+    /// Canonical out-of-band mechanism used.
+    pub mechanism: DebugBreakpointMechanism,
+    /// Whether the breakpoint remains on the canonical branch.
+    pub canonical: bool,
+    /// Whether the resolution mutates guest-visible memory.
+    pub mutates_guest_memory: bool,
+    /// Whether a guest-memory trap patch was used.
+    pub memory_patch_used: bool,
+    /// Whether the operator must opt into a non-canonical mutation branch.
+    pub requires_allow_mutate: bool,
+}
+
+impl DebugBreakpointReport {
+    /// Returns whether this breakpoint satisfies the canonical out-of-band contract.
+    #[must_use]
+    pub const fn is_canonical_out_of_band(&self) -> bool {
+        self.canonical
+            && !self.mutates_guest_memory
+            && !self.memory_patch_used
+            && !self.requires_allow_mutate
+    }
+
+    /// Returns whether a software-breakpoint client request was transparently satisfied.
+    #[must_use]
+    pub const fn transparently_satisfies_software_request(&self) -> bool {
+        matches!(
+            self.requested_client_kind,
+            DebugBreakpointClientKind::Software
+        ) && self.is_canonical_out_of_band()
+    }
+}
+
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphFork {
@@ -16540,6 +16741,15 @@ pub enum EngineError {
         /// Configuration being attached to.
         configuration: ContentHash,
     },
+    /// A canonical breakpoint would require guest-memory mutation.
+    DebugBreakpointRequiresAllowMutate {
+        /// Requested node.
+        node: NodeId,
+        /// Breakpoint target that has no canonical out-of-band mechanism.
+        target: DebugBreakpointTarget,
+        /// Client breakpoint kind that could not be satisfied canonically.
+        requested_client_kind: DebugBreakpointClientKind,
+    },
     /// A scenario family has an invalid finite parameter space.
     ScenarioFamilyInvalidSpace {
         /// Stable reason for the parameter-space rejection.
@@ -16906,6 +17116,9 @@ impl fmt::Display for EngineError {
             Self::DebugAttachUnknownNode { .. } => {
                 f.write_str("debug attach requested an unknown runtime node")
             }
+            Self::DebugBreakpointRequiresAllowMutate { .. } => f.write_str(
+                "canonical debug breakpoint requires guest-memory mutation; rerun with --allow-mutate to fork a non-canonical debug branch",
+            ),
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")
             }
