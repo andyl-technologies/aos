@@ -1232,6 +1232,49 @@ impl MinorGcForwardingPointer {
     }
 }
 
+/// A caller-owned forwarding slot for a from-space nursery object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcForwardingSlot {
+    source: GcHeapAddress,
+    forwarded: Option<ResolvedValueGeneration>,
+}
+
+impl MinorGcForwardingSlot {
+    /// Creates an empty forwarding slot for `source`.
+    pub const fn new(source: GcHeapAddress) -> Self {
+        Self {
+            source,
+            forwarded: None,
+        }
+    }
+
+    /// Creates an occupied forwarding slot for `source`.
+    pub const fn with_forwarded_value(
+        source: GcHeapAddress,
+        forwarded: ResolvedValueGeneration,
+    ) -> Self {
+        Self {
+            source,
+            forwarded: Some(forwarded),
+        }
+    }
+
+    /// Returns the from-space object that owns this slot.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the forwarded value installed in this slot, if any.
+    pub const fn forwarded_value(self) -> Option<ResolvedValueGeneration> {
+        self.forwarded
+    }
+
+    /// Returns whether the slot does not yet hold a forwarding value.
+    pub const fn is_empty(self) -> bool {
+        self.forwarded.is_none()
+    }
+}
+
 /// Forwarding-pointer installation metadata for a planned minor collection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinorGcForwardingPointerPlan {
@@ -1267,6 +1310,29 @@ impl MinorGcForwardingPointerPlan {
         }
 
         Ok(Self { pointers })
+    }
+
+    /// Installs forwarding values into caller-owned forwarding slots.
+    ///
+    /// The supplied slots must match the plan's pointer count and source order,
+    /// and every slot must still be empty. The method validates every slot
+    /// before writing any forwarding value, so validation failures leave all
+    /// slots unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if the slot count differs from the plan,
+    /// if a slot belongs to a different source object, or if any slot is already
+    /// occupied.
+    pub fn install_into_slots(
+        &self,
+        slots: &mut [MinorGcForwardingSlot],
+    ) -> Result<(), GenerationalGcError> {
+        validate_forwarding_slots_match_plan(self, slots)?;
+        for (pointer, slot) in self.pointers.iter().zip(slots) {
+            slot.forwarded = Some(pointer.forwarded_value());
+        }
+        Ok(())
     }
 
     /// Returns forwarding-pointer metadata in object-copy order.
@@ -2020,6 +2086,41 @@ fn validate_relocation_destination_alignment(
     Ok(())
 }
 
+fn validate_forwarding_slots_match_plan(
+    plan: &MinorGcForwardingPointerPlan,
+    slots: &[MinorGcForwardingSlot],
+) -> Result<(), GenerationalGcError> {
+    if plan.len() != slots.len() {
+        return Err(
+            GenerationalGcError::MinorGcForwardingPointerSlotLengthMismatch {
+                pointers: plan.len(),
+                slots: slots.len(),
+            },
+        );
+    }
+
+    for (index, (pointer, slot)) in plan.pointers().iter().zip(slots).enumerate() {
+        if pointer.source() != slot.source() {
+            return Err(
+                GenerationalGcError::MinorGcForwardingPointerSlotSourceMismatch {
+                    index,
+                    expected: pointer.source(),
+                    actual: slot.source(),
+                },
+            );
+        }
+        if let Some(actual) = slot.forwarded_value() {
+            return Err(GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+                index,
+                address: slot.source(),
+                actual,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_forwarding_plan_matches_object_copies(
     object_copies: &MinorGcObjectCopyPlan,
     forwarding_pointers: &MinorGcForwardingPointerPlan,
@@ -2619,6 +2720,44 @@ pub enum GenerationalGcError {
     MinorGcForwardingPointerAllocationFailed {
         /// The requested forwarding-pointer-plan capacity.
         pointers: usize,
+    },
+    /// A forwarding-pointer plan received the wrong number of caller-owned
+    /// slots.
+    #[error(
+        "minor-GC forwarding-pointer slot count {slots} does not match pointer count {pointers}"
+    )]
+    MinorGcForwardingPointerSlotLengthMismatch {
+        /// The planned forwarding-pointer count.
+        pointers: usize,
+        /// The supplied forwarding-slot count.
+        slots: usize,
+    },
+    /// A forwarding-pointer slot belonged to a different source object.
+    #[error(
+        "minor-GC forwarding-pointer slot source mismatch at index {index}: expected 0x{expected:x}, got 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    MinorGcForwardingPointerSlotSourceMismatch {
+        /// The mismatched slot index.
+        index: usize,
+        /// The source object expected by the forwarding-pointer plan.
+        expected: GcHeapAddress,
+        /// The source object found in the caller-owned slot.
+        actual: GcHeapAddress,
+    },
+    /// A forwarding-pointer slot was already occupied.
+    #[error(
+        "minor-GC forwarding-pointer slot for 0x{address:x} at index {index} is already occupied by {actual:?}",
+        address = address.address_bits()
+    )]
+    MinorGcForwardingPointerSlotOccupied {
+        /// The occupied slot index.
+        index: usize,
+        /// The source object whose slot was already occupied.
+        address: GcHeapAddress,
+        /// The already-installed forwarding value.
+        actual: ResolvedValueGeneration,
     },
     /// A minor-GC commit plan received mismatched copy and forwarding counts.
     #[error(
@@ -4311,6 +4450,155 @@ mod tests {
                 .expect("empty forwarding plan builds");
         assert_eq!(empty_forwarding_plan.len(), 0);
         assert!(empty_forwarding_plan.is_empty());
+    }
+
+    #[test]
+    fn minor_gc_forwarding_pointer_plan_installs_into_forwarding_slots() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 24, 8),
+                NurseryObjectLayout::new(promote, 40, 16),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_plan = MinorGcForwardingPointerPlan::from_object_copy_plan(&copy_plan)
+            .expect("forwarding plan builds");
+        let mut slots = [
+            MinorGcForwardingSlot::new(copy),
+            MinorGcForwardingSlot::new(promote),
+        ];
+
+        forwarding_plan
+            .install_into_slots(&mut slots)
+            .expect("forwarding slots install");
+
+        assert_eq!(slots[0].source(), copy);
+        assert_eq!(
+            slots[0].forwarded_value(),
+            Some(ResolvedValueGeneration::young(copy_destination))
+        );
+        assert!(!slots[0].is_empty());
+        assert_eq!(slots[1].source(), promote);
+        assert_eq!(
+            slots[1].forwarded_value(),
+            Some(ResolvedValueGeneration::old(promote_destination))
+        );
+        assert!(!slots[1].is_empty());
+    }
+
+    #[test]
+    fn minor_gc_forwarding_pointer_plan_rejects_stale_forwarding_slots() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(first, 8, 8),
+                NurseryObjectLayout::new(second, 16, 16),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_plan = MinorGcForwardingPointerPlan::from_object_copy_plan(&copy_plan)
+            .expect("forwarding plan builds");
+
+        let mut short_slots = [MinorGcForwardingSlot::new(first)];
+        let unchanged_short_slots = short_slots;
+        assert_eq!(
+            forwarding_plan.install_into_slots(&mut short_slots),
+            Err(
+                GenerationalGcError::MinorGcForwardingPointerSlotLengthMismatch {
+                    pointers: 2,
+                    slots: 1,
+                }
+            )
+        );
+        assert_eq!(short_slots, unchanged_short_slots);
+
+        let mut mismatched_slots = [
+            MinorGcForwardingSlot::new(second),
+            MinorGcForwardingSlot::new(first),
+        ];
+        let unchanged_mismatched_slots = mismatched_slots;
+        assert_eq!(
+            forwarding_plan.install_into_slots(&mut mismatched_slots),
+            Err(
+                GenerationalGcError::MinorGcForwardingPointerSlotSourceMismatch {
+                    index: 0,
+                    expected: first,
+                    actual: second,
+                }
+            )
+        );
+        assert_eq!(mismatched_slots, unchanged_mismatched_slots);
+
+        let mut occupied_slots = [
+            MinorGcForwardingSlot::new(first),
+            MinorGcForwardingSlot::with_forwarded_value(
+                second,
+                ResolvedValueGeneration::young(first_destination),
+            ),
+        ];
+        let unchanged_occupied_slots = occupied_slots;
+        assert_eq!(
+            forwarding_plan.install_into_slots(&mut occupied_slots),
+            Err(GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+                index: 1,
+                address: second,
+                actual: ResolvedValueGeneration::young(first_destination),
+            })
+        );
+        assert_eq!(occupied_slots, unchanged_occupied_slots);
     }
 
     #[test]

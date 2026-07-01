@@ -5064,6 +5064,17 @@ and helps the oracle directly.
       schedules. This remains header-installation metadata only; object-header
       mutation, object-byte copying, root/field writeback, semispace management,
       and remembered-set mutation remain open.
+- [x] Current minor-GC forwarding-slot installation precursor:
+      `MinorGcForwardingSlot` and
+      `MinorGcForwardingPointerPlan::install_into_slots` apply a validated
+      forwarding plan to caller-owned forwarding-slot buffers after checking
+      slot count, source order, and empty-slot state. The helper validates the
+      full buffer before writing any forwarded value, so count, source, or
+      occupied-slot failures leave slots unchanged. Unit tests cover copied-young
+      and promoted-old forwarded values plus length, source, occupied-slot, and
+      no-partial-write failures. This remains a slot-buffer application surface
+      only; real object-header integration, object-byte copying, root/field
+      writeback, semispace management, and remembered-set mutation remain open.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` turns a
       caller-supplied root/field reference sequence and a validated relocation

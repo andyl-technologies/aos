@@ -1061,6 +1061,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       still header-installation metadata only: it does not mutate object headers,
       read or write object bytes, rewrite roots/fields, reserve semispace pages,
       or mutate remembered sets.
+- [x] Current minor-GC forwarding-slot installation precursor:
+      `MinorGcForwardingSlot` and
+      `MinorGcForwardingPointerPlan::install_into_slots` apply a validated
+      forwarding plan to caller-owned forwarding-slot buffers after checking
+      slot count, source order, and empty-slot state. The helper validates the
+      entire buffer before writing any forwarded value, so count, source, or
+      occupied-slot failures leave slots unchanged. Tests cover copied-young and
+      promoted-old forwarded values plus length, source, occupied-slot, and
+      no-partial-write failures. This is a slot-buffer application surface only:
+      it does not wire into real object headers, copy object bytes, rewrite
+      roots/fields, reserve semispace pages, or mutate remembered sets.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` converts a
       caller-supplied root/field reference sequence plus a validated relocation
