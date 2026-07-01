@@ -833,6 +833,10 @@ pub enum AllocationCollectorPollReferenceSource {
     RememberedEdge {
         /// The remembered old-or-permanent to young edge.
         edge: RememberedEdge,
+        /// The source object's precise field index in scanner order.
+        field_index: usize,
+        /// The precise source-field label on the remembered edge source object.
+        source: HeapEdgeSource,
     },
     /// A copied precise field from a planned young survivor.
     NurseryField {
@@ -1752,14 +1756,7 @@ impl EvalHeap {
         }
 
         for edge in remembered_set.edges() {
-            push_reference_slot(
-                &mut reference_slots,
-                AllocationCollectorPollReferenceSource::RememberedEdge { edge: *edge },
-                ResolvedValueGeneration::Heap {
-                    address: edge.target(),
-                    generation: HeapGeneration::Young,
-                },
-            )?;
+            self.push_remembered_edge_reference_slots(&mut reference_slots, *edge)?;
         }
 
         for survivor in plan.survivors() {
@@ -1778,6 +1775,52 @@ impl EvalHeap {
         }
 
         Ok(reference_slots)
+    }
+
+    fn push_remembered_edge_reference_slots(
+        &self,
+        reference_slots: &mut Vec<AllocationCollectorPollReferenceSlot>,
+        edge: RememberedEdge,
+    ) -> Result<(), EvalHeapError> {
+        let source_record = self.record_for_gc_address(edge.source(), "source")?;
+        let source_edges = self.scan_record_edges(source_record)?;
+        let mut matched = false;
+
+        for (field_index, source_edge) in source_edges.iter().enumerate() {
+            let ResolvedValueGeneration::Heap {
+                address,
+                generation: HeapGeneration::Young,
+            } = self.resolved_generation_for_value(source_edge.value())?
+            else {
+                continue;
+            };
+            if address != edge.target() {
+                continue;
+            }
+
+            matched = true;
+            push_reference_slot(
+                reference_slots,
+                AllocationCollectorPollReferenceSource::RememberedEdge {
+                    edge,
+                    field_index,
+                    source: source_edge.source().clone(),
+                },
+                ResolvedValueGeneration::Heap {
+                    address,
+                    generation: HeapGeneration::Young,
+                },
+            )?;
+        }
+
+        if matched {
+            Ok(())
+        } else {
+            Err(EvalHeapError::StaleCollectorPollRememberedEdge {
+                source_address: edge.source(),
+                target_address: edge.target(),
+            })
+        }
     }
 
     fn record_for_scannable_value(&self, value: Value) -> Result<&HeapRecord, EvalHeapError> {

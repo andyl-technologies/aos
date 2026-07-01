@@ -5234,16 +5234,19 @@ and helps the oracle directly.
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
       reference-slot sequence for the future rewrite step: explicit roots from
-      the poll scan, remembered-edge targets in snapshot order, and precise
-      `HeapEdgeSource`-labeled fields of planned young survivors in survivor
-      order. The `reference_rewrite_plan` helper delegates that sequence to
+      the poll scan, remembered-edge source fields in snapshot order, and
+      precise `HeapEdgeSource`-labeled fields of planned young survivors in
+      survivor order. Remembered edges are expanded through current concrete
+      source fields, so duplicate source fields produce distinct rewrite slots
+      and stale remembered entries with no current field are rejected. The
+      `reference_rewrite_plan` helper delegates that sequence to
       `MinorGcReferenceRewritePlan` once a relocation map exists, preserving
       slot indices so tests can link rewrites back to copied roots, remembered
-      edges, and survivor fields. Unit tests cover root and nursery-field
-      rewrites plus remembered-edge rewrites. This remains copied slot metadata
-      only; mutable evaluator roots, object-field writeback, concrete
-      remembered-source field identity, remembered-source field mutation, and
-      live runtime-state application remain open.
+      source fields, and survivor fields. Unit tests cover root and nursery-field
+      rewrites, remembered-edge rewrites, duplicate remembered source fields, and
+      stale remembered-edge rejection. This remains copied slot metadata only;
+      mutable evaluator roots, object-field writeback, remembered-source field
+      mutation, and live runtime-state application remain open.
 - [x] Current allocation-poll destination-planning bridge precursor:
       `AllocationCollectorPollMinorGcPlan::relocation_destination_plan`
       composes the poll survivor frontier with caller-supplied nursery layouts
@@ -5270,14 +5273,13 @@ and helps the oracle directly.
       frontier, and derives object-copy sizes from the validated placement plan.
       The bridge preserves the poll plan's
       labeled reference slots beside the commit metadata, so tests can connect
-      lower-level rewrites back to copied roots, remembered edges, and survivor
-      fields. Unit tests cover empty remembered-set commit metadata, retained
-      copied-young remembered edges, and rejection of a destination plan built
-      for a different poll survivor frontier or promotion policy. This remains
-      metadata only;
-      destination storage allocation, binding byte buffers to real objects,
-      forwarding-slot installation, live root/object-field mutation, concrete
-      remembered-source field identity, remembered-set publication, and
+      lower-level rewrites back to copied roots, remembered source fields, and
+      survivor fields. Unit tests cover empty remembered-set commit metadata,
+      retained copied-young remembered edges, and rejection of a destination plan
+      built for a different poll survivor frontier or promotion policy. This
+      remains metadata only; destination storage allocation, binding byte buffers
+      to real objects, forwarding-slot installation, live root/object-field
+      mutation, remembered-source field mutation, remembered-set publication, and
       semispace management remain open.
 - [x] Current allocation-poll commit-buffer bridge precursor:
       `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` and
@@ -5292,8 +5294,8 @@ and helps the oracle directly.
       rejection before lower-level mutation, and lower-level stale-buffer error
       mapping without partial mutation. This remains a caller-buffer application
       surface only; destination storage allocation, binding buffers to live heap
-      objects or object headers, tree-walk root/object-field mutation, concrete
-      remembered-source field identity, and semispace management remain open.
+      objects or object headers, tree-walk root/object-field mutation,
+      remembered-source field mutation, and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5378,13 +5380,15 @@ and helps the oracle directly.
       stack-map integration remain open.
 - [x] Current `heap/roots.rs` reference-slot bridge precursor:
       `AllocationCollectorPollReferenceSlot` labels the copied references that
-      would need relocation after a minor collection: root slots, remembered
-      edge targets, and `HeapEdgeSource`-labeled fields of planned nursery
-      survivors. The slot sequence feeds `MinorGcReferenceRewritePlan` with
-      stable indices, but does not yet own or mutate the underlying evaluator
-      storage. Real relocation slots for tree-walk roots, copied object fields,
-      remembered old/permanent fields, and later JIT stack-map entries remain
-      open.
+      would need relocation after a minor collection: root slots, concrete
+      remembered old/permanent source fields, and `HeapEdgeSource`-labeled fields
+      of planned nursery survivors. Remembered edges are expanded into the current
+      source fields they describe, including duplicate fields to the same target,
+      and stale remembered entries with no matching source field are rejected. The
+      slot sequence feeds `MinorGcReferenceRewritePlan` with stable indices, but
+      does not yet own or mutate the underlying evaluator storage. Real
+      relocation slots for tree-walk roots, copied object fields, remembered
+      old/permanent fields, and later JIT stack-map entries remain open.
 - [x] Current `heap/roots.rs` destination-planning bridge precursor:
       `AllocationCollectorPollMinorGcPlan::relocation_destination_plan` derives
       destination allocation requirements, aligned placements, and materialized
@@ -5403,7 +5407,7 @@ and helps the oracle directly.
       and copy/promote actions against the poll plan. The wrapper keeps the copied
       `AllocationCollectorPollReferenceSlot` labels next to the lower-level
       commit plan, but still does not provide mutable tree-walk roots, copied
-      object-field slots, old/permanent field slots, or stack-map writeback
+      object-field slots, old/permanent field mutation, or stack-map writeback
       slots.
 - [x] Current `heap/roots.rs` commit-buffer bridge precursor:
       `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` checks that
@@ -5413,8 +5417,7 @@ and helps the oracle directly.
       forwarding slots, reference values, and remembered-set state. This
       connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live tree-walk root writeback, object-field
-      writeback, remembered-source field identity, old/permanent field mutation,
-      or JIT stack-map writeback slots.
+      writeback, old/permanent field mutation, or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

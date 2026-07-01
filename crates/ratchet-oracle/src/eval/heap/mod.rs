@@ -383,6 +383,18 @@ pub enum EvalHeapError {
         /// The young target object that must be remembered.
         target_address: GcHeapAddress,
     },
+    /// A remembered-set edge no longer matches any concrete source field.
+    #[error(
+        "collector-poll remembered-set edge has no current source field: 0x{source:x} -> 0x{target:x}",
+        source = source_address.address_bits(),
+        target = target_address.address_bits()
+    )]
+    StaleCollectorPollRememberedEdge {
+        /// The remembered edge source address.
+        source_address: GcHeapAddress,
+        /// The remembered edge target address.
+        target_address: GcHeapAddress,
+    },
     /// A planned minor-GC survivor no longer belongs to this evaluator heap.
     #[error("collector-poll minor-GC survivor address does not belong to this heap: 0x{address:x}", address = address.address_bits())]
     UnknownCollectorPollSurvivorAddress {

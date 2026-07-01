@@ -900,15 +900,18 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current allocation-poll reference-slot precursor:
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
-      roots from the poll scan, remembered-edge targets in snapshot order, and
-      precise `HeapEdgeSource`-labeled fields of planned young survivors in
-      survivor order. The helper `reference_rewrite_plan` delegates that
-      sequence to `MinorGcReferenceRewritePlan` once a relocation map exists,
-      preserving slot indices so tests can link each rewrite back to its copied
-      root, remembered edge, or survivor field. Tests cover root and
-      nursery-field rewrites plus remembered-edge rewrites. This is still copied
-      slot metadata only: it does not hold mutable evaluator roots, update
-      object fields, identify the concrete remembered source field, rewrite
+      roots from the poll scan, remembered-edge source fields in snapshot order,
+      and precise `HeapEdgeSource`-labeled fields of planned young survivors in
+      survivor order. Remembered edges are expanded through current concrete
+      source fields, so duplicate source fields produce distinct rewrite slots
+      and stale remembered entries with no current field are rejected. The helper
+      `reference_rewrite_plan` delegates that sequence to
+      `MinorGcReferenceRewritePlan` once a relocation map exists, preserving slot
+      indices so tests can link each rewrite back to its copied root, remembered
+      source field, or survivor field. Tests cover root and nursery-field
+      rewrites, remembered-edge rewrites, duplicate remembered source fields, and
+      stale remembered-edge rejection. This is still copied slot metadata only:
+      it does not hold mutable evaluator roots, update object fields, rewrite
       remembered source fields, or apply the rewrite plan to live runtime state.
 - [x] Current allocation-poll destination-planning bridge precursor:
       `AllocationCollectorPollMinorGcPlan::relocation_destination_plan` connects
@@ -937,13 +940,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       frontier, and derives object-copy sizes from the validated placement plan.
       The bridge keeps the poll plan's labeled
       reference slots beside the validated commit plan so tests can relate
-      low-level rewrites back to copied roots, remembered edges, and nursery
+      low-level rewrites back to copied roots, remembered source fields, and nursery
       fields. Tests cover empty remembered-set commits, copied-young
       remembered-edge retention, and rejection of a destination plan built for a
       different poll survivor frontier or promotion policy. This is still
       metadata only: it does not
       allocate destination storage, bind byte buffers to real objects, install
-      forwarding values, mutate live roots or fields, identify remembered source
+      forwarding values, mutate live roots or fields, mutate remembered source
       fields, publish remembered sets, or manage semispaces.
 - [x] Current allocation-poll commit-buffer bridge precursor:
       `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` and

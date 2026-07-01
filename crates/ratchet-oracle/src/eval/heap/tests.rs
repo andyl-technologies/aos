@@ -2199,6 +2199,8 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         planned.reference_slots()[1].source(),
         &AllocationCollectorPollReferenceSource::RememberedEdge {
             edge: RememberedEdge::new(gc_address(root), gc_address(child)),
+            field_index: 0,
+            source: HeapEdgeSource::ListElement { index: 0 },
         }
     );
     assert_eq!(
@@ -2341,6 +2343,121 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         ]
     );
     assert_eq!(commit_remembered_set, expected_next_remembered_set);
+}
+
+#[test]
+fn collector_poll_minor_gc_plan_expands_remembered_edge_to_concrete_source_fields() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let root = heap
+        .alloc_list(NixList::new(vec![child, child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, root)
+        .expect("list root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(gc_address(root), gc_address(child)))
+        .expect("remembered edge records");
+
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+
+    assert_eq!(planned.reference_slots().len(), 3);
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::RememberedEdge {
+            edge: RememberedEdge::new(gc_address(root), gc_address(child)),
+            field_index: 0,
+            source: HeapEdgeSource::ListElement { index: 0 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[2].source(),
+        &AllocationCollectorPollReferenceSource::RememberedEdge {
+            edge: RememberedEdge::new(gc_address(root), gc_address(child)),
+            field_index: 1,
+            source: HeapEdgeSource::ListElement { index: 1 },
+        }
+    );
+
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let relocation_plan = destinations
+        .relocation_destinations()
+        .relocation_plan(planned.plan())
+        .expect("relocation plan rebuilds");
+    let rewrite_plan = planned
+        .reference_rewrite_plan(&relocation_plan)
+        .expect("reference rewrite plan builds");
+    assert_eq!(rewrite_plan.rewrites().len(), 2);
+    assert_eq!(rewrite_plan.rewrites()[0].slot(), 1);
+    assert_eq!(rewrite_plan.rewrites()[1].slot(), 2);
+}
+
+#[test]
+fn collector_poll_minor_gc_plan_rejects_stale_remembered_edge_without_source_field() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let root = heap
+        .alloc_string(NixString::from_bytes(b"root".to_vec()))
+        .expect("permanent string allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, root)
+        .expect("string root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(gc_address(root), gc_address(child)))
+        .expect("remembered edge records");
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect_err("stale remembered edge is rejected"),
+        EvalHeapError::StaleCollectorPollRememberedEdge {
+            source_address: gc_address(root),
+            target_address: gc_address(child),
+        }
+    );
 }
 
 #[test]
