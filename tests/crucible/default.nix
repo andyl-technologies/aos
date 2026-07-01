@@ -1082,6 +1082,12 @@ in rec {
       attrPath = "checks.crucible.phase4.workloadModel";
       taskIds = ["T-WL-1"];
     };
+    workloadEntropyBoundary = import ./phase4-workload-entropy-boundary.nix {
+      inherit pkgs lib;
+      phase1GuestEntropyLaunch = phase1.guestEntropyLaunch;
+      attrPath = "checks.crucible.phase4.workloadEntropyBoundary";
+      taskIds = ["T-WL-2"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
