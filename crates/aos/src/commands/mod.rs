@@ -16,6 +16,7 @@ pub mod gc;
 pub mod graph;
 pub mod hub;
 pub mod lint;
+pub mod metadata;
 pub mod package;
 pub mod prefetch;
 pub mod profile;

@@ -30,38 +30,38 @@
   # NormalizeToken takes the password.
   testToken = "aoscombinedfleettoken1";
 
-  envFile = body: {
-    path = "/etc/rancher/k3s/k3s.env";
-    mode = 384;
-    overwrite = true;
-    contents.source = dataUrl body;
-  };
-
-  # /etc/rancher/k3s/config.yaml is k3s's default config-file
-  # location. Both `k3s server` and `k3s agent` read it
-  # automatically; the loader (`pkg/configfilearg`) merges its keys
-  # in as if they were CLI flags. We use it to pin `node-ip` and
-  # `flannel-iface` per machine without having to bake them into
-  # the role's ExecStart (the role is image-shared and doesn't
-  # know the IP or interface name).
+  # Per-node k3s config baked into the image /etc via extendModules (the
+  # new-path replacement for Ignition storage.files): /etc/rancher/k3s/k3s.env
+  # (K3S_TOKEN, +K3S_URL for the worker; mode 0600) and
+  # /etc/rancher/k3s/config.yaml (node-ip + flannel-iface, +extraConfig).
   #
-  # See `tests/fleet/k3s-control-plane-worker.nix` for the longer
-  # rationale on both pins; the same gateway-less fleet harness
-  # forces the same workaround here. Both `combined` (running
-  # `k3s server` without `--disable-agent`) and `worker` run the
-  # flannel daemon, so both need the iface pin.
-  configFile = {
+  # See `tests/fleet/k3s-control-plane-worker.nix` for the longer rationale on
+  # both pins; the same gateway-less fleet harness forces the same workaround.
+  # Both `combined` (running `k3s server` without `--disable-agent`) and
+  # `worker` run the flannel daemon, so both need the iface pin.
+  k3sEtcModule = {
+    token,
     ip,
+    url ? null,
     extraConfig ? "",
   }: {
-    path = "/etc/rancher/k3s/config.yaml";
-    mode = 420; # 0644
-    overwrite = true;
-    contents.source = dataUrl ''
-      node-ip: ${ip}
-      flannel-iface: eth0
-      ${extraConfig}
-    '';
+    environment.etc = {
+      "rancher/k3s/k3s.env" = {
+        mode = "0600";
+        text =
+          "K3S_TOKEN=${token}\n"
+          + (
+            if url == null
+            then ""
+            else "K3S_URL=${url}\n"
+          );
+      };
+      "rancher/k3s/config.yaml".text = ''
+        node-ip: ${ip}
+        flannel-iface: eth0
+        ${extraConfig}
+      '';
+    };
   };
 
   combinedSystem = mkSystem [
@@ -98,41 +98,36 @@ in {
   machines = {
     combined = {
       system = combinedSystem;
+      provisioning = "newpath";
       packages = ["k3s-combined"];
-      instanceMetadata.config.storage = {
-        files = [
-          (envFile ''
-            K3S_TOKEN=${testToken}
-          '')
-          # k3s starts both kube-controller-manager and its embedded cloud
-          # controller with PodCIDR allocation enabled. In the combined
-          # topology that can produce stale duplicate allocation attempts
-          # while the worker node annotations settle. Keep allocation owned by
-          # kube-controller in this smoke test; cloud-node initialization still
-          # runs.
-          (configFile {
-            ip = "192.168.50.10";
-            extraConfig = ''
-              kube-cloud-controller-arg:
-                - allocate-node-cidrs=false
-            '';
-          })
-        ];
-      };
+      # k3s starts both kube-controller-manager and its embedded cloud
+      # controller with PodCIDR allocation enabled. In the combined topology
+      # that can produce stale duplicate allocation attempts while the worker
+      # node annotations settle. Keep allocation owned by kube-controller in
+      # this smoke test; cloud-node initialization still runs.
+      extraModules = [
+        (k3sEtcModule {
+          token = testToken;
+          ip = "192.168.50.10";
+          extraConfig = ''
+            kube-cloud-controller-arg:
+              - allocate-node-cidrs=false
+          '';
+        })
+      ];
     };
 
     worker = {
       system = workerSystem;
+      provisioning = "newpath";
       packages = ["k3s-worker"];
-      instanceMetadata.config.storage = {
-        files = [
-          (envFile ''
-            K3S_TOKEN=${testToken}
-            K3S_URL=https://192.168.50.10:6443
-          '')
-          (configFile {ip = "192.168.50.11";})
-        ];
-      };
+      extraModules = [
+        (k3sEtcModule {
+          token = testToken;
+          ip = "192.168.50.11";
+          url = "https://192.168.50.10:6443";
+        })
+      ];
     };
   };
 

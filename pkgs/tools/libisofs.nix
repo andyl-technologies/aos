@@ -3,7 +3,7 @@
 ##! Companion to libburn; together with libisoburn provides the xorriso
 ##! CLI. AOS uses xorriso to produce the `aos-metadata` ISO consumed
 ##! by the VM test harness and bare-metal operators via IPMI virtual
-##! media (see lib/testing/vm.nix:mkMetadataIso).
+##! media.
 {
   mkDerivation,
   fetchurl,

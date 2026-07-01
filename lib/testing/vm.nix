@@ -469,9 +469,6 @@
       ];
     };
 
-  # Metadata ISO builder (shared with fleet.nix). See metadata.nix.
-  inherit (import ./metadata.nix {inherit pkgs lib;}) mkMetadataIso;
-
   # ---------------------------------------------------------------------------
   # Create a VM test derivation
   # ---------------------------------------------------------------------------
@@ -626,7 +623,6 @@
     system ? null,
     groupName ? name,
     checks ? [],
-    instanceMetadata ? null,
     # Headless mode (test script IS init):
     rootfsDeps ? null,
     # Shared:
@@ -635,8 +631,6 @@
     memory ? null,
     seedSELinuxDisabledConfig ? true,
   }:
-    assert (instanceMetadata != null -> system != null)
-    || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
       if rootfsDeps != null
       then
         mkHeadlessTest {
@@ -655,17 +649,6 @@
         systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
         systemKernel = system.config.system.build.kernel;
         systemInitrd = system.config.system.build.initrd;
-
-        systemMetadataDisk =
-          if instanceMetadata != null
-          then
-            mkMetadataIso {
-              inherit name;
-              ignitionConfig = instanceMetadata.config;
-            }
-          else null;
-
-        hasMetadata = instanceMetadata != null;
 
         # Compose Python check fragments into the test source, then
         # append the user's testScript if provided. Both halves are
@@ -705,10 +688,9 @@
               kernel = builtins.toString systemKernel.vmlinux;
               initrd = "${builtins.toString systemInitrd}/initrd.img";
               disk = "${builtins.toString systemDisk}/disk.img";
-              metadata =
-                if hasMetadata
-                then "${builtins.toString systemMetadataDisk}/metadata.iso"
-                else null;
+              # Single-VM tests bake all config into the system /etc; no metadata
+              # channel (RFC-0011 new path).
+              metadata = null;
               memory_mib = effectiveMemory;
               vcpu_count = 2;
             }

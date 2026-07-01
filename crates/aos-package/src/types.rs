@@ -68,6 +68,10 @@ pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
 /// Registry feature flag for RFC-0001 package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
+/// Registry feature flag for the RFC-0011 second `config` package output and
+/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
+pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -81,6 +85,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_BPF_LSM_POLICY_V1,
     FEATURE_ATTESTATION_V1,
+    FEATURE_CONFIG_MODULE_V1,
 ];
 
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
@@ -526,6 +531,9 @@ pub struct PackageMeta {
     /// Store artifact carrying rendered RFC-0001 unit files and manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0011 config-only module output and its declared interface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -551,14 +559,316 @@ pub use aos_registry_surface::manifest::{
     RequiredCapabilityMeta, SyscallProfile,
 };
 
+// RFC-0011 config schema types are pure manifest data; they live in the
+// wasm-clean `aos-registry-surface` crate alongside the rest of the package
+// schema (so the hub indexer and the Worker share them) and are re-exported
+// here so `aos_package::types::{ConfigModuleMeta, …}` paths are unchanged.
+pub use aos_registry_surface::manifest::{
+    ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
+};
+
+// ---------------------------------------------------------------------------
+// RFC-0011 registry inverted index (`index/provides.json`)
+// ---------------------------------------------------------------------------
+
+/// Registry inverted index schema tag.
+pub const PROVIDES_INDEX_SCHEMA: &str = "aos.provides-index/v1";
+
+/// `option-path → providers` and `capability-token → setters` inverted index.
+///
+/// The registry publishes one aggregated index, rebuilt on every publish, at
+/// the registry-repo path `index/provides.json`, served alongside
+/// `registry.toml`. It maps every option path a config module *declares* to the
+/// `package@version` providers that declare it, plus the data the resolver needs
+/// to gate provider selection on `module_abi` without a second fetch.
+///
+/// ```json
+/// {
+///   "schema": "aos.provides-index/v1",
+///   "options": {
+///     "firewall.allowedTCPPorts": [
+///       { "package": "firewall", "version": "1.4.0", "platform": "x86_64-linux",
+///         "root": "firewall", "owner": true,
+///         "module_abi_compat": { "min": 1, "max": 2 },
+///         "config_output": "/nix/store/<hash>-firewall-config" }
+///     ]
+///   },
+///   "capabilities": {
+///     "system.capabilities.dns-resolver": [
+///       { "package": "unbound", "version": "1.21.0", "platform": "x86_64-linux",
+///         "module_abi_compat": { "min": 1, "max": 2 } }
+///     ]
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidesIndex {
+    /// Always [`PROVIDES_INDEX_SCHEMA`].
+    pub schema: String,
+    /// Declared option path → the packages that declare it (their `provides`).
+    pub options: BTreeMap<String, Vec<IndexEntry>>,
+    /// Capability token → the packages that *set* it (write-provider index).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capabilities: BTreeMap<String, Vec<CapabilityProvider>>,
+}
+
+/// One provider of a declared option path in a [`ProvidesIndex`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexEntry {
+    /// Provider package name.
+    pub package: String,
+    /// Provider package version.
+    pub version: String,
+    /// Target platform (e.g. `x86_64-linux`).
+    pub platform: String,
+    /// Top-level root of the option path (`firewall.x` → `firewall`).
+    pub root: String,
+    /// Whether this package *owns* `root` (declarer) vs contributes to it.
+    pub owner: bool,
+    /// ABI band this provider is usable under; the resolver filters on it.
+    pub module_abi_compat: ModuleAbiCompat,
+    /// `config` output to fetch when this provider is selected.
+    pub config_output: String,
+}
+
+/// One setter of a capability token in a [`ProvidesIndex`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityProvider {
+    /// Provider package name.
+    pub package: String,
+    /// Provider package version.
+    pub version: String,
+    /// Target platform (e.g. `x86_64-linux`).
+    pub platform: String,
+    /// ABI band this provider is usable under; the resolver filters on it.
+    pub module_abi_compat: ModuleAbiCompat,
+}
+
+impl ProvidesIndex {
+    /// Returns an empty index carrying the current schema tag.
+    pub fn empty() -> Self {
+        Self {
+            schema: PROVIDES_INDEX_SCHEMA.to_string(),
+            options: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the providers for `option_path` that admit base-lib ABI `abi`.
+    ///
+    /// This is the resolver's primary lookup: on a missing-option signal it
+    /// resolves the path to the set of compatible providers, then applies
+    /// owned-root exclusivity and variant conflicts before fetching. Entries
+    /// whose [`ModuleAbiCompat`] band excludes `abi` are filtered out. The
+    /// returned slice preserves the index's stored `(package, version,
+    /// platform)` order.
+    pub fn providers_for(&self, option_path: &str, abi: u32) -> Vec<&IndexEntry> {
+        self.options
+            .get(option_path)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.module_abi_compat.admits(abi))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the providers of any option under shared root `root` that admit
+    /// base-lib ABI `abi`.
+    ///
+    /// This is the resolver's Case-B lookup (RFC-0011 build-spec §4): a read of
+    /// an *absent root* surfaces from stock Nix as a raw `attribute '<root>'
+    /// missing` error naming only the first path segment, so the driver cannot
+    /// resolve a full option path — it must ask which package owns the root.
+    /// Entries are deduplicated by `(package, version, platform)` and returned
+    /// in the index's stored order; ABI-incompatible entries are filtered out.
+    pub fn providers_for_root(&self, root: &str, abi: u32) -> Vec<&IndexEntry> {
+        let mut seen: std::collections::BTreeSet<(&str, &str, &str)> =
+            std::collections::BTreeSet::new();
+        let mut out: Vec<&IndexEntry> = Vec::new();
+        for entries in self.options.values() {
+            for entry in entries {
+                if entry.root != root || !entry.module_abi_compat.admits(abi) {
+                    continue;
+                }
+                let key = (
+                    entry.package.as_str(),
+                    entry.version.as_str(),
+                    entry.platform.as_str(),
+                );
+                if seen.insert(key) {
+                    out.push(entry);
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns whether any index entry declares an option under shared `root`,
+    /// regardless of ABI band.
+    ///
+    /// Used by the resolver to tell a genuinely unknown root (terminal
+    /// `NoProvider`) apart from a root that exists but whose every provider is
+    /// ABI-incompatible (terminal `AbiMismatch`).
+    pub fn declares_root(&self, root: &str) -> bool {
+        self.options
+            .values()
+            .any(|entries| entries.iter().any(|entry| entry.root == root))
+    }
+
+    /// Returns the setters of capability `token` that admit base-lib ABI `abi`.
+    pub fn capability_setters(&self, token: &str, abi: u32) -> Vec<&CapabilityProvider> {
+        self.capabilities
+            .get(token)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.module_abi_compat.admits(abi))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Insert every index entry contributed by one published `package@version`.
+    ///
+    /// For each path in `module.declares`, adds one [`IndexEntry`] (with `owner`
+    /// set when the path's root appears in `module.owns_roots`); for each token
+    /// in `module.provides_capabilities`, adds one [`CapabilityProvider`]. Lists
+    /// within each key are kept sorted by `(package, version, platform)` so the
+    /// serialized index is deterministic. Idempotent: re-inserting the same
+    /// `package@version@platform` replaces its entries rather than duplicating.
+    ///
+    /// Returns the number of option-path entries added.
+    pub fn insert_package(
+        &mut self,
+        package: &str,
+        version: &str,
+        platform: &str,
+        module: &ConfigModuleMeta,
+    ) -> usize {
+        let owned_roots: std::collections::BTreeSet<&str> =
+            module.owns_roots.iter().map(|r| r.root.as_str()).collect();
+        let mut added = 0;
+        for path in &module.declares {
+            let root = option_path_root(path).to_string();
+            let owner = owned_roots.contains(root.as_str());
+            let entry = IndexEntry {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+                root,
+                owner,
+                module_abi_compat: module.module_abi_compat,
+                config_output: module.config_output.store_path.clone(),
+            };
+            let bucket = self.options.entry(path.clone()).or_default();
+            insert_sorted_index_entry(bucket, entry);
+            added += 1;
+        }
+        for token in &module.provides_capabilities {
+            let provider = CapabilityProvider {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+                module_abi_compat: module.module_abi_compat,
+            };
+            let bucket = self.capabilities.entry(token.clone()).or_default();
+            insert_sorted_capability_provider(bucket, provider);
+        }
+        added
+    }
+}
+
+/// Returns the top-level root segment of a dotted option path.
+///
+/// `"firewall.allowedTCPPorts"` → `"firewall"`; a path with no `.` is its own
+/// root.
+pub fn option_path_root(path: &str) -> &str {
+    path.split('.').next().unwrap_or(path)
+}
+
+/// Insert `entry` into `bucket`, replacing any existing entry with the same
+/// `(package, version, platform)` identity and keeping the list sorted.
+fn insert_sorted_index_entry(bucket: &mut Vec<IndexEntry>, entry: IndexEntry) {
+    bucket.retain(|existing| {
+        (
+            existing.package.as_str(),
+            existing.version.as_str(),
+            existing.platform.as_str(),
+        ) != (
+            entry.package.as_str(),
+            entry.version.as_str(),
+            entry.platform.as_str(),
+        )
+    });
+    let pos = bucket
+        .binary_search_by(|existing| {
+            (
+                existing.package.as_str(),
+                existing.version.as_str(),
+                existing.platform.as_str(),
+            )
+                .cmp(&(
+                    entry.package.as_str(),
+                    entry.version.as_str(),
+                    entry.platform.as_str(),
+                ))
+        })
+        .unwrap_or_else(|pos| pos);
+    bucket.insert(pos, entry);
+}
+
+/// Insert `provider` into `bucket`, replacing any existing setter with the same
+/// `(package, version, platform)` identity and keeping the list sorted.
+fn insert_sorted_capability_provider(
+    bucket: &mut Vec<CapabilityProvider>,
+    provider: CapabilityProvider,
+) {
+    bucket.retain(|existing| {
+        (
+            existing.package.as_str(),
+            existing.version.as_str(),
+            existing.platform.as_str(),
+        ) != (
+            provider.package.as_str(),
+            provider.version.as_str(),
+            provider.platform.as_str(),
+        )
+    });
+    let pos = bucket
+        .binary_search_by(|existing| {
+            (
+                existing.package.as_str(),
+                existing.version.as_str(),
+                existing.platform.as_str(),
+            )
+                .cmp(&(
+                    provider.package.as_str(),
+                    provider.version.as_str(),
+                    provider.platform.as_str(),
+                ))
+        })
+        .unwrap_or_else(|pos| pos);
+    bucket.insert(pos, provider);
+}
+
 /// Returns whether package metadata must be backed by DSSE provenance.
+///
+/// RFC-0001 exposure/permission/BPF-LSM metadata requires provenance via
+/// [`rfc0001_metadata_requires_provenance`]; in addition, an RFC-0011
+/// `config_module` block is privileged metadata that independently forces
+/// provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
     rfc0001_metadata_requires_provenance(
         meta.expose.as_ref(),
         meta.expose_artifact.as_ref(),
         &meta.permissions,
         meta.bpf_lsm.as_ref(),
-    )
+    ) || meta.config_module.is_some()
 }
 
 /// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
@@ -658,9 +968,19 @@ pub fn validate_supported_package_meta_with(
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
     }
+    if let Some(config_module) = &meta.config_module {
+        require_feature(meta, FEATURE_CONFIG_MODULE_V1)?;
+        validate_config_module_meta(config_module)
+            .with_context(|| format!("invalid config-module metadata for '{}'", meta.name))?;
+    }
     if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
+        let reason = if meta.config_module.is_some() {
+            "uses config-module metadata"
+        } else {
+            "uses RFC-0001 exposed or permission metadata"
+        };
         bail!(
-            "package '{}' uses RFC-0001 exposed or permission metadata without attestation provenance",
+            "package '{}' {reason} without attestation provenance",
             meta.name
         );
     }
@@ -934,6 +1254,186 @@ pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()
         );
     }
     Ok(())
+}
+
+/// Validate the second `config` package output metadata (RFC-0011).
+///
+/// Mirrors [`validate_expose_artifact_meta`]: the store path must be absolute
+/// and Nix-style, and the NAR hash must be a recognized `sha256` digest. In
+/// addition, every reference entry must be a bare store-path hash, and no
+/// reference may name a `.drv` — the config output is pure data and must never
+/// pull a derivation into its closure (publish lint, architecture.md §Stage-1).
+///
+/// # Errors
+///
+/// Returns an error when the store path is not an absolute Nix-style store path,
+/// the NAR hash is missing or malformed, the NAR size is zero, or a reference is
+/// not a bare store-path hash or names a derivation.
+pub fn validate_config_output_meta(output: &ConfigOutputMeta) -> Result<()> {
+    validate_absolute_path(&output.store_path, "config output store path")?;
+    if store_path_hash_component(&output.store_path).is_none() {
+        bail!(
+            "config output store path is not a Nix-style store path: {}",
+            output.store_path
+        );
+    }
+    if !output.nar_hash.starts_with("sha256:") && !output.nar_hash.starts_with("sha256-") {
+        bail!("config output '{}' has invalid NAR hash", output.store_path);
+    }
+    if output.nar_size == 0 {
+        bail!(
+            "config output '{}' must record a non-zero NAR size",
+            output.store_path
+        );
+    }
+    for reference in &output.references {
+        if reference.contains(".drv") {
+            bail!(
+                "config output '{}' must not reference a derivation: {reference}",
+                output.store_path
+            );
+        }
+        if reference.contains('/')
+            || reference.len() < 2
+            || !reference.chars().all(|ch| ch.is_ascii_alphanumeric())
+        {
+            bail!(
+                "config output '{}' reference is not a bare store-path hash: {reference}",
+                output.store_path
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate RFC-0011 config-module metadata.
+///
+/// Checks the embedded [`ConfigOutputMeta`], the inclusive ABI band
+/// (`min <= max`), the option paths, owned roots, and contributions for
+/// well-formedness, and the capability tokens declared by the module.
+///
+/// # Errors
+///
+/// Returns an error when the config output is malformed, the ABI band is
+/// inverted, an option path / root / capability token is empty or malformed, a
+/// declared path's root is not owned-or-contributed, or a contribution targets a
+/// root the module also owns.
+pub fn validate_config_module_meta(module: &ConfigModuleMeta) -> Result<()> {
+    validate_config_output_meta(&module.config_output)?;
+
+    if module.module_abi_compat.min > module.module_abi_compat.max {
+        bail!(
+            "config module module_abi_compat range is inverted: min {} > max {}",
+            module.module_abi_compat.min,
+            module.module_abi_compat.max
+        );
+    }
+
+    let mut declared = std::collections::BTreeSet::new();
+    for path in &module.declares {
+        validate_option_path(path)?;
+        if !declared.insert(path) {
+            bail!("config module declares option path '{path}' more than once");
+        }
+    }
+
+    let mut owned = std::collections::BTreeSet::new();
+    for owned_root in &module.owns_roots {
+        validate_option_root("owned root", &owned_root.root)?;
+        if !owned.insert(owned_root.root.as_str()) {
+            bail!(
+                "config module owns root '{}' more than once",
+                owned_root.root
+            );
+        }
+        let mut contributable = std::collections::BTreeSet::new();
+        for path in &owned_root.contributable {
+            validate_option_subpath(path)?;
+            if !contributable.insert(path) {
+                bail!(
+                    "owned root '{}' lists contributable sub-path '{path}' more than once",
+                    owned_root.root
+                );
+            }
+        }
+    }
+
+    let mut contributed = std::collections::BTreeSet::new();
+    for contribution in &module.contributes {
+        validate_option_root("contribution root", &contribution.root)?;
+        if owned.contains(contribution.root.as_str()) {
+            bail!(
+                "config module both owns and contributes to root '{}'",
+                contribution.root
+            );
+        }
+        if !contributed.insert(contribution.root.as_str()) {
+            bail!(
+                "config module contributes to root '{}' more than once",
+                contribution.root
+            );
+        }
+        if contribution.paths.is_empty() {
+            bail!(
+                "config module contribution to root '{}' lists no paths",
+                contribution.root
+            );
+        }
+        for path in &contribution.paths {
+            validate_option_subpath(path)?;
+        }
+    }
+
+    let mut capabilities = std::collections::BTreeSet::new();
+    for token in &module.provides_capabilities {
+        validate_capability_token(token)?;
+        if !capabilities.insert(token) {
+            bail!("config module sets capability '{token}' more than once");
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a dotted option path used as an inverted-index key.
+fn validate_option_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        bail!("option path must not be empty");
+    }
+    if path.starts_with('.') || path.ends_with('.') || path.contains("..") {
+        bail!("invalid option path '{path}': empty path segment");
+    }
+    if !path
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid option path '{path}': use ASCII letters, digits, '.', '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate a single option-path root segment (no `.`).
+fn validate_option_root(kind: &str, root: &str) -> Result<()> {
+    if root.is_empty() || root.contains('.') {
+        bail!("invalid {kind} '{root}': must be a single option-path segment");
+    }
+    if !root
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        bail!("invalid {kind} '{root}': use ASCII letters, digits, '_', '-'");
+    }
+    Ok(())
+}
+
+/// Validate an option sub-path relative to a shared root.
+fn validate_option_subpath(path: &str) -> Result<()> {
+    validate_option_path(path)
+}
+
+/// Validate a capability token (a dotted option path).
+fn validate_capability_token(token: &str) -> Result<()> {
+    validate_option_path(token)
 }
 
 /// Validate signed BPF-LSM policy artifact metadata.
@@ -1611,6 +2111,9 @@ pub struct ApmMeta {
     /// Rendered RFC-0001 expose artifact captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0011 config-only module metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module: Option<ConfigModuleMeta>,
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
@@ -2443,6 +2946,146 @@ pub struct SystemGeneration {
     /// upgrades and rollbacks (`None` when the toplevel ships no kernel).
     #[serde(default)]
     pub kernel_path: Option<String>,
+    /// RFC-0011: the [`ImageGeneration::number`] this config-gen was evaluated
+    /// against, establishing the parent edge.
+    ///
+    /// `None` for legacy single-axis generations created before the two-axis
+    /// split; such generations re-activate directly (the rollback pin treats a
+    /// missing pin as "same ABI", preserving the pre-RFC-0011 flow). Populated
+    /// for generations produced by the on-host config evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen_parent: Option<u32>,
+    /// RFC-0011: the `module_abi` in effect at eval time (== the parent
+    /// image-gen's `module_abi`).
+    ///
+    /// The rollback pin ([`SystemGeneration::reactivation_plan`]) compares this
+    /// against the running image's ABI: equal ⇒ direct re-activation,
+    /// different ⇒ cross-ABI re-eval. `None` for legacy generations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_abi_pinned: Option<u32>,
+    /// RFC-0011: content-address of the canonicalized manifest JSON
+    /// (`gen-N/manifest.json`) that identifies the config-gen's *output*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
+    /// RFC-0011: store path of the config-module **source** closure the
+    /// evaluator read (the eval *input*, distinct from package runtime
+    /// outputs). GC-rooted by `gen-N/cfgsrc/<hash>`; required for cross-ABI
+    /// re-eval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module_closure: Option<String>,
+    /// RFC-0011: store path / content hash of the exact `host.nix` this
+    /// config-gen was evaluated from (content-pin, never a mutable git ref).
+    /// GC-rooted by the same `gen-N/cfgsrc/<hash>` root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_ref: Option<String>,
+    /// RFC-0011: optional non-authoritative provenance — the git commit
+    /// `host.nix` came from, recorded for operator traceability only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_commit: Option<String>,
+    /// RFC-0011: content-address of the resolved instance facts (`facts.json`)
+    /// the eval consumed. Part of the reproducible input set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_hash: Option<String>,
+}
+
+impl SystemGeneration {
+    /// Decides how this config-generation may be re-activated under a running
+    /// image whose shared-option ABI is `running_abi` (RFC-0011 build-spec §6).
+    ///
+    /// A config-gen is pinned to the `module_abi` it was evaluated against
+    /// ([`Self::module_abi_pinned`]); the manifest is the *output* of evaluating
+    /// config modules against a specific base-lib option schema, so replaying it
+    /// against a different schema is undefined. The branch is therefore:
+    ///
+    /// - **Same ABI (or a legacy generation with no recorded pin)** ⇒
+    ///   [`ReactivationPlan::DirectReactivate`]: a pure pointer switch over the
+    ///   retained `cfg/` outputs. A `None` pin maps here so the pre-RFC-0011
+    ///   single-axis rollback flow is preserved byte-for-byte.
+    /// - **Different ABI** ⇒ [`ReactivationPlan::CrossAbiReEval`] carrying the
+    ///   retained inputs (`config_module_closure`, `host_nix_ref`, `facts_hash`)
+    ///   the rolled-back image's evaluator must replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only in the cross-ABI case when a retained input
+    /// required for re-eval (`config_module_closure`, `host_nix_ref`, or
+    /// `facts_hash`) is missing from the record — a fail-closed signal that the
+    /// generation cannot be safely recomputed (its `cfgsrc/` inputs were never
+    /// recorded or were lost).
+    pub fn reactivation_plan(&self, running_abi: u32) -> Result<ReactivationPlan> {
+        match self.module_abi_pinned {
+            // Legacy generation or exact ABI match: free re-activation.
+            None => Ok(ReactivationPlan::DirectReactivate),
+            Some(pinned) if pinned == running_abi => Ok(ReactivationPlan::DirectReactivate),
+            Some(pinned) => {
+                let inputs = CrossAbiReEvalInputs {
+                    config_module_closure: self.config_module_closure.clone().with_context(|| {
+                        format!(
+                            "config-gen {} pins module_abi {pinned} but the running image is \
+                             {running_abi}; cross-ABI re-eval needs config_module_closure, \
+                             which is not recorded for this generation",
+                            self.number
+                        )
+                    })?,
+                    host_nix_ref: self.host_nix_ref.clone().with_context(|| {
+                        format!(
+                            "config-gen {} requires cross-ABI re-eval but records no \
+                             host_nix_ref",
+                            self.number
+                        )
+                    })?,
+                    facts_hash: self.facts_hash.clone().with_context(|| {
+                        format!(
+                            "config-gen {} requires cross-ABI re-eval but records no facts_hash",
+                            self.number
+                        )
+                    })?,
+                    from_module_abi: pinned,
+                    to_module_abi: running_abi,
+                };
+                Ok(ReactivationPlan::CrossAbiReEval(inputs))
+            }
+        }
+    }
+}
+
+/// The action required to re-activate a config-generation under a (possibly
+/// changed) running image's `module_abi` (RFC-0011 build-spec §6).
+///
+/// Produced by [`SystemGeneration::reactivation_plan`] and consumed by the
+/// rollback path. The two arms are the two independent re-bind outcomes the
+/// generations model permits: a free pointer switch within one ABI, or a
+/// deterministic re-evaluation across an ABI boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReactivationPlan {
+    /// Same ABI: re-activate directly with a pure `current → gen-N` pointer
+    /// switch over the retained `cfg/` outputs. No eval, no reboot.
+    DirectReactivate,
+    /// Different ABI: direct activation is refused; the config-gen must be
+    /// re-evaluated from its retained inputs against the rolled-back image's
+    /// evaluator before it can be committed.
+    CrossAbiReEval(CrossAbiReEvalInputs),
+}
+
+/// The retained eval inputs a cross-ABI re-activation must replay
+/// (RFC-0011 build-spec §6, generations.md "Different-ABI").
+///
+/// All three store references are kept alive on `/var` by the per-generation
+/// `gen-N/cfgsrc/<hash>` GC root, so the re-eval is satisfiable without any
+/// network round-trip; because eval is pure and content-addressed, the
+/// recomputation is deterministic and usually cache-hits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrossAbiReEvalInputs {
+    /// Store path of the config-module source closure the evaluator must read.
+    pub config_module_closure: String,
+    /// Store path of the exact `host.nix` the config-gen was evaluated from.
+    pub host_nix_ref: String,
+    /// Content-address of the resolved instance facts (`facts.json`).
+    pub facts_hash: String,
+    /// The ABI the config-gen was originally pinned to.
+    pub from_module_abi: u32,
+    /// The running image ABI the config-gen must be re-evaluated against.
+    pub to_module_abi: u32,
 }
 
 /// Persistent state for system generations.
@@ -2455,6 +3098,211 @@ pub struct SystemGenerationState {
     /// All recorded generations, in creation order.
     #[serde(default)]
     pub generations: Vec<SystemGeneration>,
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0011 two-axis generations: image-gen (substrate) + config-gen (overlay)
+// ---------------------------------------------------------------------------
+//
+// RFC-0011 splits the bundled [`SystemGeneration`] into two records on two
+// axes (a tree: each [`ConfigGeneration`] is a child of exactly one
+// [`ImageGeneration`]). These types are introduced *alongside* the existing
+// `SystemGeneration`/`SystemGenerationState`, which remain the on-disk
+// authority for `/var/lib/profiles/system/state.json` (so legacy `state.json`
+// keeps parsing). [`ConfigGeneration`] is the forward-looking canonical view
+// over a `SystemGeneration` record; [`ImageGeneration`] is the genuinely new
+// image axis persisted at `/var/lib/profiles/image/state.json`.
+
+/// A/B slot discriminant for an image-generation (RFC-0011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageSlot {
+    /// The `A` partition slot.
+    A,
+    /// The `B` partition slot.
+    B,
+}
+
+/// One measured, signed image-generation: kernel + initrd + base lib +
+/// evaluator + render-core, delivered as an A/B UKI and tracked in the TPM
+/// PCR-11 policy (RFC-0011 build-spec §1.1).
+///
+/// It is **not** the authority of record — the ESP UKI set + the running
+/// image's `/etc/os-release` are. The `/var` record is a userspace *index*
+/// over what is installed in the ESP slots, used by APM to reason about A/B
+/// state and retention. Persisted in `/var/lib/profiles/image/state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGeneration {
+    /// Image-generation number (names the `image-gen-N/` directory).
+    pub number: u32,
+    /// A/B slot this UKI occupies.
+    pub slot: ImageSlot,
+    /// ESP-relative path of this generation's UKI, e.g.
+    /// `EFI/Linux/aos-2026.06.1+3.efi` (the `+N` is the sd-boot boot-counting
+    /// tries-suffix; see build-spec §5.2).
+    pub uki_path: String,
+    /// Store path of the sysroot toplevel this image was built from.
+    pub toplevel: String,
+    /// Sysroot package name (provenance, migrated from `SystemGeneration`).
+    pub package_name: String,
+    /// Sysroot package version.
+    pub version: String,
+    /// Source registry the sysroot package was installed from.
+    pub registry: String,
+    /// Resolved kernel store path (kernel-change detection across A/B).
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+    /// Store path of the base-lib + evaluator closure carried *inside* this
+    /// image. The ABI artifact and GC-root target for
+    /// `image-gen-N/baselib/<module_abi>`.
+    pub evaluator_ref: String,
+    /// The monotonic shared-option-schema ABI this image's base lib exports.
+    /// Mirrors `AOS_MODULE_ABI` in this image's `/etc/os-release`.
+    pub module_abi: u32,
+    /// SHA-256 of the base-lib closure, mirrored as `AOS_BASELIB_DIGEST` in
+    /// `/etc/os-release` and measured into PCR-11 via the `.osrel` section.
+    pub baselib_digest: String,
+    /// dm-verity Merkle root over the erofs root that carries the base lib
+    /// (F1), baked into the UKI `.cmdline` as `roothash=<hex>`. `None` for
+    /// unsigned/VM (ext4) images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_verity_roothash: Option<String>,
+    /// ukify-predicted PCR-11 for this UKI (RFC-0006 phase 4). `None` when
+    /// `systemd-measure` was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl ImageGeneration {
+    /// Returns whether a config-gen pinned to `pinned_abi` may re-activate
+    /// directly against this image (same-ABI), without re-eval.
+    ///
+    /// Same-ABI image upgrades (kernel/package change, no option-schema change)
+    /// satisfy the pin, so a config-gen freely re-activates across them.
+    pub fn admits_pin(&self, pinned_abi: u32) -> bool {
+        self.module_abi == pinned_abi
+    }
+}
+
+/// Persistent state for the image-generation axis
+/// (`/var/lib/profiles/image/state.json`, RFC-0011 build-spec §1.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageGenerationState {
+    /// The image-gen the live kernel booted (cross-checked against
+    /// `/etc/os-release`, never trusted from the network).
+    pub running: u32,
+    /// The slot `bootctl set-default` currently points at — the *durable*
+    /// next-boot selection (build-spec §5.2). Distinct from `running` during a
+    /// staged-but-not-yet-rebooted upgrade or a pending rollback.
+    pub default: u32,
+    /// A staged image-gen whose UKI is in the ESP but has not been booted yet;
+    /// cleared on its first successful boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<u32>,
+    /// All recorded image-generations, in creation order.
+    #[serde(default)]
+    pub generations: Vec<ImageGeneration>,
+}
+
+impl ImageGenerationState {
+    /// Looks up the currently-running image-generation record, if recorded.
+    pub fn running_generation(&self) -> Option<&ImageGeneration> {
+        self.generations.iter().find(|g| g.number == self.running)
+    }
+}
+
+/// One config-generation: the materialized `/etc` overlay produced by
+/// evaluating the installed set's config modules + `host.nix` against a
+/// specific image-gen's base lib (RFC-0011 build-spec §1.2).
+///
+/// This is the forward-looking canonical view; the on-disk authority is the
+/// (additively extended) [`SystemGeneration`] record. Use
+/// [`ConfigGeneration::from_system_generation`] to project a persisted
+/// `SystemGeneration` into this richer shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigGeneration {
+    /// Config-generation number (names the `gen-N/` directory; the pointer
+    /// `activate.sh.in` commits).
+    pub number: u32,
+    /// The [`ImageGeneration::number`] this config-gen was evaluated against.
+    /// `None` for a legacy single-axis generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gen_parent: Option<u32>,
+    /// The `module_abi` in effect at eval time. `None` for a legacy generation
+    /// (treated as compatible with any running ABI for direct re-activation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_abi_pinned: Option<u32>,
+    /// Content-address of the canonicalized manifest JSON (the *output*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_hash: Option<String>,
+    /// Store path of the config-module source closure (the eval *input*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_module_closure: Option<String>,
+    /// Store path / content hash of the exact `host.nix` evaluated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_ref: Option<String>,
+    /// Non-authoritative git commit `host.nix` came from (operator traceability).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nix_commit: Option<String>,
+    /// Content-address of the resolved instance facts (`facts.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_hash: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl ConfigGeneration {
+    /// Projects a persisted [`SystemGeneration`] into the canonical config-gen
+    /// view, copying the RFC-0011 axis fields verbatim.
+    ///
+    /// This is the one-shot migration seam: a legacy `state.json` whose
+    /// generations carry none of the RFC-0011 fields yields config-gens with
+    /// `None` axis metadata, which the rollback pin treats as same-ABI
+    /// (preserving the pre-RFC-0011 single-axis flow).
+    pub fn from_system_generation(record: &SystemGeneration) -> Self {
+        Self {
+            number: record.number,
+            image_gen_parent: record.image_gen_parent,
+            module_abi_pinned: record.module_abi_pinned,
+            manifest_hash: record.manifest_hash.clone(),
+            config_module_closure: record.config_module_closure.clone(),
+            host_nix_ref: record.host_nix_ref.clone(),
+            host_nix_commit: record.host_nix_commit.clone(),
+            facts_hash: record.facts_hash.clone(),
+            created_at: record.created_at.clone(),
+        }
+    }
+}
+
+/// Persistent state for the config-generation axis, the forward-looking
+/// canonical view over [`SystemGenerationState`] (RFC-0011 build-spec §1.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigGenerationState {
+    /// Number of the currently active generation (`0` = none yet).
+    pub current: u32,
+    /// Number the next created generation will receive.
+    pub next: u32,
+    /// All recorded config-generations, in creation order.
+    #[serde(default)]
+    pub generations: Vec<ConfigGeneration>,
+}
+
+impl ConfigGenerationState {
+    /// Migrates a legacy [`SystemGenerationState`] into the two-axis config-gen
+    /// view, preserving the `current`/`next` counters and projecting every
+    /// generation through [`ConfigGeneration::from_system_generation`].
+    pub fn from_legacy(state: &SystemGenerationState) -> Self {
+        Self {
+            current: state.current,
+            next: state.next,
+            generations: state
+                .generations
+                .iter()
+                .map(ConfigGeneration::from_system_generation)
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3180,6 +4028,7 @@ last_update = "2026-02-13T10:30:00Z"
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -3272,6 +4121,7 @@ last_update = "2026-02-13T10:30:00Z"
                 nar_hash: "sha256:artifact".into(),
                 nar_size: 128,
             }),
+            config_module: None,
             permissions: PermissionsMeta {
                 capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
                 network: Some(NetworkPermission::PrivateOutbound),
@@ -3369,6 +4219,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
@@ -3406,6 +4257,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
@@ -3454,6 +4306,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3503,6 +4356,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3543,6 +4397,7 @@ last_update = "2026-02-13T10:30:00Z"
             ],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
@@ -3583,6 +4438,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta {
                 network: Some(NetworkPermission::Host),
                 confinement: Some(ConfinementMeta {
@@ -3655,6 +4511,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3716,6 +4573,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3879,6 +4737,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3932,6 +4791,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -3968,6 +4828,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: Some(BpfLsmPolicyMeta {
                 policies: vec![BpfLsmPolicyArtifactMeta {
@@ -4041,6 +4902,7 @@ last_update = "2026-02-13T10:30:00Z"
             requires_features: requires_features.into_iter().map(str::to_string).collect(),
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -4286,6 +5148,7 @@ last_update = "2026-02-13T10:30:00Z"
                 uses: Vec::new(),
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4340,6 +5203,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }],
             }),
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: test_attestation(),
@@ -4641,5 +5505,372 @@ pin = "v2026.02"
         assert_eq!(ProfileScope::System.name(), "system");
         assert_eq!(ProfileScope::User.other(), ProfileScope::System);
         assert_eq!(ProfileScope::System.other(), ProfileScope::User);
+    }
+
+    // ----------------------------------------------------------------------
+    // RFC-0011 config-module metadata + inverted index
+    // ----------------------------------------------------------------------
+
+    fn sample_config_module() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
+                    .to_string(),
+                nar_hash: "sha256:deadbeef".to_string(),
+                nar_size: 4096,
+                references: vec!["0000000000000000000000000000000b".to_string()],
+            },
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec![
+                "firewall.allowedTCPPorts".to_string(),
+                "firewall.enable".to_string(),
+            ],
+            owns_roots: vec![OwnedRoot {
+                root: "firewall".to_string(),
+                interface_abi: 1,
+                contributable: vec!["allowedTCPPorts".to_string()],
+            }],
+            contributes: vec![RootContribution {
+                root: "nginx".to_string(),
+                paths: vec!["virtualHosts".to_string()],
+            }],
+            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
+        }
+    }
+
+    #[test]
+    fn config_module_meta_toml_round_trip() {
+        let module = sample_config_module();
+        let serialized = toml::to_string(&module).expect("serialize");
+        let parsed: ConfigModuleMeta = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(parsed, module);
+    }
+
+    #[test]
+    fn config_module_meta_inside_package_round_trips_and_gates() {
+        // A package carrying config_module must declare the feature and have
+        // attestation provenance, else validation fails.
+        let toml_str = r#"
+name = "firewall"
+version = "1.4.0"
+description = "host firewall"
+license = "MIT"
+maintainer = "aos"
+platform = "x86_64-linux"
+store_path = "/nix/store/0000000000000000000000000000000c-firewall-1.4.0"
+nar_hash = "sha256:aa"
+nar_size = 10
+references = []
+source_drv = "/nix/store/0000000000000000000000000000000d-firewall.drv"
+source_nar_hash = "sha256:bb"
+closure_size = 10
+requires-features = ["config-module-v1", "attestation-v1"]
+
+[config_module.config_output]
+store_path = "/nix/store/0000000000000000000000000000000a-firewall-config"
+nar_hash = "sha256:cc"
+nar_size = 2048
+
+[config_module.module_abi_compat]
+min = 1
+max = 2
+
+[config_module]
+declares = ["firewall.allowedTCPPorts"]
+provides_capabilities = []
+
+[[config_module.owns_roots]]
+root = "firewall"
+interface_abi = 1
+contributable = ["allowedTCPPorts"]
+
+[attestation]
+provenance = "provenance/firewall.jsonl"
+"#;
+        let meta: PackageMeta = toml::from_str(toml_str).expect("parse package meta");
+        assert!(meta.config_module.is_some());
+        validate_supported_package_meta(&meta).expect("valid config-module package");
+    }
+
+    #[test]
+    fn config_module_without_feature_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.config_module = Some(sample_config_module());
+        // Missing requires-features ⇒ feature gate refuses.
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(err.to_string().contains("config-module-v1"), "{err}");
+    }
+
+    #[test]
+    fn config_module_without_provenance_is_rejected() {
+        let mut meta = sample_package_meta();
+        meta.requires_features = vec![FEATURE_CONFIG_MODULE_V1.to_string()];
+        meta.config_module = Some(sample_config_module());
+        let err = validate_supported_package_meta(&meta).expect_err("must refuse");
+        assert!(
+            err.to_string().contains("without attestation provenance"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_output_rejects_drv_reference() {
+        let mut output = sample_config_module().config_output;
+        output.references = vec!["abc.drv".to_string()];
+        let err = validate_config_output_meta(&output).expect_err("must refuse .drv ref");
+        assert!(
+            err.to_string().contains("must not reference a derivation"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn config_module_rejects_inverted_abi_band() {
+        let mut module = sample_config_module();
+        module.module_abi_compat = ModuleAbiCompat { min: 3, max: 1 };
+        let err = validate_config_module_meta(&module).expect_err("inverted band");
+        assert!(err.to_string().contains("inverted"), "{err}");
+    }
+
+    #[test]
+    fn provides_index_insert_and_lookup() {
+        let module = sample_config_module();
+        let mut index = ProvidesIndex::empty();
+        let added = index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        assert_eq!(added, 2);
+
+        // Owner flag derived from owns_roots.
+        let owners = index.providers_for("firewall.allowedTCPPorts", 1);
+        assert_eq!(owners.len(), 1);
+        assert!(owners[0].owner);
+        assert_eq!(owners[0].root, "firewall");
+
+        // ABI filtering: image abi 3 is outside [1,2].
+        assert!(
+            index
+                .providers_for("firewall.allowedTCPPorts", 3)
+                .is_empty()
+        );
+
+        // Capability index populated.
+        let setters = index.capability_setters("system.capabilities.dns-resolver", 2);
+        assert_eq!(setters.len(), 1);
+        assert_eq!(setters[0].package, "firewall");
+
+        // Idempotent re-insert does not duplicate.
+        index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        assert_eq!(index.providers_for("firewall.allowedTCPPorts", 1).len(), 1);
+    }
+
+    #[test]
+    fn provides_index_json_round_trip() {
+        let module = sample_config_module();
+        let mut index = ProvidesIndex::empty();
+        index.insert_package("firewall", "1.4.0", "x86_64-linux", &module);
+        let json = serde_json::to_string(&index).expect("serialize");
+        let parsed: ProvidesIndex = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, index);
+        assert_eq!(parsed.schema, PROVIDES_INDEX_SCHEMA);
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0011 two-axis generation records
+    // -----------------------------------------------------------------------
+
+    /// A legacy single-axis `state.json` (no RFC-0011 fields) still parses, and
+    /// every config-gen field defaults to `None` (backward compatibility).
+    #[test]
+    fn legacy_system_generation_state_parses() {
+        let legacy = r#"{
+            "current": 1,
+            "next": 2,
+            "generations": [
+                {
+                    "number": 1,
+                    "toplevel": "/nix/store/abc-server",
+                    "version": "1.0",
+                    "package_name": "server",
+                    "registry": "core",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "kernel_path": null
+                }
+            ]
+        }"#;
+        let state: SystemGenerationState = serde_json::from_str(legacy).expect("parse legacy");
+        assert_eq!(state.current, 1);
+        let g = &state.generations[0];
+        assert!(g.module_abi_pinned.is_none());
+        assert!(g.image_gen_parent.is_none());
+        assert!(g.config_module_closure.is_none());
+        // A legacy generation re-activates directly under any running ABI.
+        assert_eq!(
+            g.reactivation_plan(5).unwrap(),
+            ReactivationPlan::DirectReactivate
+        );
+        // Re-serializing a legacy generation must NOT inject any RFC-0011 axis
+        // keys (skip_serializing_if = Option::is_none) — otherwise upgrading a
+        // node would churn its on-disk state.json for no reason.
+        let reser = serde_json::to_value(g).expect("serialize legacy gen");
+        for k in [
+            "image_gen_parent",
+            "module_abi_pinned",
+            "manifest_hash",
+            "config_module_closure",
+            "host_nix_ref",
+            "host_nix_commit",
+            "facts_hash",
+        ] {
+            assert!(
+                reser.get(k).is_none(),
+                "legacy gen must not emit RFC-0011 key '{k}'"
+            );
+        }
+    }
+
+    /// A config-gen carrying the RFC-0011 axis fields round-trips through serde
+    /// and the new fields are emitted (and re-read) verbatim.
+    #[test]
+    fn config_gen_axis_fields_round_trip() {
+        let g = SystemGeneration {
+            number: 7,
+            toplevel: "/nix/store/top-server".into(),
+            version: "2026.06".into(),
+            package_name: "server".into(),
+            registry: "core".into(),
+            created_at: "2026-06-01T00:00:00Z".into(),
+            kernel_path: None,
+            image_gen_parent: Some(2),
+            module_abi_pinned: Some(2),
+            manifest_hash: Some("sha256:beef".into()),
+            config_module_closure: Some("/nix/store/src-cfg".into()),
+            host_nix_ref: Some("/nix/store/hn-host.nix".into()),
+            host_nix_commit: Some("deadbeef".into()),
+            facts_hash: Some("sha256:facts".into()),
+        };
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains("module_abi_pinned"));
+        let parsed: SystemGeneration = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.module_abi_pinned, Some(2));
+        assert_eq!(parsed.host_nix_ref.as_deref(), Some("/nix/store/hn-host.nix"));
+
+        // Project into the canonical config-gen view.
+        let cfg = ConfigGeneration::from_system_generation(&parsed);
+        assert_eq!(cfg.number, 7);
+        assert_eq!(cfg.image_gen_parent, Some(2));
+        assert_eq!(cfg.facts_hash.as_deref(), Some("sha256:facts"));
+    }
+
+    /// The image-gen axis state round-trips, including the A/B slot, the durable
+    /// `default`/`pending` boot selection, and the verity/ABI fields.
+    #[test]
+    fn image_generation_state_round_trip() {
+        let state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: Some(2),
+            generations: vec![
+                ImageGeneration {
+                    number: 1,
+                    slot: ImageSlot::A,
+                    uki_path: "EFI/Linux/aos-2026.06.1+3.efi".into(),
+                    toplevel: "/nix/store/top1-server".into(),
+                    package_name: "server".into(),
+                    version: "2026.06.1".into(),
+                    registry: "core".into(),
+                    kernel_path: Some("/nix/store/k1-linux".into()),
+                    evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
+                    module_abi: 1,
+                    baselib_digest: "sha256:aa".into(),
+                    root_verity_roothash: Some("deadbeef".into()),
+                    expected_pcr11: None,
+                    created_at: "2026-06-01T00:00:00Z".into(),
+                },
+                ImageGeneration {
+                    number: 2,
+                    slot: ImageSlot::B,
+                    uki_path: "EFI/Linux/aos-2026.06.2+3.efi".into(),
+                    toplevel: "/nix/store/top2-server".into(),
+                    package_name: "server".into(),
+                    version: "2026.06.2".into(),
+                    registry: "core".into(),
+                    kernel_path: Some("/nix/store/k2-linux".into()),
+                    evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
+                    module_abi: 2,
+                    baselib_digest: "sha256:bb".into(),
+                    root_verity_roothash: None,
+                    expected_pcr11: None,
+                    created_at: "2026-06-02T00:00:00Z".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: ImageGenerationState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.running, 1);
+        assert_eq!(parsed.pending, Some(2));
+        let running = parsed.running_generation().unwrap();
+        assert_eq!(running.module_abi, 1);
+        assert!(running.admits_pin(1));
+        assert!(!running.admits_pin(2));
+    }
+
+    /// `ConfigGenerationState::from_legacy` preserves counters and projects
+    /// every generation into the canonical config-gen view.
+    #[test]
+    fn config_generation_state_from_legacy() {
+        let legacy = SystemGenerationState {
+            current: 2,
+            next: 3,
+            generations: vec![SystemGeneration {
+                number: 2,
+                toplevel: "/nix/store/top-server".into(),
+                version: "1.0".into(),
+                package_name: "server".into(),
+                registry: "core".into(),
+                created_at: "2026-06-01T00:00:00Z".into(),
+                kernel_path: None,
+                image_gen_parent: None,
+                module_abi_pinned: None,
+                manifest_hash: None,
+                config_module_closure: None,
+                host_nix_ref: None,
+                host_nix_commit: None,
+                facts_hash: None,
+            }],
+        };
+        let migrated = ConfigGenerationState::from_legacy(&legacy);
+        assert_eq!(migrated.current, 2);
+        assert_eq!(migrated.next, 3);
+        assert_eq!(migrated.generations.len(), 1);
+        assert_eq!(migrated.generations[0].number, 2);
+    }
+
+    fn sample_package_meta() -> PackageMeta {
+        PackageMeta {
+            name: "firewall".to_string(),
+            version: "1.4.0".to_string(),
+            description: "host firewall".to_string(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "aos".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000c-firewall-1.4.0".to_string(),
+            nar_hash: "sha256:aa".to_string(),
+            nar_size: 10,
+            references: vec![],
+            source_drv: "/nix/store/0000000000000000000000000000000d-firewall.drv".to_string(),
+            source_nar_hash: "sha256:bb".to_string(),
+            closure_size: 10,
+            sysroot: false,
+            previous: None,
+            images: vec![],
+            min_format: None,
+            requires_features: vec![],
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta::default(),
+        }
     }
 }

@@ -15,10 +15,6 @@
   registryRenderer = import ./_apm-registry-renderer.nix {inherit lib;};
   inherit (registryRenderer) registryToml trustedKeys trustedSbCerts;
 
-  ignitionFormat = lib.formats.ignition {
-    inherit lib pkgs;
-    allowStorageHardware = false;
-  };
   toml = lib.formats.toml {inherit lib pkgs;};
 
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
@@ -29,17 +25,6 @@
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
-  uriEncode = lib.uriEncode;
-  dataUrl = content: let
-    encoded = uriEncode content;
-  in
-    if builtins.match "[A-Za-z0-9._~%+-]*" encoded == null
-    then
-      throw ''
-        aos.apm.installAtBoot cannot encode non-ASCII or control
-        characters in generated Ignition data URLs.
-      ''
-    else "data:,${encoded}";
 
   systemCredentialEntries =
     lib.mapAttrs
@@ -81,96 +66,55 @@
       credentials = desiredCredentials;
     });
 
-  desiredFile = {
-    path = "/etc/aos/packages.d/desired.toml";
-    mode = 384; # 0600
-    overwrite = true;
-    contents.source = dataUrl desiredToml;
-  };
-
   registries = config.aos.apm.registries;
-  hasSbCerts = builtins.any (registry: registry.sbDbCerts != []) (builtins.attrValues registries);
-  registryDirs =
-    [
-      {
-        path = "/etc/apm";
-        mode = 493; # 0755
-        overwrite = true;
-      }
-      {
-        path = "/etc/apm/registries.d";
-        mode = 493; # 0755
-        overwrite = true;
-      }
-      {
-        path = "/etc/apm/trusted-keys.d";
-        mode = 493; # 0755
-        overwrite = true;
-      }
-    ]
-    ++ lib.optionals hasSbCerts [
-      {
-        path = "/etc/apm/trusted-sb-certs.d";
-        mode = 493; # 0755
-        overwrite = true;
-      }
-    ];
-  registryFiles =
-    lib.concatLists
-    (lib.mapAttrsToList (
-        name: registry:
-          [
-            {
-              path = "/etc/apm/registries.d/${name}.toml";
-              mode = 420; # 0644
-              overwrite = true;
-              contents.source = dataUrl (registryToml name registry);
-            }
-            {
-              path = "/etc/apm/trusted-keys.d/${name}.pub";
-              mode = 420; # 0644
-              overwrite = true;
-              contents.source = dataUrl (trustedKeys registry);
-            }
-          ]
-          ++ lib.optionals (registry.sbDbCerts != []) [
-            {
-              path = "/etc/apm/trusted-sb-certs.d/${name}.pem";
-              mode = 420; # 0644
-              overwrite = true;
-              contents.source = dataUrl (trustedSbCerts registry);
-            }
-          ]
-      )
-      registries);
 
-  installAtBootIgnitionConfig =
-    if cfg.enable
-    then {
-      storage = {
-        directories =
-          [
-            {
-              path = "/etc/aos";
-              mode = 493; # 0755
-              overwrite = true;
-            }
-            {
-              path = "/etc/aos/packages.d";
-              mode = 493; # 0755
-              overwrite = true;
-            }
-          ]
-          ++ lib.optionals cfg.includeRegistries registryDirs;
-        files =
-          [desiredFile]
-          ++ lib.optionals cfg.includeRegistries registryFiles;
+  # Files baked into the image /etc when install-at-boot is enabled: the
+  # desired-package list `apm` reconciles at first boot (aos-install-packages
+  # is `ConditionPathExists`-guarded on it), plus — when `includeRegistries` is
+  # set — the registry config + trust anchors it needs. On the RFC-0011 new
+  # path these are baked straight into /etc (previously an Ignition fragment).
+  installAtBootEtc = lib.optionalAttrs cfg.enable (
+    {
+      "aos/packages.d/desired.toml" = {
+        text = desiredToml;
+        mode = "0600";
       };
     }
-    else {};
+    // lib.optionalAttrs cfg.includeRegistries (
+      lib.listToAttrs (lib.concatLists (lib.mapAttrsToList (
+          name: registry:
+            [
+              {
+                name = "apm/registries.d/${name}.toml";
+                value = {
+                  text = registryToml name registry;
+                  mode = "0644";
+                };
+              }
+              {
+                name = "apm/trusted-keys.d/${name}.pub";
+                value = {
+                  text = trustedKeys registry;
+                  mode = "0644";
+                };
+              }
+            ]
+            ++ lib.optionals (registry.sbDbCerts != []) [
+              {
+                name = "apm/trusted-sb-certs.d/${name}.pem";
+                value = {
+                  text = trustedSbCerts registry;
+                  mode = "0644";
+                };
+              }
+            ]
+        )
+        registries))
+    )
+  );
 in {
   options.aos.apm.installAtBoot = {
-    enable = lib.mkEnableOption "Ignition-authored apm desired-package reconciliation";
+    enable = lib.mkEnableOption "apm desired-package reconciliation at first boot";
 
     packages = lib.mkOption {
       type = lib.types.listOf packageNameType;
@@ -216,17 +160,18 @@ in {
       type = lib.types.bool;
       default = true;
       description = ''
-        Include `aos.apm.registries` as Ignition-written
-        `/etc/apm/registries.d` and trust-anchor files.
+        Bake `aos.apm.registries` into `/etc/apm/registries.d` and the
+        trust-anchor files.
       '';
     };
 
-    ignitionConfig = lib.mkOption {
-      type = ignitionFormat.type;
+    etc = lib.mkOption {
+      type = lib.types.attrsOf lib.types.attrs;
       readOnly = true;
       description = ''
-        Ignition fragment that writes `desired.toml` and, when enabled,
-        matching registry configuration via `storage.files`.
+        The `environment.etc` entries baked into the image when install-at-boot
+        is enabled: `desired.toml` and, when `includeRegistries` is set, the
+        matching registry config + trust anchors.
       '';
     };
   };
@@ -304,7 +249,7 @@ in {
         }
       ];
 
-    aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
+    aos.apm.installAtBoot.etc = installAtBootEtc;
 
     # The only package on the system PATH is the aos/apm/apr CLI. Everything
     # it shells out to (git-minimal, tar, nix, systemctl, …) rides in via its
@@ -312,18 +257,24 @@ in {
     # need not be on PATH; all other tools are installed on demand with apm.
     environment.systemPackages = [pkgs.aos];
 
-    # `apm registry add` writes `~/.config/apm/registries.d/<name>.toml`.
-    # The root-owned tree is baked by lib/build/rootfs.nix because /root lives
-    # on the read-only rootfs; tmpfiles only manages writable runtime paths.
-    environment.etc."tmpfiles.d/aos-apm.conf".text = ''
-      # /etc/tmpfiles.d/aos-apm.conf
-      # Generated by modules/base/apm.nix — do not edit manually.
-      d  /etc/aos/packages.d                 0755 root root - -
-      d  /run/aos-attest                     0700 root root - -
-      d  /var/lib/apm                        0755 root root - -
-      d  /var/lib/apm/config                 0755 root root - -
-      d  /var/lib/apm/config/registries.d    0755 root root - -
-    '';
+    # install-at-boot's baked /etc (desired.toml + registry config) plus the
+    # tmpfiles config. `apm registry add` writes
+    # `~/.config/apm/registries.d/<name>.toml`; the root-owned tree is baked by
+    # lib/build/rootfs.nix because /root lives on the read-only rootfs, so
+    # tmpfiles only manages writable runtime paths.
+    environment.etc =
+      installAtBootEtc
+      // {
+        "tmpfiles.d/aos-apm.conf".text = ''
+          # /etc/tmpfiles.d/aos-apm.conf
+          # Generated by modules/base/apm.nix — do not edit manually.
+          d  /etc/aos/packages.d                 0755 root root - -
+          d  /run/aos-attest                     0700 root root - -
+          d  /var/lib/apm                        0755 root root - -
+          d  /var/lib/apm/config                 0755 root root - -
+          d  /var/lib/apm/config/registries.d    0755 root root - -
+        '';
+      };
 
     systemd.services.aos-attest = {
       description = "Produce AOS package attestation quote";
@@ -390,7 +341,7 @@ in {
         "multi-user.target"
       ];
       after = [
-        "ignition-files.service"
+        "aos-config-seed.service"
         "aos-seed-profiles.service"
         "nix-overlay-setup.service"
       ];

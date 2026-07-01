@@ -1,4 +1,8 @@
-##! lib/testing/apm-install-at-boot.nix — Ignition-authored apm intent check.
+##! lib/testing/apm-install-at-boot.nix — apm install-at-boot intent check.
+##!
+##! `aos.apm.installAtBoot` bakes `desired.toml` + registry config straight into
+##! the image /etc (RFC-0011 new path); `aos-install-packages` reconciles it at
+##! first boot. The system under test enables it directly.
 {
   pkgs,
   mkSystem,
@@ -6,11 +10,6 @@
 }: let
   anchorKey = "example:Ed25519:QUJDREVGR0g=";
   testSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-    ];
-  };
-  metadataSystem = mkSystem {
     modules = [
       ../../systems/server.nix
       {
@@ -30,7 +29,6 @@ in
     name = "apm-install-at-boot";
     system = testSystem;
     timeout = 300;
-    instanceMetadata.config = metadataSystem.config.aos.apm.installAtBoot.ignitionConfig;
     testScript = ''
       vm.wait_for_unit("aos-install-packages.service", timeout=120)
 

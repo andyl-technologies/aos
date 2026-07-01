@@ -737,6 +737,7 @@ mod tests {
                 source_nar_hash: String::new(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

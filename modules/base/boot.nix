@@ -20,6 +20,27 @@
     "mlx5_core"
     "mlx4_en"
   ];
+
+  # Base initrd module manifest. Set as a `config` def (below) rather than the
+  # option `default`, so other modules (e.g. modules/security/verity.nix adding
+  # `dm_verity`) can *append* to it — a list supplied only via `default` is
+  # suppressed wholesale by any def, which would silently drop the virtio/ext4
+  # drivers. `mkBefore` keeps this base ahead of appended entries for a stable,
+  # unchanged ordering on systems that add nothing.
+  baseInitrdModules =
+    [
+      "virtio_blk"
+      "virtio_pci"
+      "virtio_net"
+      "ext4"
+      "isofs"
+      "usb_storage"
+      "uas"
+      "overlay"
+      "dm-crypt"
+      "qemu_fw_cfg"
+    ]
+    ++ hardwareAutoloadedInitrdModules;
 in {
   options.aos.boot = {
     ## Kernel command line parameters.
@@ -43,6 +64,30 @@ in {
       '';
     };
 
+    ## sd-boot boot-counting tries for durable image rollback (RFC-0011 §5.2).
+    ##
+    ## When non-null, the UKI staged into the ESP is named with the sd-boot
+    ## tries-suffix `aos-<name>-<version>+<tries>.efi`. sd-boot decrements the
+    ## counter on each boot attempt and auto-demotes (`+0-<tries>`) a UKI that
+    ## fails to boot, so a bad new image falls back to the other A/B slot
+    ## without operator action. Durable rollback to an older slot is then
+    ## `bootctl set-default` (apm, at runtime), NOT the `default aos-*.efi`
+    ## lexically-highest glob, which remains only the first-install fallback.
+    ##
+    ## `null` (the default) keeps the un-suffixed name and the legacy glob.
+    bootCountingTries = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = ''
+        sd-boot boot-counting tries-suffix for the staged UKI (RFC-0011
+        durable image rollback). When set to N, the ESP UKI is named
+        `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
+        UKI that fails to start, falling back to the other A/B slot. Durable
+        rollback is `bootctl set-default`, not the lexical glob. `null` keeps
+        the un-suffixed filename and the glob-only selection.
+      '';
+    };
+
     initrd = {
       ## Whether to generate a systemd-based initrd.
       enable = lib.mkOption {
@@ -54,20 +99,9 @@ in {
       ## Kernel modules to include in the initrd.
       modules = lib.mkOption {
         type = lib.types.listOf lib.types.str;
-        default =
-          [
-            "virtio_blk"
-            "virtio_pci"
-            "virtio_net"
-            "ext4"
-            "isofs"
-            "usb_storage"
-            "uas"
-            "overlay"
-            "dm-crypt"
-            "qemu_fw_cfg"
-          ]
-          ++ hardwareAutoloadedInitrdModules;
+        # The base set is contributed as a `config` def (`mkBefore`, see
+        # `baseInitrdModules` above) so feature modules can append to it.
+        default = [];
         description = ''
           Kernel modules to include in the initrd module manifest. The
           initrd builder copies the active kernel's module tree; this
@@ -141,6 +175,10 @@ in {
       }
     ];
 
+    # Base initrd module manifest (see `baseInitrdModules` above). Contributed
+    # as a def with `mkBefore` so feature modules append after it.
+    aos.boot.initrd.modules = lib.mkBefore baseInitrdModules;
+
     # Base kernel command line — always present.
     aos.boot.kernelParams = [
       "console=ttyS0,115200"
@@ -161,8 +199,11 @@ in {
       # no kargs of its own), so without an explicit root= systemd
       # cannot synthesise sysroot.mount. Partition labels are stable
       # across disk renaming (vda vs. nvme0n1) and match what the
-      # image builder writes via sfdisk (name="root-a").
-      "root=/dev/disk/by-partlabel/root-a"
+      # image builder writes via sfdisk (name="root-a"). Driven off
+      # `aos.filesystems.rootDevice` (default = the root-a partlabel, so
+      # unchanged) so dm-verity (modules/security/verity.nix) can retarget
+      # it to /dev/mapper/root by setting rootDevice — no mkForce surgery.
+      "root=${config.aos.filesystems.rootDevice}"
       "ro"
       # Mask systemd-boot-random-seed.service: with efivarfs now built-in
       # (CONFIG_EFIVAR_FS=y, base.config) its ConditionPathExists is met,

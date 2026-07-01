@@ -575,6 +575,36 @@ pub fn worktree_root_role_key_ids(repo_dir: &Path) -> Result<Vec<String>> {
         .map_or_else(Vec::new, |role| role.key_ids.clone()))
 }
 
+/// Return the `(key_id, public_key)` pairs that make up the worktree root's
+/// root-role policy.
+///
+/// A producer rotating the root signing key uses this to match the operator's
+/// `--rotate-from` private key (by its derived public key) back to the root
+/// role key id it must co-sign under, so [`sign_root_envelope`]'s
+/// previous-root authorization check accepts the transition signature.
+///
+/// # Errors
+///
+/// Returns an error when `tuf/root.json` exists but cannot be read or parsed.
+pub fn worktree_root_role_keys(repo_dir: &Path) -> Result<Vec<(String, String)>> {
+    let Some(root) = read_worktree_envelope::<RootSigned>(&repo_dir.join(ROOT_JSON))? else {
+        return Ok(Vec::new());
+    };
+    let Some(role) = root.signed.roles.get(ROLE_ROOT) else {
+        return Ok(Vec::new());
+    };
+    Ok(role
+        .key_ids
+        .iter()
+        .filter_map(|key_id| {
+            root.signed
+                .keys
+                .get(key_id)
+                .map(|key| (key_id.clone(), key.key.clone()))
+        })
+        .collect())
+}
+
 fn next_version(previous: Option<u64>) -> u64 {
     previous.unwrap_or(0).saturating_add(1)
 }
@@ -1528,5 +1558,76 @@ mod tests {
             key: key.trust.clone(),
             role_key: true,
         }
+    }
+
+    #[test]
+    fn worktree_root_role_keys_returns_role_pairs() {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        let a = write_test_key(tmp.path(), "core", "a", [20; 32]);
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n").unwrap();
+        testutil::git(&repo, &["add", "."]);
+        testutil::git(&repo, &["commit", "-m", "catalog"]);
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 0, 0),
+            &[metadata_signer(&a)],
+        )
+        .unwrap();
+
+        let role_keys = worktree_root_role_keys(&repo).unwrap();
+        assert_eq!(role_keys, vec![("a".to_string(), a.trust.clone())]);
+    }
+
+    #[test]
+    fn root_rotation_requires_matching_previous_root_key_id() {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        let a = write_test_key(tmp.path(), "core", "a", [21; 32]);
+        let b = write_test_key(tmp.path(), "core", "b", [22; 32]);
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n").unwrap();
+        testutil::git(&repo, &["add", "."]);
+        testutil::git(&repo, &["commit", "-m", "catalog"]);
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 0, 0),
+            &[metadata_signer(&a)],
+        )
+        .unwrap();
+
+        // A transition co-signer carrying the previous root key material but an
+        // id that is NOT the previous root-role key id cannot authorize the
+        // rotation: `authorized_by_previous` matches on the role's key id.
+        let mut wrong_id_transition = metadata_signer(&a);
+        wrong_id_transition.key_id = "not-the-root-id".to_string();
+        wrong_id_transition.role_key = false;
+        let err = write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(2, 0, 0),
+            &[wrong_id_transition, metadata_signer(&b)],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("verifying rotated root metadata"),
+            "expected rotation rejection, got: {err:#}"
+        );
+
+        // With the correct previous root-role id ("a") the rotation succeeds and
+        // the new policy is the rotated-to key only.
+        let mut correct_transition = metadata_signer(&a);
+        correct_transition.role_key = false;
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(2, 0, 0),
+            &[correct_transition, metadata_signer(&b)],
+        )
+        .unwrap();
+        let root_bytes = fs::read(repo.join(ROOT_JSON)).unwrap();
+        let root: Envelope<RootSigned> = parse_envelope(&root_bytes, ROOT_JSON).unwrap();
+        assert_eq!(root.signed.roles[ROLE_ROOT].key_ids, vec!["b".to_string()]);
     }
 }

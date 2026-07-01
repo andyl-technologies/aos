@@ -203,17 +203,31 @@ in {
         config = let
           safe = "etc-" + lib.replaceStrings ["/"] ["-"] name;
           basename = baseNameOf name;
-          # AOS's writeTextFile produces a directory output (stdenv/
-          # setup.sh pre-creates $out as a dir, then cp puts the file
-          # inside). Use destination="/<basename>" and reference the
-          # inner path.
-          textDrv = pkgs.writeTextFile {
-            name = safe;
-            text = config.text;
-            destination = "/${basename}";
-          };
         in {
-          source = lib.mkIf (config.text != null) "${textDrv}/${basename}";
+          # When `text` is set, derive `source` from it via writeTextFile.
+          # AOS's writeTextFile produces a directory output (stdenv/setup.sh
+          # pre-creates $out as a dir, then cp puts the file inside), so use
+          # destination="/<basename>" and reference the inner path.
+          #
+          # The mkIf condition and the `text == null` guard are deliberately
+          # redundant: `collectDefsAtPath` forces every mkIf def's value to WHNF
+          # during option collection — even for the FALSE branch (it can't drop
+          # the dead branch without forcing the condition early, which would
+          # create fixpoint cycles). So a bare `mkIf (text != null) "${textDrv}…"`
+          # would build `writeTextFile` for EVERY entry, including the many
+          # store-sourced ones whose `text` is null. That faults under the
+          # RFC-0011 on-host eval-only `pkgs` (no builder functions). The inner
+          # guard keeps the dead-branch value a plain string so WHNF never
+          # constructs the derivation; the live branch is byte-identical.
+          source = lib.mkIf (config.text != null) (
+            if config.text == null
+            then "/var/empty"
+            else "${pkgs.writeTextFile {
+              name = safe;
+              text = config.text;
+              destination = "/${basename}";
+            }}/${basename}"
+          );
         };
       }));
       description = ''
@@ -236,6 +250,28 @@ in {
           The top-level system derivation. Contains /etc, systemd units,
           and symlinks to all system packages. This is what the image builder
           and update system reference.
+        '';
+      };
+
+      ## RFC-0011 `aos.config-manifest/v1` — the pure-data contract.
+      configManifest = lib.mkOption {
+        type = lib.types.attrs;
+        readOnly = true;
+        description = ''
+          The RFC-0011 `aos.config-manifest/v1` value: a pure attrset (no
+          derivations forced, no secrets) describing the rendered `/etc`
+          tree, systemd reconcile actions, F2-A job-script texts, users,
+          presets, pinned store paths, the module ABI, and the eval-input
+          provenance placeholder. This is the data contract the on-host
+          evaluator emits and the imperative materializer consumes
+          (architecture.md §"The manifest"). It is purely additive: the
+          existing `system.build.toplevel` derivation does not consume it
+          yet, so toplevel bytes are unchanged.
+
+          P0 scope note: `etc`/`jobScripts`/`storePaths`/`module_abi` are
+          populated from the live config; `units` reconcile actions and
+          `inputs` provenance are P1 placeholders (the resolver and the
+          attestation pipeline fill them on-host).
         '';
       };
 
@@ -478,19 +514,162 @@ in {
     # own `${…}` interpolation. `@apm@` resolves to `pkgs.aos` (the apm
     # binary); this does not create a cycle since `pkgs.aos` is a Rust
     # binary that does not depend on the toplevel.
-    system.build.activateScript = pkgs.runCommand "aos-activate" {} ''
-      # AOS stdenv pre-creates $out as a directory; this output is a
-      # single executable file, so drop the dir and write to $out.
-      rmdir "$out"
-      ${pkgs.sed}/bin/sed \
-        -e "s|@bash@|${pkgs.bash}|g" \
-        -e "s|@coreutils@|${pkgs.coreutils}|g" \
-        -e "s|@util-linux@|${pkgs.util-linux}|g" \
-        -e "s|@ignition@|${pkgs.ignition}|g" \
-        -e "s|@apm@|${pkgs.aos}|g" \
-        ${./activate.sh.in} > "$out"
-      chmod +x "$out"
-    '';
+    # RFC-0011 Layer 2: the activate script is an image-fixed artifact (it just
+    # substitutes pkgs store paths into activate.sh.in). Reference the resolved
+    # artifact; register the source guarded on frozenArtifacts so the stage-2
+    # frozen pkgs (no `runCommand`) never evaluates it.
+    system.build.activateScript = config.aos.config.artifacts.aos-activate;
+    aos.config._artifactSources.aos-activate =
+      if config.aos.config.frozenArtifacts ? "aos-activate"
+      then null
+      else
+        pkgs.runCommand "aos-activate" {} ''
+          # AOS stdenv pre-creates $out as a directory; this output is a
+          # single executable file, so drop the dir and write to $out.
+          rmdir "$out"
+          ${pkgs.sed}/bin/sed \
+            -e "s|@bash@|${pkgs.bash}|g" \
+            -e "s|@coreutils@|${pkgs.coreutils}|g" \
+            -e "s|@util-linux@|${pkgs.util-linux}|g" \
+            -e "s|@apm@|${pkgs.aos}|g" \
+            ${./activate.sh.in} > "$out"
+          chmod +x "$out"
+        '';
+
+    # --- RFC-0011 aos.config-manifest/v1 (pure data) -------------------
+    #
+    # Purely additive: assembled from the same pure render values the
+    # toplevel derivation is built from, but as host-portable data. Not
+    # consumed by `system.build.toplevel` (that path is unchanged), so it
+    # cannot affect the byte-identical toplevel output.
+    system.build.configManifest = let
+      unitBodies = config.system.build.systemdUnitBodies;
+      jobScripts = config.system.build.systemdJobScripts;
+
+      isOctal = m: builtins.match "[0-7]{3,4}" m != null;
+
+      # `/etc` entries contributed by `environment.etc`, minus the
+      # `systemd/system` directory (expanded per-unit below).
+      envEtc = builtins.listToAttrs (builtins.map (e:
+        lib.nameValuePair e.target (
+          if e.text != null
+          then {
+            kind = "text";
+            text = e.text;
+            mode =
+              if isOctal e.mode
+              then e.mode
+              else "0644";
+          }
+          else if isOctal e.mode
+          then {
+            # Octal-mode, store-sourced: content lives in the EROFS basedir;
+            # v1 manifest pins the source path (the materializer recovers
+            # mode/uid/gid from the metadata image). Documented limitation.
+            kind = "store-symlink";
+            target = builtins.toString e.source;
+          }
+          else {
+            kind = "store-symlink";
+            target = builtins.toString e.source;
+          }
+        ))
+      (builtins.filter (e: e.target != "systemd/system") etc'));
+
+      # `/etc/systemd/system/<unit>` text entries plus the install-symlink
+      # farm (.wants/.requires/.upholds + aliases) that `generateUnits`
+      # materializes — mirrored here as pure data.
+      unitTextEntries = lib.concatLists (lib.mapAttrsToList (unitName: u:
+        if u.enable && u.text != null
+        then [
+          (lib.nameValuePair "systemd/system/${unitName}" {
+            kind = "text";
+            text = u.text;
+            mode = "0644";
+          })
+        ]
+        else if !u.enable
+        then [
+          (lib.nameValuePair "systemd/system/${unitName}" {
+            kind = "symlink";
+            target = "/dev/null";
+          })
+        ]
+        else [])
+      unitBodies);
+
+      installSymlinks = lib.concatLists (lib.mapAttrsToList (unitName: u:
+        builtins.map (a:
+          lib.nameValuePair "systemd/system/${a}" {
+            kind = "symlink";
+            target = unitName;
+          })
+        u.aliases
+        ++ builtins.map (w:
+          lib.nameValuePair "systemd/system/${w}.wants/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.wantedBy
+        ++ builtins.map (r:
+          lib.nameValuePair "systemd/system/${r}.requires/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.requiredBy
+        ++ builtins.map (h:
+          lib.nameValuePair "systemd/system/${h}.upholds/${unitName}" {
+            kind = "symlink";
+            target = "../${unitName}";
+          })
+        u.upheldBy)
+      unitBodies);
+
+      etc =
+        envEtc
+        // builtins.listToAttrs (unitTextEntries ++ installSymlinks);
+
+      # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
+      # robust if the users module isn't imported by a given variant).
+      users = lib.mapAttrsToList (uname: u: {
+        name = uname;
+        uid = u.uid;
+        group = u.group;
+        gid = config.aos.users.groups.${u.group}.gid or null;
+        home = u.home;
+        shell = u.shell;
+        system = u.uid < 1000;
+        description = u.description or "";
+        supplementaryGroups = u.extraGroups or [];
+      }) (config.aos.users.users or {});
+
+      # Presets parsed from the image preset rules ("<policy> <unit>").
+      presets = builtins.filter (p: p != null) (builtins.map (rule: let
+        parts = lib.splitString " " rule;
+      in
+        if builtins.length parts >= 2
+        then {
+          unit = builtins.elemAt parts 1;
+          policy = builtins.head parts;
+          source = "image";
+        }
+        else null)
+      (config.systemd.systemPresetRules or []));
+
+      storePaths =
+        builtins.sort (a: b: a < b)
+        (lib.unique (builtins.map builtins.toString config.environment.systemPackages));
+    in {
+      schema = "aos.config-manifest/v1";
+      inherit etc users presets storePaths;
+      jobScripts = jobScripts;
+      # Per-unit reconcile actions are resolved on-host (P1); empty here.
+      units = {};
+      module_abi = config.aos.system.moduleAbi or 1;
+      # The five content-addressed eval inputs are computed on-host by the
+      # resolver/attestation pipeline (build-spec §inputs); P0 placeholder.
+      inputs = {};
+    };
 
     system.build.kernel = pkgs.linux;
     system.build.systemPath =

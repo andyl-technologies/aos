@@ -22,81 +22,22 @@
 {
   pkgs,
   systems,
-}: let
-  # The base image ships only ESP + root-a; ignition's disks stage
-  # creates root-b/swap/var on first boot. /var is required for the
-  # system to reach multi-user (identity + role activation persist
-  # there), so an image-boot machine MUST provision it — same layout as
-  # tests/fleet/install-from-image.nix. Image-boot machines get the full
-  # ignition profile (storage hardware allowed) from the fleet harness.
-  rootSizeMiB = 6144;
-  swapSizeMiB = 1024;
-  diskProvision = {
-    storage = {
-      disks = [
-        {
-          device = "/dev/vda";
-          wipeTable = false;
-          partitions = [
-            {
-              number = 2;
-              label = "root-a";
-              sizeMiB = rootSizeMiB;
-              resize = true;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 3;
-              label = "root-b";
-              sizeMiB = rootSizeMiB;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 4;
-              label = "swap";
-              sizeMiB = swapSizeMiB;
-              typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-            }
-            {
-              number = 5;
-              label = "var";
-              sizeMiB = 0; # rest of the disk
-            }
-          ];
-        }
-      ];
-      filesystems = [
-        {
-          device = "/dev/disk/by-partlabel/root-b";
-          format = "ext4";
-          label = "aos-root-b";
-          wipeFilesystem = false;
-        }
-        {
-          device = "/dev/disk/by-partlabel/var";
-          format = "ext4";
-          label = "aos-var";
-          wipeFilesystem = false;
-        }
-      ];
-    };
-  };
-in {
+}: {
   name = "secure-boot";
   # Image boot + enroll + reboot-to-enforcing + a second (rejected)
   # reboot. Budgeted like the other image-boot tests plus two reboots.
   timeout = 1800;
 
   machines = {
+    # The base image ships only ESP + root-a; on the RFC-0011 new path
+    # systemd-repart creates swap/var on first boot. /var is required for the
+    # system to reach multi-user (identity + role activation persist there).
     target = {
       system = systems.server-secureboot;
       bootMode = "image";
+      provisioning = "newpath";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = diskProvision;
-      };
     };
   };
 

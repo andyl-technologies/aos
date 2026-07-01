@@ -68,6 +68,11 @@ in
     }: let
       samplePolicy = pkgs.writeTextFile {
         name = "aos-ebpf-net-policy-sample.json";
+        # AOS's writeTextFile with no `destination` produces a *directory*
+        # output (see pkgs/build-support/trivial-builders.nix); the JSON parser
+        # needs a real file, so materialize the policy at a named path inside
+        # the output and reference it explicitly below.
+        destination = "/aos-ebpf-net-policy-sample.json";
         text = ''
           {
             "version": 1,
@@ -107,7 +112,7 @@ in
     in {
       validate = pkgs.runCommand "security-aos-ebpf-net-policy-validate" {} ''
         ${self}/bin/aos-ebpf-net-policy validate \
-          --policy ${samplePolicy} \
+          --policy ${samplePolicy}/aos-ebpf-net-policy-sample.json \
           --object ${self}/lib/bpf/aos-ebpf-net-policy.bpf.o
         touch $out
       '';

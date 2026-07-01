@@ -14,11 +14,11 @@
 ##!     fmt = lib.formats.json { inherit lib pkgs; };
 ##!     fmt.generate "example.json" { foo = 1; }
 ##!
-##! Additional format-specific options live on individual factories
-##! (e.g. `lib.formats.ignition { inherit lib pkgs; allowStorageHardware = false; }`).
+##! Additional format-specific options may live on individual
+##! factories (passed as extra arguments alongside `lib`/`pkgs`).
 ##!
 ##! This file is an aggregator only — the factories themselves live
-##! in sibling files (`json.nix`, `yaml.nix`, `ignition.nix`, ...).
+##! in sibling files (`json.nix`, `yaml.nix`, `toml.nix`, ...).
 ##! Keeping the factories lazy — not pre-applied — avoids threading
 ##! `pkgs` through `lib/default.nix`, which is deliberately
 ##! `pkgs`-less.
@@ -26,5 +26,4 @@
   json = import ./json.nix;
   yaml = import ./yaml.nix;
   toml = import ./toml.nix;
-  ignition = import ./ignition.nix;
 }

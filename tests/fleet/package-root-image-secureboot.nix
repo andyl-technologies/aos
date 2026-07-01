@@ -19,59 +19,6 @@
   mkSystem,
   ...
 }: let
-  rootSizeMiB = 6144;
-  swapSizeMiB = 1024;
-  diskProvision = {
-    storage = {
-      disks = [
-        {
-          device = "/dev/vda";
-          wipeTable = false;
-          partitions = [
-            {
-              number = 2;
-              label = "root-a";
-              sizeMiB = rootSizeMiB;
-              resize = true;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 3;
-              label = "root-b";
-              sizeMiB = rootSizeMiB;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 4;
-              label = "swap";
-              sizeMiB = swapSizeMiB;
-              typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-            }
-            {
-              number = 5;
-              label = "var";
-              sizeMiB = 0;
-            }
-          ];
-        }
-      ];
-      filesystems = [
-        {
-          device = "/dev/disk/by-partlabel/root-b";
-          format = "ext4";
-          label = "aos-root-b";
-          wipeFilesystem = false;
-        }
-        {
-          device = "/dev/disk/by-partlabel/var";
-          format = "ext4";
-          label = "aos-var";
-          wipeFilesystem = false;
-        }
-      ];
-    };
-  };
-
   storePathHash = path:
     builtins.elemAt (lib.splitString "-" (baseNameOf (builtins.toString path))) 0;
   mkPackageRootImage = import ../../lib/build/package-root-image.nix {inherit pkgs lib;};
@@ -277,9 +224,11 @@ in {
   timeout = 1800;
 
   machines = {
+    # New path: systemd-repart carves swap + var on first boot.
     target = {
       system = testSystem;
       bootMode = "image";
+      provisioning = "newpath";
       imageDiskMiB = 16384;
       tpm = true;
       packages = [
@@ -287,13 +236,10 @@ in {
         "package-root-image-good"
         "package-root-image-bad"
       ];
-      instanceMetadata = {
-        format = "ignition";
-        config = diskProvision;
-      };
     };
     verifier = {
       system = verifierSystem;
+      provisioning = "newpath";
     };
   };
 

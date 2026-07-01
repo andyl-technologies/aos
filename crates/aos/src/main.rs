@@ -137,6 +137,12 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command).await;
     }
 
+    // The metadata agent (initrd) reads/writes the /run/aos-metadata stash and
+    // shells out to blkid/mount + IMDS — no NixRunner needed.
+    if let Commands::Metadata { command } = &cli.command {
+        return commands::metadata::run(command).await;
+    }
+
     // Hub commands talk to an aos-hub over its public API — no NixRunner.
     if let Commands::Hub { command } = &cli.command {
         return commands::hub::run(&printer, command).await;
@@ -240,6 +246,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
+        Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
     }
 }
