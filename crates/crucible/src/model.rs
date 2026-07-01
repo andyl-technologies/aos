@@ -683,6 +683,22 @@ pub const WORKLOAD_SCENARIO_PARAMETER: &str = "crucible.workload";
 
 const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload=";
 
+/// Kernel command-line key that delivers an explicit in-guest workload seed.
+///
+/// The seed is delivered as plain scenario configuration on
+/// [`WorldNode::cmdline`]. This black-box path is sufficient without the
+/// optional guest-host channel, and changing the value changes the world's
+/// content address and the enclosing [`ScenarioDef`].
+pub const WORKLOAD_SEED_SCENARIO_PARAMETER: &str = "wseed";
+
+const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
+
+/// Whether explicit workload seeds can be delivered without white-box support.
+pub const WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES: bool = true;
+
+/// Whether explicit workload seeds require the optional guest-host channel.
+pub const WORKLOAD_SEED_REQUIRES_WHITE_BOX: bool = false;
+
 /// Whether Crucible's application traffic originates inside guest VMs.
 ///
 /// This constant is deliberately true: the engine observes and steers guest
@@ -770,6 +786,75 @@ impl GuestWorkloadBinary {
     #[must_use]
     pub fn selected_cmdline(self, base_cmdline: &str) -> String {
         cmdline_with_guest_workload(base_cmdline, self)
+    }
+}
+
+/// An explicit seed consumed by a selected in-guest workload.
+///
+/// The seed is a scenario parameter, not a host-side delivery channel. Rendering
+/// it into a node command line makes it part of the canonical world and scenario
+/// identity, while leaving the optional white-box guest-host channel disabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuestWorkloadSeed {
+    seed: Seed,
+}
+
+impl GuestWorkloadSeed {
+    /// Builds an explicit workload seed from a 256-bit scenario seed value.
+    #[must_use]
+    pub fn from_seed(seed: Seed) -> Self {
+        Self { seed }
+    }
+
+    /// Builds an explicit workload seed from a small deterministic integer.
+    ///
+    /// This is a convenience constructor for examples and tests. The integer is
+    /// encoded by [`Seed::from_u64`].
+    #[must_use]
+    pub fn from_u64(value: u64) -> Self {
+        Self::from_seed(Seed::from_u64(value))
+    }
+
+    /// Returns the underlying 256-bit workload seed.
+    #[must_use]
+    pub fn seed(self) -> Seed {
+        self.seed
+    }
+
+    /// Parses a workload seed from a `wseed` scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        parse_seed_ref(value).ok().map(Self::from_seed)
+    }
+
+    /// Parses the first valid workload seed from a kernel command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_seed_parameter(cmdline)
+    }
+
+    /// Returns the value used by the workload-seed scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter_value(self) -> String {
+        format_seed_ref(self.seed)
+    }
+
+    /// Renders this seed as a workload-seed scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(self) -> String {
+        format!(
+            "{WORKLOAD_SEED_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this explicit workload seed selected.
+    ///
+    /// Existing `wseed=...` tokens are replaced so the command line carries one
+    /// stable black-box workload-seed configuration value.
+    #[must_use]
+    pub fn selected_cmdline(self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_seed(base_cmdline, self)
     }
 }
 
@@ -1461,6 +1546,17 @@ impl NodeTemplate {
     #[must_use]
     pub fn guest_workload(mut self, workload: GuestWorkloadBinary) -> Self {
         self.cmdline = workload.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Delivers an explicit workload seed through black-box scenario config.
+    ///
+    /// The seed is encoded as `wseed=0x...` in the guest command line, which is
+    /// already part of the content-addressed world and scenario identity. This
+    /// path does not require [`WhiteBoxPolicy::Enabled`].
+    #[must_use]
+    pub fn guest_workload_seed(mut self, seed: GuestWorkloadSeed) -> Self {
+        self.cmdline = seed.selected_cmdline(&self.cmdline);
         self
     }
 
@@ -3765,6 +3861,12 @@ impl WorldNode {
     #[must_use]
     pub fn guest_workload(&self) -> Option<GuestWorkloadBinary> {
         GuestWorkloadBinary::from_cmdline(&self.cmdline)
+    }
+
+    /// Returns the explicit workload seed delivered to this node, if any.
+    #[must_use]
+    pub fn guest_workload_seed(&self) -> Option<GuestWorkloadSeed> {
+        GuestWorkloadSeed::from_cmdline(&self.cmdline)
     }
 }
 
@@ -10830,6 +10932,18 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
+    /// A world node configured an invalid explicit workload seed.
+    WorldNodeInvalidWorkloadSeed {
+        /// The invalid node.
+        node: NodeId,
+        /// The invalid workload-seed scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one explicit workload seed.
+    WorldNodeDuplicateWorkloadSeed {
+        /// The invalid node.
+        node: NodeId,
+    },
     /// A plan membership fault references an undeclared node.
     PlanFaultUnknownNode {
         /// The undeclared node.
@@ -11148,6 +11262,12 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeDuplicateWorkload { .. } => {
                 f.write_str("world node selects more than one workload")
+            }
+            Self::WorldNodeInvalidWorkloadSeed { value, .. } => {
+                write!(f, "world node workload seed value {value} is invalid")
+            }
+            Self::WorldNodeDuplicateWorkloadSeed { .. } => {
+                f.write_str("world node selects more than one workload seed")
             }
             Self::PlanFaultUnknownNode { .. } => {
                 f.write_str("plan membership fault references an undeclared node")
@@ -12295,6 +12415,7 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
             });
         }
         validate_world_node_workload(node)?;
+        validate_world_node_workload_seed(node)?;
     }
 
     Ok(())
@@ -12313,6 +12434,28 @@ fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
         }
         if GuestWorkloadBinary::from_scenario_parameter_value(value).is_none() {
             return Err(EngineError::WorldNodeUnsupportedWorkload {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        }
+        selected = true;
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX) else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkloadSeed {
+                node: node.id.clone(),
+            });
+        }
+        if GuestWorkloadSeed::from_scenario_parameter_value(value).is_none() {
+            return Err(EngineError::WorldNodeInvalidWorkloadSeed {
                 node: node.id.clone(),
                 value: value.to_owned(),
             });
@@ -18707,12 +18850,33 @@ fn parse_guest_workload_parameter(cmdline: &str) -> Option<GuestWorkloadBinary> 
     })
 }
 
+fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSeed> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadSeed::from_scenario_parameter_value)
+    })
+}
+
 fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
     let selection = workload.scenario_parameter();
     let mut rendered = String::new();
     for token in cmdline
         .split_whitespace()
         .filter(|token| !token.starts_with(WORKLOAD_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> String {
+    let selection = seed.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX))
     {
         push_cmdline_token(&mut rendered, token);
     }

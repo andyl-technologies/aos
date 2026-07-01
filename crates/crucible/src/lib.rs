@@ -75,8 +75,8 @@ pub use model::{
     FaultDuration, FaultId, FaultPlan, FaultPlanEntry, FaultRateBasisPoints,
     FaultSlowdownFactorBasisPoints, FaultState, FaultTag, FaultWeights, FramePredicate,
     FrontierChild, FrontierCoveredChild, FrontierReductionPolicy, FrontierReductionReason,
-    FrontierReductionReport, GenesisCheckpoint, GuestWorkloadBinary, Icount, IoEventKind,
-    IoFailureMode, IrqVector, LinkDef, LinkId, LinkLossProbability, LocalDagStore,
+    FrontierReductionReport, GenesisCheckpoint, GuestWorkloadBinary, GuestWorkloadSeed, Icount,
+    IoEventKind, IoFailureMode, IrqVector, LinkDef, LinkId, LinkLossProbability, LocalDagStore,
     MIN_LINK_LATENCY, MarkerId, MaterializationPolicy, MaterializationTrigger, MaterializedState,
     MemPlace, MembershipFault, MemoryCmp, MemoryDagStore, MemoryWidth, NetworkCorruptionFault,
     NetworkFault, NinePErrno, NinePFault, NodeBlobRef, NodeClockSkew, NodeCounter, NodeFault,
@@ -98,8 +98,9 @@ pub use model::{
     TemporalGraphSearch, TemporalGraphStoreError, TemporalGraphStoreKeys, TimeConversionError,
     TimerId, TimerRegistry, TimerState, TopologyShape, TopologySizeRange, VcpuId, VirtualInstant,
     VirtualTime, VmArchitecture, VmSnapshotRef, WORKLOAD_ENGINE_ROLE, WORKLOAD_SCENARIO_PARAMETER,
-    WhiteBoxPolicy, WorkloadEngineRole, World, WorldLookaheadEdge, WorldNode, WorldStaticTopology,
-    bake, instantiate, reduce, step, try_step,
+    WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_SEED_REQUIRES_WHITE_BOX,
+    WORKLOAD_SEED_SCENARIO_PARAMETER, WhiteBoxPolicy, WorkloadEngineRole, World,
+    WorldLookaheadEdge, WorldNode, WorldStaticTopology, bake, instantiate, reduce, step, try_step,
 };
 pub use node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
