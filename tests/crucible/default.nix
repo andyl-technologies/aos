@@ -1192,6 +1192,24 @@ in rec {
         phase6.advancedDependencyLadder
       ];
     };
+    restoreStrategies = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.restoreStrategies";
+      gate = import ./phase6-restore-strategies.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.restoreStrategies";
+        taskIds = ["T-ADV-5"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.advancedDependencyLadder.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.advancedDependencyLadder
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

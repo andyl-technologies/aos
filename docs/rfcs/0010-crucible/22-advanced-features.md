@@ -997,10 +997,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   `gate:replay-oracle` as restore), localizing any divergence by bisection; assert
   fork adds no new correctness obligation. — satisfies [ADV-8]; spec §22.3;
   cross-ref 07 §6, 24.
-- [ ] **T-ADV-5** Implement the two restore strategies (replay-from-seed as the
+- [x] **T-ADV-5** Implement the two restore strategies (replay-from-seed as the
   always-correct oracle; snapshot-restore as the validatable fast cache) and the
   oracle check that makes snapshot bugs visible, with divergence localization. —
   satisfies [ADV-10], [ADV-11]; spec §22.4; cross-ref 07 §6.
+  Completed by `checks.crucible.phase6.restoreStrategies`: the temporal graph
+  now has a phase6 gate proving thin replay remains the source-of-truth DAG node,
+  fat checkpoint materialization is admitted only after `replay_checkpoint`, exact
+  snapshot restore agrees with replay-from-seed, and corrupt cached snapshots
+  are rejected by the `instantiate` restore path before being evicted back to
+  thin replay. The gate feeds the observed `ReplayOracleMismatch` into the
+  replay-oracle bisection API and asserts the first differing decision is
+  localized for the fat/thin disagreement.
 - [ ] **T-ADV-6** Implement the savevm-completeness hedge (keep unreliable-snapshot
   checkpoints thin; degrade to slow replay, never to wrong) and wire save as a
   fat-checkpoint materialize keyed by config.id with thin-as-source-of-truth. —
