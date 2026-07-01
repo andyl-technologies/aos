@@ -1,16 +1,19 @@
 //! Pack and thin-delta helpers for the git-native registry.
 //!
-//! Producer-side wrappers around `git pack-objects`, `git index-pack`, and
-//! the `zstd` CLI that build the per-release transfer artifacts served from
-//! the static origin: self-contained full packs at `X.Y.0` anchors
-//! ([`full_pack`]) and thin delta packs between nearby releases
-//! ([`thin_delta`], with bases chosen by [`scheme_deltas`]). The matching
-//! consumer-side selection logic lives in
+//! Producer-side helpers that build the per-release transfer artifacts served
+//! from the static origin: self-contained libgit2 full packs at `X.Y.0`
+//! anchors ([`full_pack`]) and pure-Rust thin delta packs between nearby
+//! releases ([`thin_delta`], with bases chosen by [`scheme_deltas`]). The
+//! matching consumer-side selection logic lives in
 //! [`fetch`](crate::registry::fetch).
 //!
-//! Packs are generated with `--compression=0` so the zstd transport wrapper
-//! ([`zstd_compress`]) does all the compression with a long-distance window,
-//! optionally aided by a trained dictionary ([`train_dictionary`]).
+//! Thin packs are generated with stored zlib entries, equivalent to
+//! `git pack-objects --compression=0`, so the zstd transport wrapper
+//! ([`zstd_compress`]) can compress the whole delta stream with a
+//! long-distance window. Full packs are indexed with libgit2's indexer so stock
+//! dumb-HTTP Git can consume them; AOS consumers index full and thin packs with
+//! libgit2's pack writer ([`index_pack`]), regenerating and verifying indexes
+//! locally.
 
 use std::path::{Path, PathBuf};
 
@@ -119,8 +122,8 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
 }
 
 /// Build a self-contained pack of everything reachable from `release_commit`
-/// with libgit2's pack builder, named `pack-<hash>.pack` after its trailing
-/// checksum.
+/// with libgit2's pack builder and indexer, named `pack-<hash>.pack` after its
+/// trailing checksum.
 fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Result<PathBuf> {
     let repository = git2::Repository::open(repo)
         .with_context(|| format!("opening git repository at {}", repo.display()))?;
@@ -137,14 +140,20 @@ fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Resu
     builder
         .insert_walk(&mut revwalk)
         .context("inserting objects into pack")?;
-    let mut buf = git2::Buf::new();
-    builder.write_buf(&mut buf).context("writing pack")?;
-    let bytes: &[u8] = &buf;
-
-    // git names a pack after its trailing checksum (32 bytes for sha256).
-    let hash = hex::encode(&bytes[bytes.len().saturating_sub(32)..]);
+    builder
+        .write(out_dir, 0)
+        .with_context(|| format!("writing full pack into {}", out_dir.display()))?;
+    let hash = builder
+        .name()
+        .context("reading full-pack name")?
+        .ok_or_else(|| anyhow::anyhow!("libgit2 did not report a full-pack name"))?;
     let path = out_dir.join(format!("pack-{hash}.pack"));
-    std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    if !path.exists() {
+        bail!(
+            "libgit2 indexed full pack but did not write {}",
+            path.display()
+        );
+    }
     Ok(path)
 }
 
@@ -257,13 +266,23 @@ pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
     let repo = repo.to_path_buf();
     let pack = pack.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        use std::io::Write as _;
+        use std::io::{Read as _, Write as _};
         let repository = git2::Repository::open(&repo)
             .with_context(|| format!("opening git repository at {}", repo.display()))?;
         let odb = repository.odb().context("opening object database")?;
-        let bytes = std::fs::read(&pack).with_context(|| format!("reading {}", pack.display()))?;
+        let mut input =
+            std::fs::File::open(&pack).with_context(|| format!("opening {}", pack.display()))?;
         let mut writer = odb.packwriter().context("creating pack writer")?;
-        writer.write_all(&bytes).context("writing pack data")?;
+        let mut buf = [0u8; 128 * 1024];
+        loop {
+            let n = input
+                .read(&mut buf)
+                .with_context(|| format!("reading {}", pack.display()))?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n]).context("writing pack data")?;
+        }
         writer.commit().context("indexing pack")?;
         Ok(())
     })

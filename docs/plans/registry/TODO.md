@@ -213,9 +213,9 @@ Keep this file current as work lands.
 
 - [x] Add `registry::pack` module.
 - [x] Implement release-kind and guaranteed delta-base scheme.
-- [x] Implement full-pack and thin-delta `git pack-objects` wrappers.
+- [x] Implement libgit2 full-pack generation/indexing and Rust thin-delta generation.
 - [x] Implement zstd compress/decompress wrappers.
-- [x] Implement `git index-pack` and `--fix-thin` wrappers.
+- [x] Implement libgit2 pack indexing for full packs and completed thin packs.
 - [x] Add focused pack/delta unit tests.
 - [x] Retire bundle producer/consumer path.
 
@@ -400,21 +400,21 @@ read before editing code or docs.
       `crates/aos-package/src/registry/fetch.rs`, and
       `crates/aos-package/tests/registry_e2e.rs`.
 - [x] Add executable pack/delta e2e coverage for full packs, thin deltas,
-      zstd-compressed pack artifacts, `git index-pack --fix-thin`, fallback from
+      zstd-compressed thin-delta artifacts, libgit2 pack indexing, fallback from
       missing/corrupt delta to full pack, fallback from missing/corrupt full pack
       to loose-object git fetch, and pruning behavior after retained releases
       change. The coverage now lives in
       `crates/aos-package/tests/registry_e2e.rs`:
       `pack_delta_e2e_fetches_full_pack_and_compressed_thin_delta` builds a real
       full pack, publishes a zstd-compressed thin delta, resolves both over
-      static HTTP, and verifies the target commit exists after
-      `index-pack --fix-thin`; `pack_delta_e2e_falls_back_from_corrupt_artifacts`
+      static HTTP, and verifies the target commit exists after local pack
+      indexing; `pack_delta_e2e_falls_back_from_corrupt_artifacts`
       proves corrupt deltas fall through to the full-pack anchor plus git-fetch
       loose fallback, and corrupt full packs fall directly to git-fetch fallback;
       `signed_channel_http_e2e_advances_persisted_bucket` asserts retained
       release pruning keeps retained release dirs and removes stale ones. The
-      implementation now streams thin packs through `git index-pack --fix-thin
-      --stdin` and verifies copied full-pack indexes before accepting them.
+      implementation now streams full and thin packs through libgit2 pack
+      indexing and publishes producer-generated full-pack indexes for stock Git.
       Context: `docs/registry/packs-and-deltas.md`,
       `docs/registry/http-layout.md`, `docs/registry/publishing.md`,
       `docs/plans/registry/open-questions.md`,
@@ -966,9 +966,9 @@ read before editing code or docs.
       `REGISTRY_PERF_METRIC` values for full-pack bytes/time, thin-delta
       bytes/time, zstd bytes/time, and consumer reconstruction time. Target-host
       evidence should still inform producer pack settings and consumer
-      reconstruct cost: `git pack-objects --window`, `--depth`,
-      `--compression=0`, zstd level, zstd `--long` window, optional dictionary
-      training, and memory limits. Builder evidence from 2026-06-08:
+      reconstruct cost: Rust thinpack strategy selection, zstd level, zstd
+      `--long` window, optional dictionary training, and memory limits. Builder
+      evidence from 2026-06-08:
       `/nix/store/c6lg01w5ks8f2h4ginav0wfdhlf12az9-aos-vm-test-apm-registry-validation-pack-delta-perf-0/serial.log`
       reported `full_pack_bytes=11276`, `full_pack_ns=86438382`,
       `thin_delta_bytes=11295`, `thin_delta_ns=49235341`,

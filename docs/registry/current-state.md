@@ -92,8 +92,9 @@ Implemented producer behavior:
 - `registry::objectstore` owns sha256 object-format checks, release object-dir
   paths, loose-object path validation, relative alternates, and
   `update-server-info`.
-- `registry::pack` owns the release delta scheme and wrappers around
-  `git pack-objects`, zstd, and `git index-pack --fix-thin`.
+- `registry::pack` owns the release delta scheme, libgit2 full-pack generation,
+  pure-Rust thin-pack generation, zstd transport compression for thin deltas, and
+  libgit2 pack indexing for both full packs and completed thin deltas.
 - `apr cache generate` emits static Nix-cache files for every registry-listed
   store path: `nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`.
   It fails closed when a listed store path is absent from the local Nix store,
@@ -116,10 +117,11 @@ Implemented producer behavior:
   already committed registry tree or optionally publish a real Nix store path
   first, stages static Nix-cache files internally when publishing store roots,
   commits the `[[caches]]` pointer before signing, creates/reuses the signed
-  semver tag, generates full packs at `X.Y.0` anchors and compressed guaranteed
-  thin deltas, refreshes static git indexes, initializes or advances channel
-  partitions, and uploads cache payloads plus the static origin to repeatable
-  backend URLs in producer-safe order. It has a local publisher lock,
+  semver tag, generates full packs plus `.idx` files at `X.Y.0` anchors and
+  compressed guaranteed thin deltas, refreshes static git indexes, initializes or advances
+  channel partitions without partition decrements, and uploads cache payloads
+  plus the static origin to repeatable backend URLs in producer-safe order. It
+  has a local publisher lock,
   `--dry-run`, `--no-skip`, and `--resume` for interrupted immutable artifact
   generation.
 
