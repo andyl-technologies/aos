@@ -1017,6 +1017,22 @@
       _modules = evaluatedModules;
       _type = "evaluatedModules";
 
+      # Re-evaluate this module set with additional modules appended (matching
+      # nixpkgs' `result.extendModules`). Used to overlay a fragment onto an
+      # already-evaluated system without threading its original module list
+      # back to the caller — e.g. the fleet test harness bakes per-VM identity
+      # (`environment.etc` for hostname/network/ssh key) onto a machine's
+      # system. `pkgs`/`lib`/`extraArgs`/`specialArgs`/`operatorModules` are
+      # inherited from this evaluation unless overridden.
+      extendModules = args: let
+        extraModules = args.modules or [];
+      in
+        evalModules ({
+            modules = modules ++ extraModules;
+            inherit pkgs lib extraArgs specialArgs operatorModules;
+          }
+          // builtins.removeAttrs args ["modules"]);
+
       # RFC-0011 F3-B: the declared option surface, flattened to one record
       # per declared option path, carrying the `contributable` marker. This
       # is the data the publish-time options-only eval folds into the
