@@ -1630,6 +1630,29 @@ impl MinorGcCommitPlan {
     pub fn next_remembered_set(&self) -> &RememberedSet {
         &self.next_remembered_set
     }
+
+    /// Publishes the rebuilt remembered set into caller-owned collector state.
+    ///
+    /// This consumes the commit plan because remembered-set publication is the
+    /// final ordered metadata mutation represented by the plan. The method
+    /// validates that `remembered_set` still matches the source epoch and edge
+    /// sequence consumed by the refresh plan before replacing it with the
+    /// precomputed next-epoch set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError::MinorGcCommitRememberedSetPublicationEpochMismatch`]
+    /// if the caller-owned remembered set is no longer on the epoch consumed by
+    /// this commit plan. Returns [`GenerationalGcError`] if the caller-owned
+    /// remembered-set edges no longer match the snapshot consumed by the plan.
+    pub fn publish_next_remembered_set(
+        self,
+        remembered_set: &mut RememberedSet,
+    ) -> Result<(), GenerationalGcError> {
+        validate_remembered_set_publication_source(&self.remembered_set_refresh, remembered_set)?;
+        *remembered_set = self.next_remembered_set;
+        Ok(())
+    }
 }
 
 /// A minor-collection frontier plan for the young generation.
@@ -2074,6 +2097,41 @@ fn validate_remembered_set_refresh_matches_object_copies(
         }
     }
 
+    Ok(())
+}
+
+fn validate_remembered_set_publication_source(
+    expected: &MinorGcRememberedSetRefreshPlan,
+    actual: &RememberedSet,
+) -> Result<(), GenerationalGcError> {
+    if actual.epoch() != expected.source_epoch() {
+        return Err(
+            GenerationalGcError::MinorGcCommitRememberedSetPublicationEpochMismatch {
+                expected: expected.source_epoch(),
+                actual: actual.epoch(),
+            },
+        );
+    }
+    if actual.len() != expected.len() {
+        return Err(
+            GenerationalGcError::MinorGcCommitRememberedSetPublicationLengthMismatch {
+                expected: expected.len(),
+                actual: actual.len(),
+            },
+        );
+    }
+    for (index, (actual, expected)) in actual.edges().iter().zip(expected.refreshes()).enumerate() {
+        let expected = expected.original();
+        if *actual != expected {
+            return Err(
+                GenerationalGcError::MinorGcCommitRememberedSetPublicationEdgeMismatch {
+                    index,
+                    expected,
+                    actual: *actual,
+                },
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2614,6 +2672,41 @@ pub enum GenerationalGcError {
         expected: MinorGcRememberedSetRefreshAction,
         /// The caller-supplied refresh action.
         actual: MinorGcRememberedSetRefreshAction,
+    },
+    /// A minor-GC commit plan tried to publish into a remembered set from
+    /// another epoch.
+    #[error(
+        "minor-GC commit remembered-set publication epoch {actual} does not match source epoch {expected}"
+    )]
+    MinorGcCommitRememberedSetPublicationEpochMismatch {
+        /// The epoch consumed by the commit plan.
+        expected: RememberedSetEpoch,
+        /// The epoch currently held by the caller-owned remembered set.
+        actual: RememberedSetEpoch,
+    },
+    /// A minor-GC commit plan tried to publish over a different remembered-set
+    /// snapshot length.
+    #[error(
+        "minor-GC commit remembered-set publication length {actual} does not match source length {expected}"
+    )]
+    MinorGcCommitRememberedSetPublicationLengthMismatch {
+        /// The edge count consumed by the commit plan.
+        expected: usize,
+        /// The edge count currently held by the caller-owned remembered set.
+        actual: usize,
+    },
+    /// A minor-GC commit plan tried to publish over a different remembered-set
+    /// edge.
+    #[error(
+        "minor-GC commit remembered-set publication edge mismatch at index {index}: expected {expected:?}, got {actual:?}"
+    )]
+    MinorGcCommitRememberedSetPublicationEdgeMismatch {
+        /// The mismatched remembered-set edge index.
+        index: usize,
+        /// The edge consumed by the commit plan.
+        expected: RememberedEdge,
+        /// The edge currently held by the caller-owned remembered set.
+        actual: RememberedEdge,
     },
     /// The minor-GC reference rewrite plan length overflowed.
     #[error("minor-GC reference rewrite length overflow")]
@@ -4686,6 +4779,15 @@ mod tests {
             commit_plan.next_remembered_set().edges(),
             &[RememberedEdge::new(remembered_source, copy_destination)]
         );
+
+        commit_plan
+            .publish_next_remembered_set(&mut remembered_set)
+            .expect("remembered set publishes");
+        assert_eq!(remembered_set.epoch(), RememberedSetEpoch::new(8));
+        assert_eq!(
+            remembered_set.edges(),
+            &[RememberedEdge::new(remembered_source, copy_destination)]
+        );
     }
 
     #[test]
@@ -4732,6 +4834,97 @@ mod tests {
             [ResolvedValueGeneration::young(first)],
         )
         .expect("reference rewrite plan builds");
+
+        let publication_commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies.clone(),
+            forwarding_pointers.clone(),
+            MinorGcReferenceRewritePlan::default(),
+            MinorGcRememberedSetRefreshPlan::default(),
+        )
+        .expect("publication commit plan builds");
+        let stale_edge = RememberedEdge::new(address(0x3000), first);
+        let mut stale_remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(1));
+        stale_remembered_set
+            .record(stale_edge)
+            .expect("stale remembered edge records");
+        let unchanged_stale_remembered_set = stale_remembered_set.clone();
+        assert_eq!(
+            publication_commit_plan.publish_next_remembered_set(&mut stale_remembered_set),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetPublicationEpochMismatch {
+                    expected: RememberedSetEpoch::new(0),
+                    actual: RememberedSetEpoch::new(1),
+                }
+            )
+        );
+        assert_eq!(stale_remembered_set, unchanged_stale_remembered_set);
+
+        let publication_commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies.clone(),
+            forwarding_pointers.clone(),
+            MinorGcReferenceRewritePlan::default(),
+            MinorGcRememberedSetRefreshPlan::default(),
+        )
+        .expect("publication commit plan builds");
+        let mut changed_same_epoch_remembered_set = RememberedSet::new();
+        changed_same_epoch_remembered_set
+            .record(stale_edge)
+            .expect("same-epoch remembered edge records");
+        let unchanged_changed_same_epoch_remembered_set = changed_same_epoch_remembered_set.clone();
+        assert_eq!(
+            publication_commit_plan
+                .publish_next_remembered_set(&mut changed_same_epoch_remembered_set),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetPublicationLengthMismatch {
+                    expected: 0,
+                    actual: 1,
+                }
+            )
+        );
+        assert_eq!(
+            changed_same_epoch_remembered_set,
+            unchanged_changed_same_epoch_remembered_set
+        );
+
+        let expected_publication_edge = RememberedEdge::new(address(0x4000), first);
+        let mut source_remembered_set = RememberedSet::new();
+        source_remembered_set
+            .record(expected_publication_edge)
+            .expect("source remembered edge records");
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            source_remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("remembered-set refresh plan builds");
+        let publication_commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies.clone(),
+            forwarding_pointers.clone(),
+            MinorGcReferenceRewritePlan::default(),
+            remembered_set_refresh,
+        )
+        .expect("publication commit plan builds");
+        let actual_publication_edge = RememberedEdge::new(address(0x5000), first);
+        let mut changed_same_length_remembered_set = RememberedSet::new();
+        changed_same_length_remembered_set
+            .record(actual_publication_edge)
+            .expect("same-length remembered edge records");
+        let unchanged_changed_same_length_remembered_set =
+            changed_same_length_remembered_set.clone();
+        assert_eq!(
+            publication_commit_plan
+                .publish_next_remembered_set(&mut changed_same_length_remembered_set),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetPublicationEdgeMismatch {
+                    index: 0,
+                    expected: expected_publication_edge,
+                    actual: actual_publication_edge,
+                }
+            )
+        );
+        assert_eq!(
+            changed_same_length_remembered_set,
+            unchanged_changed_same_length_remembered_set
+        );
 
         assert_eq!(
             MinorGcCommitPlan::from_parts(

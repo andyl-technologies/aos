@@ -5114,8 +5114,19 @@ and helps the oracle directly.
       mismatches, rewrite source/replacement mismatches, retained/drop-promoted/
       drop-dead refresh mismatches, and remembered-set epoch overflow. This
       remains preflight metadata only; byte copying, forwarding-pointer
-      installation, live root/field slot mutation, remembered-set publication,
-      and semispace management remain open.
+      installation, live root/field slot mutation, and semispace management
+      remain open.
+- [x] Current minor-GC remembered-set publication precursor:
+      `MinorGcCommitPlan::publish_next_remembered_set` consumes a validated
+      commit plan after checking the caller-owned remembered set still matches
+      the refresh source epoch and edge sequence, then moves the precomputed
+      next-epoch set into place without a post-preflight allocation. Unit tests
+      cover successful publication, next-epoch edge replacement, epoch
+      mismatch, same-epoch length drift, same-length edge drift, and no partial
+      mutation of stale caller-owned sets. This remains only the remembered-set
+      publication boundary; object-byte copying,
+      forwarding-pointer installation, live root/field slot mutation, card-table
+      ownership, and semispace management remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

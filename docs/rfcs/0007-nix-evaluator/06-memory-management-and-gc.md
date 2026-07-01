@@ -1111,8 +1111,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       mismatches, rewrite source/replacement mismatches, retained/drop-promoted/
       drop-dead refresh mismatches, and remembered-set epoch overflow. This is
       still preflight metadata only: it does not copy bytes, install forwarding
-      pointers, mutate root/field slots, publish remembered sets, or manage
-      semispaces.
+      pointers, mutate root/field slots, or manage semispaces.
+- [x] Current minor-GC remembered-set publication precursor:
+      `MinorGcCommitPlan::publish_next_remembered_set` consumes a validated
+      commit plan after checking the caller-owned remembered set still matches
+      the refresh source epoch and edge sequence, then moves the precomputed
+      next-epoch set into place without a post-preflight allocation. Tests cover
+      successful publication, next-epoch edge replacement, epoch mismatch,
+      same-epoch length drift, same-length edge drift, and no partial mutation
+      of stale caller-owned sets. This is only the remembered-set publication
+      boundary: it does not copy object bytes, install forwarding pointers,
+      mutate live root/field slots, own the card table, or manage semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit
