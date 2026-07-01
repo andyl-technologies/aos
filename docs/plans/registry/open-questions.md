@@ -49,7 +49,7 @@ milestone or later** — is settled in [§4](#4-does-the-nar-cache-superset-ship
 Workstream references (target names):
 
 - [WS-01 — object store](./workstream-01-object-store.md) — sha256 bare repo, dumb-HTTP layout, `info/refs` / `HEAD` / `info/alternates` / `update-server-info`, root `/objects/` (loose) + per-release pack-only object dirs.
-- [WS-02 — pack/delta pipeline](./workstream-02-pack-delta-pipeline.md) — `pack-objects` thin/full, the delta scheme, zstd, expensive-producer tuning.
+- [WS-02 — pack/delta pipeline](./workstream-02-pack-delta-pipeline.md) — archival pack/delta plan; current implementation uses libgit2 full packs, Rust thin packs, zstd, expensive-producer tuning.
 - [WS-03 — channels & rollouts](./workstream-03-channels-rollouts.md) — 256 signed partition tags, channels-as-branches / frontier, bucket selection, publisher rollout control.
 - [WS-04 — signing & trust](./workstream-04-signing-trust.md) — signed tag objects (pure signed pointers), name-binding, sha256, anti-rollback / fix-forward.
 - [WS-05 — consumer](./workstream-05-consumer.md) — consumer resolution (bucket → channel tag → semver tag → commit), delta walk, retention, freshness/staleness policy, verification, and the client-side-configured Nix NAR cache superset.
@@ -107,17 +107,25 @@ mitigation is the loose-object fallback (brief §8: "ALL objects exist loose …
 the guaranteed completeness fallback") — but that fallback is still sha256 and
 does not rescue a non-sha256 client.
 
-### Q2 — `pack-objects` window/depth, zstd level, and trained dictionaries
+### Q2 — pack generation tuning, zstd level, and trained dictionaries
 
 | | |
 |---|---|
 | **Brief §16.2** | "Exact `pack-objects` window/depth and zstd level defaults (and whether to ship a trained dictionary per release line)." |
 | **Owner WS** | [WS-02](./workstream-02-pack-delta-pipeline.md) |
-| **Status** | OPEN — tuning, with a correctness floor on `depth`. |
+| **Status** | RESOLVED DIFFERENTLY — libgit2/Rust thinpack replaced the literal `pack-objects` flag contract; zstd `--ultra -22 --long=27` remains current for thin-delta transport; trained dictionaries remain deferred. |
 
-**What is decided (TARGET).** The producer pays so the consumer does not (brief
-§3 asymmetric-cost philosophy). Pack generation uses the expensive-producer
-flags (design brief §10):
+**Libgit2 transition note.** The original brief framed this as choosing exact
+`git pack-objects` flags. The as-built producer no longer shells out to
+`pack-objects`: full packs use libgit2 `PackBuilder` + `Indexer`, thin deltas
+use the Rust `thinpack` module, and consumers index packs locally with libgit2.
+The current tuning surface is therefore the Rust thinpack strategy set and zstd
+settings, not `--window` / `--depth` CLI flags. See
+[`../../registry/packs-and-deltas.md`](../../registry/packs-and-deltas.md).
+
+**Historical target (superseded by the libgit2 implementation).** The producer
+pays so the consumer does not (brief §3 asymmetric-cost philosophy). The original
+plan proposed the following expensive-producer flags:
 
 ```
 # Thin delta pack (objects in <to> not <from>; deltas may reference <from>):
@@ -140,45 +148,34 @@ printf '%s\n' "$commit" \
 zstd --ultra -22 --long=27 pack/delta-"$from".pack   # → .pack.zst
 ```
 
-The **zstd trick** is load-bearing and decided: git hard-codes zlib per object,
-so `--compression=0` produces a valid-but-uncompressed pack (delta encoding still
-applied), and `zstd --ultra -22 --long=27` does the entropy coding over the
-delta-encoded stream, beating zlib-9 while the pack stays git-valid (brief §10).
-The client does `zstd -d | git index-pack --fix-thin`.
+The **zstd trick** remains load-bearing for thin deltas: stored zlib entries
+produce a valid-but-uncompressed pack (delta encoding still applied), and
+`zstd --ultra -22 --long=27` does the entropy coding over the delta-encoded
+stream. The client does `zstd -d`, then completes the pack with local libgit2
+pack indexing.
 
-**What is open.**
+**What remains open.**
 
-1. **Window.** `--window=350` is the suggested default. Window is "the free
-   lever" (brief §10) — it costs only producer CPU/RAM — so it can be raised. The
-   open task is to measure the marginal pack-size win per window step on a real
-   release line and pin a default (and a per-line override) in
-   [packs-and-deltas.md](../../registry/packs-and-deltas.md).
-2. **Depth — has a correctness floor.** `--depth=50` is suggested but **capped
-   deliberately**: deep delta chains cost the *consumer* CPU to reconstruct
-   (brief §10). Depth is the one tuning knob that is not purely a producer cost;
-   raising it trades consumer reconstruct latency for marginal size. Pin a
-   conservative default and document the consumer-cost rationale.
-3. **zstd level / `--long` window.** `--ultra -22 --long=27` is the suggested
-   default; confirm the decompression-side `--long` window requirement is within
-   the consumer's `zstd -d` memory budget (the `--long=27` window forces a
-   matching `-d --long=27` on the client, costing ~128 MiB).
-4. **Trained dictionary per release line.** A zstd **trained dictionary** across
+1. **Thinpack strategy tuning.** Measure the Rust thinpack strategies on real
+   release lines and tune the candidate set if producer CPU buys meaningful
+   transport-size wins without pushing reconstruction cost onto consumers.
+2. **zstd level / `--long` window.** `--ultra -22 --long=27` is the current
+   thin-delta transport default; confirm the decompression-side memory budget on
+   target clients.
+3. **Trained dictionary per release line.** A zstd **trained dictionary** across
    a release line's small delta packs is "an optional further win" (brief §10).
    Open: is the size win worth the producer training step and the consumer
    dictionary-fetch round-trip? Recommend deferring — ship plain `--long`
    compression first, add a dictionary only if delta packs are dominated by
    cross-delta redundancy.
 
-**Recommendation.** Ship `--window=350 --depth=50 --threads=0 --compression=0` +
-`zstd --ultra -22 --long=27` as the defaults; expose window/depth/zstd-level as
-producer config; defer trained dictionaries to a WS-02 follow-on. The producer
-"may also try multiple delta bases and ship the smallest" (brief §10) — make that
-an opt-in, not a default, because it multiplies producer cost.
+**Recommendation.** Keep the implemented libgit2/Rust thinpack path. Do not
+reintroduce `git pack-objects` solely to match this archival plan. Add trained
+dictionaries only if validation shows a real win.
 
 **Failure mode.** Pure cost/size, never correctness (the loose-object and
-full-pack fallbacks are always valid). A bad depth choice shows up as slow
-`git index-pack` on the consumer; a bad window choice shows up as larger-than-
-necessary packs. Neither corrupts bytes.
+full-pack fallbacks are always valid). Bad thinpack strategy choices show up as
+slow local reconstruction or larger-than-necessary packs. Neither corrupts bytes.
 
 ### Q3 — Bucket-selection input and probe-forward fallback order
 
@@ -352,7 +349,8 @@ policy in [workstream-05-consumer.md](./workstream-05-consumer.md).
 **What is decided (TARGET).** Loose objects are **centralized at the single root
 `/objects/<xx>/<62hex>`** for every release (brief §8); the per-release
 `/releases/<M>/<m>/<patch...>/objects/` dirs are **pack-only** (they hold
-`info/packs` + `pack/pack-<sha256>.pack(.idx)` + `pack/delta-<from>.pack`, no
+`info/packs` + `pack/pack-<sha256>.pack(.idx)` +
+`pack/delta-<from>.pack.zst`, no
 loose objects and no per-release `info/alternates`). Because loose objects are
 centralized, `objects/info/alternates` no longer serves *object completeness* — it
 serves **pack discovery + the release index** (brief §4, §8).
@@ -617,7 +615,7 @@ rollout*").
 |---|---|---|---|
 | Package metadata | nested package TOMLs (`PackageToml`, `crates/aos-package/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
 | Root / manifest | `bundle-list.toml` manifest | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
-| Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack` + thin `delta-<from>.pack[.zst]` over dumb HTTP (brief §9, §10, §15) | **No** |
+| Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack(.idx)` + thin `delta-<from>.pack.zst` over dumb HTTP (brief §9, §10, §15) | **No** |
 | Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |
 | Selection | bundle selection by manifest plus branch/tag/version tracking | bucket → `/channels/<name>/<00..ff>` signed partition tag → semver tag → commit, then delta walk (brief §5, §6, §9) | **No** |
 | Rollout | none beyond tracking-mode selection | **256 signed partition tags**, publisher-advanced N/256 (brief §6) | **No** (new) |
@@ -826,7 +824,7 @@ item is closed.
 | # | Question / Risk | Owner WS | Blocks merge of | Default recommendation |
 |---|---|---|---|---|
 | Q1 | sha256 dumb-HTTP client floor | WS-01 | WS-01 object store, WS-05 fetch | Pin min git version; fail-closed consumer error |
-| Q2 | `pack-objects` window/depth, zstd, dictionary | WS-02 | WS-02 pipeline | `--window=350 --depth=50 --compression=0` + `zstd --ultra -22 --long=27`; defer dictionary |
+| Q2 | libgit2/Rust pack tuning, zstd, dictionary | WS-02 | WS-02 pipeline | Keep libgit2 full packs + Rust thinpack; keep zstd `--ultra -22 --long=27`; defer dictionary |
 | Q3 | Bucket-selection input + probe-forward order — **RESOLVED** | WS-03 / WS-05 | (none) | Registry-local salt; persist bucket index; probe `(bucket+i) mod 256` no re-pin |
 | Q4 | `apr release` shape + pluggable upload | WS-02 / WS-03 | WS-02/03 (the pipeline) | Resolved: `apr release` wrapper over focused verbs; repeatable file/HTTP/S3/SFTP upload URLs; immutable-first / low-TTL-last ordering |
 | Q5 | Consumer max-staleness policy + key-rotation cadence | WS-05 / WS-04 / WS-03 | WS-05 consumer, WS-04 trust | Partial: 14-day `max_staleness_seconds` gate on failed refreshes and unchanged valid targets; still validate production default and key cadence |
@@ -849,7 +847,7 @@ item is closed.
 - [design-brief.md](./design-brief.md) — authoritative intent; §16 is the source of this doc.
 - [gap-analysis.md](./gap-analysis.md) — producer/consumer gap enumeration.
 - [workstream-01-object-store.md](./workstream-01-object-store.md) — sha256 bare repo, dumb-HTTP layout, relative `info/alternates`, root `/objects/` + pack-only release dirs (Q1, Q6, R2).
-- [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) — pack-objects, thin/full packs, zstd (Q2, Q4, R2, R5, R11).
+- [workstream-02-pack-delta-pipeline.md](./workstream-02-pack-delta-pipeline.md) — archival pack/delta plan; current implementation uses libgit2 full packs, Rust thin packs, zstd (Q2, Q4, R2, R5, R11).
 - [workstream-03-channels-rollouts.md](./workstream-03-channels-rollouts.md) — 256 partition tags, frontier, bucket selection (Q3, Q4, Q5, R3, R6, R9, R10).
 - [workstream-04-signing-trust.md](./workstream-04-signing-trust.md) — signed tag objects (pure signed pointers), name-binding, key rotation (Q5, R4, R7, R10).
 - [workstream-05-consumer.md](./workstream-05-consumer.md) — resolution, delta walk, retention, freshness/staleness policy, verification, client-side-configured NAR cache superset (Q1, Q3, Q5, Q7, R1, R6, R7, R8, R9, R10).

@@ -574,6 +574,18 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
                     .is_some_and(|name| name.starts_with("pack-") && name.ends_with(".pack"))
             })
     );
+    assert!(
+        uploaded
+            .path()
+            .join("releases/1/1/0/objects/pack")
+            .read_dir()?
+            .any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with("pack-") && name.ends_with(".idx"))
+            })
+    );
 
     let server = StaticHttpServer::spawn(uploaded.path().to_path_buf()).await?;
     let config = fixture.signed_registry_config(server.base_url(), "stable");
