@@ -14,6 +14,7 @@
 //! `crucible-device` I/O sub-nodes into the determinism RNG and the device half
 //! of `MaterializedState`, [`device_subnode`] holds the L1 I/O devices as
 //! scheduling sub-nodes that drive the scheduler horizon and RESOLVE delivery,
+//! [`example_corpus`] owns the built-in worked-example scenario corpus,
 //! [`node_fault`] owns VM timing projection for slow and clock-skew faults,
 //! [`backend`] owns the VM backend boundary, [`event_catalog`] owns the versioned
 //! event-kind catalog, [`scheduler`] owns the quantum-loop boundary, [`trigger`]
@@ -30,6 +31,7 @@ pub mod decision;
 pub mod device;
 pub mod device_subnode;
 pub mod event_catalog;
+pub mod example_corpus;
 pub mod model;
 pub mod node_fault;
 pub mod scheduler;
@@ -58,6 +60,13 @@ pub use event_catalog::{
     EVENT_KIND_CATALOG_VERSION, EventKindCatalogDependency, EventKindCatalogEntry,
     event_kind_catalog, event_kind_catalog_canonical_bytes, event_kind_catalog_canonical_material,
     event_kind_catalog_class, event_kind_catalog_dependency_map, event_kind_catalog_entry,
+};
+pub use example_corpus::{
+    BUILT_IN_EXAMPLE_CORPUS_VERSION, EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS,
+    EXAMPLE_CORPUS_WHITE_BOX_REQUIRED, ExampleCorpusError, ExampleScenarioFixture,
+    ExampleScenarioRunOutcome, ExampleScenarioRunReport, ExampleScenarioVerifyReport,
+    HAPPY_PATH_SCENARIO_NAME, built_in_example_corpus, happy_path_scenario, run_example_scenario,
+    verify_example_scenario_runs, verify_happy_path_default_runs,
 };
 pub use model::{
     APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST, ActiveFaultTable, ActiveNetworkEdgeDirection,

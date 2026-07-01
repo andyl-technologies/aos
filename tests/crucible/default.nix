@@ -1171,6 +1171,11 @@ in rec {
     };
   };
   phase7 = {
+    happyPathExample = import ./phase7-happy-path-example.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.happyPathExample";
+      taskIds = ["T-EX-1"];
+    };
     reproductionArtifactFormat = import ./phase7-reproduction-artifact-format.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.reproductionArtifactFormat";

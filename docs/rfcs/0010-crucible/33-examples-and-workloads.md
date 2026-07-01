@@ -223,6 +223,18 @@ the adversarial host matrix (24 §7). **Reproduce:** the scenario pins its seed,
 so `crucible run happy-path.scn` is already reproducible; `crucible replay` of any
 emitted artifact lands at the same state ([EX-2]).
 
+Implementation note (T-EX-1): `crucible::example_corpus` ships the
+`happy-path.scn` corpus fixture as a content-addressed `ScenarioDefForm` with two
+unmodified guest images, in-guest `httpd`/`httpget` workload command-line
+parameters, console-marker readiness, black-box network/lifecycle/quiescence
+predicates, and no `GuestMarker` or white-box dependency. The local corpus runner
+uses the checked `EventLog` condition-prefix path to append deterministic
+observable events, fires the `pass-on-quiescence` graph event, captures a
+reproduction artifact whose schedule carries the canonical observation script,
+and `verify_example_scenario_runs` asserts independent runs have byte-identical
+canonical event-log bytes and fingerprint streams. `crucible selftest` invokes
+the same built-in corpus verifier.
+
 ### A.2 Partition recovery — the canonical fault scenario
 
 **What it shows.** The signature distributed-systems test: a replicated store on
@@ -1028,10 +1040,17 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   rootfs/9p delivery, world validation rejects mutable/host-path/duplicate
   parameterization, and changed scalar or config-tree values produce distinct
   individually reproducible `ScenarioDef` material.
-- [ ] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
+- [x] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
   corpus fixture, authored with zero guest-side components; assert `run` PASSES and
   `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec
   §A.1.
+  Completed by `checks.crucible.phase7.happyPathExample`: the built-in
+  `happy-path.scn` fixture is exported from `crucible::example_corpus`, uses only
+  black-box console/network/lifecycle/quiescence predicates with white-box
+  disabled, runs to the `pass-on-quiescence` event, captures a replayable
+  reproduction artifact with the canonical observation script in its schedule,
+  is exercised by `crucible selftest`, and verifies five independent local
+  reductions as byte-identical.
 - [ ] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
   observable trigger graph (AllOf readiness + relative-timer heal + observable
   convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`

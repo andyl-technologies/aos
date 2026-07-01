@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+crucible = { path = "../crucible" }
 
 [dev-dependencies]
 crucible-harness = { path = "../crucible-harness" }
