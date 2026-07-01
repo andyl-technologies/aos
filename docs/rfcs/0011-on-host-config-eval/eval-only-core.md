@@ -396,3 +396,18 @@ This is a dedicated, high-blast-radius change to the core VM test infrastructure
 reviewed change rather than folded in here. The runtime primitives it needs —
 the materializer, `activate` wiring, and `extendModules` — are all in place and
 validated.
+
+**One more constraint the code review surfaced:** some fleet tests do not merely
+*receive* config over Ignition — they *test Ignition itself*. `install-from-
+image` (RFC-0003) delivers an `instanceMetadata` with `storage.disks` +
+`storage.filesystems` and asserts that "ignition partitioned and formatted the
+disk" (root-a/root-b/swap/var, the immutable-erofs-root + var-fills-disk
+layout); `secure-boot`/`measured-boot` similarly exercise the Ignition disk
+path. Removing Ignition removes those tests' *subject*, so they must be
+**rewritten to validate the `systemd-repart` install flow** (the substrate
+already exists and boots — `systems.server-rfc0011.checks.system-boot` is
+green), not just re-plumbed for identity. That test-suite migration — not the
+identity baking — is the substantive remainder of "remove all deprecated code,"
+and it is deliberately not rushed: the runtime substrate is proven, but the
+install/disk *assertions* are Ignition-shaped and need repart-shaped
+replacements plus a full fleet re-run.
