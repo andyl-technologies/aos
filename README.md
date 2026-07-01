@@ -1,17 +1,21 @@
-# AOS — Andyl OS
+# `AOS // ANDYL OS`
 
-AOS is a Linux distribution tailored for headless environments like servers and IoT devices. AOS has a clear and reproducible [provenance] thanks to its build process conducted with [Nix] and bootstrapped entirely from source.
+**EARLY PREVIEW**
+
+AOS is a Linux distribution tailored for headless environments like servers and IoT devices.
 
 ## Purpose
 
-We wanted a lightweight operating system that runs on any host with a single image that brings together all the great features of NixOS under a familiar package management system that users of `apt` or `yum` would be delighted to use.
+A lightweight operating system that runs on any host with a single image. AOS brings together all the great features of NixOS under a familiar package management system that users of `apt` or `yum` would be delighted to use.
+
+As a guiding principle, every AOS binary has a clear and reproducible provenance and is entirely bootstrapped from source.
 
 ## Components
 
-- Universal image for cloud and metal
-- [Host provisionning] via cloud-init (Ignition)
-- Runtime managed by systemd
-- [Package management] built with Nix
+- **Universal image** for cloud and metal
+- **Host provisioning** via cloud-init
+- Runtime managed by **systemd**
+- Package management built with **Nix**
 
 ## Install
 
@@ -117,17 +121,5 @@ Installation:
 - You can access the server's console or lookup its IP from its detail page.
 
 </details>
-
-
-## Packages
-
-## Develop
-
-
-
-[AOS image]: 
-[minimal `config.json`]: ./docs/users/install/minimal-config.json
-
-[provenance]: ./docs/users/build_assurance.md
 
 <!-- vim: set spell spelllang=en wrap: -->
