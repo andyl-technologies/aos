@@ -50,6 +50,34 @@ impl EvalHeap {
         self.permanent_allocator.stats()
     }
 
+    /// Installs one GC-stress polling policy for both worker and permanent
+    /// allocation domains.
+    pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
+        self.allocator.set_gc_stress_policy(policy);
+        self.permanent_allocator.set_gc_stress_policy(policy);
+    }
+
+    /// Returns the worker allocation-domain GC-stress polling policy.
+    pub const fn allocator_gc_stress_policy(&self) -> GcStressPolicy {
+        self.allocator.gc_stress_policy()
+    }
+
+    /// Returns the permanent allocation-domain GC-stress polling policy.
+    pub const fn permanent_allocator_gc_stress_policy(&self) -> GcStressPolicy {
+        self.permanent_allocator.gc_stress_policy()
+    }
+
+    /// Returns allocation-safepoint accounting for worker-domain allocations.
+    pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
+        self.allocator.allocation_safepoints()
+    }
+
+    /// Returns allocation-safepoint accounting for permanent shared
+    /// allocations.
+    pub const fn permanent_allocation_safepoints(&self) -> AllocationSafepointState {
+        self.permanent_allocator.allocation_safepoints()
+    }
+
     /// Returns the runtime allocation tier backing this heap.
     pub fn allocator_tier(&self) -> RuntimeAllocatorTier {
         self.allocator.tier()

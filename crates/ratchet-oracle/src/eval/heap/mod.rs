@@ -22,7 +22,10 @@ use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats};
 use crate::list::NixList;
-use crate::runtime::alloc::{PermanentSharedAllocator, RuntimeAllocator, RuntimeAllocatorTier};
+use crate::runtime::alloc::{
+    AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
+    RuntimeAllocatorTier,
+};
 use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};

@@ -4,6 +4,7 @@ use super::super::ThunkState;
 use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
+use crate::runtime::alloc::AllocationGcPollReason;
 use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::SymbolTable;
@@ -53,8 +54,53 @@ fn default_heap_uses_tier_a_runtime_allocator() {
         heap.permanent_allocator_tier(),
         RuntimeAllocatorTier::PermanentShared
     );
+    assert!(heap.allocator_gc_stress_policy().is_disabled());
+    assert!(heap.permanent_allocator_gc_stress_policy().is_disabled());
+    assert_eq!(
+        heap.allocation_safepoints(),
+        AllocationSafepointState::default()
+    );
+    assert_eq!(
+        heap.permanent_allocation_safepoints(),
+        AllocationSafepointState::default()
+    );
     assert_eq!(heap.arena_stats(), ArenaStats::default());
     assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
+}
+
+#[test]
+fn gc_stress_policy_installs_across_heap_allocation_domains() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+
+    assert_eq!(
+        heap.allocator_gc_stress_policy(),
+        GcStressPolicy::every_safepoint()
+    );
+    assert_eq!(
+        heap.permanent_allocator_gc_stress_policy(),
+        GcStressPolicy::every_safepoint()
+    );
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"root".to_vec()))
+        .expect("string allocates");
+
+    assert_eq!(
+        heap.allocation_safepoints()
+            .last()
+            .expect("worker safepoint")
+            .gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert_eq!(
+        heap.permanent_allocation_safepoints()
+            .last()
+            .expect("permanent safepoint")
+            .gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
 }
 
 #[test]

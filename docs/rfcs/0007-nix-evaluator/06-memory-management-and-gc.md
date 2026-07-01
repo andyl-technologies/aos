@@ -847,9 +847,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       arena accounting. Tests prove every worker route (`thunk`, `lambda`,
       `attrs`, `cons`, `list`, `string`, `raw`) and every permanent route
       (`attrs`, `list`, `string`) records exactly one safepoint. This is
-      metadata only: it does not yet poll a collector, build a live root set,
+      metadata only: it does not yet invoke a collector, build a live root set,
       run GC-stress collection, export C ABI symbols, or integrate the
       thunk-resolve write barrier with allocation dispatch.
+- [x] Current GC-stress safepoint-poll precursor:
+      `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
+      permanent-shared allocators mark allocation safepoints as collector-poll
+      candidates under disabled, every-safepoint, or every-N-safepoints stress
+      policies; `AllocationSafepoint::gc_poll_reason` records why the poll was
+      requested, and `EvalHeap::set_gc_stress_policy` installs one policy across
+      both allocation domains. Periodic policies use the allocator lifetime
+      safepoint sequence, and enabled stress policies poll once the sequence
+      saturates. Tests cover zero-period rejection, default-disabled behavior,
+      every-safepoint polling, lifetime-sequence periodic polling, saturation
+      polling, permanent-shared allocation polling, and heap-level installation
+      across both domains. This is poll intent only: no live root set is built
+      and no collector or GC-stress collection is invoked yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 

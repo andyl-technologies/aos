@@ -36,10 +36,110 @@ pub enum RuntimeAllocationEntryPoint {
     AosAllocRaw,
 }
 
+/// GC-stress polling policy evaluated at allocation safepoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GcStressPolicy {
+    mode: GcStressPolicyMode,
+}
+
+impl Default for GcStressPolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl GcStressPolicy {
+    /// Creates a policy that never requests a GC-stress collector poll.
+    pub const fn disabled() -> Self {
+        Self {
+            mode: GcStressPolicyMode::Disabled,
+        }
+    }
+
+    /// Creates a policy that requests a GC-stress collector poll at every
+    /// allocation safepoint.
+    pub const fn every_safepoint() -> Self {
+        Self {
+            mode: GcStressPolicyMode::EverySafepoint,
+        }
+    }
+
+    /// Creates a policy that requests a GC-stress collector poll every `period`
+    /// allocation safepoints.
+    ///
+    /// The cadence is evaluated against the allocator's lifetime safepoint
+    /// sequence, not the policy-installation epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GcStressPolicyError::ZeroPeriod`] when `period` is zero.
+    pub const fn every_n_safepoints(period: u64) -> Result<Self, GcStressPolicyError> {
+        if period == 0 {
+            return Err(GcStressPolicyError::ZeroPeriod);
+        }
+        Ok(Self {
+            mode: GcStressPolicyMode::EveryNSafepoints { period },
+        })
+    }
+
+    /// Returns whether this policy never requests a GC-stress collector poll.
+    pub const fn is_disabled(self) -> bool {
+        matches!(self.mode, GcStressPolicyMode::Disabled)
+    }
+
+    const fn poll_reason_for(self, sequence: u64) -> Option<AllocationGcPollReason> {
+        match self.mode {
+            GcStressPolicyMode::Disabled => None,
+            _ if sequence == u64::MAX => Some(AllocationGcPollReason::GcStressSequenceSaturated),
+            GcStressPolicyMode::EverySafepoint => {
+                Some(AllocationGcPollReason::GcStressEverySafepoint)
+            }
+            GcStressPolicyMode::EveryNSafepoints { period } => {
+                if sequence % period == 0 {
+                    Some(AllocationGcPollReason::GcStressEveryNSafepoints { period })
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GcStressPolicyMode {
+    Disabled,
+    EverySafepoint,
+    EveryNSafepoints { period: u64 },
+}
+
+/// A GC-stress policy configuration failure.
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum GcStressPolicyError {
+    /// Periodic GC-stress polling needs a non-zero period.
+    #[error("GC-stress safepoint period cannot be zero")]
+    ZeroPeriod,
+}
+
+/// The reason an allocation safepoint requested a collector poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocationGcPollReason {
+    /// GC-stress mode requested a collector poll at every safepoint.
+    GcStressEverySafepoint,
+    /// GC-stress mode requested a collector poll at a periodic safepoint.
+    GcStressEveryNSafepoints {
+        /// The configured safepoint period.
+        period: u64,
+    },
+    /// GC-stress mode requested a collector poll because the safepoint sequence
+    /// saturated.
+    GcStressSequenceSaturated,
+}
+
 /// Metadata captured at one allocation safepoint.
 ///
-/// The current tree-walk runtime records safepoints only. It does not yet poll a
-/// collector, build a root set, or run GC stress mode from this event.
+/// The current tree-walk runtime records safepoints and GC-stress poll intent
+/// only. It does not yet invoke a collector, build a root set, or run GC stress
+/// collection from this event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AllocationSafepoint {
     sequence: u64,
@@ -49,6 +149,7 @@ pub struct AllocationSafepoint {
     requested_size: usize,
     reserved_size: usize,
     stats_after: ArenaStats,
+    gc_poll_reason: Option<AllocationGcPollReason>,
 }
 
 impl AllocationSafepoint {
@@ -58,6 +159,7 @@ impl AllocationSafepoint {
         entrypoint: RuntimeAllocationEntryPoint,
         allocation: ArenaAllocation,
         stats_after: ArenaStats,
+        gc_poll_reason: Option<AllocationGcPollReason>,
     ) -> Self {
         Self {
             sequence,
@@ -67,6 +169,7 @@ impl AllocationSafepoint {
             requested_size: allocation.requested_size,
             reserved_size: allocation.reserved_size,
             stats_after,
+            gc_poll_reason,
         }
     }
 
@@ -103,6 +206,11 @@ impl AllocationSafepoint {
     /// Returns the full arena accounting snapshot after this allocation.
     pub const fn stats_after(self) -> ArenaStats {
         self.stats_after
+    }
+
+    /// Returns why this safepoint requested a collector poll.
+    pub const fn gc_poll_reason(self) -> Option<AllocationGcPollReason> {
+        self.gc_poll_reason
     }
 
     /// Returns heap chunks owned after this allocation completed.
@@ -150,15 +258,18 @@ impl AllocationSafepointState {
         entrypoint: RuntimeAllocationEntryPoint,
         allocation: ArenaAllocation,
         stats_after: ArenaStats,
+        gc_stress_policy: GcStressPolicy,
     ) {
         let sequence = self.count.saturating_add(1);
         self.count = sequence;
+        let gc_poll_reason = gc_stress_policy.poll_reason_for(sequence);
         self.last = Some(AllocationSafepoint::new(
             sequence,
             tier,
             entrypoint,
             allocation,
             stats_after,
+            gc_poll_reason,
         ));
     }
 }
@@ -168,6 +279,7 @@ impl AllocationSafepointState {
 pub struct RuntimeAllocator {
     backend: RuntimeAllocatorBackend,
     safepoints: AllocationSafepointState,
+    gc_stress_policy: GcStressPolicy,
 }
 
 impl Default for RuntimeAllocator {
@@ -182,6 +294,7 @@ impl RuntimeAllocator {
         Self {
             backend: RuntimeAllocatorBackend::TierAOneShot(BumpArena::new()),
             safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
         }
     }
 
@@ -197,7 +310,27 @@ impl RuntimeAllocator {
                 chunk_bytes,
             )?),
             safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
         })
+    }
+
+    /// Returns this allocator with a GC-stress polling policy installed.
+    pub fn with_gc_stress_policy(mut self, policy: GcStressPolicy) -> Self {
+        self.gc_stress_policy = policy;
+        self
+    }
+
+    /// Installs a GC-stress polling policy for later allocation safepoints.
+    ///
+    /// Periodic policies use this allocator's lifetime safepoint sequence, so
+    /// installing a policy does not reset the cadence.
+    pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
+        self.gc_stress_policy = policy;
+    }
+
+    /// Returns the installed GC-stress polling policy.
+    pub const fn gc_stress_policy(&self) -> GcStressPolicy {
+        self.gc_stress_policy
     }
 
     /// Returns the installed allocation tier.
@@ -323,8 +456,11 @@ impl RuntimeAllocator {
         entrypoint: RuntimeAllocationEntryPoint,
         allocation: ArenaAllocation,
     ) {
+        let tier = self.tier();
+        let stats = self.stats();
+        let gc_stress_policy = self.gc_stress_policy;
         self.safepoints
-            .record(self.tier(), entrypoint, allocation, self.stats());
+            .record(tier, entrypoint, allocation, stats, gc_stress_policy);
     }
 }
 
@@ -338,6 +474,7 @@ enum RuntimeAllocatorBackend {
 pub(crate) struct PermanentSharedAllocator {
     arena: BumpArena,
     safepoints: AllocationSafepointState,
+    gc_stress_policy: GcStressPolicy,
 }
 
 impl Default for PermanentSharedAllocator {
@@ -352,6 +489,7 @@ impl PermanentSharedAllocator {
         Self {
             arena: BumpArena::new(),
             safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
         }
     }
 
@@ -365,7 +503,21 @@ impl PermanentSharedAllocator {
         Ok(Self {
             arena: BumpArena::with_initial_chunk_bytes(chunk_bytes)?,
             safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
         })
+    }
+
+    /// Installs a GC-stress polling policy for later allocation safepoints.
+    ///
+    /// Periodic policies use this allocator's lifetime safepoint sequence, so
+    /// installing a policy does not reset the cadence.
+    pub(crate) fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
+        self.gc_stress_policy = policy;
+    }
+
+    /// Returns the installed GC-stress polling policy.
+    pub(crate) const fn gc_stress_policy(&self) -> GcStressPolicy {
+        self.gc_stress_policy
     }
 
     /// Returns the allocator tier for permanent shared storage.
@@ -425,8 +577,11 @@ impl PermanentSharedAllocator {
         entrypoint: RuntimeAllocationEntryPoint,
         allocation: ArenaAllocation,
     ) {
+        let tier = self.tier();
+        let stats = self.stats();
+        let gc_stress_policy = self.gc_stress_policy;
         self.safepoints
-            .record(self.tier(), entrypoint, allocation, self.stats());
+            .record(tier, entrypoint, allocation, stats, gc_stress_policy);
     }
 }
 
@@ -460,6 +615,7 @@ mod tests {
         assert_eq!(event.heap_used_bytes_after(), stats.used_bytes);
         assert_eq!(event.heap_reserved_bytes_after(), stats.reserved_bytes);
         assert_eq!(event.heap_mapped_bytes_after(), stats.mapped_bytes);
+        assert_eq!(event.gc_poll_reason(), None);
     }
 
     #[test]
@@ -468,6 +624,7 @@ mod tests {
             RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
 
         assert_eq!(allocator.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert!(allocator.gc_stress_policy().is_disabled());
         assert_eq!(
             allocator.allocation_safepoints(),
             AllocationSafepointState::default()
@@ -570,6 +727,7 @@ mod tests {
             PermanentSharedAllocator::with_initial_chunk_bytes(256).expect("allocator creates");
 
         assert_eq!(allocator.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert!(allocator.gc_stress_policy().is_disabled());
         assert_eq!(allocator.stats(), ArenaStats::default());
         assert_eq!(
             allocator.allocation_safepoints(),
@@ -645,5 +803,151 @@ mod tests {
             .expect_err("zero-sized chunks are invalid");
 
         assert_eq!(error, ArenaError::InvalidChunkSize { chunk_bytes: 0 });
+    }
+
+    #[test]
+    fn gc_stress_period_rejects_zero() {
+        assert_eq!(
+            GcStressPolicy::every_n_safepoints(0),
+            Err(GcStressPolicyError::ZeroPeriod)
+        );
+    }
+
+    #[test]
+    fn gc_stress_every_safepoint_records_poll_reason() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(128).expect("allocator creates");
+        allocator.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+
+        allocator.aos_alloc_thunk().expect("thunk allocates");
+
+        let event = allocator
+            .allocation_safepoints()
+            .last()
+            .expect("safepoint records");
+        assert_eq!(event.sequence(), 1);
+        assert_eq!(
+            event.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressEverySafepoint)
+        );
+    }
+
+    #[test]
+    fn gc_stress_periodic_policy_records_poll_on_matching_sequences() {
+        let mut allocator = RuntimeAllocator::tier_a_with_initial_chunk_bytes(128)
+            .expect("allocator creates")
+            .with_gc_stress_policy(
+                GcStressPolicy::every_n_safepoints(2).expect("period is non-zero"),
+            );
+
+        allocator.aos_alloc_thunk().expect("first allocation");
+        assert_eq!(
+            allocator
+                .allocation_safepoints()
+                .last()
+                .expect("first safepoint")
+                .gc_poll_reason(),
+            None
+        );
+
+        allocator.aos_alloc_lambda().expect("second allocation");
+        assert_eq!(
+            allocator
+                .allocation_safepoints()
+                .last()
+                .expect("second safepoint")
+                .gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressEveryNSafepoints { period: 2 })
+        );
+
+        allocator.aos_alloc_cons().expect("third allocation");
+        assert_eq!(
+            allocator
+                .allocation_safepoints()
+                .last()
+                .expect("third safepoint")
+                .gc_poll_reason(),
+            None
+        );
+    }
+
+    #[test]
+    fn periodic_gc_stress_uses_allocator_lifetime_sequence() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(128).expect("allocator creates");
+        allocator.aos_alloc_thunk().expect("first allocation");
+
+        allocator.set_gc_stress_policy(
+            GcStressPolicy::every_n_safepoints(2).expect("period is non-zero"),
+        );
+        allocator.aos_alloc_lambda().expect("second allocation");
+
+        let event = allocator
+            .allocation_safepoints()
+            .last()
+            .expect("second safepoint");
+        assert_eq!(event.sequence(), 2);
+        assert_eq!(
+            event.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressEveryNSafepoints { period: 2 })
+        );
+    }
+
+    #[test]
+    fn enabled_gc_stress_polls_when_safepoint_sequence_saturates() {
+        let mut arena = BumpArena::with_initial_chunk_bytes(64).expect("arena creates");
+        let allocation = arena.aos_alloc_thunk().expect("thunk allocates");
+        let mut state = AllocationSafepointState {
+            count: u64::MAX - 1,
+            last: None,
+        };
+        let policy = GcStressPolicy::every_n_safepoints(2).expect("period is non-zero");
+
+        state.record(
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocThunk,
+            allocation,
+            arena.stats(),
+            policy,
+        );
+        let event = state.last().expect("saturated safepoint records");
+        assert_eq!(event.sequence(), u64::MAX);
+        assert_eq!(
+            event.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressSequenceSaturated)
+        );
+
+        state.record(
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocThunk,
+            allocation,
+            arena.stats(),
+            policy,
+        );
+        let event = state.last().expect("post-saturation safepoint records");
+        assert_eq!(event.sequence(), u64::MAX);
+        assert_eq!(
+            event.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressSequenceSaturated)
+        );
+    }
+
+    #[test]
+    fn permanent_shared_allocations_can_record_gc_stress_poll_reason() {
+        let mut allocator =
+            PermanentSharedAllocator::with_initial_chunk_bytes(128).expect("allocator creates");
+        allocator.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+
+        allocator.aos_alloc_string(5).expect("string allocates");
+
+        let event = allocator
+            .allocation_safepoints()
+            .last()
+            .expect("safepoint records");
+        assert_eq!(event.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert_eq!(
+            event.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressEverySafepoint)
+        );
     }
 }

@@ -4977,9 +4977,23 @@ and helps the oracle directly.
       allocation sizes, and post-allocation arena accounting. Tests pin exactly
       one safepoint for `thunk`, `lambda`, `attrs`, `cons`, `list`, `string`,
       and `raw` worker allocations plus permanent `attrs`, `list`, and
-      `string` allocations. This remains metadata only; collector polling,
+      `string` allocations. This remains metadata only; collector invocation,
       live-root construction, GC-stress execution, exported C ABI symbols, and
       write-barrier dispatch integration remain open.
+- [x] Current GC-stress safepoint-poll precursor:
+      `runtime::alloc::GcStressPolicy` classifies centralized worker and
+      permanent-shared allocation safepoints under disabled, every-safepoint, or
+      every-N-safepoints stress policies, and `AllocationSafepoint` records the
+      poll reason for later collector dispatch. `EvalHeap::set_gc_stress_policy`
+      installs one policy across both worker and permanent allocation domains.
+      Periodic policies use the allocator lifetime safepoint sequence, and
+      enabled stress policies poll when that sequence saturates. Tests pin
+      zero-period rejection, default-disabled behavior, every-safepoint polling,
+      lifetime-sequence periodic polling, saturation polling, permanent-shared
+      polling, and heap-level installation across both domains. This is
+      poll-intent metadata only; building the live root set, invoking the
+      collector, actually collecting at every safepoint, exported C ABI symbols,
+      and write-barrier dispatch integration remain open.
 - [x] Current permanent-shared allocation precursor:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
