@@ -121,6 +121,7 @@ fn eval_whnf_owned_with_evaluator(
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
+    let memory_budget_action = evaluator.heap.last_memory_budget_action();
     let cheap_memory_advice_report = evaluator
         .options
         .heap_cheap_memory_advice_min_idle_epochs()
@@ -137,6 +138,7 @@ fn eval_whnf_owned_with_evaluator(
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        memory_budget_action,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
     })
@@ -236,6 +238,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
+    let memory_budget_action = evaluator.heap.last_memory_budget_action();
     let cheap_memory_advice_report = evaluator
         .options
         .heap_cheap_memory_advice_min_idle_epochs()
@@ -252,6 +255,7 @@ fn eval_instantiation_attr_path_with_evaluator(
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        memory_budget_action,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
     })

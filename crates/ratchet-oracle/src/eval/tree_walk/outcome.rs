@@ -108,6 +108,7 @@ pub struct EvalOutcome {
     pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
     pub(crate) thunk_resolve_remembered_set: RememberedSet,
+    pub(crate) memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
 }
@@ -132,6 +133,7 @@ impl std::fmt::Debug for EvalOutcome {
                 "thunk_resolve_remembered_set",
                 &self.thunk_resolve_remembered_set,
             )
+            .field("memory_budget_action", &self.memory_budget_action)
             .field(
                 "cheap_memory_advice_report",
                 &self.cheap_memory_advice_report,
@@ -198,6 +200,11 @@ impl EvalOutcome {
     /// Returns the remembered set populated by thunk-resolution write barriers.
     pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
         &self.thunk_resolve_remembered_set
+    }
+
+    /// Returns the final high-water heap budget action, if one was configured.
+    pub const fn memory_budget_action(&self) -> Option<EvalHeapMemoryBudgetAction> {
+        self.memory_budget_action
     }
 
     /// Returns the post-evaluation cheap heap advice report, if one was requested.

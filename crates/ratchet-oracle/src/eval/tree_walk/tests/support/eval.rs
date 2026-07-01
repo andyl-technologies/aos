@@ -51,6 +51,7 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        memory_budget_action: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans: EvalGcStressBoundaryScans::default(),
     }

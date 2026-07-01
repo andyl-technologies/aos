@@ -47,8 +47,9 @@ use super::env::{
 };
 use super::heap::{
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollScan, EvalHeap,
-    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapResidentMemoryMode, EvalLambda,
-    EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};

@@ -5431,14 +5431,18 @@ and helps the oracle directly.
       validated `HeapMemoryBudget`, and `TreeWalk` installs that budget on
       `EvalHeap`. Successful typed heap allocations now poll the configured
       budget automatically, dispatch the implemented unused-tail advice response,
-      and retain the latest action for tests and later daemon policy; hash-cons
-      hits skip the poll because no heap allocation occurred. Linux budget polls
-      now sample process RSS from `/proc/self/statm` through
+      and retain the latest action for tests and later daemon policy;
+      `EvalOutcome` snapshots that final action through `memory_budget_action()`
+      so root and attr-path callers can observe the safety-valve decision
+      without reaching into heap internals. Hash-cons hits skip the poll because
+      no heap allocation occurred. Linux budget polls now sample process RSS
+      from `/proc/self/statm` through
       `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
       unsupported or unreadable platforms; tests pin the parser, the fallback
-      mode, and the resident-source metadata carried by budget decisions. Daemon
-      policy, non-Linux live RSS backends, CA-store spill, cold hash-consed page
-      eviction, and collector installation remain open under the full
+      mode, the resident-source metadata carried by budget decisions, and
+      outcome-level budget-action reporting. Daemon policy, non-Linux live RSS
+      backends, CA-store spill, cold hash-consed page eviction, and collector
+      installation remain open under the full
       memory-management rows. `EvalHeap` also tracks per-record access epochs
       and exposes cold hash-consed logical-byte estimates for opt-in budget
       classification, but the executed unused-tail budget action still credits

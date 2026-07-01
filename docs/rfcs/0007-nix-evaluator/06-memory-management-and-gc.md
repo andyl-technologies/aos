@@ -1109,14 +1109,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `HeapMemoryBudget`, and `TreeWalk` installs that budget on `EvalHeap`.
       Successful typed heap allocations now poll the configured budget
       automatically, dispatch the implemented unused-tail advice response, and
-      retain the latest action for tests and later daemon policy; hash-cons hits
-      skip the poll because no heap allocation occurred. Linux budget polls now
-      sample process RSS from `/proc/self/statm` through
+      retain the latest action for tests and later daemon policy; `EvalOutcome`
+      snapshots that final action through `memory_budget_action()` so root and
+      attr-path callers can observe the safety-valve decision without reaching
+      into heap internals. Hash-cons hits skip the poll because no heap
+      allocation occurred. Linux budget polls now sample process RSS from
+      `/proc/self/statm` through
       `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
       unsupported or unreadable platforms; tests pin the parser, the fallback
-      mode, and the resident-source metadata carried by budget decisions. Daemon
-      policy, non-Linux live RSS backends, actual CA-store spill, and collector
-      installation are not wired yet, so the full row above remains open.
+      mode, the resident-source metadata carried by budget decisions, and
+      outcome-level budget-action reporting. Daemon policy, non-Linux live RSS
+      backends, actual CA-store spill, and collector installation are not wired
+      yet, so the full row above remains open.
       `EvalHeap` also records access epochs for typed heap records and exposes
       cold hash-consed logical-byte estimates for opt-in budget classification,
       but the executed unused-tail response still passes zero cold reclaim

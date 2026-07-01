@@ -116,9 +116,9 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
     );
     assert_eq!(outcome.heap().memory_budget_poll_count(), 1);
     let action = outcome
-        .heap()
-        .last_memory_budget_action()
-        .expect("tree-walk allocation polls configured budget");
+        .memory_budget_action()
+        .expect("tree-walk outcome records configured budget action");
+    assert_eq!(outcome.heap().last_memory_budget_action(), Some(action));
     assert_eq!(action.decision().budget(), budget);
     assert_eq!(
         action.decision().worker_stats(),
@@ -133,6 +133,30 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
     }
     assert!(action.requests_tier_b());
+}
+
+#[test]
+fn attr_path_eval_reports_final_heap_memory_budget_action() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("{ value = \"budgeted\"; }");
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &[b"value".to_vec()],
+        TreeWalkOptions::with_heap_memory_budget(budget),
+        None,
+    )
+    .expect("attr-path selection evaluates");
+
+    let action = outcome
+        .memory_budget_action()
+        .expect("attr-path outcome records configured budget action");
+    assert_eq!(outcome.heap().last_memory_budget_action(), Some(action));
+    assert_eq!(action.decision().budget(), budget);
+    assert_eq!(
+        action.decision().permanent_stats(),
+        outcome.heap().permanent_arena_stats()
+    );
+    assert!(action.decision().requires_runtime_action());
 }
 
 #[test]
