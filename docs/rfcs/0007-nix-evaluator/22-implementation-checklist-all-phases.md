@@ -5101,6 +5101,21 @@ and helps the oracle directly.
       rebuilds, retained-edge filtering, and overflow rejection. This still does
       not mutate the source snapshot, own card-table construction, rescan old
       fields, or invoke the collector.
+- [x] Current minor-GC commit-plan precursor:
+      `ratchet-value::heap::gc::MinorGcCommitPlan::from_parts` composes the
+      validated object-copy schedule, forwarding-pointer plan, reference-rewrite
+      plan, and remembered-set refresh into a single ordered commit metadata
+      object. It verifies the forwarding plan, reference rewrites, and
+      remembered-set refresh decisions are exact projections of the object-copy
+      schedule and precomputes the rebuilt next-epoch remembered set, surfacing
+      cross-plan mismatches, epoch overflow, or retained-edge storage failures
+      before a future mutating collector step begins. Unit tests cover valid
+      composition, next remembered-set publication, forwarding count/order
+      mismatches, rewrite source/replacement mismatches, retained/drop-promoted/
+      drop-dead refresh mismatches, and remembered-set epoch overflow. This
+      remains preflight metadata only; byte copying, forwarding-pointer
+      installation, live root/field slot mutation, remembered-set publication,
+      and semispace management remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

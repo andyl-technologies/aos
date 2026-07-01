@@ -29,7 +29,7 @@ pub use concurrent_gc::{
     classify_thunk_mutation_barrier,
 };
 pub use gc::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitPlan,
     MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
     MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcForwardingPointer,
     MinorGcForwardingPointerPlan, MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan,

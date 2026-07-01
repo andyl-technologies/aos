@@ -1098,6 +1098,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       filtering, and overflow rejection. This still does not mutate the source
       snapshot, own the card-table protocol, rescan old fields, or invoke a
       collector.
+- [x] Current minor-GC commit-plan precursor:
+      `ratchet-value::heap::gc::MinorGcCommitPlan::from_parts` composes the
+      validated object-copy schedule, forwarding-pointer plan, reference-rewrite
+      plan, and remembered-set refresh into a single ordered commit metadata
+      object. It verifies the forwarding plan, reference rewrites, and
+      remembered-set refresh decisions are exact projections of the object-copy
+      schedule and precomputes the rebuilt next-epoch remembered set, surfacing
+      cross-plan mismatches, epoch overflow, or retained-edge storage failures
+      before a future mutating collector step begins. Tests cover valid
+      composition, next remembered-set publication, forwarding count/order
+      mismatches, rewrite source/replacement mismatches, retained/drop-promoted/
+      drop-dead refresh mismatches, and remembered-set epoch overflow. This is
+      still preflight metadata only: it does not copy bytes, install forwarding
+      pointers, mutate root/field slots, publish remembered sets, or manage
+      semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

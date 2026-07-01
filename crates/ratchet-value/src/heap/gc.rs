@@ -1559,6 +1559,79 @@ impl MinorGcRememberedSetRefreshPlan {
     }
 }
 
+/// A metadata commit plan for the ordered side effects of one minor collection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MinorGcCommitPlan {
+    object_copies: MinorGcObjectCopyPlan,
+    forwarding_pointers: MinorGcForwardingPointerPlan,
+    reference_rewrites: MinorGcReferenceRewritePlan,
+    remembered_set_refresh: MinorGcRememberedSetRefreshPlan,
+    next_remembered_set: RememberedSet,
+}
+
+impl MinorGcCommitPlan {
+    /// Builds a minor-GC commit plan from already validated subplans.
+    ///
+    /// The commit plan records the deterministic order a later collector
+    /// implementation will use: copy/promote object bytes, install forwarding
+    /// pointers, rewrite roots and fields, then publish the rebuilt remembered
+    /// set for the next minor epoch. This remains metadata only and does not
+    /// perform those mutations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if any subplan does not match
+    /// `object_copies`, if the remembered-set epoch cannot advance, or if
+    /// rebuilding the next remembered set cannot reserve storage.
+    pub fn from_parts(
+        object_copies: MinorGcObjectCopyPlan,
+        forwarding_pointers: MinorGcForwardingPointerPlan,
+        reference_rewrites: MinorGcReferenceRewritePlan,
+        remembered_set_refresh: MinorGcRememberedSetRefreshPlan,
+    ) -> Result<Self, GenerationalGcError> {
+        validate_forwarding_plan_matches_object_copies(&object_copies, &forwarding_pointers)?;
+        validate_reference_rewrites_match_object_copies(&object_copies, &reference_rewrites)?;
+        validate_remembered_set_refresh_matches_object_copies(
+            &object_copies,
+            &remembered_set_refresh,
+        )?;
+        let next_remembered_set = remembered_set_refresh.rebuild_remembered_set()?;
+
+        Ok(Self {
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+            next_remembered_set,
+        })
+    }
+
+    /// Returns object-copy metadata for the commit.
+    pub fn object_copies(&self) -> &MinorGcObjectCopyPlan {
+        &self.object_copies
+    }
+
+    /// Returns forwarding-pointer metadata for the commit.
+    pub fn forwarding_pointers(&self) -> &MinorGcForwardingPointerPlan {
+        &self.forwarding_pointers
+    }
+
+    /// Returns reference-rewrite metadata for the commit.
+    pub fn reference_rewrites(&self) -> &MinorGcReferenceRewritePlan {
+        &self.reference_rewrites
+    }
+
+    /// Returns remembered-set refresh metadata for the commit.
+    pub fn remembered_set_refresh(&self) -> &MinorGcRememberedSetRefreshPlan {
+        &self.remembered_set_refresh
+    }
+
+    /// Returns the rebuilt remembered set for the next minor-GC epoch.
+    pub fn next_remembered_set(&self) -> &RememberedSet {
+        &self.next_remembered_set
+    }
+}
+
 /// A minor-collection frontier plan for the young generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinorGcPlan {
@@ -1922,6 +1995,115 @@ fn validate_relocation_destination_alignment(
         );
     }
     Ok(())
+}
+
+fn validate_forwarding_plan_matches_object_copies(
+    object_copies: &MinorGcObjectCopyPlan,
+    forwarding_pointers: &MinorGcForwardingPointerPlan,
+) -> Result<(), GenerationalGcError> {
+    if object_copies.len() != forwarding_pointers.len() {
+        return Err(
+            GenerationalGcError::MinorGcCommitForwardingPointerLengthMismatch {
+                copies: object_copies.len(),
+                pointers: forwarding_pointers.len(),
+            },
+        );
+    }
+
+    for (index, (copy, pointer)) in object_copies
+        .copies()
+        .iter()
+        .zip(forwarding_pointers.pointers())
+        .enumerate()
+    {
+        let expected = MinorGcForwardingPointer { copy: *copy };
+        if *pointer != expected {
+            return Err(
+                GenerationalGcError::MinorGcCommitForwardingPointerMismatch {
+                    index,
+                    expected,
+                    actual: *pointer,
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_reference_rewrites_match_object_copies(
+    object_copies: &MinorGcObjectCopyPlan,
+    reference_rewrites: &MinorGcReferenceRewritePlan,
+) -> Result<(), GenerationalGcError> {
+    for rewrite in reference_rewrites.rewrites() {
+        let copy = object_copy_for(object_copies, rewrite.source()).ok_or(
+            GenerationalGcError::MinorGcCommitReferenceRewriteSourceMissing {
+                address: rewrite.source(),
+            },
+        )?;
+        let expected = copy.relocated_value();
+        let actual = rewrite.replacement();
+        if actual != expected {
+            return Err(GenerationalGcError::MinorGcCommitReferenceRewriteMismatch {
+                slot: rewrite.slot(),
+                address: rewrite.source(),
+                expected,
+                actual,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_remembered_set_refresh_matches_object_copies(
+    object_copies: &MinorGcObjectCopyPlan,
+    remembered_set_refresh: &MinorGcRememberedSetRefreshPlan,
+) -> Result<(), GenerationalGcError> {
+    for refresh in remembered_set_refresh.refreshes() {
+        let expected = expected_remembered_set_refresh_action(object_copies, *refresh);
+        let actual = refresh.action();
+        if actual != expected {
+            return Err(
+                GenerationalGcError::MinorGcCommitRememberedSetRefreshMismatch {
+                    original: refresh.original(),
+                    expected,
+                    actual,
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn expected_remembered_set_refresh_action(
+    object_copies: &MinorGcObjectCopyPlan,
+    refresh: MinorGcRememberedSetRefresh,
+) -> MinorGcRememberedSetRefreshAction {
+    let original = refresh.original();
+    match object_copy_for(object_copies, original.target()) {
+        Some(copy) if copy.action() == MinorGcSurvivorAction::CopyToNursery => {
+            MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                refreshed: RememberedEdge::new(original.source(), copy.destination()),
+            }
+        }
+        Some(copy) => MinorGcRememberedSetRefreshAction::DropPromoted {
+            destination: copy.destination(),
+        },
+        None => MinorGcRememberedSetRefreshAction::DropDead,
+    }
+}
+
+fn object_copy_for(
+    object_copies: &MinorGcObjectCopyPlan,
+    address: GcHeapAddress,
+) -> Option<MinorGcObjectCopy> {
+    object_copies
+        .copies()
+        .iter()
+        .copied()
+        .find(|copy| copy.source() == address)
 }
 
 fn nursery_age_for(
@@ -2379,6 +2561,59 @@ pub enum GenerationalGcError {
     MinorGcForwardingPointerAllocationFailed {
         /// The requested forwarding-pointer-plan capacity.
         pointers: usize,
+    },
+    /// A minor-GC commit plan received mismatched copy and forwarding counts.
+    #[error(
+        "minor-GC commit forwarding-pointer count {pointers} does not match object-copy count {copies}"
+    )]
+    MinorGcCommitForwardingPointerLengthMismatch {
+        /// The object-copy count.
+        copies: usize,
+        /// The forwarding-pointer count.
+        pointers: usize,
+    },
+    /// A minor-GC commit plan received a forwarding pointer for another copy.
+    #[error(
+        "minor-GC commit forwarding pointer mismatch at index {index}: expected {expected:?}, got {actual:?}"
+    )]
+    MinorGcCommitForwardingPointerMismatch {
+        /// The mismatched copy index.
+        index: usize,
+        /// The forwarding pointer projected from the object-copy plan.
+        expected: MinorGcForwardingPointer,
+        /// The caller-supplied forwarding pointer.
+        actual: MinorGcForwardingPointer,
+    },
+    /// A minor-GC commit plan referenced an uncopied rewrite source.
+    #[error("minor-GC commit reference rewrite source is not copied: 0x{address:x}", address = address.address_bits())]
+    MinorGcCommitReferenceRewriteSourceMissing {
+        /// The missing object-copy source address.
+        address: GcHeapAddress,
+    },
+    /// A minor-GC commit plan received a rewrite for another relocation.
+    #[error("minor-GC commit reference rewrite mismatch at slot {slot} for 0x{address:x}: expected {expected:?}, got {actual:?}", address = address.address_bits())]
+    MinorGcCommitReferenceRewriteMismatch {
+        /// The mismatched reference slot.
+        slot: usize,
+        /// The rewrite source address.
+        address: GcHeapAddress,
+        /// The relocated value projected from the object-copy plan.
+        expected: ResolvedValueGeneration,
+        /// The caller-supplied replacement value.
+        actual: ResolvedValueGeneration,
+    },
+    /// A minor-GC commit plan received a remembered-set refresh decision from
+    /// another relocation map.
+    #[error(
+        "minor-GC commit remembered-set refresh mismatch for {original:?}: expected {expected:?}, got {actual:?}"
+    )]
+    MinorGcCommitRememberedSetRefreshMismatch {
+        /// The remembered edge being refreshed.
+        original: RememberedEdge,
+        /// The refresh action projected from the object-copy plan.
+        expected: MinorGcRememberedSetRefreshAction,
+        /// The caller-supplied refresh action.
+        actual: MinorGcRememberedSetRefreshAction,
     },
     /// The minor-GC reference rewrite plan length overflowed.
     #[error("minor-GC reference rewrite length overflow")]
@@ -4362,6 +4597,299 @@ mod tests {
         .expect("max epoch empty refresh plan builds");
         assert_eq!(
             max_epoch_refresh.rebuild_remembered_set(),
+            Err(GenerationalGcError::RememberedSetEpochOverflow)
+        );
+    }
+
+    #[test]
+    fn minor_gc_commit_plan_composes_validated_subplans() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let remembered_source = address(0x3000);
+        let promoted_source = address(0x4000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 24, 8),
+                NurseryObjectLayout::new(promote, 40, 16),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+        let reference_rewrites = MinorGcReferenceRewritePlan::from_references(
+            &relocation_plan,
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+        )
+        .expect("reference rewrite plan builds");
+        let mut remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(7));
+        remembered_set
+            .record(RememberedEdge::new(remembered_source, copy))
+            .expect("remembered copy edge records");
+        remembered_set
+            .record(RememberedEdge::new(promoted_source, promote))
+            .expect("remembered promote edge records");
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("remembered-set refresh plan builds");
+
+        let commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies.clone(),
+            forwarding_pointers.clone(),
+            reference_rewrites.clone(),
+            remembered_set_refresh.clone(),
+        )
+        .expect("commit plan builds");
+
+        assert_eq!(commit_plan.object_copies(), &object_copies);
+        assert_eq!(commit_plan.forwarding_pointers(), &forwarding_pointers);
+        assert_eq!(commit_plan.reference_rewrites(), &reference_rewrites);
+        assert_eq!(
+            commit_plan.remembered_set_refresh(),
+            &remembered_set_refresh
+        );
+        assert_eq!(
+            commit_plan.next_remembered_set().epoch(),
+            RememberedSetEpoch::new(8)
+        );
+        assert_eq!(
+            commit_plan.next_remembered_set().edges(),
+            &[RememberedEdge::new(remembered_source, copy_destination)]
+        );
+    }
+
+    #[test]
+    fn minor_gc_commit_plan_rejects_inconsistent_subplans() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let first_destination = address(0x9000);
+        let second_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(first, first_destination),
+                MinorGcRelocationDestination::new(second, second_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(first, 8, 8),
+                NurseryObjectLayout::new(second, 8, 8),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+        let reference_rewrites = MinorGcReferenceRewritePlan::from_references(
+            &relocation_plan,
+            [ResolvedValueGeneration::young(first)],
+        )
+        .expect("reference rewrite plan builds");
+
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                object_copies.clone(),
+                MinorGcForwardingPointerPlan::default(),
+                MinorGcReferenceRewritePlan::default(),
+                MinorGcRememberedSetRefreshPlan::default(),
+            ),
+            Err(
+                GenerationalGcError::MinorGcCommitForwardingPointerLengthMismatch {
+                    copies: 2,
+                    pointers: 0,
+                }
+            )
+        );
+
+        let reversed_forwarding_pointers = MinorGcForwardingPointerPlan {
+            pointers: vec![
+                forwarding_pointers.pointers()[1],
+                forwarding_pointers.pointers()[0],
+            ],
+        };
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                object_copies.clone(),
+                reversed_forwarding_pointers,
+                MinorGcReferenceRewritePlan::default(),
+                MinorGcRememberedSetRefreshPlan::default(),
+            ),
+            Err(
+                GenerationalGcError::MinorGcCommitForwardingPointerMismatch {
+                    index: 0,
+                    expected: forwarding_pointers.pointers()[0],
+                    actual: forwarding_pointers.pointers()[1],
+                }
+            )
+        );
+
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                MinorGcObjectCopyPlan::default(),
+                MinorGcForwardingPointerPlan::default(),
+                reference_rewrites.clone(),
+                MinorGcRememberedSetRefreshPlan::default(),
+            ),
+            Err(GenerationalGcError::MinorGcCommitReferenceRewriteSourceMissing { address: first })
+        );
+
+        let mut mismatched_reference_rewrites = reference_rewrites.clone();
+        mismatched_reference_rewrites.rewrites[0].destination = second_destination;
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                object_copies.clone(),
+                forwarding_pointers.clone(),
+                mismatched_reference_rewrites,
+                MinorGcRememberedSetRefreshPlan::default(),
+            ),
+            Err(GenerationalGcError::MinorGcCommitReferenceRewriteMismatch {
+                slot: 0,
+                address: first,
+                expected: ResolvedValueGeneration::young(first_destination),
+                actual: ResolvedValueGeneration::young(second_destination),
+            })
+        );
+
+        let remembered_source = address(0x3000);
+        let retained_uncopied_refresh = MinorGcRememberedSetRefreshPlan {
+            source_epoch: RememberedSetEpoch::new(0),
+            refreshes: vec![MinorGcRememberedSetRefresh {
+                original: RememberedEdge::new(remembered_source, first),
+                action: MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                    refreshed: RememberedEdge::new(remembered_source, first_destination),
+                },
+            }],
+        };
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                MinorGcObjectCopyPlan::default(),
+                MinorGcForwardingPointerPlan::default(),
+                MinorGcReferenceRewritePlan::default(),
+                retained_uncopied_refresh,
+            ),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetRefreshMismatch {
+                    original: RememberedEdge::new(remembered_source, first),
+                    expected: MinorGcRememberedSetRefreshAction::DropDead,
+                    actual: MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                        refreshed: RememberedEdge::new(remembered_source, first_destination),
+                    },
+                }
+            )
+        );
+
+        let promoted_copied_refresh = MinorGcRememberedSetRefreshPlan {
+            source_epoch: RememberedSetEpoch::new(0),
+            refreshes: vec![MinorGcRememberedSetRefresh {
+                original: RememberedEdge::new(remembered_source, first),
+                action: MinorGcRememberedSetRefreshAction::DropPromoted {
+                    destination: first_destination,
+                },
+            }],
+        };
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                object_copies.clone(),
+                forwarding_pointers.clone(),
+                MinorGcReferenceRewritePlan::default(),
+                promoted_copied_refresh,
+            ),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetRefreshMismatch {
+                    original: RememberedEdge::new(remembered_source, first),
+                    expected: MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                        refreshed: RememberedEdge::new(remembered_source, first_destination),
+                    },
+                    actual: MinorGcRememberedSetRefreshAction::DropPromoted {
+                        destination: first_destination,
+                    },
+                }
+            )
+        );
+
+        let dropped_copied_refresh = MinorGcRememberedSetRefreshPlan {
+            source_epoch: RememberedSetEpoch::new(0),
+            refreshes: vec![MinorGcRememberedSetRefresh {
+                original: RememberedEdge::new(remembered_source, first),
+                action: MinorGcRememberedSetRefreshAction::DropDead,
+            }],
+        };
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                object_copies.clone(),
+                forwarding_pointers,
+                MinorGcReferenceRewritePlan::default(),
+                dropped_copied_refresh,
+            ),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetRefreshMismatch {
+                    original: RememberedEdge::new(remembered_source, first),
+                    expected: MinorGcRememberedSetRefreshAction::RetainCopiedYoung {
+                        refreshed: RememberedEdge::new(remembered_source, first_destination),
+                    },
+                    actual: MinorGcRememberedSetRefreshAction::DropDead,
+                }
+            )
+        );
+
+        let max_epoch_refresh = MinorGcRememberedSetRefreshPlan {
+            source_epoch: RememberedSetEpoch::new(u64::MAX),
+            refreshes: vec![],
+        };
+        assert_eq!(
+            MinorGcCommitPlan::from_parts(
+                MinorGcObjectCopyPlan::default(),
+                MinorGcForwardingPointerPlan::default(),
+                MinorGcReferenceRewritePlan::default(),
+                max_epoch_refresh,
+            ),
             Err(GenerationalGcError::RememberedSetEpochOverflow)
         );
     }
