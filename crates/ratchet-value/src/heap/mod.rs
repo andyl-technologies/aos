@@ -31,13 +31,13 @@ pub use concurrent_gc::{
 pub use gc::{
     GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
     MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
-    MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
-    MinorGcRelocation, MinorGcRelocationDestination, MinorGcRelocationDestinationPlan,
-    MinorGcRelocationPlan, MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
-    MinorGcRememberedSetRefreshPlan, MinorGcSurvivor, MinorGcSurvivorAction, NurseryObjectAge,
-    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetUpdate,
-    ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
+    MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcObjectCopy,
+    MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite,
+    MinorGcReferenceRewritePlan, MinorGcRelocation, MinorGcRelocationDestination,
+    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefresh,
+    MinorGcRememberedSetRefreshAction, MinorGcRememberedSetRefreshPlan, MinorGcSurvivor,
+    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectLayout, RememberedEdge, RememberedSet,
+    RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
     classify_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier,
 };
 pub use region::{

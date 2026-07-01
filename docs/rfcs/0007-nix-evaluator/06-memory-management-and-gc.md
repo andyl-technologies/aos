@@ -1035,6 +1035,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       This is only relocation mapping: it does not allocate destination storage,
       copy object bytes, install forwarding pointers, rewrite roots/fields, or
       manage semispaces.
+- [x] Current minor-GC object-copy scheduling precursor:
+      `ratchet-value::heap::gc::MinorGcObjectCopyPlan::from_relocation_plan`
+      combines a validated relocation map with caller-supplied nursery layout
+      metadata to schedule copy/promote byte ranges in relocation order. Each
+      copy records the source, destination, copy-vs-promote action, destination
+      generation, relocated value metadata, object size, and destination
+      alignment. The constructor requires exactly one valid layout per relocated
+      source, rejects missing, duplicate, invalid, or stale layout metadata, and
+      verifies relocation destinations satisfy the source object's required
+      alignment even when callers build relocation maps directly. Tests cover
+      copy/promote scheduling, relocation-order preservation, relocated value
+      generation, layout-validation failure modes, and direct-relocation
+      destination-alignment rejection. This is still scheduling metadata only:
+      it does not read or write object bytes, reserve semispace pages, install
+      forwarding pointers, rewrite roots/fields, or mutate remembered sets.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` converts a
       caller-supplied root/field reference sequence plus a validated relocation

@@ -5038,6 +5038,21 @@ and helps the oracle directly.
       stale-source, and from-space destination rejection. This is still only map
       construction; destination allocation, object copying, forwarding pointers,
       root/field writeback, and semispace management remain open.
+- [x] Current minor-GC object-copy scheduling precursor:
+      `ratchet-value::heap::gc::MinorGcObjectCopyPlan::from_relocation_plan`
+      combines a validated relocation map with caller-supplied nursery layout
+      metadata to schedule copy/promote byte ranges in relocation order. Each
+      copy records source, destination, copy-vs-promote action, destination
+      generation, relocated value metadata, object size, and destination
+      alignment. The constructor requires exactly one valid layout per relocated
+      source, rejects missing, duplicate, invalid, or stale layout metadata, and
+      verifies relocation destinations satisfy the source object's required
+      alignment even when callers build relocation maps directly. Unit tests
+      cover copy/promote scheduling, relocation-order preservation, relocated
+      value generation, layout-validation failure modes, and direct-relocation
+      destination-alignment rejection. This remains scheduling metadata only;
+      reading or writing object bytes, reserving semispace pages, forwarding
+      pointers, root/field writeback, and remembered-set mutation remain open.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` turns a
       caller-supplied root/field reference sequence and a validated relocation

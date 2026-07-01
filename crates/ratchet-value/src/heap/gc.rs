@@ -1078,6 +1078,122 @@ impl MinorGcRelocationPlan {
     }
 }
 
+/// One planned object copy or promotion for a minor-GC survivor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcObjectCopy {
+    relocation: MinorGcRelocation,
+    size_bytes: usize,
+    align: usize,
+}
+
+impl MinorGcObjectCopy {
+    /// Returns the relocation whose bytes would be copied.
+    pub const fn relocation(self) -> MinorGcRelocation {
+        self.relocation
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(self) -> GcHeapAddress {
+        self.relocation.source()
+    }
+
+    /// Returns the destination address for the copied or promoted object.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.relocation.destination()
+    }
+
+    /// Returns whether this copy keeps the object young or promotes it.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.relocation.action()
+    }
+
+    /// Returns the generation that will own the copied or promoted object.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        self.relocation.destination_generation()
+    }
+
+    /// Returns the relocated heap value metadata for this object copy.
+    pub const fn relocated_value(self) -> ResolvedValueGeneration {
+        self.relocation.relocated_value()
+    }
+
+    /// Returns the object size in bytes to copy.
+    pub const fn size_bytes(self) -> usize {
+        self.size_bytes
+    }
+
+    /// Returns the required destination alignment in bytes.
+    pub const fn align(self) -> usize {
+        self.align
+    }
+}
+
+/// Object-copy metadata for a planned minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcObjectCopyPlan {
+    copies: Vec<MinorGcObjectCopy>,
+}
+
+impl MinorGcObjectCopyPlan {
+    /// Builds copy metadata from relocations and nursery layouts.
+    ///
+    /// Copies are emitted in relocation order. The layout table must contain
+    /// exactly one valid layout for each relocated source and no stale
+    /// non-relocated entries. Copied survivors keep their young-generation
+    /// destination, while promoted survivors use their old-generation
+    /// destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if copy storage cannot be reserved, if
+    /// the copy count overflows, if nursery layout metadata is missing,
+    /// duplicated, invalid, or stale for `relocation_plan`, or if a relocation
+    /// destination does not satisfy the source object's required alignment.
+    pub fn from_relocation_plan(
+        relocation_plan: &MinorGcRelocationPlan,
+        nursery_layouts: &[NurseryObjectLayout],
+    ) -> Result<Self, GenerationalGcError> {
+        validate_unique_nursery_layouts(nursery_layouts)?;
+        validate_nursery_layout_values(nursery_layouts)?;
+        validate_nursery_layout_sources_are_relocated(relocation_plan, nursery_layouts)?;
+
+        let mut copies = Vec::new();
+        for relocation in relocation_plan.relocations() {
+            let layout = nursery_layout_for(nursery_layouts, relocation.source())?;
+            validate_relocation_destination_alignment(*relocation, layout)?;
+            let copies_len = copies
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcObjectCopyLengthOverflow)?;
+            copies.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcObjectCopyAllocationFailed { copies: copies_len }
+            })?;
+            copies.push(MinorGcObjectCopy {
+                relocation: *relocation,
+                size_bytes: layout.size_bytes(),
+                align: layout.align(),
+            });
+        }
+
+        Ok(Self { copies })
+    }
+
+    /// Returns copy metadata in relocation order.
+    pub fn copies(&self) -> &[MinorGcObjectCopy] {
+        &self.copies
+    }
+
+    /// Returns the number of planned object copies.
+    pub fn len(&self) -> usize {
+        self.copies.len()
+    }
+
+    /// Returns whether no object copies are planned.
+    pub fn is_empty(&self) -> bool {
+        self.copies.is_empty()
+    }
+}
+
 /// One root or field reference that must be rewritten after minor-GC relocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcReferenceRewrite {
@@ -1658,6 +1774,41 @@ fn validate_placement_plan_matches_survivor_plan(
     Ok(())
 }
 
+fn validate_nursery_layout_sources_are_relocated(
+    relocation_plan: &MinorGcRelocationPlan,
+    nursery_layouts: &[NurseryObjectLayout],
+) -> Result<(), GenerationalGcError> {
+    for layout in nursery_layouts {
+        if !relocation_plan
+            .relocations()
+            .iter()
+            .any(|relocation| relocation.source() == layout.address)
+        {
+            return Err(GenerationalGcError::StaleNurseryObjectLayout {
+                address: layout.address,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_relocation_destination_alignment(
+    relocation: MinorGcRelocation,
+    layout: NurseryObjectLayout,
+) -> Result<(), GenerationalGcError> {
+    if relocation.destination().address_bits() & (layout.align() - 1) != 0 {
+        return Err(
+            GenerationalGcError::MinorGcRelocationDestinationAlignmentMismatch {
+                address: relocation.source(),
+                generation: relocation.destination_generation(),
+                destination: relocation.destination(),
+                align: layout.align(),
+            },
+        );
+    }
+    Ok(())
+}
+
 fn nursery_age_for(
     nursery_objects: &[NurseryObjectAge],
     address: GcHeapAddress,
@@ -2074,6 +2225,15 @@ pub enum GenerationalGcError {
     MinorGcRelocationAllocationFailed {
         /// The requested relocation-plan capacity.
         relocations: usize,
+    },
+    /// The minor-GC object-copy plan length overflowed.
+    #[error("minor-GC object-copy length overflow")]
+    MinorGcObjectCopyLengthOverflow,
+    /// The minor-GC object-copy plan could not reserve storage.
+    #[error("failed to reserve {copies} minor-GC object copies")]
+    MinorGcObjectCopyAllocationFailed {
+        /// The requested object-copy-plan capacity.
+        copies: usize,
     },
     /// The minor-GC reference rewrite plan length overflowed.
     #[error("minor-GC reference rewrite length overflow")]
@@ -3404,6 +3564,174 @@ mod tests {
                 GenerationalGcError::MinorGcRelocationDestinationInFromSpace {
                     from: first,
                     destination: second,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_schedules_relocations_with_layouts() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(promote, 40, 16),
+                NurseryObjectLayout::new(copy, 24, 8),
+            ],
+        )
+        .expect("object-copy plan builds");
+
+        assert_eq!(copy_plan.len(), 2);
+        assert!(!copy_plan.is_empty());
+        assert_eq!(
+            copy_plan.copies()[0].relocation(),
+            relocation_plan.relocations()[0]
+        );
+        assert_eq!(copy_plan.copies()[0].source(), copy);
+        assert_eq!(copy_plan.copies()[0].destination(), copy_destination);
+        assert_eq!(
+            copy_plan.copies()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(
+            copy_plan.copies()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(
+            copy_plan.copies()[0].relocated_value(),
+            ResolvedValueGeneration::young(copy_destination)
+        );
+        assert_eq!(copy_plan.copies()[0].size_bytes(), 24);
+        assert_eq!(copy_plan.copies()[0].align(), 8);
+        assert_eq!(copy_plan.copies()[1].source(), promote);
+        assert_eq!(copy_plan.copies()[1].destination(), promote_destination);
+        assert_eq!(
+            copy_plan.copies()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            copy_plan.copies()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(
+            copy_plan.copies()[1].relocated_value(),
+            ResolvedValueGeneration::old(promote_destination)
+        );
+        assert_eq!(copy_plan.copies()[1].size_bytes(), 40);
+        assert_eq!(copy_plan.copies()[1].align(), 16);
+    }
+
+    #[test]
+    fn minor_gc_object_copy_plan_rejects_bad_layout_metadata() {
+        let young = address(0x1000);
+        let other = address(0x2000);
+        let destination = address(0x9000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[MinorGcRelocationDestination::new(young, destination)],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(&relocation_plan, &[]),
+            Err(GenerationalGcError::MissingNurseryObjectLayout { address: young })
+        );
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[
+                    NurseryObjectLayout::new(young, 8, 8),
+                    NurseryObjectLayout::new(young, 16, 8),
+                ],
+            ),
+            Err(GenerationalGcError::DuplicateNurseryObjectLayout { address: young })
+        );
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[NurseryObjectLayout::new(young, 0, 8)],
+            ),
+            Err(GenerationalGcError::InvalidNurseryObjectSize {
+                address: young,
+                size_bytes: 0,
+            })
+        );
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[NurseryObjectLayout::new(young, 8, 3)],
+            ),
+            Err(GenerationalGcError::InvalidNurseryObjectAlignment {
+                address: young,
+                align: 3,
+            })
+        );
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &relocation_plan,
+                &[
+                    NurseryObjectLayout::new(young, 8, 8),
+                    NurseryObjectLayout::new(other, 16, 8),
+                ],
+            ),
+            Err(GenerationalGcError::StaleNurseryObjectLayout { address: other })
+        );
+
+        let misaligned_destination = address(0x9008);
+        let misaligned_relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[MinorGcRelocationDestination::new(
+                young,
+                misaligned_destination,
+            )],
+        )
+        .expect("misaligned relocation plan builds");
+
+        assert_eq!(
+            MinorGcObjectCopyPlan::from_relocation_plan(
+                &misaligned_relocation_plan,
+                &[NurseryObjectLayout::new(young, 16, 16)],
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationAlignmentMismatch {
+                    address: young,
+                    generation: HeapGeneration::Young,
+                    destination: misaligned_destination,
+                    align: 16,
                 }
             )
         );
