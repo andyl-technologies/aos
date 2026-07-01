@@ -121,8 +121,8 @@
         needle = "FAILURE_CAUSAL_SLICE_DOMAIN";
       }
       {
-        label = "cone hash function";
-        needle = "causal_slice_hash_through_index";
+        label = "cone material function";
+        needle = "failure_causal_cone_through_index";
       }
       {
         label = "typed dependency cone";

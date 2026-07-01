@@ -70,8 +70,11 @@ const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.
 const COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN: &str = "crucible.coverage-guided-fuzz.sample.v1";
 const COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN: &str = "crucible.coverage-guided-fuzz.override.v1";
 const FAILURE_SIGNATURE_DOMAIN: &str = "crucible.failure-signature.v1";
+const FAILURE_SIGNATURE_KEY_DOMAIN: &str = "crucible.failure-signature.key.v1";
 const FAILURE_CAUSAL_SLICE_DOMAIN: &str = "crucible.failure-signature.causal-slice.v1";
+const FAILURE_TRIAGE_RESULT_IDENTITY_DOMAIN: &str = "crucible.failure-triage.result-identity.v1";
 const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
+const SIGNATURE_POLICY_SCHEMA_VERSION: u16 = 1;
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
 const ADAPTIVE_CONFIRMED_FAILURE_REWARD: u64 = 1_000_000_000_000;
 
@@ -4058,6 +4061,244 @@ impl FailureCoverageClass {
     }
 }
 
+/// Closed failure-signature policy levels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SignaturePolicyLevel {
+    /// Clusters by failure kind and stable property id.
+    Coarse,
+    /// Clusters by the everyday failure key used by default triage.
+    #[default]
+    Default,
+    /// Adds the cone-scoped causal slice hash to separate code paths.
+    Fine,
+    /// Adds absolute icount and full causal-cone material for forensic runs.
+    Exact,
+}
+
+/// Versioned selector for failure-signature key fields.
+///
+/// The policy is closed over the four RFC0010 levels and records the schema
+/// version plus coverage-class bucketing algorithm in every key projection and
+/// triage result identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SignaturePolicy {
+    level: SignaturePolicyLevel,
+}
+
+impl SignaturePolicy {
+    /// Returns the coarse clustering policy.
+    #[must_use]
+    pub fn coarse() -> Self {
+        Self {
+            level: SignaturePolicyLevel::Coarse,
+        }
+    }
+
+    /// Returns the default clustering policy.
+    #[must_use]
+    pub fn default_policy() -> Self {
+        Self {
+            level: SignaturePolicyLevel::Default,
+        }
+    }
+
+    /// Returns the fine-grained clustering policy.
+    #[must_use]
+    pub fn fine() -> Self {
+        Self {
+            level: SignaturePolicyLevel::Fine,
+        }
+    }
+
+    /// Returns the exact forensic clustering policy.
+    #[must_use]
+    pub fn exact() -> Self {
+        Self {
+            level: SignaturePolicyLevel::Exact,
+        }
+    }
+
+    /// Returns the closed policy level.
+    #[must_use]
+    pub fn level(&self) -> SignaturePolicyLevel {
+        self.level
+    }
+
+    /// Returns the versioned policy schema identifier.
+    #[must_use]
+    pub fn schema_version(&self) -> u16 {
+        SIGNATURE_POLICY_SCHEMA_VERSION
+    }
+
+    /// Returns the fixed coverage-class bucketing algorithm selected by policy.
+    #[must_use]
+    pub fn coverage_class_algorithm(&self) -> &'static str {
+        FAILURE_COVERAGE_CLASS_ALGORITHM
+    }
+
+    /// Returns whether this policy allows minimization merges.
+    ///
+    /// `exact` is forensic and must not minimize-merge.
+    #[must_use]
+    pub fn allows_minimize_merge(&self) -> bool {
+        !matches!(self.level, SignaturePolicyLevel::Exact)
+    }
+
+    /// Returns whether the causal slice hash is a key field.
+    #[must_use]
+    pub fn keys_causal_slice_hash(&self) -> bool {
+        matches!(
+            self.level,
+            SignaturePolicyLevel::Fine | SignaturePolicyLevel::Exact
+        )
+    }
+
+    /// Returns whether absolute icount is a key field.
+    #[must_use]
+    pub fn keys_absolute_icount(&self) -> bool {
+        matches!(self.level, SignaturePolicyLevel::Exact)
+    }
+
+    /// Projects `signature` into this policy's deterministic key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if the
+    /// signature's coverage bucket was built by a different algorithm, or if the
+    /// exact policy is requested for a signature that does not retain full
+    /// causal-cone material.
+    pub fn signature_key(
+        &self,
+        signature: &FailureSignature,
+    ) -> Result<FailureSignatureKey, EngineError> {
+        if signature.coverage_class.algorithm != self.coverage_class_algorithm() {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-signature.policy",
+                reason: "signature coverage class algorithm does not match policy",
+            });
+        }
+        if self.level == SignaturePolicyLevel::Exact && signature.causal_cone.is_none() {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-signature.policy",
+                reason: "exact policy requires full causal cone material",
+            });
+        }
+        Ok(FailureSignatureKey {
+            policy: *self,
+            canonical_material: failure_signature_key_material(signature, *self),
+        })
+    }
+
+    /// Returns the canonical policy material included in result identities.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_signature_policy_material(*self)
+    }
+
+    /// Returns the content address of this policy selector.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_SIGNATURE_KEY_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
+}
+
+/// Deterministic projection of a signature under a [`SignaturePolicy`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailureSignatureKey {
+    policy: SignaturePolicy,
+    canonical_material: String,
+}
+
+impl FailureSignatureKey {
+    /// Returns the policy that selected this key's fields.
+    #[must_use]
+    pub fn policy(&self) -> SignaturePolicy {
+        self.policy
+    }
+
+    /// Returns the canonical material hashed into the cluster id.
+    #[must_use]
+    pub fn canonical_material(&self) -> &str {
+        &self.canonical_material
+    }
+
+    /// Returns the content-addressed cluster id for this key.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(FAILURE_SIGNATURE_KEY_DOMAIN, &self.canonical_material)
+    }
+}
+
+/// Content-addressed identity of one triage result.
+///
+/// The findings ledger content address and active signature policy are both
+/// included, so re-clustering the same ledger under the same policy resolves to
+/// the same result identity while a policy change is a distinct artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailureTriageResultIdentity {
+    /// Content hash of the findings ledger being clustered.
+    pub findings_ledger: ContentHash,
+    /// Active policy used to project failure-signature keys.
+    pub policy: SignaturePolicy,
+}
+
+impl FailureTriageResultIdentity {
+    /// Builds a triage result identity from a findings ledger and policy.
+    #[must_use]
+    pub fn new(findings_ledger: ContentHash, policy: SignaturePolicy) -> Self {
+        Self {
+            findings_ledger,
+            policy,
+        }
+    }
+
+    /// Returns the canonical identity material.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_triage_result_identity_material(*self)
+    }
+
+    /// Returns the content-addressed triage result id.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_TRIAGE_RESULT_IDENTITY_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
+}
+
+/// Full canonical causal-cone material retained for exact policy keys.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailureCausalCone {
+    canonical_material: String,
+}
+
+impl FailureCausalCone {
+    /// Builds full causal-cone material from an already-canonical representation.
+    #[must_use]
+    pub fn from_canonical_material(canonical_material: impl Into<String>) -> Self {
+        Self {
+            canonical_material: canonical_material.into(),
+        }
+    }
+
+    /// Returns the full canonical causal-cone material.
+    #[must_use]
+    pub fn canonical_material(&self) -> &str {
+        &self.canonical_material
+    }
+
+    /// Returns the hash used by non-exact policy levels when the causal slice is keyed.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(FAILURE_CAUSAL_SLICE_DOMAIN, &self.canonical_material)
+    }
+}
+
 /// Signature-normalization inputs applied before failure fields are keyed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FailureSignatureNormalization {
@@ -4323,6 +4564,11 @@ pub struct FailureSignature {
     /// This is computed over the causal prefix ending at the first failing
     /// causal entry, not the whole causal subsequence.
     pub causal_slice_hash: Option<ContentHash>,
+    /// Full canonical causal cone retained for exact-policy forensic keys.
+    ///
+    /// Coarse/default/fine policies key only selected scalar fields and, for
+    /// fine, the cone hash above. The exact policy uses this material directly.
+    pub causal_cone: Option<FailureCausalCone>,
     /// Absolute instruction count of the first failing point for reports only.
     ///
     /// The current default content hash excludes this value so minimization that
@@ -4371,16 +4617,15 @@ impl FailureSignature {
         validate_violation_for_finding(finding, violation)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
         let causal_index = validate_violation_point(event_log, violation)?;
+        let causal_cone =
+            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
         Ok(Self {
             failure_kind: FailureKind::PropertyViolation,
             property: Some(violation.property_key()),
             first_failing_point: violation.first_failing_point_with(&canonicalizer),
             coverage_class: event_log.coverage_class(),
-            causal_slice_hash: Some(causal_slice_hash_through_index(
-                event_log,
-                causal_index,
-                &canonicalizer,
-            )),
+            causal_slice_hash: Some(causal_cone.content_hash()),
+            causal_cone: Some(causal_cone),
             at_icount_report_only: violation.violation.at_icount,
         })
     }
@@ -4426,6 +4671,8 @@ impl FailureSignature {
         validate_recorded_event_log_for_finding(finding, event_log)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
         let causal_index = validate_divergence_point(event_log, divergence)?;
+        let causal_cone =
+            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
         Ok(Self {
             failure_kind: FailureKind::Divergence,
             property: None,
@@ -4435,11 +4682,8 @@ impl FailureSignature {
                     .canonical_node_option(&divergence_faulting_node(divergence)),
             },
             coverage_class: event_log.coverage_class(),
-            causal_slice_hash: Some(causal_slice_hash_through_index(
-                event_log,
-                causal_index,
-                &canonicalizer,
-            )),
+            causal_slice_hash: Some(causal_cone.content_hash()),
+            causal_cone: Some(causal_cone),
             at_icount_report_only: Some(divergence.at.icount),
         })
     }
@@ -4460,6 +4704,20 @@ impl FailureSignature {
     #[must_use]
     pub fn report_material(&self) -> String {
         failure_signature_report_material(self)
+    }
+
+    /// Projects this signature into the key selected by `policy`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if the
+    /// signature's coverage bucket does not match the policy's fixed bucketing
+    /// algorithm, or if the exact policy needs missing causal-cone material.
+    pub fn signature_key(
+        &self,
+        policy: SignaturePolicy,
+    ) -> Result<FailureSignatureKey, EngineError> {
+        policy.signature_key(self)
     }
 }
 
@@ -4617,17 +4875,17 @@ fn divergence_faulting_node(divergence: &EventLogCausalDivergencePoint) -> Optio
     }
 }
 
-fn causal_slice_hash_through_index(
+fn failure_causal_cone_through_index(
     event_log: &FailureRecordedEventLog,
     causal_index: usize,
     canonicalizer: &FailureSymmetryCanonicalizer,
-) -> ContentHash {
+) -> FailureCausalCone {
     let cone = failure_causal_cone_entries(event_log, causal_index, canonicalizer);
     let mut lines = vec![format!("causal_cone_events={}", cone.len())];
     for (cone_index, entry) in cone.into_iter().enumerate() {
         push_failure_causal_slice_entry_lines(cone_index, entry, canonicalizer, &mut lines);
     }
-    ContentHash::from_canonical_material(FAILURE_CAUSAL_SLICE_DOMAIN, &lines.join("\n"))
+    FailureCausalCone::from_canonical_material(lines.join("\n"))
 }
 
 fn failure_causal_cone_entries<'a>(
@@ -4880,7 +5138,130 @@ fn failure_signature_report_material(signature: &FailureSignature) -> String {
             .map(|icount| format!("at_icount_report_only={}", icount.retired))
             .unwrap_or_else(|| String::from("at_icount_report_only=none")),
     );
+    match &signature.causal_cone {
+        Some(cone) => {
+            lines.push(String::from("causal_cone=some"));
+            lines.push(String::from("causal_cone_material_BEGIN"));
+            lines.push(cone.canonical_material().to_owned());
+            lines.push(String::from("causal_cone_material_END"));
+        }
+        None => lines.push(String::from("causal_cone=none")),
+    }
     lines.join("\n")
+}
+
+fn failure_signature_key_material(signature: &FailureSignature, policy: SignaturePolicy) -> String {
+    let mut lines = vec![failure_signature_policy_material(policy)];
+    lines.push(String::from("key_fields_BEGIN"));
+    lines.push(format!(
+        "failure_kind={}",
+        failure_kind_label(signature.failure_kind)
+    ));
+    match &signature.property {
+        Some(property) => {
+            lines.push(String::from("property=some"));
+            lines.push(assertion_id_material(&property.id));
+            if policy.level >= SignaturePolicyLevel::Default {
+                lines.push(format!(
+                    "property_quantifier={}",
+                    failure_assertion_quantifier_label(property.quantifier)
+                ));
+            }
+        }
+        None => lines.push(String::from("property=none")),
+    }
+    if policy.level >= SignaturePolicyLevel::Default {
+        lines.push(format!(
+            "first_failing_event_kind_len={}",
+            signature.first_failing_point.event_kind.len()
+        ));
+        lines.push(format!(
+            "first_failing_event_kind={}",
+            signature.first_failing_point.event_kind
+        ));
+        match &signature.first_failing_point.faulting_node {
+            Some(node) => lines.push(node_ref_material("faulting_node", node)),
+            None => lines.push(String::from("faulting_node=none")),
+        }
+        lines.push(format!(
+            "coverage_class_algorithm={}",
+            signature.coverage_class.algorithm
+        ));
+        lines.push(format!(
+            "coverage_class_bucket={}",
+            signature.coverage_class.bucket
+        ));
+    }
+    if policy.keys_causal_slice_hash() {
+        lines.push(
+            signature
+                .causal_slice_hash
+                .map(|hash| format!("causal_slice_hash={}", hash.to_hex()))
+                .unwrap_or_else(|| String::from("causal_slice_hash=none")),
+        );
+    }
+    if policy.keys_absolute_icount() {
+        lines.push(
+            signature
+                .at_icount_report_only
+                .map(|icount| format!("at_icount_key={}", icount.retired))
+                .unwrap_or_else(|| String::from("at_icount_key=none")),
+        );
+        match &signature.causal_cone {
+            Some(cone) => {
+                lines.push(String::from("exact_causal_cone=some"));
+                lines.push(String::from("exact_causal_cone_material_BEGIN"));
+                lines.push(cone.canonical_material().to_owned());
+                lines.push(String::from("exact_causal_cone_material_END"));
+            }
+            None => lines.push(String::from("exact_causal_cone=none")),
+        }
+    }
+    lines.push(String::from("key_fields_END"));
+    lines.join("\n")
+}
+
+fn failure_signature_policy_material(policy: SignaturePolicy) -> String {
+    [
+        format!(
+            "signature_policy_schema_version={}",
+            policy.schema_version()
+        ),
+        format!(
+            "signature_policy_level={}",
+            signature_policy_level_label(policy.level())
+        ),
+        format!(
+            "coverage_class_algorithm={}",
+            policy.coverage_class_algorithm()
+        ),
+        format!("minimize_merge_allowed={}", policy.allows_minimize_merge()),
+    ]
+    .join("\n")
+}
+
+fn failure_triage_result_identity_material(identity: FailureTriageResultIdentity) -> String {
+    [
+        format!(
+            "triage_result_schema_version={}",
+            SIGNATURE_POLICY_SCHEMA_VERSION
+        ),
+        format!(
+            "findings_ledger={}",
+            content_hash_hex(identity.findings_ledger)
+        ),
+        identity.policy.canonical_material(),
+    ]
+    .join("\n")
+}
+
+fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {
+    match level {
+        SignaturePolicyLevel::Coarse => "coarse",
+        SignaturePolicyLevel::Default => "default",
+        SignaturePolicyLevel::Fine => "fine",
+        SignaturePolicyLevel::Exact => "exact",
+    }
 }
 
 fn failure_kind_label(kind: FailureKind) -> &'static str {

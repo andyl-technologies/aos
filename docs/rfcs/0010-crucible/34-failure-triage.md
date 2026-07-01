@@ -880,10 +880,18 @@ recomputable byte-for-byte from what was already stored.
   gate proves absolute icount shifts do not perturb the key, symmetric replica
   nodes collapse to one canonical faulting node, and trailing out-of-cone causal
   entries do not change the slice hash.
-- [ ] **T-TRI-3** Implement the closed, versioned `SignaturePolicy`
+- [x] **T-TRI-3** Implement the closed, versioned `SignaturePolicy`
   (coarse/default/fine/exact) selecting key vs detail fields and the
   `coverage_class` bucketing, recorded in the triage result identity for
   idempotent re-cluster. — satisfies [TRI-8]; spec §34.2.3.
+  Completed by `checks.crucible.phase6.signaturePolicy`: the model now exposes a
+  closed `SignaturePolicyLevel` enum and versioned `SignaturePolicy` projection
+  for coarse/default/fine/exact keys, with the fixed coverage bucketing algorithm
+  recorded in policy material. `FailureSignatureKey` projects only the active
+  key fields, `exact` adds absolute icount and full causal-cone material while
+  disallowing minimize-merge, and `FailureTriageResultIdentity` includes the
+  findings ledger plus policy so re-clustering the same ledger under the same
+  policy is idempotent.
 - [ ] **T-TRI-4** Implement deterministic clustering: equivalence-class partition
   by signature key, cluster id = content hash of the key, output and intra-cluster
   members content-address ordered with no host-nondeterminism on an

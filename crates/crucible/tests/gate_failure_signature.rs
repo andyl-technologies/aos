@@ -8,12 +8,13 @@ use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
     Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp, EventLogOffset,
-    EventSource, FailureKind, FailurePropertyViolationRecord, FailureRecordedEventLog,
-    FailureSignature, FailureSignatureNormalization, FindingDiscoveryPath,
-    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed, SymmetryClassId,
-    SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    EventSource, FailureCausalCone, FailureKind, FailurePropertyViolationRecord,
+    FailureRecordedEventLog, FailureSignature, FailureSignatureNormalization,
+    FailureTriageResultIdentity, FindingDiscoveryPath, FindingReproductionArtifact,
+    HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent,
+    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
+    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -305,6 +306,170 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
     assert_eq!(
         trailing_signature.content_hash(),
         replica_a_signature.content_hash()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn failure_signature_policy_projects_versioned_keys_and_result_identity()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("signature-policy"),
+    )?;
+    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
+    let record = property_violation_record(finding.artifact.id());
+    let signature =
+        FailureSignature::from_recorded_property_violation(&finding, &recorded_log, &record)?;
+
+    let coarse = SignaturePolicy::coarse();
+    let default = SignaturePolicy::default();
+    let fine = SignaturePolicy::fine();
+    let exact = SignaturePolicy::exact();
+    assert_eq!(default, SignaturePolicy::default_policy());
+    assert_eq!(default.level(), SignaturePolicyLevel::Default);
+    assert_eq!(coarse.schema_version(), 1);
+    assert_eq!(
+        default.coverage_class_algorithm(),
+        signature.coverage_class.algorithm
+    );
+    assert!(default.allows_minimize_merge());
+    assert!(!exact.allows_minimize_merge());
+    assert!(!default.keys_absolute_icount());
+    assert!(exact.keys_absolute_icount());
+    assert!(fine.keys_causal_slice_hash());
+
+    let base_coarse = signature.signature_key(coarse)?;
+    let base_default = signature.signature_key(default)?;
+    let base_fine = signature.signature_key(fine)?;
+    let base_exact = signature.signature_key(exact)?;
+    assert_ne!(base_coarse.content_hash(), base_default.content_hash());
+    assert_eq!(base_default.policy(), default);
+    assert!(
+        base_exact
+            .canonical_material()
+            .contains("exact_causal_cone_material_BEGIN")
+    );
+    assert!(base_exact.canonical_material().contains("at_icount_key=8"));
+    assert!(
+        signature
+            .report_material()
+            .contains("causal_cone_material_BEGIN")
+    );
+
+    let mut changed_quantifier = signature.clone();
+    changed_quantifier
+        .property
+        .as_mut()
+        .ok_or("property signature must carry a property key")?
+        .quantifier = AssertionQuantifierKind::Sometimes;
+    assert_eq!(
+        changed_quantifier.signature_key(coarse)?.content_hash(),
+        base_coarse.content_hash(),
+        "coarse keys only stable property id, not quantifier"
+    );
+    assert_ne!(
+        changed_quantifier.signature_key(default)?.content_hash(),
+        base_default.content_hash(),
+        "default keys property quantifier"
+    );
+
+    let mut changed_coverage = signature.clone();
+    changed_coverage.coverage_class.bucket = changed_coverage.coverage_class.bucket.wrapping_add(1);
+    assert_eq!(
+        changed_coverage.signature_key(coarse)?.content_hash(),
+        base_coarse.content_hash(),
+        "coarse does not key coverage class"
+    );
+    assert_ne!(
+        changed_coverage.signature_key(default)?.content_hash(),
+        base_default.content_hash(),
+        "default keys coverage class"
+    );
+
+    let mut changed_slice = signature.clone();
+    changed_slice.causal_slice_hash = Some(finding_hash("changed-causal-slice"));
+    assert_eq!(
+        changed_slice.signature_key(default)?.content_hash(),
+        base_default.content_hash(),
+        "default leaves the causal slice as detail"
+    );
+    assert_ne!(
+        changed_slice.signature_key(fine)?.content_hash(),
+        base_fine.content_hash(),
+        "fine keys the causal slice hash"
+    );
+
+    let mut changed_cone_signature = signature.clone();
+    changed_cone_signature.causal_cone = Some(FailureCausalCone::from_canonical_material(
+        "causal_cone_events=1\nentry.cone_index=0\nentry.kind=exact-only-cone-change",
+    ));
+    assert_eq!(
+        changed_cone_signature.signature_key(fine)?.content_hash(),
+        base_fine.content_hash(),
+        "fine keys the causal slice hash, not the full causal cone"
+    );
+    let changed_cone_exact = changed_cone_signature.signature_key(exact)?;
+    assert_ne!(
+        changed_cone_exact.content_hash(),
+        base_exact.content_hash(),
+        "exact keys the full causal-cone material"
+    );
+    assert_ne!(
+        changed_cone_signature.causal_cone, signature.causal_cone,
+        "the regression must mutate only the retained full causal cone"
+    );
+    assert!(
+        changed_cone_exact
+            .canonical_material()
+            .contains("exact_causal_cone_material_BEGIN")
+    );
+    assert!(
+        changed_cone_exact
+            .canonical_material()
+            .contains("exact-only-cone-change")
+    );
+
+    let mut shifted_icount = signature.clone();
+    shifted_icount.at_icount_report_only = Some(icount(99));
+    assert_eq!(
+        shifted_icount.signature_key(fine)?.content_hash(),
+        base_fine.content_hash(),
+        "fine keeps absolute icount report-only"
+    );
+    assert_ne!(
+        shifted_icount.signature_key(exact)?.content_hash(),
+        base_exact.content_hash(),
+        "exact keys absolute icount"
+    );
+
+    let ledger = finding_hash("findings-ledger");
+    let default_identity = FailureTriageResultIdentity::new(ledger, default);
+    let same_default_identity = FailureTriageResultIdentity::new(ledger, default);
+    let fine_identity = FailureTriageResultIdentity::new(ledger, fine);
+    assert_eq!(
+        default_identity.content_hash(),
+        same_default_identity.content_hash()
+    );
+    assert_ne!(
+        default_identity.content_hash(),
+        fine_identity.content_hash()
+    );
+    assert!(
+        default_identity
+            .canonical_material()
+            .contains("signature_policy_level=default")
+    );
+    assert!(
+        fine_identity
+            .canonical_material()
+            .contains(default.coverage_class_algorithm())
     );
 
     Ok(())
