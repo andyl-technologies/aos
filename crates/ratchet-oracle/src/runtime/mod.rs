@@ -8,5 +8,6 @@
 //! historical `crate::runtime::builtins` path for the runtime tiers.
 
 pub mod alloc;
+pub mod barrier;
 
 pub use crate::compile::builtins;

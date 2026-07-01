@@ -854,6 +854,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata only; it still does not export `unsafe extern "C"` functions, define
       the allocation-failure/trap convention, register symbols with Cranelift,
       choose the startup allocator vtable, or swap in the Tier-B collector body.
+- [x] Current write-barrier symbol/signature precursor:
+      `ratchet-core::runtime_abi` now reserves the single
+      `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
+      alongside the allocation helper inventory. `ratchet-oracle::runtime::barrier`
+      mirrors that symbol as `RuntimeWriteBarrierEntryPoint` and pins its
+      machine-level signature: runtime context, source thunk pointer whose
+      forced-result slot is being updated, and published `Value`, returning
+      unit. Tests prove the oracle write-barrier
+      inventory exactly matches the core helper role, round-trips from symbol
+      text, and rejects non-barrier helpers. This is ABI metadata only; it does
+      not export the `unsafe extern "C"` function, register Cranelift symbols,
+      or wire compiled code to the heap-backed thunk-resolve barrier.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /

@@ -5198,6 +5198,18 @@ and helps the oracle directly.
       allocation-failure/trap convention, Cranelift symbol registration, startup
       allocator vtable selection, every-tier/primop routing, and Tier-B collector
       body swapping remain open.
+- [x] Current write-barrier symbol/signature precursor:
+      `ratchet-core::runtime_abi` now reserves the single
+      `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
+      alongside the allocation helper inventory. `ratchet-oracle::runtime::barrier`
+      mirrors that symbol as `RuntimeWriteBarrierEntryPoint` and pins its
+      machine-level signature: runtime context, source thunk pointer whose
+      forced-result slot is being updated, and published `Value`, returning
+      unit. Tests prove the oracle write-barrier
+      inventory exactly matches the core helper role, round-trips from symbol
+      text, and rejects non-barrier helpers. This is ABI metadata only; it does
+      not export the `unsafe extern "C"` function, register Cranelift symbols,
+      or wire compiled code to the heap-backed thunk-resolve barrier.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared

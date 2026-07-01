@@ -95,6 +95,8 @@ pub enum RuntimeHelperRole {
     EnvironmentAccess,
     /// Forcing helpers own thunk forcing, deep forcing, and blackhole checks.
     ForcingControl,
+    /// Write-barrier helpers own GC-visible heap mutation boundaries.
+    WriteBarrier,
     /// Attribute helpers own select, presence, and update slow paths.
     AttrsetAccess,
     /// Error helpers own catch-frame and diagnostic control transfer.
@@ -116,6 +118,7 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_env_get", RuntimeHelperRole::EnvironmentAccess),
     RuntimeHelperSymbol::new("aos_force", RuntimeHelperRole::ForcingControl),
     RuntimeHelperSymbol::new("aos_force_deep", RuntimeHelperRole::ForcingControl),
+    RuntimeHelperSymbol::new("aos_gc_write_barrier", RuntimeHelperRole::WriteBarrier),
     RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
@@ -218,5 +221,17 @@ mod tests {
             }
             previous = Some(symbol.name());
         }
+    }
+
+    #[test]
+    fn runtime_helper_symbols_include_single_write_barrier_wall() {
+        let write_barriers = runtime_helper_symbols()
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.role() == RuntimeHelperRole::WriteBarrier)
+            .map(RuntimeHelperSymbol::name)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(write_barriers, BTreeSet::from(["aos_gc_write_barrier"]));
     }
 }
