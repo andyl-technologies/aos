@@ -391,12 +391,87 @@ impl NodeClockSkewDeclaration {
     }
 }
 
+/// Configuration for the debug-session QEMU gdbstub proxy channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuGdbstubChannelConfig {
+    qemu_endpoint: String,
+    operator_listen: String,
+}
+
+impl QemuGdbstubChannelConfig {
+    /// Builds a validated gdbstub proxy channel configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchCommandError`] when either endpoint is empty or
+    /// contains a newline or NUL byte.
+    pub fn new(
+        qemu_endpoint: impl Into<String>,
+        operator_listen: impl Into<String>,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        let config = Self {
+            qemu_endpoint: qemu_endpoint.into(),
+            operator_listen: operator_listen.into(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Returns the raw endpoint passed to QEMU's `-gdb` option.
+    #[must_use]
+    pub fn qemu_endpoint(&self) -> &str {
+        &self.qemu_endpoint
+    }
+
+    /// Returns the operator-facing `--gdb-listen` endpoint owned by the proxy.
+    #[must_use]
+    pub fn operator_listen(&self) -> &str {
+        &self.operator_listen
+    }
+
+    /// Returns whether Crucible mediates the QEMU gdbstub to the operator endpoint.
+    #[must_use]
+    pub const fn mediated_by_crucible(&self) -> bool {
+        true
+    }
+
+    /// Returns whether the gdbstub channel is outside the scheduler hot path.
+    #[must_use]
+    pub const fn out_of_band(&self) -> bool {
+        true
+    }
+
+    /// Returns whether debugger traffic carries per-quantum timing data.
+    #[must_use]
+    pub const fn carries_per_quantum_timing(&self) -> bool {
+        false
+    }
+
+    /// Returns whether debugger traffic carries guest frame data.
+    #[must_use]
+    pub const fn carries_frame_data(&self) -> bool {
+        false
+    }
+
+    /// Validates the launch/proxy endpoint strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchCommandError::InvalidLaunchText`] when an endpoint is
+    /// empty or contains a newline or NUL byte.
+    pub fn validate(&self) -> Result<(), QemuLaunchCommandError> {
+        validate_launch_text("qemu_gdbstub_endpoint", &self.qemu_endpoint)?;
+        validate_launch_text("gdb_listen_endpoint", &self.operator_listen)
+    }
+}
+
 /// A validated QEMU launch command prepared for process spawning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchCommand {
     executable: String,
     args: Vec<String>,
     vm_hash_material: String,
+    gdbstub: Option<QemuGdbstubChannelConfig>,
 }
 
 impl QemuLaunchCommand {
@@ -416,6 +491,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn vm_launch_hash_material(&self) -> &str {
         &self.vm_hash_material
+    }
+
+    /// Returns the optional debug gdbstub channel for this launch.
+    #[must_use]
+    pub const fn gdbstub_channel(&self) -> Option<&QemuGdbstubChannelConfig> {
+        self.gdbstub.as_ref()
     }
 
     /// Returns canonical material for hashing the complete QEMU command line.
@@ -439,6 +520,7 @@ pub struct QemuLaunchCommandBuilder {
     vm: QemuVmLaunchConfig,
     executable: String,
     plugin: QemuLaunchPluginConfig,
+    gdbstub: Option<QemuGdbstubChannelConfig>,
 }
 
 impl QemuLaunchCommandBuilder {
@@ -455,7 +537,15 @@ impl QemuLaunchCommandBuilder {
             vm,
             executable: executable.into(),
             plugin,
+            gdbstub: None,
         }
+    }
+
+    /// Returns a builder that enables the debug-session gdbstub channel.
+    #[must_use]
+    pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
+        self.gdbstub = Some(gdbstub);
+        self
     }
 
     /// Builds and validates the concrete QEMU command.
@@ -470,11 +560,17 @@ impl QemuLaunchCommandBuilder {
         validate_store_path("qemu_executable", &self.executable)?;
         self.vm.validate()?;
         self.plugin.validate()?;
+        if let Some(gdbstub) = &self.gdbstub {
+            gdbstub.validate()?;
+        }
 
         let vm_hash_material = self.vm.launch_hash_material();
         let mut args = self.profile.canonical_qemu_args();
         args.extend(self.vm.qemu_args());
         args.extend(["-plugin".to_owned(), self.plugin.qemu_plugin_argument()]);
+        if let Some(gdbstub) = &self.gdbstub {
+            args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
+        }
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
@@ -482,6 +578,7 @@ impl QemuLaunchCommandBuilder {
             executable: self.executable,
             args,
             vm_hash_material,
+            gdbstub: self.gdbstub,
         })
     }
 }

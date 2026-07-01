@@ -10671,6 +10671,59 @@ impl TemporalGraph {
         })
     }
 
+    /// Attaches a debug session by realizing the requested checkpoint configuration.
+    ///
+    /// Debug attach is intentionally just [`Self::resume`] plus metadata for the
+    /// fourth out-of-band gdbstub channel. It records no scheduler decision,
+    /// carries no per-quantum/frame data, and introduces no debug-specific
+    /// realization path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::resume`] when the checkpoint
+    /// configuration cannot be instantiated. Returns
+    /// [`EngineError::DebugAttachUnknownNode`] when the realized runtime does not
+    /// contain the requested node.
+    pub fn debug_attach(
+        &mut self,
+        request: &DebugAttachRequest,
+    ) -> Result<DebugAttachReport, EngineError> {
+        let runtime = self.resume(&request.configuration)?;
+        let node = request.node.clone();
+        if !runtime.runtime.node_blobs.contains_key(&node)
+            || !runtime.runtime.node_icounts.contains_key(&node)
+        {
+            return Err(EngineError::DebugAttachUnknownNode {
+                node,
+                configuration: request.configuration.id(),
+            });
+        }
+        let reduced = reduce(&request.configuration.def, &request.configuration.schedule)?;
+        if runtime.runtime.id != reduced.id {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: reduced.id,
+                actual: runtime.runtime.id,
+            });
+        }
+
+        Ok(DebugAttachReport {
+            configuration: request.configuration.id(),
+            checkpoint: runtime.checkpoint,
+            runtime,
+            reduced_state: reduced.id,
+            channel_set: DebugAttachChannelSet::four_channel_debug_session(),
+            gdbstub: DebugGdbstubChannel {
+                node: request.node.clone(),
+                qemu_endpoint: request.qemu_gdbstub.clone(),
+                operator_listen: request.gdb_listen.clone(),
+                mediated_by_crucible: true,
+                out_of_band: true,
+                carries_per_quantum_timing: false,
+                carries_frame_data: false,
+            },
+        })
+    }
+
     /// Forks from `base` by instantiating it and appending `decisions`.
     ///
     /// The returned branch is recorded as a thin checkpoint in the same DAG.
@@ -14180,6 +14233,173 @@ pub struct TemporalGraphRuntime {
     pub runtime: RuntimeState,
 }
 
+/// A gdb-protocol endpoint used by the debug attach boundary.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DebugGdbEndpoint {
+    value: String,
+}
+
+impl DebugGdbEndpoint {
+    /// Builds a validated endpoint string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DebugGdbEndpointInvalid`] when `value` is empty or
+    /// contains a newline or NUL byte.
+    pub fn new(field: &'static str, value: impl Into<String>) -> Result<Self, EngineError> {
+        let value = value.into();
+        validate_debug_gdb_endpoint(field, &value)?;
+        Ok(Self { value })
+    }
+
+    /// Returns the stable endpoint text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+/// A request to attach the time-travel debugger to one checkpoint configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugAttachRequest {
+    /// Checkpoint configuration resolved from the operator coordinate.
+    pub configuration: Configuration,
+    /// Node whose QEMU gdbstub is exposed to the operator.
+    pub node: NodeId,
+    /// Host-side endpoint where QEMU exposes its raw gdbstub.
+    pub qemu_gdbstub: DebugGdbEndpoint,
+    /// Operator-facing `--gdb-listen` endpoint served by Crucible's proxy.
+    pub gdb_listen: DebugGdbEndpoint,
+}
+
+impl DebugAttachRequest {
+    /// Builds a debug attach request from a resolved checkpoint configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DebugGdbEndpointInvalid`] when either endpoint is
+    /// empty or cannot be represented as stable launch/proxy text.
+    pub fn new(
+        configuration: Configuration,
+        node: NodeId,
+        qemu_gdbstub: impl Into<String>,
+        gdb_listen: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        Ok(Self {
+            configuration,
+            node,
+            qemu_gdbstub: DebugGdbEndpoint::new("qemu_gdbstub", qemu_gdbstub)?,
+            gdb_listen: DebugGdbEndpoint::new("gdb_listen", gdb_listen)?,
+        })
+    }
+}
+
+/// One channel role in the QEMU child boundary during a debug session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugAttachChannelKind {
+    /// Plugin IPC control carries setup and teardown messages only.
+    PluginIpcControl,
+    /// Shared memory carries the per-quantum hot path.
+    SharedMemoryHotPath,
+    /// QMP carries out-of-band machine-control commands.
+    QmpMachineControl,
+    /// The gdbstub carries out-of-band debugger protocol packets.
+    Gdbstub,
+}
+
+/// The complete QEMU child channel set while a debugger is attached.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugAttachChannelSet {
+    /// Stable channel roles owned by the debug-attached node.
+    pub channels: BTreeSet<DebugAttachChannelKind>,
+}
+
+impl DebugAttachChannelSet {
+    /// Builds the required four-channel debug-session boundary.
+    #[must_use]
+    pub fn four_channel_debug_session() -> Self {
+        Self {
+            channels: BTreeSet::from([
+                DebugAttachChannelKind::PluginIpcControl,
+                DebugAttachChannelKind::SharedMemoryHotPath,
+                DebugAttachChannelKind::QmpMachineControl,
+                DebugAttachChannelKind::Gdbstub,
+            ]),
+        }
+    }
+
+    /// Returns whether the set contains exactly the four required channel roles.
+    #[must_use]
+    pub fn is_four_channel_debug_session(&self) -> bool {
+        self == &Self::four_channel_debug_session()
+    }
+}
+
+/// The mediated QEMU gdbstub channel exposed during a debug attach.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugGdbstubChannel {
+    /// Node whose QEMU child owns the gdbstub.
+    pub node: NodeId,
+    /// Host-side endpoint where QEMU exposes the raw gdbstub.
+    pub qemu_endpoint: DebugGdbEndpoint,
+    /// Operator-facing gdb-protocol endpoint served by Crucible's proxy.
+    pub operator_listen: DebugGdbEndpoint,
+    /// Whether Crucible mediates the raw QEMU gdbstub.
+    pub mediated_by_crucible: bool,
+    /// Whether the channel is outside scheduler delivery order.
+    pub out_of_band: bool,
+    /// Whether debugger traffic carries per-quantum timing data.
+    pub carries_per_quantum_timing: bool,
+    /// Whether debugger traffic carries guest frame data.
+    pub carries_frame_data: bool,
+}
+
+impl DebugGdbstubChannel {
+    /// Returns whether this channel satisfies the out-of-band debug contract.
+    #[must_use]
+    pub const fn is_out_of_band_debug_proxy(&self) -> bool {
+        self.mediated_by_crucible
+            && self.out_of_band
+            && !self.carries_per_quantum_timing
+            && !self.carries_frame_data
+    }
+}
+
+/// Result of attaching a debugger to an instantiated checkpoint configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugAttachReport {
+    /// Configuration realized for the debugger attach.
+    pub configuration: ContentHash,
+    /// Checkpoint identity used as the attach target.
+    pub checkpoint: ContentHash,
+    /// Ordinary runtime produced by [`TemporalGraph::resume`].
+    pub runtime: TemporalGraphRuntime,
+    /// Reduced state denoted by the attached configuration.
+    pub reduced_state: ContentHash,
+    /// Complete child-channel set visible during the debug session.
+    pub channel_set: DebugAttachChannelSet,
+    /// The out-of-band mediated gdbstub channel.
+    pub gdbstub: DebugGdbstubChannel,
+}
+
+impl DebugAttachReport {
+    /// Returns whether the attach report proves the ordinary instantiate path.
+    #[must_use]
+    pub fn uses_instantiated_runtime(&self) -> bool {
+        self.runtime.configuration == self.configuration
+            && self.runtime.checkpoint == self.checkpoint
+            && self.runtime.runtime.configuration == self.configuration
+            && self.runtime.runtime.id == self.reduced_state
+    }
+
+    /// Returns whether the report carries the required four-channel debug boundary.
+    #[must_use]
+    pub fn has_four_channel_debug_boundary(&self) -> bool {
+        self.channel_set.is_four_channel_debug_session()
+            && self.gdbstub.is_out_of_band_debug_proxy()
+    }
+}
+
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphFork {
@@ -14407,6 +14627,17 @@ fn validate_app_random_draw_cap(def: &ScenarioDef, schedule: &Schedule) -> Resul
         });
     }
     Ok(())
+}
+
+fn validate_debug_gdb_endpoint(field: &'static str, value: &str) -> Result<(), EngineError> {
+    if value.is_empty() || value.contains('\n') || value.contains('\0') {
+        Err(EngineError::DebugGdbEndpointInvalid {
+            field,
+            value: value.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn count_app_random_decisions(schedule: &Schedule) -> u64 {
@@ -15918,6 +16149,20 @@ pub enum EngineError {
         /// The number of app-random decisions present in the schedule.
         actual: u64,
     },
+    /// A debugger gdb-protocol endpoint was not stable non-empty text.
+    DebugGdbEndpointInvalid {
+        /// Endpoint field being validated.
+        field: &'static str,
+        /// Rejected endpoint value.
+        value: String,
+    },
+    /// A debug attach requested a node absent from the instantiated runtime.
+    DebugAttachUnknownNode {
+        /// Requested node.
+        node: NodeId,
+        /// Configuration being attached to.
+        configuration: ContentHash,
+    },
     /// A scenario family has an invalid finite parameter space.
     ScenarioFamilyInvalidSpace {
         /// Stable reason for the parameter-space rejection.
@@ -16277,6 +16522,12 @@ impl fmt::Display for EngineError {
                     f,
                     "app-random draw count {actual} exceeds scenario cap {cap}"
                 )
+            }
+            Self::DebugGdbEndpointInvalid { field, .. } => {
+                write!(f, "debug gdb endpoint {field} is invalid")
+            }
+            Self::DebugAttachUnknownNode { .. } => {
+                f.write_str("debug attach requested an unknown runtime node")
             }
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")

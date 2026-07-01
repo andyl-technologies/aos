@@ -15,7 +15,9 @@
 //! owns host-side plugin coverage observation bridging; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
-//! boundary assertion; `async_driver` owns the bounded host-I/O bridge between
+//! boundary assertion; `gdbstub_proxy` owns the mediated debug gdbstub bridge
+//! between QEMU and the operator-facing `--gdb-listen` endpoint; `async_driver`
+//! owns the bounded host-I/O bridge between
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
 //! scheduler-facing one-child/three-channel QEMU wrapper; `quantum` owns the
@@ -36,6 +38,7 @@ mod async_driver;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;
+mod gdbstub_proxy;
 mod inertness;
 mod launch;
 mod node;
@@ -74,6 +77,10 @@ pub use determinism_boundary::{
     REQUIRED_QEMU_FINGERPRINT_COMPONENTS, REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES,
     qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
 };
+pub use gdbstub_proxy::{
+    QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
+    QemuGdbstubProxySessionReport,
+};
 pub use inertness::{
     QemuControlFrameClass, QemuControlPlaneInertnessError, QemuControlPlaneInertnessReport,
     QemuControlPlaneObservation, QemuSimulationMode, SIM_ON_CONTROL_FRAME_CLASSES,
@@ -84,8 +91,8 @@ pub use launch::{
     GuestEntropySeed, GuestEntropySeedFile, IcountShiftSetting, InputPolicy,
     LaunchProfileCandidate, LaunchProfileError, MachineResetMode, NodeClockSkewDeclaration,
     NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
-    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError,
-    QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
+    QemuGdbstubChannelConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
+    QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
     validate_pre_spawn_qemu_launch_args,
 };

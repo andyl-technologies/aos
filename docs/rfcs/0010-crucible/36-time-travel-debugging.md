@@ -892,11 +892,21 @@ touching the canonical run.
 > control-plane, fork, and event-log foundations they depend on ([ADV-1], [G-5],
 > [PLAN-4]).
 
-- [ ] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
+- [x] **T-DBG-1** Implement debug attach as `instantiate` of a resolved checkpoint
   configuration (05 §5, 10 §10.5) and the **fourth out-of-band gdbstub channel**
   (alongside plugin-IPC/shmem/QMP), mediated/proxied to a `--gdb-listen` gdb-protocol
   endpoint, carrying no per-quantum/frame data. — satisfies [DBG-1], [DBG-2],
   [DBG-3], [DBG-4], [DBG-5], [DBG-6]; spec §36.1, §36.2.
+  Completed by `checks.crucible.phase6.debugAttach`: `TemporalGraph::debug_attach`
+  now accepts a resolved checkpoint configuration, realizes it through the same
+  `resume`/`instantiate` path as ordinary graph operations, and reports the
+  resulting runtime together with an explicit four-channel debug boundary:
+  plugin-IPC, shared memory, QMP, and a mediated gdbstub. The QEMU launch builder
+  adds a validated `-gdb` endpoint only for debug launches, and the
+  `QemuGdbstubProxy` binds the operator `--gdb-listen` address, connects to
+  QEMU's raw gdbstub endpoint, and forwards debugger bytes outside the scheduler
+  hot path. The tests assert both the four-channel contract and local proxy
+  mediation, with no per-quantum timing or frame payload.
 - [ ] **T-DBG-2** Implement read-only inspection that appends no causal entry,
   mutates no config, and advances no virtual time, with a gate test that the
   canonical causal subsequence is byte-identical with/without a debugger and that

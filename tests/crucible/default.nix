@@ -1569,6 +1569,24 @@ in rec {
         phase6.minimization
       ];
     };
+    debugAttach = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.debugAttach";
+      gate = import ./phase6-debug-attach.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.debugAttach";
+        taskIds = ["T-DBG-1"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.unifyingView.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.unifyingView
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
