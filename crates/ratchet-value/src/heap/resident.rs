@@ -1,9 +1,10 @@
 //! Process resident-memory sampling for heap budget policy.
 //!
 //! The high-water heap budget is defined in resident bytes. Linux exposes a
-//! cheap process-wide RSS sample through `/proc/self/statm`; other targets
-//! currently report that no live process sampler is available so callers can
-//! fall back to allocator-mapped bytes without changing correctness.
+//! cheap process-wide RSS sample through `/proc/self/statm`, and Darwin exposes
+//! one through Mach task metadata. Other targets currently report that no live
+//! process sampler is available so callers can fall back to allocator-mapped
+//! bytes without changing correctness.
 
 use std::num::ParseIntError;
 
@@ -46,6 +47,8 @@ impl ProcessResidentMemorySample {
 pub enum ProcessResidentMemorySource {
     /// Linux `/proc/self/statm`, using the resident-pages field.
     LinuxProcSelfStatm,
+    /// Darwin Mach `MACH_TASK_BASIC_INFO`, using the current resident-size field.
+    DarwinMachTaskBasicInfo,
 }
 
 /// A process resident-memory sample failed.
@@ -72,6 +75,23 @@ pub enum ProcessResidentMemoryError {
     /// The Linux `/proc/self/statm` resident byte calculation overflowed.
     #[error("resident byte count overflowed while parsing /proc/self/statm")]
     LinuxStatmResidentBytesOverflow,
+    /// Darwin `task_info(MACH_TASK_BASIC_INFO)` did not return task metadata.
+    #[error("failed to query Mach task basic info for process resident memory: {code}")]
+    DarwinMachTaskInfoFailed {
+        /// The Mach kernel return code.
+        code: i32,
+    },
+    /// Darwin `task_info(MACH_TASK_BASIC_INFO)` returned a short metadata payload.
+    #[error("Mach task basic info returned {actual_count} words, expected {expected_count}")]
+    DarwinMachTaskInfoShortRead {
+        /// The number of words returned by Mach.
+        actual_count: u32,
+        /// The number of words required for `mach_task_basic_info_data_t`.
+        expected_count: u32,
+    },
+    /// The Darwin Mach resident byte count did not fit in `usize`.
+    #[error("resident byte count overflowed while reading Mach task basic info")]
+    DarwinMachResidentBytesOverflow,
 }
 
 /// Samples current process resident bytes when a platform sampler exists.
@@ -131,7 +151,17 @@ fn process_resident_memory_sample_for_target()
     Ok(Some(sample))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn process_resident_memory_sample_for_target()
+-> Result<Option<ProcessResidentMemorySample>, ProcessResidentMemoryError> {
+    let resident_bytes = darwin_resident_size_bytes()?;
+    Ok(Some(ProcessResidentMemorySample {
+        resident_bytes,
+        source: ProcessResidentMemorySource::DarwinMachTaskBasicInfo,
+    }))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn process_resident_memory_sample_for_target()
 -> Result<Option<ProcessResidentMemorySample>, ProcessResidentMemoryError> {
     Ok(None)
@@ -148,6 +178,53 @@ fn system_page_size() -> Result<usize, ProcessResidentMemoryError> {
         return Err(ProcessResidentMemoryError::PageSizeUnavailable);
     }
     usize::try_from(page_size).map_err(|_| ProcessResidentMemoryError::PageSizeUnavailable)
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_resident_size_bytes() -> Result<usize, ProcessResidentMemoryError> {
+    let mut info = std::mem::MaybeUninit::<libc::mach_task_basic_info_data_t>::uninit();
+    let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+    let task = {
+        // SAFETY: `mach_task_self` reads the process-local current task port.
+        // The returned send right is borrowed from the process and must not be
+        // deallocated by this sampler.
+        #[allow(deprecated)]
+        unsafe {
+            libc::mach_task_self()
+        }
+    };
+    let status = {
+        // SAFETY: `task` names the current task. `task_info` writes at most
+        // `count` integer slots into the valid `mach_task_basic_info_data_t`
+        // storage, and `count` is initialized to the exact slot count for the
+        // requested flavor.
+        unsafe {
+            libc::task_info(
+                task,
+                libc::MACH_TASK_BASIC_INFO,
+                info.as_mut_ptr().cast::<libc::integer_t>(),
+                &mut count,
+            )
+        }
+    };
+    if status != libc::KERN_SUCCESS {
+        return Err(ProcessResidentMemoryError::DarwinMachTaskInfoFailed {
+            code: status as i32,
+        });
+    }
+    if count < libc::MACH_TASK_BASIC_INFO_COUNT {
+        return Err(ProcessResidentMemoryError::DarwinMachTaskInfoShortRead {
+            actual_count: count as u32,
+            expected_count: libc::MACH_TASK_BASIC_INFO_COUNT as u32,
+        });
+    }
+    let info = {
+        // SAFETY: `task_info` returned success with the full
+        // `MACH_TASK_BASIC_INFO` payload, so the output structure is initialized.
+        unsafe { info.assume_init() }
+    };
+    usize::try_from(info.resident_size)
+        .map_err(|_| ProcessResidentMemoryError::DarwinMachResidentBytesOverflow)
 }
 
 #[cfg(test)]
@@ -196,5 +273,25 @@ mod tests {
             process_resident_memory_sample_from_linux_statm("123 2\n", usize::MAX),
             Err(ProcessResidentMemoryError::LinuxStatmResidentBytesOverflow)
         ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn current_process_sampler_reports_target_source() {
+        let sample = ProcessResidentMemorySample::current()
+            .expect("target sampler succeeds")
+            .expect("target has a live resident-memory sampler");
+
+        assert!(sample.resident_bytes() > 0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            sample.source(),
+            ProcessResidentMemorySource::LinuxProcSelfStatm
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            sample.source(),
+            ProcessResidentMemorySource::DarwinMachTaskBasicInfo
+        );
     }
 }

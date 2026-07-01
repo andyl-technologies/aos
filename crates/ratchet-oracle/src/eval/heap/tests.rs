@@ -1456,7 +1456,11 @@ fn process_resident_memory_mode_reports_live_or_mapped_source() {
     match action.decision().resident_source() {
         EvalHeapResidentMemorySource::ArenaMappedBytes => {}
         EvalHeapResidentMemorySource::ProcessResidentSet(source) => {
-            assert_eq!(source, ProcessResidentMemorySource::LinuxProcSelfStatm);
+            assert!(matches!(
+                source,
+                ProcessResidentMemorySource::LinuxProcSelfStatm
+                    | ProcessResidentMemorySource::DarwinMachTaskBasicInfo
+            ));
         }
     }
     assert!(action.requests_tier_b());

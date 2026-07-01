@@ -5562,17 +5562,17 @@ and helps the oracle directly.
       budget and the post-evaluation cheap-advice idle threshold, `EvalOutcome`
       also snapshots the cold-aware planning telemetry through
       `cheap_memory_budget_plan()`. Hash-cons hits skip the poll because no heap
-      allocation occurred. Linux budget polls now sample process RSS from
-      `/proc/self/statm` through
+      allocation occurred. Linux and Darwin budget polls now sample process RSS
+      from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through
       `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
-      unsupported or unreadable platforms; tests pin the parser, the fallback
-      mode, the resident-source metadata carried by budget decisions, and
-      outcome-level budget-action reporting. Daemon policy, non-Linux live RSS
-      backends, CA-store spill, cold hash-consed page eviction, and collector
-      installation remain open under the full
-      memory-management rows. `EvalHeap` also tracks per-record access epochs
-      and exposes cold hash-consed logical-byte estimates for opt-in budget
-      classification. `plan_memory_budget_with_cheap_memory_advice` now
+      unsupported or unreadable platforms; tests pin the Linux parser, the
+      Darwin live-source path, the fallback mode, the resident-source metadata
+      carried by budget decisions, and outcome-level budget-action reporting.
+      Daemon policy, live RSS backends beyond Linux/Darwin, CA-store spill, cold
+      hash-consed page eviction, and collector installation remain open under
+      the full memory-management rows. `EvalHeap` also tracks per-record access
+      epochs and exposes cold hash-consed logical-byte estimates for opt-in
+      budget classification. `plan_memory_budget_with_cheap_memory_advice` now
       combines those cold estimates with supported unused-tail capacity and runs
       the cheap advice hooks for telemetry when reclaim is planned, while the
       automatic allocation-safepoint budget action and `memory_budget_action()`

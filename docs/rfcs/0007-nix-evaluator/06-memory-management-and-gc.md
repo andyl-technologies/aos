@@ -1227,14 +1227,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       post-evaluation cheap-advice idle threshold, `EvalOutcome` also snapshots
       the cold-aware planning telemetry through `cheap_memory_budget_plan()`.
       Hash-cons hits skip the poll because no heap allocation occurred. Linux
-      budget polls now sample process RSS from
-      `/proc/self/statm` through
-      `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
-      unsupported or unreadable platforms; tests pin the parser, the fallback
-      mode, the resident-source metadata carried by budget decisions, and
-      outcome-level budget-action reporting. Daemon policy, non-Linux live RSS
-      backends, actual CA-store spill, and collector installation are not wired
-      yet, so the full row above remains open.
+      and Darwin budget polls now sample process RSS from `/proc/self/statm` or
+      Mach `MACH_TASK_BASIC_INFO` through `ProcessResidentMemorySample`, falling
+      back to arena-mapped bytes on unsupported or unreadable platforms; tests
+      pin the Linux parser, the Darwin live-source path, the fallback mode, the
+      resident-source metadata carried by budget decisions, and outcome-level
+      budget-action reporting. Daemon policy, live RSS backends beyond
+      Linux/Darwin, actual CA-store spill, and collector installation are not
+      wired yet, so the full row above remains open.
       `EvalHeap` also records access epochs for typed heap records and exposes
       cold hash-consed logical-byte estimates for opt-in budget classification.
       `EvalHeap::plan_memory_budget_with_cheap_memory_advice` now combines
