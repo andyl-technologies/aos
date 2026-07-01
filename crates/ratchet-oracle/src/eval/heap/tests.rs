@@ -7,10 +7,10 @@ use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
     AllocationRegionFacts, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
     HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
-    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout,
-    ProcessResidentMemorySource, RegionPlan, RegionRuntimeTier, RememberedEdge, RememberedSet,
-    ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPlan,
+    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectAge,
+    NurseryObjectLayout, ProcessResidentMemorySource, RegionPlan, RegionRuntimeTier,
+    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -90,6 +90,16 @@ fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
         .expect("heap record exists")
         .layout
         .size_bytes
+}
+
+fn record_layout_align(heap: &EvalHeap, value: Value) -> usize {
+    let address = gc_address(value);
+    heap.records
+        .iter()
+        .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+        .expect("heap record exists")
+        .layout
+        .align
 }
 
 #[test]
@@ -3713,6 +3723,10 @@ fn collector_poll_minor_gc_relocation_destinations_derive_layouts_from_heap_reco
         .expect("object byte-copy plan derives");
     assert_eq!(byte_copy_plan.len(), 1);
     assert!(!byte_copy_plan.is_empty());
+    assert_eq!(byte_copy_plan.copy_to_nursery_count(), 1);
+    assert_eq!(byte_copy_plan.promote_to_old_count(), 0);
+    assert_eq!(byte_copy_plan.copy_to_nursery_bytes(), expected_thunk_bytes);
+    assert_eq!(byte_copy_plan.promote_to_old_bytes(), 0);
     let byte_copy = &byte_copy_plan.requests()[0];
     assert_eq!(byte_copy.source(), gc_address(child));
     assert_eq!(byte_copy.destination(), base);
@@ -3720,6 +3734,156 @@ fn collector_poll_minor_gc_relocation_destinations_derive_layouts_from_heap_reco
     assert_eq!(byte_copy.destination_generation(), HeapGeneration::Young);
     assert_eq!(byte_copy.size_bytes(), expected_thunk_bytes);
     assert_eq!(byte_copy.align(), expected_align);
+    assert_eq!(
+        byte_copy_plan
+            .copy_to_nursery_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![*byte_copy]
+    );
+    assert_eq!(
+        byte_copy_plan
+            .promote_to_old_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        Vec::new()
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_object_byte_copy_plan_partitions_mixed_actions() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first_copy = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first copied thunk allocates");
+    let promote = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("promoted thunk allocates");
+    let second_copy = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second copied thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let first_copy_address = gc_address(first_copy);
+    let promote_address = gc_address(promote);
+    let second_copy_address = gc_address(second_copy);
+    let roots = vec![
+        ResolvedValueGeneration::young(first_copy_address),
+        ResolvedValueGeneration::young(promote_address),
+        ResolvedValueGeneration::young(second_copy_address),
+    ];
+    let nursery_objects = vec![
+        NurseryObjectAge::new(first_copy_address, 0),
+        NurseryObjectAge::new(promote_address, 1),
+        NurseryObjectAge::new(second_copy_address, 0),
+    ];
+    let remembered_set = RememberedSet::new();
+    let plan = MinorGcPlan::from_roots_and_remembered(
+        roots.iter().copied(),
+        remembered_set.snapshot(),
+        remembered_set.epoch(),
+        &nursery_objects,
+        MinorGcPromotionPolicy::new(2),
+    )
+    .expect("mixed-action minor-GC plan builds");
+    let planned = AllocationCollectorPollMinorGcPlan::from_parts_for_test(
+        poll,
+        heap.records.len(),
+        heap.region_owner,
+        heap.worker_region_epoch,
+        heap.allocation_safepoints(),
+        heap.permanent_allocation_safepoints(),
+        remembered_set,
+        roots,
+        nursery_objects,
+        Vec::new(),
+        Vec::new(),
+        plan,
+    );
+    let first_copy_size = record_layout_size(&heap, first_copy);
+    let promote_size = record_layout_size(&heap, promote);
+    let second_copy_size = record_layout_size(&heap, second_copy);
+    let nursery_layouts = [
+        NurseryObjectLayout::new(
+            first_copy_address,
+            first_copy_size,
+            record_layout_align(&heap, first_copy),
+        ),
+        NurseryObjectLayout::new(
+            promote_address,
+            promote_size,
+            record_layout_align(&heap, promote),
+        ),
+        NurseryObjectLayout::new(
+            second_copy_address,
+            second_copy_size,
+            record_layout_align(&heap, second_copy),
+        ),
+    ];
+    let destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("mixed-action destination plan builds");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("mixed-action commit plan builds");
+    let byte_copy_plan = heap
+        .collector_poll_minor_gc_object_byte_copy_plan(&commit)
+        .expect("mixed-action object byte-copy plan derives");
+
+    assert_eq!(byte_copy_plan.len(), 3);
+    assert_eq!(byte_copy_plan.copy_to_nursery_count(), 2);
+    assert_eq!(byte_copy_plan.promote_to_old_count(), 1);
+    assert_eq!(
+        byte_copy_plan.copy_to_nursery_bytes(),
+        first_copy_size + second_copy_size
+    );
+    assert_eq!(byte_copy_plan.promote_to_old_bytes(), promote_size);
+    assert_eq!(
+        byte_copy_plan
+            .requests()
+            .iter()
+            .map(AllocationCollectorPollObjectByteCopyRequest::action)
+            .collect::<Vec<_>>(),
+        vec![
+            MinorGcSurvivorAction::CopyToNursery,
+            MinorGcSurvivorAction::PromoteToOld,
+            MinorGcSurvivorAction::CopyToNursery,
+        ]
+    );
+    let requests = byte_copy_plan.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(AllocationCollectorPollObjectByteCopyRequest::source)
+            .collect::<Vec<_>>(),
+        vec![first_copy_address, promote_address, second_copy_address]
+    );
+    assert_eq!(requests[0].destination_generation(), HeapGeneration::Young);
+    assert_eq!(requests[1].destination_generation(), HeapGeneration::Old);
+    assert_eq!(requests[2].destination_generation(), HeapGeneration::Young);
+    assert_eq!(
+        byte_copy_plan
+            .copy_to_nursery_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![requests[0], requests[2]]
+    );
+    assert_eq!(
+        byte_copy_plan
+            .promote_to_old_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![requests[1]]
+    );
 }
 
 #[test]
@@ -3951,6 +4115,10 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
         .collector_poll_minor_gc_object_byte_copy_plan(&commit)
         .expect("promoted object byte-copy plan derives");
     assert_eq!(byte_copy_plan.len(), 1);
+    assert_eq!(byte_copy_plan.copy_to_nursery_count(), 0);
+    assert_eq!(byte_copy_plan.promote_to_old_count(), 1);
+    assert_eq!(byte_copy_plan.copy_to_nursery_bytes(), 0);
+    assert_eq!(byte_copy_plan.promote_to_old_bytes(), 24);
     let byte_copy = &byte_copy_plan.requests()[0];
     assert_eq!(byte_copy.source(), gc_address(child));
     assert_eq!(byte_copy.destination(), old_base);
@@ -3958,6 +4126,20 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
     assert_eq!(byte_copy.destination_generation(), HeapGeneration::Old);
     assert_eq!(byte_copy.size_bytes(), 24);
     assert_eq!(byte_copy.align(), 8);
+    assert_eq!(
+        byte_copy_plan
+            .copy_to_nursery_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        Vec::new()
+    );
+    assert_eq!(
+        byte_copy_plan
+            .promote_to_old_requests()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![*byte_copy]
+    );
     let mut forwarding_slots = commit
         .forwarding_slot_buffer()
         .expect("promoted forwarding slot buffer derives");

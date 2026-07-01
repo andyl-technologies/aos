@@ -5778,6 +5778,10 @@ and helps the oracle directly.
       current young worker-domain heap records, revalidating their recorded
       size/alignment, and returning copy requests for the future
       semispace/storage owner rather than raw byte slices.
+      `AllocationCollectorPollObjectByteCopyPlan` now exposes copy-to-nursery
+      and promote-to-old request views plus per-generation object-payload byte
+      totals, while destination-space sizing continues to come from the
+      placement plan's reserved-byte totals so alignment padding stays explicit.
       `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
       remembered-source and nursery-field slots back to current side-table fields
       for the reference buffer while rejecting copied root slots, and

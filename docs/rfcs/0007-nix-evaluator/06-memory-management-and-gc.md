@@ -1569,13 +1569,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       forwarding values, rewrite references, and publish the next remembered set.
       The report-returning variant summarizes committed copy, promotion,
       forwarding, reference-rewrite, and remembered-set publication counts after
-      a successful commit. Tests cover successful cross-buffer application,
-      commit-report counts, and a late remembered-set mismatch that leaves byte
-      destinations, forwarding slots, references, and remembered-set state
-      unchanged. This is still a caller-buffer application surface only: it does
-      not allocate destination objects, bind buffers to real heap storage or
-      object headers, own the card table, scan/rescan old fields, or manage
-      semispaces.
+      a successful commit. The allocation-poll bridge exposes copy-to-nursery
+      and promote-to-old object byte-copy request views plus per-generation
+      object-payload byte totals; destination-space sizing still uses the
+      placement plan's reserved-byte totals because alignment padding belongs
+      there. Tests cover successful cross-buffer application, commit-report
+      counts, action-partitioned allocation-poll byte-copy requests, and a late
+      remembered-set mismatch that leaves byte destinations, forwarding slots,
+      references, and remembered-set state unchanged. This is still a
+      caller-buffer application surface only: it does not allocate destination
+      objects, bind buffers to real heap storage or object headers, own the card
+      table, scan/rescan old fields, or manage semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

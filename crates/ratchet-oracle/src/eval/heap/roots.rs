@@ -1021,6 +1021,37 @@ impl AllocationCollectorPollMinorGcPlan {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn from_parts_for_test(
+        poll: AllocationCollectorPoll,
+        heap_records: usize,
+        worker_region_owner: u64,
+        worker_region_epoch: u64,
+        allocation_safepoints: AllocationSafepointState,
+        permanent_allocation_safepoints: AllocationSafepointState,
+        remembered_set: RememberedSet,
+        roots: Vec<ResolvedValueGeneration>,
+        nursery_objects: Vec<NurseryObjectAge>,
+        nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+        reference_slots: Vec<AllocationCollectorPollReferenceSlot>,
+        plan: MinorGcPlan,
+    ) -> Self {
+        Self::new(
+            poll,
+            heap_records,
+            worker_region_owner,
+            worker_region_epoch,
+            allocation_safepoints,
+            permanent_allocation_safepoints,
+            remembered_set,
+            roots,
+            nursery_objects,
+            nursery_fields,
+            reference_slots,
+            plan,
+        )
+    }
+
     /// Returns the allocation safepoint collector-poll request.
     pub const fn poll(&self) -> AllocationCollectorPoll {
         self.poll
@@ -1580,6 +1611,50 @@ impl AllocationCollectorPollObjectByteCopyPlan {
     /// Returns object byte-copy requests in commit order.
     pub fn requests(&self) -> &[AllocationCollectorPollObjectByteCopyRequest] {
         &self.requests
+    }
+
+    /// Returns requests copied into the next nursery in commit order.
+    pub fn copy_to_nursery_requests(
+        &self,
+    ) -> impl Iterator<Item = &AllocationCollectorPollObjectByteCopyRequest> {
+        self.requests
+            .iter()
+            .filter(|request| request.action() == MinorGcSurvivorAction::CopyToNursery)
+    }
+
+    /// Returns requests promoted into old generation in commit order.
+    pub fn promote_to_old_requests(
+        &self,
+    ) -> impl Iterator<Item = &AllocationCollectorPollObjectByteCopyRequest> {
+        self.requests
+            .iter()
+            .filter(|request| request.action() == MinorGcSurvivorAction::PromoteToOld)
+    }
+
+    /// Returns the number of requests copied into the next nursery.
+    pub fn copy_to_nursery_count(&self) -> usize {
+        self.copy_to_nursery_requests().count()
+    }
+
+    /// Returns the number of requests promoted into old generation.
+    pub fn promote_to_old_count(&self) -> usize {
+        self.promote_to_old_requests().count()
+    }
+
+    /// Returns total requested nursery destination bytes.
+    pub fn copy_to_nursery_bytes(&self) -> usize {
+        self.copy_to_nursery_requests()
+            .fold(0usize, |total, request| {
+                total.saturating_add(request.size_bytes())
+            })
+    }
+
+    /// Returns total requested old-generation destination bytes.
+    pub fn promote_to_old_bytes(&self) -> usize {
+        self.promote_to_old_requests()
+            .fold(0usize, |total, request| {
+                total.saturating_add(request.size_bytes())
+            })
     }
 
     /// Returns the number of object byte-copy requests.
