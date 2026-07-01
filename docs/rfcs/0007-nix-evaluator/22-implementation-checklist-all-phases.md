@@ -4982,6 +4982,19 @@ and helps the oracle directly.
       This remains a planning surface only; object copying, forwarding-pointer
       updates, relocation writeback, semispace allocation, and oracle heap-scan
       integration remain open.
+- [x] Current minor-GC destination-allocation planning precursor:
+      `ratchet-value::heap::gc::NurseryObjectLayout` and
+      `MinorGcDestinationAllocationPlan::from_minor_gc_plan` validate
+      caller-supplied object size/alignment metadata for a survivor plan and
+      split destination storage requirements by copy-to-nursery vs promote-to-old
+      action. Allocations keep survivor-frontier order, require one layout per
+      live survivor with no stale entries, reject duplicate layouts, zero sizes,
+      invalid alignments, and byte-total overflow, and report nursery, old, and
+      aggregate byte requirements. Unit tests cover copy/promote byte splitting,
+      ordering, layout validation failures, per-generation overflow, and
+      aggregate overflow. This remains allocation planning only; destination
+      address allocation, object copying, forwarding pointers, root/field
+      writeback, and semispace management remain open.
 - [x] Current minor-GC relocation-map precursor:
       `ratchet-value::heap::gc::MinorGcRelocationDestination` and
       `MinorGcRelocationPlan::from_minor_gc_plan` validate collector-supplied

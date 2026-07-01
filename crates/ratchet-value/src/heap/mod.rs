@@ -29,14 +29,15 @@ pub use concurrent_gc::{
     classify_thunk_mutation_barrier,
 };
 pub use gc::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcPlan,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcPlan,
     MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
     MinorGcRelocation, MinorGcRelocationDestination, MinorGcRelocationPlan,
     MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
     MinorGcRememberedSetRefreshPlan, MinorGcSurvivor, MinorGcSurvivorAction, NurseryObjectAge,
-    RememberedEdge, RememberedSet, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
-    ThunkResolveWriteBarrier, classify_thunk_resolve_write_barrier,
-    record_thunk_resolve_write_barrier,
+    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetUpdate,
+    ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
+    classify_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier,
 };
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,

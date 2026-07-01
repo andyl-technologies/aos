@@ -415,6 +415,40 @@ impl<'a> NurseryObjectFields<'a> {
     }
 }
 
+/// Size and alignment metadata for one young-generation object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NurseryObjectLayout {
+    address: GcHeapAddress,
+    size_bytes: usize,
+    align: usize,
+}
+
+impl NurseryObjectLayout {
+    /// Creates layout metadata for a nursery object.
+    pub const fn new(address: GcHeapAddress, size_bytes: usize, align: usize) -> Self {
+        Self {
+            address,
+            size_bytes,
+            align,
+        }
+    }
+
+    /// Returns the young-generation object address.
+    pub const fn address(self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the object size in bytes that must be copied or promoted.
+    pub const fn size_bytes(self) -> usize {
+        self.size_bytes
+    }
+
+    /// Returns the required destination alignment in bytes.
+    pub const fn align(self) -> usize {
+        self.align
+    }
+}
+
 /// Age threshold that promotes nursery survivors into the old generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcPromotionPolicy {
@@ -484,6 +518,156 @@ impl MinorGcSurvivor {
     /// Returns whether this survivor is copied or promoted.
     pub const fn action(self) -> MinorGcSurvivorAction {
         self.action
+    }
+}
+
+/// One destination allocation requirement for a minor-GC survivor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcDestinationAllocation {
+    survivor: MinorGcSurvivor,
+    size_bytes: usize,
+    align: usize,
+}
+
+impl MinorGcDestinationAllocation {
+    /// Returns the survivor that needs destination storage.
+    pub const fn survivor(self) -> MinorGcSurvivor {
+        self.survivor
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(self) -> GcHeapAddress {
+        self.survivor.address()
+    }
+
+    /// Returns whether this survivor will be copied or promoted.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.survivor.action()
+    }
+
+    /// Returns the generation that must receive the destination allocation.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        match self.action() {
+            MinorGcSurvivorAction::CopyToNursery => HeapGeneration::Young,
+            MinorGcSurvivorAction::PromoteToOld => HeapGeneration::Old,
+        }
+    }
+
+    /// Returns the destination allocation size in bytes.
+    pub const fn size_bytes(self) -> usize {
+        self.size_bytes
+    }
+
+    /// Returns the destination allocation alignment in bytes.
+    pub const fn align(self) -> usize {
+        self.align
+    }
+}
+
+/// Destination allocation requirements for a planned minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcDestinationAllocationPlan {
+    allocations: Vec<MinorGcDestinationAllocation>,
+    nursery_bytes: usize,
+    old_bytes: usize,
+}
+
+impl MinorGcDestinationAllocationPlan {
+    /// Builds destination allocation metadata from survivor and layout plans.
+    ///
+    /// Allocations are emitted in survivor-frontier order. The layout table must
+    /// contain exactly one valid layout for each survivor source and no stale
+    /// non-survivor entries. Copied survivors contribute to nursery bytes, while
+    /// promoted survivors contribute to old-generation bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if destination-allocation storage cannot
+    /// be reserved, if a survivor has no layout, if layout metadata is
+    /// duplicated or stale, if an object layout has a zero size or invalid
+    /// alignment, or if byte totals overflow.
+    pub fn from_minor_gc_plan(
+        plan: &MinorGcPlan,
+        layouts: &[NurseryObjectLayout],
+    ) -> Result<Self, GenerationalGcError> {
+        validate_unique_nursery_layouts(layouts)?;
+        validate_nursery_layout_values(layouts)?;
+        validate_nursery_layout_sources_are_live(plan, layouts)?;
+
+        let mut allocations = Vec::new();
+        let mut nursery_bytes = 0usize;
+        let mut old_bytes = 0usize;
+        for survivor in plan.survivors() {
+            let layout = nursery_layout_for(layouts, survivor.address())?;
+            match survivor.action() {
+                MinorGcSurvivorAction::CopyToNursery => {
+                    nursery_bytes = checked_add_destination_bytes(
+                        nursery_bytes,
+                        layout.size_bytes,
+                        HeapGeneration::Young,
+                    )?;
+                }
+                MinorGcSurvivorAction::PromoteToOld => {
+                    old_bytes = checked_add_destination_bytes(
+                        old_bytes,
+                        layout.size_bytes,
+                        HeapGeneration::Old,
+                    )?;
+                }
+            };
+            let allocations_len = allocations
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcDestinationAllocationLengthOverflow)?;
+            allocations.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcDestinationAllocationFailed {
+                    allocations: allocations_len,
+                }
+            })?;
+            allocations.push(MinorGcDestinationAllocation {
+                survivor: *survivor,
+                size_bytes: layout.size_bytes,
+                align: layout.align,
+            });
+        }
+
+        let _total_bytes = checked_add_destination_total_bytes(nursery_bytes, old_bytes)?;
+
+        Ok(Self {
+            allocations,
+            nursery_bytes,
+            old_bytes,
+        })
+    }
+
+    /// Returns allocation requirements in survivor-frontier order.
+    pub fn allocations(&self) -> &[MinorGcDestinationAllocation] {
+        &self.allocations
+    }
+
+    /// Returns bytes requested from the next nursery semispace.
+    pub const fn nursery_bytes(&self) -> usize {
+        self.nursery_bytes
+    }
+
+    /// Returns bytes requested from old-generation storage.
+    pub const fn old_bytes(&self) -> usize {
+        self.old_bytes
+    }
+
+    /// Returns total destination bytes requested by all survivors.
+    pub const fn total_bytes(&self) -> usize {
+        self.nursery_bytes + self.old_bytes
+    }
+
+    /// Returns the number of destination allocations needed.
+    pub fn len(&self) -> usize {
+        self.allocations.len()
+    }
+
+    /// Returns whether no survivor destination allocations are needed.
+    pub fn is_empty(&self) -> bool {
+        self.allocations.is_empty()
     }
 }
 
@@ -1047,6 +1231,60 @@ fn validate_unique_nursery_fields(
     Ok(())
 }
 
+fn validate_unique_nursery_layouts(
+    nursery_layouts: &[NurseryObjectLayout],
+) -> Result<(), GenerationalGcError> {
+    for (index, object) in nursery_layouts.iter().enumerate() {
+        if nursery_layouts[index + 1..]
+            .iter()
+            .any(|other| other.address == object.address)
+        {
+            return Err(GenerationalGcError::DuplicateNurseryObjectLayout {
+                address: object.address,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_nursery_layout_values(
+    nursery_layouts: &[NurseryObjectLayout],
+) -> Result<(), GenerationalGcError> {
+    for layout in nursery_layouts {
+        if layout.size_bytes == 0 {
+            return Err(GenerationalGcError::InvalidNurseryObjectSize {
+                address: layout.address,
+                size_bytes: layout.size_bytes,
+            });
+        }
+        if layout.align == 0 || !layout.align.is_power_of_two() {
+            return Err(GenerationalGcError::InvalidNurseryObjectAlignment {
+                address: layout.address,
+                align: layout.align,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_nursery_layout_sources_are_live(
+    plan: &MinorGcPlan,
+    nursery_layouts: &[NurseryObjectLayout],
+) -> Result<(), GenerationalGcError> {
+    for layout in nursery_layouts {
+        if !plan
+            .survivors()
+            .iter()
+            .any(|survivor| survivor.address() == layout.address)
+        {
+            return Err(GenerationalGcError::StaleNurseryObjectLayout {
+                address: layout.address,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_unique_relocation_sources(
     destinations: &[MinorGcRelocationDestination],
 ) -> Result<(), GenerationalGcError> {
@@ -1127,6 +1365,36 @@ fn nursery_age_for(
         .copied()
         .find(|object| object.address == address)
         .ok_or(GenerationalGcError::MissingNurseryObjectAge { address })
+}
+
+fn nursery_layout_for(
+    nursery_layouts: &[NurseryObjectLayout],
+    address: GcHeapAddress,
+) -> Result<NurseryObjectLayout, GenerationalGcError> {
+    nursery_layouts
+        .iter()
+        .copied()
+        .find(|object| object.address == address)
+        .ok_or(GenerationalGcError::MissingNurseryObjectLayout { address })
+}
+
+fn checked_add_destination_bytes(
+    current: usize,
+    size_bytes: usize,
+    generation: HeapGeneration,
+) -> Result<usize, GenerationalGcError> {
+    current
+        .checked_add(size_bytes)
+        .ok_or(GenerationalGcError::MinorGcDestinationBytesOverflow { generation })
+}
+
+fn checked_add_destination_total_bytes(
+    nursery_bytes: usize,
+    old_bytes: usize,
+) -> Result<usize, GenerationalGcError> {
+    nursery_bytes
+        .checked_add(old_bytes)
+        .ok_or(GenerationalGcError::MinorGcDestinationTotalBytesOverflow)
 }
 
 fn relocation_destination_for(
@@ -1307,6 +1575,24 @@ pub enum GenerationalGcError {
         /// The requested survivor-plan capacity.
         survivors: usize,
     },
+    /// The minor-GC destination allocation plan length overflowed.
+    #[error("minor-GC destination allocation length overflow")]
+    MinorGcDestinationAllocationLengthOverflow,
+    /// The minor-GC destination allocation plan could not reserve storage.
+    #[error("failed to reserve {allocations} minor-GC destination allocations")]
+    MinorGcDestinationAllocationFailed {
+        /// The requested destination-allocation capacity.
+        allocations: usize,
+    },
+    /// Minor-GC destination allocation bytes overflowed for one generation.
+    #[error("minor-GC destination bytes overflowed for {generation:?}")]
+    MinorGcDestinationBytesOverflow {
+        /// The destination generation whose byte total overflowed.
+        generation: HeapGeneration,
+    },
+    /// Minor-GC destination allocation bytes overflowed in aggregate.
+    #[error("minor-GC total destination bytes overflowed")]
+    MinorGcDestinationTotalBytesOverflow,
     /// The minor-GC relocation plan length overflowed.
     #[error("minor-GC relocation length overflow")]
     MinorGcRelocationLengthOverflow,
@@ -1360,6 +1646,40 @@ pub enum GenerationalGcError {
     DuplicateNurseryObjectFields {
         /// The duplicated young object.
         address: GcHeapAddress,
+    },
+    /// A live survivor had no nursery layout metadata.
+    #[error("missing nursery layout metadata for 0x{address:x}", address = address.address_bits())]
+    MissingNurseryObjectLayout {
+        /// The survivor missing layout metadata.
+        address: GcHeapAddress,
+    },
+    /// A young object appeared more than once in the nursery layout table.
+    #[error("duplicate nursery layout metadata for 0x{address:x}", address = address.address_bits())]
+    DuplicateNurseryObjectLayout {
+        /// The duplicated young object.
+        address: GcHeapAddress,
+    },
+    /// A nursery layout referenced an object outside the survivor plan.
+    #[error("nursery layout source is not live: 0x{address:x}", address = address.address_bits())]
+    StaleNurseryObjectLayout {
+        /// The non-survivor source address.
+        address: GcHeapAddress,
+    },
+    /// A nursery layout had an invalid object size.
+    #[error("invalid nursery object size {size_bytes} for 0x{address:x}", address = address.address_bits())]
+    InvalidNurseryObjectSize {
+        /// The object with invalid layout metadata.
+        address: GcHeapAddress,
+        /// The rejected size in bytes.
+        size_bytes: usize,
+    },
+    /// A nursery layout had an invalid object alignment.
+    #[error("invalid nursery object alignment {align} for 0x{address:x}", address = address.address_bits())]
+    InvalidNurseryObjectAlignment {
+        /// The object with invalid layout metadata.
+        address: GcHeapAddress,
+        /// The rejected alignment in bytes.
+        align: usize,
     },
     /// A live survivor had no relocation destination metadata.
     #[error("missing minor-GC relocation destination for 0x{address:x}", address = address.address_bits())]
@@ -1811,6 +2131,184 @@ mod tests {
         assert_eq!(
             plan.survivors()[1].action(),
             MinorGcSurvivorAction::PromoteToOld
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_allocation_plan_splits_copy_and_promote_bytes() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        let allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(promote, 40, 16),
+                NurseryObjectLayout::new(copy, 24, 8),
+            ],
+        )
+        .expect("allocation plan builds");
+
+        assert_eq!(allocation_plan.len(), 2);
+        assert!(!allocation_plan.is_empty());
+        assert_eq!(allocation_plan.nursery_bytes(), 24);
+        assert_eq!(allocation_plan.old_bytes(), 40);
+        assert_eq!(allocation_plan.total_bytes(), 64);
+        assert_eq!(allocation_plan.allocations()[0].source(), copy);
+        assert_eq!(
+            allocation_plan.allocations()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(
+            allocation_plan.allocations()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(allocation_plan.allocations()[0].size_bytes(), 24);
+        assert_eq!(allocation_plan.allocations()[0].align(), 8);
+        assert_eq!(allocation_plan.allocations()[1].source(), promote);
+        assert_eq!(
+            allocation_plan.allocations()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            allocation_plan.allocations()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(allocation_plan.allocations()[1].size_bytes(), 40);
+        assert_eq!(allocation_plan.allocations()[1].align(), 16);
+        assert_eq!(
+            allocation_plan.allocations()[1].survivor(),
+            plan.survivors()[1]
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_allocation_plan_rejects_invalid_layout_metadata() {
+        let young = address(0x1000);
+        let other = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(&plan, &[]),
+            Err(GenerationalGcError::MissingNurseryObjectLayout { address: young })
+        );
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    NurseryObjectLayout::new(young, 8, 8),
+                    NurseryObjectLayout::new(young, 16, 8),
+                ],
+            ),
+            Err(GenerationalGcError::DuplicateNurseryObjectLayout { address: young })
+        );
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &plan,
+                &[NurseryObjectLayout::new(young, 0, 8)],
+            ),
+            Err(GenerationalGcError::InvalidNurseryObjectSize {
+                address: young,
+                size_bytes: 0,
+            })
+        );
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &plan,
+                &[NurseryObjectLayout::new(young, 8, 3)],
+            ),
+            Err(GenerationalGcError::InvalidNurseryObjectAlignment {
+                address: young,
+                align: 3,
+            })
+        );
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    NurseryObjectLayout::new(young, 8, 8),
+                    NurseryObjectLayout::new(other, 16, 8),
+                ],
+            ),
+            Err(GenerationalGcError::StaleNurseryObjectLayout { address: other })
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_allocation_plan_rejects_byte_overflow() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    NurseryObjectLayout::new(first, usize::MAX, 8),
+                    NurseryObjectLayout::new(second, 1, 8),
+                ],
+            ),
+            Err(GenerationalGcError::MinorGcDestinationBytesOverflow {
+                generation: HeapGeneration::Young,
+            })
+        );
+
+        let split_plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("split minor GC plan builds");
+        assert_eq!(
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+                &split_plan,
+                &[
+                    NurseryObjectLayout::new(first, usize::MAX, 8),
+                    NurseryObjectLayout::new(second, usize::MAX, 8),
+                ],
+            ),
+            Err(GenerationalGcError::MinorGcDestinationTotalBytesOverflow)
         );
     }
 

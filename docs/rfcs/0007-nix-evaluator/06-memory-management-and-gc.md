@@ -980,6 +980,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       surface: no object copy, forwarding-pointer update, relocation writeback,
       semispace allocation, or integration with the oracle heap scanner is
       implemented here.
+- [x] Current minor-GC destination-allocation planning precursor:
+      `ratchet-value::heap::gc::NurseryObjectLayout` and
+      `MinorGcDestinationAllocationPlan::from_minor_gc_plan` validate
+      caller-supplied object size/alignment metadata for a survivor plan and
+      split destination storage requirements by copy-to-nursery vs promote-to-old
+      action. The plan preserves survivor-frontier order, requires one layout per
+      live survivor with no stale entries, rejects duplicate layouts, zero sizes,
+      invalid alignments, and byte-total overflow, and reports nursery, old, and
+      aggregate byte requirements. Tests cover copy/promote byte splitting,
+      ordering, layout validation failures, per-generation overflow, and
+      aggregate overflow. This is allocation planning only: it does not allocate
+      destination addresses, copy bytes, install forwarding pointers, mutate
+      roots/fields, or manage semispaces.
 - [x] Current minor-GC relocation-map precursor:
       `ratchet-value::heap::gc::MinorGcRelocationDestination` and
       `MinorGcRelocationPlan::from_minor_gc_plan` validate a caller-supplied
