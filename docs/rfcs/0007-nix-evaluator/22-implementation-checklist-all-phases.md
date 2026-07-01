@@ -5298,14 +5298,17 @@ and helps the oracle directly.
       their existing source object, while nursery fields name the relocated
       destination object that would receive the rewritten field. Root rewrites are
       skipped by that heap-field writeback view because their mutable storage
-      remains external to `EvalHeap`. Unit tests cover successful
-      empty-remembered-set application, retained copied-young remembered-edge
-      publication, heap-field reference-buffer derivation, heap-field writeback
-      derivation for copied and promoted nursery owners, root-slot
-      rejection/empty root-only writebacks, stale field-label rejection, stale
-      same-label field-value rejection, incomplete or mismatched reference-buffer
-      rejection before lower-level mutation, and lower-level stale-buffer error
-      mapping without partial mutation. This remains a
+      remains external to `EvalHeap`;
+      `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` exposes
+      those root-backed rewrites as metadata with the same slot-to-rewrite source
+      validation. Unit tests cover successful empty-remembered-set application,
+      retained copied-young remembered-edge publication, heap-field
+      reference-buffer derivation, root writeback derivation, heap-field
+      writeback derivation for copied and promoted nursery owners, root-slot
+      rejection/empty root-only heap-field writebacks, stale field-label
+      rejection, stale same-label field-value rejection, incomplete or mismatched
+      reference-buffer rejection before lower-level mutation, and lower-level
+      stale-buffer error mapping without partial mutation. This remains a
       caller-buffer/writeback-metadata surface only; destination storage
       allocation, binding byte buffers to live heap objects or object headers,
       tree-walk root/object-field mutation, remembered-source field mutation, and
@@ -5432,6 +5435,10 @@ and helps the oracle directly.
       `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
       remembered-source and nursery-field slots back to current side-table fields
       for the reference buffer while rejecting copied root slots, and
+      `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` filters
+      lower-level rewrites to root-backed slots with slot-to-rewrite source
+      validation while leaving live root mutation to the tree-walk/JIT safepoint
+      owner.
       `EvalHeap::collector_poll_minor_gc_heap_field_writeback_plan` filters
       lower-level rewrites to heap-field-backed slots, revalidates their current
       labels/values plus slot-to-rewrite source binding, and returns the

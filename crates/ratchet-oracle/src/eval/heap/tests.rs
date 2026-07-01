@@ -2384,6 +2384,91 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
 }
 
 #[test]
+fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let permanent_parent = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let mut remembered_set = RememberedSet::new();
+    remembered_set
+        .record(RememberedEdge::new(
+            gc_address(permanent_parent),
+            gc_address(child),
+        ))
+        .expect("remembered edge records");
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+    let child_destination = commit.commit_plan().object_copies().copies()[0].destination();
+
+    let root_writeback_plan = commit
+        .root_writeback_plan()
+        .expect("root writeback plan derives");
+    assert_eq!(root_writeback_plan.len(), 1);
+    assert_eq!(root_writeback_plan.writebacks()[0].slot(), 0);
+    assert_eq!(
+        root_writeback_plan.writebacks()[0].source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(
+        root_writeback_plan.writebacks()[0].replacement(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let heap_writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("heap-field writeback plan derives");
+    assert_eq!(heap_writeback_plan.len(), 1);
+    assert_eq!(heap_writeback_plan.writebacks()[0].slot(), 1);
+    assert_eq!(
+        heap_writeback_plan.writebacks()[0].writeback_object(),
+        gc_address(permanent_parent)
+    );
+    assert_eq!(
+        heap_writeback_plan.writebacks()[0].replacement(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_plan_expands_remembered_edge_to_concrete_source_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
@@ -2541,6 +2626,11 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_reads_remembered_fields()
         .commit_plan(&destinations)
         .expect("commit plan builds");
 
+    let root_writeback_plan = commit
+        .root_writeback_plan()
+        .expect("root writeback plan derives");
+    assert_eq!(root_writeback_plan.len(), 0);
+    assert!(root_writeback_plan.is_empty());
     assert_eq!(
         heap.collector_poll_minor_gc_heap_field_reference_buffer(&commit)
             .expect("heap-field references derive"),
@@ -2749,6 +2839,33 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_root_slots() {
     let commit = planned
         .commit_plan(&destinations)
         .expect("commit plan builds");
+    let child_destination = commit.commit_plan().object_copies().copies()[0].destination();
+
+    let root_writeback_plan = commit
+        .root_writeback_plan()
+        .expect("root writeback plan derives");
+    assert_eq!(root_writeback_plan.len(), 1);
+    assert!(!root_writeback_plan.is_empty());
+    let root_writeback = &root_writeback_plan.writebacks()[0];
+    assert_eq!(root_writeback.slot(), 0);
+    assert_eq!(
+        root_writeback.source(),
+        &EvalRootSource::ValueStack { slot: 0 }
+    );
+    assert_eq!(
+        root_writeback.expected(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        root_writeback.replacement(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
 
     assert_eq!(
         heap.collector_poll_minor_gc_heap_field_reference_buffer(&commit)
