@@ -5369,6 +5369,20 @@ and helps the oracle directly.
       destination storage allocation, binding raw byte slices to live heap objects
       or object headers, tree-walk root/object-field mutation, remembered-source
       field mutation, and semispace management remain open.
+- [x] Current GC-stress boundary reference-writeback application precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflight::apply_reference_writebacks_to_owned_slots`
+      copies the boundary preflight's owned root and heap-field writeback slots,
+      validates them with the combined
+      `AllocationCollectorPollReferenceWritebackPlan`, applies replacements into
+      those owned buffers, and returns a per-tier report with the rewritten
+      buffers. `EvalGcStressBoundaryMinorGcCommitPreflights` applies the same
+      operation across worker and permanent-shared preflights while preserving
+      the tier partition. Tests cover worker-root rewrites, mixed root plus
+      heap-field rewrites, permanent-shared empty rewrites, and empty reports when
+      GC stress is disabled. This remains boundary-owned buffer application only;
+      live tree-walk root/heap-field binding, object-byte copying, forwarding-slot
+      installation, remembered-set publication, remembered-source field mutation,
+      and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5692,8 +5706,10 @@ and helps the oracle directly.
       validates and extracts owned object byte-copy requests, empty forwarding
       slot buffers, copied reference buffers, and root/heap-field reference
       writeback metadata plus caller-owned writeback slot buffers from those
-      paired plans. These helpers still do not bind live object-byte buffers,
-      live root/field storage, reserve semispace storage, or commit mutations.
+      paired plans. Boundary preflights can now apply those reference writebacks
+      to owned slot-buffer copies and report the rewritten root/heap-field
+      counts. These helpers still do not bind live object-byte buffers, live
+      root/field storage, reserve semispace storage, or commit live mutations.
       The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
@@ -5709,8 +5725,9 @@ and helps the oracle directly.
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
-      stress-disabled outcomes, stale same-domain poll rejection, recursive-force
-      cleanup, and first-class primop error cleanup. This remains a root-set
+      stress-disabled outcomes, boundary owned reference-writeback application,
+      stale same-domain poll rejection, recursive-force cleanup, and
+      first-class primop error cleanup. This remains a root-set
       precursor: arbitrary Rust locals still need explicit value-stack
       registration, and mutable relocation slots, collector invocation, and JIT
       stack maps remain open in the full precise-root row above.

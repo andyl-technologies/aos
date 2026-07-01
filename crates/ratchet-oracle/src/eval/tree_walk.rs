@@ -50,10 +50,11 @@ use super::heap::{
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollReferenceSlot,
     AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
-    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
-    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
+    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, EvalHeap,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -327,6 +328,8 @@ pub(crate) use options::{
 pub use outcome::{
     EvalDerivation, EvalGcStressBoundaryMinorGcCommitPreflight,
     EvalGcStressBoundaryMinorGcCommitPreflights, EvalGcStressBoundaryMinorGcPlans,
+    EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
+    EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
     EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryMinorGcRelocationPlan,
     EvalGcStressBoundaryMinorGcRelocationPlans, EvalGcStressBoundaryScans, EvalOutcome, EvalStats,
     EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,

@@ -318,6 +318,105 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         &self.heap_field_writeback_slots
     }
+
+    /// Applies reference writebacks to this preflight's owned slot buffers.
+    ///
+    /// The method clones the root and heap-field writeback slots captured by
+    /// this preflight, validates them against the copied reference-writeback
+    /// plan, applies replacements into those owned buffers, and returns the
+    /// mutated buffers with the writeback report. It still does not bind those
+    /// buffers to live tree-walk roots, live heap fields, copied object bytes,
+    /// object headers, forwarding slots, remembered-set storage, or semispace
+    /// storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the copied slot buffers cannot be reserved
+    /// or if the copied slots no longer match this preflight's writeback plan.
+    pub fn apply_reference_writebacks_to_owned_slots(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcReferenceWritebackApplication, EvalHeapError> {
+        let mut root_writeback_slots =
+            clone_boundary_root_writeback_slots(&self.root_writeback_slots)?;
+        let mut heap_field_writeback_slots =
+            clone_boundary_heap_field_writeback_slots(&self.heap_field_writeback_slots)?;
+        let report = self
+            .reference_writeback_plan
+            .apply_to_slots(&mut root_writeback_slots, &mut heap_field_writeback_slots)?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcReferenceWritebackApplication::new(
+                report,
+                root_writeback_slots,
+                heap_field_writeback_slots,
+            ),
+        )
+    }
+}
+
+/// Applied caller-owned reference writeback buffers for one boundary preflight.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
+    report: AllocationCollectorPollReferenceWritebackReport,
+    root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+    heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
+}
+
+impl EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
+    const fn new(
+        report: AllocationCollectorPollReferenceWritebackReport,
+        root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+        heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
+    ) -> Self {
+        Self {
+            report,
+            root_writeback_slots,
+            heap_field_writeback_slots,
+        }
+    }
+
+    /// Returns the writeback counts reported by the applied plan.
+    pub const fn report(&self) -> AllocationCollectorPollReferenceWritebackReport {
+        self.report
+    }
+
+    /// Returns caller-owned root writeback slots after application.
+    pub fn root_writeback_slots(&self) -> &[AllocationCollectorPollRootWritebackSlot] {
+        &self.root_writeback_slots
+    }
+
+    /// Returns caller-owned heap-field writeback slots after application.
+    pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
+        &self.heap_field_writeback_slots
+    }
+}
+
+fn clone_boundary_root_writeback_slots(
+    slots: &[AllocationCollectorPollRootWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollRootWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
+    Ok(cloned)
+}
+
+fn clone_boundary_heap_field_writeback_slots(
+    slots: &[AllocationCollectorPollHeapFieldWritebackSlot],
+) -> Result<Vec<AllocationCollectorPollHeapFieldWritebackSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().cloned());
+    Ok(cloned)
 }
 
 /// Commit-preflight metadata derived from GC-stress boundary scans.
@@ -360,6 +459,87 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
 
     /// Returns the permanent-shared allocator's commit-preflight metadata, if any.
     pub const fn permanent_shared(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitPreflight> {
+        self.permanent_shared.as_ref()
+    }
+
+    /// Applies reference writebacks for every recorded boundary preflight.
+    ///
+    /// Each allocator tier is applied independently to owned slot-buffer copies
+    /// from its preflight. The returned report preserves the worker and
+    /// permanent-shared partition. This still does not mutate live evaluator
+    /// roots, heap fields, object bytes, forwarding slots, remembered-set state,
+    /// or semispace storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if any preflight cannot copy its owned
+    /// writeback slots or if any copied slot buffer fails validation.
+    pub fn apply_reference_writebacks_to_owned_slots(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcReferenceWritebackApplications, EvalHeapError> {
+        let worker = self
+            .worker
+            .as_ref()
+            .map(EvalGcStressBoundaryMinorGcCommitPreflight::apply_reference_writebacks_to_owned_slots)
+            .transpose()?;
+        let permanent_shared = self
+            .permanent_shared
+            .as_ref()
+            .map(EvalGcStressBoundaryMinorGcCommitPreflight::apply_reference_writebacks_to_owned_slots)
+            .transpose()?;
+
+        Ok(
+            EvalGcStressBoundaryMinorGcReferenceWritebackApplications::new(
+                worker,
+                permanent_shared,
+            ),
+        )
+    }
+}
+
+/// Applied reference writeback buffers derived from boundary preflights.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcReferenceWritebackApplications {
+    worker: Option<EvalGcStressBoundaryMinorGcReferenceWritebackApplication>,
+    permanent_shared: Option<EvalGcStressBoundaryMinorGcReferenceWritebackApplication>,
+}
+
+impl EvalGcStressBoundaryMinorGcReferenceWritebackApplications {
+    const fn new(
+        worker: Option<EvalGcStressBoundaryMinorGcReferenceWritebackApplication>,
+        permanent_shared: Option<EvalGcStressBoundaryMinorGcReferenceWritebackApplication>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier produced applied writeback buffers.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced applied writeback buffers.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's applied writeback buffers, if any.
+    pub const fn worker(
+        &self,
+    ) -> Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's applied writeback buffers, if any.
+    pub const fn permanent_shared(
+        &self,
+    ) -> Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication> {
         self.permanent_shared.as_ref()
     }
 }

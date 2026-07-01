@@ -1032,6 +1032,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       destination storage, bind raw byte slices to live heap objects or headers,
       mutate tree-walk roots/fields in place, mutate remembered source fields, or
       manage semispaces.
+- [x] Current GC-stress boundary reference-writeback application precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflight::apply_reference_writebacks_to_owned_slots`
+      copies the boundary preflight's owned root and heap-field writeback slots,
+      validates them with the combined
+      `AllocationCollectorPollReferenceWritebackPlan`, applies replacements into
+      those owned buffers, and returns a per-tier report with the rewritten
+      buffers. `EvalGcStressBoundaryMinorGcCommitPreflights` applies the same
+      operation across worker and permanent-shared preflights while preserving
+      the tier partition. Tests cover worker-root rewrites, mixed root plus
+      heap-field rewrites, permanent-shared empty rewrites, and empty reports when
+      GC stress is disabled. This is still boundary-owned buffer application
+      only: it does not bind the buffers to live tree-walk roots or heap fields,
+      copy object bytes, install forwarding slots, publish remembered sets,
+      mutate remembered source fields, or manage semispaces.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll
@@ -1504,8 +1518,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       validates and extracts owned object byte-copy requests, empty forwarding
       slot buffers, copied reference buffers, and root/heap-field reference
       writeback metadata plus caller-owned writeback slot buffers from those
-      paired plans. These helpers still do not bind live object-byte buffers,
-      live root/field storage, reserve semispace storage, or commit mutations.
+      paired plans. Boundary preflights can now apply those reference writebacks
+      to owned slot-buffer copies and report the rewritten root/heap-field
+      counts. These helpers still do not bind live object-byte buffers, live
+      root/field storage, reserve semispace storage, or commit live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1519,7 +1535,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
-      stress-disabled outcomes, stale same-domain poll rejection, and stack
+      stress-disabled outcomes, boundary owned reference-writeback application,
+      stale same-domain poll rejection, and stack
       cleanup after force/primop failures. This still does not infer arbitrary
       Rust locals without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those

@@ -580,21 +580,25 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
             .heap_field_writebacks()
             .is_empty()
     );
-    let mut root_slots = preflight.root_writeback_slots().to_vec();
-    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
-    let report = preflight
-        .reference_writeback_plan()
-        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
-        .expect("caller-owned writeback slots apply");
-    assert_eq!(report.root_writebacks(), 1);
-    assert_eq!(report.heap_field_writebacks(), 0);
+    let application = preflight
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("boundary preflight applies owned writeback slots");
+    assert_eq!(application.report().root_writebacks(), 1);
+    assert_eq!(application.report().heap_field_writebacks(), 0);
     assert_eq!(
-        root_slots[0].value(),
+        application.root_writeback_slots()[0].value(),
         ResolvedValueGeneration::Heap {
             address: nursery_base,
             generation: HeapGeneration::Young,
         }
     );
+
+    let applications = preflights
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("boundary preflights apply owned writeback slots");
+    assert_eq!(applications.len(), 1);
+    assert_eq!(applications.worker(), Some(&application));
+    assert!(applications.permanent_shared().is_none());
 }
 
 #[test]
@@ -618,16 +622,19 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     assert_eq!(preflight.root_writeback_slots().len(), 1);
     assert!(!preflight.heap_field_writeback_slots().is_empty());
 
-    let mut root_slots = preflight.root_writeback_slots().to_vec();
-    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
-    let report = preflight
-        .reference_writeback_plan()
-        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
-        .expect("mixed caller-owned writeback slots apply");
+    let application = preflight
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("mixed boundary writeback slots apply");
 
-    assert_eq!(report.root_writebacks(), root_slots.len());
-    assert_eq!(report.heap_field_writebacks(), heap_field_slots.len());
-    for (slot, writeback) in root_slots.iter().zip(
+    assert_eq!(
+        application.report().root_writebacks(),
+        application.root_writeback_slots().len()
+    );
+    assert_eq!(
+        application.report().heap_field_writebacks(),
+        application.heap_field_writeback_slots().len()
+    );
+    for (slot, writeback) in application.root_writeback_slots().iter().zip(
         preflight
             .reference_writeback_plan()
             .root_writebacks()
@@ -635,7 +642,7 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     ) {
         assert_eq!(slot.value(), writeback.replacement());
     }
-    for (slot, writeback) in heap_field_slots.iter().zip(
+    for (slot, writeback) in application.heap_field_writeback_slots().iter().zip(
         preflight
             .reference_writeback_plan()
             .heap_field_writebacks()
@@ -696,13 +703,19 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     assert!(preflight.reference_writeback_plan().is_empty());
     assert!(preflight.root_writeback_slots().is_empty());
     assert!(preflight.heap_field_writeback_slots().is_empty());
-    let mut root_slots = preflight.root_writeback_slots().to_vec();
-    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
-    let report = preflight
-        .reference_writeback_plan()
-        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
-        .expect("empty caller-owned writeback slots apply");
-    assert_eq!(report.writebacks(), 0);
+    let application = preflight
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("empty boundary writeback slots apply");
+    assert_eq!(application.report().writebacks(), 0);
+    assert!(application.root_writeback_slots().is_empty());
+    assert!(application.heap_field_writeback_slots().is_empty());
+
+    let applications = preflights
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("permanent boundary preflight applies owned writeback slots");
+    assert_eq!(applications.len(), 1);
+    assert!(applications.worker().is_none());
+    assert_eq!(applications.permanent_shared(), Some(&application));
 }
 
 #[test]
@@ -721,6 +734,10 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
 
     assert!(outcome.gc_stress_boundary_scans().is_empty());
     assert!(preflights.is_empty());
+    let applications = preflights
+        .apply_reference_writebacks_to_owned_slots()
+        .expect("empty boundary preflights produce empty writeback application");
+    assert!(applications.is_empty());
 }
 
 #[test]
