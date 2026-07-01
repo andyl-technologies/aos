@@ -5152,6 +5152,19 @@ and helps the oracle directly.
       publication boundary; object-byte copying,
       forwarding-pointer installation, live root/field slot mutation, card-table
       ownership, and semispace management remain open.
+- [x] Current minor-GC commit-buffer application precursor:
+      `MinorGcCommitBuffers` and `MinorGcCommitPlan::apply_to_buffers` apply a
+      validated commit plan to caller-owned byte-copy buffers, forwarding slots,
+      reference slots, and remembered-set state. The helper validates every
+      supplied buffer before mutation, then performs the ordered commit steps:
+      copy object bytes, install forwarding values, rewrite references, and
+      publish the next remembered set. Unit tests cover successful cross-buffer
+      application and a late remembered-set mismatch that leaves byte
+      destinations, forwarding slots, references, and remembered-set state
+      unchanged. This remains a caller-buffer application surface only;
+      destination object allocation, binding buffers to real heap storage or
+      object headers, card-table ownership, old-field rescanning, and semispace
+      management remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

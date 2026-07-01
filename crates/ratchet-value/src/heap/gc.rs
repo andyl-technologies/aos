@@ -1243,11 +1243,7 @@ impl MinorGcObjectCopyPlan {
         buffers: &mut [MinorGcObjectByteCopyBuffer<'_>],
     ) -> Result<(), GenerationalGcError> {
         validate_object_byte_copy_buffers_match_plan(self, buffers)?;
-        for buffer in buffers {
-            buffer
-                .destination_bytes
-                .copy_from_slice(buffer.source_bytes);
-        }
+        copy_object_byte_buffers(buffers);
         Ok(())
     }
 
@@ -1402,9 +1398,7 @@ impl MinorGcForwardingPointerPlan {
         slots: &mut [MinorGcForwardingSlot],
     ) -> Result<(), GenerationalGcError> {
         validate_forwarding_slots_match_plan(self, slots)?;
-        for (pointer, slot) in self.pointers.iter().zip(slots) {
-            slot.forwarded = Some(pointer.forwarded_value());
-        }
+        install_forwarding_slots(self, slots);
         Ok(())
     }
 
@@ -1534,12 +1528,8 @@ impl MinorGcReferenceRewritePlan {
         &self,
         references: &mut [ResolvedValueGeneration],
     ) -> Result<(), GenerationalGcError> {
-        for rewrite in &self.rewrites {
-            validate_reference_rewrite_slot(*rewrite, references)?;
-        }
-        for rewrite in &self.rewrites {
-            references[rewrite.slot()] = rewrite.replacement();
-        }
+        validate_reference_rewrite_slots_match_plan(self, references)?;
+        apply_reference_rewrites(self, references);
         Ok(())
     }
 
@@ -1708,6 +1698,31 @@ pub struct MinorGcCommitPlan {
     next_remembered_set: RememberedSet,
 }
 
+/// Caller-owned mutation buffers for applying one minor-GC commit plan.
+pub struct MinorGcCommitBuffers<'a, 'bytes> {
+    object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+    forwarding_slots: &'a mut [MinorGcForwardingSlot],
+    references: &'a mut [ResolvedValueGeneration],
+    remembered_set: &'a mut RememberedSet,
+}
+
+impl<'a, 'bytes> MinorGcCommitBuffers<'a, 'bytes> {
+    /// Creates caller-owned buffers for a minor-GC commit application.
+    pub fn new(
+        object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+    ) -> Self {
+        Self {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+        }
+    }
+}
+
 impl MinorGcCommitPlan {
     /// Builds a minor-GC commit plan from already validated subplans.
     ///
@@ -1768,6 +1783,50 @@ impl MinorGcCommitPlan {
     /// Returns the rebuilt remembered set for the next minor-GC epoch.
     pub fn next_remembered_set(&self) -> &RememberedSet {
         &self.next_remembered_set
+    }
+
+    /// Applies this commit plan to caller-owned mutation buffers.
+    ///
+    /// The method validates every supplied buffer before making any mutation:
+    /// object byte buffers must match the object-copy schedule, forwarding
+    /// slots must match and be empty, reference slots must still contain the
+    /// expected young from-space values, and the remembered set must still match
+    /// the refresh source snapshot. If validation succeeds, mutations are
+    /// applied in commit order: copy object bytes, install forwarding values,
+    /// rewrite references, then publish the next remembered set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if any caller-owned buffer no longer
+    /// matches this commit plan.
+    pub fn apply_to_buffers(
+        self,
+        buffers: MinorGcCommitBuffers<'_, '_>,
+    ) -> Result<(), GenerationalGcError> {
+        let Self {
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+            next_remembered_set,
+        } = self;
+        let MinorGcCommitBuffers {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+        } = buffers;
+
+        validate_object_byte_copy_buffers_match_plan(&object_copies, object_byte_copies)?;
+        validate_forwarding_slots_match_plan(&forwarding_pointers, forwarding_slots)?;
+        validate_reference_rewrite_slots_match_plan(&reference_rewrites, references)?;
+        validate_remembered_set_publication_source(&remembered_set_refresh, remembered_set)?;
+
+        copy_object_byte_buffers(object_byte_copies);
+        install_forwarding_slots(&forwarding_pointers, forwarding_slots);
+        apply_reference_rewrites(&reference_rewrites, references);
+        *remembered_set = next_remembered_set;
+        Ok(())
     }
 
     /// Publishes the rebuilt remembered set into caller-owned collector state.
@@ -2247,6 +2306,42 @@ fn validate_forwarding_slots_match_plan(
     }
 
     Ok(())
+}
+
+fn validate_reference_rewrite_slots_match_plan(
+    plan: &MinorGcReferenceRewritePlan,
+    references: &[ResolvedValueGeneration],
+) -> Result<(), GenerationalGcError> {
+    for rewrite in plan.rewrites() {
+        validate_reference_rewrite_slot(*rewrite, references)?;
+    }
+    Ok(())
+}
+
+fn copy_object_byte_buffers(buffers: &mut [MinorGcObjectByteCopyBuffer<'_>]) {
+    for buffer in buffers {
+        buffer
+            .destination_bytes
+            .copy_from_slice(buffer.source_bytes);
+    }
+}
+
+fn install_forwarding_slots(
+    plan: &MinorGcForwardingPointerPlan,
+    slots: &mut [MinorGcForwardingSlot],
+) {
+    for (pointer, slot) in plan.pointers.iter().zip(slots) {
+        slot.forwarded = Some(pointer.forwarded_value());
+    }
+}
+
+fn apply_reference_rewrites(
+    plan: &MinorGcReferenceRewritePlan,
+    references: &mut [ResolvedValueGeneration],
+) {
+    for rewrite in plan.rewrites() {
+        references[rewrite.slot()] = rewrite.replacement();
+    }
 }
 
 fn validate_forwarding_plan_matches_object_copies(
@@ -5528,6 +5623,253 @@ mod tests {
             remembered_set.edges(),
             &[RememberedEdge::new(remembered_source, copy_destination)]
         );
+    }
+
+    #[test]
+    fn minor_gc_commit_plan_applies_to_caller_owned_buffers() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let remembered_source = address(0x3000);
+        let promoted_source = address(0x4000);
+        let ignored_old = address(0x5000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 4, 4),
+                NurseryObjectLayout::new(promote, 4, 4),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+        let mut references = [
+            ResolvedValueGeneration::young(copy),
+            ResolvedValueGeneration::old(ignored_old),
+            ResolvedValueGeneration::young(promote),
+        ];
+        let reference_rewrites =
+            MinorGcReferenceRewritePlan::from_references(&relocation_plan, references)
+                .expect("reference rewrite plan builds");
+        let mut remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(7));
+        remembered_set
+            .record(RememberedEdge::new(remembered_source, copy))
+            .expect("remembered copy edge records");
+        remembered_set
+            .record(RememberedEdge::new(promoted_source, promote))
+            .expect("remembered promote edge records");
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("remembered-set refresh plan builds");
+        let commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+        )
+        .expect("commit plan builds");
+        let copy_source = [1, 2, 3, 4];
+        let promote_source = [5, 6, 7, 8];
+        let mut copy_destination_bytes = [0; 4];
+        let mut promote_destination_bytes = [0; 4];
+        let mut object_byte_copies = [
+            MinorGcObjectByteCopyBuffer::new(
+                copy,
+                copy_destination,
+                &copy_source,
+                &mut copy_destination_bytes,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                promote,
+                promote_destination,
+                &promote_source,
+                &mut promote_destination_bytes,
+            ),
+        ];
+        let mut forwarding_slots = [
+            MinorGcForwardingSlot::new(copy),
+            MinorGcForwardingSlot::new(promote),
+        ];
+
+        commit_plan
+            .apply_to_buffers(MinorGcCommitBuffers::new(
+                &mut object_byte_copies,
+                &mut forwarding_slots,
+                &mut references,
+                &mut remembered_set,
+            ))
+            .expect("commit applies");
+
+        assert_eq!(object_byte_copies[0].destination_bytes(), copy_source);
+        assert_eq!(object_byte_copies[1].destination_bytes(), promote_source);
+        assert_eq!(
+            forwarding_slots[0].forwarded_value(),
+            Some(ResolvedValueGeneration::young(copy_destination))
+        );
+        assert_eq!(
+            forwarding_slots[1].forwarded_value(),
+            Some(ResolvedValueGeneration::old(promote_destination))
+        );
+        assert_eq!(
+            references,
+            [
+                ResolvedValueGeneration::young(copy_destination),
+                ResolvedValueGeneration::old(ignored_old),
+                ResolvedValueGeneration::old(promote_destination),
+            ]
+        );
+        assert_eq!(remembered_set.epoch(), RememberedSetEpoch::new(8));
+        assert_eq!(
+            remembered_set.edges(),
+            &[RememberedEdge::new(remembered_source, copy_destination)]
+        );
+    }
+
+    #[test]
+    fn minor_gc_commit_plan_rejects_stale_buffers_without_partial_writes() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let remembered_source = address(0x3000);
+        let promoted_source = address(0x4000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let object_copies = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 4, 4),
+                NurseryObjectLayout::new(promote, 4, 4),
+            ],
+        )
+        .expect("object-copy plan builds");
+        let forwarding_pointers =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)
+                .expect("forwarding plan builds");
+        let mut references = [
+            ResolvedValueGeneration::young(copy),
+            ResolvedValueGeneration::young(promote),
+        ];
+        let original_references = references;
+        let reference_rewrites =
+            MinorGcReferenceRewritePlan::from_references(&relocation_plan, references)
+                .expect("reference rewrite plan builds");
+        let mut source_remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(7));
+        source_remembered_set
+            .record(RememberedEdge::new(remembered_source, copy))
+            .expect("remembered copy edge records");
+        source_remembered_set
+            .record(RememberedEdge::new(promoted_source, promote))
+            .expect("remembered promote edge records");
+        let remembered_set_refresh = MinorGcRememberedSetRefreshPlan::from_snapshot(
+            source_remembered_set.snapshot(),
+            &relocation_plan,
+        )
+        .expect("remembered-set refresh plan builds");
+        let commit_plan = MinorGcCommitPlan::from_parts(
+            object_copies,
+            forwarding_pointers,
+            reference_rewrites,
+            remembered_set_refresh,
+        )
+        .expect("commit plan builds");
+        let copy_source = [1, 2, 3, 4];
+        let promote_source = [5, 6, 7, 8];
+        let mut copy_destination_bytes = [0; 4];
+        let mut promote_destination_bytes = [0; 4];
+        let mut object_byte_copies = [
+            MinorGcObjectByteCopyBuffer::new(
+                copy,
+                copy_destination,
+                &copy_source,
+                &mut copy_destination_bytes,
+            ),
+            MinorGcObjectByteCopyBuffer::new(
+                promote,
+                promote_destination,
+                &promote_source,
+                &mut promote_destination_bytes,
+            ),
+        ];
+        let mut forwarding_slots = [
+            MinorGcForwardingSlot::new(copy),
+            MinorGcForwardingSlot::new(promote),
+        ];
+        let mut stale_remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(8));
+        stale_remembered_set
+            .record(RememberedEdge::new(remembered_source, copy))
+            .expect("stale remembered copy edge records");
+        stale_remembered_set
+            .record(RememberedEdge::new(promoted_source, promote))
+            .expect("stale remembered promote edge records");
+        let unchanged_stale_remembered_set = stale_remembered_set.clone();
+
+        assert_eq!(
+            commit_plan.apply_to_buffers(MinorGcCommitBuffers::new(
+                &mut object_byte_copies,
+                &mut forwarding_slots,
+                &mut references,
+                &mut stale_remembered_set,
+            )),
+            Err(
+                GenerationalGcError::MinorGcCommitRememberedSetPublicationEpochMismatch {
+                    expected: RememberedSetEpoch::new(7),
+                    actual: RememberedSetEpoch::new(8),
+                }
+            )
+        );
+        assert_eq!(object_byte_copies[0].destination_bytes(), [0; 4]);
+        assert_eq!(object_byte_copies[1].destination_bytes(), [0; 4]);
+        assert!(forwarding_slots[0].is_empty());
+        assert!(forwarding_slots[1].is_empty());
+        assert_eq!(references, original_references);
+        assert_eq!(stale_remembered_set, unchanged_stale_remembered_set);
     }
 
     #[test]
