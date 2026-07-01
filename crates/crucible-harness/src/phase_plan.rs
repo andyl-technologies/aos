@@ -4,7 +4,7 @@
 //! every gate occurrence, including repeated gates such as `gate:replay-oracle`
 //! and `gate:e2e-determinism`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::find_gate;
 
@@ -164,6 +164,106 @@ pub struct LayerGatePrecedenceFailure {
     pub rationale: &'static str,
 }
 
+/// One rung in the advanced-feature dependency ladder from RFC-0010 file 22.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AdvancedFeatureRung {
+    /// Exact deterministic replay is the bedrock below every advanced feature.
+    ExactDeterminism,
+    /// Oracle-validated save/restore provides correct checkpoint realization.
+    SaveRestore,
+    /// Fork branches the temporal graph from validated checkpoints.
+    Fork,
+    /// Search systematically expands frontier decisions.
+    Search,
+    /// Coverage feedback records observational basic-block guidance.
+    CoverageFeedback,
+    /// Fuzzing samples and mutates families, schedules, and fault plans.
+    Fuzzing,
+}
+
+impl AdvancedFeatureRung {
+    /// Returns the RFC label for this advanced-feature rung.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ExactDeterminism => "exact-determinism",
+            Self::SaveRestore => "save-restore",
+            Self::Fork => "fork",
+            Self::Search => "search",
+            Self::CoverageFeedback => "coverage-feedback",
+            Self::Fuzzing => "fuzzing",
+        }
+    }
+}
+
+/// One ADV checklist task bound to the dependency ladder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdvancedFeatureTaskOrder {
+    /// RFC checklist task identifier such as `T-ADV-12`.
+    pub task_id: &'static str,
+    /// Ladder rung that owns the task.
+    pub rung: AdvancedFeatureRung,
+    /// Phase where the task is scheduled by the master implementation plan.
+    pub phase: PhasePlanPhase,
+    /// Gate occurrences that must already be green before this task can start.
+    pub required_green_attr_paths: &'static [&'static str],
+    /// Earlier ADV tasks whose completion is a prerequisite for this task.
+    pub required_task_ids: &'static [&'static str],
+    /// Short human-readable rationale for the dependency.
+    pub rationale: &'static str,
+}
+
+/// A failed ADV dependency-ladder ordering rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdvancedFeatureLadderFailure {
+    /// Task whose dependency rule failed.
+    pub task_id: &'static str,
+    /// Rung that owns the task.
+    pub rung: AdvancedFeatureRung,
+    /// Missing or late gate attr path, when the failure concerns a gate.
+    pub attr_path: Option<&'static str>,
+    /// Missing or late prerequisite ADV task, when the failure concerns a task.
+    pub prerequisite_task_id: Option<&'static str>,
+    /// Why this dependency exists.
+    pub rationale: &'static str,
+}
+
+/// The class of advanced-feature schedule failure found in `tests/crucible/default.nix`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdvancedFeatureScheduleFailureKind {
+    /// A scheduled ADV task is absent from the dependency ladder.
+    UnknownTask,
+    /// A scheduled ADV task appears in more than one check.
+    DuplicateTaskSchedule,
+    /// A scheduled ADV check does not expose a check attr path.
+    MissingAttrPath,
+    /// A scheduled ADV check is not wrapped in `greenBeforeAdvance`.
+    MissingGreenBeforeAdvance,
+    /// A scheduled ADV check does not depend on a required green lower gate.
+    MissingGateDependency,
+    /// A scheduled ADV check appears before its prerequisite task has a check.
+    MissingTaskSchedule,
+    /// A scheduled ADV check does not depend on a prerequisite task check.
+    MissingTaskDependency,
+    /// A Phase 6 check import does not declare task IDs at the scheduling site.
+    MissingExplicitTaskIds,
+}
+
+/// A failed advanced-feature schedule rule from the actual Nix check graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdvancedFeatureScheduleFailure {
+    /// The scheduled task whose dependency rule failed.
+    pub task_id: String,
+    /// The class of schedule failure.
+    pub kind: AdvancedFeatureScheduleFailureKind,
+    /// The scheduled check attr path, when it was discoverable.
+    pub attr_path: Option<String>,
+    /// Required gate attr path or Nix dependency reference, when applicable.
+    pub dependency: Option<String>,
+    /// Required ADV task, when the failure concerns task order.
+    pub prerequisite_task_id: Option<String>,
+}
+
 /// Layer-gate precedence obligations that make HARN-3 executable.
 pub const LAYER_GATE_PRECEDENCES: &[LayerGatePrecedence] = &[
     LayerGatePrecedence {
@@ -242,6 +342,193 @@ pub const LAYER_GATE_PRECEDENCES: &[LayerGatePrecedence] = &[
         lower_attr_path: "checks.crucible.phase4.gates.e2eDeterminism",
         higher_attr_path: "checks.crucible.phase5.gates.controlResponsive",
         rationale: "control-plane checks cannot stand in for mock e2e determinism",
+    },
+];
+
+const EXACT_DETERMINISM_FOUNDATION: &[&str] = &[
+    "checks.crucible.phase2.gates.singleVmFingerprint",
+    "checks.crucible.phase4.gates.e2eDeterminism",
+];
+const REPLAY_ORACLE_FOUNDATION: &[&str] = &[
+    "checks.crucible.phase4.gates.replayOracle",
+    "checks.crucible.phase4.gates.e2eDeterminism",
+];
+const CONTROL_PLANE_FOUNDATION: &[&str] = &["checks.crucible.phase5.gates.controlResponsive"];
+const ADVANCED_LADDER_FOUNDATION: &[&str] = &[
+    "checks.crucible.phase2.gates.singleVmFingerprint",
+    "checks.crucible.phase4.gates.e2eDeterminism",
+    "checks.crucible.phase5.gates.controlResponsive",
+];
+
+/// ADV checklist ordering required by RFC-0010 file 22 section 22.1.
+pub const ADVANCED_FEATURE_TASK_ORDER: &[AdvancedFeatureTaskOrder] = &[
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-1",
+        rung: AdvancedFeatureRung::ExactDeterminism,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: ADVANCED_LADDER_FOUNDATION,
+        required_task_ids: &[],
+        rationale: "the ladder check itself is sequenced after deterministic replay and control are green",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-2",
+        rung: AdvancedFeatureRung::ExactDeterminism,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: CONTROL_PLANE_FOUNDATION,
+        required_task_ids: &["T-ADV-1"],
+        rationale: "exploration lifecycle controls must ride the session actor",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-5",
+        rung: AdvancedFeatureRung::SaveRestore,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-1"],
+        rationale: "restore strategies require the replay-oracle foundation",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-6",
+        rung: AdvancedFeatureRung::SaveRestore,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-5"],
+        rationale: "savepoints degrade to thin replay only after restore is oracle checked",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-3",
+        rung: AdvancedFeatureRung::Fork,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-6"],
+        rationale: "fork is instantiate from an oracle-validated checkpoint",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-4",
+        rung: AdvancedFeatureRung::Fork,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-3"],
+        rationale: "fork validation reuses the save/restore replay oracle",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-7",
+        rung: AdvancedFeatureRung::Search,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-4"],
+        rationale: "search is systematic fork from validated frontier nodes",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-8",
+        rung: AdvancedFeatureRung::Search,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-7"],
+        rationale: "search strategies order already-valid frontier expansion",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-9",
+        rung: AdvancedFeatureRung::Search,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-8"],
+        rationale: "reductions prune search children only after search ordering exists",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-20",
+        rung: AdvancedFeatureRung::Search,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-9"],
+        rationale: "preemption branching is a search dimension",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-21",
+        rung: AdvancedFeatureRung::Search,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-20"],
+        rationale: "app-controlled randomness is a search dimension",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-10",
+        rung: AdvancedFeatureRung::CoverageFeedback,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: EXACT_DETERMINISM_FOUNDATION,
+        required_task_ids: &["T-ADV-7"],
+        rationale: "coverage is black-box feedback consumed by search and fuzzing",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-11",
+        rung: AdvancedFeatureRung::CoverageFeedback,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: EXACT_DETERMINISM_FOUNDATION,
+        required_task_ids: &["T-ADV-10"],
+        rationale: "coverage enters the observational event log after extraction exists",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-17",
+        rung: AdvancedFeatureRung::CoverageFeedback,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-8", "T-ADV-11"],
+        rationale: "guidance signals compose deterministic search with coverage feedback",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-18",
+        rung: AdvancedFeatureRung::CoverageFeedback,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-17"],
+        rationale: "adaptive strategy selection wraps guidance without changing replay",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-19",
+        rung: AdvancedFeatureRung::CoverageFeedback,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-18"],
+        rationale: "ordering determinism lint protects guided strategy selection",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-12",
+        rung: AdvancedFeatureRung::Fuzzing,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-11", "T-ADV-19", "T-ADV-21"],
+        rationale: "coverage-guided fuzzing requires search, coverage, and deterministic guidance",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-13",
+        rung: AdvancedFeatureRung::Fuzzing,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-12"],
+        rationale: "corpus management stores coverage-driven fuzz findings",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-14",
+        rung: AdvancedFeatureRung::Fuzzing,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-13"],
+        rationale: "reproduction artifacts are emitted from search/fuzz findings",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-15",
+        rung: AdvancedFeatureRung::Fuzzing,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-14"],
+        rationale: "minimization shrinks self-contained findings",
+    },
+    AdvancedFeatureTaskOrder {
+        task_id: "T-ADV-16",
+        rung: AdvancedFeatureRung::Fuzzing,
+        phase: PhasePlanPhase::Phase6,
+        required_green_attr_paths: REPLAY_ORACLE_FOUNDATION,
+        required_task_ids: &["T-ADV-15"],
+        rationale: "the unifying-view test requires all advanced operations",
     },
 ];
 
@@ -594,6 +881,452 @@ pub fn layer_gate_precedence_failures(
     }
 
     failures
+}
+
+/// Returns every ADV checklist task in dependency order.
+#[must_use]
+pub fn advanced_feature_task_order() -> &'static [AdvancedFeatureTaskOrder] {
+    ADVANCED_FEATURE_TASK_ORDER
+}
+
+/// Returns ADV dependency-ladder failures against the phase-gate plan.
+#[must_use]
+pub fn advanced_feature_ladder_failures(
+    plan: &[PhaseGateOccurrence],
+    tasks: &[AdvancedFeatureTaskOrder],
+) -> Vec<AdvancedFeatureLadderFailure> {
+    let mut failures = Vec::new();
+    let ordered_gate_attrs = plan
+        .iter()
+        .map(|occurrence| occurrence.attr_path)
+        .collect::<Vec<_>>();
+
+    for (task_index, task) in tasks.iter().enumerate() {
+        for &attr_path in task.required_green_attr_paths {
+            let Some(gate_index) = ordered_gate_attrs
+                .iter()
+                .position(|candidate| *candidate == attr_path)
+            else {
+                failures.push(AdvancedFeatureLadderFailure {
+                    task_id: task.task_id,
+                    rung: task.rung,
+                    attr_path: Some(attr_path),
+                    prerequisite_task_id: None,
+                    rationale: task.rationale,
+                });
+                continue;
+            };
+            if plan[gate_index].phase >= task.phase {
+                failures.push(AdvancedFeatureLadderFailure {
+                    task_id: task.task_id,
+                    rung: task.rung,
+                    attr_path: Some(attr_path),
+                    prerequisite_task_id: None,
+                    rationale: task.rationale,
+                });
+            }
+        }
+
+        for &prerequisite_task_id in task.required_task_ids {
+            let prerequisite_index = tasks
+                .iter()
+                .position(|candidate| candidate.task_id == prerequisite_task_id);
+            if !matches!(prerequisite_index, Some(index) if index < task_index) {
+                failures.push(AdvancedFeatureLadderFailure {
+                    task_id: task.task_id,
+                    rung: task.rung,
+                    attr_path: None,
+                    prerequisite_task_id: Some(prerequisite_task_id),
+                    rationale: task.rationale,
+                });
+            }
+        }
+
+        if task_index > 0 {
+            let previous = tasks[task_index - 1];
+            if task.rung < previous.rung {
+                failures.push(AdvancedFeatureLadderFailure {
+                    task_id: task.task_id,
+                    rung: task.rung,
+                    attr_path: None,
+                    prerequisite_task_id: Some(previous.task_id),
+                    rationale: task.rationale,
+                });
+            }
+        }
+    }
+
+    failures
+}
+
+/// Returns failures where the actual Nix check graph schedules ADV work out of order.
+///
+/// The `default_checks` input is the text of `tests/crucible/default.nix`. This
+/// check is deliberately tied to the real gate wiring so a future `T-ADV-*`
+/// check cannot be added without the lower green gates and earlier ADV task
+/// checks it depends on.
+#[must_use]
+pub fn advanced_feature_schedule_failures(
+    default_checks: &str,
+    tasks: &[AdvancedFeatureTaskOrder],
+) -> Vec<AdvancedFeatureScheduleFailure> {
+    let task_map = tasks
+        .iter()
+        .map(|task| (task.task_id, *task))
+        .collect::<BTreeMap<_, _>>();
+    let scheduled_checks = scheduled_advanced_feature_checks(default_checks);
+    let mut scheduled_by_task = BTreeMap::new();
+    let mut failures = phase6_import_task_id_failures(default_checks);
+
+    for scheduled in &scheduled_checks {
+        for task_id in &scheduled.task_ids {
+            if !task_map.contains_key(task_id.as_str()) {
+                failures.push(AdvancedFeatureScheduleFailure {
+                    task_id: task_id.clone(),
+                    kind: AdvancedFeatureScheduleFailureKind::UnknownTask,
+                    attr_path: scheduled.attr_path.clone(),
+                    dependency: None,
+                    prerequisite_task_id: None,
+                });
+                continue;
+            }
+
+            if let Some(previous) = scheduled_by_task.insert(task_id.clone(), scheduled) {
+                failures.push(AdvancedFeatureScheduleFailure {
+                    task_id: task_id.clone(),
+                    kind: AdvancedFeatureScheduleFailureKind::DuplicateTaskSchedule,
+                    attr_path: scheduled
+                        .attr_path
+                        .clone()
+                        .or_else(|| previous.attr_path.clone()),
+                    dependency: None,
+                    prerequisite_task_id: None,
+                });
+            }
+        }
+    }
+
+    for scheduled in &scheduled_checks {
+        for task_id in &scheduled.task_ids {
+            let Some(task) = task_map.get(task_id.as_str()) else {
+                continue;
+            };
+
+            if scheduled.attr_path.is_none() {
+                failures.push(AdvancedFeatureScheduleFailure {
+                    task_id: task_id.clone(),
+                    kind: AdvancedFeatureScheduleFailureKind::MissingAttrPath,
+                    attr_path: None,
+                    dependency: None,
+                    prerequisite_task_id: None,
+                });
+            }
+
+            if !scheduled.green_before_advance {
+                failures.push(AdvancedFeatureScheduleFailure {
+                    task_id: task_id.clone(),
+                    kind: AdvancedFeatureScheduleFailureKind::MissingGreenBeforeAdvance,
+                    attr_path: scheduled.attr_path.clone(),
+                    dependency: None,
+                    prerequisite_task_id: None,
+                });
+            }
+
+            for &required_attr_path in task.required_green_attr_paths {
+                let dependency = attr_path_to_default_nix_reference(required_attr_path);
+                if !scheduled
+                    .dependencies
+                    .iter()
+                    .any(|candidate| candidate == &dependency)
+                {
+                    failures.push(AdvancedFeatureScheduleFailure {
+                        task_id: task_id.clone(),
+                        kind: AdvancedFeatureScheduleFailureKind::MissingGateDependency,
+                        attr_path: scheduled.attr_path.clone(),
+                        dependency: Some(dependency),
+                        prerequisite_task_id: None,
+                    });
+                }
+            }
+
+            for &required_task_id in task.required_task_ids {
+                let Some(prerequisite) = scheduled_by_task.get(required_task_id) else {
+                    failures.push(AdvancedFeatureScheduleFailure {
+                        task_id: task_id.clone(),
+                        kind: AdvancedFeatureScheduleFailureKind::MissingTaskSchedule,
+                        attr_path: scheduled.attr_path.clone(),
+                        dependency: None,
+                        prerequisite_task_id: Some(required_task_id.to_string()),
+                    });
+                    continue;
+                };
+
+                let Some(prerequisite_attr_path) = prerequisite.attr_path.as_deref() else {
+                    failures.push(AdvancedFeatureScheduleFailure {
+                        task_id: task_id.clone(),
+                        kind: AdvancedFeatureScheduleFailureKind::MissingTaskSchedule,
+                        attr_path: scheduled.attr_path.clone(),
+                        dependency: None,
+                        prerequisite_task_id: Some(required_task_id.to_string()),
+                    });
+                    continue;
+                };
+
+                let dependency = attr_path_to_default_nix_reference(prerequisite_attr_path);
+                if !scheduled
+                    .dependencies
+                    .iter()
+                    .any(|candidate| candidate == &dependency)
+                {
+                    failures.push(AdvancedFeatureScheduleFailure {
+                        task_id: task_id.clone(),
+                        kind: AdvancedFeatureScheduleFailureKind::MissingTaskDependency,
+                        attr_path: scheduled.attr_path.clone(),
+                        dependency: Some(dependency),
+                        prerequisite_task_id: Some(required_task_id.to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    failures
+}
+
+#[derive(Clone, Debug)]
+struct ScheduledAdvancedFeatureCheck {
+    attr_path: Option<String>,
+    task_ids: Vec<String>,
+    dependencies: BTreeSet<String>,
+    green_before_advance: bool,
+}
+
+fn scheduled_advanced_feature_checks(default_checks: &str) -> Vec<ScheduledAdvancedFeatureCheck> {
+    let mut checks = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_start) = default_checks[search_from..].find("taskIds = [") {
+        let task_ids_start = search_from + relative_start;
+        let list_start = task_ids_start + "taskIds = [".len();
+        let Some(relative_end) = default_checks[list_start..].find("];") else {
+            break;
+        };
+        let list_end = list_start + relative_end;
+        let task_ids = quoted_strings(&default_checks[list_start..list_end])
+            .into_iter()
+            .filter(|task_id| task_id.starts_with("T-ADV-"))
+            .collect::<Vec<_>>();
+        search_from = list_end + "];".len();
+
+        if task_ids.is_empty() {
+            continue;
+        }
+
+        let green_block =
+            enclosing_green_before_advance_block(default_checks, task_ids_start).map(str::to_owned);
+        let fallback_start = task_ids_start.saturating_sub(1024);
+        let fallback_end = default_checks.len().min(search_from + 1024);
+        let fallback_block = &default_checks[fallback_start..fallback_end];
+        let block = green_block.as_deref().unwrap_or(fallback_block);
+
+        checks.push(ScheduledAdvancedFeatureCheck {
+            attr_path: attr_path_from_block(block),
+            task_ids,
+            dependencies: if green_block.is_some() {
+                top_level_dependency_tokens(block)
+            } else {
+                dependency_tokens(block)
+            },
+            green_before_advance: green_block.is_some(),
+        });
+    }
+
+    checks
+}
+
+fn enclosing_green_before_advance_block(content: &str, position: usize) -> Option<&str> {
+    let marker = "= greenBeforeAdvance {";
+    let mut candidates = content[..position]
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    candidates.reverse();
+
+    for start in candidates {
+        let open_brace = start + marker.len() - 1;
+        let Some(end) = matching_brace_end(content, open_brace) else {
+            continue;
+        };
+        if end >= position {
+            return Some(&content[start..=end]);
+        }
+    }
+
+    None
+}
+
+fn matching_brace_end(content: &str, open_brace: usize) -> Option<usize> {
+    let mut depth = 0_u32;
+    let mut in_double_quoted_string = false;
+    let mut escaped = false;
+
+    for (offset, character) in content[open_brace..].char_indices() {
+        if in_double_quoted_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_double_quoted_string = false;
+            }
+            continue;
+        }
+
+        match character {
+            '"' => in_double_quoted_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(open_brace + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn attr_path_from_block(block: &str) -> Option<String> {
+    let marker = "attrPath = \"";
+    let start = block.find(marker)? + marker.len();
+    let end = block[start..].find('"')?;
+    Some(block[start..start + end].to_string())
+}
+
+fn dependency_tokens(block: &str) -> BTreeSet<String> {
+    let mut dependencies = BTreeSet::new();
+    let mut search_from = 0;
+
+    while let Some(relative_start) = block[search_from..].find("dependencies = [") {
+        let list_start = search_from + relative_start + "dependencies = [".len();
+        let Some(relative_end) = block[list_start..].find("];") else {
+            break;
+        };
+        let list_end = list_start + relative_end;
+        dependencies.extend(
+            block[list_start..list_end]
+                .split_whitespace()
+                .filter(|token| !token.is_empty())
+                .map(|token| token.trim_matches(|character| character == '(' || character == ')'))
+                .map(str::to_string),
+        );
+        search_from = list_end + "];".len();
+    }
+
+    dependencies
+}
+
+fn top_level_dependency_tokens(block: &str) -> BTreeSet<String> {
+    let mut dependencies = BTreeSet::new();
+    let mut depth = 0_u32;
+    let mut in_double_quoted_string = false;
+    let mut escaped = false;
+    let marker = "dependencies = [";
+
+    for (index, character) in block.char_indices() {
+        if in_double_quoted_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_double_quoted_string = false;
+            }
+            continue;
+        }
+
+        if block[index..].starts_with(marker) && depth == 1 {
+            let list_start = index + marker.len();
+            if let Some(relative_end) = block[list_start..].find("];") {
+                let list_end = list_start + relative_end;
+                dependencies.extend(dependency_list_tokens(&block[list_start..list_end]));
+            }
+        }
+
+        match character {
+            '"' => in_double_quoted_string = true,
+            '{' => depth += 1,
+            '}' => {
+                if let Some(next_depth) = depth.checked_sub(1) {
+                    depth = next_depth;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    dependencies
+}
+
+fn dependency_list_tokens(list: &str) -> impl Iterator<Item = String> + '_ {
+    list.split_whitespace()
+        .filter(|token| !token.is_empty())
+        .map(|token| token.trim_matches(|character| character == '(' || character == ')'))
+        .map(str::to_string)
+}
+
+fn quoted_strings(text: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find('"') {
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('"') else {
+            break;
+        };
+        strings.push(after_start[..end].to_string());
+        remaining = &after_start[end + 1..];
+    }
+
+    strings
+}
+
+fn phase6_import_task_id_failures(default_checks: &str) -> Vec<AdvancedFeatureScheduleFailure> {
+    let mut failures = Vec::new();
+    let mut search_from = 0;
+    let import_marker = "import ./phase6-";
+
+    while let Some(relative_start) = default_checks[search_from..].find(import_marker) {
+        let import_start = search_from + relative_start;
+        search_from = import_start + import_marker.len();
+        let Some(relative_open_brace) = default_checks[import_start..].find('{') else {
+            continue;
+        };
+        let open_brace = import_start + relative_open_brace;
+        let Some(end) = matching_brace_end(default_checks, open_brace) else {
+            continue;
+        };
+        let import_args = &default_checks[open_brace..=end];
+
+        if !import_args.contains("taskIds = [") {
+            failures.push(AdvancedFeatureScheduleFailure {
+                task_id: "T-ADV-*".to_string(),
+                kind: AdvancedFeatureScheduleFailureKind::MissingExplicitTaskIds,
+                attr_path: attr_path_from_block(import_args),
+                dependency: None,
+                prerequisite_task_id: None,
+            });
+        }
+    }
+
+    failures
+}
+
+fn attr_path_to_default_nix_reference(attr_path: &str) -> String {
+    attr_path
+        .strip_prefix("checks.crucible.")
+        .unwrap_or(attr_path)
+        .to_string()
 }
 
 const fn catalog_gate(

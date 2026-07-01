@@ -8,8 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crucible_harness::phase_plan::{
+    ADVANCED_FEATURE_TASK_ORDER, AdvancedFeatureRung, AdvancedFeatureScheduleFailureKind,
     LAYER_GATE_PRECEDENCES, PhaseGateKind, PhaseGateOccurrence, PhasePlanInvariantFailureKind,
-    PhasePlanPhase, SIM_DOUBLE_AVAILABLE_PHASE, green_before_advance_failures,
+    PhasePlanPhase, SIM_DOUBLE_AVAILABLE_PHASE, advanced_feature_ladder_failures,
+    advanced_feature_schedule_failures, advanced_feature_task_order, green_before_advance_failures,
     layer_gate_precedence_failures, phase_gate_order, phase_plan_invariant_failures,
     terminal_acceptance_gate,
 };
@@ -199,6 +201,246 @@ fn layer_gate_precedences_keep_lower_layer_checks_first() {
         }),
         "synthetic HARN-3 drift was not rejected: {failures:#?}"
     );
+}
+
+#[test]
+fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let advanced_features =
+        fs::read_to_string(root.join("docs/rfcs/0010-crucible/22-advanced-features.md"))?;
+    let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
+
+    assert!(
+        advanced_feature_ladder_failures(phase_gate_order(), advanced_feature_task_order())
+            .is_empty()
+    );
+    assert!(advanced_features.contains("- [x] **T-ADV-1**"));
+    assert!(advanced_features.contains("exact-determinism →"));
+    assert!(advanced_features.contains("coverage-guided fuzzing"));
+    assert!(default_checks.contains("checks.crucible.phase6.gates.replayOracle"));
+    let schedule_failures =
+        advanced_feature_schedule_failures(&default_checks, advanced_feature_task_order());
+    assert!(
+        schedule_failures.is_empty(),
+        "advanced-feature schedule failures: {schedule_failures:#?}"
+    );
+
+    let checklist_task_ids = advanced_checklist_task_ids(&advanced_features);
+    let ladder_task_ids = advanced_feature_task_order()
+        .iter()
+        .map(|task| task.task_id.to_string())
+        .collect::<Vec<_>>();
+
+    let checklist_ids = checklist_task_ids.iter().collect::<BTreeSet<_>>();
+    let task_ids = ladder_task_ids.iter().collect::<BTreeSet<_>>();
+    assert_eq!(task_ids, checklist_ids);
+    assert_eq!(task_ids.len(), ADVANCED_FEATURE_TASK_ORDER.len());
+    assert_eq!(task_ids.len(), 21);
+    for index in 1..=21 {
+        let task_id = format!("T-ADV-{index}");
+        assert!(
+            task_ids.contains(&task_id),
+            "{task_id} is missing from the advanced-feature ladder"
+        );
+    }
+
+    let fuzzing = advanced_feature_task_order()
+        .iter()
+        .find(|task| task.task_id == "T-ADV-12")
+        .ok_or("T-ADV-12 is missing")?;
+    assert_eq!(fuzzing.rung, AdvancedFeatureRung::Fuzzing);
+    assert!(fuzzing.required_task_ids.contains(&"T-ADV-11"));
+    assert!(fuzzing.required_task_ids.contains(&"T-ADV-19"));
+    assert!(fuzzing.required_task_ids.contains(&"T-ADV-21"));
+
+    let ladder = advanced_feature_task_order()
+        .iter()
+        .find(|task| task.task_id == "T-ADV-1")
+        .ok_or("T-ADV-1 is missing")?;
+    assert!(
+        ladder
+            .required_green_attr_paths
+            .contains(&"checks.crucible.phase5.gates.controlResponsive")
+    );
+
+    let coverage = advanced_feature_task_order()
+        .iter()
+        .find(|task| task.task_id == "T-ADV-11")
+        .ok_or("T-ADV-11 is missing")?;
+    assert_eq!(coverage.rung, AdvancedFeatureRung::CoverageFeedback);
+    assert_eq!(coverage.rung.label(), "coverage-feedback");
+
+    Ok(())
+}
+
+#[test]
+fn advanced_feature_schedule_rejects_unwrapped_default_check() {
+    let default_checks = r#"
+      phase6 = {
+        fuzzingSmoke = import ./phase6-fuzzing-smoke.nix {
+          attrPath = "checks.crucible.phase6.fuzzingSmoke";
+          taskIds = ["T-ADV-12"];
+        };
+      };
+    "#;
+
+    let failures =
+        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-12"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGreenBeforeAdvance
+        }),
+        "synthetic unwrapped ADV check was not rejected: {failures:#?}"
+    );
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-12"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingTaskSchedule
+                && failure.prerequisite_task_id.as_deref() == Some("T-ADV-11")
+        }),
+        "synthetic fuzz check without coverage prerequisite was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_schedule_rejects_missing_green_gate_dependency() {
+    let default_checks = r#"
+      phase6 = {
+        advancedDependencyLadder = greenBeforeAdvance {
+          attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+          gate = import ./phase6-advanced-dependency-ladder.nix {
+            attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+            taskIds = ["T-ADV-1"];
+          };
+          dependencies = [phase2.gates.singleVmFingerprint phase4.gates.e2eDeterminism];
+        };
+      };
+    "#;
+
+    let failures =
+        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-1"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGateDependency
+                && failure.dependency.as_deref() == Some("phase5.gates.controlResponsive")
+        }),
+        "synthetic ADV check without a green control dependency was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_schedule_rejects_inner_only_gate_dependency() {
+    let default_checks = r#"
+      phase6 = {
+        advancedDependencyLadder = greenBeforeAdvance {
+          attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+          gate = import ./phase6-advanced-dependency-ladder.nix {
+            attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+            taskIds = ["T-ADV-1"];
+            dependencies = [phase4.gates.e2eDeterminism.rawGate];
+          };
+          dependencies = [
+            phase2.gates.singleVmFingerprint
+            phase5.gates.controlResponsive
+          ];
+        };
+      };
+    "#;
+
+    let failures =
+        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-1"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGateDependency
+                && failure.dependency.as_deref() == Some("phase4.gates.e2eDeterminism")
+        }),
+        "synthetic ADV check with only inner raw e2e dependency was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_schedule_rejects_phase6_import_without_explicit_task_ids() {
+    let default_checks = r#"
+      phase6 = {
+        fuzzingSmoke = greenBeforeAdvance {
+          attrPath = "checks.crucible.phase6.fuzzingSmoke";
+          gate = import ./phase6-fuzzing-smoke.nix {
+            attrPath = "checks.crucible.phase6.fuzzingSmoke";
+          };
+          dependencies = [phase5.gates.controlResponsive];
+        };
+      };
+    "#;
+
+    let failures =
+        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-*"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingExplicitTaskIds
+                && failure.attr_path.as_deref() == Some("checks.crucible.phase6.fuzzingSmoke")
+        }),
+        "synthetic phase6 import without explicit taskIds was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_ladder_rejects_fuzzing_before_coverage() {
+    let mut drifted = advanced_feature_task_order().to_vec();
+    let fuzz_index = drifted
+        .iter()
+        .position(|task| task.task_id == "T-ADV-12")
+        .expect("fuzz task should be present");
+    let coverage_index = drifted
+        .iter()
+        .position(|task| task.task_id == "T-ADV-11")
+        .expect("coverage task should be present");
+    drifted.swap(fuzz_index, coverage_index);
+
+    let failures = advanced_feature_ladder_failures(phase_gate_order(), &drifted);
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-12"
+                && failure.rung == AdvancedFeatureRung::Fuzzing
+                && failure.prerequisite_task_id == Some("T-ADV-11")
+        }),
+        "synthetic fuzz-before-coverage drift was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_ladder_rejects_tasks_before_foundation_gates() {
+    let mut drifted_plan = phase_gate_order().to_vec();
+    let phase4_e2e = drifted_plan
+        .iter_mut()
+        .find(|occurrence| occurrence.attr_path == "checks.crucible.phase4.gates.e2eDeterminism")
+        .expect("phase4 e2e gate should be present");
+    phase4_e2e.phase = PhasePlanPhase::Phase6;
+
+    let failures = advanced_feature_ladder_failures(&drifted_plan, advanced_feature_task_order());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-1"
+                && failure.attr_path == Some("checks.crucible.phase4.gates.e2eDeterminism")
+        }),
+        "synthetic late determinism gate was not rejected: {failures:#?}"
+    );
+}
+
+fn advanced_checklist_task_ids(document: &str) -> Vec<String> {
+    document
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- ["))
+        .filter_map(|line| {
+            let marker = "**T-ADV-";
+            let start = line.find(marker)? + marker.len() - "T-ADV-".len();
+            let end = line[start..].find("**")?;
+            Some(line[start..start + end].to_string())
+        })
+        .collect()
 }
 
 #[test]
