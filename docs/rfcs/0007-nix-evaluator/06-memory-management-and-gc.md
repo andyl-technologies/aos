@@ -1062,12 +1062,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       `ratchet-oracle::runtime::alloc::AllocationSafepoint` can now classify that
       policy from post-allocation mapped arena bytes plus caller-supplied
       dead-page and cold-hash-cons reclaim estimates, returning an explicit
-      `AllocationMemoryBudgetDecision` for later runtime dispatch. Tests pin
-      zero-budget rejection, derived headroom, cheap-reclaim saturation, the
-      Tier-A-vs-Tier-B boundary, and safepoint-level Continue/Spill/Tier-B
-      classification. No CLI/env/daemon configuration, actual CA-store spill,
-      `madvise` call, live RSS sampler, or collector installation is wired yet,
-      so the full row above remains open.
+      `AllocationMemoryBudgetDecision` for later runtime dispatch. `EvalHeap`
+      also exposes whole-heap classification over the saturating sum of worker
+      and permanent mapped arena bytes, preserving both domain accounting
+      snapshots in `EvalHeapMemoryBudgetDecision`. Tests pin zero-budget
+      rejection, derived headroom, cheap-reclaim saturation, the
+      Tier-A-vs-Tier-B boundary, safepoint-level Continue/Spill/Tier-B
+      classification, and whole-heap worker/permanent aggregation. No
+      CLI/env/daemon configuration, actual CA-store spill, `madvise` call, live
+      RSS sampler, or collector installation is wired yet, so the full row above
+      remains open.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 

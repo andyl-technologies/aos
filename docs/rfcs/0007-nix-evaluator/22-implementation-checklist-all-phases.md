@@ -5380,12 +5380,16 @@ and helps the oracle directly.
       `runtime::alloc::AllocationSafepoint` can now classify that policy from
       post-allocation mapped arena bytes plus caller-supplied dead-page and
       cold-hash-cons reclaim estimates, returning an
-      `AllocationMemoryBudgetDecision` for later runtime dispatch. Tests cover
-      zero-budget rejection, headroom derivation, spill-before-collector
-      ordering, saturating reclaim accounting, and safepoint-level
-      Continue/Spill/Tier-B classification. CLI/env/daemon configuration, live
-      RSS sampling, CA-store spill, `madvise`, and collector installation remain
-      open under the full memory-management rows.
+      `AllocationMemoryBudgetDecision` for later runtime dispatch. `EvalHeap`
+      also exposes whole-heap classification over the saturating sum of worker
+      and permanent mapped arena bytes, preserving both domain accounting
+      snapshots in `EvalHeapMemoryBudgetDecision`. Tests cover zero-budget
+      rejection, headroom derivation, spill-before-collector ordering,
+      saturating reclaim accounting, safepoint-level Continue/Spill/Tier-B
+      classification, and whole-heap worker/permanent aggregation.
+      CLI/env/daemon configuration, live RSS sampling, CA-store spill,
+      `madvise`, and collector installation remain open under the full
+      memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

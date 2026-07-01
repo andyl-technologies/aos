@@ -5,10 +5,11 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
-    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout,
-    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget,
+    HeapMemoryBudgetResponse, HeapMemorySample, MinorGcDestinationBases, MinorGcForwardingSlot,
+    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, MinorGcRelocationPlan,
+    MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge, RememberedSet,
+    ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -349,6 +350,81 @@ fn allocates_string_values_and_recovers_contents() {
         allocation_domain(&heap, value),
         HeapAllocationDomain::PermanentShared
     );
+}
+
+#[test]
+fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("test resident bytes fit");
+    assert!(worker_stats.mapped_bytes > 0);
+    assert!(permanent_stats.mapped_bytes > 0);
+
+    assert_eq!(
+        heap.memory_budget_sample(7, 11),
+        HeapMemorySample::new(resident_bytes, 7, 11)
+    );
+
+    let loose_budget =
+        HeapMemoryBudget::new(resident_bytes.checked_mul(2).expect("budget doubles"))
+            .expect("budget is non-zero");
+    let continue_decision = heap.classify_memory_budget(loose_budget, 0, 0);
+    assert_eq!(continue_decision.budget(), loose_budget);
+    assert_eq!(
+        continue_decision.sample(),
+        HeapMemorySample::new(resident_bytes, 0, 0)
+    );
+    assert_eq!(continue_decision.worker_stats(), worker_stats);
+    assert_eq!(continue_decision.permanent_stats(), permanent_stats);
+    assert_eq!(
+        continue_decision.response(),
+        HeapMemoryBudgetResponse::ContinueTierA {
+            headroom_bytes: loose_budget.soft_limit_bytes() - resident_bytes,
+            projected_resident_bytes: resident_bytes,
+        }
+    );
+    assert!(!continue_decision.requires_runtime_action());
+    assert!(!continue_decision.requests_tier_b());
+
+    let spill_budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
+    let spill_reclaim_bytes = resident_bytes - spill_budget.soft_limit_bytes();
+    let spill_decision = heap.classify_memory_budget(spill_budget, 0, spill_reclaim_bytes);
+    assert_eq!(
+        spill_decision.sample(),
+        HeapMemorySample::new(resident_bytes, 0, spill_reclaim_bytes)
+    );
+    assert_eq!(
+        spill_decision.response(),
+        HeapMemoryBudgetResponse::SpillCold {
+            desired_reclaim_bytes: spill_reclaim_bytes,
+            available_reclaim_bytes: spill_reclaim_bytes,
+            projected_resident_bytes: spill_budget.soft_limit_bytes(),
+        }
+    );
+    assert!(spill_decision.requires_runtime_action());
+    assert!(!spill_decision.requests_tier_b());
+
+    let tier_b_budget = HeapMemoryBudget::new(resident_bytes / 2).expect("budget is non-zero");
+    let tier_b_decision = heap.classify_memory_budget(tier_b_budget, 0, 0);
+    assert_eq!(
+        tier_b_decision.response(),
+        HeapMemoryBudgetResponse::InstallTierB {
+            desired_reclaim_bytes: resident_bytes - tier_b_budget.soft_limit_bytes(),
+            available_reclaim_bytes: 0,
+            projected_resident_bytes: resident_bytes,
+            over_budget_bytes: resident_bytes - tier_b_budget.max_resident_bytes(),
+        }
+    );
+    assert!(tier_b_decision.requires_runtime_action());
+    assert!(tier_b_decision.requests_tier_b());
 }
 
 #[test]

@@ -4,7 +4,79 @@ use std::hash::{Hash, Hasher};
 
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample};
+
 use super::*;
+
+/// A whole-heap high-water memory-budget decision.
+///
+/// `EvalHeap` owns a worker allocation domain and a permanent shared domain, so
+/// this decision records both accounting snapshots alongside the single sample
+/// classified by the shared budget policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapMemoryBudgetDecision {
+    budget: HeapMemoryBudget,
+    sample: HeapMemorySample,
+    worker_stats: ArenaStats,
+    permanent_stats: ArenaStats,
+    response: HeapMemoryBudgetResponse,
+}
+
+impl EvalHeapMemoryBudgetDecision {
+    const fn new(
+        budget: HeapMemoryBudget,
+        sample: HeapMemorySample,
+        worker_stats: ArenaStats,
+        permanent_stats: ArenaStats,
+    ) -> Self {
+        Self {
+            budget,
+            sample,
+            worker_stats,
+            permanent_stats,
+            response: budget.classify(sample),
+        }
+    }
+
+    /// Returns the budget used to classify memory pressure.
+    pub const fn budget(self) -> HeapMemoryBudget {
+        self.budget
+    }
+
+    /// Returns the whole-heap memory sample classified by the budget policy.
+    pub const fn sample(self) -> HeapMemorySample {
+        self.sample
+    }
+
+    /// Returns worker-domain arena accounting captured for this decision.
+    pub const fn worker_stats(self) -> ArenaStats {
+        self.worker_stats
+    }
+
+    /// Returns permanent-shared arena accounting captured for this decision.
+    pub const fn permanent_stats(self) -> ArenaStats {
+        self.permanent_stats
+    }
+
+    /// Returns the high-water budget response selected for the whole heap.
+    pub const fn response(self) -> HeapMemoryBudgetResponse {
+        self.response
+    }
+
+    /// Returns whether the response asks runtime code to do more than continue.
+    pub const fn requires_runtime_action(self) -> bool {
+        match self.response {
+            HeapMemoryBudgetResponse::ContinueTierA { .. } => false,
+            HeapMemoryBudgetResponse::SpillCold { .. }
+            | HeapMemoryBudgetResponse::InstallTierB { .. } => true,
+        }
+    }
+
+    /// Returns whether the response asks the runtime to install Tier B.
+    pub const fn requests_tier_b(self) -> bool {
+        matches!(self.response, HeapMemoryBudgetResponse::InstallTierB { .. })
+    }
+}
 
 impl EvalHeap {
     /// Creates an empty evaluator heap.
@@ -48,6 +120,43 @@ impl EvalHeap {
     /// Returns current permanent shared allocation accounting.
     pub fn permanent_arena_stats(&self) -> ArenaStats {
         self.permanent_allocator.stats()
+    }
+
+    /// Builds a high-water budget sample for both heap allocation domains.
+    ///
+    /// The active runtime does not have live RSS sampling yet, so the sample uses
+    /// the saturating sum of worker and permanent mapped arena bytes as the
+    /// resident-memory proxy. The caller supplies cheap-reclaim estimates for
+    /// dead arena pages and cold hash-consed values.
+    pub fn memory_budget_sample(
+        &self,
+        dead_arena_bytes: usize,
+        cold_hash_consed_bytes: usize,
+    ) -> HeapMemorySample {
+        whole_heap_memory_budget_sample(
+            self.arena_stats(),
+            self.permanent_arena_stats(),
+            dead_arena_bytes,
+            cold_hash_consed_bytes,
+        )
+    }
+
+    /// Classifies the whole heap against a high-water memory budget.
+    pub fn classify_memory_budget(
+        &self,
+        budget: HeapMemoryBudget,
+        dead_arena_bytes: usize,
+        cold_hash_consed_bytes: usize,
+    ) -> EvalHeapMemoryBudgetDecision {
+        let worker_stats = self.arena_stats();
+        let permanent_stats = self.permanent_arena_stats();
+        let sample = whole_heap_memory_budget_sample(
+            worker_stats,
+            permanent_stats,
+            dead_arena_bytes,
+            cold_hash_consed_bytes,
+        );
+        EvalHeapMemoryBudgetDecision::new(budget, sample, worker_stats, permanent_stats)
     }
 
     /// Installs one GC-stress polling policy for both worker and permanent
@@ -1052,6 +1161,21 @@ fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), E
             actual,
         })),
     }
+}
+
+const fn whole_heap_memory_budget_sample(
+    worker_stats: ArenaStats,
+    permanent_stats: ArenaStats,
+    dead_arena_bytes: usize,
+    cold_hash_consed_bytes: usize,
+) -> HeapMemorySample {
+    HeapMemorySample::new(
+        worker_stats
+            .mapped_bytes
+            .saturating_add(permanent_stats.mapped_bytes),
+        dead_arena_bytes,
+        cold_hash_consed_bytes,
+    )
 }
 
 fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
