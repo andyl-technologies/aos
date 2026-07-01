@@ -9,5 +9,6 @@
 
 pub mod alloc;
 pub mod barrier;
+pub mod helpers;
 
 pub use crate::compile::builtins;

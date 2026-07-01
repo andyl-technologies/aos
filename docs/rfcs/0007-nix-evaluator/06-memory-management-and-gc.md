@@ -891,6 +891,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       only; it does not export the `unsafe extern "C"` function, register
       Cranelift symbols, implement a daemon card table, mutate object
       generations, or install the Tier-B collector table.
+- [x] Current runtime-helper binding-manifest precursor:
+      `ratchet-oracle::runtime::helpers` now combines the allocation and
+      write-barrier helper families into one safe `RuntimeHelperBinding`
+      inventory. Each binding carries the frozen helper symbol, core helper
+      role, and family-specific ABI signature, and resolves back from symbol
+      text. Tests prove the manifest exactly covers the currently bound
+      `RuntimeHelperRole::Allocation` and `RuntimeHelperRole::WriteBarrier`
+      symbols from `ratchet-core`, preserves the allocation and write-barrier
+      ABI inventories, and rejects helper roles that still have no safe runtime
+      binding. This is a registration manifest only; it does not export
+      `unsafe extern "C"` functions, define the failure/trap convention,
+      register Cranelift symbols, or add bindings for forcing/call/attr/error
+      helpers.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
