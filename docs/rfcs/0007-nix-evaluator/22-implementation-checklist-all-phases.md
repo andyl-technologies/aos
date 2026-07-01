@@ -5008,6 +5008,24 @@ and helps the oracle directly.
       metadata only; reserving pages, choosing base addresses, allocating
       destination objects, copying bytes, forwarding pointers, and semispace
       management remain open.
+- [x] Current minor-GC relocation-destination materialization precursor:
+      `ratchet-value::heap::gc::MinorGcDestinationBases` and
+      `MinorGcRelocationDestinationPlan::from_placement_plan` combine checked
+      placement offsets with caller-supplied nursery and old-generation base
+      addresses to materialize relocation destination metadata. Copied survivors
+      use the nursery base, promoted survivors use the old-generation base,
+      address arithmetic is overflow-checked, materialized addresses reuse
+      `GcHeapAddress` low-tag validation, object alignment is rechecked after
+      base addition, and the table is validated by the existing relocation-map
+      rules. The constructor also requires the placement plan to match the
+      survivor plan's count, source order, and copy/promote actions. Unit tests
+      cover base-plus-offset materialization, copy/promote generation
+      preservation through the relocation map, address overflow rejection,
+      invalid low-tag address rejection, base-induced alignment mismatch, and
+      mismatched placement-plan rejection. This remains metadata only; reserving
+      or choosing pages, allocating destination objects, copying bytes,
+      forwarding pointers, root/field writeback, and semispace management remain
+      open.
 - [x] Current minor-GC relocation-map precursor:
       `ratchet-value::heap::gc::MinorGcRelocationDestination` and
       `MinorGcRelocationPlan::from_minor_gc_plan` validate collector-supplied

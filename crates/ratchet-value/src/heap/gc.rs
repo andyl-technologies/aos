@@ -832,6 +832,109 @@ impl MinorGcDestinationPlacementPlan {
     }
 }
 
+/// Destination-space bases for materializing relocation addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcDestinationBases {
+    nursery: GcHeapAddress,
+    old: GcHeapAddress,
+}
+
+impl MinorGcDestinationBases {
+    /// Creates destination-space base metadata.
+    pub const fn new(nursery: GcHeapAddress, old: GcHeapAddress) -> Self {
+        Self { nursery, old }
+    }
+
+    /// Returns the base address for copied nursery survivors.
+    pub const fn nursery(self) -> GcHeapAddress {
+        self.nursery
+    }
+
+    /// Returns the base address for promoted old-generation survivors.
+    pub const fn old(self) -> GcHeapAddress {
+        self.old
+    }
+}
+
+/// Relocation destination metadata materialized from placement offsets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcRelocationDestinationPlan {
+    destinations: Vec<MinorGcRelocationDestination>,
+}
+
+impl MinorGcRelocationDestinationPlan {
+    /// Builds relocation destination metadata from placement offsets and bases.
+    ///
+    /// Destinations are emitted in placement order. Copied survivors use the
+    /// nursery base, promoted survivors use the old-generation base, and each
+    /// placement's offset is checked against its selected base address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if destination storage cannot be
+    /// reserved, if destination count overflows, if `placement_plan` does not
+    /// match `survivor_plan`, if adding a placement offset to its base address
+    /// overflows, if materialized address bits fail [`GcHeapAddress`]
+    /// validation, if a materialized destination does not satisfy its placement
+    /// alignment, or if materialized destinations fail the same validation and
+    /// storage reservation as [`MinorGcRelocationPlan::from_minor_gc_plan`].
+    pub fn from_placement_plan(
+        survivor_plan: &MinorGcPlan,
+        placement_plan: &MinorGcDestinationPlacementPlan,
+        bases: MinorGcDestinationBases,
+    ) -> Result<Self, GenerationalGcError> {
+        validate_placement_plan_matches_survivor_plan(survivor_plan, placement_plan)?;
+
+        let mut destinations = Vec::new();
+        for placement in placement_plan.placements() {
+            let destination = materialized_destination_for(*placement, bases)?;
+            let destinations_len = destinations
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcRelocationDestinationLengthOverflow)?;
+            destinations.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcRelocationDestinationAllocationFailed {
+                    destinations: destinations_len,
+                }
+            })?;
+            destinations.push(MinorGcRelocationDestination::new(
+                placement.source(),
+                destination,
+            ));
+        }
+        MinorGcRelocationPlan::from_minor_gc_plan(survivor_plan, &destinations)?;
+        Ok(Self { destinations })
+    }
+
+    /// Returns relocation destinations in placement order.
+    pub fn destinations(&self) -> &[MinorGcRelocationDestination] {
+        &self.destinations
+    }
+
+    /// Builds the validated relocation map for these materialized destinations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if relocation storage cannot be reserved
+    /// or if destination metadata no longer matches `survivor_plan`.
+    pub fn relocation_plan(
+        &self,
+        survivor_plan: &MinorGcPlan,
+    ) -> Result<MinorGcRelocationPlan, GenerationalGcError> {
+        MinorGcRelocationPlan::from_minor_gc_plan(survivor_plan, &self.destinations)
+    }
+
+    /// Returns the number of materialized relocation destinations.
+    pub fn len(&self) -> usize {
+        self.destinations.len()
+    }
+
+    /// Returns whether no relocation destinations were materialized.
+    pub fn is_empty(&self) -> bool {
+        self.destinations.is_empty()
+    }
+}
+
 /// Destination metadata for one live minor-GC survivor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcRelocationDestination {
@@ -1517,6 +1620,44 @@ fn validate_relocation_destinations_are_not_sources(
     Ok(())
 }
 
+fn validate_placement_plan_matches_survivor_plan(
+    survivor_plan: &MinorGcPlan,
+    placement_plan: &MinorGcDestinationPlacementPlan,
+) -> Result<(), GenerationalGcError> {
+    let survivors = survivor_plan.survivors();
+    let placements = placement_plan.placements();
+    if survivors.len() != placements.len() {
+        return Err(
+            GenerationalGcError::MinorGcRelocationDestinationPlacementLengthMismatch {
+                survivors: survivors.len(),
+                placements: placements.len(),
+            },
+        );
+    }
+
+    for (survivor, placement) in survivors.iter().zip(placements) {
+        if survivor.address() != placement.source() {
+            return Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementSourceMismatch {
+                    expected: survivor.address(),
+                    actual: placement.source(),
+                },
+            );
+        }
+        if survivor.action() != placement.action() {
+            return Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementActionMismatch {
+                    address: survivor.address(),
+                    expected: survivor.action(),
+                    actual: placement.action(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn nursery_age_for(
     nursery_objects: &[NurseryObjectAge],
     address: GcHeapAddress,
@@ -1592,6 +1733,53 @@ fn checked_add_destination_placement_total_bytes(
     nursery_reserved_bytes
         .checked_add(old_reserved_bytes)
         .ok_or(GenerationalGcError::MinorGcDestinationPlacementTotalBytesOverflow)
+}
+
+fn materialized_destination_for(
+    placement: MinorGcDestinationPlacement,
+    bases: MinorGcDestinationBases,
+) -> Result<GcHeapAddress, GenerationalGcError> {
+    let (generation, base) = match placement.action() {
+        MinorGcSurvivorAction::CopyToNursery => (HeapGeneration::Young, bases.nursery()),
+        MinorGcSurvivorAction::PromoteToOld => (HeapGeneration::Old, bases.old()),
+    };
+    let address_bits = base
+        .address_bits()
+        .checked_add(placement.offset_bytes())
+        .ok_or(
+            GenerationalGcError::MinorGcRelocationDestinationAddressOverflow {
+                generation,
+                base,
+                offset: placement.offset_bytes(),
+            },
+        )?;
+    let destination = GcHeapAddress::new(address_bits)?;
+    validate_materialized_destination_alignment(placement, generation, destination)?;
+    Ok(destination)
+}
+
+fn validate_materialized_destination_alignment(
+    placement: MinorGcDestinationPlacement,
+    generation: HeapGeneration,
+    destination: GcHeapAddress,
+) -> Result<(), GenerationalGcError> {
+    let align = placement.align();
+    if align == 0 || !align.is_power_of_two() {
+        return Err(
+            GenerationalGcError::InvalidMinorGcDestinationPlacementAlignment { generation, align },
+        );
+    }
+    if destination.address_bits() & (align - 1) != 0 {
+        return Err(
+            GenerationalGcError::MinorGcRelocationDestinationAlignmentMismatch {
+                address: placement.source(),
+                generation,
+                destination,
+                align,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn relocation_destination_for(
@@ -1816,6 +2004,68 @@ pub enum GenerationalGcError {
     /// Minor-GC destination placement reserved bytes overflowed in aggregate.
     #[error("minor-GC total destination placement bytes overflowed")]
     MinorGcDestinationPlacementTotalBytesOverflow,
+    /// The minor-GC relocation destination plan length overflowed.
+    #[error("minor-GC relocation destination length overflow")]
+    MinorGcRelocationDestinationLengthOverflow,
+    /// The minor-GC relocation destination plan could not reserve storage.
+    #[error("failed to reserve {destinations} minor-GC relocation destinations")]
+    MinorGcRelocationDestinationAllocationFailed {
+        /// The requested relocation-destination capacity.
+        destinations: usize,
+    },
+    /// A destination placement plan did not match the survivor count.
+    #[error(
+        "minor-GC relocation destination placement count {placements} does not match survivor count {survivors}"
+    )]
+    MinorGcRelocationDestinationPlacementLengthMismatch {
+        /// The survivor count in the minor-GC plan.
+        survivors: usize,
+        /// The placement count in the destination-placement plan.
+        placements: usize,
+    },
+    /// A destination placement plan did not preserve survivor source order.
+    #[error("minor-GC relocation destination placement source mismatch: expected 0x{expected:x}, got 0x{actual:x}", expected = expected.address_bits(), actual = actual.address_bits())]
+    MinorGcRelocationDestinationPlacementSourceMismatch {
+        /// The survivor source expected at this position.
+        expected: GcHeapAddress,
+        /// The placement source found at this position.
+        actual: GcHeapAddress,
+    },
+    /// A destination placement action did not match the survivor action.
+    #[error(
+        "minor-GC relocation destination placement action mismatch for 0x{address:x}: expected {expected:?}, got {actual:?}",
+        address = address.address_bits()
+    )]
+    MinorGcRelocationDestinationPlacementActionMismatch {
+        /// The survivor source with mismatched action metadata.
+        address: GcHeapAddress,
+        /// The action from the survivor plan.
+        expected: MinorGcSurvivorAction,
+        /// The action from the placement plan.
+        actual: MinorGcSurvivorAction,
+    },
+    /// Materializing a relocation destination address overflowed.
+    #[error("minor-GC relocation destination address overflowed for {generation:?} base 0x{base:x} offset {offset}", base = base.address_bits())]
+    MinorGcRelocationDestinationAddressOverflow {
+        /// The destination generation being materialized.
+        generation: HeapGeneration,
+        /// The destination-space base address.
+        base: GcHeapAddress,
+        /// The placement offset in bytes.
+        offset: usize,
+    },
+    /// A materialized relocation destination violated object alignment.
+    #[error("minor-GC relocation destination 0x{destination:x} for 0x{address:x} is not {align}-byte aligned in {generation:?}", destination = destination.address_bits(), address = address.address_bits())]
+    MinorGcRelocationDestinationAlignmentMismatch {
+        /// The survivor source being placed.
+        address: GcHeapAddress,
+        /// The destination generation being materialized.
+        generation: HeapGeneration,
+        /// The misaligned relocation destination.
+        destination: GcHeapAddress,
+        /// The required object alignment in bytes.
+        align: usize,
+    },
     /// The minor-GC relocation plan length overflowed.
     #[error("minor-GC relocation length overflow")]
     MinorGcRelocationLengthOverflow,
@@ -2702,6 +2952,299 @@ mod tests {
                 GenerationalGcError::InvalidMinorGcDestinationPlacementAlignment {
                     generation: HeapGeneration::Young,
                     align: 0,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_destination_plan_materializes_offsets_from_bases() {
+        let first_copy = address(0x1000);
+        let promote = address(0x2000);
+        let second_copy = address(0x3000);
+        let nursery_base = address(0x9000);
+        let old_base = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first_copy),
+                ResolvedValueGeneration::young(promote),
+                ResolvedValueGeneration::young(second_copy),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first_copy, 0),
+                NurseryObjectAge::new(promote, 1),
+                NurseryObjectAge::new(second_copy, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(second_copy, 8, 16),
+                NurseryObjectLayout::new(promote, 40, 16),
+                NurseryObjectLayout::new(first_copy, 24, 8),
+            ],
+        )
+        .expect("allocation plan builds");
+        let placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
+                .expect("placement plan builds");
+        let bases = MinorGcDestinationBases::new(nursery_base, old_base);
+
+        let destination_plan =
+            MinorGcRelocationDestinationPlan::from_placement_plan(&plan, &placement_plan, bases)
+                .expect("relocation destination plan builds");
+
+        assert_eq!(bases.nursery(), nursery_base);
+        assert_eq!(bases.old(), old_base);
+        assert_eq!(destination_plan.len(), 3);
+        assert!(!destination_plan.is_empty());
+        assert_eq!(destination_plan.destinations()[0].source(), first_copy);
+        assert_eq!(
+            destination_plan.destinations()[0].destination(),
+            nursery_base
+        );
+        assert_eq!(destination_plan.destinations()[1].source(), promote);
+        assert_eq!(destination_plan.destinations()[1].destination(), old_base);
+        assert_eq!(destination_plan.destinations()[2].source(), second_copy);
+        assert_eq!(
+            destination_plan.destinations()[2].destination(),
+            address(0x9020)
+        );
+
+        let relocation_plan = destination_plan
+            .relocation_plan(&plan)
+            .expect("relocation plan builds");
+        assert_eq!(relocation_plan.len(), 3);
+        assert_eq!(relocation_plan.relocations()[0].source(), first_copy);
+        assert_eq!(relocation_plan.relocations()[0].destination(), nursery_base);
+        assert_eq!(
+            relocation_plan.relocations()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(relocation_plan.relocations()[1].source(), promote);
+        assert_eq!(relocation_plan.relocations()[1].destination(), old_base);
+        assert_eq!(
+            relocation_plan.relocations()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(relocation_plan.relocations()[2].source(), second_copy);
+        assert_eq!(
+            relocation_plan.relocations()[2].destination(),
+            address(0x9020)
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_destination_plan_rejects_bad_materialized_addresses() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let overflow_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(first, 8, 8),
+                NurseryObjectLayout::new(second, 8, 8),
+            ],
+        )
+        .expect("overflow allocation plan builds");
+        let overflow_placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&overflow_allocation_plan)
+                .expect("overflow placement plan builds");
+        let overflow_base = address(usize::MAX & !POINTER_TAG_MASK);
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &plan,
+                &overflow_placement_plan,
+                MinorGcDestinationBases::new(overflow_base, address(0xa000)),
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationAddressOverflow {
+                    generation: HeapGeneration::Young,
+                    base: overflow_base,
+                    offset: 8,
+                }
+            )
+        );
+
+        let low_tag_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(first, 4, 4),
+                NurseryObjectLayout::new(second, 8, 4),
+            ],
+        )
+        .expect("low-tag allocation plan builds");
+        let low_tag_placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&low_tag_allocation_plan)
+                .expect("low-tag placement plan builds");
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &plan,
+                &low_tag_placement_plan,
+                MinorGcDestinationBases::new(address(0x9000), address(0xa000)),
+            ),
+            Err(GenerationalGcError::LowTagBitsPresent {
+                address_bits: 0x9004,
+            })
+        );
+
+        let misaligned_base_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(first, 16, 16),
+                NurseryObjectLayout::new(second, 8, 8),
+            ],
+        )
+        .expect("misaligned-base allocation plan builds");
+        let misaligned_base_placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&misaligned_base_allocation_plan)
+                .expect("misaligned-base placement plan builds");
+        let misaligned_destination = address(0x9008);
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &plan,
+                &misaligned_base_placement_plan,
+                MinorGcDestinationBases::new(misaligned_destination, address(0xa000)),
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationAlignmentMismatch {
+                    address: first,
+                    generation: HeapGeneration::Young,
+                    destination: misaligned_destination,
+                    align: 16,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_destination_plan_rejects_mismatched_placement_plan() {
+        let young = address(0x1000);
+        let copy_plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("copy minor GC plan builds");
+        let promote_plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 1)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("promote minor GC plan builds");
+        let copy_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &copy_plan,
+            &[NurseryObjectLayout::new(young, 8, 8)],
+        )
+        .expect("copy allocation plan builds");
+        let copy_placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&copy_allocation_plan)
+                .expect("copy placement plan builds");
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &promote_plan,
+                &copy_placement_plan,
+                MinorGcDestinationBases::new(address(0x9000), address(0xa000)),
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementActionMismatch {
+                    address: young,
+                    expected: MinorGcSurvivorAction::PromoteToOld,
+                    actual: MinorGcSurvivorAction::CopyToNursery,
+                }
+            )
+        );
+
+        let other = address(0x2000);
+        let two_survivor_plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(young),
+                ResolvedValueGeneration::young(other),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(young, 0),
+                NurseryObjectAge::new(other, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("two-survivor minor GC plan builds");
+        let reversed_plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(other),
+                ResolvedValueGeneration::young(young),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(young, 0),
+                NurseryObjectAge::new(other, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("reversed minor GC plan builds");
+        let reversed_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &reversed_plan,
+            &[
+                NurseryObjectLayout::new(young, 8, 8),
+                NurseryObjectLayout::new(other, 8, 8),
+            ],
+        )
+        .expect("reversed allocation plan builds");
+        let reversed_placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&reversed_allocation_plan)
+                .expect("reversed placement plan builds");
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &two_survivor_plan,
+                &reversed_placement_plan,
+                MinorGcDestinationBases::new(address(0x9000), address(0xa000)),
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementSourceMismatch {
+                    expected: young,
+                    actual: other,
+                }
+            )
+        );
+
+        assert_eq!(
+            MinorGcRelocationDestinationPlan::from_placement_plan(
+                &two_survivor_plan,
+                &copy_placement_plan,
+                MinorGcDestinationBases::new(address(0x9000), address(0xa000)),
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementLengthMismatch {
+                    survivors: 2,
+                    placements: 1,
                 }
             )
         );
