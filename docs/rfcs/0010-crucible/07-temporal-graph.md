@@ -903,10 +903,10 @@ command.
     classes, non-default `coverage_fingerprint`, and the full loadable
     materialized state yield the same unambiguous canonical-relabeling
     fingerprint, skips only the non-canonical ordering of disjoint-node
-    decisions with an explicit independence proof whose representative is
-    already recorded, and explores when coverage, materialized state, symmetry
-    classes, touched nodes, representative state, or ordering resources are
-    unknown.
+    decisions with an explicit independence proof after recording that
+    canonical representative on demand, and explores when coverage,
+    materialized state, symmetry classes, touched nodes, representative state,
+    or ordering resources are unknown.
 - [x] **T-TEMP-11** Wire save/resume/fork/replay/search as operations on the
   temporal graph via `instantiate`, with no checkpoint store or state
   representation outside the DAG. — satisfies [TEMP-30]; spec §10; cross-ref

@@ -1290,6 +1290,28 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
+    searchReductions = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.searchReductions";
+      gate = import ./phase6-search-reductions.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.searchReductions";
+        taskIds = ["T-ADV-9"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.stateSpaceSearch.rawGate
+          phase6.searchStrategies.rawGate
+          phase6.gates.replayOracle.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.stateSpaceSearch
+        phase6.searchStrategies
+        phase6.gates.replayOracle
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

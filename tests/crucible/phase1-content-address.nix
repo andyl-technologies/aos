@@ -901,8 +901,8 @@
         needle = "gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonical_interleaving";
       }
       {
-        label = "POR explores when representative absent";
-        needle = "gate_content_address_temporal_graph_partial_order_reduction_explores_without_representative";
+        label = "POR records missing representative";
+        needle = "gate_content_address_temporal_graph_partial_order_reduction_records_missing_representative";
       }
       {
         label = "POR explores dependent decisions";
