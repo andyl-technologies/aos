@@ -19,6 +19,9 @@ result-*
 # Direnv
 .direnv/
 
+# Wrangler local state and caches
+.wrangler/
+
 # Doc index cache
 .aos-doc-cache.json
 
