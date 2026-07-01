@@ -893,6 +893,19 @@ mount  = "/etc/workload"
   parameterized `ScenarioDef` (06 §7.1, [SPAT-27]). *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §B.4; cross-ref 06 §7.1, 22.
 
+Implementation note (T-WL-6): `GuestWorkloadScalarParameter` models the supported
+cmdline scalar keys (`target`, rate/count/payload-size, and key-cardinality
+policy), and `GuestWorkloadConfigTreeRef` models structured config as a
+content-addressed `wcfg=...` reference delivered by read-only rootfs or read-only
+9p. `World::workload_config_trees()` exposes the validated world-level
+config-tree bindings derived from hashed node config. World validation rejects
+duplicate scalar keys, empty scalar values, non-content-addressed config exports,
+non-portable guest mount paths, duplicate config-tree refs, rootfs config refs
+whose export does not match the node's read-only `root_image`, and any delivery
+mode outside `readonly_rootfs`/`readonly_9p`. The fixtures assert parameter
+changes alter `ScenarioDef::id`, round-trip through canonical TOML and compact
+binary, and capture as self-contained reproduction artifacts.
+
 ### B.5 The workload story, restated
 
 ```text
@@ -1004,11 +1017,17 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   validation rejects host-wall-clock or missing/stray time-source configuration,
   and the spike/cardinality fixtures reproduce byte-identical canonical scenario
   material across independent construction.
-- [ ] **T-WL-6** Implement content-addressed workload parameterization (cmdline
+- [x] **T-WL-6** Implement content-addressed workload parameterization (cmdline
   scalars + read-only rootfs/9p config tree), part of the scenario hash, read-only
   to the guest; assert a parameter change yields a different `ScenarioDef::id` and
   an individually reproducible scenario. — satisfies [WL-10], [WL-11], [WL-12];
   spec §B.4; cross-ref 06 §3.1, §8, §7.1, 15.
+  Completed by `checks.crucible.phase4.workloadParameterization`:
+  supported workload scalar keys render as immutable cmdline scenario config,
+  structured config trees render as content-addressed read-only `wcfg` refs for
+  rootfs/9p delivery, world validation rejects mutable/host-path/duplicate
+  parameterization, and changed scalar or config-tree values produce distinct
+  individually reproducible `ScenarioDef` material.
 - [ ] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
   corpus fixture, authored with zero guest-side components; assert `run` PASSES and
   `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec

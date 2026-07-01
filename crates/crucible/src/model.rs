@@ -720,6 +720,15 @@ pub const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER: &str = "load_time_source";
 
 const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_time_source=";
 
+/// Kernel command-line key that declares a structured workload config tree.
+///
+/// The value is a content-addressed, read-only tree reference. It is still plain
+/// scenario configuration on [`WorldNode::cmdline`], and the referenced content
+/// hash therefore contributes to the world's canonical material.
+pub const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER: &str = "wcfg";
+
+const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX: &str = "wcfg=";
+
 /// Whether explicit workload seeds can be delivered without white-box support.
 pub const WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES: bool = true;
 
@@ -737,6 +746,21 @@ pub const WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME: bool = true;
 
 /// Whether load shapes may derive their variation from the host wall clock.
 pub const WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED: bool = false;
+
+/// Whether workload parameters are immutable scenario-definition material.
+pub const WORKLOAD_PARAMETERS_ARE_SCENARIO_CONFIG: bool = true;
+
+/// Whether structured workload config trees are served read-only to the guest.
+pub const WORKLOAD_CONFIG_TREES_ARE_READ_ONLY: bool = true;
+
+/// Whether workload parameterization may use host runtime pokes after boot.
+pub const WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED: bool = false;
+
+/// Whether 9p workload config trees use path-hashed QIDs.
+pub const WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS: bool = true;
+
+/// Whether 9p workload config-tree directory enumeration is sorted.
+pub const WORKLOAD_CONFIG_TREE_SORTED_ENUMERATION: bool = true;
 
 /// Whether Crucible's application traffic originates inside guest VMs.
 ///
@@ -894,6 +918,323 @@ impl GuestWorkloadSeed {
     #[must_use]
     pub fn selected_cmdline(self, base_cmdline: &str) -> String {
         cmdline_with_guest_workload_seed(base_cmdline, self)
+    }
+}
+
+/// A supported scalar workload-parameter key carried on the guest command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadParameterKey {
+    /// Request target, such as `server:8080`.
+    Target,
+    /// Generic request or operation rate.
+    Rate,
+    /// Request or operation rate per second.
+    RatePerSec,
+    /// Baseline request or operation rate per second.
+    BaseRatePerSec,
+    /// Peak request or operation rate per second.
+    PeakRatePerSec,
+    /// Burst request or operation rate per second.
+    BurstRatePerSec,
+    /// Total request or operation count.
+    Count,
+    /// Payload size in bytes.
+    PayloadSize,
+    /// Payload size in bytes, spelled with an explicit unit.
+    PayloadSizeBytes,
+    /// Initial key cardinality.
+    InitialKeys,
+    /// Key cardinality growth rate per second.
+    KeyGrowthPerSec,
+    /// Maximum key cardinality.
+    KeyCap,
+}
+
+impl GuestWorkloadParameterKey {
+    /// The supported scalar workload-parameter vocabulary.
+    pub const SUPPORTED: [Self; 12] = [
+        Self::Target,
+        Self::Rate,
+        Self::RatePerSec,
+        Self::BaseRatePerSec,
+        Self::PeakRatePerSec,
+        Self::BurstRatePerSec,
+        Self::Count,
+        Self::PayloadSize,
+        Self::PayloadSizeBytes,
+        Self::InitialKeys,
+        Self::KeyGrowthPerSec,
+        Self::KeyCap,
+    ];
+
+    /// Returns the guest command-line key for this workload parameter.
+    #[must_use]
+    pub const fn cmdline_key(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::Rate => "rate",
+            Self::RatePerSec => "rate_per_sec",
+            Self::BaseRatePerSec => "base_rate_per_sec",
+            Self::PeakRatePerSec => "peak_rate_per_sec",
+            Self::BurstRatePerSec => "burst_rate_per_sec",
+            Self::Count => "count",
+            Self::PayloadSize => "payload_size",
+            Self::PayloadSizeBytes => "payload_size_bytes",
+            Self::InitialKeys => "initial_keys",
+            Self::KeyGrowthPerSec => "key_growth_per_sec",
+            Self::KeyCap => "key_cap",
+        }
+    }
+
+    /// Returns the human-readable parameter name used by diagnostics and docs.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::Rate | Self::RatePerSec => "request rate",
+            Self::BaseRatePerSec => "base request rate",
+            Self::PeakRatePerSec => "peak request rate",
+            Self::BurstRatePerSec => "burst request rate",
+            Self::Count => "request count",
+            Self::PayloadSize | Self::PayloadSizeBytes => "payload size",
+            Self::InitialKeys => "initial key cardinality",
+            Self::KeyGrowthPerSec => "key cardinality growth rate",
+            Self::KeyCap => "key cardinality cap",
+        }
+    }
+
+    /// Parses a workload-parameter key from a command-line key.
+    #[must_use]
+    pub fn from_cmdline_key(key: &str) -> Option<Self> {
+        match key {
+            "target" => Some(Self::Target),
+            "rate" => Some(Self::Rate),
+            "rate_per_sec" => Some(Self::RatePerSec),
+            "base_rate_per_sec" => Some(Self::BaseRatePerSec),
+            "peak_rate_per_sec" => Some(Self::PeakRatePerSec),
+            "burst_rate_per_sec" => Some(Self::BurstRatePerSec),
+            "count" => Some(Self::Count),
+            "payload_size" => Some(Self::PayloadSize),
+            "payload_size_bytes" => Some(Self::PayloadSizeBytes),
+            "initial_keys" => Some(Self::InitialKeys),
+            "key_growth_per_sec" => Some(Self::KeyGrowthPerSec),
+            "key_cap" => Some(Self::KeyCap),
+            _ => None,
+        }
+    }
+}
+
+/// A single scalar workload parameter delivered through the guest command line.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuestWorkloadScalarParameter {
+    key: GuestWorkloadParameterKey,
+    value: String,
+}
+
+impl GuestWorkloadScalarParameter {
+    /// Builds a scalar workload parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorkloadParameterInvalidValue`] when `value` is
+    /// empty or contains command-line whitespace.
+    pub fn new(
+        key: GuestWorkloadParameterKey,
+        value: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        let value = value.into();
+        if !valid_guest_workload_parameter_value(&value) {
+            return Err(EngineError::WorkloadParameterInvalidValue {
+                parameter: key.cmdline_key().to_owned(),
+                value,
+            });
+        }
+        Ok(Self { key, value })
+    }
+
+    /// Returns this parameter's key.
+    #[must_use]
+    pub const fn key(&self) -> GuestWorkloadParameterKey {
+        self.key
+    }
+
+    /// Returns this parameter's command-line value.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Renders this parameter as `key=value`.
+    #[must_use]
+    pub fn scenario_parameter(&self) -> String {
+        format!("{}={}", self.key.cmdline_key(), self.value)
+    }
+
+    /// Returns `base_cmdline` with this scalar workload parameter selected.
+    ///
+    /// Existing tokens for the same supported scalar key are replaced so the
+    /// command line carries one stable parameter value.
+    #[must_use]
+    pub fn selected_cmdline(&self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_scalar_parameter(base_cmdline, self)
+    }
+}
+
+/// The immutable channel used for a structured workload config tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadConfigTreeDelivery {
+    /// The config is baked into the read-only root image.
+    ReadOnlyRootfs,
+    /// The config is served by the read-only deterministic 9p sub-node.
+    ReadOnlyNineP,
+}
+
+impl GuestWorkloadConfigTreeDelivery {
+    /// The supported structured workload-config delivery channels.
+    pub const SUPPORTED: [Self; 2] = [Self::ReadOnlyRootfs, Self::ReadOnlyNineP];
+
+    /// Returns the scenario-parameter value for this delivery channel.
+    #[must_use]
+    pub const fn scenario_parameter_value(self) -> &'static str {
+        match self {
+            Self::ReadOnlyRootfs => "readonly_rootfs",
+            Self::ReadOnlyNineP => "readonly_9p",
+        }
+    }
+
+    /// Returns whether this delivery channel is read-only to the guest.
+    #[must_use]
+    pub const fn is_read_only(self) -> bool {
+        true
+    }
+
+    /// Parses a delivery channel from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        match value {
+            "readonly_rootfs" => Some(Self::ReadOnlyRootfs),
+            "readonly_9p" => Some(Self::ReadOnlyNineP),
+            _ => None,
+        }
+    }
+}
+
+/// A content-addressed workload config tree delivered read-only to the guest.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuestWorkloadConfigTreeRef {
+    delivery: GuestWorkloadConfigTreeDelivery,
+    export: ContentAddressedBlobRef,
+    mount: String,
+}
+
+impl GuestWorkloadConfigTreeRef {
+    /// Builds a read-only rootfs-backed workload config-tree reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorkloadConfigTreeInvalidMount`] when `mount` is
+    /// not an absolute portable guest path.
+    pub fn read_only_rootfs(
+        export: ContentAddressedBlobRef,
+        mount: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        Self::new(
+            GuestWorkloadConfigTreeDelivery::ReadOnlyRootfs,
+            export,
+            mount,
+        )
+    }
+
+    /// Builds a read-only 9p-backed workload config-tree reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::WorkloadConfigTreeInvalidMount`] when `mount` is
+    /// not an absolute portable guest path.
+    pub fn read_only_ninep(
+        export: ContentAddressedBlobRef,
+        mount: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        Self::new(
+            GuestWorkloadConfigTreeDelivery::ReadOnlyNineP,
+            export,
+            mount,
+        )
+    }
+
+    fn new(
+        delivery: GuestWorkloadConfigTreeDelivery,
+        export: ContentAddressedBlobRef,
+        mount: impl Into<String>,
+    ) -> Result<Self, EngineError> {
+        let mount = mount.into();
+        if !valid_guest_mount_path(&mount) {
+            return Err(EngineError::WorkloadConfigTreeInvalidMount { mount });
+        }
+        Ok(Self {
+            delivery,
+            export,
+            mount,
+        })
+    }
+
+    /// Returns the read-only delivery channel for this config tree.
+    #[must_use]
+    pub const fn delivery(&self) -> GuestWorkloadConfigTreeDelivery {
+        self.delivery
+    }
+
+    /// Returns the content-addressed exported config tree.
+    #[must_use]
+    pub const fn export(&self) -> ContentAddressedBlobRef {
+        self.export
+    }
+
+    /// Returns the guest mount path for this config tree.
+    #[must_use]
+    pub fn mount(&self) -> &str {
+        &self.mount
+    }
+
+    /// Parses a config-tree reference from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        parse_guest_workload_config_tree_value(value)
+    }
+
+    /// Parses the first valid config-tree reference from a command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_config_tree_parameter(cmdline)
+    }
+
+    /// Returns the stable value used by `wcfg`.
+    #[must_use]
+    pub fn scenario_parameter_value(&self) -> String {
+        format!(
+            "{},export={},mount={}",
+            self.delivery.scenario_parameter_value(),
+            self.export.to_uri(),
+            self.mount
+        )
+    }
+
+    /// Renders this config-tree reference as a workload scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(&self) -> String {
+        format!(
+            "{WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this config-tree reference selected.
+    ///
+    /// Existing `wcfg=...` tokens are replaced so the command line carries one
+    /// stable content-addressed structured workload-config reference.
+    #[must_use]
+    pub fn selected_cmdline(&self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_config_tree(base_cmdline, self)
     }
 }
 
@@ -1534,6 +1875,26 @@ impl World {
         &self.links
     }
 
+    /// Returns the workload config-tree exports declared by world nodes.
+    ///
+    /// The declarations are derived from validated `wcfg=...` scenario
+    /// parameters in node command lines, so the returned config-tree refs are
+    /// part of the world's content-addressed material. Rootfs-backed entries are
+    /// additionally validated to match the node's read-only `root_image`.
+    #[must_use]
+    pub fn workload_config_trees(&self) -> Vec<WorldWorkloadConfigTree> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.guest_workload_config_tree()
+                    .map(|config| WorldWorkloadConfigTree {
+                        node: node.id.clone(),
+                        config,
+                    })
+            })
+            .collect()
+    }
+
     /// Builds a canonical world from node ready-point configuration.
     ///
     /// Nodes are sorted by [`NodeId`] before hashing so authoring order does not
@@ -1554,9 +1915,10 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid. Returns [`EngineError::WorldNodeUnsupportedWorkload`]
-    /// or [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
-    /// `crucible.workload` scenario parameter is invalid.
+    /// fields are invalid. Returns workload scenario-parameter validation errors
+    /// when reserved workload, seed, scalar-parameter, config-tree, load-pattern,
+    /// spike-mode, or time-source command-line config is malformed, duplicated,
+    /// unsupported, or inconsistent with its declared delivery surface.
     pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
         Self::from_nodes_and_links(nodes, Vec::new())
     }
@@ -1581,9 +1943,10 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
-    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
-    /// `crucible.workload` scenario parameter is invalid,
+    /// fields are invalid, workload scenario-parameter validation errors when
+    /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
+    /// spike-mode, or time-source command-line config is malformed, duplicated,
+    /// unsupported, or inconsistent with its declared delivery surface,
     /// [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
@@ -1626,10 +1989,11 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
-    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
-    /// `crucible.workload` scenario parameter is invalid, or a link validation error from
-    /// [`World::validate_topology`].
+    /// fields are invalid, workload scenario-parameter validation errors when
+    /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
+    /// spike-mode, or time-source command-line config is malformed, duplicated,
+    /// unsupported, or inconsistent with its declared delivery surface, or a link
+    /// validation error from [`World::validate_topology`].
     pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
         self.validate_topology()
     }
@@ -1651,9 +2015,10 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
-    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
-    /// `crucible.workload` scenario parameter is invalid,
+    /// fields are invalid, workload scenario-parameter validation errors when
+    /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
+    /// spike-mode, or time-source command-line config is malformed, duplicated,
+    /// unsupported, or inconsistent with its declared delivery surface,
     /// [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
@@ -1839,7 +2204,8 @@ impl World {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed TOML or an id
-    /// mismatch, or a world validation error for invalid topology.
+    /// mismatch, or a world validation error for invalid topology, launch fields,
+    /// ready points, or workload scenario-parameter delivery.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
         validate_no_host_path_image_refs_in_toml(input)?;
         let toml = toml::from_str::<WorldToml>(input).map_err(|source| {
@@ -1861,7 +2227,8 @@ impl World {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed binary input
-    /// or an id mismatch, or a world validation error for invalid topology.
+    /// or an id mismatch, or a world validation error for invalid topology,
+    /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
         let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC)?;
         let world = read_world_binary(&mut reader)?;
@@ -2072,6 +2439,35 @@ impl NodeTemplate {
     #[must_use]
     pub fn guest_workload_seed(mut self, seed: GuestWorkloadSeed) -> Self {
         self.cmdline = seed.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Delivers a scalar workload parameter through black-box scenario config.
+    ///
+    /// The parameter is encoded as a stable `key=value` token in the guest
+    /// command line, which is already part of the content-addressed world and
+    /// scenario identity.
+    #[must_use]
+    pub fn guest_workload_scalar_parameter(
+        mut self,
+        parameter: &GuestWorkloadScalarParameter,
+    ) -> Self {
+        self.cmdline = parameter.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Delivers a structured workload config tree through immutable scenario config.
+    ///
+    /// The tree reference is encoded as `wcfg=...` in the guest command line. A
+    /// rootfs-backed config also selects the same content-addressed blob as the
+    /// node's read-only root image, so the structured config is represented in
+    /// both the delivery surface and the world's canonical material.
+    #[must_use]
+    pub fn guest_workload_config_tree(mut self, config: &GuestWorkloadConfigTreeRef) -> Self {
+        self.cmdline = config.selected_cmdline(&self.cmdline);
+        if config.delivery() == GuestWorkloadConfigTreeDelivery::ReadOnlyRootfs {
+            self.root_image = Some(config.export());
+        }
         self
     }
 
@@ -4413,6 +4809,18 @@ impl WorldNode {
     #[must_use]
     pub fn guest_workload_seed(&self) -> Option<GuestWorkloadSeed> {
         GuestWorkloadSeed::from_cmdline(&self.cmdline)
+    }
+
+    /// Returns the scalar workload parameters selected by this node.
+    #[must_use]
+    pub fn guest_workload_scalar_parameters(&self) -> BTreeMap<GuestWorkloadParameterKey, String> {
+        parse_guest_workload_scalar_parameters(&self.cmdline)
+    }
+
+    /// Returns the structured workload config tree selected by this node, if any.
+    #[must_use]
+    pub fn guest_workload_config_tree(&self) -> Option<GuestWorkloadConfigTreeRef> {
+        GuestWorkloadConfigTreeRef::from_cmdline(&self.cmdline)
     }
 
     /// Returns the in-guest load pattern selected by this node, if any.
@@ -9137,6 +9545,15 @@ pub struct World {
     links: Vec<LinkDef>,
 }
 
+/// A workload config-tree export declared by one world node.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WorldWorkloadConfigTree {
+    /// The VM node that consumes this config tree.
+    pub node: NodeId,
+    /// The immutable content-addressed config tree and delivery channel.
+    pub config: GuestWorkloadConfigTreeRef,
+}
+
 /// Static topology products derived from a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WorldStaticTopology {
@@ -11508,6 +11925,62 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
+    /// A scalar workload parameter carried an invalid command-line value.
+    WorkloadParameterInvalidValue {
+        /// The invalid parameter key.
+        parameter: String,
+        /// The invalid parameter value.
+        value: String,
+    },
+    /// A world node selected more than one value for a scalar workload parameter.
+    WorldNodeDuplicateWorkloadParameter {
+        /// The invalid node.
+        node: NodeId,
+        /// The duplicated workload parameter key.
+        parameter: String,
+    },
+    /// A world node selected an invalid scalar workload-parameter value.
+    WorldNodeInvalidWorkloadParameterValue {
+        /// The invalid node.
+        node: NodeId,
+        /// The invalid workload parameter key.
+        parameter: String,
+        /// The invalid workload parameter value.
+        value: String,
+    },
+    /// A structured workload config tree used a non-portable guest mount path.
+    WorkloadConfigTreeInvalidMount {
+        /// The invalid guest mount path.
+        mount: String,
+    },
+    /// A world node selected an invalid workload config-tree reference.
+    WorldNodeUnsupportedWorkloadConfigTree {
+        /// The invalid node.
+        node: NodeId,
+        /// The unsupported config-tree scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one structured workload config tree.
+    WorldNodeDuplicateWorkloadConfigTree {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A rootfs-backed workload config tree had no matching root image.
+    WorldNodeWorkloadConfigTreeRootfsMissingRootImage {
+        /// The invalid node.
+        node: NodeId,
+        /// The content-addressed config tree that must be the node root image.
+        export: ContentAddressedBlobRef,
+    },
+    /// A rootfs-backed workload config tree did not match the node root image.
+    WorldNodeWorkloadConfigTreeRootfsMismatchedRootImage {
+        /// The invalid node.
+        node: NodeId,
+        /// The content-addressed config tree declared by `wcfg`.
+        export: ContentAddressedBlobRef,
+        /// The node root image actually configured.
+        root_image: ContentAddressedBlobRef,
+    },
     /// A world node selected an unsupported load-pattern value.
     WorldNodeUnsupportedWorkloadPattern {
         /// The invalid node.
@@ -11888,6 +12361,59 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeDuplicateWorkloadSeed { .. } => {
                 f.write_str("world node selects more than one workload seed")
+            }
+            Self::WorkloadParameterInvalidValue {
+                parameter, value, ..
+            } => {
+                write!(
+                    f,
+                    "workload parameter {parameter} value {value} is invalid"
+                )
+            }
+            Self::WorldNodeDuplicateWorkloadParameter { parameter, .. } => {
+                write!(
+                    f,
+                    "world node selects more than one value for workload parameter {parameter}"
+                )
+            }
+            Self::WorldNodeInvalidWorkloadParameterValue {
+                parameter, value, ..
+            } => {
+                write!(
+                    f,
+                    "world node workload parameter {parameter} value {value} is invalid"
+                )
+            }
+            Self::WorkloadConfigTreeInvalidMount { mount } => {
+                write!(f, "workload config tree mount path {mount} is invalid")
+            }
+            Self::WorldNodeUnsupportedWorkloadConfigTree { value, .. } => {
+                write!(
+                    f,
+                    "world node workload config tree value {value} is unsupported"
+                )
+            }
+            Self::WorldNodeDuplicateWorkloadConfigTree { .. } => {
+                f.write_str("world node selects more than one workload config tree")
+            }
+            Self::WorldNodeWorkloadConfigTreeRootfsMissingRootImage { export, .. } => {
+                write!(
+                    f,
+                    "world node rootfs workload config tree {} has no matching root image",
+                    export.to_uri()
+                )
+            }
+            Self::WorldNodeWorkloadConfigTreeRootfsMismatchedRootImage {
+                export,
+                root_image,
+                ..
+            } => {
+                write!(
+                    f,
+                    "world node rootfs workload config tree {} does not match root image {}",
+                    export.to_uri(),
+                    root_image.to_uri()
+                )
             }
             Self::WorldNodeUnsupportedWorkloadPattern { value, .. } => {
                 write!(
@@ -13077,6 +13603,8 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
         }
         validate_world_node_workload(node)?;
         validate_world_node_workload_seed(node)?;
+        validate_world_node_workload_scalar_parameters(node)?;
+        validate_world_node_workload_config_tree(node)?;
         validate_world_node_workload_pattern(node)?;
         validate_world_node_workload_spike_mode(node)?;
         validate_world_node_workload_pattern_consistency(node)?;
@@ -13125,6 +13653,76 @@ fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError
                 node: node.id.clone(),
                 value: value.to_owned(),
             });
+        }
+        selected = true;
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_scalar_parameters(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = BTreeSet::new();
+    for token in node.cmdline.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        let Some(parameter) = GuestWorkloadParameterKey::from_cmdline_key(key) else {
+            continue;
+        };
+        if !selected.insert(parameter) {
+            return Err(EngineError::WorldNodeDuplicateWorkloadParameter {
+                node: node.id.clone(),
+                parameter: parameter.cmdline_key().to_owned(),
+            });
+        }
+        if !valid_guest_workload_parameter_value(value) {
+            return Err(EngineError::WorldNodeInvalidWorkloadParameterValue {
+                node: node.id.clone(),
+                parameter: parameter.cmdline_key().to_owned(),
+                value: value.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_config_tree(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX) else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkloadConfigTree {
+                node: node.id.clone(),
+            });
+        }
+        let Some(config) = GuestWorkloadConfigTreeRef::from_scenario_parameter_value(value) else {
+            return Err(EngineError::WorldNodeUnsupportedWorkloadConfigTree {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        };
+        if config.delivery() == GuestWorkloadConfigTreeDelivery::ReadOnlyRootfs {
+            match node.root_image {
+                Some(root_image) if root_image == config.export() => {}
+                Some(root_image) => {
+                    return Err(
+                        EngineError::WorldNodeWorkloadConfigTreeRootfsMismatchedRootImage {
+                            node: node.id.clone(),
+                            export: config.export(),
+                            root_image,
+                        },
+                    );
+                }
+                None => {
+                    return Err(
+                        EngineError::WorldNodeWorkloadConfigTreeRootfsMissingRootImage {
+                            node: node.id.clone(),
+                            export: config.export(),
+                        },
+                    );
+                }
+            }
         }
         selected = true;
     }
@@ -19633,6 +20231,34 @@ fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSee
     })
 }
 
+fn parse_guest_workload_scalar_parameters(
+    cmdline: &str,
+) -> BTreeMap<GuestWorkloadParameterKey, String> {
+    let mut parameters = BTreeMap::new();
+    for token in cmdline.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        let Some(parameter) = GuestWorkloadParameterKey::from_cmdline_key(key) else {
+            continue;
+        };
+        if valid_guest_workload_parameter_value(value) {
+            parameters
+                .entry(parameter)
+                .or_insert_with(|| value.to_owned());
+        }
+    }
+    parameters
+}
+
+fn parse_guest_workload_config_tree_parameter(cmdline: &str) -> Option<GuestWorkloadConfigTreeRef> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadConfigTreeRef::from_scenario_parameter_value)
+    })
+}
+
 fn parse_guest_workload_pattern_parameter(cmdline: &str) -> Option<GuestWorkloadPattern> {
     cmdline.split_whitespace().find_map(|token| {
         token
@@ -19657,6 +20283,47 @@ fn parse_guest_workload_time_source_parameter(cmdline: &str) -> Option<GuestWork
     })
 }
 
+fn parse_guest_workload_config_tree_value(value: &str) -> Option<GuestWorkloadConfigTreeRef> {
+    let mut parts = value.split(',');
+    let delivery = parts
+        .next()
+        .and_then(GuestWorkloadConfigTreeDelivery::from_scenario_parameter_value)?;
+    let export = parts
+        .next()
+        .and_then(|part| part.strip_prefix("export="))
+        .and_then(|part| ContentAddressedBlobRef::parse("wcfg.export", part).ok())?;
+    let mount = parts.next().and_then(|part| part.strip_prefix("mount="))?;
+    if parts.next().is_some() || !valid_guest_mount_path(mount) {
+        return None;
+    }
+    Some(GuestWorkloadConfigTreeRef {
+        delivery,
+        export,
+        mount: mount.to_owned(),
+    })
+}
+
+fn valid_guest_workload_parameter_value(value: &str) -> bool {
+    !value.is_empty() && !value.chars().any(char::is_whitespace)
+}
+
+fn valid_guest_mount_path(mount: &str) -> bool {
+    if !mount.starts_with('/')
+        || mount.is_empty()
+        || mount.contains(',')
+        || mount.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+    if mount != "/" && mount.ends_with('/') {
+        return false;
+    }
+    mount
+        .split('/')
+        .skip(1)
+        .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
     let selection = workload.scenario_parameter();
     let mut rendered = String::new();
@@ -19676,6 +20343,42 @@ fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> S
     for token in cmdline
         .split_whitespace()
         .filter(|token| !token.starts_with(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn cmdline_with_guest_workload_scalar_parameter(
+    cmdline: &str,
+    parameter: &GuestWorkloadScalarParameter,
+) -> String {
+    let selection = parameter.scenario_parameter();
+    let key = parameter.key().cmdline_key();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| match token.split_once('=') {
+            Some((existing_key, _value)) => existing_key != key,
+            None => true,
+        })
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn cmdline_with_guest_workload_config_tree(
+    cmdline: &str,
+    config: &GuestWorkloadConfigTreeRef,
+) -> String {
+    let selection = config.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX))
     {
         push_cmdline_token(&mut rendered, token);
     }

@@ -1103,6 +1103,11 @@ in rec {
       attrPath = "checks.crucible.phase4.workloadVirtualTimeShapes";
       taskIds = ["T-WL-5"];
     };
+    workloadParameterization = import ./phase4-workload-parameterization.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.workloadParameterization";
+      taskIds = ["T-WL-6"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
