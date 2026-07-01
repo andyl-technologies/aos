@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: options.
 
 use super::*;
+use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
 
 #[test]
 fn evaluates_inline_scalar_literals() {
@@ -107,6 +108,10 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
             .expect("string evaluates");
 
     assert_eq!(outcome.heap().memory_budget(), Some(budget));
+    assert_eq!(
+        outcome.heap().resident_memory_mode(),
+        EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback
+    );
     assert_eq!(outcome.heap().memory_budget_poll_count(), 1);
     let action = outcome
         .heap()
@@ -121,6 +126,10 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         action.decision().permanent_stats(),
         outcome.heap().permanent_arena_stats()
     );
+    match action.decision().resident_source() {
+        EvalHeapResidentMemorySource::ArenaMappedBytes => {}
+        EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
+    }
     assert!(action.requests_tier_b());
 }
 

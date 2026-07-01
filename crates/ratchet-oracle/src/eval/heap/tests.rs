@@ -8,8 +8,8 @@ use crate::heap::{
     GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget,
     HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind, MinorGcDestinationBases,
     MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
-    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge,
-    RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, ProcessResidentMemorySource,
+    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -101,6 +101,10 @@ fn default_heap_uses_tier_a_runtime_allocator() {
         AllocationSafepointState::default()
     );
     assert_eq!(heap.memory_budget(), None);
+    assert_eq!(
+        heap.resident_memory_mode(),
+        EvalHeapResidentMemoryMode::ArenaMappedBytes
+    );
     assert_eq!(heap.memory_budget_poll_count(), 0);
     assert_eq!(heap.last_memory_budget_action(), None);
     assert_eq!(heap.arena_stats(), ArenaStats::default());
@@ -385,6 +389,10 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
         continue_decision.sample(),
         HeapMemorySample::new(resident_bytes, 0, 0)
     );
+    assert_eq!(
+        continue_decision.resident_source(),
+        EvalHeapResidentMemorySource::ArenaMappedBytes
+    );
     assert_eq!(continue_decision.worker_stats(), worker_stats);
     assert_eq!(continue_decision.permanent_stats(), permanent_stats);
     assert_eq!(
@@ -646,6 +654,10 @@ fn configured_heap_memory_budget_polls_successful_allocations() {
     heap.set_memory_budget(budget);
 
     assert_eq!(heap.memory_budget(), Some(budget));
+    assert_eq!(
+        heap.resident_memory_mode(),
+        EvalHeapResidentMemoryMode::ArenaMappedBytes
+    );
     assert_eq!(heap.memory_budget_poll_count(), 0);
     assert_eq!(heap.last_memory_budget_action(), None);
 
@@ -657,6 +669,10 @@ fn configured_heap_memory_budget_polls_successful_allocations() {
         .last_memory_budget_action()
         .expect("configured budget polls after allocation");
     assert_eq!(action.decision().budget(), budget);
+    assert_eq!(
+        action.decision().resident_source(),
+        EvalHeapResidentMemorySource::ArenaMappedBytes
+    );
     assert_eq!(action.decision().worker_stats(), heap.arena_stats());
     assert_eq!(
         action.decision().permanent_stats(),
@@ -695,6 +711,32 @@ fn configured_heap_memory_budget_polls_successful_allocations() {
     ))
     .expect("lambda allocates with budget polling disabled");
     assert_eq!(heap.memory_budget_poll_count(), 2);
+}
+
+#[test]
+fn process_resident_memory_mode_reports_live_or_mapped_source() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+
+    heap.set_memory_budget(budget);
+    heap.set_resident_memory_mode(EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback);
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+
+    assert_eq!(
+        heap.resident_memory_mode(),
+        EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback
+    );
+    let action = heap
+        .last_memory_budget_action()
+        .expect("configured budget polls after allocation");
+    match action.decision().resident_source() {
+        EvalHeapResidentMemorySource::ArenaMappedBytes => {}
+        EvalHeapResidentMemorySource::ProcessResidentSet(source) => {
+            assert_eq!(source, ProcessResidentMemorySource::LinuxProcSelfStatm);
+        }
+    }
+    assert!(action.requests_tier_b());
 }
 
 #[test]

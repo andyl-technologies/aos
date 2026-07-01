@@ -6,7 +6,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::heap::{
     ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
-    MemoryAdviceKind,
+    MemoryAdviceKind, ProcessResidentMemorySample, ProcessResidentMemorySource,
 };
 
 use super::*;
@@ -15,11 +15,12 @@ use super::*;
 ///
 /// `EvalHeap` owns a worker allocation domain and a permanent shared domain, so
 /// this decision records both accounting snapshots alongside the single sample
-/// classified by the shared budget policy.
+/// and resident-byte source classified by the shared budget policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalHeapMemoryBudgetDecision {
     budget: HeapMemoryBudget,
     sample: HeapMemorySample,
+    resident_source: EvalHeapResidentMemorySource,
     worker_stats: ArenaStats,
     permanent_stats: ArenaStats,
     response: HeapMemoryBudgetResponse,
@@ -29,12 +30,14 @@ impl EvalHeapMemoryBudgetDecision {
     const fn new(
         budget: HeapMemoryBudget,
         sample: HeapMemorySample,
+        resident_source: EvalHeapResidentMemorySource,
         worker_stats: ArenaStats,
         permanent_stats: ArenaStats,
     ) -> Self {
         Self {
             budget,
             sample,
+            resident_source,
             worker_stats,
             permanent_stats,
             response: budget.classify(sample),
@@ -49,6 +52,11 @@ impl EvalHeapMemoryBudgetDecision {
     /// Returns the whole-heap memory sample classified by the budget policy.
     pub const fn sample(self) -> HeapMemorySample {
         self.sample
+    }
+
+    /// Returns the source used for the resident byte count in the sample.
+    pub const fn resident_source(self) -> EvalHeapResidentMemorySource {
+        self.resident_source
     }
 
     /// Returns worker-domain arena accounting captured for this decision.
@@ -79,6 +87,25 @@ impl EvalHeapMemoryBudgetDecision {
     pub const fn requests_tier_b(self) -> bool {
         matches!(self.response, HeapMemoryBudgetResponse::InstallTierB { .. })
     }
+}
+
+/// The resident-byte source used for a heap memory-budget decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalHeapResidentMemorySource {
+    /// The decision used worker plus permanent arena mapped bytes.
+    ArenaMappedBytes,
+    /// The decision used a live process resident-set sample.
+    ProcessResidentSet(ProcessResidentMemorySource),
+}
+
+/// The resident-byte sampling mode for automatic heap budget polls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EvalHeapResidentMemoryMode {
+    /// Use worker plus permanent arena mapped bytes.
+    #[default]
+    ArenaMappedBytes,
+    /// Try a live process resident-set sample, falling back to arena mapped bytes.
+    ProcessResidentSetWithArenaFallback,
 }
 
 /// Memory-advice reports for both evaluator heap allocation domains.
@@ -219,6 +246,7 @@ impl EvalHeap {
             allocator: RuntimeAllocator::tier_a_one_shot(),
             permanent_allocator: PermanentSharedAllocator::new(),
             memory_budget: None,
+            resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
             last_memory_budget_action: None,
             records: Vec::new(),
@@ -242,6 +270,7 @@ impl EvalHeap {
             permanent_allocator: PermanentSharedAllocator::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             memory_budget: None,
+            resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
             last_memory_budget_action: None,
             records: Vec::new(),
@@ -273,6 +302,17 @@ impl EvalHeap {
         self.last_memory_budget_action = None;
     }
 
+    /// Returns the resident-memory sampling mode for automatic budget polls.
+    pub const fn resident_memory_mode(&self) -> EvalHeapResidentMemoryMode {
+        self.resident_memory_mode
+    }
+
+    /// Replaces the resident-memory sampling mode for later budget polls.
+    pub fn set_resident_memory_mode(&mut self, mode: EvalHeapResidentMemoryMode) {
+        self.resident_memory_mode = mode;
+        self.last_memory_budget_action = None;
+    }
+
     /// Returns how many successful heap allocations polled the configured budget.
     pub const fn memory_budget_poll_count(&self) -> u64 {
         self.memory_budget_poll_count
@@ -295,10 +335,10 @@ impl EvalHeap {
 
     /// Builds a high-water budget sample for both heap allocation domains.
     ///
-    /// The active runtime does not have live RSS sampling yet, so the sample uses
-    /// the saturating sum of worker and permanent mapped arena bytes as the
-    /// resident-memory proxy. The caller supplies cheap-reclaim estimates for
-    /// dead arena pages and cold hash-consed values.
+    /// This deterministic helper uses the saturating sum of worker and
+    /// permanent mapped arena bytes as the resident-memory proxy. The caller
+    /// supplies cheap-reclaim estimates for dead arena pages and cold
+    /// hash-consed values.
     pub fn memory_budget_sample(
         &self,
         dead_arena_bytes: usize,
@@ -327,7 +367,13 @@ impl EvalHeap {
             dead_arena_bytes,
             cold_hash_consed_bytes,
         );
-        EvalHeapMemoryBudgetDecision::new(budget, sample, worker_stats, permanent_stats)
+        EvalHeapMemoryBudgetDecision::new(
+            budget,
+            sample,
+            EvalHeapResidentMemorySource::ArenaMappedBytes,
+            worker_stats,
+            permanent_stats,
+        )
     }
 
     /// Advises unused bytes at the end of both heap allocation domains.
@@ -356,11 +402,12 @@ impl EvalHeap {
     /// reclaim action.
     ///
     /// The method estimates dead arena bytes from unused worker/permanent arena
-    /// tails that the active advice shim can lower, classifies the whole heap
-    /// with no cold hash-cons reclaim estimate, and applies destructive
-    /// dead-page advice to unused tails when the classifier asks for reclaim. It
-    /// does not spill cold hash-consed values or install Tier B; those states
-    /// are reflected in the returned action for future runtime dispatch.
+    /// tails that the active advice shim can lower, samples resident bytes from
+    /// the configured resident-memory mode, classifies the whole heap with no
+    /// cold hash-cons reclaim estimate, and applies destructive dead-page advice
+    /// to unused tails when the classifier asks for reclaim. It does not spill
+    /// cold hash-consed values or install Tier B; those states are reflected in
+    /// the returned action for future runtime dispatch.
     pub fn respond_to_memory_budget_with_unused_tail_advice(
         &self,
         budget: HeapMemoryBudget,
@@ -368,10 +415,16 @@ impl EvalHeap {
         let worker_stats = self.arena_stats();
         let permanent_stats = self.permanent_arena_stats();
         let dead_arena_bytes = self.supported_unused_tail_advice_bytes();
-        let sample =
-            whole_heap_memory_budget_sample(worker_stats, permanent_stats, dead_arena_bytes, 0);
-        let decision =
-            EvalHeapMemoryBudgetDecision::new(budget, sample, worker_stats, permanent_stats);
+        let (resident_bytes, resident_source) =
+            self.memory_budget_resident_bytes(worker_stats, permanent_stats);
+        let sample = HeapMemorySample::new(resident_bytes, dead_arena_bytes, 0);
+        let decision = EvalHeapMemoryBudgetDecision::new(
+            budget,
+            sample,
+            resident_source,
+            worker_stats,
+            permanent_stats,
+        );
         match decision.response() {
             HeapMemoryBudgetResponse::ContinueTierA { .. } => {
                 EvalHeapMemoryBudgetAction::ContinueTierA { decision }
@@ -394,6 +447,32 @@ impl EvalHeap {
         self.memory_budget_poll_count = self.memory_budget_poll_count.saturating_add(1);
         self.last_memory_budget_action =
             Some(self.respond_to_memory_budget_with_unused_tail_advice(budget));
+    }
+
+    fn memory_budget_resident_bytes(
+        &self,
+        worker_stats: ArenaStats,
+        permanent_stats: ArenaStats,
+    ) -> (usize, EvalHeapResidentMemorySource) {
+        let mapped_bytes = worker_stats
+            .mapped_bytes
+            .saturating_add(permanent_stats.mapped_bytes);
+        match self.resident_memory_mode {
+            EvalHeapResidentMemoryMode::ArenaMappedBytes => {
+                (mapped_bytes, EvalHeapResidentMemorySource::ArenaMappedBytes)
+            }
+            EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback => {
+                match ProcessResidentMemorySample::current() {
+                    Ok(Some(sample)) => (
+                        sample.resident_bytes(),
+                        EvalHeapResidentMemorySource::ProcessResidentSet(sample.source()),
+                    ),
+                    Ok(None) | Err(_) => {
+                        (mapped_bytes, EvalHeapResidentMemorySource::ArenaMappedBytes)
+                    }
+                }
+            }
+        }
     }
 
     /// Installs one GC-stress polling policy for both worker and permanent

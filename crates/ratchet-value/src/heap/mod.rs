@@ -11,6 +11,7 @@ pub mod budget;
 pub mod concurrent_gc;
 pub mod gc;
 pub mod region;
+pub mod resident;
 
 pub use advice::{
     MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold, advise_dead,
@@ -47,4 +48,8 @@ pub use gc::{
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,
     RegionPlan, RegionRuntimeTier, RegionSharing,
+};
+pub use resident::{
+    ProcessResidentMemoryError, ProcessResidentMemorySample, ProcessResidentMemorySource,
+    process_resident_memory_sample, process_resident_memory_sample_from_linux_statm,
 };

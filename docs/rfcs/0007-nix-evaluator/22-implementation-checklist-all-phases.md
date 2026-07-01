@@ -5399,9 +5399,14 @@ and helps the oracle directly.
       `EvalHeap`. Successful typed heap allocations now poll the configured
       budget automatically, dispatch the implemented unused-tail advice response,
       and retain the latest action for tests and later daemon policy; hash-cons
-      hits skip the poll because no heap allocation occurred. Daemon policy, live
-      RSS sampling, CA-store spill, cold hash-consed page eviction, and collector
-      installation remain open under the full memory-management rows.
+      hits skip the poll because no heap allocation occurred. Linux budget polls
+      now sample process RSS from `/proc/self/statm` through
+      `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
+      unsupported or unreadable platforms; tests pin the parser, the fallback
+      mode, and the resident-source metadata carried by budget decisions. Daemon
+      policy, non-Linux live RSS backends, CA-store spill, cold hash-consed page
+      eviction, and collector installation remain open under the full
+      memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

@@ -308,6 +308,9 @@ impl TreeWalk {
         let mut heap = EvalHeap::new();
         if let Some(heap_memory_budget) = options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
+            heap.set_resident_memory_mode(
+                EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback,
+            );
         }
         Self {
             modules: vec![TreeWalkModule {

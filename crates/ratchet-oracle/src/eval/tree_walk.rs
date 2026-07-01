@@ -46,8 +46,8 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    EvalHeap, EvalHeapError, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
+    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};

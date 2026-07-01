@@ -42,6 +42,7 @@ mod thunk;
 
 pub use arena::{
     EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction, EvalHeapMemoryBudgetDecision,
+    EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
 pub use roots::{
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
@@ -180,6 +181,7 @@ pub struct EvalHeap {
     allocator: RuntimeAllocator,
     permanent_allocator: PermanentSharedAllocator,
     memory_budget: Option<HeapMemoryBudget>,
+    resident_memory_mode: EvalHeapResidentMemoryMode,
     memory_budget_poll_count: u64,
     last_memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
     records: Vec<HeapRecord>,
