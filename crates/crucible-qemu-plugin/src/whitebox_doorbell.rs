@@ -183,22 +183,7 @@ impl PluginWhiteboxDoorbell {
         }
         self.validate_payload_range(event.payload_range())?;
 
-        let payload = reader
-            .read_guest_memory(
-                event.vcpu_index(),
-                event.current_icount(),
-                event.payload_range(),
-            )
-            .map_err(|source| WhiteboxDoorbellError::GuestMemoryRead {
-                range: event.payload_range(),
-                source,
-            })?;
-        if payload.len() != event.payload_range().len() {
-            return Err(WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
-                requested_len: event.payload_range().len(),
-                actual_len: payload.len(),
-            });
-        }
+        let payload = read_doorbell_payload(self, reader, event)?;
         let frame = WhiteboxDoorbellFrame::decode(&payload).map_err(|source| {
             WhiteboxDoorbellError::DoorbellFrameDecode {
                 marker_icount: event.current_icount(),
@@ -2198,6 +2183,43 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            256,
+        );
+        let trap_snapshot = coverage_marker_frame("trap-snapshot");
+        let later_guest_memory = coverage_marker_frame("late-mutation");
+        let range = GuestMemoryRange::new(
+            GuestMemoryAddressSpace::Physical,
+            0x1000,
+            trap_snapshot.len(),
+        );
+        let event = WhiteboxDoorbellTrapEvent::from_shared_page(3, 1234, range);
+        let mut reader =
+            MutatingSnapshotGuestMemoryReader::new(trap_snapshot, later_guest_memory.clone());
+        let mut sink = RecordingMarkerSink::default();
+
+        let marker =
+            match handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event) {
+                Ok(marker) => marker,
+                Err(error) => panic!("trap-icount snapshot should decode as a marker: {error}"),
+            };
+
+        assert_eq!(reader.calls, vec![(3, 1234, range)]);
+        assert_eq!(reader.memory_after_read, later_guest_memory);
+        assert_eq!(marker.marker_icount(), 1234);
+        assert_eq!(marker.vcpu_index(), 3);
+        assert_eq!(marker.payload_range(), range);
+        assert!(matches!(
+            marker.decoded_payload(),
+            WhiteboxMarkerPayload::Coverage(body) if body.point == "trap-snapshot"
+        ));
+        assert_eq!(sink.markers, vec![marker]);
+    }
+
+    #[test]
     fn whitebox_doorbell_rejects_malformed_frame_without_marker() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -2434,6 +2456,113 @@ mod tests {
             })
         );
         assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn whitebox_channel_safety_injects_host_to_guest_only_at_delivery_icount() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let input = input_at(88, b"reply");
+        let mut writer = RecordingGuestInputWriter::default();
+
+        assert_eq!(
+            handle_whitebox_guest_input_callback(&doorbell, &capability, &mut writer, 87, &input),
+            Ok(WhiteboxGuestInputOutcome::NotReady {
+                delivery_icount: 88,
+            })
+        );
+        assert!(writer.writes.is_empty());
+
+        assert_eq!(
+            handle_whitebox_guest_input_callback(&doorbell, &capability, &mut writer, 88, &input),
+            Ok(WhiteboxGuestInputOutcome::Delivered(
+                WhiteboxGuestInputInjection {
+                    delivery_icount: 88,
+                    payload_range: input.payload_range(),
+                    payload_len: 5,
+                }
+            ))
+        );
+        assert_eq!(
+            writer.writes,
+            vec![(88, input.payload_range(), b"reply".to_vec())]
+        );
+
+        assert_eq!(
+            handle_whitebox_guest_input_callback(&doorbell, &capability, &mut writer, 89, &input),
+            Err(WhiteboxDoorbellError::InputDeliveryAlreadyPassed {
+                delivery_icount: 88,
+                current_icount: 89,
+            })
+        );
+        assert_eq!(writer.writes.len(), 1);
+    }
+
+    #[test]
+    fn whitebox_channel_safety_ignores_producer_timing_before_delivery_icount() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let input = input_at(88, b"reply");
+
+        let mut eager_writer = RecordingGuestInputWriter::default();
+        for current_icount in [81, 82, 87] {
+            assert_eq!(
+                handle_whitebox_guest_input_callback(
+                    &doorbell,
+                    &capability,
+                    &mut eager_writer,
+                    current_icount,
+                    &input,
+                ),
+                Ok(WhiteboxGuestInputOutcome::NotReady {
+                    delivery_icount: 88,
+                })
+            );
+        }
+        assert!(eager_writer.writes.is_empty());
+        assert_eq!(
+            handle_whitebox_guest_input_callback(
+                &doorbell,
+                &capability,
+                &mut eager_writer,
+                88,
+                &input,
+            ),
+            Ok(WhiteboxGuestInputOutcome::Delivered(
+                WhiteboxGuestInputInjection {
+                    delivery_icount: 88,
+                    payload_range: input.payload_range(),
+                    payload_len: 5,
+                }
+            ))
+        );
+
+        let mut just_in_time_writer = RecordingGuestInputWriter::default();
+        assert_eq!(
+            handle_whitebox_guest_input_callback(
+                &doorbell,
+                &capability,
+                &mut just_in_time_writer,
+                88,
+                &input,
+            ),
+            Ok(WhiteboxGuestInputOutcome::Delivered(
+                WhiteboxGuestInputInjection {
+                    delivery_icount: 88,
+                    payload_range: input.payload_range(),
+                    payload_len: 5,
+                }
+            ))
+        );
+        assert_eq!(eager_writer.writes, just_in_time_writer.writes);
     }
 
     #[test]
@@ -2830,6 +2959,36 @@ mod tests {
         ) -> Result<Vec<u8>, GuestMemoryReadError> {
             self.calls.push((vcpu_index, current_icount, range));
             self.result.clone()
+        }
+    }
+
+    struct MutatingSnapshotGuestMemoryReader {
+        calls: Vec<(u32, u64, GuestMemoryRange)>,
+        memory_after_read: Vec<u8>,
+        later_guest_memory: Vec<u8>,
+    }
+
+    impl MutatingSnapshotGuestMemoryReader {
+        fn new(trap_snapshot: Vec<u8>, later_guest_memory: Vec<u8>) -> Self {
+            Self {
+                calls: Vec::new(),
+                memory_after_read: trap_snapshot,
+                later_guest_memory,
+            }
+        }
+    }
+
+    impl GuestMemoryReader for MutatingSnapshotGuestMemoryReader {
+        fn read_guest_memory(
+            &mut self,
+            vcpu_index: u32,
+            current_icount: u64,
+            range: GuestMemoryRange,
+        ) -> Result<Vec<u8>, GuestMemoryReadError> {
+            self.calls.push((vcpu_index, current_icount, range));
+            let snapshot = self.memory_after_read.clone();
+            self.memory_after_read = self.later_guest_memory.clone();
+            Ok(snapshot)
         }
     }
 
