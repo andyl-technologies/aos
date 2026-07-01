@@ -968,15 +968,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` exposes
       those root-backed rewrites as metadata with the same slot-to-rewrite source
       validation, and `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
-      returns the root and heap-field writeback partitions together. Tests cover
-      successful empty-remembered-set application, retained copied-young
-      remembered-edge publication, heap-field reference-buffer derivation, root
-      writeback derivation, combined mixed root/heap writeback partitioning,
-      copied and promoted nursery-field writeback derivation, root-slot
-      rejection/empty root-only heap-field writebacks, stale field-label
-      rejection, stale same-label field-value rejection, incomplete or mismatched
-      reference-buffer rejection before lower-level mutation, and lower-level
-      stale-buffer error mapping without partial mutation. This is still a
+      returns the root and heap-field writeback partitions together.
+      `EvalHeap::collector_poll_minor_gc_reference_buffer` merges caller-supplied
+      current root values with live heap-field reads into one full
+      reference-slot-order buffer for later caller-owned commit application. Tests
+      cover successful empty-remembered-set application, retained copied-young
+      remembered-edge publication, heap-field and full reference-buffer
+      derivation, root writeback derivation, combined mixed root/heap writeback
+      partitioning, copied and promoted nursery-field writeback derivation,
+      root-slot rejection/empty root-only heap-field writebacks, stale
+      field-label rejection, stale same-label field-value rejection, root-value
+      count/source/value rejection, incomplete or mismatched reference-buffer
+      rejection before lower-level mutation, and lower-level stale-buffer error
+      mapping without partial mutation. This is still a
       caller-buffer/writeback-metadata surface only: it does not allocate
       destination storage, bind byte buffers to live heap objects or headers,
       mutate tree-walk roots/fields in place, mutate remembered source fields, or

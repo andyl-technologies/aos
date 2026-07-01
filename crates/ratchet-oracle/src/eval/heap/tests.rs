@@ -2485,6 +2485,32 @@ fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites()
             .slot(),
         1
     );
+
+    let reference_buffer = heap
+        .collector_poll_minor_gc_reference_buffer(
+            &commit,
+            &[AllocationCollectorPollRootReferenceValue::new(
+                EvalRootSource::ValueStack { slot: 0 },
+                ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Young,
+                },
+            )],
+        )
+        .expect("mixed reference buffer derives");
+    assert_eq!(
+        reference_buffer,
+        vec![
+            ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+        ]
+    );
 }
 
 #[test]
@@ -2859,6 +2885,13 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_root_slots() {
         .commit_plan(&destinations)
         .expect("commit plan builds");
     let child_destination = commit.commit_plan().object_copies().copies()[0].destination();
+    let root_reference_value = AllocationCollectorPollRootReferenceValue::new(
+        EvalRootSource::ValueStack { slot: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    );
 
     let root_writeback_plan = commit
         .root_writeback_plan()
@@ -2883,6 +2916,78 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_rejects_root_slots() {
         ResolvedValueGeneration::Heap {
             address: child_destination,
             generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_reference_buffer(
+            &commit,
+            std::slice::from_ref(&root_reference_value),
+        )
+        .expect("root-only reference buffer derives"),
+        vec![ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }]
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_reference_buffer(&commit, &[])
+            .expect_err("missing root value is rejected"),
+        EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+            expected: 1,
+            actual: 0,
+        }
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_reference_buffer(
+            &commit,
+            &[
+                root_reference_value.clone(),
+                AllocationCollectorPollRootReferenceValue::new(
+                    EvalRootSource::ValueStack { slot: 1 },
+                    ResolvedValueGeneration::Inline,
+                ),
+            ],
+        )
+        .expect_err("extra root value is rejected"),
+        EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+            expected: 1,
+            actual: 2,
+        }
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_reference_buffer(
+            &commit,
+            &[AllocationCollectorPollRootReferenceValue::new(
+                EvalRootSource::ValueStack { slot: 1 },
+                ResolvedValueGeneration::Heap {
+                    address: gc_address(child),
+                    generation: HeapGeneration::Young,
+                },
+            )],
+        )
+        .expect_err("wrong root source is rejected"),
+        EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+            index: 0,
+            expected: EvalRootSource::ValueStack { slot: 0 },
+            actual: EvalRootSource::ValueStack { slot: 1 },
+        }
+    );
+    assert_eq!(
+        heap.collector_poll_minor_gc_reference_buffer(
+            &commit,
+            &[AllocationCollectorPollRootReferenceValue::new(
+                EvalRootSource::ValueStack { slot: 0 },
+                ResolvedValueGeneration::Inline,
+            )],
+        )
+        .expect_err("stale root value is rejected"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 0,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
         }
     );
 

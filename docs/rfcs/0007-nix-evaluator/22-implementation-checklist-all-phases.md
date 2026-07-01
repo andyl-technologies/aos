@@ -5302,13 +5302,17 @@ and helps the oracle directly.
       `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` exposes
       those root-backed rewrites as metadata with the same slot-to-rewrite source
       validation, and `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
-      returns the root and heap-field writeback partitions together. Unit tests
-      cover successful empty-remembered-set application, retained copied-young
-      remembered-edge publication, heap-field reference-buffer derivation, root
-      writeback derivation, combined mixed root/heap writeback partitioning,
-      heap-field writeback derivation for copied and promoted nursery owners,
-      root-slot rejection/empty root-only heap-field writebacks, stale
-      field-label rejection, stale same-label field-value rejection, incomplete
+      returns the root and heap-field writeback partitions together.
+      `EvalHeap::collector_poll_minor_gc_reference_buffer` merges caller-supplied
+      current root values with live heap-field reads into one full
+      reference-slot-order buffer for later caller-owned commit application. Unit
+      tests cover successful empty-remembered-set application, retained
+      copied-young remembered-edge publication, heap-field and full
+      reference-buffer derivation, root writeback derivation, combined mixed
+      root/heap writeback partitioning, heap-field writeback derivation for
+      copied and promoted nursery owners, root-slot rejection/empty root-only
+      heap-field writebacks, stale field-label rejection, stale same-label
+      field-value rejection, root-value count/source/value rejection, incomplete
       or mismatched reference-buffer rejection before lower-level mutation, and
       lower-level stale-buffer error mapping without partial mutation. This
       remains a caller-buffer/writeback-metadata surface only; destination
@@ -5447,10 +5451,12 @@ and helps the oracle directly.
       writeback object plus replacement value that a future mutating field writer
       would store. `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
       returns both partitions together for callers that need complete reference
-      writeback metadata. This connects the roots bridge to commit-buffer
-      preflight/application tests, but still does not provide live tree-walk root
-      writeback, object-field mutation, old/permanent field mutation, or JIT
-      stack-map writeback slots.
+      writeback metadata, and
+      `EvalHeap::collector_poll_minor_gc_reference_buffer` merges external root
+      values with live heap-field reads into one caller-owned reference buffer.
+      This connects the roots bridge to commit-buffer preflight/application tests,
+      but still does not provide live tree-walk root writeback, object-field
+      mutation, old/permanent field mutation, or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

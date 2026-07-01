@@ -39,10 +39,13 @@ mod roots;
 mod thunk;
 
 pub use roots::{
+    AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
+    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollRootReferenceValue,
+    AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
     AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
     EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
     StackMapSlot,
@@ -424,6 +427,29 @@ pub enum EvalHeapError {
         expected: ResolvedValueGeneration,
         /// The caller-supplied reference value.
         actual: ResolvedValueGeneration,
+    },
+    /// A caller-supplied root value list did not contain one value per copied
+    /// root reference slot.
+    #[error(
+        "collector-poll minor-GC root reference value count {actual} does not match copied root slot count {expected}"
+    )]
+    CollectorPollRootReferenceValueLengthMismatch {
+        /// The copied allocation-poll root-slot count.
+        expected: usize,
+        /// The caller-supplied root value count.
+        actual: usize,
+    },
+    /// A caller-supplied root value no longer describes the copied root slot.
+    #[error(
+        "collector-poll minor-GC root reference slot {index} source mismatch: expected {expected:?}, found {actual:?}"
+    )]
+    CollectorPollRootReferenceSourceMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The copied root source captured by the poll plan.
+        expected: EvalRootSource,
+        /// The caller-supplied root source.
+        actual: EvalRootSource,
     },
     /// A live reference buffer cannot be derived for copied root-only slots yet.
     #[error(

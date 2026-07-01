@@ -869,6 +869,13 @@ impl AllocationCollectorPollReferenceSlot {
         &self.source
     }
 
+    fn is_root(&self) -> bool {
+        matches!(
+            self.source,
+            AllocationCollectorPollReferenceSource::Root { .. }
+        )
+    }
+
     /// Returns the reference value copied from the slot.
     pub const fn value(&self) -> ResolvedValueGeneration {
         self.value
@@ -1411,6 +1418,30 @@ impl AllocationCollectorPollReferenceWritebackPlan {
     }
 }
 
+/// A caller-supplied current value for one copied root reference slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollRootReferenceValue {
+    source: EvalRootSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollRootReferenceValue {
+    /// Creates a current root value for the copied root slot named by `source`.
+    pub fn new(source: EvalRootSource, value: ResolvedValueGeneration) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the copied root source this value belongs to.
+    pub const fn source(&self) -> &EvalRootSource {
+        &self.source
+    }
+
+    /// Returns the current value read from the root source.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
+    }
+}
+
 /// One heap-field-backed reference that must be rewritten after minor GC.
 ///
 /// Remembered-source fields are validated and rewritten in the same
@@ -1775,6 +1806,89 @@ impl EvalHeap {
         for (index, slot) in reference_slots.iter().enumerate() {
             references.push(self.current_heap_field_reference_value(index, slot.source())?);
         }
+        Ok(references)
+    }
+
+    /// Derives a complete commit reference buffer in copied slot order.
+    ///
+    /// `root_values` must contain one current root value for every copied root
+    /// reference slot in [`AllocationCollectorPollMinorGcCommitPlan::reference_slots`]
+    /// order, including roots that will not be rewritten by the lower-level
+    /// reference-rewrite plan. Heap-field-backed slots are read and revalidated
+    /// from the current typed heap side table. The returned buffer is caller-owned
+    /// and suitable for the reference slice passed to
+    /// [`AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the caller supplies too few or too many root
+    /// values, if a supplied root source or value no longer matches the copied
+    /// reference slot, if a heap-field slot is stale, or if the reference buffer
+    /// cannot reserve storage.
+    pub fn collector_poll_minor_gc_reference_buffer(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+        root_values: &[AllocationCollectorPollRootReferenceValue],
+    ) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+        let reference_slots = commit_plan.reference_slots();
+        let expected_roots = reference_slots.iter().filter(|slot| slot.is_root()).count();
+        if root_values.len() != expected_roots {
+            return Err(
+                EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+                    expected: expected_roots,
+                    actual: root_values.len(),
+                },
+            );
+        }
+
+        let mut references = Vec::new();
+        references
+            .try_reserve_exact(reference_slots.len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_REFERENCE_BUFFER_TABLE,
+                entries: reference_slots.len(),
+            })?;
+
+        let mut root_index = 0usize;
+        for (index, slot) in reference_slots.iter().enumerate() {
+            let value = match slot.source() {
+                AllocationCollectorPollReferenceSource::Root { source } => {
+                    let Some(root_value) = root_values.get(root_index) else {
+                        return Err(
+                            EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+                                expected: expected_roots,
+                                actual: root_values.len(),
+                            },
+                        );
+                    };
+                    root_index =
+                        root_index
+                            .checked_add(1)
+                            .ok_or(EvalHeapError::RootScanLengthOverflow {
+                                table: MINOR_GC_REFERENCE_BUFFER_TABLE,
+                            })?;
+                    if root_value.source() != source {
+                        return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+                            index,
+                            expected: source.clone(),
+                            actual: root_value.source().clone(),
+                        });
+                    }
+                    root_value.value()
+                }
+                _ => self.current_heap_field_reference_value(index, slot.source())?,
+            };
+            let expected = slot.value();
+            if value != expected {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index,
+                    expected,
+                    actual: value,
+                });
+            }
+            references.push(value);
+        }
+
         Ok(references)
     }
 
