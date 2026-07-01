@@ -5376,10 +5376,15 @@ and helps the oracle directly.
       classifier for memory pressure: below the derived soft limit it keeps Tier
       A, near/above the budget it asks for cold/dead-page reclaim when that can
       bring projected residency under the hard budget, and it asks for Tier B
-      only when known cheap reclaim is insufficient. Tests cover zero-budget
-      rejection, headroom derivation, spill-before-collector ordering, and
-      saturating reclaim accounting. CLI/env/daemon configuration, live RSS
-      sampling, CA-store spill, `madvise`, and collector installation remain
+      only when known cheap reclaim is insufficient.
+      `runtime::alloc::AllocationSafepoint` can now classify that policy from
+      post-allocation mapped arena bytes plus caller-supplied dead-page and
+      cold-hash-cons reclaim estimates, returning an
+      `AllocationMemoryBudgetDecision` for later runtime dispatch. Tests cover
+      zero-budget rejection, headroom derivation, spill-before-collector
+      ordering, saturating reclaim accounting, and safepoint-level
+      Continue/Spill/Tier-B classification. CLI/env/daemon configuration, live
+      RSS sampling, CA-store spill, `madvise`, and collector installation remain
       open under the full memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over

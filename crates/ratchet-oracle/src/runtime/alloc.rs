@@ -7,6 +7,7 @@
 //! behind the same worker `aos_alloc_*` entry-point surface.
 
 use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind};
+use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample};
 
 /// The installed runtime allocation strategy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,6 +459,90 @@ impl AllocationCollectorPoll {
     }
 }
 
+/// A high-water memory-budget decision made at an allocation safepoint.
+///
+/// The current runtime does not have a live RSS sampler, so allocation
+/// safepoints use post-allocation mapped arena bytes as the resident-memory
+/// proxy and accept caller-supplied cheap-reclaim capacity for dead arena pages
+/// and cold hash-consed values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllocationMemoryBudgetDecision {
+    sequence: u64,
+    tier: RuntimeAllocatorTier,
+    entrypoint: RuntimeAllocationEntryPoint,
+    budget: HeapMemoryBudget,
+    sample: HeapMemorySample,
+    stats_after: ArenaStats,
+    response: HeapMemoryBudgetResponse,
+}
+
+impl AllocationMemoryBudgetDecision {
+    const fn new(
+        safepoint: AllocationSafepoint,
+        budget: HeapMemoryBudget,
+        sample: HeapMemorySample,
+    ) -> Self {
+        Self {
+            sequence: safepoint.sequence,
+            tier: safepoint.tier,
+            entrypoint: safepoint.entrypoint,
+            budget,
+            sample,
+            stats_after: safepoint.stats_after,
+            response: budget.classify(sample),
+        }
+    }
+
+    /// Returns the allocation safepoint sequence that produced this decision.
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the allocation tier sampled by this decision.
+    pub const fn tier(self) -> RuntimeAllocatorTier {
+        self.tier
+    }
+
+    /// Returns the allocation entry point sampled by this decision.
+    pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the budget used to classify memory pressure.
+    pub const fn budget(self) -> HeapMemoryBudget {
+        self.budget
+    }
+
+    /// Returns the memory sample classified by the budget policy.
+    pub const fn sample(self) -> HeapMemorySample {
+        self.sample
+    }
+
+    /// Returns allocator accounting captured after the safepoint allocation.
+    pub const fn stats_after(self) -> ArenaStats {
+        self.stats_after
+    }
+
+    /// Returns the high-water budget response selected for this safepoint.
+    pub const fn response(self) -> HeapMemoryBudgetResponse {
+        self.response
+    }
+
+    /// Returns whether the response asks runtime code to do more than continue.
+    pub const fn requires_runtime_action(self) -> bool {
+        match self.response {
+            HeapMemoryBudgetResponse::ContinueTierA { .. } => false,
+            HeapMemoryBudgetResponse::SpillCold { .. }
+            | HeapMemoryBudgetResponse::InstallTierB { .. } => true,
+        }
+    }
+
+    /// Returns whether the response asks the runtime to install Tier B.
+    pub const fn requests_tier_b(self) -> bool {
+        matches!(self.response, HeapMemoryBudgetResponse::InstallTierB { .. })
+    }
+}
+
 /// Metadata captured at one allocation safepoint.
 ///
 /// The current tree-walk runtime records safepoints and GC-stress poll intent
@@ -544,6 +629,35 @@ impl AllocationSafepoint {
         }
     }
 
+    /// Builds the high-water budget sample for this safepoint.
+    ///
+    /// The active runtime does not have live RSS sampling yet, so the sample uses
+    /// post-allocation mapped arena bytes as its resident-memory proxy. The
+    /// caller supplies cheap-reclaim estimates for dead arena pages and cold
+    /// hash-consed values.
+    pub const fn memory_budget_sample(
+        self,
+        dead_arena_bytes: usize,
+        cold_hash_consed_bytes: usize,
+    ) -> HeapMemorySample {
+        HeapMemorySample::new(
+            self.heap_mapped_bytes_after(),
+            dead_arena_bytes,
+            cold_hash_consed_bytes,
+        )
+    }
+
+    /// Classifies this safepoint against a high-water memory budget.
+    pub const fn classify_memory_budget(
+        self,
+        budget: HeapMemoryBudget,
+        dead_arena_bytes: usize,
+        cold_hash_consed_bytes: usize,
+    ) -> AllocationMemoryBudgetDecision {
+        let sample = self.memory_budget_sample(dead_arena_bytes, cold_hash_consed_bytes);
+        AllocationMemoryBudgetDecision::new(self, budget, sample)
+    }
+
     /// Returns heap chunks owned after this allocation completed.
     pub const fn heap_chunks_after(self) -> usize {
         self.stats_after.chunks
@@ -587,6 +701,23 @@ impl AllocationSafepointState {
     pub const fn last_safepoint_collector_poll(self) -> Option<AllocationCollectorPoll> {
         match self.last {
             Some(safepoint) => safepoint.collector_poll(),
+            None => None,
+        }
+    }
+
+    /// Classifies the most recent safepoint against a high-water memory budget.
+    pub const fn last_memory_budget_decision(
+        self,
+        budget: HeapMemoryBudget,
+        dead_arena_bytes: usize,
+        cold_hash_consed_bytes: usize,
+    ) -> Option<AllocationMemoryBudgetDecision> {
+        match self.last {
+            Some(safepoint) => Some(safepoint.classify_memory_budget(
+                budget,
+                dead_arena_bytes,
+                cold_hash_consed_bytes,
+            )),
             None => None,
         }
     }
@@ -959,6 +1090,10 @@ mod tests {
         assert_eq!(state.last_safepoint_collector_poll(), None);
     }
 
+    fn memory_budget(bytes: usize) -> HeapMemoryBudget {
+        HeapMemoryBudget::new(bytes).expect("budget is non-zero")
+    }
+
     #[test]
     fn tier_a_allocator_routes_every_entrypoint() {
         let mut allocator =
@@ -1113,6 +1248,80 @@ mod tests {
         let stats = allocator.stats();
         assert_eq!(stats.chunks, 1);
         assert!(stats.used_bytes > 0);
+    }
+
+    #[test]
+    fn allocation_safepoint_classifies_high_water_memory_budget() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(128).expect("allocator creates");
+        allocator.aos_alloc_thunk().expect("thunk allocates");
+        let state = allocator.allocation_safepoints();
+        let safepoint = state.last().expect("safepoint records");
+        let mapped_bytes = safepoint.heap_mapped_bytes_after();
+        assert!(mapped_bytes > 1);
+
+        let loose_budget = memory_budget(mapped_bytes.checked_mul(2).expect("budget doubles"));
+        let continue_decision = safepoint.classify_memory_budget(loose_budget, 0, 0);
+        assert_eq!(continue_decision.sequence(), safepoint.sequence());
+        assert_eq!(continue_decision.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert_eq!(
+            continue_decision.entrypoint(),
+            RuntimeAllocationEntryPoint::AosAllocThunk
+        );
+        assert_eq!(continue_decision.budget(), loose_budget);
+        assert_eq!(
+            continue_decision.sample(),
+            HeapMemorySample::new(mapped_bytes, 0, 0)
+        );
+        assert_eq!(continue_decision.stats_after(), safepoint.stats_after());
+        assert_eq!(
+            continue_decision.response(),
+            HeapMemoryBudgetResponse::ContinueTierA {
+                headroom_bytes: loose_budget.soft_limit_bytes() - mapped_bytes,
+                projected_resident_bytes: mapped_bytes,
+            }
+        );
+        assert!(!continue_decision.requires_runtime_action());
+        assert!(!continue_decision.requests_tier_b());
+
+        let spill_budget = memory_budget(mapped_bytes);
+        let spill_reclaim_bytes = mapped_bytes - spill_budget.soft_limit_bytes();
+        let spill_decision = state
+            .last_memory_budget_decision(spill_budget, spill_reclaim_bytes, 0)
+            .expect("last safepoint classifies");
+        assert_eq!(
+            spill_decision.sample(),
+            HeapMemorySample::new(mapped_bytes, spill_reclaim_bytes, 0)
+        );
+        assert_eq!(
+            spill_decision.response(),
+            HeapMemoryBudgetResponse::SpillCold {
+                desired_reclaim_bytes: spill_reclaim_bytes,
+                available_reclaim_bytes: spill_reclaim_bytes,
+                projected_resident_bytes: spill_budget.soft_limit_bytes(),
+            }
+        );
+        assert!(spill_decision.requires_runtime_action());
+        assert!(!spill_decision.requests_tier_b());
+
+        let tier_b_budget = memory_budget(mapped_bytes / 2);
+        let tier_b_decision = safepoint.classify_memory_budget(tier_b_budget, 0, 0);
+        assert_eq!(
+            tier_b_decision.response(),
+            HeapMemoryBudgetResponse::InstallTierB {
+                desired_reclaim_bytes: mapped_bytes - tier_b_budget.soft_limit_bytes(),
+                available_reclaim_bytes: 0,
+                projected_resident_bytes: mapped_bytes,
+                over_budget_bytes: mapped_bytes - tier_b_budget.max_resident_bytes(),
+            }
+        );
+        assert!(tier_b_decision.requires_runtime_action());
+        assert!(tier_b_decision.requests_tier_b());
+
+        assert_eq!(
+            AllocationSafepointState::default().last_memory_budget_decision(loose_budget, 0, 0),
+            None
+        );
     }
 
     #[test]
