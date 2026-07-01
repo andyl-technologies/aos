@@ -9,6 +9,16 @@ type IfdRealizerCallback =
 
 const BOUNDARY_MINOR_GC_ROOT_REFERENCE_VALUES_TABLE: &str =
     "boundary minor-GC root reference values";
+const BOUNDARY_MINOR_GC_OBJECT_BYTE_COPY_APPLICATIONS_TABLE: &str =
+    "boundary minor-GC object byte-copy applications";
+const BOUNDARY_MINOR_GC_OBJECT_SOURCE_BYTES_TABLE: &str = "boundary minor-GC object source bytes";
+const BOUNDARY_MINOR_GC_OBJECT_DESTINATION_BYTES_TABLE: &str =
+    "boundary minor-GC object destination bytes";
+const BOUNDARY_MINOR_GC_OBJECT_BYTE_COPY_BUFFERS_TABLE: &str =
+    "boundary minor-GC object byte-copy buffers";
+const BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str =
+    "boundary minor-GC forwarding slot buffer";
+const BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "boundary minor-GC reference buffer";
 const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE: &str = "boundary minor-GC root writeback slots";
 const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC heap-field writeback slots";
@@ -352,6 +362,55 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
             ),
         )
     }
+
+    /// Applies the commit plan to boundary-owned synthetic commit buffers.
+    ///
+    /// The method clones this preflight's forwarding slots and reference buffer,
+    /// clones the remembered set captured by the minor-GC plan, builds
+    /// synthetic source and destination byte buffers from the object byte-copy
+    /// requests, and applies the full lower-level commit plan to those owned
+    /// buffers. The synthetic byte buffers prove commit ordering and validation
+    /// without claiming to bind to live semispace storage or real heap object
+    /// bytes. Live tree-walk roots, heap fields, object headers, remembered-set
+    /// storage, and semispace pages remain untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if any owned buffer cannot be reserved, if
+    /// commit metadata cannot be rebuilt from the paired relocation plan, or if
+    /// any owned buffer fails the lower-level commit validation.
+    pub fn apply_commit_to_owned_buffers(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitApplication, EvalHeapError> {
+        let mut object_byte_copies =
+            boundary_minor_gc_object_byte_copy_applications(&self.object_byte_copy_plan)?;
+        let mut forwarding_slots = clone_boundary_forwarding_slots(&self.forwarding_slots)?;
+        let mut references = clone_boundary_reference_buffer(&self.reference_buffer)?;
+        let mut remembered_set =
+            clone_boundary_remembered_set(self.relocation_plan.minor_gc_plan().remembered_set())?;
+
+        let report = {
+            let commit_plan = self.relocation_plan.commit_plan()?;
+            let mut object_byte_copy_buffers =
+                boundary_minor_gc_object_byte_copy_buffers(&mut object_byte_copies)?;
+            commit_plan.apply_to_buffers_with_report(
+                AllocationCollectorPollMinorGcCommitBuffers::new(
+                    &mut object_byte_copy_buffers,
+                    &mut forwarding_slots,
+                    &mut references,
+                    &mut remembered_set,
+                ),
+            )?
+        };
+
+        Ok(EvalGcStressBoundaryMinorGcCommitApplication::new(
+            report,
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+        ))
+    }
 }
 
 /// Applied caller-owned reference writeback buffers for one boundary preflight.
@@ -389,6 +448,213 @@ impl EvalGcStressBoundaryMinorGcReferenceWritebackApplication {
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         &self.heap_field_writeback_slots
     }
+}
+
+/// Applied boundary-owned object byte buffers for one minor-GC object copy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcObjectByteCopyApplication {
+    request: AllocationCollectorPollObjectByteCopyRequest,
+    source_bytes: Vec<u8>,
+    destination_bytes: Vec<u8>,
+}
+
+impl EvalGcStressBoundaryMinorGcObjectByteCopyApplication {
+    fn new(
+        request: AllocationCollectorPollObjectByteCopyRequest,
+        source_bytes: Vec<u8>,
+        destination_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            request,
+            source_bytes,
+            destination_bytes,
+        }
+    }
+
+    /// Returns the byte-copy request that shaped this owned buffer pair.
+    pub const fn request(&self) -> AllocationCollectorPollObjectByteCopyRequest {
+        self.request
+    }
+
+    /// Returns the synthetic source bytes supplied to the commit application.
+    pub fn source_bytes(&self) -> &[u8] {
+        &self.source_bytes
+    }
+
+    /// Returns the destination bytes after commit application.
+    pub fn destination_bytes(&self) -> &[u8] {
+        &self.destination_bytes
+    }
+}
+
+/// Applied boundary-owned buffers for one minor-GC commit preflight.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitApplication {
+    report: MinorGcCommitReport,
+    object_byte_copies: Vec<EvalGcStressBoundaryMinorGcObjectByteCopyApplication>,
+    forwarding_slots: Vec<MinorGcForwardingSlot>,
+    references: Vec<ResolvedValueGeneration>,
+    remembered_set: RememberedSet,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitApplication {
+    fn new(
+        report: MinorGcCommitReport,
+        object_byte_copies: Vec<EvalGcStressBoundaryMinorGcObjectByteCopyApplication>,
+        forwarding_slots: Vec<MinorGcForwardingSlot>,
+        references: Vec<ResolvedValueGeneration>,
+        remembered_set: RememberedSet,
+    ) -> Self {
+        Self {
+            report,
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+        }
+    }
+
+    /// Returns the lower-level commit counts for the applied owned buffers.
+    pub const fn report(&self) -> MinorGcCommitReport {
+        self.report
+    }
+
+    /// Returns owned object byte buffers after commit application.
+    pub fn object_byte_copies(&self) -> &[EvalGcStressBoundaryMinorGcObjectByteCopyApplication] {
+        &self.object_byte_copies
+    }
+
+    /// Returns forwarding slots after commit application.
+    pub fn forwarding_slots(&self) -> &[MinorGcForwardingSlot] {
+        &self.forwarding_slots
+    }
+
+    /// Returns copied reference values after commit application.
+    pub fn references(&self) -> &[ResolvedValueGeneration] {
+        &self.references
+    }
+
+    /// Returns the remembered set after commit publication into the owned buffer.
+    pub const fn remembered_set(&self) -> &RememberedSet {
+        &self.remembered_set
+    }
+}
+
+fn boundary_minor_gc_object_byte_copy_applications(
+    plan: &AllocationCollectorPollObjectByteCopyPlan,
+) -> Result<Vec<EvalGcStressBoundaryMinorGcObjectByteCopyApplication>, EvalHeapError> {
+    let requests = plan.requests();
+    let mut applications = Vec::new();
+    applications
+        .try_reserve_exact(requests.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_BYTE_COPY_APPLICATIONS_TABLE,
+            entries: requests.len(),
+        })?;
+
+    for (index, request) in requests.iter().copied().enumerate() {
+        applications.push(EvalGcStressBoundaryMinorGcObjectByteCopyApplication::new(
+            request,
+            boundary_minor_gc_object_source_bytes(index, request.size_bytes())?,
+            boundary_minor_gc_object_destination_bytes(request.size_bytes())?,
+        ));
+    }
+
+    Ok(applications)
+}
+
+fn boundary_minor_gc_object_source_bytes(
+    index: usize,
+    size_bytes: usize,
+) -> Result<Vec<u8>, EvalHeapError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(size_bytes)
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_SOURCE_BYTES_TABLE,
+            entries: size_bytes,
+        })?;
+    let seed = index.to_le_bytes()[0].wrapping_mul(31).wrapping_add(0xa5);
+    for offset in 0..size_bytes {
+        bytes.push(seed.wrapping_add(offset.to_le_bytes()[0]));
+    }
+    Ok(bytes)
+}
+
+fn boundary_minor_gc_object_destination_bytes(size_bytes: usize) -> Result<Vec<u8>, EvalHeapError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(size_bytes)
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_DESTINATION_BYTES_TABLE,
+            entries: size_bytes,
+        })?;
+    bytes.resize(size_bytes, 0);
+    Ok(bytes)
+}
+
+fn boundary_minor_gc_object_byte_copy_buffers<'a>(
+    applications: &'a mut [EvalGcStressBoundaryMinorGcObjectByteCopyApplication],
+) -> Result<Vec<MinorGcObjectByteCopyBuffer<'a>>, EvalHeapError> {
+    let mut buffers = Vec::new();
+    buffers.try_reserve_exact(applications.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_OBJECT_BYTE_COPY_BUFFERS_TABLE,
+            entries: applications.len(),
+        }
+    })?;
+
+    for application in applications.iter_mut() {
+        let request = application.request;
+        let source_bytes = application.source_bytes.as_slice();
+        let destination_bytes = application.destination_bytes.as_mut_slice();
+        buffers.push(MinorGcObjectByteCopyBuffer::new(
+            request.source(),
+            request.destination(),
+            source_bytes,
+            destination_bytes,
+        ));
+    }
+
+    Ok(buffers)
+}
+
+fn clone_boundary_forwarding_slots(
+    slots: &[MinorGcForwardingSlot],
+) -> Result<Vec<MinorGcForwardingSlot>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(slots.len())
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+            entries: slots.len(),
+        })?;
+    cloned.extend(slots.iter().copied());
+    Ok(cloned)
+}
+
+fn clone_boundary_reference_buffer(
+    references: &[ResolvedValueGeneration],
+) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+    let mut cloned = Vec::new();
+    cloned.try_reserve_exact(references.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_REFERENCE_BUFFER_TABLE,
+            entries: references.len(),
+        }
+    })?;
+    cloned.extend(references.iter().copied());
+    Ok(cloned)
+}
+
+fn clone_boundary_remembered_set(
+    remembered_set: &RememberedSet,
+) -> Result<RememberedSet, EvalHeapError> {
+    let mut cloned = RememberedSet::with_epoch(remembered_set.epoch());
+    for edge in remembered_set.edges() {
+        cloned.record(*edge)?;
+    }
+    Ok(cloned)
 }
 
 fn clone_boundary_root_writeback_slots(
@@ -495,6 +761,39 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
             ),
         )
     }
+
+    /// Applies complete commit plans for every recorded boundary preflight.
+    ///
+    /// Each allocator tier is committed independently into owned synthetic
+    /// byte buffers plus cloned forwarding, reference, and remembered-set
+    /// buffers. This preserves the worker/permanent-shared partition while
+    /// still avoiding mutation of live tree-walk roots, heap fields, object
+    /// headers, remembered-set storage, or semispace pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if any preflight cannot allocate its owned
+    /// buffers, rebuild commit metadata, or validate those buffers against the
+    /// lower-level commit plan.
+    pub fn apply_commits_to_owned_buffers(
+        &self,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitApplications, EvalHeapError> {
+        let worker = self
+            .worker
+            .as_ref()
+            .map(EvalGcStressBoundaryMinorGcCommitPreflight::apply_commit_to_owned_buffers)
+            .transpose()?;
+        let permanent_shared = self
+            .permanent_shared
+            .as_ref()
+            .map(EvalGcStressBoundaryMinorGcCommitPreflight::apply_commit_to_owned_buffers)
+            .transpose()?;
+
+        Ok(EvalGcStressBoundaryMinorGcCommitApplications::new(
+            worker,
+            permanent_shared,
+        ))
+    }
 }
 
 /// Applied reference writeback buffers derived from boundary preflights.
@@ -540,6 +839,49 @@ impl EvalGcStressBoundaryMinorGcReferenceWritebackApplications {
     pub const fn permanent_shared(
         &self,
     ) -> Option<&EvalGcStressBoundaryMinorGcReferenceWritebackApplication> {
+        self.permanent_shared.as_ref()
+    }
+}
+
+/// Applied owned commit buffers derived from boundary preflights.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitApplications {
+    worker: Option<EvalGcStressBoundaryMinorGcCommitApplication>,
+    permanent_shared: Option<EvalGcStressBoundaryMinorGcCommitApplication>,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitApplications {
+    const fn new(
+        worker: Option<EvalGcStressBoundaryMinorGcCommitApplication>,
+        permanent_shared: Option<EvalGcStressBoundaryMinorGcCommitApplication>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier produced an owned commit application.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced owned commit applications.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's owned commit application, if any.
+    pub const fn worker(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitApplication> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's owned commit application, if any.
+    pub const fn permanent_shared(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitApplication> {
         self.permanent_shared.as_ref()
     }
 }

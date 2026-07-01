@@ -1046,6 +1046,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       only: it does not bind the buffers to live tree-walk roots or heap fields,
       copy object bytes, install forwarding slots, publish remembered sets,
       mutate remembered source fields, or manage semispaces.
+- [x] Current GC-stress boundary commit-buffer application precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflight::apply_commit_to_owned_buffers`
+      rebuilds the paired commit metadata, allocates boundary-owned synthetic
+      object byte buffers from the preflight's copy requests, clones forwarding
+      slots and reference buffers, clones the remembered-set snapshot, and
+      applies the lower-level `AllocationCollectorPollMinorGcCommitPlan` into
+      those owned buffers. The returned per-tier report includes object-copy,
+      promotion, forwarding, reference-rewrite, and remembered-set publication
+      counts plus the mutated owned buffers. The aggregate
+      `EvalGcStressBoundaryMinorGcCommitPreflights::apply_commits_to_owned_buffers`
+      preserves worker/permanent-shared partitioning. Tests cover worker
+      owned-buffer commits, mixed root plus heap-field commit applications,
+      retained remembered-edge publication into the owned remembered-set buffer,
+      permanent-shared empty commits, and empty reports when GC stress is
+      disabled. Remembered-set source buffers are copied fallibly through the
+      existing `RememberedSet::record` path. This is still boundary-owned
+      synthetic-buffer application only: it does not bind raw bytes to live heap
+      objects, install real object-header forwarding slots, mutate live
+      tree-walk roots or heap fields, mutate remembered source fields, publish
+      the evaluator-owned remembered set, or manage semispace storage.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll
@@ -1519,9 +1539,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       slot buffers, copied reference buffers, and root/heap-field reference
       writeback metadata plus caller-owned writeback slot buffers from those
       paired plans. Boundary preflights can now apply those reference writebacks
-      to owned slot-buffer copies and report the rewritten root/heap-field
-      counts. These helpers still do not bind live object-byte buffers, live
-      root/field storage, reserve semispace storage, or commit live mutations.
+      to owned slot-buffer copies and can apply the complete lower-level commit
+      to boundary-owned synthetic byte, forwarding-slot, reference, and
+      remembered-set buffers, reporting the rewritten root/heap-field counts and
+      the lower-level commit counts. These helpers still do not bind live
+      object-byte buffers, live root/field storage, live forwarding slots, or
+      evaluator-owned remembered-set storage; reserve semispace storage; or
+      commit live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1535,8 +1559,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
-      stress-disabled outcomes, boundary owned reference-writeback application,
-      stale same-domain poll rejection, and stack
+      stress-disabled outcomes, boundary owned reference-writeback and synthetic
+      commit-buffer application, stale same-domain poll rejection, and stack
       cleanup after force/primop failures. This still does not infer arbitrary
       Rust locals without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those

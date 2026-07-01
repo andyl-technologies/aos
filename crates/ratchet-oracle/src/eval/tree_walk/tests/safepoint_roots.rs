@@ -1,10 +1,12 @@
 //! Tree-walk safepoint root-set tests.
 
 use super::*;
-use crate::eval::heap::{AllocationCollectorPollScan, EvalRoot, EvalRootSource, InternedRootTable};
+use crate::eval::heap::{
+    AllocationCollectorPollScan, EvalRoot, EvalRootSource, HeapAllocationDomain, InternedRootTable,
+};
 use crate::heap::{
-    GcHeapAddress, HeapGeneration, MinorGcDestinationBases, MinorGcPromotionPolicy, RememberedSet,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
+    MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
@@ -592,6 +594,42 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
             generation: HeapGeneration::Young,
         }
     );
+    let commit_application = preflight
+        .apply_commit_to_owned_buffers()
+        .expect("boundary preflight applies owned commit buffers");
+    let commit_report = commit_application.report();
+    assert_eq!(commit_report.object_copies(), 1);
+    assert_eq!(commit_report.copied_to_nursery(), 1);
+    assert_eq!(commit_report.promoted_to_old(), 0);
+    assert_eq!(commit_report.forwarding_pointers(), 1);
+    assert_eq!(commit_report.reference_rewrites(), 1);
+    assert_eq!(commit_report.remembered_set_source_edges(), 0);
+    assert_eq!(commit_report.remembered_set_published_edges(), 0);
+    let object_copy = &commit_application.object_byte_copies()[0];
+    assert_eq!(
+        object_copy.request(),
+        preflight.object_byte_copy_plan().requests()[0]
+    );
+    assert_eq!(
+        object_copy.source_bytes().len(),
+        object_copy.request().size_bytes()
+    );
+    assert_eq!(object_copy.destination_bytes(), object_copy.source_bytes());
+    assert_eq!(
+        commit_application.forwarding_slots()[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        commit_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }]
+    );
+    assert!(commit_application.remembered_set().is_empty());
 
     let applications = preflights
         .apply_reference_writebacks_to_owned_slots()
@@ -599,6 +637,12 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
     assert_eq!(applications.len(), 1);
     assert_eq!(applications.worker(), Some(&application));
     assert!(applications.permanent_shared().is_none());
+    let commit_applications = preflights
+        .apply_commits_to_owned_buffers()
+        .expect("boundary preflights apply owned commit buffers");
+    assert_eq!(commit_applications.len(), 1);
+    assert_eq!(commit_applications.worker(), Some(&commit_application));
+    assert!(commit_applications.permanent_shared().is_none());
 }
 
 #[test]
@@ -650,6 +694,100 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     ) {
         assert_eq!(slot.value(), writeback.replacement());
     }
+    let commit_application = preflight
+        .apply_commit_to_owned_buffers()
+        .expect("mixed boundary commit buffers apply");
+    assert_eq!(
+        commit_application.report().reference_rewrites(),
+        application.report().writebacks()
+    );
+    assert!(
+        commit_application
+            .object_byte_copies()
+            .iter()
+            .all(|copy| copy.destination_bytes() == copy.source_bytes())
+    );
+    assert!(
+        commit_application
+            .forwarding_slots()
+            .iter()
+            .all(|slot| slot.forwarded_value().is_some())
+    );
+}
+
+#[test]
+fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options.set_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    evaluator
+        .heap
+        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark source thunk permanent");
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    assert_eq!(forced.tag(), ValueTag::Lambda);
+
+    let gc_stress_boundary_scans = evaluator
+        .gc_stress_boundary_scans(forced)
+        .expect("forced value builds boundary scans");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    let outcome = EvalOutcome {
+        value: forced,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        memory_budget_action: None,
+        cheap_memory_advice_report: None,
+        gc_stress_boundary_scans,
+    };
+    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
+
+    let nursery_base = static_gc_address(0x1000_0000);
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("remembered boundary scan builds commit preflight metadata");
+    let application = preflights
+        .worker()
+        .expect("worker preflight records")
+        .apply_commit_to_owned_buffers()
+        .expect("remembered boundary commit buffers apply");
+
+    assert_eq!(application.report().remembered_set_source_edges(), 1);
+    assert_eq!(application.report().remembered_set_published_edges(), 1);
+    assert_eq!(application.remembered_set().len(), 1);
+    assert_eq!(
+        application.remembered_set().edges()[0].source(),
+        gc_address(thunk_value)
+    );
+    assert_eq!(
+        application.remembered_set().edges()[0].target(),
+        nursery_base
+    );
 }
 
 #[test]
@@ -709,6 +847,19 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     assert_eq!(application.report().writebacks(), 0);
     assert!(application.root_writeback_slots().is_empty());
     assert!(application.heap_field_writeback_slots().is_empty());
+    let commit_application = preflight
+        .apply_commit_to_owned_buffers()
+        .expect("empty boundary commit buffers apply");
+    assert_eq!(commit_application.report().object_copies(), 0);
+    assert_eq!(commit_application.report().forwarding_pointers(), 0);
+    assert_eq!(commit_application.report().reference_rewrites(), 0);
+    assert!(commit_application.object_byte_copies().is_empty());
+    assert!(commit_application.forwarding_slots().is_empty());
+    assert_eq!(
+        commit_application.references(),
+        preflight.reference_buffer()
+    );
+    assert!(commit_application.remembered_set().is_empty());
 
     let applications = preflights
         .apply_reference_writebacks_to_owned_slots()
@@ -716,6 +867,15 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     assert_eq!(applications.len(), 1);
     assert!(applications.worker().is_none());
     assert_eq!(applications.permanent_shared(), Some(&application));
+    let commit_applications = preflights
+        .apply_commits_to_owned_buffers()
+        .expect("permanent boundary preflight applies owned commit buffers");
+    assert_eq!(commit_applications.len(), 1);
+    assert!(commit_applications.worker().is_none());
+    assert_eq!(
+        commit_applications.permanent_shared(),
+        Some(&commit_application)
+    );
 }
 
 #[test]
@@ -738,6 +898,10 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         .apply_reference_writebacks_to_owned_slots()
         .expect("empty boundary preflights produce empty writeback application");
     assert!(applications.is_empty());
+    let commit_applications = preflights
+        .apply_commits_to_owned_buffers()
+        .expect("empty boundary preflights produce empty commit application");
+    assert!(commit_applications.is_empty());
 }
 
 #[test]

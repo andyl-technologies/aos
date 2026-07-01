@@ -46,15 +46,16 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    AllocationCollectorPollHeapFieldWritebackSlot, AllocationCollectorPollMinorGcCommitPlan,
-    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
-    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollReferenceSlot,
-    AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
-    AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
-    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, EvalHeap,
-    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
-    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollHeapFieldWritebackSlot, AllocationCollectorPollMinorGcCommitBuffers,
+    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
+    AllocationCollectorPollMinorGcRelocationDestinations,
+    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
+    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
+    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
+    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWritebackSlot,
+    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
+    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
+    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -80,8 +81,9 @@ use crate::compile::{
     IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
 use crate::heap::{
-    GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
+    GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
@@ -326,8 +328,10 @@ pub(crate) use options::{
     search_path_literal_lookup, search_path_suffix, store_path_root,
 };
 pub use outcome::{
-    EvalDerivation, EvalGcStressBoundaryMinorGcCommitPreflight,
-    EvalGcStressBoundaryMinorGcCommitPreflights, EvalGcStressBoundaryMinorGcPlans,
+    EvalDerivation, EvalGcStressBoundaryMinorGcCommitApplication,
+    EvalGcStressBoundaryMinorGcCommitApplications, EvalGcStressBoundaryMinorGcCommitPreflight,
+    EvalGcStressBoundaryMinorGcCommitPreflights,
+    EvalGcStressBoundaryMinorGcObjectByteCopyApplication, EvalGcStressBoundaryMinorGcPlans,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplication,
     EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
     EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryMinorGcRelocationPlan,
