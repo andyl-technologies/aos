@@ -340,8 +340,8 @@ frontier work-list instead of a single user's fork commands.
 ```text
                       genesis (def, [])
                      /        |        \         ← enumerate Decisions at the frontier
-                  d=A        d=B        d=C        (05 §3: delivery tie-break, fault
-                  /            |           \        fires?, RNG draw, override)
+                  d=A        d=B        d=C        (05 §3: fault branch with RNG draw,
+                  /            |           \        RNG draw, override)
                c_A           c_B           c_C    ← step() each to a child (07 §1)
               / \            / \           / \
             ...  ...       ...  ...       ...  ... ← frontier expands; DAG dedups (07 §9)
@@ -352,13 +352,18 @@ frontier work-list instead of a single user's fork commands.
            prune with symmetry + partial-order reduction (07 §9, §22.5.3).
 ```
 
-What is enumerated at a frontier is the closed `Decision` taxonomy of 05 §3: the
-delivery order on a genuine tie ([INV-3] resolves non-ties for free, 05 [EXEC-8]),
-whether a probabilistic fault fires, a decision-RNG draw, and search/fuzz
-*overrides* (`Decision::Override`, 05 §3) that substitute a non-default choice at a
-scheduling point. Because a child reached by two different paths that denote the
-same `(def, schedule)` is one node by content address (07 §1, 05 [EXEC-26]), the
-search work-list is self-deduplicating.
+What is enumerated at a frontier is the closed `Decision` taxonomy of 05 §3, but
+only at unresolved runtime choice points: probabilistic fault branches are
+recorded with their paired decision-RNG draw, standalone decision-RNG draws may
+branch where a stream value is itself the choice, and search/fuzz *overrides*
+(`Decision::Override`, 05 §3) substitute a non-default choice at a scheduling
+point. Delivery order branches exist only for a genuine delivery tie that [INV-3]
+does not already resolve; the current RESOLVE key orders due events by
+`(virtual_time, consumer, producer, sequence)`, so ordinary `Decision::DeliveryOrder`
+records are deterministic replay material rather than search branches. Because a
+child reached by two different paths that denote the same `(def, schedule)` is
+one node by content address (07 §1, 05 [EXEC-26]), the search work-list is
+self-deduplicating.
 
 - **[ADV-14]** State-space search MUST express the schedule space as the
   content-addressed temporal graph (07 §1): nodes are checkpoints (recorded
@@ -370,12 +375,13 @@ search work-list is self-deduplicating.
   `gate:replay-oracle`. *Spec:* §22.5.1; cross-ref 05 §3/§9, 07 §1/§10.
 
 - **[ADV-15]** The `Decision`s enumerated at a frontier MUST be drawn from the
-  closed taxonomy of 05 §3 (delivery order on a genuine tie, probabilistic
-  fault-fires outcome, decision-RNG draw, and `Decision::Override` for a non-default
-  scheduling choice). Search MUST NOT enumerate choices that [INV-3]'s total order
-  already resolves deterministically (no genuine tie ⇒ no branch, 05 [EXEC-8]); it
-  branches only where a *genuine* choice exists. *Gate:* `gate:content-address`.
-  *Spec:* §22.5.1; cross-ref 05 §3, [INV-3].
+  closed taxonomy of 05 §3 (probabilistic fault-fires outcome with its paired
+  decision-RNG draw, standalone decision-RNG draw, `Decision::Override` for a
+  non-default scheduling choice, and delivery order only if [INV-3] leaves a
+  genuine unresolved tie). Search MUST NOT enumerate choices that [INV-3]'s total
+  order already resolves deterministically (no genuine tie ⇒ no branch, 05
+  [EXEC-8]); it branches only where a *genuine* choice exists. *Gate:*
+  `gate:content-address`. *Spec:* §22.5.1; cross-ref 05 §3, [INV-3].
 
 - **[ADV-16]** Each frontier node MUST be realized via `instantiate` (05 §5),
   forking from the cheapest correct cached ancestor (loadvm a fat ancestor, else
@@ -1035,11 +1041,19 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   fat caches without changing runtime identity, and the user-facing `save` path
   persists a fat checkpoint keyed by the configuration id while retaining the
   thin source-of-truth DAG node.
-- [ ] **T-ADV-7** Implement state-space search as systematic frontier expansion of
+- [x] **T-ADV-7** Implement state-space search as systematic frontier expansion of
   the temporal graph (enumerate genuine `Decision`s, step each child, dedup by
   content address), realizing each frontier node via `instantiate` from the
   cheapest cached ancestor under the materialization budget. — satisfies [ADV-14],
   [ADV-15], [ADV-16]; spec §22.5.1; cross-ref 05 §3/§9, 07 §1.
+  Completed by `checks.crucible.phase6.stateSpaceSearch`: graph search now
+  realizes the frontier through the same `resume`/`instantiate` path used by
+  fork and restore, reports that runtime in `TemporalGraphSearch`, enumerates
+  closed-taxonomy choices from the realized runtime frontier, excludes
+  deterministic delivery orders and control-plane decisions from search branching,
+  deduplicates children by content-addressed configuration id, marks
+  already-recorded reruns, keeps cold children thin, and materializes only hot
+  explored children admitted by the materialization budget.
 - [ ] **T-ADV-8** Implement pluggable, deterministic search strategies (BFS, DFS,
   priority, coverage-guided) with content-address-tie-broken ordering; prove the
   explored graph and discovered failures are identical for identical

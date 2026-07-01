@@ -17,9 +17,10 @@ use crucible::{
     MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
     NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind,
     RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, State, SymmetryClassId, SymmetryReductionClasses,
-    TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError, TimerId, TimerRegistry,
-    TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake, instantiate, reduce, step,
+    SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State, SymmetryClassId,
+    SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError,
+    TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake,
+    instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -39,7 +40,7 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
         expected_vectors([
             (
                 "scenario",
-                "df57faa3c2fa71358c131b12c6286800cb0d5a6b57e454bac4560b2f521811f4"
+                "10999eb4e514503faa0ed63c2d63906ea2ab683c54679e151e50d2f3ea9f1f1f"
             ),
             (
                 "schedule",
@@ -47,11 +48,11 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "configuration",
-                "6667e00670552b00007df3e17327c05e31bf74768abe8c1e61b9661f00967635",
+                "fb8a2f5a06ec7ab97784f947fe77a7376c18856e9b9b9e7798a8e5dbf88a5040",
             ),
             (
                 "state",
-                "92242671a1571eba8b3ee2dd1844789ed63232e86ffe7f29a08e5b0c78ac9fcf"
+                "15012a0bf6d785b9ef33c4cfb437164c83e0aa213b4cc8263bd1a09248c702cf"
             ),
             (
                 "world-component",
@@ -361,6 +362,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
         )]),
         active_fault_tags: BTreeMap::new(),
         active_fault_table: crucible::ActiveFaultTable::default(),
+        search_frontier: SearchFrontierChoices::empty(),
     };
     let decision_rng = DecisionRngState {
         positions: BTreeMap::from([(stream, RngStreamPosition::new(11))]),
@@ -1646,15 +1648,21 @@ fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
     ));
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked = bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
-    let mut graph = TemporalGraph::empty()
-        .with_baked_genesis(&scenario, baked)
-        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
     let store = MemoryDagStore::new();
     let saved = step(&genesis, generated_decision(810, 0));
     let fork_decision = generated_decision(811, 0);
     let forked = step(&genesis, fork_decision.clone());
+    let search_extra = generated_decision(814, 0);
     let search_only = generated_decision(812, 0);
+    let mut baked =
+        bake(&world).unwrap_or_else(|error| panic!("bake should produce genesis: {error}"));
+    baked.checkpoint = checkpoint_with_search_frontier_choices(
+        baked.checkpoint,
+        vec![search_extra, search_only.clone()],
+    );
+    let mut graph = TemporalGraph::empty()
+        .with_baked_genesis(&scenario, baked)
+        .unwrap_or_else(|error| panic!("baked genesis should seed temporal graph: {error}"));
 
     let save = graph
         .save(&store, &saved)
@@ -1700,7 +1708,6 @@ fn gate_content_address_temporal_graph_user_operations_share_single_dag() {
     let search = graph
         .search(
             &genesis,
-            vec![generated_decision(810, 0), search_only],
             FrontierReductionPolicy::none(),
             MaterializationPolicy::thin_only(),
             MaterializationTrigger::Cold,
@@ -1840,6 +1847,27 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         Err(error) => panic!("temporary DAG store root should be clearable: {error}"),
     }
     root
+}
+
+fn checkpoint_with_search_frontier_choices(
+    mut checkpoint: Checkpoint,
+    decisions: Vec<Decision>,
+) -> Checkpoint {
+    let state = checkpoint
+        .state
+        .as_ref()
+        .expect("test checkpoint must be materialized");
+    let mut scheduler = state.scheduler.clone();
+    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
+        state.vm_snapshots.clone(),
+        state.device_overlays.clone(),
+        scheduler,
+        state.decision_rng.clone(),
+        state.event_log,
+        state.event_log_segments.clone(),
+    ));
+    checkpoint
 }
 
 fn scenario(material: &str) -> ScenarioDef {

@@ -8642,6 +8642,132 @@ pub struct PendingFrame {
     pub payload: ContentHash,
 }
 
+/// Runtime-derived search choices available at one frontier.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SearchFrontierChoices {
+    choices: Vec<SearchFrontierChoice>,
+    decisions: Vec<Decision>,
+}
+
+impl SearchFrontierChoices {
+    /// Builds an empty frontier-choice set.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            choices: Vec::new(),
+            decisions: Vec::new(),
+        }
+    }
+
+    /// Builds a frontier-choice set from scheduler-derived candidate decisions.
+    ///
+    /// The retained decisions are limited to the closed search taxonomy:
+    /// probabilistic fault outcomes, decision-RNG draws, and search overrides.
+    /// Delivery order is excluded here because RESOLVE already imposes a total
+    /// order over scheduled events.
+    #[must_use]
+    pub fn from_decisions<I>(decisions: I) -> Self
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        Self::from_choices(decisions.into_iter().filter_map(|decision| {
+            if is_genuine_search_frontier_decision(&decision) {
+                Some(SearchFrontierChoice::single(decision))
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// Builds a frontier-choice set from candidate decision sequences.
+    #[must_use]
+    pub fn from_decision_sequences<I, J>(choices: I) -> Self
+    where
+        I: IntoIterator<Item = J>,
+        J: IntoIterator<Item = Decision>,
+    {
+        Self::from_choices(
+            choices
+                .into_iter()
+                .filter_map(SearchFrontierChoice::from_decisions),
+        )
+    }
+
+    /// Returns the retained search frontier decisions.
+    #[must_use]
+    pub fn decisions(&self) -> &[Decision] {
+        &self.decisions
+    }
+
+    /// Returns the retained search frontier choices.
+    #[must_use]
+    pub fn choices(&self) -> &[SearchFrontierChoice] {
+        &self.choices
+    }
+
+    /// Returns whether this frontier has no retained search choices.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.decisions.is_empty()
+    }
+
+    fn from_choices<I>(choices: I) -> Self
+    where
+        I: IntoIterator<Item = SearchFrontierChoice>,
+    {
+        let choices = choices.into_iter().collect::<Vec<_>>();
+        let decisions = choices
+            .iter()
+            .map(|choice| choice.decision.clone())
+            .collect();
+        Self { choices, decisions }
+    }
+}
+
+/// One search choice and the causal decision sequence that realizes it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchFrontierChoice {
+    decision: Decision,
+    decisions: Vec<Decision>,
+}
+
+impl SearchFrontierChoice {
+    fn single(decision: Decision) -> Self {
+        Self {
+            decision: decision.clone(),
+            decisions: vec![decision],
+        }
+    }
+
+    fn from_decisions<I>(decisions: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        let decisions = decisions.into_iter().collect::<Vec<_>>();
+        let decision = match decisions.as_slice() {
+            [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
+            [Decision::RngDraw(_), decision @ Decision::FaultFires(_)] => decision.clone(),
+            _ => return None,
+        };
+        Some(Self {
+            decision,
+            decisions,
+        })
+    }
+
+    /// Returns the primary decision reported for this search choice.
+    #[must_use]
+    pub fn decision(&self) -> &Decision {
+        &self.decision
+    }
+
+    /// Returns the causal decision sequence applied for this search choice.
+    #[must_use]
+    pub fn decisions(&self) -> &[Decision] {
+        &self.decisions
+    }
+}
+
 /// The saved sequence-counter key for one event producer/consumer pair.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventSequenceKey {
@@ -8759,6 +8885,8 @@ pub struct SchedulerState {
     pub active_fault_tags: BTreeMap<FaultTag, MembershipFault>,
     /// Deterministic scheduler lookup table reduced from active faults.
     pub active_fault_table: ActiveFaultTable,
+    /// Search choices captured from the runtime frontier.
+    pub search_frontier: SearchFrontierChoices,
 }
 
 impl SchedulerState {
@@ -8773,6 +8901,7 @@ impl SchedulerState {
             active_faults: BTreeMap::new(),
             active_fault_tags: BTreeMap::new(),
             active_fault_table: ActiveFaultTable::default(),
+            search_frontier: SearchFrontierChoices::empty(),
         }
     }
 
@@ -10154,32 +10283,30 @@ impl TemporalGraph {
         self.replay_checkpoint(configuration, &checkpoint)
     }
 
-    /// Searches one frontier by reducing, deduplicating, and materializing children.
+    /// Searches one frontier by realizing, reducing, deduplicating, and materializing children.
     ///
-    /// Frontier expansion uses [`Self::enumerate_frontier_reduced`]. Every
-    /// explored child is then passed through [`Self::materialize_hot_checkpoint`]
+    /// The frontier is first realized through [`Self::resume`], so expansion uses
+    /// the same [`instantiate`] path as user-facing resume and fork operations.
+    /// Search then enumerates runtime-derived frontier decisions from the closed
+    /// search taxonomy and passes them to [`Self::enumerate_frontier_reduced`].
+    /// Every explored child is passed through [`Self::materialize_hot_checkpoint`]
     /// with the supplied materialization policy and trigger; covered children
     /// are reported but never materialized.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError`] when the frontier cannot be recorded, a child
-    /// checkpoint cannot be represented, or a requested hot materialization
-    /// cannot be replay-oracle validated.
-    pub fn search<I>(
+    /// Returns [`EngineError`] when the frontier cannot be realized or recorded,
+    /// a child checkpoint cannot be represented, or a requested hot
+    /// materialization cannot be replay-oracle validated.
+    pub fn search(
         &mut self,
         frontier: &Configuration,
-        decisions: I,
         reduction_policy: FrontierReductionPolicy,
         materialization_policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
-    ) -> Result<TemporalGraphSearch, EngineError>
-    where
-        I: IntoIterator<Item = Decision>,
-    {
+    ) -> Result<TemporalGraphSearch, EngineError> {
         self.search_inner(
             frontier,
-            decisions,
             reduction_policy,
             materialization_policy,
             trigger,
@@ -10200,21 +10327,16 @@ impl TemporalGraph {
     /// checkpoint differs from its thin reconstruction. Other graph,
     /// materialization, or replay-oracle validation errors are returned as
     /// [`EngineError`].
-    pub fn search_with_replay_oracle_sampling<I>(
+    pub fn search_with_replay_oracle_sampling(
         &mut self,
         frontier: &Configuration,
-        decisions: I,
         reduction_policy: FrontierReductionPolicy,
         materialization_policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
         sampling_config: &SearchReplayOracleSamplingConfig,
-    ) -> Result<TemporalGraphSearch, EngineError>
-    where
-        I: IntoIterator<Item = Decision>,
-    {
+    ) -> Result<TemporalGraphSearch, EngineError> {
         self.search_inner(
             frontier,
-            decisions,
             reduction_policy,
             materialization_policy,
             trigger,
@@ -10222,21 +10344,19 @@ impl TemporalGraph {
         )
     }
 
-    fn search_inner<I>(
+    fn search_inner(
         &mut self,
         frontier: &Configuration,
-        decisions: I,
         reduction_policy: FrontierReductionPolicy,
         materialization_policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
         sampling_config: Option<&SearchReplayOracleSamplingConfig>,
-    ) -> Result<TemporalGraphSearch, EngineError>
-    where
-        I: IntoIterator<Item = Decision>,
-    {
-        let frontier_id = frontier.id();
+    ) -> Result<TemporalGraphSearch, EngineError> {
+        let frontier_runtime = self.resume(frontier)?;
+        let frontier_id = frontier_runtime.configuration;
+        let choices = search_frontier_choices(&frontier_runtime.runtime);
         let frontier_report =
-            self.enumerate_frontier_reduced(frontier, decisions, reduction_policy)?;
+            self.enumerate_frontier_choices_reduced(frontier, choices, reduction_policy)?;
         let mut materialized = Vec::new();
         let mut replay_oracle_sampling =
             sampling_config.map(|_| SearchReplayOracleSamplingReport::default());
@@ -10273,6 +10393,7 @@ impl TemporalGraph {
 
         Ok(TemporalGraphSearch {
             frontier: frontier_id,
+            frontier_runtime,
             frontier_report,
             materialized,
             replay_oracle_sampling,
@@ -10479,6 +10600,70 @@ impl TemporalGraph {
         let mut covered = Vec::new();
         for decision in decisions {
             let configuration = try_step(frontier, decision.clone())?;
+            if let Some(cover) = partial_order_cover(
+                self,
+                frontier,
+                decision.clone(),
+                configuration.clone(),
+                &policy,
+            ) {
+                covered.push(cover);
+                continue;
+            }
+            children.entry(configuration.id()).or_insert(FrontierChild {
+                decision,
+                configuration,
+                already_recorded: false,
+            });
+        }
+
+        let mut explored = Vec::new();
+        let mut symmetry_representatives = BTreeMap::new();
+        for mut child in children.into_values() {
+            if let Some(key) =
+                self.symmetry_reduction_key(&child.configuration, &policy.symmetry_classes)
+            {
+                match symmetry_representatives.entry(key) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(child.configuration.id());
+                    }
+                    Entry::Occupied(entry) => {
+                        covered.push(FrontierCoveredChild {
+                            decision: child.decision,
+                            configuration: child.configuration,
+                            representative: *entry.get(),
+                            reason: FrontierReductionReason::Symmetry,
+                            reduction_key: key.fingerprint,
+                        });
+                        continue;
+                    }
+                }
+            }
+            child.already_recorded = !self.record_checkpoint_closure(&child.configuration)?;
+            explored.push(child);
+        }
+
+        Ok(FrontierReductionReport { explored, covered })
+    }
+
+    fn enumerate_frontier_choices_reduced<I>(
+        &mut self,
+        frontier: &Configuration,
+        choices: I,
+        policy: FrontierReductionPolicy,
+    ) -> Result<FrontierReductionReport, EngineError>
+    where
+        I: IntoIterator<Item = SearchFrontierChoice>,
+    {
+        self.record_checkpoint_closure(frontier)?;
+        let mut children = BTreeMap::new();
+        let mut covered = Vec::new();
+        for choice in choices {
+            let mut configuration = frontier.clone();
+            for decision in choice.decisions() {
+                configuration = try_step(&configuration, decision.clone())?;
+            }
+            let decision = choice.decision().clone();
             if let Some(cover) = partial_order_cover(
                 self,
                 frontier,
@@ -11448,6 +11633,8 @@ pub struct TemporalGraphFork {
 pub struct TemporalGraphSearch {
     /// Frontier configuration expanded by the operation.
     pub frontier: ContentHash,
+    /// Runtime realized for the frontier before decisions were enumerated.
+    pub frontier_runtime: TemporalGraphRuntime,
     /// Reduced frontier enumeration report.
     pub frontier_report: FrontierReductionReport,
     /// Checkpoints returned by hot/cold materialization policy for explored children.
@@ -11645,6 +11832,24 @@ fn count_app_random_decisions(schedule: &Schedule) -> u64 {
         .iter()
         .filter(|decision| matches!(decision, Decision::AppRandom(_)))
         .count() as u64
+}
+
+fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFrontierChoice> {
+    runtime
+        .scheduler
+        .search_frontier
+        .choices()
+        .iter()
+        .cloned()
+        .collect()
+}
+
+fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
+    match decision {
+        Decision::DeliveryOrder(_) => false,
+        Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_) => true,
+        Decision::Preemption(_) | Decision::AppRandom(_) | Decision::ControlFault(_) => false,
+    }
 }
 
 /// Materializes `config` into a live runtime through `graph`.
@@ -12662,6 +12867,9 @@ fn replay_suffix(
     let node_blobs = replayed_node_blobs(&runtime.node_blobs, start, suffix, target);
     let node_icounts = replayed_node_icounts(&runtime.node_icounts, suffix);
     let mut scheduler = runtime.scheduler;
+    if !suffix.is_empty() {
+        scheduler.search_frontier = SearchFrontierChoices::empty();
+    }
     let event_log = runtime.event_log;
     scheduler.apply_decisions(suffix.decisions());
     runtime_for_configuration_with_scheduler(
@@ -13449,6 +13657,25 @@ fn push_symmetry_scheduler_lines(
     tag_lines.sort();
     lines.push(format!("scheduler.active_fault_tags={}", tag_lines.len()));
     lines.extend(tag_lines);
+
+    let mut search_frontier_lines = Vec::new();
+    for (index, choice) in scheduler.search_frontier.choices().iter().enumerate() {
+        let mut entry = Vec::new();
+        entry.push(format!(
+            "choice[{index}].decisions={}",
+            choice.decisions().len()
+        ));
+        for (decision_index, decision) in choice.decisions().iter().enumerate() {
+            push_decision_lines(decision_index, decision, &mut entry);
+        }
+        search_frontier_lines.push(entry.join("\n"));
+    }
+    search_frontier_lines.sort();
+    lines.push(format!(
+        "scheduler.search_frontier.decisions={}",
+        search_frontier_lines.len()
+    ));
+    lines.extend(search_frontier_lines);
     Some(())
 }
 
