@@ -781,8 +781,8 @@ harness, never cut for scope.
       `aos_alloc_*` helper and resolves from the frozen symbol name. Tests keep
       that signature inventory aligned with `ratchet-core`'s allocation helper
       symbols. This remains metadata only; no exported wrappers,
-      allocation-failure/trap convention, Cranelift registration, native startup
-      binding, or compiled-symbol relinking is implemented here.
+      no executable trap-transfer wrappers, Cranelift registration, native
+      startup binding, or compiled-symbol relinking is implemented here.
 - [x] Current allocation-vtable precursor:
       internal `ratchet-oracle::runtime::alloc::RuntimeAllocationVTable`
       dispatch is selected from the installed `RuntimeAllocator` backend and
@@ -791,8 +791,17 @@ harness, never cut for scope.
       table before reaching the current Tier-A `BumpArena` bodies, and tests
       exercise both selected-table metadata and direct crate-internal vtable
       allocation calls. This is internal safe startup dispatch only; it does not
-      export wrappers, define the native failure/trap convention, register
-      Cranelift symbols, install a Tier-B table, or relink compiled artifacts.
+      export wrappers, perform native trap transfer, register Cranelift symbols,
+      install a Tier-B table, or relink compiled artifacts.
+- [x] Current runtime-helper failure-convention precursor:
+      `RuntimeHelperBinding::failure_convention` pins every currently bound
+      allocation and write-barrier helper as `TrapToEvaluator`, meaning the
+      native ABI has no null-pointer or sentinel failure result: helpers return
+      only on success, while allocation or barrier failures must transfer to
+      evaluator trap/error machinery. Tests pin the convention for each
+      `aos_alloc_*` and `aos_gc_write_barrier` symbol. This remains metadata
+      only; exported wrappers, actual trap transfer, `JITBuilder::symbol`
+      registration, and native startup binding remain open.
 
 ### Perfect-hash builtin dispatch
 

@@ -31,6 +31,14 @@ pub const fn runtime_helper_bindings() -> &'static [RuntimeHelperBinding] {
     RUNTIME_HELPER_BINDINGS
 }
 
+/// The native failure behavior promised by a runtime helper binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeHelperFailureConvention {
+    /// The helper returns only on success and transfers failures to evaluator
+    /// trap/error machinery instead of returning a null pointer or sentinel.
+    TrapToEvaluator,
+}
+
 /// A safe ABI binding for one frozen runtime helper symbol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeHelperBinding {
@@ -54,6 +62,15 @@ impl RuntimeHelperBinding {
         match self {
             Self::Allocation(_) => RuntimeHelperRole::Allocation,
             Self::WriteBarrier(_) => RuntimeHelperRole::WriteBarrier,
+        }
+    }
+
+    /// Returns the native failure convention for this helper binding.
+    pub const fn failure_convention(self) -> RuntimeHelperFailureConvention {
+        match self {
+            Self::Allocation(_) | Self::WriteBarrier(_) => {
+                RuntimeHelperFailureConvention::TrapToEvaluator
+            }
         }
     }
 
@@ -134,6 +151,53 @@ mod tests {
         assert_eq!(
             write_barrier_signatures.as_slice(),
             runtime_write_barrier_abi_signatures()
+        );
+    }
+
+    #[test]
+    fn runtime_helper_bindings_pin_failure_conventions() {
+        let helper_conventions = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .map(|binding| (binding.symbol_name(), binding.failure_convention()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            helper_conventions,
+            vec![
+                (
+                    "aos_alloc_attrs",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_cons",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_lambda",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_list",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_raw",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_string",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_alloc_thunk",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+                (
+                    "aos_gc_write_barrier",
+                    RuntimeHelperFailureConvention::TrapToEvaluator,
+                ),
+            ]
         );
     }
 

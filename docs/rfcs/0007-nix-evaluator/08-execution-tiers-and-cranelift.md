@@ -924,7 +924,7 @@ harness, never cut for scope.
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the
       same order as the allocation entry-point inventory, and resolves from the
       frozen symbol name for future registration code. This remains metadata only;
-      exported `unsafe extern "C"` wrappers, allocation-failure/trap behavior,
+      exported `unsafe extern "C"` wrappers, executable trap-transfer behavior,
       `JITBuilder::symbol` registration, native startup binding, and Tier-B body
       swapping remain open.
 - [x] Current allocation-vtable precursor:
@@ -934,8 +934,17 @@ harness, never cut for scope.
       dispatch through that table before reaching the current Tier-A `BumpArena`
       bodies, and tests exercise both selected-table metadata and direct vtable
       allocation calls inside the crate. This is internal safe Rust dispatch
-      only; exported wrappers, Cranelift symbol registration, native failure/trap
-      semantics, and Tier-B vtable installation remain open.
+      only; exported wrappers, Cranelift symbol registration, native trap
+      transfer, and Tier-B vtable installation remain open.
+- [x] Current runtime-helper failure-convention precursor:
+      `RuntimeHelperBinding::failure_convention` pins every currently bound
+      allocation and write-barrier helper as `TrapToEvaluator`, so the native ABI
+      has no null-pointer or sentinel failure result: helpers return only on
+      success, while allocation or barrier failures must transfer to evaluator
+      trap/error machinery. Tests pin the convention for each `aos_alloc_*` and
+      `aos_gc_write_barrier` symbol. This remains metadata only; exported
+      wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
+      native startup binding remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT

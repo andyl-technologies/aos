@@ -5195,7 +5195,7 @@ and helps the oracle directly.
       every helper. The signature descriptor also resolves from a frozen symbol
       name so future registration code can consume the same inventory. This is
       metadata only; actual exported `unsafe extern "C"` functions, the
-      allocation-failure/trap convention, Cranelift symbol registration, native
+      executable trap-transfer wrappers, Cranelift symbol registration, native
       startup binding, every-tier/primop routing, and Tier-B collector body
       swapping remain open.
 - [x] Current allocation-vtable precursor:
@@ -5206,9 +5206,8 @@ and helps the oracle directly.
       `BumpArena` bodies, and tests assert both default/configured allocator
       construction and direct crate-internal vtable calls preserve the expected
       safepoint entry points. This is internal safe Rust startup dispatch only; no
-      unsafe C exports, native failure/trap convention, Cranelift symbol
-      registration, Tier-B table, or compiled-artifact relinking is implemented
-      here.
+      unsafe C exports, native trap transfer, Cranelift symbol registration,
+      Tier-B table, or compiled-artifact relinking is implemented here.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
@@ -5239,15 +5238,19 @@ and helps the oracle directly.
       `ratchet-oracle::runtime::helpers` now combines the allocation and
       write-barrier helper families into one safe `RuntimeHelperBinding`
       inventory. Each binding carries the frozen helper symbol, core helper
-      role, and family-specific ABI signature, and resolves back from symbol
-      text. Tests prove the manifest exactly covers the currently bound
+      role, family-specific ABI signature, and failure convention, and resolves
+      back from symbol text. The current allocation and write-barrier helpers are
+      pinned as `TrapToEvaluator`: they return only on success and future native
+      wrappers must transfer failures to evaluator trap/error machinery instead
+      of returning null pointers or sentinels. Tests prove the manifest exactly
+      covers the currently bound
       `RuntimeHelperRole::Allocation` and `RuntimeHelperRole::WriteBarrier`
-      symbols from `ratchet-core`, preserves the allocation and write-barrier
-      ABI inventories, and rejects helper roles that still have no safe runtime
-      binding. This is a registration manifest only; it does not export
-      `unsafe extern "C"` functions, define the failure/trap convention,
-      register Cranelift symbols, or add bindings for forcing/call/attr/error
-      helpers.
+      symbols from `ratchet-core`, preserves the allocation/write-barrier ABI
+      inventories, pins the helper failure convention by symbol, and rejects
+      helper roles that still have no safe runtime binding. This is a
+      registration manifest only; it does not export `unsafe extern "C"`
+      functions, implement trap transfer, register Cranelift symbols, or add
+      bindings for forcing/call/attr/error helpers.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared
