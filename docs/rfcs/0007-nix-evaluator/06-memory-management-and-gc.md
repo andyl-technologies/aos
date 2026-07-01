@@ -1233,9 +1233,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       backends, actual CA-store spill, and collector installation are not wired
       yet, so the full row above remains open.
       `EvalHeap` also records access epochs for typed heap records and exposes
-      cold hash-consed logical-byte estimates for opt-in budget classification,
-      but the executed unused-tail response still passes zero cold reclaim
-      capacity until CA-store spill/rematerialization exists.
+      cold hash-consed logical-byte estimates for opt-in budget classification.
+      `EvalHeap::plan_memory_budget_with_cheap_memory_advice` now combines
+      those cold estimates with supported unused-tail capacity and runs the
+      cheap advice hooks for telemetry when reclaim is planned, while the
+      automatic allocation-safepoint response still stays conservative and
+      credits zero cold reclaim until CA-store spill/rematerialization exists.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 
@@ -1247,9 +1250,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       that carry structural hashes. The opt-in
       `classify_memory_budget_with_cold_hash_consed_estimate` helper feeds that
       logical-size estimate into the existing budget classifier for future spill
-      planning. This is metadata only: no CA-store handle is installed, no value
-      is evicted or rematerialized, and automatic budget actions still do not
-      credit cold hash-cons reclaim.
+      planning, and the opt-in
+      `plan_memory_budget_with_cheap_memory_advice` helper applies the current
+      non-destructive cold advice hook alongside unused-tail advice as planning
+      telemetry when that classifier asks for reclaim. This is still not
+      CA-store spill and not proof of resident-byte reclaim: no handle is
+      installed, no value is evicted or rematerialized, and automatic budget
+      actions still do not credit cold hash-cons reclaim.
 - [x] `madvise` portability shim (`advise_dead`/`advise_free`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
 - [x] Current `madvise`/arena-tail closure:
       `ratchet-value::heap::advice` provides the advisory memory API over

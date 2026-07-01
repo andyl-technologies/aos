@@ -41,9 +41,9 @@ mod roots;
 mod thunk;
 
 pub use arena::{
-    EvalHeapCheapMemoryAdviceReport, EvalHeapColdHashConsedAdviceReport,
-    EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction, EvalHeapMemoryBudgetDecision,
-    EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan,
+    EvalHeapColdHashConsedAdviceReport, EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction,
+    EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };
 pub use roots::{
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,

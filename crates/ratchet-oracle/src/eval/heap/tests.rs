@@ -1178,6 +1178,90 @@ fn memory_budget_action_does_not_credit_subpage_or_unsupported_tail_advice() {
 }
 
 #[test]
+fn cheap_memory_budget_plan_credits_cold_hash_consed_estimate_as_planning_metadata() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"spillable".to_vec()))
+        .expect("permanent string allocates");
+    let cold_hash_consed_bytes = record_layout_size(&heap, string);
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = heap
+        .arena_stats()
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    assert_eq!(heap.supported_unused_tail_advice_bytes(), 0);
+    assert!(resident_bytes > cold_hash_consed_bytes);
+    let budget =
+        HeapMemoryBudget::new(resident_bytes - cold_hash_consed_bytes).expect("budget is non-zero");
+
+    let unused_tail_action = heap.respond_to_memory_budget_with_unused_tail_advice(budget);
+    assert!(matches!(
+        unused_tail_action,
+        EvalHeapMemoryBudgetAction::RequestTierB { .. }
+    ));
+    assert_eq!(
+        unused_tail_action
+            .decision()
+            .sample()
+            .cold_hash_consed_bytes(),
+        0
+    );
+
+    let plan = heap.plan_memory_budget_with_cheap_memory_advice(budget, 0);
+
+    let decision = plan.decision();
+    let report = plan
+        .cheap_advice_report()
+        .expect("cold-aware spill planning records cheap advice telemetry");
+    assert_eq!(
+        decision.sample(),
+        HeapMemorySample::new(resident_bytes, 0, cold_hash_consed_bytes)
+    );
+    assert_eq!(
+        decision.response(),
+        HeapMemoryBudgetResponse::SpillCold {
+            desired_reclaim_bytes: resident_bytes - budget.soft_limit_bytes(),
+            available_reclaim_bytes: cold_hash_consed_bytes,
+            projected_resident_bytes: budget.max_resident_bytes(),
+        }
+    );
+    assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
+    assert_eq!(report.cold_hash_consed().records(), 1);
+    assert_eq!(
+        report.cold_hash_consed().requested_bytes(),
+        cold_hash_consed_bytes
+    );
+}
+
+#[test]
+fn cheap_memory_budget_plan_continues_without_advice_below_soft_limit() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    heap.alloc_string(NixString::from_bytes(b"cold-but-under-budget".to_vec()))
+        .expect("permanent string allocates");
+    let resident_bytes = heap
+        .arena_stats()
+        .mapped_bytes
+        .checked_add(heap.permanent_arena_stats().mapped_bytes)
+        .expect("resident bytes fit");
+    let budget = HeapMemoryBudget::new(resident_bytes.checked_mul(2).expect("budget doubles"))
+        .expect("budget is non-zero");
+
+    let plan = heap.plan_memory_budget_with_cheap_memory_advice(budget, 0);
+
+    assert_eq!(plan.cheap_advice_report(), None);
+    assert_eq!(
+        plan.decision().response(),
+        HeapMemoryBudgetResponse::ContinueTierA {
+            headroom_bytes: budget.soft_limit_bytes() - resident_bytes,
+            projected_resident_bytes: resident_bytes,
+        }
+    );
+}
+
+#[test]
 fn memory_budget_action_advises_unused_tails_for_spill_response() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
     heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
@@ -1321,6 +1405,14 @@ fn configured_heap_memory_budget_polls_successful_allocations() {
         .alloc_string(NixString::from_bytes(b"shared".to_vec()))
         .expect("first permanent string allocates");
     assert_eq!(heap.memory_budget_poll_count(), 2);
+    let string_action = heap
+        .last_memory_budget_action()
+        .expect("permanent allocation records an action");
+    assert_eq!(
+        string_action.decision().sample().cold_hash_consed_bytes(),
+        0,
+        "automatic polling stays on the conservative unused-tail response"
+    );
     let second = heap
         .alloc_string(NixString::from_bytes(b"shared".to_vec()))
         .expect("matching permanent string reuses the consed value");

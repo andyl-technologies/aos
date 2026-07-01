@@ -5569,16 +5569,22 @@ and helps the oracle directly.
       installation remain open under the full
       memory-management rows. `EvalHeap` also tracks per-record access epochs
       and exposes cold hash-consed logical-byte estimates for opt-in budget
-      classification, but the executed unused-tail budget action still credits
-      zero cold reclaim until CA-store spill/rematerialization exists.
+      classification. `plan_memory_budget_with_cheap_memory_advice` now
+      combines those cold estimates with supported unused-tail capacity and runs
+      the cheap advice hooks for telemetry when reclaim is planned, while the
+      automatic allocation-safepoint budget action still credits zero cold
+      reclaim until CA-store spill/rematerialization exists.
 - [x] Current cold hash-cons candidate precursor:
       `EvalHeap` stamps typed heap records with a monotonic access epoch at
       allocation time, refreshes successful reusable-value reads and hash-cons
       hits, and estimates cold permanent-shared hash-consed bytes by idle epoch
       threshold. The opt-in budget classifier can carry that estimate as
-      `cold_hash_consed_bytes` for future spill planning. This is metadata only:
-      it installs no CA-store handle, evicts or rematerializes no value, and
-      does not change automatic memory-budget actions.
+      `cold_hash_consed_bytes` for future spill planning, and the opt-in
+      cold-aware plan applies the current non-destructive cold advice hook
+      alongside unused-tail advice as telemetry when that classifier asks for
+      reclaim. This is still not CA-store spill and not proof of resident-byte
+      reclaim: it installs no CA-store handle, evicts or rematerializes no
+      value, and does not change automatic memory-budget actions.
 - [x] Current `madvise` portability closure:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

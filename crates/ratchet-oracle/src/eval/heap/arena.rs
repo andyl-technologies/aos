@@ -367,6 +367,46 @@ impl EvalHeapMemoryBudgetAction {
     }
 }
 
+/// An opt-in cold-aware budget plan with optional advice telemetry.
+///
+/// This is planning metadata for the future spill path. Its decision can credit
+/// logical cold hash-consed bytes as future CA-store spill capacity, while the
+/// optional advice report records only the cheap operating-system hints the
+/// oracle can issue today. Cold hash-consed advice is non-destructive; it does
+/// not prove that resident bytes were reclaimed, install CA-store spill handles,
+/// or rematerialize values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapCheapMemoryBudgetPlan {
+    decision: EvalHeapMemoryBudgetDecision,
+    cheap_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
+}
+
+impl EvalHeapCheapMemoryBudgetPlan {
+    const fn new(
+        decision: EvalHeapMemoryBudgetDecision,
+        cheap_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
+    ) -> Self {
+        Self {
+            decision,
+            cheap_advice_report,
+        }
+    }
+
+    /// Returns the cold-aware budget decision selected by the planner.
+    pub const fn decision(self) -> EvalHeapMemoryBudgetDecision {
+        self.decision
+    }
+
+    /// Returns the cheap memory-advice report produced while planning.
+    ///
+    /// A report means the classifier asked for reclaim and the oracle issued
+    /// the cheap hints it can issue today. It is not evidence that cold
+    /// hash-consed bytes were actually spilled or reclaimed.
+    pub const fn cheap_advice_report(self) -> Option<EvalHeapCheapMemoryAdviceReport> {
+        self.cheap_advice_report
+    }
+}
+
 impl EvalHeap {
     /// Creates an empty evaluator heap.
     ///
@@ -791,6 +831,49 @@ impl EvalHeap {
                 EvalHeapMemoryBudgetAction::RequestTierB { decision, report }
             }
         }
+    }
+
+    /// Builds a cold-aware budget plan and applies cheap advice for telemetry.
+    ///
+    /// The method estimates dead arena bytes from supported unused
+    /// worker/permanent arena tails, estimates cold permanent hash-consed bytes
+    /// with `min_idle_epochs`, samples resident bytes from the configured
+    /// resident-memory mode, and classifies the whole heap with both reclaim
+    /// estimates. When the classifier asks for reclaim, it records the cheap
+    /// hints available today by applying destructive dead-page advice to unused
+    /// tails and non-destructive cold advice to selected hash-consed records.
+    /// The returned decision can model future CA-store spill capacity, but the
+    /// advice report is not proof that cold hash-consed resident bytes were
+    /// reclaimed. Automatic allocation-safepoint polling keeps using
+    /// [`Self::respond_to_memory_budget_with_unused_tail_advice`].
+    pub fn plan_memory_budget_with_cheap_memory_advice(
+        &self,
+        budget: HeapMemoryBudget,
+        min_idle_epochs: u64,
+    ) -> EvalHeapCheapMemoryBudgetPlan {
+        let worker_stats = self.arena_stats();
+        let permanent_stats = self.permanent_arena_stats();
+        let dead_arena_bytes = self.supported_unused_tail_advice_bytes();
+        let cold_hash_consed_bytes = self.cold_hash_consed_bytes(min_idle_epochs);
+        let (resident_bytes, resident_source) =
+            self.memory_budget_resident_bytes(worker_stats, permanent_stats);
+        let sample =
+            HeapMemorySample::new(resident_bytes, dead_arena_bytes, cold_hash_consed_bytes);
+        let decision = EvalHeapMemoryBudgetDecision::new(
+            budget,
+            sample,
+            resident_source,
+            worker_stats,
+            permanent_stats,
+        );
+        let cheap_advice_report = match decision.response() {
+            HeapMemoryBudgetResponse::ContinueTierA { .. } => None,
+            HeapMemoryBudgetResponse::SpillCold { .. }
+            | HeapMemoryBudgetResponse::InstallTierB { .. } => {
+                Some(self.advise_cheap_memory_ranges(min_idle_epochs))
+            }
+        };
+        EvalHeapCheapMemoryBudgetPlan::new(decision, cheap_advice_report)
     }
 
     fn poll_memory_budget_after_allocation(&mut self) {
