@@ -317,8 +317,9 @@ pub(crate) use options::{
     search_path_literal_lookup, search_path_suffix, store_path_root,
 };
 pub use outcome::{
-    EvalDerivation, EvalOutcome, EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput,
-    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
+    EvalDerivation, EvalGcStressBoundaryScans, EvalOutcome, EvalStats, EvalTraceKind,
+    EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError,
+    IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{

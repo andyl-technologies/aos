@@ -32,7 +32,7 @@ pub enum TreeWalkSafepointRootError {
 }
 
 /// A tree-walk safepoint heap-scan failure.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TreeWalkSafepointScanError {
     /// Root-set construction failed before the heap scan began.
     #[error("failed to build tree-walk safepoint roots: {0}")]
@@ -205,6 +205,23 @@ impl TreeWalk {
         self.validate_current_collector_poll(poll)?;
         let roots = self.safepoint_root_set_with_value_stack(value_stack)?;
         Ok(self.heap.scan_collector_poll_roots(poll, &roots)?)
+    }
+
+    pub(in crate::eval::tree_walk) fn gc_stress_boundary_scans(
+        &self,
+        value: Value,
+    ) -> Result<EvalGcStressBoundaryScans, TreeWalkSafepointScanError> {
+        let worker = match self.current_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot)
+        {
+            Some(poll) => Some(self.safepoint_collector_poll_scan(poll, [value])?),
+            None => None,
+        };
+        let permanent_shared =
+            match self.current_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared) {
+                Some(poll) => Some(self.safepoint_collector_poll_scan(poll, [value])?),
+                None => None,
+            };
+        Ok(EvalGcStressBoundaryScans::new(worker, permanent_shared))
     }
 
     fn validate_current_collector_poll(

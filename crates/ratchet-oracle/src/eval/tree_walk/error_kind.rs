@@ -843,6 +843,14 @@ pub enum TreeWalkErrorKind {
         /// The heap-backed value tag.
         tag: ValueTag,
     },
+    /// A GC-stress boundary scan failed after evaluation produced a value.
+    #[error("GC-stress boundary scan failed at node {id:?}: {source}")]
+    GcStressBoundaryScan {
+        /// The root node id whose completed evaluation triggered the scan.
+        id: IrId,
+        /// The lower-level safepoint scanner failure.
+        source: TreeWalkSafepointScanError,
+    },
     /// The evaluator heap failed while allocating or retrieving a value.
     #[error("heap operation failed at node {id:?}: {source}")]
     Heap {

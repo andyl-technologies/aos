@@ -1034,8 +1034,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       polling, permanent-shared allocation polling, and heap-level installation
       across both domains. `TreeWalkOptions` can now install the same policy on
       the evaluator heap, with tests covering worker-domain lambda allocation and
-      permanent-shared string allocation poll reasons. This is poll intent only:
-      tree-walk does not invoke a collector or perform GC-stress collection yet.
+      permanent-shared string allocation poll reasons. Owned tree-walk outcomes
+      now record `EvalGcStressBoundaryScans` at successful evaluation
+      boundaries: current worker and permanent-shared polls are scanned
+      separately with the produced value published as transient value-stack slot
+      0, and tests cover lambda, string, and attr-path outcomes under
+      every-safepoint stress. This is still poll/scan intent only: tree-walk
+      does not invoke a collector at each allocation safepoint or perform
+      mutating GC-stress collection yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
@@ -1459,15 +1465,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::safepoint_collector_poll_scan` pairs a supplied, still-current
       `AllocationCollectorPoll` with those tree-walk roots through the
       existing heap collector-poll scan, rejecting polls that are no longer
-      current for their allocator tier. `force_value`, lambda-call,
+      current for their allocator tier. `TreeWalk::gc_stress_boundary_scans`
+      runs that scan at successful owned evaluation boundaries for each current
+      worker and permanent-shared poll, exposing
+      `EvalGcStressBoundaryScans` on `EvalOutcome` with the produced WHNF value
+      rooted as transient value-stack slot 0. `force_value`, lambda-call,
       import-evaluation, nested numeric-equality, and saturated first-class
       primop paths push/pop active or suspended safepoint frames on success and
       error paths, and
       `eval::tree_walk::tests::safepoint_roots` pins root labels,
       suspended-env roots, import-cache roots, interned-root inclusion, heap
       scanning, GC-stress collector-poll scanning with an explicit transient
-      root, minor-GC planning from that scan, and stack cleanup after
-      force/primop failures. This still does not infer arbitrary Rust locals
+      root, minor-GC planning from that scan, boundary scans for worker,
+      permanent-shared, and attr-path outcomes, stale same-domain poll
+      rejection, and stack cleanup after force/primop failures. This still does
+      not infer arbitrary Rust locals
       without explicit value-stack registration, bind mutable relocation slots,
       invoke a collector, or consume JIT stack maps; those remain open in the
       full precise-root row above.
@@ -1569,11 +1581,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       under that policy. Tree-walk can now convert a supplied GC-stress
       `AllocationCollectorPoll` plus explicit transient value-stack roots into
       an `AllocationCollectorPollScan` when the poll is still current for its
-      allocator tier, and tests prove a worker-domain lambda allocation can be
-      planned as a minor-GC survivor from that scan while a stale same-domain
-      poll is rejected. This is still a poll/scan/planning hook only: no
-      collector is invoked at those polls and no root/field relocation is
-      applied.
+      allocator tier. Successful owned evaluations also surface
+      `EvalGcStressBoundaryScans`, which run that current-poll scan for worker
+      and permanent-shared domains with the returned WHNF value as transient
+      value-stack slot 0. Tests prove a worker-domain lambda allocation can be
+      planned as a minor-GC survivor from an explicit scan, a permanent-shared
+      string result is rooted in the boundary scan, attr-path owned evaluation
+      records a boundary scan, and a stale same-domain poll is rejected. This is
+      still a poll/scan/planning hook only: no collector is invoked at those
+      polls and no root/field relocation is applied.
 
 ## References
 

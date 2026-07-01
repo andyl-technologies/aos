@@ -7,6 +7,50 @@ use crate::compile::EffectClass;
 type IfdRealizerCallback =
     dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
 
+/// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryScans {
+    worker: Option<AllocationCollectorPollScan>,
+    permanent_shared: Option<AllocationCollectorPollScan>,
+}
+
+impl EvalGcStressBoundaryScans {
+    /// Creates a boundary-scan report from per-allocator scan results.
+    pub(crate) const fn new(
+        worker: Option<AllocationCollectorPollScan>,
+        permanent_shared: Option<AllocationCollectorPollScan>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier requested a GC-stress boundary scan.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced a boundary scan.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's GC-stress boundary scan, if any.
+    pub const fn worker(&self) -> Option<&AllocationCollectorPollScan> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's GC-stress boundary scan, if any.
+    pub const fn permanent_shared(&self) -> Option<&AllocationCollectorPollScan> {
+        self.permanent_shared.as_ref()
+    }
+}
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 pub struct EvalOutcome {
     pub(crate) value: Value,
@@ -21,6 +65,7 @@ pub struct EvalOutcome {
     pub(crate) derivations: Vec<EvalDerivation>,
     pub(crate) thunk_resolve_remembered_set: RememberedSet,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
+    pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
 }
 
 impl std::fmt::Debug for EvalOutcome {
@@ -47,6 +92,7 @@ impl std::fmt::Debug for EvalOutcome {
                 "cheap_memory_advice_report",
                 &self.cheap_memory_advice_report,
             )
+            .field("gc_stress_boundary_scans", &self.gc_stress_boundary_scans)
             .finish()
     }
 }
@@ -113,6 +159,11 @@ impl EvalOutcome {
     /// Returns the post-evaluation cheap heap advice report, if one was requested.
     pub const fn cheap_memory_advice_report(&self) -> Option<EvalHeapCheapMemoryAdviceReport> {
         self.cheap_memory_advice_report
+    }
+
+    /// Returns GC-stress scans recorded at the successful evaluation boundary.
+    pub const fn gc_stress_boundary_scans(&self) -> &EvalGcStressBoundaryScans {
+        &self.gc_stress_boundary_scans
     }
 
     /// Consumes the outcome into its value and heap.

@@ -5374,9 +5374,13 @@ and helps the oracle directly.
       allocation and permanent-shared string allocation poll reasons. Building
       the live root set for an observed poll that is still current for its
       allocator tier is now possible through the tree-walk collector-poll scan
-      bridge below. Invoking the collector, actually collecting at every
-      safepoint, exported C ABI symbols, and write-barrier dispatch integration
-      remain open.
+      bridge below. Owned tree-walk outcomes now record
+      `EvalGcStressBoundaryScans` at successful evaluation boundaries: current
+      worker and permanent-shared polls are scanned separately with the produced
+      value published as transient value-stack slot 0, and tests cover lambda,
+      string, and attr-path outcomes under every-safepoint stress. Invoking the
+      collector, actually collecting at every safepoint, exported C ABI symbols,
+      and write-barrier dispatch integration remain open.
 - [x] Current permanent-shared allocation closure:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
@@ -5649,14 +5653,19 @@ and helps the oracle directly.
       `TreeWalk::safepoint_collector_poll_scan` pairs a supplied, still-current
       `AllocationCollectorPoll` with those tree-walk roots through the existing
       heap collector-poll scan, rejecting polls that are no longer current for
-      their allocator tier. The force, lambda-call, import-evaluation, nested
+      their allocator tier. `TreeWalk::gc_stress_boundary_scans` runs that scan
+      at successful owned evaluation boundaries for each current worker and
+      permanent-shared poll, exposing `EvalGcStressBoundaryScans` on
+      `EvalOutcome` with the produced WHNF value rooted as transient value-stack
+      slot 0. The force, lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
       register/unregister active or suspended safepoint frames, including
       error-path cleanup, and
       `eval::tree_walk::tests::safepoint_roots` covers stable root labels,
       suspended-env roots, import-cache roots, interned-root inclusion, heap
       scanning, GC-stress collector-poll scanning with an explicit transient
-      root, minor-GC planning from that scan, stale same-domain poll rejection,
+      root, minor-GC planning from that scan, boundary scans for worker,
+      permanent-shared, and attr-path outcomes, stale same-domain poll rejection,
       recursive-force cleanup, and first-class primop error cleanup. This
       remains a root-set precursor: arbitrary Rust locals still need explicit
       value-stack registration, and mutable relocation slots, collector

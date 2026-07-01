@@ -117,6 +117,7 @@ fn eval_whnf_owned_with_evaluator(
     }
     let value = evaluator.eval_root()?;
     let derivations = evaluator.derivation_snapshot()?;
+    let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
@@ -137,6 +138,7 @@ fn eval_whnf_owned_with_evaluator(
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         cheap_memory_advice_report,
+        gc_stress_boundary_scans,
     })
 }
 
@@ -230,6 +232,7 @@ fn eval_instantiation_attr_path_with_evaluator(
     let span = evaluator.node(ir.root)?.span;
     let value = evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)?;
     let derivations = evaluator.derivation_snapshot()?;
+    let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
@@ -250,6 +253,23 @@ fn eval_instantiation_attr_path_with_evaluator(
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         cheap_memory_advice_report,
+        gc_stress_boundary_scans,
+    })
+}
+
+fn gc_stress_boundary_scans_for_outcome(
+    evaluator: &TreeWalk,
+    value: Value,
+) -> Result<EvalGcStressBoundaryScans, TreeWalkError> {
+    let id = evaluator.current_ir().root;
+    evaluator.gc_stress_boundary_scans(value).map_err(|source| {
+        let span = evaluator
+            .current_ir()
+            .arena
+            .node(id)
+            .map(|node| node.span)
+            .unwrap_or_default();
+        TreeWalkError::new(TreeWalkErrorKind::GcStressBoundaryScan { id, source }, span)
     })
 }
 

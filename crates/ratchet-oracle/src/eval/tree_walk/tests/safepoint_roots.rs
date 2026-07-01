@@ -1,7 +1,7 @@
 //! Tree-walk safepoint root-set tests.
 
 use super::*;
-use crate::eval::heap::{EvalRoot, EvalRootSource, InternedRootTable};
+use crate::eval::heap::{AllocationCollectorPollScan, EvalRoot, EvalRootSource, InternedRootTable};
 use crate::heap::{GcHeapAddress, MinorGcPromotionPolicy, RememberedSet};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
@@ -9,6 +9,20 @@ use std::path::PathBuf;
 fn gc_address(value: Value) -> GcHeapAddress {
     GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
         .expect("heap pointer is a valid GC address")
+}
+
+fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
+    scan.scan().roots().iter().any(|scan_root| {
+        scan_root.source() == &EvalRootSource::ValueStack { slot: 0 }
+            && scan_root.value().raw_eq(value)
+    })
+}
+
+fn scan_has_object(scan: &AllocationCollectorPollScan, value: Value) -> bool {
+    scan.scan()
+        .objects()
+        .iter()
+        .any(|object| object.value().raw_eq(value))
 }
 
 #[test]
@@ -210,6 +224,81 @@ fn gc_stress_poll_scan_uses_tree_walk_roots_plus_transient_value_stack() {
         .expect("collector poll minor-GC planning accepts the tree-walk scan");
     assert_eq!(minor_gc.plan().survivors().len(), 1);
     assert_eq!(minor_gc.plan().survivors()[0].address(), gc_address(root));
+}
+
+#[test]
+fn owned_eval_records_gc_stress_boundary_worker_scan() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+
+    let scans = outcome.gc_stress_boundary_scans();
+    assert_eq!(scans.len(), 1);
+    assert!(scans.permanent_shared().is_none());
+    let worker_scan = scans.worker().expect("worker boundary scan records");
+    assert_eq!(
+        worker_scan.poll().entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert_eq!(
+        worker_scan.poll().reason(),
+        AllocationGcPollReason::GcStressEverySafepoint
+    );
+    assert!(scan_has_value_stack_root(worker_scan, outcome.value()));
+    assert!(scan_has_object(worker_scan, outcome.value()));
+}
+
+#[test]
+fn owned_eval_records_gc_stress_boundary_permanent_scan() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+
+    let scans = outcome.gc_stress_boundary_scans();
+    assert_eq!(scans.len(), 1);
+    assert!(scans.worker().is_none());
+    let permanent_scan = scans
+        .permanent_shared()
+        .expect("permanent boundary scan records");
+    assert_eq!(
+        permanent_scan.poll().entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_scan.poll().reason(),
+        AllocationGcPollReason::GcStressEverySafepoint
+    );
+    assert!(scan_has_value_stack_root(permanent_scan, outcome.value()));
+    assert!(scan_has_object(permanent_scan, outcome.value()));
+}
+
+#[test]
+fn attr_path_eval_records_gc_stress_boundary_scan() {
+    let ir = lower("{ f = x: x; }");
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &[b"f".to_vec()],
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+        None,
+    )
+    .expect("attr-path selection evaluates under GC stress");
+
+    let worker_scan = outcome
+        .gc_stress_boundary_scans()
+        .worker()
+        .expect("selected lambda boundary scan records");
+    assert_eq!(
+        worker_scan.poll().entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert!(scan_has_value_stack_root(worker_scan, outcome.value()));
+    assert!(scan_has_object(worker_scan, outcome.value()));
 }
 
 #[test]
