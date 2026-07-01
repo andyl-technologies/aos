@@ -1577,6 +1577,28 @@ in rec {
         phase6.minimization
       ];
     };
+    failureNormalization = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.failureNormalization";
+      gate = import ./phase6-failure-normalization.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.failureNormalization";
+        taskIds = ["T-TRI-2"];
+        dependencies = [
+          phase6.failureSignature.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.minimization.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.failureSignature
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.minimization
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {

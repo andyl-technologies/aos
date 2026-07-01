@@ -158,8 +158,8 @@
         needle = "validate_divergence_point";
       }
       {
-        label = "causal slice deferred";
-        needle = "causal_slice_hash: None";
+        label = "causal slice field";
+        needle = "causal_slice_hash: Option<ContentHash>";
       }
       {
         label = "no discovery path in signature docs";
@@ -252,8 +252,8 @@
         needle = "divergence point must exist in the recorded causal projection";
       }
       {
-        label = "causal slice deferred test";
-        needle = "causal_slice_hash.is_none()";
+        label = "causal slice computed test";
+        needle = "causal_slice_hash.is_some()";
       }
       {
         label = "recorded property constructor exercised";

@@ -70,6 +70,7 @@ const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.
 const COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN: &str = "crucible.coverage-guided-fuzz.sample.v1";
 const COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN: &str = "crucible.coverage-guided-fuzz.override.v1";
 const FAILURE_SIGNATURE_DOMAIN: &str = "crucible.failure-signature.v1";
+const FAILURE_CAUSAL_SLICE_DOMAIN: &str = "crucible.failure-signature.causal-slice.v1";
 const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
 const ADAPTIVE_CONFIRMED_FAILURE_REWARD: u64 = 1_000_000_000_000;
@@ -4057,6 +4058,77 @@ impl FailureCoverageClass {
     }
 }
 
+/// Signature-normalization inputs applied before failure fields are keyed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FailureSignatureNormalization {
+    /// Interchangeable-node classes used to canonicalize `faulting_node`.
+    pub symmetry_classes: SymmetryReductionClasses,
+}
+
+impl FailureSignatureNormalization {
+    /// Builds identity normalization with no interchangeable-node classes.
+    #[must_use]
+    pub fn identity() -> Self {
+        Self::default()
+    }
+
+    /// Replaces the interchangeable-node classes used by triage canonicalization.
+    #[must_use]
+    pub fn with_symmetry_classes(mut self, classes: SymmetryReductionClasses) -> Self {
+        self.symmetry_classes = classes;
+        self
+    }
+}
+
+/// Deterministic triage-side node relabeling for failure signatures.
+///
+/// Nodes not assigned to an interchangeable class keep their scenario identity.
+/// Nodes inside a class are rewritten to a stable class-local label so symmetric
+/// findings on different replicas share one `faulting_node` key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureSymmetryCanonicalizer {
+    coverage_fingerprint: ContentHash,
+    classes: SymmetryReductionClasses,
+}
+
+impl FailureSymmetryCanonicalizer {
+    /// Builds a canonicalizer bound to the recorded coverage fingerprint.
+    #[must_use]
+    pub fn new(coverage_fingerprint: ContentHash, classes: SymmetryReductionClasses) -> Self {
+        Self {
+            coverage_fingerprint,
+            classes,
+        }
+    }
+
+    /// Builds an identity canonicalizer for records without symmetry classes.
+    #[must_use]
+    pub fn identity(coverage_fingerprint: ContentHash) -> Self {
+        Self::new(coverage_fingerprint, SymmetryReductionClasses::new())
+    }
+
+    /// Returns the recorded coverage fingerprint this canonicalizer is bound to.
+    #[must_use]
+    pub fn coverage_fingerprint(&self) -> ContentHash {
+        self.coverage_fingerprint
+    }
+
+    /// Returns `node` under the triage symmetry-canonical relabeling.
+    #[must_use]
+    pub fn canonical_node(&self, node: &NodeId) -> NodeId {
+        match self.classes.classes.get(node) {
+            Some(class) => NodeId {
+                name: format!("symmetry-class:{}:{}", class.name.len(), class.name),
+            },
+            None => node.clone(),
+        }
+    }
+
+    fn canonical_node_option(&self, node: &Option<NodeId>) -> Option<NodeId> {
+        node.as_ref().map(|node| self.canonical_node(node))
+    }
+}
+
 /// Checked event-log evidence for failure-signature construction.
 ///
 /// This value binds the supplied event-log entries to the
@@ -4168,6 +4240,18 @@ impl FailureRecordedEventLog {
     pub fn coverage_class(&self) -> FailureCoverageClass {
         FailureCoverageClass::from_coverage_fingerprint(self.coverage_fingerprint)
     }
+
+    /// Builds a symmetry canonicalizer bound to this log's recorded coverage.
+    #[must_use]
+    pub fn symmetry_canonicalizer(
+        &self,
+        normalization: &FailureSignatureNormalization,
+    ) -> FailureSymmetryCanonicalizer {
+        FailureSymmetryCanonicalizer::new(
+            self.coverage_fingerprint,
+            normalization.symmetry_classes.clone(),
+        )
+    }
 }
 
 /// Property-violation source record consumed by failure-signature construction.
@@ -4200,9 +4284,20 @@ impl FailurePropertyViolationRecord {
     /// Returns the first failing point read from the violation record.
     #[must_use]
     pub fn first_failing_point(&self) -> FailureFirstFailingPoint {
+        self.first_failing_point_with(&FailureSymmetryCanonicalizer::identity(
+            ContentHash::default(),
+        ))
+    }
+
+    /// Returns the first failing point under the supplied symmetry relabeling.
+    #[must_use]
+    pub fn first_failing_point_with(
+        &self,
+        canonicalizer: &FailureSymmetryCanonicalizer,
+    ) -> FailureFirstFailingPoint {
         FailureFirstFailingPoint {
             event_kind: self.violation.event_kind.clone(),
-            faulting_node: self.violation.node.clone(),
+            faulting_node: canonicalizer.canonical_node_option(&self.violation.node),
         }
     }
 }
@@ -4225,9 +4320,14 @@ pub struct FailureSignature {
     pub coverage_class: FailureCoverageClass,
     /// Optional digest of the cone-scoped recorded causal slice.
     ///
-    /// This remains `None` until the T-TRI-2 cone normalization defines the
-    /// stable slice boundary.
+    /// This is computed over the causal prefix ending at the first failing
+    /// causal entry, not the whole causal subsequence.
     pub causal_slice_hash: Option<ContentHash>,
+    /// Absolute instruction count of the first failing point for reports only.
+    ///
+    /// The current default content hash excludes this value so minimization that
+    /// shifts absolute icounts does not perturb the clustering key.
+    pub at_icount_report_only: Option<Icount>,
 }
 
 impl FailureSignature {
@@ -4243,15 +4343,45 @@ impl FailureSignature {
         event_log: &FailureRecordedEventLog,
         violation: &FailurePropertyViolationRecord,
     ) -> Result<Self, EngineError> {
+        Self::from_recorded_property_violation_with_normalization(
+            finding,
+            event_log,
+            violation,
+            &FailureSignatureNormalization::identity(),
+        )
+    }
+
+    /// Builds a property-violation signature with explicit normalizations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] if the finding's embedded
+    /// artifact, event-log metadata, violation record, replay metadata, and
+    /// configuration id disagree before any signature field is read. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the violation site
+    /// is absent from the checked recorded causal projection.
+    pub fn from_recorded_property_violation_with_normalization(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        violation: &FailurePropertyViolationRecord,
+        normalization: &FailureSignatureNormalization,
+    ) -> Result<Self, EngineError> {
         validate_finding_static_identity(finding)?;
         validate_recorded_event_log_for_finding(finding, event_log)?;
         validate_violation_for_finding(finding, violation)?;
+        let canonicalizer = event_log.symmetry_canonicalizer(normalization);
+        let causal_index = validate_violation_point(event_log, violation)?;
         Ok(Self {
             failure_kind: FailureKind::PropertyViolation,
             property: Some(violation.property_key()),
-            first_failing_point: violation.first_failing_point(),
+            first_failing_point: violation.first_failing_point_with(&canonicalizer),
             coverage_class: event_log.coverage_class(),
-            causal_slice_hash: None,
+            causal_slice_hash: Some(causal_slice_hash_through_index(
+                event_log,
+                causal_index,
+                &canonicalizer,
+            )),
+            at_icount_report_only: violation.violation.at_icount,
         })
     }
 
@@ -4269,18 +4399,48 @@ impl FailureSignature {
         event_log: &FailureRecordedEventLog,
         divergence: &EventLogCausalDivergencePoint,
     ) -> Result<Self, EngineError> {
+        Self::from_recorded_divergence_with_normalization(
+            finding,
+            event_log,
+            divergence,
+            &FailureSignatureNormalization::identity(),
+        )
+    }
+
+    /// Builds a divergence signature with explicit normalizations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] if the finding's embedded
+    /// artifact, event-log metadata, replay metadata, and configuration id
+    /// disagree before any signature field is read. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when `divergence` is not
+    /// present in the checked recorded causal projection.
+    pub fn from_recorded_divergence_with_normalization(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        divergence: &EventLogCausalDivergencePoint,
+        normalization: &FailureSignatureNormalization,
+    ) -> Result<Self, EngineError> {
         validate_finding_static_identity(finding)?;
         validate_recorded_event_log_for_finding(finding, event_log)?;
-        validate_divergence_point(event_log, divergence)?;
+        let canonicalizer = event_log.symmetry_canonicalizer(normalization);
+        let causal_index = validate_divergence_point(event_log, divergence)?;
         Ok(Self {
             failure_kind: FailureKind::Divergence,
             property: None,
             first_failing_point: FailureFirstFailingPoint {
                 event_kind: divergence.kind.clone(),
-                faulting_node: divergence_faulting_node(divergence),
+                faulting_node: canonicalizer
+                    .canonical_node_option(&divergence_faulting_node(divergence)),
             },
             coverage_class: event_log.coverage_class(),
-            causal_slice_hash: None,
+            causal_slice_hash: Some(causal_slice_hash_through_index(
+                event_log,
+                causal_index,
+                &canonicalizer,
+            )),
+            at_icount_report_only: Some(divergence.at.icount),
         })
     }
 
@@ -4294,6 +4454,12 @@ impl FailureSignature {
     #[must_use]
     pub fn canonical_material(&self) -> String {
         failure_signature_material(self)
+    }
+
+    /// Returns canonical report material including non-key detail fields.
+    #[must_use]
+    pub fn report_material(&self) -> String {
+        failure_signature_report_material(self)
     }
 }
 
@@ -4370,14 +4536,21 @@ fn validate_violation_for_finding(
 fn validate_divergence_point(
     event_log: &FailureRecordedEventLog,
     divergence: &EventLogCausalDivergencePoint,
-) -> Result<(), EngineError> {
-    if event_log.projection.entries().iter().any(|entry| {
-        entry.raw_index == divergence.raw_index
-            && &entry.entry.time().icount == &divergence.at
-            && entry.entry.source() == &divergence.source
-            && entry.entry.event_payload().kind() == divergence.kind
-    }) {
-        return Ok(());
+) -> Result<usize, EngineError> {
+    if let Some((index, _)) =
+        event_log
+            .projection
+            .entries()
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| {
+                entry.raw_index == divergence.raw_index
+                    && &entry.entry.time().icount == &divergence.at
+                    && entry.entry.source() == &divergence.source
+                    && entry.entry.event_payload().kind() == divergence.kind
+            })
+    {
+        return Ok(index);
     }
 
     Err(EngineError::UnifiedOperationEvidenceMismatch {
@@ -4386,12 +4559,270 @@ fn validate_divergence_point(
     })
 }
 
+fn validate_violation_point(
+    event_log: &FailureRecordedEventLog,
+    violation: &FailurePropertyViolationRecord,
+) -> Result<usize, EngineError> {
+    if let Some((index, _)) =
+        event_log
+            .projection
+            .entries()
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| {
+                entry.entry.event_payload().kind() == violation.violation.event_kind
+                    && entry.entry.at() == violation.violation.at_virtual_time
+                    && violation_event_icount_matches(entry.entry.time(), &violation.violation)
+                    && violation_event_assertion_matches(
+                        entry.entry.event_payload(),
+                        &violation.violation,
+                    )
+            })
+    {
+        return Ok(index);
+    }
+
+    Err(EngineError::UnifiedOperationEvidenceMismatch {
+        operation: "failure-signature.violation",
+        reason: "violation record is absent from recorded causal projection",
+    })
+}
+
+fn violation_event_icount_matches(
+    at: &crate::scheduler::EventLogTime,
+    violation: &HostAssertionViolation,
+) -> bool {
+    violation
+        .at_icount
+        .map(|icount| at.icount.icount == icount)
+        .unwrap_or(true)
+}
+
+fn violation_event_assertion_matches(
+    payload: &crate::scheduler::EventPayload,
+    violation: &HostAssertionViolation,
+) -> bool {
+    matches!(
+        payload.attribute("id"),
+        Some(EventAttributeValue::String(value)) if value == &violation.assertion.name
+    )
+}
+
 fn divergence_faulting_node(divergence: &EventLogCausalDivergencePoint) -> Option<NodeId> {
     match &divergence.source {
         EventSource::Node { node } | EventSource::Guest { node } => Some(node.clone()),
         EventSource::Scenario { .. } | EventSource::Engine | EventSource::Command { .. } => {
             divergence.at.node.clone()
         }
+    }
+}
+
+fn causal_slice_hash_through_index(
+    event_log: &FailureRecordedEventLog,
+    causal_index: usize,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> ContentHash {
+    let cone = failure_causal_cone_entries(event_log, causal_index, canonicalizer);
+    let mut lines = vec![format!("causal_cone_events={}", cone.len())];
+    for (cone_index, entry) in cone.into_iter().enumerate() {
+        push_failure_causal_slice_entry_lines(cone_index, entry, canonicalizer, &mut lines);
+    }
+    ContentHash::from_canonical_material(FAILURE_CAUSAL_SLICE_DOMAIN, &lines.join("\n"))
+}
+
+fn failure_causal_cone_entries<'a>(
+    event_log: &'a FailureRecordedEventLog,
+    causal_index: usize,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> Vec<&'a crate::scheduler::EventLogCausalProjectionEntry> {
+    let anchor = &event_log.projection.entries()[causal_index];
+    let anchor_keys = failure_causal_dependency_keys(anchor, canonicalizer);
+    event_log
+        .projection
+        .entries()
+        .iter()
+        .take(causal_index + 1)
+        .filter(|entry| {
+            entry.raw_index == anchor.raw_index
+                || failure_causal_dependency_keys(entry, canonicalizer)
+                    .iter()
+                    .any(|key| anchor_keys.contains(key))
+        })
+        .collect()
+}
+
+fn failure_causal_dependency_keys(
+    entry: &crate::scheduler::EventLogCausalProjectionEntry,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    match entry.entry.source() {
+        EventSource::Scenario { event } => {
+            keys.insert(format!("event:{}:{}", event.name.len(), event.name));
+        }
+        EventSource::Engine | EventSource::Command { .. } => {}
+        EventSource::Node { node } | EventSource::Guest { node } => {
+            keys.insert(format!(
+                "node:{}",
+                failure_node_value(&canonicalizer.canonical_node(node))
+            ));
+        }
+    }
+    if let Some(node) = &entry.entry.time().icount.node {
+        keys.insert(format!(
+            "node:{}",
+            failure_node_value(&canonicalizer.canonical_node(node))
+        ));
+    }
+    for value in entry.entry.event_payload().attributes().values() {
+        push_failure_dependency_keys_for_attribute(value, canonicalizer, &mut keys);
+    }
+    keys
+}
+
+fn push_failure_dependency_keys_for_attribute(
+    value: &EventAttributeValue,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+    keys: &mut BTreeSet<String>,
+) {
+    match value {
+        EventAttributeValue::String(value) => {
+            keys.insert(format!("string:{}:{}", value.len(), value));
+        }
+        EventAttributeValue::Node(node) => {
+            keys.insert(format!(
+                "node:{}",
+                failure_node_value(&canonicalizer.canonical_node(node))
+            ));
+        }
+        EventAttributeValue::Event(event) => {
+            keys.insert(format!("event:{}:{}", event.name.len(), event.name));
+        }
+        EventAttributeValue::Fault(fault) => {
+            keys.insert(format!("fault:{}:{}", fault.name.len(), fault.name));
+        }
+        EventAttributeValue::Bool(_)
+        | EventAttributeValue::U64(_)
+        | EventAttributeValue::U128(_)
+        | EventAttributeValue::Bytes(_)
+        | EventAttributeValue::VirtualTime(_)
+        | EventAttributeValue::Icount(_)
+        | EventAttributeValue::Level(_) => {}
+    }
+}
+
+fn push_failure_causal_slice_entry_lines(
+    cone_index: usize,
+    entry: &crate::scheduler::EventLogCausalProjectionEntry,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("entry.cone_index={cone_index}"));
+    match &entry.entry.time().icount.node {
+        Some(node) => lines.push(failure_node_material(
+            "entry.icount.node",
+            &canonicalizer.canonical_node(node),
+        )),
+        None => lines.push(String::from("entry.icount.node=none")),
+    }
+    lines.push(failure_event_source_material(
+        "entry.source",
+        entry.entry.source(),
+        canonicalizer,
+    ));
+    lines.push(format!(
+        "entry.level={}",
+        failure_event_level_label(entry.entry.level())
+    ));
+    lines.push(format!(
+        "entry.class={}",
+        failure_event_class_label(entry.entry.class())
+    ));
+    lines.push(format!("entry.kind={}", entry.entry.event_payload().kind()));
+    for (name, value) in entry.entry.event_payload().attributes() {
+        if let Some(material) = failure_event_attribute_material(value, canonicalizer) {
+            lines.push(format!("entry.attr.{name}={material}"));
+        }
+    }
+}
+
+fn failure_event_source_material(
+    prefix: &str,
+    source: &EventSource,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> String {
+    match source {
+        EventSource::Scenario { event } => {
+            format!("{prefix}=scenario:{}", event.name)
+        }
+        EventSource::Engine => format!("{prefix}=engine"),
+        EventSource::Node { node } => {
+            format!(
+                "{prefix}=node:{}",
+                failure_node_value(&canonicalizer.canonical_node(node))
+            )
+        }
+        EventSource::Guest { node } => {
+            format!(
+                "{prefix}=guest:{}",
+                failure_node_value(&canonicalizer.canonical_node(node))
+            )
+        }
+        EventSource::Command { command_id } => format!("{prefix}=command:{command_id}"),
+    }
+}
+
+fn failure_event_attribute_material(
+    value: &EventAttributeValue,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> Option<String> {
+    match value {
+        EventAttributeValue::Bool(value) => Some(format!("bool:{value}")),
+        EventAttributeValue::U64(value) => Some(format!("u64:{value}")),
+        EventAttributeValue::U128(value) => Some(format!("u128:{value}")),
+        EventAttributeValue::String(value) => Some(format!("string:{}:{}", value.len(), value)),
+        EventAttributeValue::Bytes(value) => {
+            Some(format!("bytes:{}:{}", value.len(), bytes_hex(value)))
+        }
+        EventAttributeValue::Node(node) => Some(format!(
+            "node:{}",
+            failure_node_value(&canonicalizer.canonical_node(node))
+        )),
+        EventAttributeValue::Event(event) => {
+            Some(format!("event:{}:{}", event.name.len(), event.name))
+        }
+        EventAttributeValue::Fault(fault) => {
+            Some(format!("fault:{}:{}", fault.name.len(), fault.name))
+        }
+        EventAttributeValue::VirtualTime(_) | EventAttributeValue::Icount(_) => None,
+        EventAttributeValue::Level(level) => {
+            Some(format!("level:{}", failure_event_level_label(*level)))
+        }
+    }
+}
+
+fn failure_node_material(prefix: &str, node: &NodeId) -> String {
+    format!("{prefix}={}", failure_node_value(node))
+}
+
+fn failure_node_value(node: &NodeId) -> String {
+    format!("{}:{}", node.name.len(), node.name)
+}
+
+fn failure_event_level_label(level: EventLevel) -> &'static str {
+    match level {
+        EventLevel::Trace => "trace",
+        EventLevel::Debug => "debug",
+        EventLevel::Info => "info",
+        EventLevel::Warn => "warn",
+        EventLevel::Error => "error",
+    }
+}
+
+fn failure_event_class_label(class: SchedulerEventLogClass) -> &'static str {
+    match class {
+        SchedulerEventLogClass::Causal => "causal",
+        SchedulerEventLogClass::Observational => "observational",
     }
 }
 
@@ -4437,6 +4868,17 @@ fn failure_signature_material(signature: &FailureSignature) -> String {
             .causal_slice_hash
             .map(|hash| format!("causal_slice_hash={}", hash.to_hex()))
             .unwrap_or_else(|| String::from("causal_slice_hash=none")),
+    );
+    lines.join("\n")
+}
+
+fn failure_signature_report_material(signature: &FailureSignature) -> String {
+    let mut lines = vec![signature.canonical_material()];
+    lines.push(
+        signature
+            .at_icount_report_only
+            .map(|icount| format!("at_icount_report_only={}", icount.retired))
+            .unwrap_or_else(|| String::from("at_icount_report_only=none")),
     );
     lines.join("\n")
 }

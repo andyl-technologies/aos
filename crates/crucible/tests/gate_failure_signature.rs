@@ -9,10 +9,11 @@ use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
     Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp, EventLogOffset,
     EventSource, FailureKind, FailurePropertyViolationRecord, FailureRecordedEventLog,
-    FailureSignature, FindingDiscoveryPath, FindingReproductionArtifact, HostAssertionViolation,
-    Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties,
-    ReadyPoint, ScenarioDefForm, Schedule, SchedulingPoint, Seed, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    FailureSignature, FailureSignatureNormalization, FindingDiscoveryPath,
+    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed, SymmetryClassId,
+    SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -105,7 +106,7 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
         noisy_signature.content_hash(),
         first_signature.content_hash()
     );
-    assert!(first_signature.causal_slice_hash.is_none());
+    assert!(first_signature.causal_slice_hash.is_some());
 
     Ok(())
 }
@@ -144,8 +145,167 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
             faulting_node: None,
         }
     );
-    assert!(signature.causal_slice_hash.is_none());
+    assert!(signature.causal_slice_hash.is_some());
     assert_eq!(signature.content_hash(), signature.content_hash());
+
+    Ok(())
+}
+
+#[test]
+fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("normalization"),
+    )?;
+    let base_entries = recorded_event_log(schedule.decisions()[0].clone());
+    let base_log = recorded_event_log_for_finding(&finding, &base_entries)?;
+    let replica_class = SymmetryClassId {
+        name: "replicas".to_owned(),
+    };
+    let normalization = FailureSignatureNormalization::identity().with_symmetry_classes(
+        SymmetryReductionClasses::new()
+            .with_node_class(node("replica-a"), replica_class.clone())
+            .with_node_class(node("replica-b"), replica_class),
+    );
+
+    let replica_a = property_violation_record_for_node(finding.artifact.id(), node("replica-a"));
+    let replica_b = property_violation_record_for_node(finding.artifact.id(), node("replica-b"));
+    let replica_a_signature =
+        FailureSignature::from_recorded_property_violation_with_normalization(
+            &finding,
+            &base_log,
+            &replica_a,
+            &normalization,
+        )?;
+    let replica_b_signature =
+        FailureSignature::from_recorded_property_violation_with_normalization(
+            &finding,
+            &base_log,
+            &replica_b,
+            &normalization,
+        )?;
+
+    assert_eq!(
+        replica_a_signature.first_failing_point.faulting_node,
+        replica_b_signature.first_failing_point.faulting_node
+    );
+    assert_eq!(
+        replica_a_signature.first_failing_point.faulting_node,
+        Some(NodeId {
+            name: "symmetry-class:8:replicas".to_owned(),
+        })
+    );
+    assert_eq!(
+        replica_a_signature.content_hash(),
+        replica_b_signature.content_hash()
+    );
+
+    let mut shifted_icount = replica_a_signature.clone();
+    shifted_icount.at_icount_report_only = Some(icount(9000));
+    assert_ne!(
+        shifted_icount.at_icount_report_only,
+        replica_a_signature.at_icount_report_only
+    );
+    assert_eq!(
+        shifted_icount.content_hash(),
+        replica_a_signature.content_hash()
+    );
+    assert!(
+        !replica_a_signature
+            .canonical_material()
+            .contains("at_icount_report_only")
+    );
+    assert!(
+        replica_a_signature
+            .report_material()
+            .contains("at_icount_report_only=8")
+    );
+
+    let shifted_entries =
+        recorded_event_log_with_assertion_time(schedule.decisions()[0].clone(), 88);
+    let shifted_log = recorded_event_log_for_finding(&finding, &shifted_entries)?;
+    let shifted_record =
+        property_violation_record_for_node_at(finding.artifact.id(), node("replica-a"), 88);
+    let shifted_log_signature =
+        FailureSignature::from_recorded_property_violation_with_normalization(
+            &finding,
+            &shifted_log,
+            &shifted_record,
+            &normalization,
+        )?;
+    assert_ne!(
+        shifted_log_signature.at_icount_report_only,
+        replica_a_signature.at_icount_report_only
+    );
+    assert_eq!(
+        shifted_log_signature.causal_slice_hash,
+        replica_a_signature.causal_slice_hash
+    );
+    assert_eq!(
+        shifted_log_signature.content_hash(),
+        replica_a_signature.content_hash()
+    );
+
+    let mut prefailure_out_of_cone_entries = base_entries.clone();
+    prefailure_out_of_cone_entries.insert(
+        2,
+        crucible::test_support::condition_boundary_entry_for_test(
+            77,
+            VirtualTime { ticks: 5 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    );
+    let prefailure_out_of_cone_log =
+        recorded_event_log_for_finding(&finding, &prefailure_out_of_cone_entries)?;
+    let prefailure_out_of_cone_signature =
+        FailureSignature::from_recorded_property_violation_with_normalization(
+            &finding,
+            &prefailure_out_of_cone_log,
+            &replica_a,
+            &normalization,
+        )?;
+    assert_ne!(
+        base_log.causal_subsequence(),
+        prefailure_out_of_cone_log.causal_subsequence()
+    );
+    assert_eq!(
+        prefailure_out_of_cone_signature.causal_slice_hash,
+        replica_a_signature.causal_slice_hash
+    );
+    assert_eq!(
+        prefailure_out_of_cone_signature.content_hash(),
+        replica_a_signature.content_hash()
+    );
+
+    let mut trailing_causal_entries = base_entries.clone();
+    trailing_causal_entries.push(crucible::test_support::condition_boundary_entry_for_test(
+        3,
+        VirtualTime { ticks: 99 },
+        SchedulerEvaluationBoundaryKind::Quantum,
+    ));
+    let trailing_log = recorded_event_log_for_finding(&finding, &trailing_causal_entries)?;
+    let trailing_signature = FailureSignature::from_recorded_property_violation_with_normalization(
+        &finding,
+        &trailing_log,
+        &replica_a,
+        &normalization,
+    )?;
+    assert_ne!(
+        base_log.causal_subsequence(),
+        trailing_log.causal_subsequence()
+    );
+    assert_eq!(
+        trailing_signature.causal_slice_hash,
+        replica_a_signature.causal_slice_hash
+    );
+    assert_eq!(
+        trailing_signature.content_hash(),
+        replica_a_signature.content_hash()
+    );
 
     Ok(())
 }
@@ -266,6 +426,13 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
 }
 
 fn recorded_event_log(decision: Decision) -> Vec<crucible::SchedulerEventLogEntry> {
+    recorded_event_log_with_assertion_time(decision, 8)
+}
+
+fn recorded_event_log_with_assertion_time(
+    decision: Decision,
+    assertion_ticks: u64,
+) -> Vec<crucible::SchedulerEventLogEntry> {
     vec![
         crucible::test_support::condition_payload_entry_for_test(
             0,
@@ -279,7 +446,9 @@ fn recorded_event_log(decision: Decision) -> Vec<crucible::SchedulerEventLogEntr
         condition_observation_entry_for_test(
             2,
             &ObservableEvent::assertion_state_changed(
-                VirtualTime { ticks: 8 },
+                VirtualTime {
+                    ticks: assertion_ticks,
+                },
                 assertion_id("no-forbidden-marker"),
                 AssertionPhase::Violated,
             ),
@@ -298,14 +467,31 @@ fn recorded_event_log_for_finding(
 }
 
 fn property_violation_record(reproduction_artifact: ContentHash) -> FailurePropertyViolationRecord {
+    property_violation_record_for_node(reproduction_artifact, node("triage-node"))
+}
+
+fn property_violation_record_for_node(
+    reproduction_artifact: ContentHash,
+    node: NodeId,
+) -> FailurePropertyViolationRecord {
+    property_violation_record_for_node_at(reproduction_artifact, node, 8)
+}
+
+fn property_violation_record_for_node_at(
+    reproduction_artifact: ContentHash,
+    node: NodeId,
+    assertion_ticks: u64,
+) -> FailurePropertyViolationRecord {
     FailurePropertyViolationRecord::new(HostAssertionViolation {
         assertion: assertion_id("no-forbidden-marker"),
         message: "forbidden marker must stay absent".to_owned(),
         quantifier: AssertionQuantifierKind::Always,
         event_kind: "assertion_state_changed".to_owned(),
-        at_icount: Some(icount(8)),
-        at_virtual_time: VirtualTime { ticks: 8 },
-        node: Some(node("triage-node")),
+        at_icount: Some(icount(assertion_ticks)),
+        at_virtual_time: VirtualTime {
+            ticks: assertion_ticks,
+        },
+        node: Some(node),
         detail: "observed forbidden marker".to_owned(),
         reproduction_artifact,
     })
