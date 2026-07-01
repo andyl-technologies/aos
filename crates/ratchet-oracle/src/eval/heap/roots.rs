@@ -42,6 +42,7 @@ const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
+const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot buffer";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
@@ -1181,6 +1182,31 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     /// Returns the ordered lower-level minor-GC commit plan.
     pub const fn commit_plan(&self) -> &MinorGcCommitPlan {
         &self.commit_plan
+    }
+
+    /// Derives empty forwarding slots for caller-owned commit application.
+    ///
+    /// Slots are emitted in the lower-level forwarding-pointer order, using each
+    /// pointer's from-space source address. The returned buffer is caller-owned
+    /// and suitable for the forwarding-slot slice passed to
+    /// [`AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if forwarding-slot storage cannot be reserved.
+    pub fn forwarding_slot_buffer(&self) -> Result<Vec<MinorGcForwardingSlot>, EvalHeapError> {
+        let pointers = self.commit_plan.forwarding_pointers().pointers();
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(pointers.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE,
+                entries: pointers.len(),
+            }
+        })?;
+        for pointer in pointers {
+            slots.push(MinorGcForwardingSlot::new(pointer.source()));
+        }
+        Ok(slots)
     }
 
     /// Derives writeback metadata for root-backed minor-GC rewrites.

@@ -969,13 +969,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       those root-backed rewrites as metadata with the same slot-to-rewrite source
       validation, and `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
       returns the root and heap-field writeback partitions together.
+      `AllocationCollectorPollMinorGcCommitPlan::forwarding_slot_buffer` derives
+      empty caller-owned forwarding slots in lower-level forwarding-pointer order.
       `EvalHeap::collector_poll_minor_gc_reference_buffer` merges caller-supplied
       current root values with live heap-field reads into one full
       reference-slot-order buffer for later caller-owned commit application. Tests
       cover successful empty-remembered-set application, retained copied-young
       remembered-edge publication, heap-field and full reference-buffer
       derivation, root writeback derivation, combined mixed root/heap writeback
-      partitioning, copied and promoted nursery-field writeback derivation,
+      partitioning, forwarding-slot buffer derivation for copied and promoted
+      survivors, copied and promoted nursery-field writeback derivation,
       root-slot rejection/empty root-only heap-field writebacks, stale
       field-label rejection, stale same-label field-value rejection, root-value
       count/source/value rejection, incomplete or mismatched reference-buffer

@@ -1615,6 +1615,16 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         3
     );
     assert_eq!(
+        commit
+            .forwarding_slot_buffer()
+            .expect("forwarding slot buffer derives"),
+        vec![
+            MinorGcForwardingSlot::new(gc_address(lambda)),
+            MinorGcForwardingSlot::new(gc_address(child)),
+            MinorGcForwardingSlot::new(gc_address(sibling)),
+        ]
+    );
+    assert_eq!(
         commit.commit_plan().reference_rewrites().rewrites(),
         rewrite_plan.rewrites()
     );
@@ -1749,11 +1759,9 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
             &mut sibling_destination_bytes,
         ),
     ];
-    let mut forwarding_slots = [
-        MinorGcForwardingSlot::new(gc_address(lambda)),
-        MinorGcForwardingSlot::new(gc_address(child)),
-        MinorGcForwardingSlot::new(gc_address(sibling)),
-    ];
+    let mut forwarding_slots = commit
+        .forwarding_slot_buffer()
+        .expect("success forwarding slot buffer derives");
     let mut references = planned.reference_values().collect::<Vec<_>>();
     let mut commit_remembered_set = remembered_set.clone();
 
@@ -2104,6 +2112,25 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
         commit.commit_plan().object_copies().copies()[0].destination_generation(),
         HeapGeneration::Old
     );
+    let mut forwarding_slots = commit
+        .forwarding_slot_buffer()
+        .expect("promoted forwarding slot buffer derives");
+    assert_eq!(
+        forwarding_slots,
+        vec![MinorGcForwardingSlot::new(gc_address(child))]
+    );
+    commit
+        .commit_plan()
+        .forwarding_pointers()
+        .install_into_slots(&mut forwarding_slots)
+        .expect("promoted forwarding slot installs");
+    assert_eq!(
+        forwarding_slots[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: old_base,
+            generation: HeapGeneration::Old,
+        })
+    );
 }
 
 #[test]
@@ -2303,7 +2330,9 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         &mismatch_child_source_bytes,
         &mut mismatch_child_destination_bytes,
     )];
-    let mut mismatch_forwarding_slots = [MinorGcForwardingSlot::new(gc_address(child))];
+    let mut mismatch_forwarding_slots = mismatch_commit
+        .forwarding_slot_buffer()
+        .expect("mismatch forwarding slot buffer derives");
     let mut mismatch_references = planned.reference_values().collect::<Vec<_>>();
     let expected_root_reference = mismatch_references[0];
     mismatch_references[0] = ResolvedValueGeneration::Inline;
@@ -2346,7 +2375,9 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         &child_source_bytes,
         &mut child_destination_bytes,
     )];
-    let mut forwarding_slots = [MinorGcForwardingSlot::new(gc_address(child))];
+    let mut forwarding_slots = commit
+        .forwarding_slot_buffer()
+        .expect("remembered-edge forwarding slot buffer derives");
     let mut references = planned.reference_values().collect::<Vec<_>>();
     let mut commit_remembered_set = remembered_set.clone();
 
