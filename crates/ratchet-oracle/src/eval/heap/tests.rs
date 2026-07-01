@@ -3885,6 +3885,107 @@ fn collector_poll_minor_gc_heap_field_reference_buffer_reads_remembered_fields()
             generation: HeapGeneration::Young,
         }]
     );
+    let writeback_plan = heap
+        .collector_poll_minor_gc_heap_field_writeback_plan(&commit)
+        .expect("heap-field writeback plan derives");
+    assert_eq!(writeback_plan.len(), 1);
+    let child_destination = commit.commit_plan().object_copies().copies()[0].destination();
+    let mut short_slots = Vec::new();
+    assert_eq!(
+        writeback_plan
+            .apply_to_slots(&mut short_slots)
+            .expect_err("short heap-field writeback buffer rejects"),
+        EvalHeapError::CollectorPollHeapFieldWritebackSlotLengthMismatch {
+            expected: 1,
+            actual: 0,
+        }
+    );
+    let mut object_mismatch_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(child),
+        gc_address(root),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    assert_eq!(
+        writeback_plan
+            .apply_to_slots(&mut object_mismatch_slots)
+            .expect_err("wrong heap-field objects reject"),
+        EvalHeapError::CollectorPollHeapFieldWritebackSlotObjectMismatch {
+            index: 0,
+            expected_validation_object: gc_address(root),
+            actual_validation_object: gc_address(child),
+            expected_writeback_object: gc_address(root),
+            actual_writeback_object: gc_address(root),
+        }
+    );
+    let mut field_mismatch_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(root),
+        gc_address(root),
+        1,
+        HeapEdgeSource::ListElement { index: 1 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    assert_eq!(
+        writeback_plan
+            .apply_to_slots(&mut field_mismatch_slots)
+            .expect_err("wrong heap-field label rejects"),
+        EvalHeapError::CollectorPollHeapFieldWritebackSlotFieldMismatch {
+            index: 0,
+            expected_field_index: 0,
+            actual_field_index: 1,
+            expected_source: HeapEdgeSource::ListElement { index: 0 },
+            actual_source: HeapEdgeSource::ListElement { index: 1 },
+        }
+    );
+    let mut stale_value_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(root),
+        gc_address(root),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Inline,
+    )];
+    assert_eq!(
+        writeback_plan
+            .apply_to_slots(&mut stale_value_slots)
+            .expect_err("stale heap-field value rejects"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 0,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+
+    let mut slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(root),
+        gc_address(root),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    let report = writeback_plan
+        .apply_to_slots(&mut slots)
+        .expect("heap-field writebacks apply");
+    assert_eq!(report.writebacks(), 1);
+    assert_eq!(
+        slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
 }
 
 #[test]
@@ -4039,6 +4140,82 @@ fn collector_poll_minor_gc_heap_field_writeback_plan_uses_promoted_nursery_owner
     );
     assert_eq!(
         nursery_writeback.replacement(),
+        ResolvedValueGeneration::Heap {
+            address: grandchild_copy.destination(),
+            generation: HeapGeneration::Old,
+        }
+    );
+
+    let mut stale_slots = [
+        AllocationCollectorPollHeapFieldWritebackSlot::new(
+            gc_address(root),
+            gc_address(root),
+            0,
+            HeapEdgeSource::ListElement { index: 0 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollHeapFieldWritebackSlot::new(
+            gc_address(child),
+            child_copy.destination(),
+            0,
+            HeapEdgeSource::ThunkSelectReceiver,
+            ResolvedValueGeneration::Inline,
+        ),
+    ];
+    let unchanged_stale_slots = stale_slots.clone();
+    assert_eq!(
+        writeback_plan
+            .apply_to_slots(&mut stale_slots)
+            .expect_err("stale copied nursery field rejects"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 1,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(grandchild),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(stale_slots, unchanged_stale_slots);
+
+    let mut slots = [
+        AllocationCollectorPollHeapFieldWritebackSlot::new(
+            gc_address(root),
+            gc_address(root),
+            0,
+            HeapEdgeSource::ListElement { index: 0 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollHeapFieldWritebackSlot::new(
+            gc_address(child),
+            child_copy.destination(),
+            0,
+            HeapEdgeSource::ThunkSelectReceiver,
+            ResolvedValueGeneration::Heap {
+                address: gc_address(grandchild),
+                generation: HeapGeneration::Young,
+            },
+        ),
+    ];
+    let report = writeback_plan
+        .apply_to_slots(&mut slots)
+        .expect("heap-field writebacks apply");
+    assert_eq!(report.writebacks(), 2);
+    assert_eq!(
+        slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: child_copy.destination(),
+            generation: HeapGeneration::Old,
+        }
+    );
+    assert_eq!(
+        slots[1].value(),
         ResolvedValueGeneration::Heap {
             address: grandchild_copy.destination(),
             generation: HeapGeneration::Old,

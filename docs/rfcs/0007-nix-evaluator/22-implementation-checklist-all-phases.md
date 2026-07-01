@@ -5579,15 +5579,20 @@ and helps the oracle directly.
       lower-level rewrites to heap-field-backed slots, revalidates their current
       labels/values plus slot-to-rewrite source binding, and returns the
       writeback object plus replacement value that a future mutating field writer
-      would store. `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
+      would store. `AllocationCollectorPollHeapFieldWritebackPlan::apply_to_slots`
+      validates caller-owned heap-field writeback slot count, validation/writeback
+      objects, field labels, and expected values before rewriting the supplied
+      field-slot buffer and reporting the rewrite count; it still leaves live
+      object-field mutation and semispace storage ownership to the collector.
+      `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
       returns both partitions together for callers that need complete reference
       writeback metadata, and
       `EvalHeap::collector_poll_minor_gc_reference_buffer` merges external root
       values with live heap-field reads into one caller-owned reference buffer.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live object-byte slices, destination storage,
-      tree-walk root writeback, object-field mutation, old/permanent field
-      mutation, or JIT stack-map writeback slots.
+      tree-walk root writeback, live object-field mutation, old/permanent field
+      mutation in evaluator-owned objects, or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

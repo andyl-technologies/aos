@@ -1404,9 +1404,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       lambda/thunk captured environments, primop arguments, suspended thunk
       captures, blackholed thunk captures, and forced-thunk cached results. This
       is still primarily a copied-value graph report; the allocation-poll bridge
-      can apply derived root writebacks to caller-owned root-slot buffers, but
-      live tree-walk/JIT root storage binding, the full relocation-slot collector
-      contract, real Tier-B collector, and
+      can apply derived root and heap-field writebacks to caller-owned slot
+      buffers, but live tree-walk/JIT root storage binding, live object-field
+      mutation, the full relocation-slot collector contract, real Tier-B
+      collector, and
       Cranelift stack-map emission/consumption remain open in the row above and
       in [08](08-execution-tiers-and-cranelift.md).
 - [x] Current tree-walk safepoint root-set builder precursor:

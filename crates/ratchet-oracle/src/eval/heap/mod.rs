@@ -47,6 +47,7 @@ pub use arena::{
 };
 pub use roots::{
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
+    AllocationCollectorPollHeapFieldWritebackReport, AllocationCollectorPollHeapFieldWritebackSlot,
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
@@ -493,6 +494,55 @@ pub enum EvalHeapError {
         expected: HeapEdgeSource,
         /// The current field source at the saved index, if any.
         actual: Option<HeapEdgeSource>,
+    },
+    /// A heap-field writeback application did not receive one caller-owned slot
+    /// per derived heap-field writeback.
+    #[error(
+        "collector-poll minor-GC heap-field writeback slot count {actual} does not match heap-field writeback count {expected}"
+    )]
+    CollectorPollHeapFieldWritebackSlotLengthMismatch {
+        /// The derived heap-field writeback count.
+        expected: usize,
+        /// The caller-supplied heap-field writeback slot count.
+        actual: usize,
+    },
+    /// A caller-owned heap-field writeback slot names different objects than the
+    /// copied writeback plan.
+    #[error(
+        "collector-poll minor-GC heap-field writeback slot {index} object mismatch: expected validation 0x{expected_validation_object:x} / writeback 0x{expected_writeback_object:x}, found validation 0x{actual_validation_object:x} / writeback 0x{actual_writeback_object:x}",
+        expected_validation_object = expected_validation_object.address_bits(),
+        expected_writeback_object = expected_writeback_object.address_bits(),
+        actual_validation_object = actual_validation_object.address_bits(),
+        actual_writeback_object = actual_writeback_object.address_bits()
+    )]
+    CollectorPollHeapFieldWritebackSlotObjectMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The heap object used to validate the copied field label.
+        expected_validation_object: GcHeapAddress,
+        /// The caller-supplied validation object.
+        actual_validation_object: GcHeapAddress,
+        /// The heap object whose field must be rewritten.
+        expected_writeback_object: GcHeapAddress,
+        /// The caller-supplied writeback object.
+        actual_writeback_object: GcHeapAddress,
+    },
+    /// A caller-owned heap-field writeback slot names a different field than
+    /// the copied writeback plan.
+    #[error(
+        "collector-poll minor-GC heap-field writeback slot {index} field mismatch: expected field {expected_field_index} {expected_source:?}, found field {actual_field_index} {actual_source:?}"
+    )]
+    CollectorPollHeapFieldWritebackSlotFieldMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The precise field index captured by the writeback plan.
+        expected_field_index: usize,
+        /// The caller-supplied field index.
+        actual_field_index: usize,
+        /// The precise field source captured by the writeback plan.
+        expected_source: HeapEdgeSource,
+        /// The caller-supplied field source.
+        actual_source: HeapEdgeSource,
     },
     /// A heap-field-backed reference slot object no longer belongs to this heap.
     #[error("collector-poll minor-GC reference slot object does not belong to this heap: 0x{address:x}", address = address.address_bits())]

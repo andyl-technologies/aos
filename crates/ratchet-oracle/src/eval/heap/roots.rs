@@ -1875,6 +1875,146 @@ impl AllocationCollectorPollHeapFieldWritebackPlan {
     pub fn is_empty(&self) -> bool {
         self.writebacks.is_empty()
     }
+
+    /// Applies planned heap-field writebacks to caller-owned field slots.
+    ///
+    /// The supplied slots must match this plan's heap-field writeback count and
+    /// order. Each slot must name the validation object, writeback object, field
+    /// index, copied field source label, and expected young from-space value.
+    /// The method validates every slot before rewriting any slot, so validation
+    /// failures leave the caller-owned buffer unchanged. This mutates only the
+    /// supplied buffer; it does not bind to live evaluator object fields,
+    /// copied object bytes, object headers, or semispace storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the supplied slot count differs from the
+    /// plan, if a slot names a different object, field index, or field source,
+    /// or if a slot no longer contains the expected young from-space value.
+    pub fn apply_to_slots(
+        &self,
+        slots: &mut [AllocationCollectorPollHeapFieldWritebackSlot],
+    ) -> Result<AllocationCollectorPollHeapFieldWritebackReport, EvalHeapError> {
+        if slots.len() != self.writebacks.len() {
+            return Err(
+                EvalHeapError::CollectorPollHeapFieldWritebackSlotLengthMismatch {
+                    expected: self.writebacks.len(),
+                    actual: slots.len(),
+                },
+            );
+        }
+
+        for (writeback, slot) in self.writebacks.iter().zip(slots.iter()) {
+            if slot.validation_object() != writeback.validation_object()
+                || slot.writeback_object() != writeback.writeback_object()
+            {
+                return Err(
+                    EvalHeapError::CollectorPollHeapFieldWritebackSlotObjectMismatch {
+                        index: writeback.slot(),
+                        expected_validation_object: writeback.validation_object(),
+                        actual_validation_object: slot.validation_object(),
+                        expected_writeback_object: writeback.writeback_object(),
+                        actual_writeback_object: slot.writeback_object(),
+                    },
+                );
+            }
+            if slot.field_index() != writeback.field_index() || slot.source() != writeback.source()
+            {
+                return Err(
+                    EvalHeapError::CollectorPollHeapFieldWritebackSlotFieldMismatch {
+                        index: writeback.slot(),
+                        expected_field_index: writeback.field_index(),
+                        actual_field_index: slot.field_index(),
+                        expected_source: writeback.source().clone(),
+                        actual_source: slot.source().clone(),
+                    },
+                );
+            }
+            let actual = slot.value();
+            if actual != writeback.expected() {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index: writeback.slot(),
+                    expected: writeback.expected(),
+                    actual,
+                });
+            }
+        }
+
+        for (writeback, slot) in self.writebacks.iter().zip(slots.iter_mut()) {
+            slot.value = writeback.replacement();
+        }
+
+        Ok(AllocationCollectorPollHeapFieldWritebackReport {
+            writebacks: self.writebacks.len(),
+        })
+    }
+}
+
+/// Caller-owned mutable storage for one heap-field writeback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollHeapFieldWritebackSlot {
+    validation_object: GcHeapAddress,
+    writeback_object: GcHeapAddress,
+    field_index: usize,
+    source: HeapEdgeSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollHeapFieldWritebackSlot {
+    /// Creates a caller-owned heap-field slot value for writeback application.
+    pub fn new(
+        validation_object: GcHeapAddress,
+        writeback_object: GcHeapAddress,
+        field_index: usize,
+        source: HeapEdgeSource,
+        value: ResolvedValueGeneration,
+    ) -> Self {
+        Self {
+            validation_object,
+            writeback_object,
+            field_index,
+            source,
+            value,
+        }
+    }
+
+    /// Returns the heap object used to validate the copied field label.
+    pub const fn validation_object(&self) -> GcHeapAddress {
+        self.validation_object
+    }
+
+    /// Returns the heap object whose copied field slot is rewritten.
+    pub const fn writeback_object(&self) -> GcHeapAddress {
+        self.writeback_object
+    }
+
+    /// Returns the precise field index represented by this slot.
+    pub const fn field_index(&self) -> usize {
+        self.field_index
+    }
+
+    /// Returns the copied field source label represented by this slot.
+    pub const fn source(&self) -> &HeapEdgeSource {
+        &self.source
+    }
+
+    /// Returns the current heap-generation value in this slot.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
+    }
+}
+
+/// A summary of caller-owned heap fields rewritten by a writeback plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollHeapFieldWritebackReport {
+    writebacks: usize,
+}
+
+impl AllocationCollectorPollHeapFieldWritebackReport {
+    /// Returns the number of caller-owned heap-field slots rewritten.
+    pub const fn writebacks(self) -> usize {
+        self.writebacks
+    }
 }
 
 /// Caller-owned buffers for applying an allocation-poll minor-GC commit plan.
