@@ -1709,7 +1709,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalk::region_plan_for_allocation` map current-module IR
       `ExprFacts` plus each node's `EffectClass` into the conservative
       `AllocationRegionFacts`/`RegionPlan` policy. Missing node/fact records
-      fail closed to conservative placement. Non-thunk nodes require `Strict +
+      fail closed to conservative placement. Hash-consed source value shapes
+      (string/URI/interpolation forms, path/search-path forms, lists, and
+      attrsets) are marked permanent shared so they bypass lexical region
+      placement. Private non-thunk nodes require `Strict +
       NoEscape + speculable` facts to become lexical-subregion candidates, while
       thunk allocations remain conservative until a distinct no-latent-force
       proof exists. Successful source `ThunkAlloc` allocations now sample that

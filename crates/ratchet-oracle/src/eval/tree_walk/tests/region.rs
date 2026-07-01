@@ -6,7 +6,7 @@ use crate::heap::{AllocationRegionFacts, RegionPlacement, RegionPlacementReason,
 
 #[test]
 fn region_plan_for_allocation_fails_closed_for_conservative_facts() {
-    let ir = lower("[ (1 + 2) ]");
+    let ir = lower("x: x");
     let evaluator = TreeWalk::new(&ir);
 
     let plan = evaluator.region_plan_for_allocation(ir.root, RegionRuntimeTier::OneShotArena);
@@ -21,7 +21,7 @@ fn region_plan_for_allocation_fails_closed_for_conservative_facts() {
 
 #[test]
 fn region_plan_for_allocation_uses_strict_no_escape_facts() {
-    let mut ir = lower("[ 1 ]");
+    let mut ir = lower("x: x");
     *ir.facts.get_mut(ir.root).expect("root fact exists") = ExprFacts {
         strictness: Strictness::Strict,
         cardinality: Cardinality::Many,
@@ -38,6 +38,38 @@ fn region_plan_for_allocation_uses_strict_no_escape_facts() {
 }
 
 #[test]
+fn region_plan_for_allocation_routes_hash_consed_shapes_to_permanent_shared() {
+    for (source, label) in [
+        ("[ 1 ]", "list"),
+        ("{ a = 1; }", "attrset"),
+        (r#""value""#, "string"),
+        (r#""pre-${"value"}""#, "interpolated string"),
+        ("./value.nix", "path"),
+        ("<nixpkgs>", "search path"),
+        ("https://example.test/value", "uri"),
+    ] {
+        let mut ir = lower(source);
+        *ir.facts.get_mut(ir.root).expect("root fact exists") = ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Many,
+            escape: Escape::NoEscape,
+        };
+        let evaluator = TreeWalk::new(&ir);
+
+        let facts = evaluator.allocation_region_facts(ir.root);
+        let plan = evaluator.region_plan_for_allocation(ir.root, RegionRuntimeTier::OneShotArena);
+
+        assert_eq!(facts.sharing, RegionSharing::SharedPermanent, "{label}");
+        assert_eq!(plan.placement, RegionPlacement::PermanentShared, "{label}");
+        assert_eq!(
+            plan.reason,
+            RegionPlacementReason::PermanentSharing,
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn region_plan_for_allocation_requires_strictness_and_no_escape() {
     for (strictness, escape, label) in [
         (
@@ -51,7 +83,7 @@ fn region_plan_for_allocation_requires_strictness_and_no_escape() {
             "strict escaping node leaves the frame",
         ),
     ] {
-        let mut ir = lower("[ 1 ]");
+        let mut ir = lower("x: x");
         *ir.facts.get_mut(ir.root).expect("root fact exists") = ExprFacts {
             strictness,
             cardinality: Cardinality::Many,
@@ -104,10 +136,10 @@ fn region_plan_for_allocation_requires_speculable_effects() {
     let mut ir = manual_ir(
         root,
         vec![IrNode::new(
-            IrKind::List,
+            IrKind::Lambda,
             Span::new(0, 2),
             EffectClass::new(7, false),
-            IrData::Children(IrChildSlice::new(0, 0)),
+            IrData::None,
         )],
     );
     *ir.facts.get_mut(root).expect("root fact exists") = ExprFacts {

@@ -6508,15 +6508,17 @@ it ships).**
       `ExprFacts` plus each IR node's `EffectClass` into
       `AllocationRegionFacts` and the existing conservative `RegionPlan`
       decision. Missing node/fact records fail closed to conservative placement,
-      non-thunk nodes require `Strict + NoEscape + speculable` facts to become
-      lexical-subregion candidates, and thunk allocations remain conservative
-      until a distinct no-latent-force proof exists. Successful source
-      `ThunkAlloc` allocations now record the conservative `RegionPlan` outcome
-      in `EvalStats` source-thunk region-plan counters, making source-thunk
-      allocation sampling observable without changing heap placement. This is a
-      classification bridge for future allocation-site placement; it does not
-      allocate into subregions, pop automatically, or strengthen the current
-      escape pass.
+      hash-consed source value shapes (string/URI/interpolation forms,
+      path/search-path forms, lists, and attrsets) are marked permanent shared
+      so they bypass lexical region placement, private non-thunk nodes require
+      `Strict + NoEscape + speculable` facts to become lexical-subregion
+      candidates, and thunk allocations remain conservative until a distinct
+      no-latent-force proof exists. Successful source `ThunkAlloc` allocations
+      now record the conservative `RegionPlan` outcome in `EvalStats`
+      source-thunk region-plan counters, making source-thunk allocation sampling
+      observable without changing heap placement. This is a classification
+      bridge for future allocation-site placement; it does not allocate into
+      subregions, pop automatically, or strengthen the current escape pass.
 - [x] Current arena region-pop primitive precursor: `BumpArena` can capture a
       lexical subregion marker and, behind an explicit caller proof, pop back to
       it by rewinding the retained chunk, unmapping later chunks, restoring the

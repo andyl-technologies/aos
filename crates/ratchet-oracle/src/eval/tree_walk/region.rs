@@ -18,9 +18,11 @@ impl TreeWalk {
     /// Returns conservative region facts for one current-module IR node.
     ///
     /// Missing nodes or fact records fail closed to
-    /// [`AllocationRegionFacts::conservative`]. A lexical subregion candidate is
-    /// emitted only when the existing IR facts prove strict, no-escape,
-    /// speculable evaluation for a non-thunk allocation site.
+    /// [`AllocationRegionFacts::conservative`]. Hash-consed reusable value
+    /// shapes are marked permanent shared so they bypass lexical region
+    /// placement. A lexical subregion candidate is emitted only when the
+    /// existing IR facts prove strict, no-escape, speculable evaluation for a
+    /// private non-thunk allocation site.
     pub(super) fn allocation_region_facts(&self, id: IrId) -> AllocationRegionFacts {
         let ir = self.current_ir();
         let Some(node) = ir.arena.node(id) else {
@@ -38,6 +40,7 @@ fn allocation_region_facts_for_node(node: &IrNode, facts: ExprFacts) -> Allocati
     let thunk_like = matches!(node.kind, IrKind::ThunkAlloc);
     let no_latent_force = facts.strictness == Strictness::Strict && !thunk_like;
     let speculable = node.effect.is_speculable();
+    let sharing = allocation_region_sharing_for_node(node.kind);
 
     AllocationRegionFacts {
         escapes_frame: !proven_no_escape,
@@ -52,6 +55,19 @@ fn allocation_region_facts_for_node(node: &IrNode, facts: ExprFacts) -> Allocati
         } else {
             RegionLifetime::Unbounded
         },
-        sharing: RegionSharing::Private,
+        sharing,
+    }
+}
+
+fn allocation_region_sharing_for_node(kind: IrKind) -> RegionSharing {
+    match kind {
+        IrKind::Str
+        | IrKind::Path
+        | IrKind::SearchPath
+        | IrKind::Uri
+        | IrKind::List
+        | IrKind::AttrSet
+        | IrKind::Interp => RegionSharing::SharedPermanent,
+        _ => RegionSharing::Private,
     }
 }
