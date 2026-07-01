@@ -4691,6 +4691,116 @@ fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
 }
 
 #[test]
+fn collector_poll_minor_gc_root_writeback_plan_filters_stack_map_roots() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let stack_value = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(11)))
+        .expect("stack-map thunk allocates");
+    let register_value = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(13)))
+        .expect("register thunk allocates");
+    let value_stack_value = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(17)))
+        .expect("value-stack thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_stack_map(44, 7, StackMapSlot::Stack { offset: -24 }, stack_value)
+        .expect("stack-map stack root records");
+    roots
+        .try_push_stack_map(
+            44,
+            7,
+            StackMapSlot::Register { dwarf_reg: 3 },
+            register_value,
+        )
+        .expect("stack-map register root records");
+    roots
+        .try_push_value_stack(9, value_stack_value)
+        .expect("value-stack root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+    let root_writeback_plan = commit
+        .root_writeback_plan()
+        .expect("root writeback plan derives");
+
+    assert_eq!(root_writeback_plan.len(), 3);
+    assert_eq!(root_writeback_plan.stack_map_writeback_count(), 2);
+    assert_eq!(
+        root_writeback_plan
+            .stack_map_writebacks()
+            .map(AllocationCollectorPollRootWriteback::slot)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(
+        root_writeback_plan.writebacks()[0].source(),
+        &EvalRootSource::StackMap {
+            frame: 44,
+            safepoint: 7,
+            slot: StackMapSlot::Stack { offset: -24 },
+        }
+    );
+    assert_eq!(
+        root_writeback_plan.writebacks()[1].source(),
+        &EvalRootSource::StackMap {
+            frame: 44,
+            safepoint: 7,
+            slot: StackMapSlot::Register { dwarf_reg: 3 },
+        }
+    );
+    assert_eq!(
+        root_writeback_plan.writebacks()[2].source(),
+        &EvalRootSource::ValueStack { slot: 9 }
+    );
+
+    let mut slots = root_writeback_plan
+        .writebacks()
+        .iter()
+        .map(|writeback| {
+            AllocationCollectorPollRootWritebackSlot::new(
+                writeback.source().clone(),
+                writeback.expected(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let report = root_writeback_plan
+        .apply_to_slots(&mut slots)
+        .expect("root writebacks apply");
+    assert_eq!(report.writebacks(), 3);
+    for (slot, writeback) in slots.iter().zip(root_writeback_plan.writebacks()) {
+        assert_eq!(slot.source(), writeback.source());
+        assert_eq!(slot.value(), writeback.replacement());
+    }
+}
+
+#[test]
 fn collector_poll_minor_gc_plan_expands_remembered_edge_to_concrete_source_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());

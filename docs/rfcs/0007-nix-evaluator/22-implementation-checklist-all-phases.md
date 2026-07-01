@@ -5731,6 +5731,16 @@ and helps the oracle directly.
       does not yet own or mutate the underlying evaluator storage. Real
       relocation slots for tree-walk roots, copied object fields, remembered
       old/permanent fields, and later JIT stack-map entries remain open.
+- [x] Current `heap/roots.rs` stack-map root-writeback metadata precursor:
+      `AllocationCollectorPollRootWritebackPlan::stack_map_writebacks` exposes
+      the compiled-frame `EvalRootSource::StackMap` subset of root writebacks in
+      reference-rewrite order, and `stack_map_writeback_count` reports that
+      partition for future JIT stack-map storage owners. Tests drive stack and
+      register stack-map roots through collector-poll scanning, minor-GC
+      planning, root-writeback metadata, and caller-owned slot application while
+      preserving a value-stack root in the same plan. This is metadata only;
+      live compiled-frame mutation, Cranelift stack-map emission/consumption,
+      and a JIT safepoint writer remain open.
 - [x] Current `heap/roots.rs` destination-planning bridge precursor:
       `AllocationCollectorPollMinorGcPlan::relocation_destination_plan` derives
       destination allocation requirements, aligned placements, and materialized

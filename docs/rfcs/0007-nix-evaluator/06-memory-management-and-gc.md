@@ -1596,6 +1596,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       collector, and
       Cranelift stack-map emission/consumption remain open in the row above and
       in [08](08-execution-tiers-and-cranelift.md).
+- [x] Current stack-map root-writeback metadata precursor:
+      `AllocationCollectorPollRootWritebackPlan::stack_map_writebacks` exposes
+      the compiled-frame `EvalRootSource::StackMap` subset of root writebacks in
+      reference-rewrite order, and `stack_map_writeback_count` reports the same
+      partition for future JIT stack-map storage owners. Tests drive stack and
+      register stack-map roots through collector-poll scanning, minor-GC
+      planning, root-writeback metadata, and caller-owned slot application while
+      also preserving a value-stack root in the same plan. This is stack-map
+      writeback metadata only; it does not bind or mutate live compiled frames,
+      emit Cranelift stack maps, or install a JIT safepoint writer.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       a precise root set from the evaluator state that is explicit today:

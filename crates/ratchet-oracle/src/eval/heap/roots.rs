@@ -1654,6 +1654,25 @@ impl AllocationCollectorPollRootWritebackPlan {
         &self.writebacks
     }
 
+    /// Returns planned writebacks for compiled stack-map roots.
+    ///
+    /// The iterator preserves reference-rewrite order and filters only
+    /// [`EvalRootSource::StackMap`] entries. It is metadata for a later JIT
+    /// stack-map writer; applying the returned entries still requires
+    /// caller-owned slots and does not mutate compiled frames.
+    pub fn stack_map_writebacks(
+        &self,
+    ) -> impl Iterator<Item = &AllocationCollectorPollRootWriteback> {
+        self.writebacks
+            .iter()
+            .filter(|writeback| matches!(writeback.source(), EvalRootSource::StackMap { .. }))
+    }
+
+    /// Returns the number of compiled stack-map root writebacks.
+    pub fn stack_map_writeback_count(&self) -> usize {
+        self.stack_map_writebacks().count()
+    }
+
     /// Returns the number of root writebacks.
     pub fn len(&self) -> usize {
         self.writebacks.len()
