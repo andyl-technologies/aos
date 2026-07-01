@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
+use crate::heap::MemoryAdviceKind;
 
 #[test]
 fn evaluates_inline_scalar_literals() {
@@ -131,6 +132,79 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
     }
     assert!(action.requests_tier_b());
+}
+
+#[test]
+fn heap_cheap_memory_advice_option_can_be_configured() {
+    let mut options = TreeWalkOptions::new();
+
+    assert_eq!(options.heap_cheap_memory_advice_min_idle_epochs(), None);
+    options.set_heap_cheap_memory_advice_min_idle_epochs(7);
+    assert_eq!(options.heap_cheap_memory_advice_min_idle_epochs(), Some(7));
+    options.clear_heap_cheap_memory_advice();
+    assert_eq!(options.heap_cheap_memory_advice_min_idle_epochs(), None);
+
+    let options = TreeWalkOptions::with_heap_cheap_memory_advice_min_idle_epochs(3);
+    assert_eq!(options.heap_cheap_memory_advice_min_idle_epochs(), Some(3));
+}
+
+#[test]
+fn heap_cheap_memory_advice_option_reports_after_tree_walk_eval() {
+    let ir = lower("\"advised\"");
+    let default_outcome = eval_whnf_owned(&ir).expect("string evaluates without advice");
+    assert_eq!(default_outcome.cheap_memory_advice_report(), None);
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_heap_cheap_memory_advice_min_idle_epochs(0),
+    )
+    .expect("string evaluates");
+
+    assert_eq!(outcome.stats(), default_outcome.stats());
+    assert_eq!(
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("advised result is a heap-owned string")
+            .bytes(),
+        default_outcome
+            .heap()
+            .get_string(default_outcome.value())
+            .expect("default result is a heap-owned string")
+            .bytes()
+    );
+    let report = outcome
+        .cheap_memory_advice_report()
+        .expect("cheap heap advice report is recorded");
+    assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
+    assert!(report.cold_hash_consed().records() >= 1);
+    assert!(report.cold_hash_consed().requested_bytes() > 0);
+    assert_eq!(outcome.heap().memory_budget_poll_count(), 0);
+    assert_eq!(outcome.heap().last_memory_budget_action(), None);
+}
+
+#[test]
+fn heap_cheap_memory_advice_option_reports_after_attr_path_eval() {
+    let ir = lower("{ selected = \"advised\"; }");
+    let attr_path = vec![b"selected".to_vec()];
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &attr_path,
+        TreeWalkOptions::with_heap_cheap_memory_advice_min_idle_epochs(0),
+        None,
+    )
+    .expect("attr-path evaluation succeeds");
+
+    let report = outcome
+        .cheap_memory_advice_report()
+        .expect("attr-path outcomes also carry the post-evaluation advice report");
+    assert_eq!(report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.cold_hash_consed().kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
+    assert_eq!(outcome.heap().memory_budget_poll_count(), 0);
+    assert_eq!(outcome.heap().last_memory_budget_action(), None);
 }
 
 #[test]

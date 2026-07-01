@@ -216,6 +216,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
+    pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
+        let mut options = Self::default();
+        options.set_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -600,6 +607,16 @@ impl TreeWalkOptions {
         self.heap_memory_budget = None;
     }
 
+    /// Enables post-evaluation cheap heap advice for owned evaluation outcomes.
+    pub fn set_heap_cheap_memory_advice_min_idle_epochs(&mut self, min_idle_epochs: u64) {
+        self.heap_cheap_memory_advice_min_idle_epochs = Some(min_idle_epochs);
+    }
+
+    /// Disables post-evaluation cheap heap advice for owned evaluation outcomes.
+    pub fn clear_heap_cheap_memory_advice(&mut self) {
+        self.heap_cheap_memory_advice_min_idle_epochs = None;
+    }
+
     /// Configures one exact indirect flake-reference resolution.
     ///
     /// The `indirect` key uses the same canonical string form returned by
@@ -762,6 +779,11 @@ impl TreeWalkOptions {
     /// Returns the configured high-water heap budget, if one is available.
     pub const fn heap_memory_budget(&self) -> Option<HeapMemoryBudget> {
         self.heap_memory_budget
+    }
+
+    /// Returns the idle-epoch threshold for post-evaluation cheap heap advice.
+    pub const fn heap_cheap_memory_advice_min_idle_epochs(&self) -> Option<u64> {
+        self.heap_cheap_memory_advice_min_idle_epochs
     }
 
     /// Returns the configured target for an exact indirect flake reference.

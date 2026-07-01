@@ -19,6 +19,7 @@ pub struct EvalOutcome {
     pub(crate) impure_input_trace_complete: bool,
     pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
+    pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
 }
 
 impl std::fmt::Debug for EvalOutcome {
@@ -37,6 +38,10 @@ impl std::fmt::Debug for EvalOutcome {
                 &self.impure_input_trace_complete,
             )
             .field("derivations", &self.derivations)
+            .field(
+                "cheap_memory_advice_report",
+                &self.cheap_memory_advice_report,
+            )
             .finish()
     }
 }
@@ -93,6 +98,11 @@ impl EvalOutcome {
     /// Returns derivations observed while evaluating the root expression.
     pub fn derivations(&self) -> &[EvalDerivation] {
         &self.derivations
+    }
+
+    /// Returns the post-evaluation cheap heap advice report, if one was requested.
+    pub const fn cheap_memory_advice_report(&self) -> Option<EvalHeapCheapMemoryAdviceReport> {
+        self.cheap_memory_advice_report
     }
 
     /// Consumes the outcome into its value and heap.

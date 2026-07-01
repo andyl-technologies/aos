@@ -46,8 +46,8 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    EvalHeap, EvalHeapError, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
-    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapResidentMemoryMode,
+    EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -353,6 +353,7 @@ pub struct TreeWalkOptions {
     eval_cache_enabled: bool,
     force_cache_materialization_costs: MaterializationCosts,
     heap_memory_budget: Option<HeapMemoryBudget>,
+    heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -384,6 +385,7 @@ impl Default for TreeWalkOptions {
             eval_cache_enabled: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             heap_memory_budget: None,
+            heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),

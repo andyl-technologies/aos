@@ -1146,6 +1146,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       integration point while preserving today's budget semantics: it does not
       classify a memory budget, credit cold reclaim, request Tier B, issue
       `MADV_PAGEOUT`, or spill/rematerialize CA-store values.
+- [x] Current tree-walk opt-in cheap-advice policy precursor:
+      `TreeWalkOptions` can configure a post-evaluation idle-epoch threshold for
+      cheap heap advice, and `EvalOutcome` carries the resulting
+      `EvalHeapCheapMemoryAdviceReport`. The hook runs only after the tree-walk
+      result, derivation snapshot, and stats snapshot are produced. It does not
+      change allocation-time budget polling, cache semantics, output values,
+      `.drv` materialization, cold-reclaim accounting, `MADV_PAGEOUT`, or
+      CA-store spill/rematerialization.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

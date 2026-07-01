@@ -5463,6 +5463,15 @@ and helps the oracle directly.
       integration hook only; automatic budget dispatch still credits zero cold
       reclaim, does not issue `MADV_PAGEOUT`, does not request Tier B from this
       helper, and does not spill or rematerialize CA-store values.
+- [x] Current tree-walk opt-in cheap-advice policy precursor:
+      `TreeWalkOptions` now carries an optional post-evaluation idle-epoch
+      threshold for cheap heap advice. When configured, root and attr-path
+      `EvalOutcome`s carry the `EvalHeapCheapMemoryAdviceReport` produced by
+      `EvalHeap::advise_cheap_memory_ranges` after the evaluator has produced
+      the value, derivation snapshot, and stats snapshot. This is opt-in outcome
+      telemetry only: allocation-time budget polling, force-cache identity,
+      output values, `.drv` materialization, cold-reclaim accounting,
+      `MADV_PAGEOUT`, and CA-store spill/rematerialization remain unchanged.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

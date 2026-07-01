@@ -50,6 +50,7 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
+        cheap_memory_advice_report: None,
     }
 }
 
