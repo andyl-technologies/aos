@@ -1054,10 +1054,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   deduplicates children by content-addressed configuration id, marks
   already-recorded reruns, keeps cold children thin, and materializes only hot
   explored children admitted by the materialization budget.
-- [ ] **T-ADV-8** Implement pluggable, deterministic search strategies (BFS, DFS,
+- [x] **T-ADV-8** Implement pluggable, deterministic search strategies (BFS, DFS,
   priority, coverage-guided) with content-address-tie-broken ordering; prove the
   explored graph and discovered failures are identical for identical
   (scenario, seed, budget). — satisfies [ADV-17], [ADV-18]; spec §22.5.2.
+  Completed by `checks.crucible.phase6.searchStrategies`: strategy-driven search
+  now expands the temporal graph through the existing single-frontier search API,
+  supports breadth-first, depth-first, seeded priority, and coverage-guided
+  frontier ordering, breaks every strategy tie by configuration content address,
+  records deterministic expansion order plus reached graph and failure reports,
+  and proves same-input reproducibility plus complete-budget graph equivalence in
+  the `gate_search_strategies` Rust target, with graph-level reductions deferred
+  to T-ADV-9.
 - [ ] **T-ADV-9** Implement symmetry reduction and partial-order reduction as
   sound graph-level node-deduplication over the content-addressed DAG (07 §9),
   explicitly not a model checker / spec-language evaluator (NG-3). — satisfies
