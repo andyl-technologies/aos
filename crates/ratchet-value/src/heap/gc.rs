@@ -671,6 +671,167 @@ impl MinorGcDestinationAllocationPlan {
     }
 }
 
+/// One aligned destination placement for a minor-GC survivor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcDestinationPlacement {
+    allocation: MinorGcDestinationAllocation,
+    offset_bytes: usize,
+    end_offset_bytes: usize,
+}
+
+impl MinorGcDestinationPlacement {
+    /// Returns the destination allocation requirement being placed.
+    pub const fn allocation(self) -> MinorGcDestinationAllocation {
+        self.allocation
+    }
+
+    /// Returns the survivor that needs destination storage.
+    pub const fn survivor(self) -> MinorGcSurvivor {
+        self.allocation.survivor()
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(self) -> GcHeapAddress {
+        self.allocation.source()
+    }
+
+    /// Returns whether this survivor will be copied or promoted.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.allocation.action()
+    }
+
+    /// Returns the generation whose destination space owns this placement.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        self.allocation.destination_generation()
+    }
+
+    /// Returns the aligned byte offset within the destination generation.
+    pub const fn offset_bytes(self) -> usize {
+        self.offset_bytes
+    }
+
+    /// Returns the byte offset immediately after this placed object.
+    pub const fn end_offset_bytes(self) -> usize {
+        self.end_offset_bytes
+    }
+
+    /// Returns the placed object size in bytes.
+    pub const fn size_bytes(self) -> usize {
+        self.allocation.size_bytes()
+    }
+
+    /// Returns the placed object alignment in bytes.
+    pub const fn align(self) -> usize {
+        self.allocation.align()
+    }
+}
+
+/// Aligned destination-space offsets for a planned minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcDestinationPlacementPlan {
+    placements: Vec<MinorGcDestinationPlacement>,
+    nursery_reserved_bytes: usize,
+    old_reserved_bytes: usize,
+}
+
+impl MinorGcDestinationPlacementPlan {
+    /// Builds aligned destination offsets from allocation requirements.
+    ///
+    /// Placements are emitted in survivor-frontier order. Copied survivors are
+    /// packed into the next nursery destination space, promoted survivors are
+    /// packed into old-generation destination space, and each generation's
+    /// offset stream is aligned independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if placement storage cannot be reserved,
+    /// if placement length overflows, if an allocation carries invalid
+    /// alignment metadata, or if per-generation or aggregate reserved byte
+    /// totals overflow.
+    pub fn from_allocation_plan(
+        allocation_plan: &MinorGcDestinationAllocationPlan,
+    ) -> Result<Self, GenerationalGcError> {
+        let mut placements = Vec::new();
+        let mut nursery_reserved_bytes = 0usize;
+        let mut old_reserved_bytes = 0usize;
+
+        for allocation in allocation_plan.allocations() {
+            let (generation, current) = match allocation.action() {
+                MinorGcSurvivorAction::CopyToNursery => {
+                    (HeapGeneration::Young, nursery_reserved_bytes)
+                }
+                MinorGcSurvivorAction::PromoteToOld => (HeapGeneration::Old, old_reserved_bytes),
+            };
+            let offset = align_destination_offset(current, allocation.align(), generation)?;
+            let end_offset = checked_add_destination_placement_bytes(
+                offset,
+                allocation.size_bytes(),
+                generation,
+            )?;
+            match allocation.action() {
+                MinorGcSurvivorAction::CopyToNursery => nursery_reserved_bytes = end_offset,
+                MinorGcSurvivorAction::PromoteToOld => old_reserved_bytes = end_offset,
+            }
+
+            let placements_len = placements
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcDestinationPlacementLengthOverflow)?;
+            placements.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcDestinationPlacementAllocationFailed {
+                    placements: placements_len,
+                }
+            })?;
+            placements.push(MinorGcDestinationPlacement {
+                allocation: *allocation,
+                offset_bytes: offset,
+                end_offset_bytes: end_offset,
+            });
+        }
+
+        let _total_reserved_bytes = checked_add_destination_placement_total_bytes(
+            nursery_reserved_bytes,
+            old_reserved_bytes,
+        )?;
+
+        Ok(Self {
+            placements,
+            nursery_reserved_bytes,
+            old_reserved_bytes,
+        })
+    }
+
+    /// Returns placements in survivor-frontier order.
+    pub fn placements(&self) -> &[MinorGcDestinationPlacement] {
+        &self.placements
+    }
+
+    /// Returns reserved bytes needed for the next nursery destination space.
+    pub const fn nursery_reserved_bytes(&self) -> usize {
+        self.nursery_reserved_bytes
+    }
+
+    /// Returns reserved bytes needed for old-generation destination space.
+    pub const fn old_reserved_bytes(&self) -> usize {
+        self.old_reserved_bytes
+    }
+
+    /// Returns total reserved destination bytes, including alignment padding.
+    pub const fn total_reserved_bytes(&self) -> usize {
+        self.nursery_reserved_bytes + self.old_reserved_bytes
+    }
+
+    /// Returns the number of destination placements.
+    pub fn len(&self) -> usize {
+        self.placements.len()
+    }
+
+    /// Returns whether no destination placements are needed.
+    pub fn is_empty(&self) -> bool {
+        self.placements.is_empty()
+    }
+}
+
 /// Destination metadata for one live minor-GC survivor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcRelocationDestination {
@@ -1397,6 +1558,42 @@ fn checked_add_destination_total_bytes(
         .ok_or(GenerationalGcError::MinorGcDestinationTotalBytesOverflow)
 }
 
+fn align_destination_offset(
+    offset: usize,
+    align: usize,
+    generation: HeapGeneration,
+) -> Result<usize, GenerationalGcError> {
+    if align == 0 || !align.is_power_of_two() {
+        return Err(
+            GenerationalGcError::InvalidMinorGcDestinationPlacementAlignment { generation, align },
+        );
+    }
+    let mask = align - 1;
+    offset
+        .checked_add(mask)
+        .map(|offset| offset & !mask)
+        .ok_or(GenerationalGcError::MinorGcDestinationPlacementBytesOverflow { generation })
+}
+
+fn checked_add_destination_placement_bytes(
+    offset: usize,
+    size_bytes: usize,
+    generation: HeapGeneration,
+) -> Result<usize, GenerationalGcError> {
+    offset
+        .checked_add(size_bytes)
+        .ok_or(GenerationalGcError::MinorGcDestinationPlacementBytesOverflow { generation })
+}
+
+fn checked_add_destination_placement_total_bytes(
+    nursery_reserved_bytes: usize,
+    old_reserved_bytes: usize,
+) -> Result<usize, GenerationalGcError> {
+    nursery_reserved_bytes
+        .checked_add(old_reserved_bytes)
+        .ok_or(GenerationalGcError::MinorGcDestinationPlacementTotalBytesOverflow)
+}
+
 fn relocation_destination_for(
     destinations: &[MinorGcRelocationDestination],
     address: GcHeapAddress,
@@ -1593,6 +1790,32 @@ pub enum GenerationalGcError {
     /// Minor-GC destination allocation bytes overflowed in aggregate.
     #[error("minor-GC total destination bytes overflowed")]
     MinorGcDestinationTotalBytesOverflow,
+    /// The minor-GC destination placement plan length overflowed.
+    #[error("minor-GC destination placement length overflow")]
+    MinorGcDestinationPlacementLengthOverflow,
+    /// The minor-GC destination placement plan could not reserve storage.
+    #[error("failed to reserve {placements} minor-GC destination placements")]
+    MinorGcDestinationPlacementAllocationFailed {
+        /// The requested destination-placement capacity.
+        placements: usize,
+    },
+    /// A destination placement carried invalid alignment metadata.
+    #[error("invalid minor-GC destination placement alignment {align} for {generation:?}")]
+    InvalidMinorGcDestinationPlacementAlignment {
+        /// The destination generation being placed.
+        generation: HeapGeneration,
+        /// The rejected alignment in bytes.
+        align: usize,
+    },
+    /// Minor-GC destination placement reserved bytes overflowed.
+    #[error("minor-GC destination placement bytes overflowed for {generation:?}")]
+    MinorGcDestinationPlacementBytesOverflow {
+        /// The destination generation whose reserved byte total overflowed.
+        generation: HeapGeneration,
+    },
+    /// Minor-GC destination placement reserved bytes overflowed in aggregate.
+    #[error("minor-GC total destination placement bytes overflowed")]
+    MinorGcDestinationPlacementTotalBytesOverflow,
     /// The minor-GC relocation plan length overflowed.
     #[error("minor-GC relocation length overflow")]
     MinorGcRelocationLengthOverflow,
@@ -2309,6 +2532,178 @@ mod tests {
                 ],
             ),
             Err(GenerationalGcError::MinorGcDestinationTotalBytesOverflow)
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_placement_plan_aligns_offsets_by_generation() {
+        let first_copy = address(0x1000);
+        let promote = address(0x2000);
+        let second_copy = address(0x3000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first_copy),
+                ResolvedValueGeneration::young(promote),
+                ResolvedValueGeneration::young(second_copy),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first_copy, 0),
+                NurseryObjectAge::new(promote, 1),
+                NurseryObjectAge::new(second_copy, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(second_copy, 8, 16),
+                NurseryObjectLayout::new(promote, 40, 16),
+                NurseryObjectLayout::new(first_copy, 24, 8),
+            ],
+        )
+        .expect("allocation plan builds");
+
+        let placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)
+                .expect("placement plan builds");
+
+        assert_eq!(placement_plan.len(), 3);
+        assert!(!placement_plan.is_empty());
+        assert_eq!(placement_plan.nursery_reserved_bytes(), 40);
+        assert_eq!(placement_plan.old_reserved_bytes(), 40);
+        assert_eq!(placement_plan.total_reserved_bytes(), 80);
+        assert_eq!(placement_plan.placements()[0].source(), first_copy);
+        assert_eq!(
+            placement_plan.placements()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(placement_plan.placements()[0].offset_bytes(), 0);
+        assert_eq!(placement_plan.placements()[0].end_offset_bytes(), 24);
+        assert_eq!(placement_plan.placements()[1].source(), promote);
+        assert_eq!(
+            placement_plan.placements()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(placement_plan.placements()[1].offset_bytes(), 0);
+        assert_eq!(placement_plan.placements()[1].end_offset_bytes(), 40);
+        assert_eq!(placement_plan.placements()[2].source(), second_copy);
+        assert_eq!(
+            placement_plan.placements()[2].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(placement_plan.placements()[2].offset_bytes(), 32);
+        assert_eq!(placement_plan.placements()[2].end_offset_bytes(), 40);
+        assert_eq!(placement_plan.placements()[2].size_bytes(), 8);
+        assert_eq!(placement_plan.placements()[2].align(), 16);
+        assert_eq!(
+            placement_plan.placements()[2].allocation(),
+            allocation_plan.allocations()[2]
+        );
+        assert_eq!(
+            placement_plan.placements()[2].survivor(),
+            plan.survivors()[2]
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_placement_plan_rejects_reserved_byte_overflow() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                NurseryObjectLayout::new(first, usize::MAX - 1, 1),
+                NurseryObjectLayout::new(second, 1, 8),
+            ],
+        )
+        .expect("allocation plan builds");
+
+        assert_eq!(
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan),
+            Err(
+                GenerationalGcError::MinorGcDestinationPlacementBytesOverflow {
+                    generation: HeapGeneration::Young,
+                }
+            )
+        );
+
+        let promote = address(0x3000);
+        let split_plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("split minor GC plan builds");
+        let split_allocation_plan = MinorGcDestinationAllocationPlan::from_minor_gc_plan(
+            &split_plan,
+            &[
+                NurseryObjectLayout::new(first, usize::MAX - 2, 1),
+                NurseryObjectLayout::new(second, 1, 2),
+                NurseryObjectLayout::new(promote, 1, 1),
+            ],
+        )
+        .expect("split allocation plan builds");
+
+        assert_eq!(
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&split_allocation_plan),
+            Err(GenerationalGcError::MinorGcDestinationPlacementTotalBytesOverflow)
+        );
+    }
+
+    #[test]
+    fn minor_gc_destination_placement_plan_rejects_invalid_alignment_metadata() {
+        let young = address(0x1000);
+        let survivor = MinorGcSurvivor {
+            address: young,
+            previous_survivals: 0,
+            next_survivals: 1,
+            action: MinorGcSurvivorAction::CopyToNursery,
+        };
+        let allocation_plan = MinorGcDestinationAllocationPlan {
+            allocations: vec![MinorGcDestinationAllocation {
+                survivor,
+                size_bytes: 8,
+                align: 0,
+            }],
+            nursery_bytes: 8,
+            old_bytes: 0,
+        };
+
+        assert_eq!(
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan),
+            Err(
+                GenerationalGcError::InvalidMinorGcDestinationPlacementAlignment {
+                    generation: HeapGeneration::Young,
+                    align: 0,
+                }
+            )
         );
     }
 

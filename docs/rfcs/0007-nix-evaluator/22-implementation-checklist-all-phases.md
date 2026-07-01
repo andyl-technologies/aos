@@ -4995,6 +4995,19 @@ and helps the oracle directly.
       aggregate overflow. This remains allocation planning only; destination
       address allocation, object copying, forwarding pointers, root/field
       writeback, and semispace management remain open.
+- [x] Current minor-GC destination-placement planning precursor:
+      `ratchet-value::heap::gc::MinorGcDestinationPlacementPlan` converts a
+      destination-allocation plan into aligned byte offsets inside future nursery
+      and old-generation destination spaces. It keeps survivor-frontier order
+      while advancing nursery and old offset streams independently, includes
+      alignment padding in reserved-byte totals, and rejects invalid alignment
+      metadata plus per-generation or aggregate reserved-byte overflow. Unit
+      tests cover nursery/old offset separation, padding, retained survivor
+      identity, invalid alignment defense, per-generation reserved-byte
+      overflow, and aggregate reserved-byte overflow. This remains offset
+      metadata only; reserving pages, choosing base addresses, allocating
+      destination objects, copying bytes, forwarding pointers, and semispace
+      management remain open.
 - [x] Current minor-GC relocation-map precursor:
       `ratchet-value::heap::gc::MinorGcRelocationDestination` and
       `MinorGcRelocationPlan::from_minor_gc_plan` validate collector-supplied

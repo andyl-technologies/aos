@@ -993,6 +993,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       aggregate overflow. This is allocation planning only: it does not allocate
       destination addresses, copy bytes, install forwarding pointers, mutate
       roots/fields, or manage semispaces.
+- [x] Current minor-GC destination-placement planning precursor:
+      `ratchet-value::heap::gc::MinorGcDestinationPlacementPlan` converts a
+      destination-allocation plan into aligned byte offsets inside future nursery
+      and old-generation destination spaces. It preserves survivor-frontier
+      order while advancing the nursery and old offset streams independently,
+      includes alignment padding in reserved-byte totals, and rejects invalid
+      alignment metadata plus per-generation or aggregate reserved-byte overflow.
+      Tests cover nursery/old offset separation, padding, retained survivor
+      identity, invalid alignment defense, per-generation reserved-byte overflow,
+      and aggregate reserved-byte overflow. This is offset metadata only: it
+      does not reserve pages, choose base addresses, allocate destination
+      objects, copy bytes, install forwarding pointers, or manage semispaces.
 - [x] Current minor-GC relocation-map precursor:
       `ratchet-value::heap::gc::MinorGcRelocationDestination` and
       `MinorGcRelocationPlan::from_minor_gc_plan` validate a caller-supplied

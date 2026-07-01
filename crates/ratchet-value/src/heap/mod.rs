@@ -30,10 +30,10 @@ pub use concurrent_gc::{
 };
 pub use gc::{
     GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
-    MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
-    MinorGcRelocation, MinorGcRelocationDestination, MinorGcRelocationPlan,
-    MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
+    MinorGcDestinationAllocation, MinorGcDestinationAllocationPlan, MinorGcDestinationPlacement,
+    MinorGcDestinationPlacementPlan, MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite,
+    MinorGcReferenceRewritePlan, MinorGcRelocation, MinorGcRelocationDestination,
+    MinorGcRelocationPlan, MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
     MinorGcRememberedSetRefreshPlan, MinorGcSurvivor, MinorGcSurvivorAction, NurseryObjectAge,
     NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetUpdate,
     ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
