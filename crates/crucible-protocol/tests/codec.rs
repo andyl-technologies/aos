@@ -6,7 +6,9 @@ use std::io::{Cursor, ErrorKind, Write};
 
 use crucible_protocol::{
     ControlDirection, ControlTag, FRAME_LENGTH_PREFIX_SIZE, FrameDecodeError, FrameIoError,
-    HostMsg, MAX_FRAME_SIZE, PluginMsg, TAG_HELLO, TAG_SETUP_ACK, WhiteboxDoorbellFrame,
+    HostMsg, MAX_FRAME_SIZE, PluginMsg, TAG_HELLO, TAG_SETUP_ACK,
+    WHITEBOX_DOORBELL_FRAME_HEADER_LEN, WHITEBOX_DOORBELL_FRAME_MAGIC,
+    WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
     WhiteboxDoorbellMarkerKind, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
     WhiteboxMarkerPayloadEncodeError, WhiteboxRandomRequestBody, control_decode_host_msg,
     control_decode_plugin_msg, control_encode_host_msg, control_encode_plugin_msg,
@@ -178,6 +180,67 @@ fn marker_payload_decoder_reports_typed_shape_errors() {
 }
 
 #[test]
+fn doorbell_frame_decoder_reports_typed_shape_errors() {
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode(&[1, 2, 3]),
+        Err(WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+            len: 3,
+            minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+        })
+    );
+
+    let bad_magic = doorbell_frame_with_header(0, WHITEBOX_DOORBELL_PROTOCOL_VERSION, 1, &[]);
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode(&bad_magic),
+        Err(WhiteboxDoorbellFrameDecodeError::BadMagic {
+            expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
+            actual: 0,
+        })
+    );
+
+    let bad_version = doorbell_frame_with_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 0xffff, 1, &[]);
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode(&bad_version),
+        Err(WhiteboxDoorbellFrameDecodeError::UnsupportedVersion {
+            expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+            actual: 0xffff,
+        })
+    );
+
+    let short_payload = doorbell_frame_with_declared_len(
+        WHITEBOX_DOORBELL_FRAME_MAGIC,
+        WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+        1,
+        4,
+        &[0xa5],
+    );
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode(&short_payload),
+        Err(WhiteboxDoorbellFrameDecodeError::PayloadLengthMismatch {
+            declared_len: 4,
+            actual_len: 1,
+        })
+    );
+
+    let oversized_declared = doorbell_frame_with_declared_len(
+        WHITEBOX_DOORBELL_FRAME_MAGIC,
+        WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+        1,
+        9,
+        &[],
+    );
+    assert_eq!(
+        WhiteboxDoorbellFrame::decode_bounded(&oversized_declared, 8),
+        Err(
+            WhiteboxDoorbellFrameDecodeError::PayloadLengthExceedsBound {
+                declared_len: 9,
+                max_payload_len: 8,
+            }
+        )
+    );
+}
+
+#[test]
 fn frame_stream_helpers_reject_truncated_reads_as_io_errors() {
     let mut truncated_prefix = Cursor::new(vec![0, 0]);
     assert_eq!(
@@ -274,6 +337,26 @@ fn marker_frame(kind: WhiteboxDoorbellMarkerKind, payload: &[u8]) -> WhiteboxDoo
         Ok(frame) => frame,
         Err(error) => panic!("marker test frame should decode: {error}"),
     }
+}
+
+fn doorbell_frame_with_header(magic: u32, version: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+    doorbell_frame_with_declared_len(magic, version, kind, body.len() as u32, body)
+}
+
+fn doorbell_frame_with_declared_len(
+    magic: u32,
+    version: u16,
+    kind: u16,
+    declared_len: u32,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&magic.to_le_bytes());
+    frame.extend_from_slice(&version.to_le_bytes());
+    frame.extend_from_slice(&kind.to_le_bytes());
+    frame.extend_from_slice(&declared_len.to_le_bytes());
+    frame.extend_from_slice(body);
+    frame
 }
 
 struct FailingWriter;

@@ -52,6 +52,25 @@ impl WhiteboxDoorbellFrame {
     /// Returns [`WhiteboxDoorbellFrameDecodeError`] when the frame has a bad
     /// magic, unsupported version, mismatched payload length, or truncated header.
     pub fn decode(bytes: &[u8]) -> Result<Self, WhiteboxDoorbellFrameDecodeError> {
+        Self::decode_bounded(bytes, u32::MAX as usize)
+    }
+
+    /// Decodes one doorbell frame with an explicit payload allocation bound.
+    ///
+    /// The bound is checked against the header-declared payload length before
+    /// copying the payload into the decoded frame, so malformed guest input
+    /// cannot request an allocation larger than the caller's trap-time read
+    /// budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhiteboxDoorbellFrameDecodeError`] when the frame has a bad
+    /// magic, unsupported version, payload length above `max_payload_len`,
+    /// mismatched payload length, or truncated header.
+    pub fn decode_bounded(
+        bytes: &[u8],
+        max_payload_len: usize,
+    ) -> Result<Self, WhiteboxDoorbellFrameDecodeError> {
         if bytes.len() < WHITEBOX_DOORBELL_FRAME_HEADER_LEN {
             return Err(WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
                 len: bytes.len(),
@@ -77,6 +96,14 @@ impl WhiteboxDoorbellFrame {
 
         let kind = u16::from_le_bytes([bytes[6], bytes[7]]);
         let payload_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        if payload_len > max_payload_len {
+            return Err(
+                WhiteboxDoorbellFrameDecodeError::PayloadLengthExceedsBound {
+                    declared_len: payload_len,
+                    max_payload_len,
+                },
+            );
+        }
         let actual_payload_len = bytes.len() - WHITEBOX_DOORBELL_FRAME_HEADER_LEN;
         if payload_len != actual_payload_len {
             return Err(WhiteboxDoorbellFrameDecodeError::PayloadLengthMismatch {
@@ -184,6 +211,14 @@ pub enum WhiteboxDoorbellFrameDecodeError {
         expected: u16,
         /// Observed protocol version.
         actual: u16,
+    },
+    /// The header-declared payload length exceeded the caller's allocation bound.
+    #[error("white-box doorbell payload length {declared_len} exceeds bound {max_payload_len}")]
+    PayloadLengthExceedsBound {
+        /// Header-declared payload length.
+        declared_len: usize,
+        /// Caller-supplied maximum payload length.
+        max_payload_len: usize,
     },
     /// The header payload length did not match the received payload bytes.
     #[error("white-box doorbell payload length {declared_len} does not match actual {actual_len}")]

@@ -184,19 +184,40 @@ impl PluginWhiteboxDoorbell {
         self.validate_payload_range(event.payload_range())?;
 
         let payload = read_doorbell_payload(self, reader, event)?;
-        let frame = WhiteboxDoorbellFrame::decode(&payload).map_err(|source| {
-            WhiteboxDoorbellError::DoorbellFrameDecode {
-                marker_icount: event.current_icount(),
-                source,
+        let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, self.max_payload_len()) {
+            Ok(frame) => frame,
+            Err(source) => {
+                record_decode_diagnostic(
+                    sink,
+                    WhiteboxDoorbellDecodeDiagnostic::frame_decode(event, source.clone()),
+                )?;
+                return Err(WhiteboxDoorbellError::DoorbellFrameDecode {
+                    marker_icount: event.current_icount(),
+                    source,
+                });
             }
-        })?;
-        let decoded_payload = decode_whitebox_marker_payload(&frame).map_err(|source| {
-            WhiteboxDoorbellError::DoorbellMarkerDecode {
-                marker_icount: event.current_icount(),
-                source,
+        };
+        let decoded_payload = match decode_whitebox_marker_payload(&frame) {
+            Ok(decoded_payload) => decoded_payload,
+            Err(source) => {
+                record_decode_diagnostic(
+                    sink,
+                    WhiteboxDoorbellDecodeDiagnostic::marker_decode(event, source.clone()),
+                )?;
+                return Err(WhiteboxDoorbellError::DoorbellMarkerDecode {
+                    marker_icount: event.current_icount(),
+                    source,
+                });
             }
-        })?;
+        };
         if !decoded_payload.is_observational() {
+            record_decode_diagnostic(
+                sink,
+                WhiteboxDoorbellDecodeDiagnostic::non_observational_kind(
+                    event,
+                    decoded_payload.kind(),
+                ),
+            )?;
             return Err(WhiteboxDoorbellError::NonObservationalMarkerKind {
                 marker_icount: event.current_icount(),
                 kind: decoded_payload.kind(),
@@ -359,6 +380,20 @@ impl PluginWhiteboxDoorbell {
     }
 }
 
+fn record_decode_diagnostic<S>(
+    sink: &mut S,
+    diagnostic: WhiteboxDoorbellDecodeDiagnostic,
+) -> Result<(), WhiteboxDoorbellError>
+where
+    S: WhiteboxMarkerSink + ?Sized,
+{
+    sink.record_whitebox_decode_diagnostic(&diagnostic)
+        .map_err(|source| WhiteboxDoorbellError::MarkerSink {
+            marker_icount: diagnostic.marker_icount(),
+            source,
+        })
+}
+
 /// Handles one safe white-box doorbell callback body.
 ///
 /// # Errors
@@ -429,7 +464,7 @@ where
 {
     let payload =
         read_doorbell_payload(doorbell, reader, event).map_err(AppRandomDoorbellError::Doorbell)?;
-    let frame = match WhiteboxDoorbellFrame::decode(&payload) {
+    let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, doorbell.max_payload_len()) {
         Ok(frame) => frame,
         Err(error) => {
             return Ok(AppRandomDoorbellOutcome::Dropped {
@@ -854,6 +889,13 @@ impl From<WhiteboxDoorbellFrameDecodeError> for AppRandomDecodeDiagnostic {
             WhiteboxDoorbellFrameDecodeError::UnsupportedVersion { expected, actual } => {
                 AppRandomDecodeDiagnosticKind::UnsupportedVersion { expected, actual }
             }
+            WhiteboxDoorbellFrameDecodeError::PayloadLengthExceedsBound {
+                declared_len,
+                max_payload_len,
+            } => AppRandomDecodeDiagnosticKind::PayloadLengthExceedsBound {
+                declared_len,
+                max_payload_len,
+            },
             WhiteboxDoorbellFrameDecodeError::PayloadLengthMismatch {
                 declared_len,
                 actual_len,
@@ -896,6 +938,13 @@ pub enum AppRandomDecodeDiagnosticKind {
         declared_len: usize,
         /// Actual payload length after the header.
         actual_len: usize,
+    },
+    /// The header payload length exceeded the bounded trap-time allocation budget.
+    PayloadLengthExceedsBound {
+        /// Header-declared payload length.
+        declared_len: usize,
+        /// Configured maximum payload length.
+        max_payload_len: usize,
     },
     /// The frame kind was not the random-request kind.
     UnexpectedKind {
@@ -1643,6 +1692,112 @@ impl WhiteboxMarker {
     }
 }
 
+/// A defensive decode diagnostic for a dropped white-box doorbell payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WhiteboxDoorbellDecodeDiagnostic {
+    marker_icount: u64,
+    vcpu_index: u32,
+    payload_range: GuestMemoryRange,
+    kind: WhiteboxDoorbellDecodeDiagnosticKind,
+}
+
+impl WhiteboxDoorbellDecodeDiagnostic {
+    fn frame_decode(
+        event: WhiteboxDoorbellTrapEvent,
+        source: WhiteboxDoorbellFrameDecodeError,
+    ) -> Self {
+        Self::new(
+            event,
+            WhiteboxDoorbellDecodeDiagnosticKind::FrameDecode { source },
+        )
+    }
+
+    fn marker_decode(
+        event: WhiteboxDoorbellTrapEvent,
+        source: WhiteboxMarkerPayloadDecodeError,
+    ) -> Self {
+        Self::new(
+            event,
+            WhiteboxDoorbellDecodeDiagnosticKind::MarkerDecode { source },
+        )
+    }
+
+    fn non_observational_kind(
+        event: WhiteboxDoorbellTrapEvent,
+        kind: WhiteboxDoorbellMarkerKind,
+    ) -> Self {
+        Self::new(
+            event,
+            WhiteboxDoorbellDecodeDiagnosticKind::NonObservationalKind { kind },
+        )
+    }
+
+    fn new(event: WhiteboxDoorbellTrapEvent, kind: WhiteboxDoorbellDecodeDiagnosticKind) -> Self {
+        Self {
+            marker_icount: event.current_icount(),
+            vcpu_index: event.vcpu_index(),
+            payload_range: event.payload_range(),
+            kind,
+        }
+    }
+
+    /// Returns the exact doorbell icount stamped on the diagnostic.
+    #[must_use]
+    pub const fn marker_icount(&self) -> u64 {
+        self.marker_icount
+    }
+
+    /// Returns the vCPU that retired the malformed doorbell instruction.
+    #[must_use]
+    pub const fn vcpu_index(&self) -> u32 {
+        self.vcpu_index
+    }
+
+    /// Returns the guest-memory range used for the malformed payload read.
+    #[must_use]
+    pub const fn payload_range(&self) -> GuestMemoryRange {
+        self.payload_range
+    }
+
+    /// Returns the typed decode diagnostic kind.
+    #[must_use]
+    pub const fn kind(&self) -> &WhiteboxDoorbellDecodeDiagnosticKind {
+        &self.kind
+    }
+}
+
+/// The defensive decode diagnostic kind for a dropped white-box doorbell payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WhiteboxDoorbellDecodeDiagnosticKind {
+    /// The fixed doorbell frame header or length was invalid.
+    FrameDecode {
+        /// The typed frame decode error.
+        source: WhiteboxDoorbellFrameDecodeError,
+    },
+    /// The frame kind or kind-specific marker body was invalid.
+    MarkerDecode {
+        /// The typed marker payload decode error.
+        source: WhiteboxMarkerPayloadDecodeError,
+    },
+    /// The marker path received a non-observational in-band kind.
+    NonObservationalKind {
+        /// The non-observational marker kind.
+        kind: WhiteboxDoorbellMarkerKind,
+    },
+}
+
+impl WhiteboxDoorbellDecodeDiagnosticKind {
+    /// Returns a stable marker label for event-log diagnostic records.
+    #[must_use]
+    pub const fn semantic_label(&self) -> &'static str {
+        match self {
+            Self::FrameDecode { .. } => "frame_decode",
+            Self::MarkerDecode { .. } => "marker_decode",
+            Self::NonObservationalKind { .. } => "non_observational_kind",
+        }
+    }
+}
+
 /// A backend for reading guest memory at the doorbell trap.
 pub trait GuestMemoryReader {
     /// Reads one guest-memory range through QEMU's plugin memory API.
@@ -1693,6 +1848,17 @@ pub trait WhiteboxMarkerSink {
     fn record_whitebox_marker(
         &mut self,
         marker: &WhiteboxMarker,
+    ) -> Result<(), WhiteboxMarkerSinkError>;
+
+    /// Records one malformed doorbell decode diagnostic as observational output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhiteboxMarkerSinkError`] when the event-log path cannot accept
+    /// the diagnostic and must fail loudly.
+    fn record_whitebox_decode_diagnostic(
+        &mut self,
+        diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
     ) -> Result<(), WhiteboxMarkerSinkError>;
 }
 
@@ -2399,6 +2565,16 @@ mod tests {
         );
         assert_eq!(reader.calls, vec![(2, 777, range)]);
         assert!(sink.markers.is_empty());
+        assert_eq!(
+            sink.diagnostics,
+            vec![WhiteboxDoorbellDecodeDiagnostic::frame_decode(
+                event,
+                WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+                    len: 4,
+                    minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+                },
+            )]
+        );
     }
 
     #[test]
@@ -2423,6 +2599,44 @@ mod tests {
         );
         assert_eq!(reader.calls, vec![(2, 777, range)]);
         assert!(sink.markers.is_empty());
+        assert_eq!(
+            sink.diagnostics,
+            vec![WhiteboxDoorbellDecodeDiagnostic::non_observational_kind(
+                event,
+                WhiteboxDoorbellMarkerKind::RandomRequest,
+            )]
+        );
+    }
+
+    #[test]
+    fn whitebox_doorbell_records_unknown_kind_decode_diagnostic_without_marker() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let frame = doorbell_frame(0xffff, &[]);
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, frame.len());
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 778, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(frame);
+        let mut sink = RecordingMarkerSink::default();
+
+        assert_eq!(
+            handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event),
+            Err(WhiteboxDoorbellError::DoorbellMarkerDecode {
+                marker_icount: 778,
+                source: WhiteboxMarkerPayloadDecodeError::UnknownKind { kind: 0xffff },
+            })
+        );
+        assert_eq!(reader.calls, vec![(2, 778, range)]);
+        assert!(sink.markers.is_empty());
+        assert_eq!(
+            sink.diagnostics,
+            vec![WhiteboxDoorbellDecodeDiagnostic::marker_decode(
+                event,
+                WhiteboxMarkerPayloadDecodeError::UnknownKind { kind: 0xffff },
+            )]
+        );
     }
 
     #[test]
@@ -3040,6 +3254,111 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects() {
+        let cases = [
+            (
+                "bad magic",
+                doorbell_frame_with_header(0, WHITEBOX_DOORBELL_PROTOCOL_VERSION, 5, &[]),
+                AppRandomDecodeDiagnosticKind::BadMagic {
+                    expected: WHITEBOX_DOORBELL_FRAME_MAGIC,
+                    actual: 0,
+                },
+            ),
+            (
+                "bad version",
+                doorbell_frame_with_header(WHITEBOX_DOORBELL_FRAME_MAGIC, 1, 5, &[]),
+                AppRandomDecodeDiagnosticKind::UnsupportedVersion {
+                    expected: WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                    actual: 1,
+                },
+            ),
+            (
+                "declared length exceeds bound",
+                doorbell_frame_with_declared_len(
+                    WHITEBOX_DOORBELL_FRAME_MAGIC,
+                    WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                    5,
+                    129,
+                    &[],
+                ),
+                AppRandomDecodeDiagnosticKind::PayloadLengthExceedsBound {
+                    declared_len: 129,
+                    max_payload_len: 128,
+                },
+            ),
+            (
+                "declared length mismatch",
+                doorbell_frame_with_declared_len(
+                    WHITEBOX_DOORBELL_FRAME_MAGIC,
+                    WHITEBOX_DOORBELL_PROTOCOL_VERSION,
+                    5,
+                    4,
+                    &[0xa5],
+                ),
+                AppRandomDecodeDiagnosticKind::PayloadLengthMismatch {
+                    declared_len: 4,
+                    actual_len: 1,
+                },
+            ),
+            (
+                "wrong kind",
+                doorbell_frame(4, &[]),
+                AppRandomDecodeDiagnosticKind::UnexpectedKind {
+                    expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
+                    actual: 4,
+                },
+            ),
+        ];
+
+        for (name, payload, expected_kind) in cases {
+            let doorbell = PluginWhiteboxDoorbell::new(
+                PluginSwitch::On,
+                WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+                128,
+            );
+            let capability = guest_input_capability(&doorbell);
+            let range =
+                GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+            let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
+            let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+            let mut decisions = RecordingAppRandomSource::with_record(
+                AppRandomDecisionRecord::new("node-a", name, 0, 8, 0),
+            );
+            let mut writer = RecordingGuestInputWriter::default();
+
+            let outcome = match handle_whitebox_app_random_callback(
+                &doorbell,
+                &capability,
+                &mut reader,
+                &mut decisions,
+                &mut writer,
+                "node-a",
+                event,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => panic!("malformed app-random case `{name}` should drop: {error}"),
+            };
+
+            assert_eq!(
+                outcome,
+                AppRandomDoorbellOutcome::Dropped {
+                    diagnostic: AppRandomDecodeDiagnostic::new(expected_kind),
+                },
+                "malformed app-random case `{name}` produced the wrong diagnostic"
+            );
+            assert_eq!(reader.calls, vec![(0, 10, range)]);
+            assert!(
+                decisions.requests.is_empty(),
+                "malformed app-random case `{name}` must not draw a decision"
+            );
+            assert!(
+                writer.writes.is_empty(),
+                "malformed app-random case `{name}` must not write a reply"
+            );
+        }
+    }
+
+    #[test]
     fn whitebox_app_random_rejects_unmasked_decision_value_without_reply() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -3207,11 +3526,21 @@ mod tests {
     }
 
     fn doorbell_frame_with_header(magic: u32, version: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+        doorbell_frame_with_declared_len(magic, version, kind, body.len() as u32, body)
+    }
+
+    fn doorbell_frame_with_declared_len(
+        magic: u32,
+        version: u16,
+        kind: u16,
+        declared_len: u32,
+        body: &[u8],
+    ) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.extend_from_slice(&magic.to_le_bytes());
         frame.extend_from_slice(&version.to_le_bytes());
         frame.extend_from_slice(&kind.to_le_bytes());
-        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&declared_len.to_le_bytes());
         frame.extend_from_slice(body);
         frame
     }
@@ -3282,6 +3611,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMarkerSink {
         markers: Vec<WhiteboxMarker>,
+        diagnostics: Vec<WhiteboxDoorbellDecodeDiagnostic>,
     }
 
     impl WhiteboxMarkerSink for RecordingMarkerSink {
@@ -3290,6 +3620,14 @@ mod tests {
             marker: &WhiteboxMarker,
         ) -> Result<(), WhiteboxMarkerSinkError> {
             self.markers.push(marker.clone());
+            Ok(())
+        }
+
+        fn record_whitebox_decode_diagnostic(
+            &mut self,
+            diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
+        ) -> Result<(), WhiteboxMarkerSinkError> {
+            self.diagnostics.push(diagnostic.clone());
             Ok(())
         }
     }
@@ -3325,6 +3663,34 @@ mod tests {
             .ok_or_else(|| {
                 WhiteboxMarkerSinkError::new("non-observational marker reached event-log sink")
             })?;
+            let sequence = self
+                .event_log
+                .next_sequence(0)
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
+            let entry =
+                crucible::test_support::condition_observation_entry_for_test(sequence, &event);
+            let append = self
+                .event_log
+                .append_entries(vec![entry])
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
+            self.entries.extend(append.entries);
+            Ok(())
+        }
+
+        fn record_whitebox_decode_diagnostic(
+            &mut self,
+            diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
+        ) -> Result<(), WhiteboxMarkerSinkError> {
+            let event = crucible::ObservableEvent::guest_marker(
+                crucible::Icount {
+                    retired: diagnostic.marker_icount(),
+                },
+                self.node.clone(),
+                crucible::MarkerId::from_name(format!(
+                    "decode_diagnostic.{}",
+                    diagnostic.kind().semantic_label()
+                )),
+            );
             let sequence = self
                 .event_log
                 .next_sequence(0)
