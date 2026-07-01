@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
-    EventLevel, EventLogCausalProjection, EventLogCoverageFeedback,
+    EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
     EventLogCoverageFeedbackConsumer, ScheduledEventPayload, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, event_log_causal_projection,
 };
@@ -10924,6 +10924,103 @@ impl TemporalGraph {
         self.non_canonical_debug_branches.len()
     }
 
+    /// Resolves an operator-facing debug target into a `goto` request.
+    ///
+    /// The resolver accepts the public coordinate forms used by the debug CLI:
+    /// direct `--at` coordinates, event-log sequence coordinates, the first
+    /// assertion failure in the event log, checkpoint content addresses, and
+    /// divergence-bisection coordinates. The returned request delegates actual
+    /// movement to [`Self::debug_goto`], keeping target resolution separate from
+    /// restore-plus-replay execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the selector has no matching event-log or
+    /// checkpoint coordinate, when `--at-failure` sees no assertion violation,
+    /// or when the resolved target belongs to another scenario.
+    pub fn debug_resolve_target(
+        &self,
+        request: &DebugTargetResolverRequest,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<DebugTargetResolverReport, EngineError> {
+        let mut failure_event_sequence = None;
+        let mut divergence = None;
+        let mut exact_target = None;
+        let resolved_coordinate = match &request.selector {
+            DebugTargetSelector::At(coordinate) => coordinate.clone(),
+            DebugTargetSelector::AtEvent(sequence) => {
+                if !debug_event_log_contains_sequence(event_log, *sequence) {
+                    return Err(EngineError::DebugTimeTravelMissingEventCoordinate {
+                        sequence: *sequence,
+                    });
+                }
+                DebugCoordinate::event_sequence(*sequence)
+            }
+            DebugTargetSelector::AtFailure => {
+                let sequence = debug_first_assertion_violation_sequence(event_log).ok_or(
+                    EngineError::DebugTargetResolverFailureNotFound {
+                        configuration: request.current.id(),
+                    },
+                )?;
+                failure_event_sequence = Some(sequence);
+                DebugCoordinate::event_sequence(sequence)
+            }
+            DebugTargetSelector::AtCheckpoint(checkpoint) => {
+                DebugCoordinate::checkpoint(*checkpoint)
+            }
+            DebugTargetSelector::Divergence(coordinate) => {
+                divergence = Some(coordinate.clone());
+                let target =
+                    self.debug_resolve_exact_divergence_coordinate(&request.current, coordinate)?;
+                exact_target = Some(target.clone());
+                DebugCoordinate::configuration(target)
+            }
+        };
+        let target = if let Some(target) = exact_target {
+            target
+        } else {
+            self.debug_resolve_coordinate(
+                &request.current,
+                &resolved_coordinate,
+                &request.event_coordinates,
+            )?
+        };
+        debug_validate_same_scenario(&request.current, &target)?;
+        let goto_request = DebugGotoRequest {
+            current: request.current.clone(),
+            target: resolved_coordinate.clone(),
+            event_coordinates: request.event_coordinates.clone(),
+        };
+        let failure_footer = request
+            .failure_footer_artifact
+            .as_ref()
+            .map(|artifact| DebugFailureFooterCommand::new(artifact.clone()));
+
+        Ok(DebugTargetResolverReport {
+            selector: request.selector.clone(),
+            resolved_coordinate,
+            target_configuration: target.id(),
+            goto_request,
+            failure_event_sequence,
+            divergence,
+            failure_footer,
+        })
+    }
+
+    fn debug_resolve_exact_divergence_coordinate(
+        &self,
+        current: &Configuration,
+        coordinate: &DebugDivergenceCoordinate,
+    ) -> Result<Configuration, EngineError> {
+        self.debug_resolve_scoped_node_icount(current, &coordinate.node, coordinate.icount)
+            .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
+                coordinate: DebugCoordinate::node_icount(
+                    coordinate.node.clone(),
+                    coordinate.icount,
+                ),
+            })
+    }
+
     /// Moves an attached debug session to `request.target` using restore-plus-replay.
     ///
     /// The selected restore point is the exact target snapshot when one exists,
@@ -16096,6 +16193,64 @@ fn debug_non_canonical_schedule_delta(request: &DebugNonCanonicalBranchRequest) 
     }))
 }
 
+fn debug_first_assertion_violation_sequence(event_log: &[SchedulerEventLogEntry]) -> Option<u64> {
+    event_log
+        .iter()
+        .find(|entry| debug_event_log_entry_is_assertion_violation(entry))
+        .map(SchedulerEventLogEntry::sequence)
+}
+
+fn debug_event_log_contains_sequence(event_log: &[SchedulerEventLogEntry], sequence: u64) -> bool {
+    event_log.iter().any(|entry| entry.sequence() == sequence)
+}
+
+fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
+            state: AssertionPhase::Violated,
+            ..
+        })
+    ) || (entry.event_payload().kind() == "assertion_state_changed"
+        && entry.event_payload().string("new_state") == Some("Violated"))
+}
+
+fn shell_quote_command_argument(value: &str) -> String {
+    if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
+        return value.to_owned();
+    }
+
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'@'
+            | b'%'
+            | b'_'
+            | b'+'
+            | b'='
+            | b':'
+            | b','
+            | b'.'
+            | b'/'
+            | b'-'
+    )
+}
+
 /// Client-visible breakpoint request flavor at the debug protocol boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DebugBreakpointClientKind {
@@ -16853,6 +17008,216 @@ impl DebugCoordinate {
     #[must_use]
     pub fn node_icount(node: NodeId, icount: Icount) -> Self {
         Self::NodeIcount { node, icount }
+    }
+}
+
+/// Divergence-bisection coordinate accepted directly as a debug target.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugDivergenceCoordinate {
+    /// Node pinned by the divergence bisection.
+    pub node: NodeId,
+    /// Retired-instruction count pinned by the divergence bisection.
+    pub icount: Icount,
+    /// Open-set event kind reported by the divergence bisection.
+    pub kind: String,
+}
+
+impl DebugDivergenceCoordinate {
+    /// Builds a node-local divergence coordinate.
+    #[must_use]
+    pub fn new(node: NodeId, icount: Icount, kind: impl Into<String>) -> Self {
+        Self {
+            node,
+            icount,
+            kind: kind.into(),
+        }
+    }
+
+    /// Converts an event-log causal divergence point when it is node-local.
+    #[must_use]
+    pub fn from_event_log_causal_divergence(point: &EventLogCausalDivergencePoint) -> Option<Self> {
+        Some(Self {
+            node: point.at.node.clone()?,
+            icount: point.at.icount,
+            kind: point.kind.clone(),
+        })
+    }
+}
+
+/// Operator-facing target selector accepted by the debug target resolver.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugTargetSelector {
+    /// Direct `--at` coordinate.
+    At(DebugCoordinate),
+    /// `--at-event <seq>` event-log coordinate.
+    AtEvent(u64),
+    /// `--at-failure`, the first assertion-violation event.
+    AtFailure,
+    /// `--at-checkpoint <hash>` checkpoint coordinate.
+    AtCheckpoint(ContentHash),
+    /// Divergence-bisection `(node, icount, kind)` coordinate.
+    Divergence(DebugDivergenceCoordinate),
+}
+
+impl DebugTargetSelector {
+    /// Builds a direct `--at` virtual-time selector.
+    #[must_use]
+    pub const fn at_virtual_time(time: VirtualTime) -> Self {
+        Self::At(DebugCoordinate::virtual_time(time))
+    }
+
+    /// Builds a direct `--at` node-icount selector.
+    #[must_use]
+    pub fn at_node_icount(node: NodeId, icount: Icount) -> Self {
+        Self::At(DebugCoordinate::node_icount(node, icount))
+    }
+
+    /// Builds an `--at-event` selector.
+    #[must_use]
+    pub const fn at_event(sequence: u64) -> Self {
+        Self::AtEvent(sequence)
+    }
+
+    /// Builds an `--at-failure` selector.
+    #[must_use]
+    pub const fn at_failure() -> Self {
+        Self::AtFailure
+    }
+
+    /// Builds an `--at-checkpoint` selector.
+    #[must_use]
+    pub const fn at_checkpoint(checkpoint: ContentHash) -> Self {
+        Self::AtCheckpoint(checkpoint)
+    }
+
+    /// Builds a divergence-bisection selector.
+    #[must_use]
+    pub fn divergence(coordinate: DebugDivergenceCoordinate) -> Self {
+        Self::Divergence(coordinate)
+    }
+}
+
+/// Copy-pasteable debug command printed in non-passing failure footers.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugFailureFooterCommand {
+    /// Reproduction artifact path displayed to the operator.
+    pub artifact: String,
+    /// Debug command that opens at the first failure.
+    pub debug_command: String,
+}
+
+impl DebugFailureFooterCommand {
+    /// Builds the `crucible debug <artifact> --at-failure` command.
+    #[must_use]
+    pub fn new(artifact: impl Into<String>) -> Self {
+        let artifact = artifact.into();
+        let debug_command = format!(
+            "crucible debug {} --at-failure",
+            shell_quote_command_argument(&artifact)
+        );
+        Self {
+            artifact,
+            debug_command,
+        }
+    }
+
+    /// Returns whether the command is the required at-failure debug footer.
+    #[must_use]
+    pub fn is_copy_pasteable_at_failure(&self) -> bool {
+        !self.artifact.is_empty()
+            && !self.artifact.chars().any(|ch| matches!(ch, '\n' | '\0'))
+            && self.debug_command
+                == format!(
+                    "crucible debug {} --at-failure",
+                    shell_quote_command_argument(&self.artifact)
+                )
+    }
+}
+
+/// Request to resolve an operator-facing debug target.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugTargetResolverRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Operator-facing target selector.
+    pub selector: DebugTargetSelector,
+    /// Mapping from event-log sequence to temporal-graph coordinate.
+    pub event_coordinates: BTreeMap<u64, Configuration>,
+    /// Reproduction artifact shown in the optional failure footer command.
+    pub failure_footer_artifact: Option<String>,
+}
+
+impl DebugTargetResolverRequest {
+    /// Builds a debug target resolver request.
+    #[must_use]
+    pub fn new(current: Configuration, selector: DebugTargetSelector) -> Self {
+        Self {
+            current,
+            selector,
+            event_coordinates: BTreeMap::new(),
+            failure_footer_artifact: None,
+        }
+    }
+
+    /// Adds an event-log sequence to configuration mapping.
+    #[must_use]
+    pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
+        self.event_coordinates.insert(sequence, configuration);
+        self
+    }
+
+    /// Adds the artifact path used to render an at-failure debug footer.
+    #[must_use]
+    pub fn with_failure_footer_artifact(mut self, artifact: impl Into<String>) -> Self {
+        self.failure_footer_artifact = Some(artifact.into());
+        self
+    }
+}
+
+/// Result of resolving an operator-facing debug target.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugTargetResolverReport {
+    /// Target selector supplied by the operator.
+    pub selector: DebugTargetSelector,
+    /// Concrete coordinate delegated to `debug goto`.
+    pub resolved_coordinate: DebugCoordinate,
+    /// Resolved configuration content address.
+    pub target_configuration: ContentHash,
+    /// `goto` request that can realize the resolved target.
+    pub goto_request: DebugGotoRequest,
+    /// Event sequence selected by `--at-failure`, when that selector was used.
+    pub failure_event_sequence: Option<u64>,
+    /// Divergence coordinate consumed directly by the resolver, when present.
+    pub divergence: Option<DebugDivergenceCoordinate>,
+    /// Optional copy-pasteable failure footer command.
+    pub failure_footer: Option<DebugFailureFooterCommand>,
+}
+
+impl DebugTargetResolverReport {
+    /// Returns whether the report delegates the resolved coordinate to `goto`.
+    #[must_use]
+    pub fn delegates_to_goto(&self) -> bool {
+        self.goto_request.target == self.resolved_coordinate
+            && self.goto_request.current.id() != ContentHash::default()
+            && self.target_configuration != ContentHash::default()
+    }
+
+    /// Returns whether the report carries the required at-failure footer command.
+    #[must_use]
+    pub fn has_copy_pasteable_at_failure_footer(&self) -> bool {
+        self.failure_footer
+            .as_ref()
+            .is_some_and(DebugFailureFooterCommand::is_copy_pasteable_at_failure)
+    }
+
+    /// Returns whether this report satisfies the T-DBG-7 target resolver contract.
+    #[must_use]
+    pub fn proves_debug_target_resolution(&self) -> bool {
+        self.delegates_to_goto()
+            && (!matches!(self.selector, DebugTargetSelector::AtFailure)
+                || self.failure_event_sequence.is_some())
+            && (!matches!(self.selector, DebugTargetSelector::Divergence(_))
+                || self.divergence.is_some())
     }
 }
 
@@ -19284,6 +19649,11 @@ pub enum EngineError {
         /// Configuration where the branch was requested.
         configuration: ContentHash,
     },
+    /// `--at-failure` found no assertion violation in the supplied event log.
+    DebugTargetResolverFailureNotFound {
+        /// Configuration where the target was requested.
+        configuration: ContentHash,
+    },
     /// A debug `goto` request did not start at the attached configuration.
     DebugGotoAttachMismatch {
         /// Configuration currently attached.
@@ -19712,6 +20082,9 @@ impl fmt::Display for EngineError {
             Self::DebugNonCanonicalBranchMissingTriggerEvidence { .. } => f.write_str(
                 "non-canonical debug branch trigger is missing matching first operator action evidence",
             ),
+            Self::DebugTargetResolverFailureNotFound { .. } => {
+                f.write_str("debug target resolver found no assertion violation for --at-failure")
+            }
             Self::DebugGotoAttachMismatch { .. } => {
                 f.write_str("debug goto current coordinate does not match attached configuration")
             }

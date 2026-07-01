@@ -616,6 +616,17 @@ impl SchedulerEventLogEntry {
     }
 
     #[cfg(debug_assertions)]
+    pub(crate) fn with_open_payload_for_test(
+        sequence: u64,
+        at: VirtualTime,
+        class: SchedulerEventLogClass,
+        event_payload: EventPayload,
+        payload: SchedulerEventLogPayload,
+    ) -> Self {
+        scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
+    }
+
+    #[cfg(debug_assertions)]
     pub(crate) fn with_time_for_test(self, at: EventLogTime) -> Self {
         scheduler_event_log_entry_with_material(
             self.sequence,

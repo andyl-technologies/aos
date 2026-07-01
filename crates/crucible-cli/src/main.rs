@@ -292,7 +292,8 @@ fn write_failure_reproduction_artifact(
     let path = cli.artifact_dir.join(file_name);
     fs::write(&path, artifact_bytes)?;
     let replay_command = format!("crucible replay {}", path.display());
-    let debug_command = format!("crucible debug {} --at-failure", path.display());
+    let debug_command =
+        crucible::DebugFailureFooterCommand::new(path.display().to_string()).debug_command;
 
     Ok(FailureArtifactReport {
         path,
@@ -1386,10 +1387,11 @@ mod tests {
     #[test]
     fn cli_failure_artifact_writer_emits_replay_and_debug_commands() -> Result<(), Box<dyn Error>> {
         let temp = TempDir::new()?;
+        let artifact_dir = temp.path().join("artifact dir with spaces");
         let cli = Cli::parse_from([
             "crucible",
             "--artifact-dir",
-            temp.path().to_str().unwrap_or("."),
+            artifact_dir.to_str().unwrap_or("."),
             "run",
         ]);
         let artifact = mock_e2e_reproduction_artifact()?;
@@ -1402,6 +1404,8 @@ mod tests {
         assert!(report.path.exists());
         assert!(report.replay_command.starts_with("crucible replay "));
         assert!(report.debug_command.ends_with(" --at-failure"));
+        assert!(report.debug_command.contains("artifact dir with spaces"));
+        assert!(report.debug_command.contains('\''));
         assert!(report.path.to_string_lossy().contains("property-violation"));
         let debug_cli = Cli::parse_from([
             "crucible",

@@ -1679,6 +1679,26 @@ in rec {
         phase6.debugScopedTimeTravel
       ];
     };
+    debugTargetResolver = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.debugTargetResolver";
+      gate = import ./phase6-debug-target-resolver.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.debugTargetResolver";
+        taskIds = ["T-DBG-7"];
+        dependencies = [
+          phase1.gates.divergenceBisect.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase5.gates.controlResponsive.rawGate
+          phase6.debugNonCanonicalBranch.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.divergenceBisect
+        phase4.gates.replayOracle
+        phase5.gates.controlResponsive
+        phase6.debugNonCanonicalBranch
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
