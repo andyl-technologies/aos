@@ -3517,6 +3517,204 @@ fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites()
 }
 
 #[test]
+fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, first)
+        .expect("first root records");
+    roots
+        .try_push_value_stack(1, second)
+        .expect("second root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan derives heap layouts");
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds");
+    let root_writeback_plan = commit
+        .root_writeback_plan()
+        .expect("root writeback plan derives");
+    assert_eq!(root_writeback_plan.len(), 2);
+    let first_destination = commit
+        .commit_plan()
+        .object_copies()
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == gc_address(first))
+        .expect("first survivor copy is planned")
+        .destination();
+    let second_destination = commit
+        .commit_plan()
+        .object_copies()
+        .copies()
+        .iter()
+        .find(|copy| copy.source() == gc_address(second))
+        .expect("second survivor copy is planned")
+        .destination();
+
+    let mut no_slots = Vec::new();
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_slots(&mut no_slots)
+            .expect_err("short root writeback buffer rejects"),
+        EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+            expected: 2,
+            actual: 0,
+        }
+    );
+
+    let mut stale_slots = [
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 0 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(first),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 1 },
+            ResolvedValueGeneration::Inline,
+        ),
+    ];
+    let unchanged_stale_slots = stale_slots.clone();
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_slots(&mut stale_slots)
+            .expect_err("stale second root rejects"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 1,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(second),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(stale_slots, unchanged_stale_slots);
+
+    let mut wrong_source_slots = [
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 2 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(first),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 1 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(second),
+                generation: HeapGeneration::Young,
+            },
+        ),
+    ];
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_slots(&mut wrong_source_slots)
+            .expect_err("wrong root source rejects"),
+        EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+            index: 0,
+            expected: EvalRootSource::ValueStack { slot: 0 },
+            actual: EvalRootSource::ValueStack { slot: 2 },
+        }
+    );
+
+    let mut later_wrong_source_slots = [
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 0 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(first),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 2 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(second),
+                generation: HeapGeneration::Young,
+            },
+        ),
+    ];
+    let unchanged_later_wrong_source_slots = later_wrong_source_slots.clone();
+    assert_eq!(
+        root_writeback_plan
+            .apply_to_slots(&mut later_wrong_source_slots)
+            .expect_err("later wrong root source rejects"),
+        EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+            index: 1,
+            expected: EvalRootSource::ValueStack { slot: 1 },
+            actual: EvalRootSource::ValueStack { slot: 2 },
+        }
+    );
+    assert_eq!(later_wrong_source_slots, unchanged_later_wrong_source_slots);
+
+    let mut slots = [
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 0 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(first),
+                generation: HeapGeneration::Young,
+            },
+        ),
+        AllocationCollectorPollRootWritebackSlot::new(
+            EvalRootSource::ValueStack { slot: 1 },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(second),
+                generation: HeapGeneration::Young,
+            },
+        ),
+    ];
+    let report = root_writeback_plan
+        .apply_to_slots(&mut slots)
+        .expect("root writebacks apply");
+    assert_eq!(report.writebacks(), 2);
+    assert_eq!(
+        slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: first_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        slots[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: second_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_plan_expands_remembered_edge_to_concrete_source_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());

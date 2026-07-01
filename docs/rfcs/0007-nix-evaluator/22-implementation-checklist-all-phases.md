@@ -5570,8 +5570,11 @@ and helps the oracle directly.
       for the reference buffer while rejecting copied root slots, and
       `AllocationCollectorPollMinorGcCommitPlan::root_writeback_plan` filters
       lower-level rewrites to root-backed slots with slot-to-rewrite source
-      validation while leaving live root mutation to the tree-walk/JIT safepoint
-      owner.
+      validation. `AllocationCollectorPollRootWritebackPlan::apply_to_slots`
+      validates caller-owned root writeback slot count, source labels, and
+      expected values before rewriting the supplied slot buffer and reporting the
+      rewrite count; it still leaves live tree-walk/JIT root storage binding to
+      the safepoint owner.
       `EvalHeap::collector_poll_minor_gc_heap_field_writeback_plan` filters
       lower-level rewrites to heap-field-backed slots, revalidates their current
       labels/values plus slot-to-rewrite source binding, and returns the

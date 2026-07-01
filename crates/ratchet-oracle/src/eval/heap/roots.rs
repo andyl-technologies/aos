@@ -1617,6 +1617,97 @@ impl AllocationCollectorPollRootWritebackPlan {
     pub fn is_empty(&self) -> bool {
         self.writebacks.is_empty()
     }
+
+    /// Applies planned root writebacks to caller-owned root slots.
+    ///
+    /// The supplied slots must match this plan's root writeback count and order.
+    /// Each slot must name the copied root source and still contain the expected
+    /// young from-space value. The method validates every slot before rewriting
+    /// any slot, so validation failures leave the caller-owned buffer unchanged.
+    /// This mutates only the supplied buffer; it does not bind to active
+    /// tree-walk value stacks, frames, import caches, or JIT stack maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the supplied slot count differs from the
+    /// plan, if a slot names a different copied root source, or if a slot no
+    /// longer contains the expected young from-space value.
+    pub fn apply_to_slots(
+        &self,
+        slots: &mut [AllocationCollectorPollRootWritebackSlot],
+    ) -> Result<AllocationCollectorPollRootWritebackReport, EvalHeapError> {
+        if slots.len() != self.writebacks.len() {
+            return Err(
+                EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+                    expected: self.writebacks.len(),
+                    actual: slots.len(),
+                },
+            );
+        }
+
+        for (writeback, slot) in self.writebacks.iter().zip(slots.iter()) {
+            if slot.source() != writeback.source() {
+                return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+                    index: writeback.slot(),
+                    expected: writeback.source().clone(),
+                    actual: slot.source().clone(),
+                });
+            }
+            let actual = slot.value();
+            if actual != writeback.expected() {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index: writeback.slot(),
+                    expected: writeback.expected(),
+                    actual,
+                });
+            }
+        }
+
+        for (writeback, slot) in self.writebacks.iter().zip(slots.iter_mut()) {
+            slot.value = writeback.replacement();
+        }
+
+        Ok(AllocationCollectorPollRootWritebackReport {
+            writebacks: self.writebacks.len(),
+        })
+    }
+}
+
+/// Caller-owned mutable storage for one root writeback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollRootWritebackSlot {
+    source: EvalRootSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollRootWritebackSlot {
+    /// Creates a caller-owned root slot value for writeback application.
+    pub fn new(source: EvalRootSource, value: ResolvedValueGeneration) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the copied tree-walk/JIT root source represented by this slot.
+    pub const fn source(&self) -> &EvalRootSource {
+        &self.source
+    }
+
+    /// Returns the current heap-generation value in this slot.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
+    }
+}
+
+/// A summary of caller-owned root slots rewritten by a writeback plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollRootWritebackReport {
+    writebacks: usize,
+}
+
+impl AllocationCollectorPollRootWritebackReport {
+    /// Returns the number of caller-owned root slots rewritten.
+    pub const fn writebacks(self) -> usize {
+        self.writebacks
+    }
 }
 
 /// Complete root and heap-field reference writebacks for one minor-GC commit.

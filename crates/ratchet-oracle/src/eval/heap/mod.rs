@@ -54,6 +54,7 @@ pub use roots::{
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollRootReferenceValue,
     AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
+    AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
     AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
     EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
     InternedRootTable, PreciseHeapScan, StackMapSlot,
