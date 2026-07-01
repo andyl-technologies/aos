@@ -144,6 +144,11 @@ impl NetworkLinkDirection {
 
 /// Emits one network-link frame and records the link's RNG choices ([IO-21]).
 ///
+/// The frame is already emitted by a modeled guest/device endpoint before this
+/// helper applies link behavior. This helper is not a host-side workload
+/// generator and MUST NOT be used to originate application traffic for a
+/// scenario.
+///
 /// The link's [`NetLink::rng_position`] selects the starting cursor of the
 /// canonical device stream for `link_id`. This helper draws the frame's
 /// [`FrameDraws`] through [`NetLink::emit_with_rng_draws`], so the deliveries are

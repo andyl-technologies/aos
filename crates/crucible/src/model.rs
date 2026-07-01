@@ -674,6 +674,130 @@ impl Error for TemporalGraphStoreError {
 /// Default app-random draw cap for scenarios that do not opt into a tighter cap.
 pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
 
+/// Kernel command-line key that selects a supported in-guest workload binary.
+///
+/// The value is part of [`WorldNode::cmdline`], so changing the selected
+/// workload changes the world's content address and the enclosing
+/// [`ScenarioDef`].
+pub const WORKLOAD_SCENARIO_PARAMETER: &str = "crucible.workload";
+
+const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload=";
+
+/// Whether Crucible's application traffic originates inside guest VMs.
+///
+/// This constant is deliberately true: the engine observes and steers guest
+/// execution, but it does not synthesize application records and feed them into a
+/// guest from the host.
+pub const APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST: bool = true;
+
+/// The engine's role in the workload model.
+///
+/// Crucible is allowed to observe frames, I/O, console output, and lifecycle
+/// state, and to steer the world through faults and virtual-time events. It is
+/// not a participant that originates application-level traffic.
+pub const WORKLOAD_ENGINE_ROLE: WorkloadEngineRole = WorkloadEngineRole::ObservationAndSteeringOnly;
+
+/// A supported guest binary that can produce workload traffic or I/O.
+///
+/// The selection is delivered as a scenario parameter on the guest command line;
+/// the binary itself remains ordinary guest content referenced by the kernel,
+/// root image, or initrd.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadBinary {
+    /// An HTTP daemon that serves request traffic in-guest.
+    Httpd,
+    /// A client request loop that drives request traffic in-guest.
+    ClientLoop,
+    /// A benchmark driver that produces load or storage I/O in-guest.
+    Benchmark,
+}
+
+impl GuestWorkloadBinary {
+    /// The closed set of guest workload binaries supported by the model.
+    pub const SUPPORTED: [Self; 3] = [Self::Httpd, Self::ClientLoop, Self::Benchmark];
+
+    /// Returns the scenario-parameter value for this workload binary.
+    #[must_use]
+    pub const fn scenario_parameter_value(self) -> &'static str {
+        match self {
+            Self::Httpd => "httpd",
+            Self::ClientLoop => "httpget",
+            Self::Benchmark => "bench",
+        }
+    }
+
+    /// Returns the human-readable workload name used by diagnostics and docs.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Httpd => "httpd",
+            Self::ClientLoop => "client loop",
+            Self::Benchmark => "benchmark",
+        }
+    }
+
+    /// Parses a workload binary from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        match value {
+            "httpd" => Some(Self::Httpd),
+            "httpget" => Some(Self::ClientLoop),
+            "bench" => Some(Self::Benchmark),
+            _ => None,
+        }
+    }
+
+    /// Parses the first supported workload selection from a kernel command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_parameter(cmdline)
+    }
+
+    /// Renders this workload as a kernel command-line scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(self) -> String {
+        format!(
+            "{WORKLOAD_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this workload selected by scenario parameter.
+    ///
+    /// Existing `crucible.workload=...` tokens are replaced so the command line
+    /// carries one stable workload selection. Whitespace is normalized by kernel
+    /// argument tokenization.
+    #[must_use]
+    pub fn selected_cmdline(self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload(base_cmdline, self)
+    }
+}
+
+/// The role Crucible plays for application workload traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WorkloadEngineRole {
+    /// The engine only observes black-box effects and steers via model-level controls.
+    ObservationAndSteeringOnly,
+}
+
+impl WorkloadEngineRole {
+    /// Returns whether this role originates application-level traffic.
+    #[must_use]
+    pub const fn originates_application_traffic(self) -> bool {
+        match self {
+            Self::ObservationAndSteeringOnly => false,
+        }
+    }
+
+    /// Returns whether this role permits a host-side traffic injector.
+    #[must_use]
+    pub const fn permits_host_side_traffic_injector(self) -> bool {
+        match self {
+            Self::ObservationAndSteeringOnly => false,
+        }
+    }
+}
+
 /// A handle to an immutable scenario definition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
@@ -830,7 +954,9 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid.
+    /// fields are invalid. Returns [`EngineError::WorldNodeUnsupportedWorkload`]
+    /// or [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
+    /// `crucible.workload` scenario parameter is invalid.
     pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError> {
         Self::from_nodes_and_links(nodes, Vec::new())
     }
@@ -855,7 +981,10 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
+    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
+    /// `crucible.workload` scenario parameter is invalid,
+    /// [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
@@ -897,7 +1026,9 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, or a link validation error from
+    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
+    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
+    /// `crucible.workload` scenario parameter is invalid, or a link validation error from
     /// [`World::validate_topology`].
     pub fn validate_ready_point_policies(&self) -> Result<(), EngineError> {
         self.validate_topology()
@@ -920,7 +1051,10 @@ impl World {
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
     /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
-    /// fields are invalid, [`EngineError::WorldLinkUnknownNode`] when a
+    /// fields are invalid, [`EngineError::WorldNodeUnsupportedWorkload`] or
+    /// [`EngineError::WorldNodeDuplicateWorkload`] when a node's reserved
+    /// `crucible.workload` scenario parameter is invalid,
+    /// [`EngineError::WorldLinkUnknownNode`] when a
     /// link references an undeclared node, [`EngineError::WorldLinkSelfLoop`]
     /// when a link's endpoints are equal, or [`EngineError::DuplicateWorldLink`]
     /// when a canonical endpoint pair appears more than once. Returns
@@ -1315,6 +1449,18 @@ impl NodeTemplate {
     #[must_use]
     pub fn cmdline(mut self, cmdline: impl Into<String>) -> Self {
         self.cmdline = cmdline.into();
+        self
+    }
+
+    /// Selects a supported in-guest workload binary by scenario parameter.
+    ///
+    /// The selected workload is encoded as `crucible.workload=...` in the guest
+    /// command line, which is already part of the content-addressed world and
+    /// scenario identity. This helper does not install an agent or create a
+    /// host-side application traffic source.
+    #[must_use]
+    pub fn guest_workload(mut self, workload: GuestWorkloadBinary) -> Self {
+        self.cmdline = workload.selected_cmdline(&self.cmdline);
         self
     }
 
@@ -3612,6 +3758,14 @@ pub struct WorldNode {
     pub root_image: Option<ContentAddressedBlobRef>,
     /// Optional content-addressed initrd blob.
     pub initrd: Option<ContentAddressedBlobRef>,
+}
+
+impl WorldNode {
+    /// Returns the supported in-guest workload selected by this node, if any.
+    #[must_use]
+    pub fn guest_workload(&self) -> Option<GuestWorkloadBinary> {
+        GuestWorkloadBinary::from_cmdline(&self.cmdline)
+    }
 }
 
 /// One logical symmetric link between two nodes in a [`World`].
@@ -10664,6 +10818,18 @@ pub enum EngineError {
         /// The maximum legal shift value.
         maximum: u8,
     },
+    /// A world node selected an unsupported reserved workload value.
+    WorldNodeUnsupportedWorkload {
+        /// The invalid node.
+        node: NodeId,
+        /// The unsupported workload scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one reserved workload value.
+    WorldNodeDuplicateWorkload {
+        /// The invalid node.
+        node: NodeId,
+    },
     /// A plan membership fault references an undeclared node.
     PlanFaultUnknownNode {
         /// The undeclared node.
@@ -10976,6 +11142,12 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeIcountShiftTooLarge { .. } => {
                 f.write_str("world node fixed icount shift is outside the legal range")
+            }
+            Self::WorldNodeUnsupportedWorkload { value, .. } => {
+                write!(f, "world node workload value {value} is unsupported")
+            }
+            Self::WorldNodeDuplicateWorkload { .. } => {
+                f.write_str("world node selects more than one workload")
             }
             Self::PlanFaultUnknownNode { .. } => {
                 f.write_str("plan membership fault references an undeclared node")
@@ -12122,8 +12294,31 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
                 maximum: MAX_WORLD_ICOUNT_SHIFT,
             });
         }
+        validate_world_node_workload(node)?;
     }
 
+    Ok(())
+}
+
+fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_SCENARIO_PARAMETER_PREFIX) else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkload {
+                node: node.id.clone(),
+            });
+        }
+        if GuestWorkloadBinary::from_scenario_parameter_value(value).is_none() {
+            return Err(EngineError::WorldNodeUnsupportedWorkload {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        }
+        selected = true;
+    }
     Ok(())
 }
 
@@ -18502,6 +18697,34 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 fn format_content_hash_ref(hash: ContentHash) -> String {
     format!("blake3:{}", content_hash_hex(hash))
+}
+
+fn parse_guest_workload_parameter(cmdline: &str) -> Option<GuestWorkloadBinary> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadBinary::from_scenario_parameter_value)
+    })
+}
+
+fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
+    let selection = workload.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn push_cmdline_token(cmdline: &mut String, token: &str) {
+    if !cmdline.is_empty() {
+        cmdline.push(' ');
+    }
+    cmdline.push_str(token);
 }
 
 fn format_seed_ref(seed: Seed) -> String {
