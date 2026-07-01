@@ -78,7 +78,7 @@ pub use determinism_boundary::{
     qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
 };
 pub use gdbstub_proxy::{
-    QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
+    QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
     QemuGdbstubProxySessionReport,
 };
 pub use inertness::{

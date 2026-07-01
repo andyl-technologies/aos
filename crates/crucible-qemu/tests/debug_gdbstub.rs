@@ -8,8 +8,9 @@ use std::thread;
 
 use crucible::ContentHash;
 use crucible_qemu::{
-    DeterministicLaunchProfile, QemuGdbstubChannelConfig, QemuGdbstubProxy, QemuLaunchArtifact,
-    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig, QemuVmLaunchConfig,
+    DeterministicLaunchProfile, QemuGdbstubBreakpointPolicy, QemuGdbstubChannelConfig,
+    QemuGdbstubProxy, QemuLaunchArtifact, QemuLaunchCommandBuilder, QemuLaunchCommandError,
+    QemuLaunchPluginConfig, QemuVmLaunchConfig,
 };
 
 fn default_profile() -> DeterministicLaunchProfile {
@@ -155,6 +156,153 @@ fn debug_gdbstub_proxy_mediates_operator_listen_to_qemu_endpoint() {
 }
 
 #[test]
+fn debug_gdbstub_proxy_translates_software_breakpoint_to_hardware_packet() {
+    let fake_qemu = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("fake QEMU gdbstub should bind: {error}"));
+    let fake_qemu_addr = fake_qemu
+        .local_addr()
+        .unwrap_or_else(|error| panic!("fake QEMU address should be available: {error}"));
+    let expected_hardware_packets =
+        [gdb_packet(b"Z1,401000,1"), gdb_packet(b"z1,401000,1")].concat();
+    let qemu_thread = thread::spawn(move || {
+        let (mut stream, _) = fake_qemu
+            .accept()
+            .unwrap_or_else(|error| panic!("fake QEMU should accept proxy: {error}"));
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .unwrap_or_else(|error| panic!("fake QEMU should receive breakpoint packet: {error}"));
+        assert_eq!(request, expected_hardware_packets);
+        stream
+            .write_all(&gdb_packet(b"OK"))
+            .unwrap_or_else(|error| panic!("fake QEMU should respond: {error}"));
+        stream
+            .shutdown(Shutdown::Write)
+            .unwrap_or_else(|error| panic!("fake QEMU should close write half: {error}"));
+    });
+
+    let gdbstub = QemuGdbstubChannelConfig::new(format!("tcp:{fake_qemu_addr}"), "127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("gdbstub config should be valid: {error}"));
+    let listener = QemuGdbstubProxy::new(&gdbstub)
+        .unwrap_or_else(|error| panic!("gdbstub proxy should parse TCP endpoints: {error}"))
+        .bind()
+        .unwrap_or_else(|error| panic!("gdbstub proxy should bind operator listener: {error}"));
+    let operator_addr = listener.local_addr();
+    let proxy_thread = thread::spawn(move || {
+        listener
+            .serve_one()
+            .unwrap_or_else(|error| panic!("gdbstub proxy should forward one session: {error}"))
+    });
+
+    let mut operator = TcpStream::connect(operator_addr)
+        .unwrap_or_else(|error| panic!("operator should connect to proxy listener: {error}"));
+    operator
+        .write_all(&gdb_packet(b"Z0,401000,1"))
+        .unwrap_or_else(|error| panic!("operator should write software breakpoint: {error}"));
+    operator
+        .write_all(&gdb_packet(b"z0,401000,1"))
+        .unwrap_or_else(|error| {
+            panic!("operator should write software breakpoint removal: {error}")
+        });
+    operator
+        .shutdown(Shutdown::Write)
+        .unwrap_or_else(|error| panic!("operator should close write half: {error}"));
+    let mut response = Vec::new();
+    operator
+        .read_to_end(&mut response)
+        .unwrap_or_else(|error| panic!("operator should read response: {error}"));
+    assert_eq!(response, gdb_packet(b"OK"));
+
+    let report = proxy_thread
+        .join()
+        .unwrap_or_else(|_| panic!("proxy thread should not panic"));
+    qemu_thread
+        .join()
+        .unwrap_or_else(|_| panic!("fake QEMU thread should not panic"));
+    assert_eq!(
+        report.operator_to_qemu_bytes,
+        [gdb_packet(b"Z1,401000,1"), gdb_packet(b"z1,401000,1")]
+            .concat()
+            .len() as u64
+    );
+    assert_eq!(report.software_breakpoints_translated, 2);
+    assert_eq!(report.software_breakpoints_refused, 0);
+    assert_eq!(report.local_response_acks_consumed, 0);
+}
+
+#[test]
+fn debug_gdbstub_proxy_refuses_software_breakpoint_without_hardware_support() {
+    let fake_qemu = TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("fake QEMU gdbstub should bind: {error}"));
+    let fake_qemu_addr = fake_qemu
+        .local_addr()
+        .unwrap_or_else(|error| panic!("fake QEMU address should be available: {error}"));
+    let qemu_thread = thread::spawn(move || {
+        let (mut stream, _) = fake_qemu
+            .accept()
+            .unwrap_or_else(|error| panic!("fake QEMU should accept proxy: {error}"));
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .unwrap_or_else(|error| panic!("fake QEMU should observe proxy close: {error}"));
+        assert!(request.is_empty());
+    });
+
+    let gdbstub = QemuGdbstubChannelConfig::new(format!("tcp:{fake_qemu_addr}"), "127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("gdbstub config should be valid: {error}"));
+    let listener = QemuGdbstubProxy::new(&gdbstub)
+        .unwrap_or_else(|error| panic!("gdbstub proxy should parse TCP endpoints: {error}"))
+        .with_breakpoint_policy(
+            QemuGdbstubBreakpointPolicy::canonical_without_hardware_breakpoints(),
+        )
+        .bind()
+        .unwrap_or_else(|error| panic!("gdbstub proxy should bind operator listener: {error}"));
+    assert!(!listener.breakpoint_policy().hardware_breakpoints());
+    let operator_addr = listener.local_addr();
+    let proxy_thread = thread::spawn(move || {
+        listener.serve_one().unwrap_or_else(|error| {
+            panic!("gdbstub proxy should complete refusal session: {error}")
+        })
+    });
+
+    let mut operator = TcpStream::connect(operator_addr)
+        .unwrap_or_else(|error| panic!("operator should connect to proxy listener: {error}"));
+    for payload in [b"Z0,402000,1".as_slice(), b"z0,402000,1".as_slice()] {
+        operator
+            .write_all(&gdb_packet(payload))
+            .unwrap_or_else(|error| panic!("operator should write software breakpoint: {error}"));
+        let mut response = vec![0_u8; 1 + gdb_packet(b"E22").len()];
+        operator
+            .read_exact(&mut response)
+            .unwrap_or_else(|error| panic!("operator should read local refusal: {error}"));
+        assert_eq!(response[0], b'+');
+        assert_eq!(&response[1..], gdb_packet(b"E22").as_slice());
+        operator
+            .write_all(b"+")
+            .unwrap_or_else(|error| panic!("operator should ack local refusal: {error}"));
+    }
+    operator
+        .shutdown(Shutdown::Write)
+        .unwrap_or_else(|error| panic!("operator should close write half: {error}"));
+    let mut trailing = Vec::new();
+    operator
+        .read_to_end(&mut trailing)
+        .unwrap_or_else(|error| panic!("operator should read trailing proxy output: {error}"));
+    assert!(trailing.is_empty());
+
+    let report = proxy_thread
+        .join()
+        .unwrap_or_else(|_| panic!("proxy thread should not panic"));
+    qemu_thread
+        .join()
+        .unwrap_or_else(|_| panic!("fake QEMU thread should not panic"));
+    assert_eq!(report.operator_to_qemu_bytes, 0);
+    assert_eq!(report.software_breakpoints_translated, 0);
+    assert_eq!(report.software_breakpoints_refused, 2);
+    assert_eq!(report.local_response_acks_consumed, 2);
+}
+
+#[test]
 fn debug_gdbstub_rejects_unstable_endpoint_text() {
     assert_eq!(
         QemuGdbstubChannelConfig::new("", "127.0.0.1:9000"),
@@ -168,4 +316,16 @@ fn debug_gdbstub_rejects_unstable_endpoint_text() {
             field: "gdb_listen_endpoint",
         })
     );
+}
+
+fn gdb_packet(payload: &[u8]) -> Vec<u8> {
+    let checksum = payload
+        .iter()
+        .fold(0_u8, |checksum, byte| checksum.wrapping_add(*byte));
+    let mut packet = Vec::with_capacity(payload.len() + 4);
+    packet.push(b'$');
+    packet.extend_from_slice(payload);
+    packet.push(b'#');
+    packet.extend_from_slice(format!("{checksum:02x}").as_bytes());
+    packet
 }
