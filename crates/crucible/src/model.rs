@@ -16251,6 +16251,12 @@ fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
     )
 }
 
+fn debug_labels_contain_all(labels: &[&'static str], required: &[&'static str]) -> bool {
+    required
+        .iter()
+        .all(|required_label| labels.iter().any(|label| label == required_label))
+}
+
 /// Client-visible breakpoint request flavor at the debug protocol boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DebugBreakpointClientKind {
@@ -17218,6 +17224,288 @@ impl DebugTargetResolverReport {
                 || self.failure_event_sequence.is_some())
             && (!matches!(self.selector, DebugTargetSelector::Divergence(_))
                 || self.divergence.is_some())
+    }
+}
+
+/// Contract for source-level debug-info ownership.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugSymbolResolutionPolicy {
+    /// Whether Crucible provides an in-process symbol server.
+    pub crucible_symbol_server: bool,
+    /// Whether Crucible parses DWARF or maps source locations itself.
+    pub crucible_dwarf_resolution: bool,
+    /// Whether source mapping is delegated to the operator's gdb-protocol client.
+    pub operator_gdb_client_resolves_symbols: bool,
+    /// Whether debug info is supplied by the operator instead of the engine.
+    pub operator_supplied_debug_info: bool,
+}
+
+impl DebugSymbolResolutionPolicy {
+    /// Builds the RFC-0010 no-symbol-server policy.
+    #[must_use]
+    pub const fn no_symbol_server() -> Self {
+        Self {
+            crucible_symbol_server: false,
+            crucible_dwarf_resolution: false,
+            operator_gdb_client_resolves_symbols: true,
+            operator_supplied_debug_info: true,
+        }
+    }
+
+    /// Returns whether Crucible stays out of source mapping.
+    #[must_use]
+    pub const fn proves_no_crucible_symbol_server(&self) -> bool {
+        !self.crucible_symbol_server
+            && !self.crucible_dwarf_resolution
+            && self.operator_gdb_client_resolves_symbols
+            && self.operator_supplied_debug_info
+    }
+}
+
+/// Contract for multi-vCPU debugger behavior.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugMultiVcpuPolicy {
+    /// Whether each vCPU is exposed as a distinct gdb thread.
+    pub exposes_vcpus_as_gdb_threads: bool,
+    /// Whether the node model is deterministic single-threaded round-robin TCG.
+    pub deterministic_round_robin_icount: bool,
+    /// Whether an affected node lands every vCPU at one coordinate.
+    pub lands_affected_vcpus_at_one_coordinate: bool,
+    /// Whether whole-world `goto` lands every node and vCPU coherently.
+    pub whole_world_lands_every_vcpu: bool,
+    /// Whether reads, breakpoints, and reverse operations observe one coherent state.
+    pub coherent_reads_breakpoints_and_reverse: bool,
+}
+
+impl DebugMultiVcpuPolicy {
+    /// Builds the RFC-0010 multi-vCPU debug policy.
+    #[must_use]
+    pub const fn coherent_round_robin_threads() -> Self {
+        Self {
+            exposes_vcpus_as_gdb_threads: true,
+            deterministic_round_robin_icount: true,
+            lands_affected_vcpus_at_one_coordinate: true,
+            whole_world_lands_every_vcpu: true,
+            coherent_reads_breakpoints_and_reverse: true,
+        }
+    }
+
+    /// Returns whether multi-vCPU debugging satisfies the coherence contract.
+    #[must_use]
+    pub const fn proves_multi_vcpu_coherence(&self) -> bool {
+        self.exposes_vcpus_as_gdb_threads
+            && self.deterministic_round_robin_icount
+            && self.lands_affected_vcpus_at_one_coordinate
+            && self.whole_world_lands_every_vcpu
+            && self.coherent_reads_breakpoints_and_reverse
+    }
+}
+
+/// Contract for read-only gdbstub fallback while the S14 spike is unresolved.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugGdbstubStepPolicy {
+    /// Whether the gdbstub attach/step behavior remains a named spike.
+    pub spike_required: bool,
+    /// Whether debugger attach defaults to read-only.
+    pub read_only_attach_default: bool,
+    /// Whether stepping is routed through Crucible deterministic step verbs.
+    pub crucible_driven_step_reverse_step: bool,
+    /// Whether raw gdb single-step is disabled until the spike is green.
+    pub raw_gdb_single_step_disabled_until_green: bool,
+}
+
+impl DebugGdbstubStepPolicy {
+    /// Builds the conservative S14 fallback policy.
+    #[must_use]
+    pub const fn disabled_raw_single_step_until_green() -> Self {
+        Self {
+            spike_required: true,
+            read_only_attach_default: true,
+            crucible_driven_step_reverse_step: true,
+            raw_gdb_single_step_disabled_until_green: true,
+        }
+    }
+
+    /// Returns whether the fallback prevents raw gdb stepping from perturbing time.
+    #[must_use]
+    pub const fn proves_s14_fallback(&self) -> bool {
+        self.spike_required
+            && self.read_only_attach_default
+            && self.crucible_driven_step_reverse_step
+            && self.raw_gdb_single_step_disabled_until_green
+    }
+}
+
+/// Contract for the read-only versus mutating debug boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReadMutationBoundaryPolicy {
+    /// Whether read-only mode is the default.
+    pub read_only_default: bool,
+    /// Whether read-only mode must leave canonical execution bit-identical.
+    pub canonical_bit_identical_required: bool,
+    /// Whether mutation requires a non-canonical debug branch.
+    pub allow_mutate_forks_non_canonical_branch: bool,
+    /// Whether the branch must be visibly labelled non-canonical.
+    pub non_canonical_branch_label_required: bool,
+    /// Whether tests must gate-enforce the boundary.
+    pub gate_enforced: bool,
+}
+
+impl DebugReadMutationBoundaryPolicy {
+    /// Builds the RFC-0010 read/mutate boundary policy.
+    #[must_use]
+    pub const fn read_only_default_with_explicit_branching() -> Self {
+        Self {
+            read_only_default: true,
+            canonical_bit_identical_required: true,
+            allow_mutate_forks_non_canonical_branch: true,
+            non_canonical_branch_label_required: true,
+            gate_enforced: true,
+        }
+    }
+
+    /// Returns whether the read/mutate boundary is explicit and gate-enforced.
+    #[must_use]
+    pub const fn proves_read_mutate_boundary(&self) -> bool {
+        self.read_only_default
+            && self.canonical_bit_identical_required
+            && self.allow_mutate_forks_non_canonical_branch
+            && self.non_canonical_branch_label_required
+            && self.gate_enforced
+    }
+}
+
+/// Contract for debug reverse-latency and snapshot-completeness risks.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseLatencyPolicy {
+    /// Whether `--checkpoint-stride` is exposed as a reverse-latency tuning knob.
+    pub checkpoint_stride_supported: bool,
+    /// Whether correctness is independent of opportunistic fat checkpoints.
+    pub correctness_independent_of_fat_checkpoints: bool,
+    /// Whether thin/replay remains the default until snapshot completeness is green.
+    pub thin_replay_until_snapshot_completeness: bool,
+}
+
+impl DebugReverseLatencyPolicy {
+    /// Builds the RFC-0010 reverse-latency risk policy.
+    #[must_use]
+    pub const fn performance_only_checkpoint_cadence() -> Self {
+        Self {
+            checkpoint_stride_supported: true,
+            correctness_independent_of_fat_checkpoints: true,
+            thin_replay_until_snapshot_completeness: true,
+        }
+    }
+
+    /// Returns whether reverse-latency tuning cannot affect correctness.
+    #[must_use]
+    pub const fn proves_reverse_latency_policy(&self) -> bool {
+        self.checkpoint_stride_supported
+            && self.correctness_independent_of_fat_checkpoints
+            && self.thin_replay_until_snapshot_completeness
+    }
+}
+
+/// Contract for the `crucible debug` CLI surface.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugCliSurfaceContract {
+    /// Accepted coordinate flags.
+    pub coordinate_flags: Vec<&'static str>,
+    /// Accepted debug-control flags.
+    pub control_flags: Vec<&'static str>,
+    /// Accepted interactive verbs.
+    pub interactive_verbs: Vec<&'static str>,
+    /// Whether the CLI stores no debugger state of its own.
+    pub cli_holds_debug_state: bool,
+    /// Whether the CLI delegates to existing session operations.
+    pub delegates_to_session_commands: bool,
+    /// Whether gdb traffic is exposed only through the mediated gdbstub proxy.
+    pub delegates_to_gdbstub_proxy: bool,
+    /// Source-level debug-info ownership policy.
+    pub symbol_resolution: DebugSymbolResolutionPolicy,
+    /// Multi-vCPU debugger coherence policy.
+    pub multi_vcpu: DebugMultiVcpuPolicy,
+    /// Gdbstub attach/step fallback policy.
+    pub gdbstub_step: DebugGdbstubStepPolicy,
+    /// Read-only versus mutating debug boundary policy.
+    pub read_mutate_boundary: DebugReadMutationBoundaryPolicy,
+    /// Reverse-latency and snapshot-completeness policy.
+    pub reverse_latency: DebugReverseLatencyPolicy,
+}
+
+impl DebugCliSurfaceContract {
+    /// Builds the RFC-0010 `crucible debug` surface contract.
+    #[must_use]
+    pub fn rfc0010() -> Self {
+        Self {
+            coordinate_flags: vec!["--at", "--at-event", "--at-failure", "--at-checkpoint"],
+            control_flags: vec![
+                "--node",
+                "--gdb-listen",
+                "--read-only",
+                "--allow-mutate",
+                "--checkpoint-stride",
+            ],
+            interactive_verbs: vec!["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+            cli_holds_debug_state: false,
+            delegates_to_session_commands: true,
+            delegates_to_gdbstub_proxy: true,
+            symbol_resolution: DebugSymbolResolutionPolicy::no_symbol_server(),
+            multi_vcpu: DebugMultiVcpuPolicy::coherent_round_robin_threads(),
+            gdbstub_step: DebugGdbstubStepPolicy::disabled_raw_single_step_until_green(),
+            read_mutate_boundary:
+                DebugReadMutationBoundaryPolicy::read_only_default_with_explicit_branching(),
+            reverse_latency: DebugReverseLatencyPolicy::performance_only_checkpoint_cadence(),
+        }
+    }
+
+    /// Returns whether the CLI exposes every required coordinate flag.
+    #[must_use]
+    pub fn has_required_coordinate_flags(&self) -> bool {
+        debug_labels_contain_all(
+            &self.coordinate_flags,
+            &["--at", "--at-event", "--at-failure", "--at-checkpoint"],
+        )
+    }
+
+    /// Returns whether the CLI exposes every required debug-control flag.
+    #[must_use]
+    pub fn has_required_control_flags(&self) -> bool {
+        debug_labels_contain_all(
+            &self.control_flags,
+            &[
+                "--node",
+                "--gdb-listen",
+                "--read-only",
+                "--allow-mutate",
+                "--checkpoint-stride",
+            ],
+        )
+    }
+
+    /// Returns whether the CLI exposes every required interactive verb.
+    #[must_use]
+    pub fn has_required_interactive_verbs(&self) -> bool {
+        debug_labels_contain_all(
+            &self.interactive_verbs,
+            &["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+        )
+    }
+
+    /// Returns whether this surface satisfies the T-DBG-8 contract.
+    #[must_use]
+    pub fn proves_t_dbg_8(&self) -> bool {
+        self.has_required_coordinate_flags()
+            && self.has_required_control_flags()
+            && self.has_required_interactive_verbs()
+            && !self.cli_holds_debug_state
+            && self.delegates_to_session_commands
+            && self.delegates_to_gdbstub_proxy
+            && self.symbol_resolution.proves_no_crucible_symbol_server()
+            && self.multi_vcpu.proves_multi_vcpu_coherence()
+            && self.gdbstub_step.proves_s14_fallback()
+            && self.read_mutate_boundary.proves_read_mutate_boundary()
+            && self.reverse_latency.proves_reverse_latency_policy()
     }
 }
 

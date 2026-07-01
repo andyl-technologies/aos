@@ -1011,7 +1011,7 @@ touching the canonical run.
   restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
   copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
   artifact writer uses it.
-- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/goto/reverse-step/reverse-continue
@@ -1022,3 +1022,16 @@ touching the canonical run.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
+  Completed by `checks.crucible.phase6.debugCliSurface`:
+  `crucible debug` now parses artifact/savepoint and `--session` targets plus
+  `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
+  `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the
+  attach-gdb/goto/reverse-step/reverse-continue verbs. The CLI planner records only
+  delegated session commands and mediated gdbstub-proxy operations, defaults
+  artifacts to `--at-failure`, savepoints to their checkpoint coordinate, and
+  sessions to the current coordinate, realizes reverse-step through the debug
+  reverse-step/goto restore-plus-replay path rather than unsupported forward session
+  step modes, proves that the CLI holds no debugger state, defaults to read-only
+  inspection, forks a visibly `NON-CANONICAL` branch before mutation, exposes the no
+  symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
+  single-step disabled until the gdbstub-disturbs-icount spike is green.

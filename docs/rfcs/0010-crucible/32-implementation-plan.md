@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:7b5e14887566de67`
+Checklist sync digest: `rfc0010-checklist-v1:206991122d086ea7`
 
 ## The phase ladder
 
@@ -247,7 +247,14 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   through `checks.crucible.phase6.debugTargetResolver`, which resolves `--at`,
   `--at-event`, `--at-failure`, `--at-checkpoint`, and divergence-bisection targets
   into replay-checked debug `goto` requests and centralizes the copy-pasteable
-  `crucible debug <artifact> --at-failure` failure footer command.
+  `crucible debug <artifact> --at-failure` failure footer command; `T-DBG-8`/`T-CLI-18`
+  are green through `checks.crucible.phase6.debugCliSurface`, which implements the
+  `crucible debug` parser and planner as a stateless session/debugger wrapper over
+  target-aware coordinate defaults, target resolution, session query/snapshot/fork
+  commands, debug reverse-step/goto restore-plus-replay operations, the mediated
+  gdbstub proxy, read-only default inspection, explicit non-canonical mutation
+  branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
+  disabled raw gdb single-step until the S14 spike is green.
 - Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
