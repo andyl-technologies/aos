@@ -47,6 +47,9 @@
             ExecStart=${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-preset-disabled && ${pkgs.coreutils}/bin/printf boot >> /var/lib/aos-preset-disabled/boots'
           '';
         };
+        # The per-host preset, baked into the image /etc (RFC-0011 new path;
+        # previously delivered as an Ignition storage.files fragment).
+        environment.etc."systemd/system-preset/20-aos-host.preset".text = hostPreset;
       }
     ];
   };
@@ -55,25 +58,6 @@ in
     name = "package-preset";
     system = testSystem;
     timeout = 300;
-    instanceMetadata.config = {
-      storage = {
-        directories = [
-          {
-            path = "/etc/systemd/system-preset";
-            mode = 493; # 0755
-            overwrite = true;
-          }
-        ];
-        files = [
-          {
-            path = "/etc/systemd/system-preset/20-aos-host.preset";
-            mode = 420; # 0644
-            overwrite = true;
-            contents.source = "data:,${builtins.replaceStrings [" " "\n"] ["%20" "%0A"] hostPreset}";
-          }
-        ];
-      };
-    };
     testScript = ''
       vm.wait_for_unit("aos-preset.service", timeout=120)
       vm.wait_until_succeeds("test -f /var/lib/aos-preset-enabled/boots", timeout=60)

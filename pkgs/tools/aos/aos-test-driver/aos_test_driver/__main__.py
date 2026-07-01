@@ -117,10 +117,9 @@ def _load_manifest(path: Path) -> dict[str, Any]:
                     " metadata ISO (it forces PLATFORM_ID=file)"
                 )
         if transport == "qemu":
-            if boot == "kernel" and m["metadata"] is None:
-                raise SystemExit(
-                    f"machine {name!r}: qemu kernel boot requires non-null metadata"
-                )
+            # A null metadata ISO is valid on the RFC-0011 new path: kernel-boot
+            # machines bake identity into /etc (via extendModules) and carry no
+            # metadata channel. The driver omits the SCSI CD-ROM when it is None.
             for required in ("mac", "ip"):
                 if required not in m:
                     raise SystemExit(

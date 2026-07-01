@@ -58,7 +58,6 @@
     findutils
     gptfdisk
     grep
-    ignition
     iproute2
     kmod
     less
@@ -79,7 +78,6 @@
       e2fsprogs
       grep
       gptfdisk
-      ignition
       iproute2
       kmod
       less
@@ -229,11 +227,6 @@
       pkg = cryptsetup;
       bin = "cryptsetup";
       src = "sbin";
-    }
-    {
-      pkg = ignition;
-      bin = "ignition";
-      src = "bin";
     }
     {
       pkg = aos-platform-detect;
@@ -646,9 +639,13 @@ in
                 # (predicting PCR-11 for the registry catalog), not needed
                 # inside the initrd. (No apostrophes in this comment — it
                 # lives inside a single-quoted sh -c block.)
+                # systemd-repart is KEPT (RFC-0011 provisioning): the
+                # convention-substrate carves /var/swap/root-b in the initrd
+                # before mount-var via repart.d drop-ins. systemd-firstboot
+                # stays stripped (hostname is manifest-rendered, not firstboot).
                 for tool in systemd-homed systemd-homework systemd-portabled \
                             systemd-nspawn systemd-importd systemd-pull \
-                            systemd-firstboot systemd-repart systemd-confext \
+                            systemd-firstboot systemd-confext \
                             systemd-sysext systemd-mountfsd systemd-nsresourced \
                             systemd-measure \
                             systemd-analyze systemd-run systemd-stdio-bridge \
@@ -675,10 +672,6 @@ in
                 find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
                 rm -f "{}/bin/c_rehash"
               ' _
-
-          # ignition-validate: pre-boot config validator. Not invoked at
-          # runtime; ignition itself does the actual provisioning.
-          rm -f root/nix/store/*-ignition-*/bin/ignition-validate
 
           # ukify + its Python dependency closure: only needed at image-
           # build time to assemble the UKI, never in the initrd. Since

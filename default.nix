@@ -52,6 +52,12 @@
   # Auto-discovered module list.
   modules = import ./modules;
 
+  # RFC-0011 stage-2: assemble the in-image, eval-only base library for a
+  # system variant. Lazy — only forced (and built) when a system actually sets
+  # `aos.config.evalAtBoot.enable = true`, so it adds nothing to every other
+  # system's closure. See `lib/build/base-lib.nix`.
+  mkBaseLib = import ./lib/build/base-lib.nix {inherit lib pkgs;};
+
   # Build a system from a system definition module (or list of modules).
   #
   # Accepts three calling conventions:
@@ -69,10 +75,19 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    # RFC-0011 CS5 seam: the on-host resolver supplies the verified `host.nix`
+    # store path here as an operator-provenance module, so its bare defs are
+    # lifted to the reserved priority-75 band (see `lib/modules.nix`
+    # `operatorModules`). Defaults `[]` — no caller sets it yet, so every
+    # existing system evaluates identically.
+    operatorModules =
+      if builtins.isAttrs args && args ? operatorModules
+      then args.operatorModules
+      else [];
   in
     lib.evalModules {
       modules = modules ++ moduleList;
-      inherit pkgs lib specialArgs;
+      inherit pkgs lib specialArgs operatorModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -90,10 +105,31 @@
       map (name: {
         name = lib.removeSuffix ".nix" name;
         value = let
-          evaluated = mkSystem (./systems + "/${name}");
+          variant = ./systems + "/${name}";
+          # The variant's eval-only base library, wired into
+          # `aos.config.evalAtBoot.baseLib`. The string interpolation keeps it
+          # lazy: the derivation is built only when the variant sets
+          # `evalAtBoot.enable = true` (so the config-eval service reads
+          # `baseLib`), leaving every other system's closure untouched.
+          baseLib = mkBaseLib {
+            baseModules = modules;
+            systemModules = [variant];
+            systemName = lib.removeSuffix ".nix" name;
+          };
+          evaluated = mkSystem {
+            modules = [
+              variant
+              {aos.config.evalAtBoot.baseLib = "${baseLib}";}
+            ];
+          };
         in {
           config = evaluated.config;
           options = evaluated.options;
+          # Re-expose `extendModules` so callers holding a discovered system
+          # (e.g. the fleet harness, which bakes per-VM identity via
+          # `environment.etc`) can overlay a fragment without rebuilding the
+          # module list. Inherits this variant's baseLib wiring.
+          inherit (evaluated) extendModules;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -297,10 +333,24 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    ignition-format = import ./lib/testing/ignition-format.nix {inherit pkgs lib;};
+    # RFC-0011 off-host config-eval preflight + flat<->module parity gates
+    # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
+    config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
+    config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    # RFC-0011 T0 characterization golden. Buildable via
+    # `nix-build -A checks.rfc-0011-characterization`, but NOT yet wired into the
+    # hard CI gate (flake.nix / build.all): it is RED until its baselines are
+    # generated on a Linux/KVM builder (`-A checks.rfc-0011-characterization.regenerate`)
+    # and committed under tests/fixtures/rfc-0011-goldens/server/. Wire it into the
+    # gate in the same diff that lands the baselines. See that dir's README.
+    rfc-0011-characterization = import ./lib/testing/rfc-0011-characterization.nix {
+      inherit pkgs lib mkSystem;
+      system = serverSystem;
+    };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-expose = import ./lib/testing/package-expose.nix {

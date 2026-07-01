@@ -148,9 +148,9 @@
 
       reg_dir="$REG_STORAGE/$reg_name"
       test -f "$reg_dir/packages/f/fixture.toml"
-      test -f "$reg_dir/closures/$store_hash"
+      test -f "$reg_dir/store/$(printf %.2s "$store_hash")/$store_hash"
       grep -q "$store_path" "$reg_dir/packages/f/fixture.toml"
-      grep -q "$store_hash" "$reg_dir/closures/$store_hash"
+      grep -q "nar:sha256:" "$reg_dir/store/$(printf %.2s "$store_hash")/$store_hash"
 
       $APR verify --registry "$reg_name" > "/tmp/$reg_name-verify.log" 2>&1 || {
         cat "/tmp/$reg_name-verify.log"
@@ -467,7 +467,7 @@ in {
         create_registry_for_store_path vm-cache "$STORE_PATH"
         nix-store -q --references "$STORE_PATH" > /tmp/backend-root-refs.out
         grep -q "$LEAF_PATH" /tmp/backend-root-refs.out
-        grep -q "$LEAF_HASH" "$REG_STORAGE/vm-cache/closures/$STORE_HASH"
+        grep -q "$LEAF_HASH" "$REG_STORAGE/vm-cache/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH"
 
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
@@ -479,7 +479,7 @@ in {
         start_sftp_server
         mkdir -p /tmp/sftp-cache/nar
 
-        set +e
+        # A valid multi-destination upload succeeds for every real backend.
         $APR cache generate --registry vm-cache \
           --output /tmp/generated-cache \
           --key /tmp/nix-cache.sec \
@@ -488,17 +488,29 @@ in {
           --upload-url file:///tmp/local-cache \
           --upload-url s3://aos-registry-test/cache \
           --upload-url sftp://root@127.0.0.1:2222/tmp/sftp-cache \
-          --upload-url not-a-url \
           --s3-region us-east-1 \
           --s3-endpoint http://127.0.0.1:19000 \
           --ssh-key /tmp/sftp-client-key \
           > /tmp/cache-generate.log 2>&1
-        CACHE_STATUS=$?
-        set -e
         cat /tmp/cache-generate.log
-        test "$CACHE_STATUS" -ne 0
-        grep -q "static cache upload failed for 1/4 destination" /tmp/cache-generate.log
-        grep -q "not-a-url" /tmp/cache-generate.log
+
+        # An invalid --upload-url is now rejected up front: the remote cache
+        # membership checker is created for every destination before any
+        # upload, so a single bad URL fails the whole generate fast (no
+        # partial-success accounting).
+        set +e
+        $APR cache generate --registry vm-cache \
+          --output /tmp/generated-cache-invalid-url \
+          --key /tmp/nix-cache.sec \
+          --no-commit \
+          --upload-url file:///tmp/local-cache-invalid \
+          --upload-url not-a-url \
+          > /tmp/cache-generate-invalid-url.log 2>&1
+        INVALID_STATUS=$?
+        set -e
+        cat /tmp/cache-generate-invalid-url.log
+        test "$INVALID_STATUS" -ne 0
+        grep -q "not-a-url" /tmp/cache-generate-invalid-url.log
 
         test -f /tmp/generated-cache/nix-cache-info
         test -f "/tmp/generated-cache/$STORE_HASH.narinfo"
@@ -719,7 +731,7 @@ in {
         create_registry_for_store_path cdn-cache "$STORE_PATH"
         nix-store -q --references "$STORE_PATH" > /tmp/cdn-root-refs.out
         grep -q "$LEAF_PATH" /tmp/cdn-root-refs.out
-        grep -q "$LEAF_HASH" "$REG_STORAGE/cdn-cache/closures/$STORE_HASH"
+        grep -q "$LEAF_HASH" "$REG_STORAGE/cdn-cache/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH"
         nix --extra-experimental-features nix-command key generate-secret \
           --key-name aos-cache > /tmp/nix-cache.sec
         $APR cache generate --registry cdn-cache \
@@ -777,9 +789,15 @@ in {
               raise AssertionError(f"unexpected upload path {path}")
           return path[len(prefix):]
 
+      # The immutable-before-mutable ordering invariant applies to the git
+      # ORIGIN upload (immutable objects before the refs/pointers that name
+      # them). `nix-cache-info` is written in the earlier cache-upload phase
+      # (last, after the NARs/narinfos it describes), so it precedes the origin
+      # objects and is not part of the origin pointer group for ordering
+      # purposes (its mutable cache-control is still asserted separately below).
       def is_mutable(path):
           return (
-              path in {"HEAD", "info/refs", "nix-cache-info"}
+              path in {"HEAD", "info/refs"}
               or path.startswith("objects/info/")
               or path.startswith("channels/")
           )
@@ -834,8 +852,10 @@ in {
       expected_narinfos = {f"{store_hash}.narinfo", f"{leaf_hash}.narinfo"}
       if not expected_narinfos.issubset(narinfo_paths):
           raise AssertionError(f"missing root/leaf narinfo uploads {expected_narinfos}, got {narinfo_events}")
+      # Narinfos are served with the mutable cache policy (they can be
+      # re-signed in place); the NARs they reference stay immutable.
       for _, event in narinfo_events:
-          assert event["cache_control"] == "public, max-age=31536000, immutable", event
+          assert event["cache_control"] == "public, max-age=60, must-revalidate", event
           assert event["content_type"] == "text/x-nix-narinfo", event
 
       nar_events = [(p, e) for p, e in rel_events if p.startswith("nar/")]
@@ -843,7 +863,7 @@ in {
           raise AssertionError(f"expected one NAR per narinfo, got narinfos={narinfo_events}, nars={nar_events}")
       for _, event in nar_events:
           assert event["cache_control"] == "public, max-age=31536000, immutable", event
-          assert event["content_type"] == "application/zstd", event
+          assert event["content_type"] == "application/x-nix-nar", event
 
       alternates = os.path.join(root, "objects/info/alternates")
       if os.path.exists(alternates):

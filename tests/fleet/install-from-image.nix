@@ -1,19 +1,19 @@
 # tests/fleet/install-from-image.nix - The installation guide, as a test.
 #
-# RFC-0003: the de-facto AOS install flow, end to end, using only what a
-# new user has — the published raw image, an Ignition config, and apm:
+# RFC-0003 + RFC-0011: the de-facto AOS install flow, end to end, using only
+# what a new user has — the published raw image and apm:
 #
 #   1. INSTALL  — boot the stock raw image under OVMF (UEFI → sd-boot →
-#                 UKI → initrd → ignition). The fw_cfg-delivered config
-#                 partitions the disk: small A/B root slots (the root is a
-#                 read-only erofs base), swap, and var taking the rest (the
-#                 A/B layout from docs/boot/qemu-uefi.md, sized down for CI),
-#                 format the filesystems.
+#                 UKI → systemd initrd). On the RFC-0011 new path there is no
+#                 Ignition: systemd-repart carves swap and var (taking the
+#                 rest) in the trailing free space of the grown per-run disk.
+#                 root-a (the read-only erofs base) ships in the image
+#                 sized-to-fit and is never resized.
 #   2. BOOT     — first boot reaches multi-user.target; the layout is
 #                 asserted: the root is mounted read-only erofs (immutable,
 #                 not grown) and /var filled the disk. This is the first CI
-#                 exercise of the sd-boot/UKI path, the qemu/fw_cfg ignition
-#                 platform, and the disks stage.
+#                 exercise of the sd-boot/UKI path and the systemd-repart
+#                 substrate carving a real disk.
 #   3. UPDATE   — `apm registry add` + `apm update` against a registry
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
@@ -32,8 +32,9 @@
 #   registry: kernel-boot peer publishing the registry + static cache
 #             (same shape as apm-registry-upgrade.nix), with the
 #             server-2 toplevel and bc pre-staged in its store.
-#   target:   image-boot (bootMode = "image"), no metadata ISO, ignition
-#             config over fw_cfg with the FULL profile (storage.disks).
+#   target:   image-boot (bootMode = "image"), new path (provisioning =
+#             "newpath"): no Ignition, no metadata channel — identity baked
+#             into /etc, systemd-repart carves swap/var.
 {
   lib,
   mkSystem,
@@ -76,11 +77,13 @@ in {
   # zstd-compresses the full server-2 closure; the upgrade pulls the
   # generation delta over the L2; then a full UEFI reboot. Budgeted
   # like apm-registry-upgrade plus the reboot.
-  timeout = 2400;
+  timeout = 3000;
 
   machines = {
     registry = {
       system = serverWithRegistry;
+      # New path (kernel boot, baked /var) — matches apm-registry-upgrade.
+      provisioning = "newpath";
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
@@ -101,61 +104,17 @@ in {
     target = {
       system = systems.server-test;
       bootMode = "image";
+      # RFC-0011 new path: no Ignition. systemd-repart carves swap + var (and
+      # the reserved root-b slot) in the trailing free space of the grown
+      # per-run image disk; per-VM identity + the guest agent are baked into
+      # the image /etc via extendModules (lib/testing/fleet.nix).
+      provisioning = "newpath";
       imageDiskMiB = diskSizeMiB;
       packages = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = {
-          storage = {
-            disks = [
-              {
-                device = "/dev/vda";
-                wipeTable = false;
-                partitions = [
-                  {
-                    number = 2;
-                    label = "root-a";
-                    sizeMiB = rootSizeMiB;
-                    resize = true;
-                    typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-                  }
-                  {
-                    number = 3;
-                    label = "root-b";
-                    sizeMiB = rootSizeMiB;
-                    typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-                  }
-                  {
-                    number = 4;
-                    label = "swap";
-                    sizeMiB = swapSizeMiB;
-                    typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-                  }
-                  {
-                    number = 5;
-                    label = "var";
-                    sizeMiB = 0; # rest of the disk
-                  }
-                ];
-              }
-            ];
-            filesystems = [
-              {
-                device = "/dev/disk/by-partlabel/root-b";
-                format = "ext4";
-                label = "aos-root-b";
-                wipeFilesystem = false;
-              }
-              {
-                device = "/dev/disk/by-partlabel/var";
-                format = "ext4";
-                label = "aos-var";
-                wipeFilesystem = false;
-              }
-            ];
-          };
-        };
-      };
+      # The upgrade leg imports the gen-2 closure delta (NAR decompress + nix
+      # import) into the /nix overlay on /var; extra RAM keeps that working set
+      # in page cache so it finishes within the deadline on a loaded builder.
+      memoryMiB = 4096;
     };
   };
 
@@ -172,21 +131,16 @@ in {
       # activated the aos-test-agent package at first boot.
       target.succeed("systemctl is-active multi-user.target")
 
-      # The declared install layout exists.
-      for label in ("root-a", "root-b", "swap", "var"):
+      # The install layout exists: root-a ships in the image, systemd-repart
+      # carved swap + var in the trailing free space (no ignition-disks). (A
+      # reserved root-b slot is future A/B work — see modules/services/repart.nix.)
+      for label in ("root-a", "swap", "var"):
           target.succeed(f"test -e /dev/disk/by-partlabel/{label}")
 
-      # ignition-disks grew root-a (vda2) to exactly ${toString rootSizeMiB} MiB.
-      sectors = int(target.succeed("cat /sys/class/block/vda2/size").strip())
-      expected = ${toString rootSizeMiB} * 2048  # MiB -> 512-byte sectors
-      assert sectors == expected, (
-          f"root-a is {sectors} sectors, expected {expected}"
-      )
-
-      # The root is a read-only erofs image — the immutable base. It is NOT
-      # grown (aos-growfs is a no-op for non-ext4 roots); all mutable state
-      # lives on /var. Confirm it is mounted read-only erofs and stayed at
-      # the image's small sized-to-fit size, far below its 1 GiB partition.
+      # The root is a read-only erofs image — the immutable base. It ships
+      # sized-to-fit in the image and is NEVER resized (repart only adds/grows
+      # the trailing partitions); all mutable state lives on /var. Confirm it
+      # is mounted read-only erofs and stayed small.
       import re
 
       mounts = target.succeed("cat /proc/mounts")
@@ -370,9 +324,13 @@ in {
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
 
+      # Downloads + imports the gen-2 closure delta over the emulated L2 and
+      # switches the system profile. The NARs download quickly; the CPU-bound
+      # zstd decompress + nix import into the /nix overlay on /var then runs
+      # long, so the deadline has generous headroom over the ~normal cost.
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos}/bin/apm upgrade --system --yes 2>&1",
-          timeout=900,
+          timeout=1800,
       )
       print("=== apm upgrade --system output ===\n" + out)
       assert "Downloading" in out, (

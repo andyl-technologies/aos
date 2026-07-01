@@ -141,6 +141,9 @@ pub struct PlatformEntry {
     /// Golden package measurement tuple.
     #[serde(default)]
     pub measurement: Option<String>,
+    /// RFC-0011 config-only module output and its declared interface.
+    #[serde(default)]
+    pub config_module: Option<ConfigModuleMeta>,
 }
 
 impl PlatformEntry {
@@ -1208,4 +1211,119 @@ mod root_config_tests {
         assert!(cfg.cache_entries().is_empty());
         assert!(cfg.cache_stack().is_none());
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// RFC-0011 config-module schema (pure manifest data)
+// ---------------------------------------------------------------------------
+
+/// Store metadata for a package's second `config` output (RFC-0011).
+///
+/// The `config` output is a store-path NAR carrying the package's config-only
+/// Nix module (`module.nix` at its root) plus any relative-imported private
+/// `.nix`. Its identity is content-addressed exactly like
+/// [`ExposeArtifactMeta`]: a store path, the uncompressed NAR hash, and the NAR
+/// size, plus the module's *direct* store references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigOutputMeta {
+    /// Store path of the `config` output (contains `module.nix` at its root).
+    pub store_path: String,
+    /// Hash of the uncompressed `config`-output NAR: `"sha256:…"`.
+    pub nar_hash: String,
+    /// Uncompressed NAR size in bytes.
+    pub nar_size: u64,
+    /// Store-path hashes of the `config` output's *direct* references.
+    ///
+    /// The enforced invariant is **no `.drv`** (see `validate_config_output_meta`):
+    /// the config module is config-only and must not pull a derivation into the
+    /// eval. Note that Nix's reference scanner *will* record any binary store path
+    /// the module text names as a reference, so this list is generally non-empty
+    /// and may include `out`-closure paths; those binaries are additionally pinned
+    /// by the manifest's `store_paths`. The no-`.drv` rule is the load-bearing
+    /// part, not the absence of binary references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
+
+/// RFC-0011 config-module interface declared by a package.
+///
+/// Carries the second [`ConfigOutputMeta`] output, the declared option surface
+/// (the package's `provides`, computed by an options-only eval at publish), the
+/// shared roots it owns or contributes to, and its base-lib ABI compatibility
+/// range. The presence of this block on a `PackageMeta` is gated behind
+/// `FEATURE_CONFIG_MODULE_V1` and requires DSSE provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigModuleMeta {
+    /// The `config` output store metadata.
+    pub config_output: ConfigOutputMeta,
+    /// Base-lib ABI range this module is compatible with (inclusive).
+    pub module_abi_compat: ModuleAbiCompat,
+    /// Option paths this module *declares* (its `provides`), computed by an
+    /// options-only eval in isolation. Sorted, deduplicated. These become the
+    /// registry inverted-index keys for this `package@version`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declares: Vec<String>,
+    /// Shared roots this module declares exclusive ownership of (e.g.
+    /// `firewall`, `nginx`). Each carries its own interface ABI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owns_roots: Vec<OwnedRoot>,
+    /// Foreign shared roots this module contributes into, restricted to the
+    /// owner-declared contributable sub-paths (F3-B).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributes: Vec<RootContribution>,
+    /// Capability tokens this module *sets* (write-provider index entries),
+    /// e.g. `system.capabilities.dns-resolver`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides_capabilities: Vec<String>,
+}
+
+/// Inclusive base-lib ABI compatibility range for a config module.
+///
+/// The resolver refuses the module unless `min <= running_image_abi <= max`.
+/// This is the RFC-0011 analogue of the SBAT revocation floor: a monotonic
+/// integer band, gated pre-eval and fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleAbiCompat {
+    /// Lowest `module_abi` this module supports.
+    pub min: u32,
+    /// Highest `module_abi` this module supports.
+    pub max: u32,
+}
+
+impl ModuleAbiCompat {
+    /// Returns whether `abi` lies within the inclusive `[min, max]` band.
+    pub fn admits(&self, abi: u32) -> bool {
+        self.min <= abi && abi <= self.max
+    }
+}
+
+/// A shared root a package owns, plus its own interface ABI and the sub-paths
+/// non-owners may contribute into (F3-B capability-scoped surface).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedRoot {
+    /// Root segment, e.g. `firewall`, `nginx`.
+    pub root: String,
+    /// Independent interface ABI for this shared root.
+    pub interface_abi: u32,
+    /// Owner-declared contributable sub-paths (relative to the root), e.g.
+    /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
+    /// excluded. A non-owner write outside these is rejected at publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributable: Vec<String>,
+}
+
+/// A foreign-root contribution declared by a non-owner package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootContribution {
+    /// The shared root being contributed into, e.g. `nginx`.
+    pub root: String,
+    /// Sub-paths (relative to `root`) this package writes; each MUST be within
+    /// the owner's `contributable` set, checked at resolve.
+    pub paths: Vec<String>,
 }

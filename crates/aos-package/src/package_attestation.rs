@@ -2373,6 +2373,7 @@ mod tests {
                     nar_hash: "sha256:artifact".into(),
                     nar_size: manifest.len() as u64,
                 }),
+                config_module: None,
                 permissions: PermissionsMeta {
                     network: Some(NetworkPermission::Private),
                     host_paths: vec![HostPathPermission {
@@ -2418,6 +2419,7 @@ mod tests {
             requires_features: vec!["attestation-v1".into()],
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {

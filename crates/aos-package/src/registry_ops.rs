@@ -84,16 +84,18 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfinementClass, ExposeArtifactMeta,
-    ExposeMeta, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
-    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
+    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfigModuleMeta, ConfinementClass,
+    ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
+    FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    PACKAGE_META_FORMAT, PermissionsMeta, ProvidesIndex, RegistryConfig, RegistryFile,
     RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
     package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
-    validate_branch_name, validate_channel_name, validate_expose_artifact_meta,
-    validate_expose_meta_for_package, validate_git_ref_name, validate_package_name,
-    validate_permissions_meta, validate_platform_name, validate_registry_name,
+    validate_branch_name, validate_channel_name, validate_config_module_meta,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
@@ -5247,6 +5249,74 @@ fn package_platform_table(
     Ok(toml::Value::Table(table))
 }
 
+/// Record an RFC-0011 `config_module` block into a package platform TOML table.
+///
+/// This is the publish-side data path / seam for the second `config` package
+/// output (RFC-0011 build-spec §2). It validates `module`, serializes it under
+/// the `config_module` key of `table`, and appends [`FEATURE_CONFIG_MODULE_V1`]
+/// to `required_features` so older clients fail closed. The caller is
+/// responsible for ensuring the platform table also carries the structural
+/// `references` gate and an attestation provenance reference (a config module is
+/// privileged metadata; see `validate_supported_package_meta_with`).
+///
+/// # Wiring TODO (later changeset)
+///
+/// The publish command does not yet expose a `--config-module-manifest` flag
+/// (analogous to `--expose-manifest`); when it does, it will derive the
+/// authoritative `declares` / `owns_roots` / `contributes` /
+/// `provides_capabilities` via an options-only eval of the module in isolation
+/// (the *populate path*, `module-system.md` §"Provides — derived, not
+/// declared"), build a [`ConfigModuleMeta`], and call this helper.
+///
+/// # Errors
+///
+/// Returns an error when `module` fails [`validate_config_module_meta`] or its
+/// TOML serialization fails.
+// Publish-side seam: exercised by tests and called once the publish command
+// grows a `--config-module-manifest` flag (see TODO above). Marked `allow` so
+// the unwired state does not warn in the non-test build.
+#[allow(dead_code)]
+pub(crate) fn record_config_module_platform_fields(
+    table: &mut toml::map::Map<String, toml::Value>,
+    required_features: &mut Vec<toml::Value>,
+    module: &ConfigModuleMeta,
+) -> Result<()> {
+    validate_config_module_meta(module).context("validating config-module metadata for publish")?;
+    let feature = toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string());
+    if !required_features.contains(&feature) {
+        required_features.push(feature);
+    }
+    table.insert(
+        "config_module".into(),
+        toml::Value::try_from(module).context("serializing config-module metadata")?,
+    );
+    Ok(())
+}
+
+/// Rebuild the registry-wide RFC-0011 inverted index from all package versions.
+///
+/// This is the publish-side construction of `index/provides.json` (RFC-0011
+/// build-spec §3.2): for every package version carrying `config_module`, every
+/// declared option path and capability token is folded into a [`ProvidesIndex`]
+/// via [`ProvidesIndex::insert_package`]. The index is a *derived* artifact —
+/// rebuilt mechanically on every publish — so this function takes the already
+/// parsed package set and produces the serializable index the registry serves.
+// Publish-side seam: exercised by tests and called once the publish/release
+// path writes `index/provides.json`. Marked `allow` so the unwired state does
+// not warn in the non-test build.
+#[allow(dead_code)]
+pub(crate) fn build_provides_index<'a>(
+    packages: impl IntoIterator<Item = &'a crate::types::PackageMeta>,
+) -> ProvidesIndex {
+    let mut index = ProvidesIndex::empty();
+    for meta in packages {
+        if let Some(module) = &meta.config_module {
+            index.insert_package(&meta.name, &meta.version, &meta.platform, module);
+        }
+    }
+    index
+}
+
 /// `apr unpublish <PACKAGE> [VERSION]` — removes package metadata from the
 /// registry.
 ///
@@ -5969,18 +6039,24 @@ pub async fn diff(
             args.push("--stat");
         }
         let output = git(&dir, &args)?;
+        // `clean` must come from the name-status entries, not `output`: with
+        // `--stat`, libgit2's diffstat emits a `0 files changed, ...` summary
+        // line even when nothing changed, so `output.is_empty()` is never true
+        // for a stat diff and would wrongly report a clean tree as dirty.
+        let changed_files = diff_name_status_entries(&dir, Some((&base, "HEAD")))?;
+        let clean = changed_files.is_empty();
         if printer.mode() == OutputMode::Json {
             printer.json(&serde_json::json!({
                 "remote": true,
                 "base": base,
                 "stat": stat,
-                "clean": output.is_empty(),
-                "changed_files": diff_name_status_entries(&dir, Some((&base, "HEAD")))?,
+                "clean": clean,
+                "changed_files": changed_files,
                 "output": output,
             }));
             return Ok(());
         }
-        if output.is_empty() {
+        if clean {
             printer.info("No pending changes.");
         } else {
             printer.plain(&output);
@@ -10579,6 +10655,7 @@ pub async fn release(
     partitions: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
+    rotate_from: Option<&Path>,
     cache_key: Option<&Path>,
     cache_url: Option<&str>,
     cache_priority: Option<u32>,
@@ -10600,7 +10677,7 @@ pub async fn release(
     }
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let (_tuf_key_owners, tuf_signing_keys) =
-        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key)?;
+        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key, rotate_from)?;
 
     let upload_auth =
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
@@ -10964,6 +11041,7 @@ fn resolve_tuf_metadata_signing_keys(
     dir: &Path,
     registry_name: &str,
     primary: &ResolvedSigningKey,
+    rotate_from: Option<&Path>,
 ) -> Result<(Vec<ResolvedSigningKey>, Vec<tuf::MetadataSigningKey>)> {
     let primary_trust_key = derive_trust_key(registry_name, primary.path())?;
     let primary_key = tuf::MetadataSigningKey {
@@ -10974,6 +11052,44 @@ fn resolve_tuf_metadata_signing_keys(
     };
     let mut metadata_keys = vec![primary_key];
     let mut owners = Vec::new();
+
+    // An operator rotating the root signing key supplies the previous root key
+    // explicitly with `--rotate-from`; it co-signs the new root so the
+    // previous-root-role authorization check accepts the transition. It is not
+    // a member of the new root policy (role_key=false). Its id must be a key id
+    // in the *current* (previous) root role, matched by public key — a freshly
+    // derived id would not satisfy the previous-root authorization check.
+    if let Some(rotate_from) = rotate_from {
+        let rotate_from_str = rotate_from.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--rotate-from path is not valid UTF-8: {}",
+                rotate_from.display()
+            )
+        })?;
+        let rotate_public = derive_trust_key(registry_name, rotate_from_str)?;
+        if rotate_public == primary_trust_key {
+            bail!(
+                "--rotate-from key is the same as the release signing key; \
+                 omit --rotate-from when not rotating the root key"
+            );
+        }
+        let previous_key_id = tuf::worktree_root_role_keys(dir)?
+            .into_iter()
+            .find(|(_, public)| *public == rotate_public)
+            .map(|(key_id, _)| key_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--rotate-from key is not a current root-role key; \
+                     pass the previous root key being rotated away from"
+                )
+            })?;
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id: previous_key_id,
+            key_path: rotate_from.to_path_buf(),
+            key: rotate_public,
+            role_key: false,
+        });
+    }
 
     let Some(roster) = keys::load_keys_toml(dir)? else {
         return Ok((owners, metadata_keys));
@@ -11968,9 +12084,99 @@ mod tests {
     use super::*;
     use crate::security::verify_tag_signature;
     use crate::testutil;
-    use crate::types::{ApmSettings, ProfileScope, RegistryConfig, RegistryUploadAuthConfig};
+    use crate::types::{
+        ApmSettings, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, ProfileScope, RegistryConfig,
+        RegistryUploadAuthConfig,
+    };
     use std::fs;
     use tempfile::TempDir;
+
+    fn config_module_fixture() -> ConfigModuleMeta {
+        ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-firewall-config"
+                    .to_string(),
+                nar_hash: "sha256:cc".to_string(),
+                nar_size: 2048,
+                references: vec![],
+            },
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
+            declares: vec!["firewall.allowedTCPPorts".to_string()],
+            owns_roots: vec![OwnedRoot {
+                root: "firewall".to_string(),
+                interface_abi: 1,
+                contributable: vec!["allowedTCPPorts".to_string()],
+            }],
+            contributes: vec![],
+            provides_capabilities: vec!["system.capabilities.dns-resolver".to_string()],
+        }
+    }
+
+    #[test]
+    fn record_config_module_emits_table_and_feature() {
+        let mut table = toml::map::Map::new();
+        let mut features = Vec::new();
+        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+            .expect("records config module");
+        assert!(table.contains_key("config_module"));
+        assert!(features.contains(&toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string())));
+        // Idempotent feature append.
+        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+            .expect("re-records");
+        assert_eq!(
+            features
+                .iter()
+                .filter(|f| **f == toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string()))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn build_provides_index_folds_config_modules() {
+        let mut meta = crate::types::PackageMeta {
+            name: "firewall".to_string(),
+            version: "1.4.0".to_string(),
+            description: String::new(),
+            homepage: None,
+            license: "MIT".to_string(),
+            maintainer: "aos".to_string(),
+            platform: "x86_64-linux".to_string(),
+            store_path: "/nix/store/0000000000000000000000000000000c-firewall-1.4.0".to_string(),
+            nar_hash: "sha256:aa".to_string(),
+            nar_size: 1,
+            references: vec![],
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1,
+            sysroot: false,
+            previous: None,
+            images: vec![],
+            min_format: None,
+            requires_features: vec![],
+            expose: None,
+            expose_artifact: None,
+            config_module: Some(config_module_fixture()),
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
+        };
+        let index = build_provides_index(std::slice::from_ref(&meta));
+        assert_eq!(index.providers_for("firewall.allowedTCPPorts", 1).len(), 1);
+        assert_eq!(
+            index
+                .capability_setters("system.capabilities.dns-resolver", 2)
+                .len(),
+            1
+        );
+        // A package without config_module contributes nothing.
+        meta.config_module = None;
+        assert!(
+            build_provides_index(std::slice::from_ref(&meta))
+                .options
+                .is_empty()
+        );
+    }
 
     fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
         ReleaseTreeOptions {

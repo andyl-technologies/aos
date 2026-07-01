@@ -2129,7 +2129,11 @@ in
           grep -q 'RestartSec=5s' "$k3s_worker_unit"
           grep -q 'ConditionPathExists=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
           grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
-          grep -q 'ExecStart=.*/k3s-preflight-start' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          # RFC-0011 F2-A: script-derived Exec*= directives now point at the
+          # gen-local `aos-job-scripts/<unit>:<slot>.<index>` materialization
+          # (derivation `aos-job-script-<scriptName>`) instead of the legacy
+          # `unit-script-<name>/bin/<name>` path. See lib/modules/systemd/lib.nix.
+          grep -q 'ExecStart=.*aos-job-script-k3s-preflight-start/aos-job-scripts/' "$k3sWorkerExposePath/units/k3s-preflight.service"
           if grep -q 'NetworkNamespacePath=' "$k3s_worker_unit"; then
             echo "k3s worker must stay on host networking" >&2
             exit 1

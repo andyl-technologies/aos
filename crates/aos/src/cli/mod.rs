@@ -191,6 +191,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
+    /// Cross-cloud metadata agent (initrd user-data fetch)
+    Metadata {
+        #[command(subcommand)]
+        command: MetadataCmd,
+    },
     /// Package manager (apm)
     Package(PackageArgs),
     /// Binary cache client (push, pull, prefetch, list)
@@ -250,6 +255,14 @@ pub enum ProfileCmd {
         /// Referenced dependency to justify
         dependency: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MetadataCmd {
+    /// Detect the platform and probe offline config-drives
+    Detect,
+    /// Fetch and stash untrusted user-data + instance facts
+    Fetch,
 }
 
 #[derive(Subcommand)]

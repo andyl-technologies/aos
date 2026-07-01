@@ -98,6 +98,14 @@
   in
     evaluated.config;
 
+  # RFC-0011 module-namespacing + F3-B contributable-surface helpers.
+  # Pure data over evaluated module sets / module values; takes the wired
+  # `types` and `mkOption` so callers reach them at `lib.mkPackageRoot` etc.
+  namespacing = import ./namespacing.nix {
+    inherit types;
+    inherit (modules) mkOption;
+  };
+
   platformMod = import ./platform.nix;
   derivations = import ./derivations.nix {inherit system bash;};
   hardening = import ./hardening.nix;
@@ -192,6 +200,15 @@
 
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
+
+      # RFC-0011 namespacing + F3-B contributable-surface helpers.
+      inherit
+        (namespacing)
+        optionSurface
+        contributableSurface
+        mkPackageRoot
+        mountPackageModules
+        ;
 
       # Compiler-hardening token vocabulary and set algebra. Used by the
       # stdenv to bake the cc-wrapper's default policy and by derivations.nix

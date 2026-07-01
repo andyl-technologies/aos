@@ -160,7 +160,12 @@
         }' > "$out/${packageHash}.attestation.json"
     '';
 
-  packageSeedBundle =
+  # RFC-0011 Layer 2: the package-profile seed is an image-fixed artifact (a
+  # function of the bundled packages, not host.nix). Reference the resolved
+  # `artifacts.aos-package-profile-seed` (frozen store path on the on-host
+  # evaluator, the live derivation below otherwise — byte-identical).
+  packageSeedBundle = config.aos.config.artifacts.aos-package-profile-seed;
+  packageSeedBundleDrv =
     pkgs.runCommand "aos-package-profile-seed" {
       buildDeps = [pkgs.coreutils];
       preferLocalBuild = true;
@@ -271,6 +276,14 @@ in {
   };
 
   config = {
+    # Register the package-profile seed as an image-fixed config artifact
+    # (RFC-0011 Layer 2). Guarded on frozenArtifacts so the stage-2 frozen pkgs
+    # (no `runCommand`) never evaluates the source.
+    aos.config._artifactSources.aos-package-profile-seed =
+      if config.aos.config.frozenArtifacts ? "aos-package-profile-seed"
+      then null
+      else packageSeedBundleDrv;
+
     assertions =
       lib.concatLists
       (lib.mapAttrsToList (

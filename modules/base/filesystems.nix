@@ -89,9 +89,15 @@ in {
     };
 
     ## Block device for the root filesystem.
+    ##
+    ## Defaults to the GPT partlabel of the root-A slot — the same device the
+    ## baked UKI `root=` points at (`modules/base/boot.nix`), so fstab and the
+    ## kernel command line agree. `modules/security/verity.nix` overrides this
+    ## to `/dev/mapper/root` so both `root=` and the fstab `/` entry follow the
+    ## dm-verity-assembled mapper device (F1) without mkForce list surgery.
     rootDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/vda2";
+      default = "/dev/disk/by-partlabel/root-a";
       description = "Block device for the root filesystem.";
     };
 

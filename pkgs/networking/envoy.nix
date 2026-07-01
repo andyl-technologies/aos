@@ -293,7 +293,7 @@ in
     inherit scrubMap;
 
     # --- Fetch-specific ---
-    depsHash = "sha256-CLKxVIUKjvjiZt5GzwkXBgfoC3fF3ffFS0by58db6Yg=";
+    depsHash = "sha256-K3DSslGZhgdQvhflNCttfanPShbcKMV//+A/tzD9F/I=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:rust_nix_x86_64"

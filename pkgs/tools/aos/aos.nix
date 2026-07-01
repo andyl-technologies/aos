@@ -71,7 +71,7 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-k0mK+JO/PJNV2L/hzIpiT/ALzsRVQqir8dU3f99452Q=";
+      hash = "sha256-ib53sob9o+8ZuU6bbWlhX2bhdmhB8doLWG5chMmgnRg=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here

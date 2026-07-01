@@ -370,7 +370,7 @@ in {
           cat "$work/apm-invalid-registry-config.out"
           exit 1
         fi
-        grep -q "invalid registry name" \
+        grep -q "the name must match the file stem" \
           "$work/apm-invalid-registry-config.out"
 
         if run_clean ${self}/bin/apr create ../escaped-create \
@@ -858,7 +858,7 @@ in {
           "$work/apr-unpublish-invalid-package-name.out"
         grep -qx "must stay put" "$reg/escaped-package.toml"
         pkg_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        mkdir -p "$reg/packages/h" "$reg/closures"
+        mkdir -p "$reg/packages/h" "$reg/store/$(printf %.2s "$pkg_hash")"
         printf '%s\n' \
           '[package]' \
           'name = "hostpkg"' \
@@ -879,7 +879,7 @@ in {
           'source_nar_hash = ""' \
           'references = []' \
           > "$reg/packages/h/hostpkg.toml"
-        printf '%s\n' "$pkg_hash" > "$reg/closures/$pkg_hash"
+        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$reg/store/$(printf %.2s "$pkg_hash")/$pkg_hash"
         printf '%s\n' \
           "" \
           '[[caches]]' \
@@ -890,10 +890,10 @@ in {
         run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-dirty.out" 2>&1
         grep -q "registry.toml" "$work/apr-status-dirty.out"
         grep -q "packages/h/hostpkg.toml" "$work/apr-status-dirty.out"
-        grep -q "closures/$pkg_hash" "$work/apr-status-dirty.out"
+        grep -q "store/$(printf %.2s "$pkg_hash")/$pkg_hash" "$work/apr-status-dirty.out"
         run_clean ${self}/bin/apr --json status --registry host-reg \
           > "$work/apr-status-dirty.json"
-        ${pkgs.jq}/bin/jq -e --arg closure "closures/$pkg_hash" \
+        ${pkgs.jq}/bin/jq -e --arg closure "store/$(printf %.2s "$pkg_hash")/$pkg_hash" \
           '.clean == false
             and (.entries | any(.path == "registry.toml"))
             and (.entries | any(.path == "packages/h/hostpkg.toml"))
@@ -1053,7 +1053,7 @@ in {
         run_clean ${self}/bin/apr show hostpkg --registry host-reg --raw > "$work/apr-show-raw.out" 2>&1
         grep -q "store_path = \"/nix/store/$pkg_hash-hostpkg-1.0.0\"" "$work/apr-show-raw.out"
         run_clean ${self}/bin/apr verify --registry host-reg > "$work/apr-verify.out" 2>&1
-        grep -q "Verified 1 package(s), 1 closure(s), no errors" "$work/apr-verify.out"
+        grep -q "Verified 1 package(s), 1 closure root(s), no errors" "$work/apr-verify.out"
         run_clean ${self}/bin/apr --json verify --registry host-reg \
           > "$work/apr-verify.json"
         ${pkgs.jq}/bin/jq -e \
@@ -1063,7 +1063,7 @@ in {
             and .package == null
             and .fix == false
             and .checked == 1
-            and .closures == 1
+            and .roots == 1
             and .repaired == 0
             and .errors == 0' \
           "$work/apr-verify.json" >/dev/null
@@ -1125,7 +1125,7 @@ in {
             and (.base | length > 0)' \
           "$work/apr-diff-remote.json" >/dev/null
 
-        system_registry_config="$system_config/registries.d/host-reg-system.toml"
+        system_registry_config="$aos_root/var/lib/apm/config/registries.d/host-reg-system.toml"
         user_shadow_config="$config/apm/registries.d/host-reg-system.toml"
         system_registry_cache="$aos_root/var/lib/apm/remote/host-reg-system"
         system_registry_clone="$aos_root/var/lib/apm/registries/host-reg-system"
@@ -1215,7 +1215,7 @@ in {
         test ! -e "$system_registry_cache"
         test ! -e "$system_registry_clone"
         test ! -e "$user_shadow_config"
-        ${pkgs.coreutils}/bin/rmdir "$system_config/registries.d"
+        ${pkgs.coreutils}/bin/rmdir "$aos_root/var/lib/apm/config/registries.d"
         assert_no_profile
 
         run_clean ${self}/bin/apm registry add --no-verify "file://$reg" --name host-reg-client > "$work/apm-registry-add.out" 2>&1
@@ -1358,6 +1358,11 @@ in {
 
         cache_root="$work/static-cache"
         mkdir -p "$cache_root/cache/nar" "$reg/packages/m"
+        printf '%s\n' \
+          'StoreDir: /nix/store' \
+          'WantMassQuery: 1' \
+          'Priority: 41' \
+          > "$cache_root/cache/nix-cache-info"
         printf '%s\n' "hostpkg NAR payload" > "$cache_root/cache/nar/$pkg_hash-hostpkg.nar"
         printf '%s\n' \
           "StorePath: /nix/store/$pkg_hash-hostpkg-1.0.0" \
@@ -1523,12 +1528,10 @@ in {
           --registry host-reg \
           --key "$work/release-key" \
           --dry-run \
-          --cache-output "$work/dry-cache" \
           --cache-url "http://127.0.0.1:$cache_port/cache" \
           --upload-url "file://$work/dry-upload" \
           > "$work/apr-release-dry-run.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/dry-cache" \
           --arg cache_url "http://127.0.0.1:$cache_port/cache" \
           --arg upload_url "file://$work/dry-upload" \
           '.action == "release"
@@ -1537,7 +1540,7 @@ in {
             and .version == "1.0.0"
             and .dry_run == true
             and .resume == false
-            and .cache_output == $cache
+            and (.cache_dir | endswith("/apm/registry-static/host-reg"))
             and .cache_url == $cache_url
             and .upload_urls == [$upload_url]
             and .cache == null
@@ -1546,7 +1549,6 @@ in {
             and (.planned_steps | index("generate_static_cache") != null)
             and (.planned_steps | index("upload_static_origin") != null)' \
           "$work/apr-release-dry-run.json" >/dev/null
-        test ! -e "$work/dry-cache"
         test ! -e "$work/dry-upload"
         if git -C "$reg" rev-parse --verify '1.0.0^{tag}' > "$work/release-dry-run-tag.out" 2>&1; then
           cat "$work/release-dry-run-tag.out"
@@ -1603,47 +1605,58 @@ in {
         resume_reg="$data/apm/registries/host-resume"
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
-        resume_hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        mkdir -p "$resume_reg/packages/h" "$resume_reg/closures"
-        printf '%s\n' \
-          '[package]' \
-          'name = "hostresume"' \
-          'description = "Host release resume fixture"' \
-          'license = "MIT"' \
-          'maintainer = "host@example.invalid"' \
-          "" \
-          '[[versions]]' \
-          'version = "1.0.0"' \
-          "" \
-          '[versions.platforms.x86_64-linux]' \
-          "store_path = \"/nix/store/$resume_hash-hostresume-1.0.0\"" \
-          'nar_hash = "sha256-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE="' \
-          'nar_size = 1234' \
-          'closure_size = 1234' \
-          'source_drv = ""' \
-          'source_nar_hash = ""' \
-          'references = []' \
-          > "$resume_reg/packages/h/hostresume.toml"
-        printf '%s\n' "$resume_hash" > "$resume_reg/closures/$resume_hash"
-        git -C "$resume_reg" add -A
-        run_clean git -C "$resume_reg" commit -m "release: hostresume 1.0.0" \
-          > "$work/git-commit-host-resume.out" 2>&1
         ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
-        if run_clean ${self}/bin/apr --json release 1.0.0 \
+        # Build a small real package registered in this test's Nix store to
+        # release (apr release introspects the store path via `nix path-info`).
+        cat > "$work/resume-build.sh" << 'SCRIPT'
+        set -eu
+        @AOS_COREUTILS@/bin/mkdir -p "$out/bin"
+        {
+          printf '%s\n' '#!@AOS_BASH@/bin/bash'
+          printf '%s\n' 'printf "host resume package executed\n"'
+        } > "$out/bin/hostresume-tool"
+        @AOS_COREUTILS@/bin/chmod +x "$out/bin/hostresume-tool"
+        SCRIPT
+        cat > "$work/resume-fixture.nix" << 'NIX'
+        derivation {
+          name = "hostresume-1.0.0";
+          system = "x86_64-linux";
+          builder = "@AOS_BASH@/bin/bash";
+          args = [ ./resume-build.sh ];
+        }
+        NIX
+        ${pkgs.python3}/bin/python3 - "$work/resume-build.sh" "$work/resume-fixture.nix" \
+          '${pkgs.bash}' '${pkgs.coreutils}' << 'PY'
+        from pathlib import Path
+        import sys
+        for p in sys.argv[1:3]:
+            path = Path(p)
+            path.write_text(
+                path.read_text()
+                .replace("@AOS_BASH@", sys.argv[3])
+                .replace("@AOS_COREUTILS@", sys.argv[4])
+            )
+        PY
+        resume_store=$(nix_build "$work/resume-fixture.nix" --no-out-link)
+        # The release pipeline now generates and uploads the static cache
+        # before creating the signed tag, so a partially-interrupted release
+        # can no longer be simulated with a missing store path. Instead drive
+        # the resume contract directly: a completed release creates a signed
+        # tag + release pack; re-releasing the same version must refuse unless
+        # --resume is given, and --resume reuses the existing tag/pack.
+        run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
+          --store-path "$resume_store" \
+          --name hostresume \
+          --description "Host release resume fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
           --key "$work/resume-release-key" \
-          --cache-output "$work/resume-cache" \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
-          > "$work/apr-release-host-resume-interrupted.json" 2>&1; then
-          cat "$work/apr-release-host-resume-interrupted.json"
-          exit 1
-        fi
-        ${pkgs.jq}/bin/jq -e \
-          '.error
-            | contains("nix-store -qR failed")
-            and contains("hostresume-1.0.0")
-            and contains("not in the Nix store")' \
-          "$work/apr-release-host-resume-interrupted.json" >/dev/null
+          --upload-url "file://$work/resume-upload" \
+          > "$work/apr-release-host-resume-initial.json"
+        ${pkgs.jq}/bin/jq -e '.status == "released" and .version == "1.0.0"' \
+          "$work/apr-release-host-resume-initial.json" >/dev/null
         git -C "$resume_reg" rev-parse --verify '1.0.0^{tag}' \
           > "$work/apr-release-host-resume-tag.out"
         resume_pack_dir="$resume_reg/.git/releases/1/0/0/objects/pack"
@@ -1651,15 +1664,19 @@ in {
         if run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
           --key "$work/resume-release-key" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          --upload-url "file://$work/resume-upload" \
           > "$work/apr-release-host-resume-without-flag.json" 2>&1; then
           cat "$work/apr-release-host-resume-without-flag.json"
           exit 1
         fi
-        grep -q "pass --resume to reuse it" \
+        grep -q "already exists" \
           "$work/apr-release-host-resume-without-flag.json"
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-resume \
           --key "$work/resume-release-key" \
+          --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
+          --upload-url "file://$work/resume-upload" \
           --resume > "$work/apr-release-host-resume-after-interrupt.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "release"
@@ -1667,10 +1684,7 @@ in {
             and .registry == "host-resume"
             and .version == "1.0.0"
             and .resume == true
-            and .cache == null
-            and .cache_pointer_updated == false
-            and (.full_pack | startswith("pack-") and endswith(".pack"))
-            and .deltas == []' \
+            and (.full_pack | startswith("pack-") and endswith(".pack"))' \
           "$work/apr-release-host-resume-after-interrupt.json" >/dev/null
         test "$(find "$resume_pack_dir" -name 'pack-*.pack' | grep -c .)" = "1"
         assert_no_profile
@@ -1733,13 +1747,15 @@ in {
           'source_nar_hash = ""' \
           'references = []' \
           >> "$reg/packages/h/hostpkg.toml"
-        printf '%s\n' "$v2_hash" > "$reg/closures/$v2_hash"
+        mkdir -p "$reg/store/$(printf %.2s "$v2_hash")"
+        printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$reg/store/$(printf %.2s "$v2_hash")/$v2_hash"
         git -C "$reg" add -A
         git -C "$reg" commit -m "release: hostpkg 2.0.0" > "$work/git-commit-v2-package.out" 2>&1
 
         run_clean ${self}/bin/apr --json release 2.0.0 \
           --registry host-reg \
           --key "$work/release-key-next" \
+          --rotate-from "$work/release-key" \
           > "$work/apr-release-v2.json"
         ${pkgs.jq}/bin/jq -e \
           '.action == "release"
@@ -2233,7 +2249,6 @@ in {
             and .previous == null
             and .images == []
             and .package_file == "packages/h/hostinstall.toml"
-            and (.closure_file | startswith("closures/"))
             and .committed == false
             and .commit_message == null
             and .current == "stable"
@@ -2266,13 +2281,12 @@ in {
             and .previous == null
             and .images == []
             and .package_file == "packages/h/hostbulk.toml"
-            and (.closure_file | startswith("closures/"))
             and .committed == false
             and .commit_message == null
             and .current == "stable"
             and (.head | length == 64)' \
           "$work/apr-publish-host-bulk.json" >/dev/null
-        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        grep -q "$install_leaf_hash" "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         run_clean ${self}/bin/apr --json verify \
           --registry host-install-channel > "$work/apr-verify-host-install-all.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2282,11 +2296,11 @@ in {
             and .package == null
             and .fix == false
             and .checked == 3
-            and .closures == 3
+            and .roots == 3
             and .repaired == 0
             and .errors == 0' \
           "$work/apr-verify-host-install-all.json" >/dev/null
-        ${pkgs.coreutils}/bin/rm "$install_reg/closures/$install_hash"
+        ${pkgs.coreutils}/bin/rm "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         run_clean ${self}/bin/apr --json verify \
           --registry host-install-channel \
           --package hostinstall \
@@ -2298,11 +2312,11 @@ in {
             and .package == "hostinstall"
             and .fix == true
             and .checked == 1
-            and .closures == 1
+            and .roots == 1
             and .repaired == 1
             and .errors == 0' \
           "$work/apr-verify-host-install-fix.json" >/dev/null
-        grep -q "$install_leaf_hash" "$install_reg/closures/$install_hash"
+        grep -q "$install_leaf_hash" "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
         install_default_upload="file://$work/install-static-cache-upload/cache"
         install_default_upload_mirror="file://$work/install-static-cache-upload/cache-mirror"
         run_clean ${self}/bin/apr --json origin config \
@@ -2415,14 +2429,12 @@ in {
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --channel stable \
           --init-channel > "$work/apr-release-host-install-v1.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -2431,7 +2443,6 @@ in {
             and .registry == "host-install-channel"
             and .version == "1.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
@@ -2440,9 +2451,7 @@ in {
             and .channel.action == "init"
             and .channel.touched_partitions == 256
             and (.cache.paths >= 3)
-            and (.cache.narinfos >= 3)
-            and (.cache.nars >= 3)
-            and .cache.output_dir == $cache
+            and (.cache.remote_skipped >= 3)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
             and (.uploaded_files > 0)
@@ -2454,15 +2463,15 @@ in {
           > "$work/apr-release-host-install-v1-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-install-v1-tag-object.out"
-        test -f "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
-        test -f "$work/install-release-cache/cache/$install_hash.narinfo"
-        test -f "$work/install-release-cache/cache/$bulk_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$install_leaf_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$install_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$install_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache/cache/$bulk_hash.narinfo"
+          "$work/install-static-cache-upload/cache/$bulk_hash.narinfo"
         test -f "$work/install-static-cache-upload/cache/HEAD"
         test -f "$work/install-static-cache-upload/cache/info/refs"
         test -f "$work/install-static-cache-upload/cache/releases/1/0/0/objects/info/packs"
@@ -2485,12 +2494,12 @@ in {
           -name 'pack-*.pack' | grep -q .
         run_clean ${self}/bin/apr --json origin upload \
           --registry host-install-channel \
-          --cache-dir "$work/install-release-cache/cache" \
+          --cache-dir "$cache/apm/registry-static/host-install-channel" \
           > "$work/apr-origin-upload-host-install-defaults.json"
         ${pkgs.jq}/bin/jq -e \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
-          --arg cache_dir "$work/install-release-cache/cache" \
+          --arg cache_dir "$cache/apm/registry-static/host-install-channel" \
           '.action == "origin_upload"
             and .registry == "host-install-channel"
             and .upload_urls == [$upload_url, $upload_url_mirror]
@@ -2639,7 +2648,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           '.package.name == "hostcollabbulk"
             and .versions[0].version == "1.0.0"
-            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+            and .versions[0].platforms."x86_64-linux".closure_size > 1000000' \
           "$work/apr-show-host-collab-a-after-pull.json" >/dev/null
         run_clean ${self}/bin/apr --json packages \
           --registry host-collab > "$work/apr-packages-host-collab-after-pull.json"
@@ -2836,7 +2845,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/aos-package-verify-host-subtree.json" >/dev/null
         run_clean ${self}/bin/aos --json package --yes remove hostsubtree \
@@ -3027,7 +3036,7 @@ in {
         ${pkgs.jq}/bin/jq -e \
           '.package.name == "hostmergebulk"
             and .versions[0].version == "1.0.0"
-            and .versions[0].platforms."x86_64-linux".nar_size > 1000000' \
+            and .versions[0].platforms."x86_64-linux".closure_size > 1000000' \
           "$work/apr-show-host-merge-squash.json" >/dev/null
 
         run_clean ${self}/bin/apr branch create feature/hostmerge-conflict \
@@ -3081,14 +3090,17 @@ in {
         fi
         grep -q "git merge -- feature/hostmerge-conflict failed" \
           "$work/apr-merge-host-merge-conflict.out"
-        grep -q "CONFLICT" "$work/apr-merge-host-merge-conflict.out"
+        grep -q "merge has conflicts" "$work/apr-merge-host-merge-conflict.out"
         test "$(git -C "$merge_reg" rev-parse HEAD)" = "$merge_before_conflict"
+        # libgit2 performs the merge in-process and refuses a conflicting merge
+        # cleanly: HEAD is unchanged and no half-merged index/worktree is left
+        # behind (unlike the git CLI, which would leave UU conflict markers and a
+        # MERGE_HEAD to `git merge --abort`). The repository stays recoverable
+        # without any cleanup.
         git -C "$merge_reg" status --porcelain \
           > "$work/git-status-host-merge-conflict.out"
-        grep -q '^UU packages/h/hostmergeleaf.toml$' \
-          "$work/git-status-host-merge-conflict.out"
-        git -C "$merge_reg" merge --abort \
-          > "$work/git-merge-abort-host-merge-conflict.out" 2>&1
+        test ! -s "$work/git-status-host-merge-conflict.out"
+        test ! -e "$merge_reg/.git/MERGE_HEAD"
         run_clean ${self}/bin/apr --json status \
           --registry host-merge-review > "$work/apr-status-host-merge-after-conflict-abort.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3117,14 +3129,12 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/direct-release-cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$direct_release_url" \
           --cache-priority 66 \
           --upload-url "file://$work/install-static-cache-upload/direct-release" \
           > "$work/apr-release-host-direct.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/direct-release-cache" \
           --arg cache_url "$direct_release_url" \
           --arg upload_url "file://$work/install-static-cache-upload/direct-release" \
           '.action == "release"
@@ -3132,7 +3142,6 @@ in {
             and .registry == "host-direct-release"
             and .version == "1.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 66
             and .cache_pointer_updated == true
@@ -3140,7 +3149,6 @@ in {
             and (.cache.paths >= 2)
             and (.cache.narinfos >= 2)
             and (.cache.nars >= 2)
-            and .cache.output_dir == $cache
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and .deltas == []
             and (.uploaded_files > 0)
@@ -3154,12 +3162,12 @@ in {
           > "$work/apr-release-host-direct-tag-object.out"
         grep -q "BEGIN SSH SIGNATURE" \
           "$work/apr-release-host-direct-tag-object.out"
-        test -f "$work/direct-release-cache/$install_leaf_hash.narinfo"
-        test -f "$work/direct-release-cache/$install_hash.narinfo"
+        test -f "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
+        test -f "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/direct-release-cache/$install_leaf_hash.narinfo"
+          "$work/install-static-cache-upload/direct-release/$install_leaf_hash.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/direct-release-cache/$install_hash.narinfo"
+          "$work/install-static-cache-upload/direct-release/$install_hash.narinfo"
         test -f "$work/install-static-cache-upload/direct-release/HEAD"
         test -f "$work/install-static-cache-upload/direct-release/info/refs"
         test -f "$work/install-static-cache-upload/direct-release/releases/1/0/0/objects/info/packs"
@@ -3452,13 +3460,21 @@ in {
             and .registries[0].updated == 0
             and .registries[0].removed == 0' \
           "$work/apm-system-provisioned-update.json" >/dev/null
+        # A user-scope `apm update` reads the registry from the immutable /etc
+        # seed (APM_SYSTEM_CONFIG_DIR) but records sync state as a delta in the
+        # user writable layer (XDG config). The seed is never mutated.
+        system_provisioned_state_config="$config/apm/registries.d/host-install-channel.toml"
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
         grep -q "last_update = \"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
+        if grep -q "last_commit = " \
+          "$system_provisioned_config/registries.d/host-install-channel.toml"; then
+          cat "$system_provisioned_config/registries.d/host-install-channel.toml"
+          exit 1
+        fi
         grep -q "$install_channel_trust_key" \
           "$config/apm/trusted-keys.d/host-install-channel.pub"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
         run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm search hostinstall \
@@ -3516,36 +3532,32 @@ in {
             and .[0].last_commit == $head' \
           "$work/apm-system-provisioned-registry-list-after-install.json" >/dev/null
         grep -q '\[registry.state\]' \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
+          "$system_provisioned_state_config"
         grep -q "last_commit = \"$install_remote_v1_commit\"" \
-          "$system_provisioned_config/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
-        run_clean ${pkgs.coreutils}/bin/env \
+          "$system_provisioned_state_config"
+        # A registry defined by an immutable /etc seed cannot be removed through
+        # apm; the mutation is refused with a clear error. The supported way to
+        # retract it is to blank the seed fragment (a provisioning operation).
+        if run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm --json registry remove host-install-channel \
-          > "$work/apm-system-provisioned-registry-remove.json"
+          > "$work/apm-system-provisioned-registry-remove.out" 2>&1; then
+          cat "$work/apm-system-provisioned-registry-remove.out"
+          exit 1
+        fi
+        grep -q "read-only seed" \
+          "$work/apm-system-provisioned-registry-remove.out"
+        # The seed-backed registry stays configured until the seed is blanked.
+        run_clean ${pkgs.coreutils}/bin/env \
+          APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
+          ${self}/bin/apm --json registry list \
+          > "$work/apm-system-provisioned-registry-list-before-blank.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg config_path "$system_provisioned_config/registries.d/host-install-channel.toml" \
-          --arg local_path "$data/apm/registries/host-install-channel" \
-          '.action == "registry_remove"
-            and .status == "removed"
-            and .registry == "host-install-channel"
-            and .name == "host-install-channel"
-            and .keep_local == false
-            and .force == false
-            and .config == $config_path
-            and .config_removed == true
-            and .local == $local_path
-            and .local_removed == true
-            and .cache_removed == true
-            and .trusted_keys_removed == true
-            and .orphan_command == "apm orphans"' \
-          "$work/apm-system-provisioned-registry-remove.json" >/dev/null
-        test ! -e "$system_provisioned_config/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/registries.d/host-install-channel.toml"
-        test ! -e "$config/apm/trusted-keys.d/host-install-channel.pub"
-        test ! -e "$data/apm/registries/host-install-channel"
-        test ! -e "$data/apm/remote/host-install-channel"
+          'length == 1 and .[0].name == "host-install-channel"' \
+          "$work/apm-system-provisioned-registry-list-before-blank.json" >/dev/null
+        # Blank the seed fragment to retract the registry; runtime deltas in the
+        # writable layer fall away once the seed no longer declares a `[registry]`.
+        : > "$system_provisioned_config/registries.d/host-install-channel.toml"
         run_clean ${pkgs.coreutils}/bin/env \
           APM_SYSTEM_CONFIG_DIR="$system_provisioned_config" \
           ${self}/bin/apm --json registry list \
@@ -3665,7 +3677,6 @@ in {
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-image-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/image-release-cache/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$image_cache_url" \
           --cache-priority 71 \
@@ -3673,14 +3684,12 @@ in {
           --channel stable \
           --init-channel > "$work/apr-release-host-image-channel.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/image-release-cache/cache" \
           --arg cache_url "$image_cache_url" \
           --arg upload_url "$image_upload_url" \
           '.action == "release"
             and .status == "released"
             and .registry == "host-image-channel"
             and .version == "1.0.0"
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 71
             and .upload_urls == [$upload_url]
@@ -3688,8 +3697,7 @@ in {
             and .channel.action == "init"
             and .channel.touched_partitions == 256
             and (.cache.paths >= 2)
-            and (.cache.narinfos >= 2)
-            and (.cache.nars >= 2)
+            and (.cache.remote_skipped >= 2)
             and (.uploaded_files > 0)
             and (.uploaded_bytes > 0)' \
           "$work/apr-release-host-image-channel.json" >/dev/null
@@ -4000,7 +4008,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-bulk-channel.json" >/dev/null
         assert_default_profile_absent
@@ -4733,7 +4741,7 @@ in {
             and .version == "1.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install.json" >/dev/null
         assert_default_profile_absent
@@ -4920,14 +4928,12 @@ in {
         run_clean ${self}/bin/apr --json release 2.0.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache-v2/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 \
           --channel stable \
           --count 256 > "$work/apr-release-host-install-v2.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache-v2/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -4936,7 +4942,6 @@ in {
             and .registry == "host-install-channel"
             and .version == "2.0.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
@@ -4946,9 +4951,7 @@ in {
             and .channel.count == 256
             and .channel.touched_partitions == 256
             and (.cache.paths >= 4)
-            and (.cache.narinfos >= 4)
-            and (.cache.nars >= 4)
-            and .cache.output_dir == $cache
+            and (.cache.remote_skipped >= 4)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.deltas | index("delta-1.0.0.pack.zst") != null)
             and (.uploaded_files > 0)
@@ -4956,12 +4959,12 @@ in {
           "$work/apr-release-host-install-v2.json" >/dev/null
         git -C "$install_reg" rev-parse --verify '2.0.0^{tag}' \
           > "$work/apr-release-host-install-v2-tag.out"
-        test -f "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
-        test -f "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache-v2/cache/$install_leaf_hash_v2.narinfo"
+          "$work/install-static-cache-upload/cache/$install_leaf_hash_v2.narinfo"
         grep -q '^Sig: hostcache:' \
-          "$work/install-release-cache-v2/cache/$install_hash_v2.narinfo"
+          "$work/install-static-cache-upload/cache/$install_hash_v2.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         grep -q "BEGIN SSH SIGNATURE" \
@@ -5417,12 +5420,10 @@ in {
         run_clean ${self}/bin/apr --json release 1.1.0 \
           --registry host-install-channel \
           --key "$work/host-install-release-key" \
-          --cache-output "$work/install-release-cache-v11/cache" \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "http://127.0.0.1:$install_cache_port/cache" \
           --cache-priority 77 > "$work/apr-release-host-install-v11.json"
         ${pkgs.jq}/bin/jq -e \
-          --arg cache "$work/install-release-cache-v11/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
           --arg upload_url "$install_default_upload" \
           --arg upload_url_mirror "$install_default_upload_mirror" \
@@ -5431,24 +5432,21 @@ in {
             and .registry == "host-install-channel"
             and .version == "1.1.0"
             and .dry_run == false
-            and .cache_output == $cache
             and .cache_url == $cache_url
             and .cache_priority == 77
             and .cache_pointer_updated == false
             and .upload_urls == [$upload_url, $upload_url_mirror]
             and .channel == null
             and (.cache.paths >= 6)
-            and (.cache.narinfos >= 6)
-            and (.cache.nars >= 6)
-            and .cache.output_dir == $cache
+            and (.cache.narinfos + .cache.remote_skipped >= 6)
             and (.full_pack | startswith("pack-") and endswith(".pack"))
             and (.uploaded_files > 0)
             and (.uploaded_bytes > 0)' \
           "$work/apr-release-host-install-v11.json" >/dev/null
         git -C "$install_reg" rev-parse --verify '1.1.0^{tag}' \
           > "$work/apr-release-host-install-v11-tag.out"
-        test -f "$work/install-release-cache-v11/cache/$install_leaf_hash_v11.narinfo"
-        test -f "$work/install-release-cache-v11/cache/$install_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_leaf_hash_v11.narinfo"
+        test -f "$work/install-static-cache-upload/cache/$install_hash_v11.narinfo"
         test -f "$work/install-static-cache-upload/cache/releases/1/1/0/objects/info/packs"
         test -f "$work/install-static-cache-upload/cache-mirror/releases/1/1/0/objects/info/packs"
         git -C "$install_reg" push origin 1.1.0 \
@@ -6105,7 +6103,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-host-install-v2.json" >/dev/null
         assert_default_profile_absent
@@ -7033,7 +7031,12 @@ in {
           "$work/apm-held-host-install-after-reinstall.json" >/dev/null
         assert_default_profile_absent
 
-        if ! find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+        # The consumer NAR download cache lives directly under <cache>/apm as
+        # <hash>.nar.zst; producer static caches under <cache>/apm/registry-static
+        # are a separate artifact that `apm clean` does not manage. Scope the
+        # download-cache assertions to maxdepth 1 so they only cover what clean
+        # is responsible for.
+        if ! find "$cache/apm" -maxdepth 1 -name '*.nar.zst' | grep -q .; then
           find "$cache/apm" -maxdepth 2 -print 2>/dev/null || true
           exit 1
         fi
@@ -7046,7 +7049,7 @@ in {
             and .freed_bytes > 0
             and (.freed | length > 0)' \
           "$work/apm-clean-host-install-cache.json" >/dev/null
-        if find "$cache/apm" -name '*.nar.zst' | grep -q .; then
+        if find "$cache/apm" -maxdepth 1 -name '*.nar.zst' | grep -q .; then
           find "$cache/apm" -maxdepth 2 -print
           exit 1
         fi
@@ -7498,7 +7501,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .verified == true
-            and (.expected_nar_hash | startswith("sha256-"))
+            and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
           "$work/apm-verify-orphan-reattached.json" >/dev/null
         run_clean ${self}/bin/apm --json registry remove orphan-reg --keep-local \
@@ -7677,9 +7680,9 @@ in {
             and (.head | length == 64)' \
           "$work/apr-unpublish-host-install-v2.json" >/dev/null
         test ! -e "$install_reg/packages/h/hostinstall.toml"
-        test -f "$install_reg/closures/$install_hash"
-        test -f "$install_reg/closures/$install_hash_v11"
-        test -f "$install_reg/closures/$install_hash_v2"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash")/$install_hash"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash_v11")/$install_hash_v11"
+        test -f "$install_reg/store/$(printf %.2s "$install_hash_v2")/$install_hash_v2"
         if run_clean ${self}/bin/apr --json show hostinstall \
           --registry host-install-channel > "$work/apr-show-host-install-after-unpublish.json" 2>&1; then
           cat "$work/apr-show-host-install-after-unpublish.json"
@@ -8015,6 +8018,12 @@ in {
           next_tag=$(git -C "$reg" rev-parse '1.0.0^{tag}')
           test "$next_tag" != "$initial_tag"
 
+          # The consumer fetches this registry over dumb HTTP; refresh the
+          # server-info advertisement so info/refs lists the current branch and
+          # the re-signed 1.0.0 tag (and packed objects) the TUF root verifies
+          # against.
+          run_clean ${pkgs.git}/bin/git -C "$reg" update-server-info \
+            > "$work/git-update-server-info.out" 2>&1
           PYTHONUNBUFFERED=1 ${pkgs.python3}/bin/python3 -m http.server "$port" \
             --bind 127.0.0.1 --directory "$data/apm/registries" \
             > "$work/http-server.log" 2>&1 &
@@ -8153,6 +8162,58 @@ in {
           producer_cache="$cache"
           producer_profile_root="$profile_root"
 
+          # Retiring 'next' revokes it in the roster and re-signs the release
+          # tags, but the TUF root sealed at 1.0.0 still lists 'next' with a
+          # 2-of-2 threshold, so a fresh consumer cannot bootstrap that release
+          # with only the surviving key. Rotating the root happens at the next
+          # release: re-seal a 1.1.0 release whose new 1-of-1 root is co-signed
+          # by the retiring key (--rotate-from), authorizing the transition off
+          # the old root. Fresh consumers then bootstrap the clean root.
+          cat > "$work/build-package-v11.sh" << SCRIPT
+          set -eu
+          ${pkgs.coreutils}/bin/mkdir -p "\$out/bin"
+          {
+            printf '%s\n' '#!${pkgs.bash}/bin/bash'
+            printf '%s\n' 'printf "host key retirement package 1.1.0 executed\n"'
+          } > "\$out/bin/host-key-retirement-tool"
+          ${pkgs.coreutils}/bin/chmod +x "\$out/bin/host-key-retirement-tool"
+          SCRIPT
+          cat > "$work/package-v11.nix" << NIX
+          derivation {
+            name = "hostkeyresign-1.1.0";
+            system = "x86_64-linux";
+            builder = "${pkgs.bash}/bin/bash";
+            args = [ ./build-package-v11.sh ];
+          }
+          NIX
+          store_path_v11=$(nix_build "$work/package-v11.nix" --no-out-link)
+          run_clean ${self}/bin/apr --json release 1.1.0 \
+            --registry host-keyresign \
+            --store-path "$store_path_v11" \
+            --name hostkeyresign \
+            --description "Host key retirement re-seal fixture" \
+            --license MIT \
+            --maintainer host@example.invalid \
+            --previous 1.0.0 \
+            --key "$work/initial-release-key" \
+            --rotate-from "$config/apm/keys/host-keyresign-next.key" \
+            > "$work/apr-release-host-keyresign-v11.json"
+          ${pkgs.jq}/bin/jq -e \
+            '.action == "release"
+              and .status == "released"
+              and .registry == "host-keyresign"
+              and .version == "1.1.0"' \
+            "$work/apr-release-host-keyresign-v11.json" >/dev/null
+          # The rotated 1-of-1 root must drop 'next' entirely.
+          git -C "$reg" show HEAD:tuf/root.json \
+            > "$work/host-keyresign-rotated-root.json"
+          if grep -q "$host_keyresign_next" "$work/host-keyresign-rotated-root.json"; then
+            cat "$work/host-keyresign-rotated-root.json"
+            exit 1
+          fi
+          run_clean ${pkgs.git}/bin/git -C "$reg" update-server-info \
+            > "$work/git-update-server-info-v11.out" 2>&1
+
           home="$work/tag-client-home"
           config="$work/tag-client-config"
           data="$work/tag-client-share"
@@ -8161,7 +8222,7 @@ in {
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
-            --tag 1.0.0 \
+            --tag 1.1.0 \
             --trust-key "$trust_key" \
             > "$work/apm-add-host-keyresign-tag.out" 2>&1
           grep -q "Registry 'host-keyresign' added" \
@@ -8169,7 +8230,7 @@ in {
           run_clean ${self}/bin/apm search hostkeyresign \
             --registry host-keyresign \
             > "$work/apm-search-host-keyresign-tag.out" 2>&1
-          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+          grep -q "hostkeyresign/host-keyresign 1.1.0" \
             "$work/apm-search-host-keyresign-tag.out"
           tag_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
           grep -q "$trust_key" "$tag_trust_file"
@@ -8188,7 +8249,7 @@ in {
           mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
           run_clean ${self}/bin/apm registry add "http://127.0.0.1:$port/host-keyresign/.git" \
             --name host-keyresign \
-            --version '^1.0' \
+            --version '^1.1' \
             --trust-key "$trust_key" \
             > "$work/apm-add-host-keyresign-version.out" 2>&1
           grep -q "Registry 'host-keyresign' added" \
@@ -8196,7 +8257,7 @@ in {
           run_clean ${self}/bin/apm search hostkeyresign \
             --registry host-keyresign \
             > "$work/apm-search-host-keyresign-version.out" 2>&1
-          grep -q "hostkeyresign/host-keyresign 1.0.0" \
+          grep -q "hostkeyresign/host-keyresign 1.1.0" \
             "$work/apm-search-host-keyresign-version.out"
           version_trust_file="$config/apm/trusted-keys.d/host-keyresign.pub"
           grep -q "$trust_key" "$version_trust_file"

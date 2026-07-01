@@ -209,7 +209,24 @@ fn materialize_package_config(
     Ok(changed)
 }
 
-fn render_package_config<'a>(
+/// Render every artifact of a package's signed config metadata against desired
+/// values, returning each artifact paired with its serialized bytes.
+///
+/// The render is deterministic: artifacts are emitted in declaration order and
+/// each artifact's fields serialize from a sorted [`BTreeMap`], so output bytes
+/// do not depend on input insertion order. This determinism is the content-
+/// addressing invariant the RFC-0011 flat-merge parity oracle pins.
+///
+/// Exposed (`#[doc(hidden)]`) only so the `golden_config_artifact` integration
+/// test can snapshot it; the behavior is unchanged from when it was private.
+///
+/// # Errors
+///
+/// Returns an error when `desired_package` references an unknown artifact, omits
+/// a required field, includes an undeclared field, or cannot be serialized in
+/// the artifact's declared format.
+#[doc(hidden)]
+pub fn render_package_config<'a>(
     package: &str,
     artifacts: &'a [ConfigArtifactMeta],
     desired_package: Option<&BTreeMap<String, BTreeMap<String, toml::Value>>>,
@@ -443,6 +460,7 @@ mod tests {
                     uses: Vec::new(),
                 }),
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -475,6 +493,7 @@ mod tests {
             requires_features: Vec::new(),
             expose,
             expose_artifact: None,
+            config_module: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
