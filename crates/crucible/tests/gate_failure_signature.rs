@@ -8,11 +8,11 @@ use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
     Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp, EventLogOffset,
-    EventSource, FailureCausalCone, FailureKind, FailurePropertyViolationRecord,
-    FailureRecordedEventLog, FailureSignature, FailureSignatureNormalization,
-    FailureTriageResultIdentity, FindingDiscoveryPath, FindingReproductionArtifact,
-    HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate, ObservableEvent,
-    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
+    EventSource, FailureCausalCone, FailureClusterFinding, FailureClusteringResult, FailureKind,
+    FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
+    FailureSignatureNormalization, FailureTriageResultIdentity, FindingDiscoveryPath,
+    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
     SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
     SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
@@ -471,6 +471,157 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
             .canonical_material()
             .contains(default.coverage_class_algorithm())
     );
+
+    Ok(())
+}
+
+#[test]
+fn failure_clustering_partitions_and_orders_by_signature_key() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("cluster-source"),
+    )?;
+    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
+    let record = property_violation_record(finding.artifact.id());
+    let base_signature =
+        FailureSignature::from_recorded_property_violation(&finding, &recorded_log, &record)?;
+
+    let mut same_default_key = base_signature.clone();
+    same_default_key.causal_slice_hash = Some(finding_hash("different-fine-path"));
+
+    let mut different_default_key = base_signature.clone();
+    different_default_key
+        .property
+        .as_mut()
+        .ok_or("property signature must carry a property key")?
+        .quantifier = AssertionQuantifierKind::Sometimes;
+
+    let member_a = finding_hash("member-a");
+    let member_b = finding_hash("member-b");
+    let member_c = finding_hash("member-c");
+    let inputs = vec![
+        FailureClusterFinding::new(member_c, different_default_key.clone()),
+        FailureClusterFinding::new(member_b, same_default_key.clone()),
+        FailureClusterFinding::new(member_a, base_signature.clone()),
+    ];
+    let reversed_inputs = inputs.iter().cloned().rev().collect::<Vec<_>>();
+    let policy = SignaturePolicy::default();
+
+    let clustered = FailureClusteringResult::from_findings(policy, inputs.clone())?;
+    let reclustered = FailureClusteringResult::from_findings(policy, reversed_inputs)?;
+    assert_eq!(clustered, reclustered);
+    assert_eq!(clustered.content_hash(), reclustered.content_hash());
+    assert_eq!(clustered.cluster_count(), 2);
+    assert_eq!(clustered.member_count(), 3);
+
+    let cluster_ids = clustered
+        .clusters
+        .iter()
+        .map(|cluster| cluster.id)
+        .collect::<Vec<_>>();
+    let mut sorted_cluster_ids = cluster_ids.clone();
+    sorted_cluster_ids.sort();
+    assert_eq!(cluster_ids, sorted_cluster_ids);
+
+    let base_key = base_signature.signature_key(policy)?;
+    let base_cluster = clustered
+        .clusters
+        .iter()
+        .find(|cluster| cluster.id == base_key.content_hash())
+        .ok_or("default cluster must exist")?;
+    assert_eq!(base_cluster.id, base_cluster.signature_key.content_hash());
+    assert_eq!(base_cluster.members.len(), 2);
+    assert_eq!(
+        base_cluster
+            .representative_member()
+            .map(|member| member.reproduction_artifact),
+        base_cluster.member_hashes().first().copied()
+    );
+    let member_hashes = base_cluster.member_hashes();
+    let mut sorted_member_hashes = member_hashes.clone();
+    sorted_member_hashes.sort();
+    assert_eq!(member_hashes, sorted_member_hashes);
+    assert!(base_cluster.members.iter().all(|member| {
+        member
+            .signature
+            .signature_key(policy)
+            .map(|key| key.content_hash() == base_cluster.id)
+            .unwrap_or(false)
+    }));
+
+    let coarse_clustered =
+        FailureClusteringResult::from_findings(SignaturePolicy::coarse(), inputs.clone())?;
+    assert_eq!(
+        coarse_clustered.cluster_count(),
+        1,
+        "coarse clusters by failure kind and property id only"
+    );
+
+    let fine_clustered =
+        FailureClusteringResult::from_findings(SignaturePolicy::fine(), inputs.clone())?;
+    assert_eq!(
+        fine_clustered.cluster_count(),
+        3,
+        "fine separates the causal slice hash"
+    );
+    assert!(
+        clustered
+            .canonical_material()
+            .contains("cluster.signature_key_BEGIN")
+    );
+    assert!(
+        clustered
+            .canonical_material()
+            .contains("cluster.member.reproduction_artifact")
+    );
+
+    let mut conflicting_signature = base_signature.clone();
+    conflicting_signature
+        .property
+        .as_mut()
+        .ok_or("property signature must carry a property key")?
+        .id = assertion_id("different-property");
+    let conflict = FailureClusteringResult::from_findings(
+        policy,
+        [
+            FailureClusterFinding::new(member_a, base_signature),
+            FailureClusterFinding::new(member_a, conflicting_signature),
+        ],
+    )
+    .expect_err("same reproduction artifact cannot carry conflicting signatures");
+    assert!(matches!(
+        conflict,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+
+    let mut report_only_conflict = same_default_key.clone();
+    report_only_conflict.at_icount_report_only = Some(icount(1234));
+    assert_eq!(
+        same_default_key.signature_key(policy)?.content_hash(),
+        report_only_conflict.signature_key(policy)?.content_hash(),
+        "the duplicate report-material guard must cover same-key evidence drift"
+    );
+    assert_ne!(
+        same_default_key.report_material(),
+        report_only_conflict.report_material()
+    );
+    let report_only_conflict_error = FailureClusteringResult::from_findings(
+        policy,
+        [
+            FailureClusterFinding::new(member_b, same_default_key),
+            FailureClusterFinding::new(member_b, report_only_conflict),
+        ],
+    )
+    .expect_err("same-key duplicate artifact with different report material must be rejected");
+    assert!(matches!(
+        report_only_conflict_error,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
 
     Ok(())
 }
