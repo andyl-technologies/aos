@@ -77,14 +77,15 @@ use crate::cache::{
     lowered_ir_fingerprint,
 };
 use crate::compile::{
-    BindingLowering, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
-    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode,
-    IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
+    BindingLowering, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment,
+    IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions,
+    IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness, resolve,
 };
 use crate::heap::{
-    GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport,
-    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
+    AllocationRegionFacts, GenerationalGcError, GenerationalGcTier, HeapMemoryBudget,
+    MinorGcCommitReport, MinorGcDestinationBases, MinorGcForwardingSlot,
+    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, RegionEffect, RegionLifetime, RegionPlan,
+    RegionRuntimeTier, RegionSharing, RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
@@ -1016,6 +1017,7 @@ mod fetch_tree_args;
 mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
+mod region;
 mod safepoint_roots;
 mod serialize_xml;
 

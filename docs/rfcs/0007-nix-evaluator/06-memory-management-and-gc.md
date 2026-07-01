@@ -1704,6 +1704,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       no-latent-force, speculable-effect, bounded-lexical-lifetime proofs select
       `LexicalSubregion`; permanent shared values bypass region pop, and every
       missing proof falls back to the active root arena or daemon GC heap.
+- [x] Current tree-walk region-plan adapter precursor:
+      `TreeWalk::allocation_region_facts` and
+      `TreeWalk::region_plan_for_allocation` map current-module IR
+      `ExprFacts` plus each node's `EffectClass` into the conservative
+      `AllocationRegionFacts`/`RegionPlan` policy. Missing node/fact records
+      fail closed to conservative placement. Non-thunk nodes require `Strict +
+      NoEscape + speculable` facts to become lexical-subregion candidates, while
+      thunk allocations remain conservative until a distinct no-latent-force
+      proof exists. This is classification telemetry for future placement; it
+      does not allocate into subregions, pop automatically, or strengthen the
+      current escape pass.
 - [x] Current arena region-pop primitive precursor: `BumpArena` can capture
       `ArenaRegionMark`s and, behind an explicit caller proof, pop back to a
       marker by rewinding the retained chunk, dropping later chunks, restoring

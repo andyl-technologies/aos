@@ -6035,8 +6035,10 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       refreshes the current fact table from a conservative baseline, runs the
       strictness, cardinality, and escape fact producers, returns a combined
       report, and leaves conservative facts behind on producer errors. The
-      tree-walk oracle already consumes the fact table carried by `Ir`, but
-      cache-key reuse, closed-world fixpoints, and JIT consumers remain open.
+      tree-walk oracle already consumes the fact table carried by `Ir` for
+      thunk elision and now exposes region-plan classification from those
+      facts, but cache-key reuse, closed-world fixpoints, allocation-site
+      placement, and JIT consumers remain open.
 - [x] Current IR-fact substrate precursor: `ratchet-core::ir` exposes the
       conservative `ExprFacts` lattice (`Unknown` strictness, `Many`
       cardinality, `Escapes` allocation behavior) plus an `IrFacts` table
@@ -6499,6 +6501,17 @@ it ships).**
       speculable-effect, and bounded-lexical-lifetime proofs before selecting a
       pop-safe lexical subregion; permanent shared values bypass region pop; all
       missing proofs fall back to the active root arena or daemon GC heap.
+- [x] Current tree-walk region-plan adapter precursor:
+      `TreeWalk::allocation_region_facts` and
+      `TreeWalk::region_plan_for_allocation` translate current-module
+      `ExprFacts` plus each IR node's `EffectClass` into
+      `AllocationRegionFacts` and the existing conservative `RegionPlan`
+      decision. Missing node/fact records fail closed to conservative placement,
+      non-thunk nodes require `Strict + NoEscape + speculable` facts to become
+      lexical-subregion candidates, and thunk allocations remain conservative
+      until a distinct no-latent-force proof exists. This is a classification
+      bridge for future allocation-site placement; it does not allocate into
+      subregions, pop automatically, or strengthen the current escape pass.
 - [x] Current arena region-pop primitive precursor: `BumpArena` can capture a
       lexical subregion marker and, behind an explicit caller proof, pop back to
       it by rewinding the retained chunk, unmapping later chunks, restoring the
