@@ -5430,6 +5430,21 @@ and helps the oracle directly.
       installing real object-header forwarding slots, mutating live tree-walk
       roots or heap fields, mutating remembered source fields, publishing the
       evaluator-owned remembered set, and semispace management remain open.
+- [x] Current GC-stress boundary commit dry-run precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflights::apply_owned_commit_dry_run`
+      consumes the boundary preflight bundle, applies owned reference-writeback
+      buffers and owned synthetic commit buffers from the same metadata, and
+      returns `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights,
+      writeback applications, and commit applications preserved together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
+      boundary pipeline from the recorded GC-stress scans in one checked call.
+      Tests cover the worker dry-run path, including copy, forwarding,
+      reference-rewrite, and owned-buffer byte equality checks, permanent-shared
+      empty dry-run partitioning, plus the stress-disabled empty path. This
+      remains an owned dry-run surface only; live heap-object byte binding, real
+      object-header forwarding installation, live tree-walk root/heap-field
+      mutation, remembered-source field mutation, evaluator remembered-set
+      publication, and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5775,9 +5790,9 @@ and helps the oracle directly.
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
-      stress-disabled outcomes, boundary owned reference-writeback and synthetic
-      commit-buffer application, stale same-domain poll rejection,
-      recursive-force cleanup, and
+      stress-disabled outcomes, boundary owned reference-writeback, synthetic
+      commit-buffer application, and single-call owned commit dry-run, stale
+      same-domain poll rejection, recursive-force cleanup, and
       first-class primop error cleanup. This remains a root-set
       precursor: arbitrary Rust locals still need explicit value-stack
       registration, and mutable relocation slots, collector invocation, and JIT

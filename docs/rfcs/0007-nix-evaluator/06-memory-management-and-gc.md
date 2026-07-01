@@ -1092,6 +1092,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       objects, install real object-header forwarding slots, mutate live
       tree-walk roots or heap fields, mutate remembered source fields, publish
       the evaluator-owned remembered set, or manage semispace storage.
+- [x] Current GC-stress boundary commit dry-run precursor:
+      `EvalGcStressBoundaryMinorGcCommitPreflights::apply_owned_commit_dry_run`
+      consumes the boundary preflight bundle, applies owned reference-writeback
+      buffers and owned synthetic commit buffers from the same metadata, and
+      returns `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights,
+      writeback applications, and commit applications preserved together.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
+      boundary pipeline from the recorded GC-stress scans in one checked call.
+      Tests cover the worker dry-run path, including copy, forwarding,
+      reference-rewrite, and owned-buffer byte equality checks, permanent-shared
+      empty dry-run partitioning, plus the stress-disabled empty path. This is
+      still an owned dry-run surface only: it does not bind raw bytes to live
+      heap objects, install real object-header forwarding slots, mutate live
+      tree-walk roots or heap fields, mutate remembered source fields, publish
+      the evaluator-owned remembered set, or manage semispace storage.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll
@@ -1585,9 +1600,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
       boundary commit-preflight reports for worker, permanent-shared, and
-      stress-disabled outcomes, boundary owned reference-writeback and synthetic
-      commit-buffer application, stale same-domain poll rejection, and stack
-      cleanup after force/primop failures. This still does not infer arbitrary
+      stress-disabled outcomes, boundary owned reference-writeback, synthetic
+      commit-buffer application, and single-call owned commit dry-run, stale
+      same-domain poll rejection, and stack cleanup after force/primop failures.
+      This still does not infer arbitrary
       Rust locals without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
       remain open in the full precise-root row above.

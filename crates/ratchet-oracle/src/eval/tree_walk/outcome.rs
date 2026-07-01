@@ -794,6 +794,80 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
             permanent_shared,
         ))
     }
+
+    /// Applies every boundary commit preflight to owned dry-run buffers.
+    ///
+    /// This consumes the preflight bundle so the returned dry-run report retains
+    /// the exact metadata that produced the owned reference-writeback and commit
+    /// applications. It still does not mutate live evaluator roots, live heap
+    /// fields, object headers, remembered-set storage, or semispace pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if any preflight cannot allocate its owned
+    /// writeback or commit buffers, rebuild commit metadata, or validate those
+    /// buffers against the lower-level plans.
+    pub fn apply_owned_commit_dry_run(
+        self,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
+        let reference_writebacks = self.apply_reference_writebacks_to_owned_slots()?;
+        let commit_applications = self.apply_commits_to_owned_buffers()?;
+
+        Ok(EvalGcStressBoundaryMinorGcCommitDryRun::new(
+            self,
+            reference_writebacks,
+            commit_applications,
+        ))
+    }
+}
+
+/// Owned dry-run application of GC-stress boundary minor-GC commit preflights.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitDryRun {
+    preflights: EvalGcStressBoundaryMinorGcCommitPreflights,
+    reference_writebacks: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+    commit_applications: EvalGcStressBoundaryMinorGcCommitApplications,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitDryRun {
+    const fn new(
+        preflights: EvalGcStressBoundaryMinorGcCommitPreflights,
+        reference_writebacks: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
+        commit_applications: EvalGcStressBoundaryMinorGcCommitApplications,
+    ) -> Self {
+        Self {
+            preflights,
+            reference_writebacks,
+            commit_applications,
+        }
+    }
+
+    /// Returns whether no allocator tier produced a dry-run application.
+    pub const fn is_empty(&self) -> bool {
+        self.preflights.is_empty()
+    }
+
+    /// Returns how many allocator tiers produced dry-run applications.
+    pub const fn len(&self) -> usize {
+        self.preflights.len()
+    }
+
+    /// Returns the preflight metadata used by this dry run.
+    pub const fn preflights(&self) -> &EvalGcStressBoundaryMinorGcCommitPreflights {
+        &self.preflights
+    }
+
+    /// Returns the owned reference-writeback applications.
+    pub const fn reference_writebacks(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcReferenceWritebackApplications {
+        &self.reference_writebacks
+    }
+
+    /// Returns the owned commit-buffer applications.
+    pub const fn commit_applications(&self) -> &EvalGcStressBoundaryMinorGcCommitApplications {
+        &self.commit_applications
+    }
 }
 
 /// Applied reference writeback buffers derived from boundary preflights.
@@ -1246,6 +1320,30 @@ impl EvalOutcome {
             worker,
             permanent_shared,
         ))
+    }
+
+    /// Runs boundary minor-GC commit preflights against owned dry-run buffers.
+    ///
+    /// This derives boundary commit preflight metadata from the recorded
+    /// GC-stress scans, applies reference writebacks into owned slot copies, and
+    /// applies commit plans into owned synthetic byte, forwarding, reference,
+    /// and remembered-set buffers. The returned report carries all three
+    /// artifacts for the exact same worker/permanent-shared partition. It still
+    /// does not mutate live evaluator roots, live heap fields, object headers,
+    /// remembered-set storage, or semispace pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary commit preflight derivation fails,
+    /// if any owned dry-run buffer cannot be allocated, or if any owned buffer
+    /// fails validation against the lower-level commit or writeback plans.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run(
+        &self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
+        self.gc_stress_boundary_minor_gc_commit_preflights(promotion_policy, bases)?
+            .apply_owned_commit_dry_run()
     }
 
     fn gc_stress_boundary_minor_gc_commit_preflight(

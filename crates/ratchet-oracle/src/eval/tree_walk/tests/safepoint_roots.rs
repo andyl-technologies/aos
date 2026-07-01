@@ -646,6 +646,169 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
 }
 
 #[test]
+fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let nursery_base = static_gc_address(0x1000_0000);
+
+    let dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("boundary scan runs owned commit dry-run");
+
+    assert_eq!(dry_run.len(), 1);
+    assert!(!dry_run.is_empty());
+    assert!(dry_run.preflights().permanent_shared().is_none());
+    assert!(dry_run.reference_writebacks().permanent_shared().is_none());
+    assert!(dry_run.commit_applications().permanent_shared().is_none());
+
+    let preflight = dry_run
+        .preflights()
+        .worker()
+        .expect("worker dry-run preflight records");
+    let writeback_application = dry_run
+        .reference_writebacks()
+        .worker()
+        .expect("worker dry-run writebacks record");
+    let commit_application = dry_run
+        .commit_applications()
+        .worker()
+        .expect("worker dry-run commit records");
+
+    assert_eq!(preflight.object_byte_copy_plan().len(), 1);
+    assert_eq!(
+        writeback_application.report().root_writebacks(),
+        preflight.reference_writeback_plan().root_writebacks().len()
+    );
+    assert_eq!(
+        writeback_application.report().heap_field_writebacks(),
+        preflight
+            .reference_writeback_plan()
+            .heap_field_writebacks()
+            .len()
+    );
+    assert_eq!(
+        writeback_application.root_writeback_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let commit_report = commit_application.report();
+    assert_eq!(
+        commit_report.object_copies(),
+        preflight.object_byte_copy_plan().len()
+    );
+    assert_eq!(
+        commit_report.forwarding_pointers(),
+        preflight.forwarding_slots().len()
+    );
+    assert_eq!(
+        commit_report.reference_rewrites(),
+        writeback_application.report().writebacks()
+    );
+    assert_eq!(commit_report.copied_to_nursery(), 1);
+    assert_eq!(commit_report.promoted_to_old(), 0);
+
+    let object_copy = &commit_application.object_byte_copies()[0];
+    assert_eq!(
+        object_copy.request(),
+        preflight.object_byte_copy_plan().requests()[0]
+    );
+    assert_eq!(object_copy.destination_bytes(), object_copy.source_bytes());
+    assert_eq!(
+        commit_application.forwarding_slots()[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        commit_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }]
+    );
+}
+
+#[test]
+fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+
+    let dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("permanent boundary scan runs owned commit dry-run");
+
+    assert_eq!(dry_run.len(), 1);
+    assert!(!dry_run.is_empty());
+    assert!(dry_run.preflights().worker().is_none());
+    assert!(dry_run.reference_writebacks().worker().is_none());
+    assert!(dry_run.commit_applications().worker().is_none());
+
+    let preflight = dry_run
+        .preflights()
+        .permanent_shared()
+        .expect("permanent dry-run preflight records");
+    let writeback_application = dry_run
+        .reference_writebacks()
+        .permanent_shared()
+        .expect("permanent dry-run writebacks record");
+    let commit_application = dry_run
+        .commit_applications()
+        .permanent_shared()
+        .expect("permanent dry-run commit records");
+
+    assert!(preflight.object_byte_copy_plan().is_empty());
+    assert!(preflight.forwarding_slots().is_empty());
+    assert!(preflight.reference_writeback_plan().is_empty());
+    assert_eq!(writeback_application.report().writebacks(), 0);
+    assert!(writeback_application.root_writeback_slots().is_empty());
+    assert!(
+        writeback_application
+            .heap_field_writeback_slots()
+            .is_empty()
+    );
+
+    let commit_report = commit_application.report();
+    assert_eq!(commit_report.object_copies(), 0);
+    assert_eq!(commit_report.forwarding_pointers(), 0);
+    assert_eq!(commit_report.reference_rewrites(), 0);
+    assert!(commit_application.object_byte_copies().is_empty());
+    assert!(commit_application.forwarding_slots().is_empty());
+    assert_eq!(
+        commit_application.references(),
+        preflight.reference_buffer()
+    );
+    assert!(commit_application.references().iter().all(|value| matches!(
+        value,
+        ResolvedValueGeneration::Heap {
+            generation: HeapGeneration::Permanent,
+            ..
+        }
+    )));
+    assert!(commit_application.remembered_set().is_empty());
+}
+
+#[test]
 fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     let ir = lower("let captured = x: x; in y: captured");
     let outcome = eval_whnf_owned_with_options(
@@ -902,6 +1065,21 @@ fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
         .apply_commits_to_owned_buffers()
         .expect("empty boundary preflights produce empty commit application");
     assert!(commit_applications.is_empty());
+
+    let dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary scans produce empty dry-run application");
+    assert!(dry_run.is_empty());
+    assert_eq!(dry_run.len(), 0);
+    assert!(dry_run.preflights().is_empty());
+    assert!(dry_run.reference_writebacks().is_empty());
+    assert!(dry_run.commit_applications().is_empty());
 }
 
 #[test]
