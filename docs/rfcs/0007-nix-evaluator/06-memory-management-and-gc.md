@@ -860,6 +860,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       metadata only: it does not yet invoke a collector, build a live root set,
       run GC-stress collection, export C ABI symbols, or integrate the
       thunk-resolve write barrier with allocation dispatch.
+- [x] Current allocation collector-poll request precursor:
+      `AllocationSafepoint::collector_poll` and
+      `AllocationSafepointState::last_safepoint_collector_poll` turn GC-stress
+      poll intent on the most recent safepoint into a typed
+      `AllocationCollectorPoll` carrying the safepoint sequence, allocator tier,
+      `aos_alloc_*` entry point, poll reason, and post-allocation arena
+      accounting. Tests cover disabled safepoints producing no request,
+      worker-domain GC-stress requests, permanent-shared requests, and saturated
+      sequence requests. This is a dispatch request only: it does not build the
+      live root set, call a collector, relocate values, or make collection
+      observable under the tree-walk oracle.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

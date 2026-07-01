@@ -180,6 +180,53 @@ pub enum AllocationGcPollReason {
     GcStressSequenceSaturated,
 }
 
+/// A collector poll requested by an allocation safepoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllocationCollectorPoll {
+    sequence: u64,
+    tier: RuntimeAllocatorTier,
+    entrypoint: RuntimeAllocationEntryPoint,
+    reason: AllocationGcPollReason,
+    stats_after: ArenaStats,
+}
+
+impl AllocationCollectorPoll {
+    const fn new(safepoint: AllocationSafepoint, reason: AllocationGcPollReason) -> Self {
+        Self {
+            sequence: safepoint.sequence,
+            tier: safepoint.tier,
+            entrypoint: safepoint.entrypoint,
+            reason,
+            stats_after: safepoint.stats_after,
+        }
+    }
+
+    /// Returns the allocation safepoint sequence that requested the poll.
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the allocation tier that requested the poll.
+    pub const fn tier(self) -> RuntimeAllocatorTier {
+        self.tier
+    }
+
+    /// Returns the allocation entry point that requested the poll.
+    pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns why the collector poll was requested.
+    pub const fn reason(self) -> AllocationGcPollReason {
+        self.reason
+    }
+
+    /// Returns allocator accounting after the safepoint allocation completed.
+    pub const fn stats_after(self) -> ArenaStats {
+        self.stats_after
+    }
+}
+
 /// Metadata captured at one allocation safepoint.
 ///
 /// The current tree-walk runtime records safepoints and GC-stress poll intent
@@ -258,6 +305,14 @@ impl AllocationSafepoint {
         self.gc_poll_reason
     }
 
+    /// Returns the typed collector poll requested by this safepoint.
+    pub const fn collector_poll(self) -> Option<AllocationCollectorPoll> {
+        match self.gc_poll_reason {
+            Some(reason) => Some(AllocationCollectorPoll::new(self, reason)),
+            None => None,
+        }
+    }
+
     /// Returns heap chunks owned after this allocation completed.
     pub const fn heap_chunks_after(self) -> usize {
         self.stats_after.chunks
@@ -295,6 +350,14 @@ impl AllocationSafepointState {
     /// Returns the most recent allocation safepoint.
     pub const fn last(self) -> Option<AllocationSafepoint> {
         self.last
+    }
+
+    /// Returns the collector poll requested by the most recent safepoint.
+    pub const fn last_safepoint_collector_poll(self) -> Option<AllocationCollectorPoll> {
+        match self.last {
+            Some(safepoint) => safepoint.collector_poll(),
+            None => None,
+        }
     }
 
     fn record(
@@ -661,6 +724,8 @@ mod tests {
         assert_eq!(event.heap_reserved_bytes_after(), stats.reserved_bytes);
         assert_eq!(event.heap_mapped_bytes_after(), stats.mapped_bytes);
         assert_eq!(event.gc_poll_reason(), None);
+        assert_eq!(event.collector_poll(), None);
+        assert_eq!(state.last_safepoint_collector_poll(), None);
     }
 
     #[test]
@@ -920,6 +985,24 @@ mod tests {
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressEverySafepoint)
         );
+        let poll = event.collector_poll().expect("poll request records");
+        assert_eq!(poll.sequence(), event.sequence());
+        assert_eq!(poll.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert_eq!(
+            poll.entrypoint(),
+            RuntimeAllocationEntryPoint::AosAllocThunk
+        );
+        assert_eq!(
+            poll.reason(),
+            AllocationGcPollReason::GcStressEverySafepoint
+        );
+        assert_eq!(poll.stats_after(), event.stats_after());
+        assert_eq!(
+            allocator
+                .allocation_safepoints()
+                .last_safepoint_collector_poll(),
+            Some(poll)
+        );
     }
 
     #[test]
@@ -1006,6 +1089,10 @@ mod tests {
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressSequenceSaturated)
         );
+        assert_eq!(
+            event.collector_poll().expect("poll records").reason(),
+            AllocationGcPollReason::GcStressSequenceSaturated
+        );
 
         state.record(
             RuntimeAllocatorTier::TierAOneShot,
@@ -1019,6 +1106,13 @@ mod tests {
         assert_eq!(
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressSequenceSaturated)
+        );
+        assert_eq!(
+            state
+                .last_safepoint_collector_poll()
+                .expect("poll records")
+                .sequence(),
+            u64::MAX
         );
     }
 
@@ -1039,5 +1133,20 @@ mod tests {
             event.gc_poll_reason(),
             Some(AllocationGcPollReason::GcStressEverySafepoint)
         );
+        let poll = allocator
+            .allocation_safepoints()
+            .last_safepoint_collector_poll()
+            .expect("permanent poll records");
+        assert_eq!(poll.sequence(), event.sequence());
+        assert_eq!(poll.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert_eq!(
+            poll.entrypoint(),
+            RuntimeAllocationEntryPoint::AosAllocString
+        );
+        assert_eq!(
+            poll.reason(),
+            AllocationGcPollReason::GcStressEverySafepoint
+        );
+        assert_eq!(poll.stats_after(), event.stats_after());
     }
 }

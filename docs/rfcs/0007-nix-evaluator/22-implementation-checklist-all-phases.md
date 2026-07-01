@@ -5011,6 +5011,16 @@ and helps the oracle directly.
       `string` allocations. This remains metadata only; collector invocation,
       live-root construction, GC-stress execution, exported C ABI symbols, and
       write-barrier dispatch integration remain open.
+- [x] Current allocation collector-poll request precursor:
+      `AllocationSafepoint::collector_poll` and
+      `AllocationSafepointState::last_safepoint_collector_poll` expose a typed
+      `AllocationCollectorPoll` when GC-stress policy marks the most recent
+      allocation safepoint for collection. The request carries safepoint
+      sequence, allocator tier, `aos_alloc_*` entry point, poll reason, and
+      post-allocation arena accounting. Tests cover disabled safepoints, worker
+      and permanent-shared GC-stress requests, and sequence saturation. This is
+      a collector dispatch request only; live-root construction, collector
+      invocation, relocation, and byte-green GC-stress execution remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
