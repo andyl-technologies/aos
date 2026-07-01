@@ -1299,6 +1299,141 @@ pub enum GuestMemoryAddressSpace {
     Virtual,
 }
 
+/// Phase 0 S5 check that retired the guest virtual-memory payload-read spike.
+pub const WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK: &str = "checks.crucible.phase0.s5VirtualMemory";
+
+/// Fail-closed payload-read addressing when S5 evidence has not been supplied.
+pub const WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED: WhiteboxGuestMemoryAddressingResolution =
+    WhiteboxGuestMemoryAddressingResolution::unresolved(WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK);
+
+const fn static_str_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// Default addressing mode for a white-box payload range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhiteboxPayloadAddressingMode {
+    /// Use the guest virtual pointer and length captured at the trap.
+    VirtualPointerLength,
+    /// Use the conservative physical or identity-mapped shared page fallback.
+    PhysicalSharedPage,
+}
+
+/// Evidence that selects the default white-box payload address form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WhiteboxGuestMemoryAddressingResolution {
+    /// Gate whose result produced this resolution.
+    pub check: &'static str,
+    /// Whether QEMU exports the plugin virtual-memory read function.
+    pub qemu_plugin_read_memory_vaddr_available: bool,
+    /// Whether the virtual-address read spike passed overall.
+    pub virtual_address_read_result: bool,
+    /// Whether resident static-storage payload reads passed.
+    pub resident_read: bool,
+    /// Whether page-spanning payload reads passed.
+    pub page_spanning_read: bool,
+    /// Whether normally paged anonymous-mmap payload reads passed.
+    pub paged_mmap_read: bool,
+    /// Whether marker icounts matched across repeated read-enabled runs.
+    pub marker_icounts_reproducible: bool,
+    /// Whether the plugin read the expected payload bytes.
+    pub read_bytes_match_expected: bool,
+    /// Whether payload hashes matched across repeated read-enabled runs.
+    pub read_hashes_reproducible: bool,
+    /// Whether read-enabled and read-disabled final fingerprints matched.
+    pub side_effect_free_fingerprint_match: bool,
+    /// Whether the conservative physical/pinned fallback was adopted.
+    pub physical_pinned_fallback_adopted: bool,
+}
+
+impl WhiteboxGuestMemoryAddressingResolution {
+    /// Builds an unresolved resolution that keeps the conservative physical fallback.
+    #[must_use]
+    pub const fn unresolved(check: &'static str) -> Self {
+        Self {
+            check,
+            qemu_plugin_read_memory_vaddr_available: false,
+            virtual_address_read_result: false,
+            resident_read: false,
+            page_spanning_read: false,
+            paged_mmap_read: false,
+            marker_icounts_reproducible: false,
+            read_bytes_match_expected: false,
+            read_hashes_reproducible: false,
+            side_effect_free_fingerprint_match: false,
+            physical_pinned_fallback_adopted: true,
+        }
+    }
+
+    /// Returns whether the virtual pointer+length payload form is sound.
+    #[must_use]
+    pub const fn virtual_pointer_length_is_sound(self) -> bool {
+        static_str_eq(self.check, WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK)
+            && self.qemu_plugin_read_memory_vaddr_available
+            && self.virtual_address_read_result
+            && self.resident_read
+            && self.page_spanning_read
+            && self.paged_mmap_read
+            && self.marker_icounts_reproducible
+            && self.read_bytes_match_expected
+            && self.read_hashes_reproducible
+            && self.side_effect_free_fingerprint_match
+            && !self.physical_pinned_fallback_adopted
+    }
+
+    /// Returns the default payload addressing mode selected by the spike result.
+    #[must_use]
+    pub const fn default_payload_addressing_mode(self) -> WhiteboxPayloadAddressingMode {
+        if self.virtual_pointer_length_is_sound() {
+            WhiteboxPayloadAddressingMode::VirtualPointerLength
+        } else {
+            WhiteboxPayloadAddressingMode::PhysicalSharedPage
+        }
+    }
+
+    /// Builds the default payload source, retaining the physical fallback.
+    #[must_use]
+    pub const fn default_payload_source(
+        self,
+        virtual_guest_address: u64,
+        physical_shared_page_address: u64,
+        len: usize,
+    ) -> WhiteboxDoorbellPayloadSource {
+        match self.default_payload_addressing_mode() {
+            WhiteboxPayloadAddressingMode::VirtualPointerLength => {
+                WhiteboxDoorbellPayloadSource::RegisterPointerLength {
+                    range: GuestMemoryRange::new(
+                        GuestMemoryAddressSpace::Virtual,
+                        virtual_guest_address,
+                        len,
+                    ),
+                }
+            }
+            WhiteboxPayloadAddressingMode::PhysicalSharedPage => {
+                WhiteboxDoorbellPayloadSource::SharedPage {
+                    range: GuestMemoryRange::new(
+                        GuestMemoryAddressSpace::Physical,
+                        physical_shared_page_address,
+                        len,
+                    ),
+                }
+            }
+        }
+    }
+}
+
 /// An opaque range in guest memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuestMemoryRange {
@@ -1385,6 +1520,27 @@ impl WhiteboxDoorbellTrapEvent {
             payload_source: WhiteboxDoorbellPayloadSource::RegisterPointerLength {
                 range: payload_range,
             },
+        }
+    }
+
+    /// Builds a doorbell trap event from the S5 virtual-memory read resolution.
+    #[must_use]
+    pub const fn from_default_payload_addressing(
+        vcpu_index: u32,
+        current_icount: u64,
+        addressing: WhiteboxGuestMemoryAddressingResolution,
+        virtual_guest_address: u64,
+        physical_shared_page_address: u64,
+        payload_len: usize,
+    ) -> Self {
+        Self {
+            vcpu_index,
+            current_icount,
+            payload_source: addressing.default_payload_source(
+                virtual_guest_address,
+                physical_shared_page_address,
+                payload_len,
+            ),
         }
     }
 
@@ -2295,6 +2451,121 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_guest_memory_addressing_uses_supplied_s5_virtual_pointer_length_evidence() {
+        let s5_pass = phase0_s5_pass_resolution();
+
+        assert_eq!(s5_pass.check, WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK);
+        assert_eq!(
+            s5_pass.default_payload_addressing_mode(),
+            WhiteboxPayloadAddressingMode::VirtualPointerLength
+        );
+        assert!(s5_pass.virtual_pointer_length_is_sound());
+        assert!(!s5_pass.physical_pinned_fallback_adopted);
+
+        let source = s5_pass.default_payload_source(0x2000, 0x1000, 64);
+        assert_eq!(
+            source,
+            WhiteboxDoorbellPayloadSource::RegisterPointerLength {
+                range: GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 64),
+            }
+        );
+        let event = WhiteboxDoorbellTrapEvent::from_default_payload_addressing(
+            1, 99, s5_pass, 0x2000, 0x1000, 64,
+        );
+        assert_eq!(event.payload_source(), source);
+        assert_eq!(
+            event.payload_range().address_space(),
+            GuestMemoryAddressSpace::Virtual
+        );
+    }
+
+    #[test]
+    fn whitebox_guest_memory_addressing_unresolved_default_is_physical_shared_page() {
+        let unresolved = WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED;
+
+        assert_eq!(unresolved.check, WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK);
+        assert_eq!(
+            unresolved.default_payload_addressing_mode(),
+            WhiteboxPayloadAddressingMode::PhysicalSharedPage
+        );
+        assert!(!unresolved.virtual_pointer_length_is_sound());
+        let event = WhiteboxDoorbellTrapEvent::from_default_payload_addressing(
+            1, 99, unresolved, 0x2000, 0x1000, 64,
+        );
+        assert_eq!(
+            event.payload_source(),
+            WhiteboxDoorbellPayloadSource::SharedPage {
+                range: GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 64),
+            }
+        );
+        assert_eq!(
+            event.payload_range().address_space(),
+            GuestMemoryAddressSpace::Physical
+        );
+    }
+
+    #[test]
+    fn whitebox_guest_memory_addressing_rejects_non_s5_evidence() {
+        let mut non_s5_pass = phase0_s5_pass_resolution();
+        non_s5_pass.check = "checks.crucible.phase0.other";
+
+        assert!(!non_s5_pass.virtual_pointer_length_is_sound());
+        assert_eq!(
+            non_s5_pass.default_payload_addressing_mode(),
+            WhiteboxPayloadAddressingMode::PhysicalSharedPage
+        );
+        assert_eq!(
+            non_s5_pass.default_payload_source(0x2000, 0x1000, 64),
+            WhiteboxDoorbellPayloadSource::SharedPage {
+                range: GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 64),
+            }
+        );
+    }
+
+    #[test]
+    fn whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolution() {
+        let virtual_event = WhiteboxDoorbellTrapEvent::from_default_payload_addressing(
+            0,
+            50,
+            phase0_s5_pass_resolution(),
+            0x2000,
+            0x1000,
+            random_request_frame(5, 2, "rng").len(),
+        );
+        let physical_event = WhiteboxDoorbellTrapEvent::from_default_payload_addressing(
+            0,
+            50,
+            WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED,
+            0x2000,
+            0x1000,
+            random_request_frame(5, 2, "rng").len(),
+        );
+        let frame = match WhiteboxDoorbellFrame::decode(&random_request_frame(5, 2, "rng")) {
+            Ok(frame) => frame,
+            Err(error) => panic!("random-request frame should decode: {error:?}"),
+        };
+        let virtual_request =
+            match AppRandomDoorbellRequest::from_frame("node-a", virtual_event, frame.clone()) {
+                Ok(request) => request,
+                Err(error) => panic!("virtual random request should decode: {error:?}"),
+            };
+        let physical_request =
+            match AppRandomDoorbellRequest::from_frame("node-a", physical_event, frame) {
+                Ok(request) => request,
+                Err(error) => panic!("physical random request should decode: {error:?}"),
+            };
+
+        assert_eq!(
+            virtual_request.reply_range(),
+            GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x2000, 2)
+        );
+        assert_eq!(
+            physical_request.reply_range(),
+            GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x1000, 2)
+        );
+    }
+
+    #[test]
     fn whitebox_doorbell_rejects_oversized_payload_before_guest_memory_read() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -2873,6 +3144,22 @@ mod tests {
             GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x3000, payload.len()),
             payload.to_vec(),
         )
+    }
+
+    fn phase0_s5_pass_resolution() -> WhiteboxGuestMemoryAddressingResolution {
+        WhiteboxGuestMemoryAddressingResolution {
+            check: WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK,
+            qemu_plugin_read_memory_vaddr_available: true,
+            virtual_address_read_result: true,
+            resident_read: true,
+            page_spanning_read: true,
+            paged_mmap_read: true,
+            marker_icounts_reproducible: true,
+            read_bytes_match_expected: true,
+            read_hashes_reproducible: true,
+            side_effect_free_fingerprint_match: true,
+            physical_pinned_fallback_adopted: false,
+        }
     }
 
     fn guest_input_capability(doorbell: &PluginWhiteboxDoorbell) -> WhiteboxGuestInputCapability {

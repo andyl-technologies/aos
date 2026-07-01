@@ -885,9 +885,22 @@ the transport layer by construction.
   backend fingerprint material while a changed causal boundary or backend workload
   still moves the witness. Full canonical `gate:any-guest` and
   `gate:single-vm-fingerprint` wiring remains the T-GHC-15 task.
-- [ ] **T-GHC-13** Run the guest virtual-vs-physical address spike for the payload
+- [x] **T-GHC-13** Run the guest virtual-vs-physical address spike for the payload
   read; default to the conservative physical/identity-mapped shared page until
   resolved. — satisfies [GHC-33]; spec §16.7.
+  Completed by `checks.crucible.phase4.guestHostVirtualMemorySpike`: the
+  phase gate now depends on the Phase 0
+  `checks.crucible.phase0.s5VirtualMemory` result file and rejects missing S5
+  evidence for the instruction-marker doorbell surface, register pointer+length
+  payload source, `qemu_plugin_read_memory_vaddr`, resident/page-spanning/paged-mmap
+  reads, reproducible marker icounts, byte hashes, side-effect-free final
+  fingerprints, and `physical_pinned_fallback_adopted=false`. The white-box
+  doorbell exposes `WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED` as the
+  fail-closed default, and its virtual-address soundness predicate requires the
+  S5 check identity before selecting a virtual register pointer+length payload
+  source. The app-random reply path is covered as a second client of the same
+  guest-memory addressing decision. The physical / pinned identity-mapped shared-page fallback
+  remains retained if that evidence is absent or invalidated.
 - [ ] **T-GHC-14** Harden the host decoder against untrusted guest input
   (bad magic/version/len/kind): defensive decode diagnostic, bounded allocation,
   fuzzed under conformance. — satisfies [GHC-23], [GHC-35]; spec §16.5, §16.7.
