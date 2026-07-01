@@ -5398,12 +5398,18 @@ and helps the oracle directly.
       before lowering to `madvise`; non-Linux targets return an unsupported
       outcome without touching memory; empty or sub-page ranges are a no-op; OS
       rejection remains an advisory outcome rather than a correctness failure.
-      Tests cover range metadata, zero-length no-op behavior, typed helper
-      dispatch, non-Linux unsupported behavior, Linux full-page trimming, a
-      Linux anonymous-`mmap` `MADV_DONTNEED` call, and Linux flag mapping.
-      Integrating the shim with live resident-set sampling, CA-store spill,
-      region-pop/dead-page selection, and collector-installation policy remains
-      open under the full memory-management rows.
+      `BumpArena::advise_unused_tail` now exposes a safe arena-owned integration
+      point that advises only bytes at or above each chunk's bump cursor, reports
+      outcome counts in `ArenaMemoryAdviceReport`, preserves arena accounting,
+      and leaves advised tails available for later allocations. Tests cover
+      range metadata, zero-length no-op behavior, typed helper dispatch,
+      non-Linux unsupported behavior, Linux full-page trimming, a Linux
+      anonymous-`mmap` `MADV_DONTNEED` call, Linux flag mapping, empty arenas,
+      complete unused-tail pages, unchanged accounting, and post-advice
+      allocation reuse. Integrating the shim with live resident-set sampling,
+      CA-store spill, live cold hash-consed page selection, region-pop/dead-page
+      selection, and collector-installation policy remains open under the full
+      memory-management rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

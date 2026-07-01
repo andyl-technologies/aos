@@ -1077,6 +1077,21 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 - [ ] CA-store-backed spill: evict cold hash-consed values to the `mmap`'d CA store leaving a content-hash handle, rematerialize on demand, write-back-free because the hash is the address (§3.4) — **P3/P8**, `C-17`; depends on the incremental cache's CA store ([12](12-incremental-evaluation-cache.md)).
 - [ ] `madvise` portability shim (`advise_dead`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
+- [x] Current `madvise`/arena-tail precursor:
+      `ratchet-value::heap::advice` provides the advisory memory API over
+      dead/free/cold/evict/huge hints, with raw non-empty range construction
+      kept behind the heap crate's unsafe boundary. Linux trims requests to full
+      pages wholly contained by the supplied range before lowering to
+      `madvise`; non-Linux targets report unsupported; empty or sub-page ranges
+      are a no-op; OS rejection remains advisory. `BumpArena::advise_unused_tail`
+      now applies that shim only to bytes at or above each chunk's bump cursor
+      and reports per-arena outcome counts through `ArenaMemoryAdviceReport`.
+      Tests cover range metadata, helper dispatch, Linux page trimming and
+      `MADV_DONTNEED`, platform flag mapping, empty arenas, complete unused-tail
+      pages, unchanged arena accounting, and post-advice allocation reuse.
+      Selecting dead regions, advising live cold hash-consed pages, CA-store
+      spill/rematerialization, budget-triggered dispatch, and collector
+      installation remain open in the surrounding rows.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

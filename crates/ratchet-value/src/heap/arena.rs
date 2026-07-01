@@ -12,6 +12,7 @@ use std::ptr;
 
 use thiserror::Error;
 
+use super::{MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_range};
 use crate::value::{HeapObject, Value};
 
 const DEFAULT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
@@ -94,6 +95,86 @@ pub struct ArenaStats {
     pub used_bytes: usize,
 }
 
+/// Summary of memory advice applied to one bump arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaMemoryAdviceReport {
+    kind: MemoryAdviceKind,
+    chunks: usize,
+    requested_bytes: usize,
+    applied: usize,
+    unsupported: usize,
+    empty: usize,
+    rejected: usize,
+}
+
+impl ArenaMemoryAdviceReport {
+    const fn for_kind(kind: MemoryAdviceKind) -> Self {
+        Self {
+            kind,
+            chunks: 0,
+            requested_bytes: 0,
+            applied: 0,
+            unsupported: 0,
+            empty: 0,
+            rejected: 0,
+        }
+    }
+
+    fn record(&mut self, requested_bytes: usize, outcome: MemoryAdviceOutcome) {
+        self.chunks = self.chunks.saturating_add(1);
+        self.requested_bytes = self.requested_bytes.saturating_add(requested_bytes);
+        match outcome {
+            MemoryAdviceOutcome::Applied { .. } => {
+                self.applied = self.applied.saturating_add(1);
+            }
+            MemoryAdviceOutcome::Unsupported { .. } => {
+                self.unsupported = self.unsupported.saturating_add(1);
+            }
+            MemoryAdviceOutcome::EmptyRange { .. } => {
+                self.empty = self.empty.saturating_add(1);
+            }
+            MemoryAdviceOutcome::Rejected { .. } => {
+                self.rejected = self.rejected.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns the advice kind requested for every chunk tail.
+    pub const fn kind(self) -> MemoryAdviceKind {
+        self.kind
+    }
+
+    /// Returns how many arena chunks were considered.
+    pub const fn chunks(self) -> usize {
+        self.chunks
+    }
+
+    /// Returns the total unused-tail bytes passed to the advice shim.
+    pub const fn requested_bytes(self) -> usize {
+        self.requested_bytes
+    }
+
+    /// Returns how many chunk-tail advice calls the operating system accepted.
+    pub const fn applied(self) -> usize {
+        self.applied
+    }
+
+    /// Returns how many chunk-tail advice calls had no platform lowering.
+    pub const fn unsupported(self) -> usize {
+        self.unsupported
+    }
+
+    /// Returns how many chunk tails contained no complete page to advise.
+    pub const fn empty_ranges(self) -> usize {
+        self.empty
+    }
+
+    /// Returns how many chunk-tail advice calls the platform rejected.
+    pub const fn rejected(self) -> usize {
+        self.rejected
+    }
+}
+
 /// A safe API over a never-free bump arena for one evaluator invocation.
 #[derive(Debug)]
 pub struct BumpArena {
@@ -157,6 +238,21 @@ impl BumpArena {
     /// Returns whether no allocation has been served yet.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
+    }
+
+    /// Advises unused bytes at the end of every arena chunk.
+    ///
+    /// This method never advises bytes below a chunk's bump cursor, so live
+    /// allocations are excluded. The advice shim trims each tail to complete
+    /// pages before calling the operating system, and later allocations may
+    /// reuse the advised tail without changing arena accounting.
+    pub fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
+        let mut report = ArenaMemoryAdviceReport::for_kind(kind);
+        for chunk in &self.chunks {
+            let range = chunk.unused_tail_range();
+            report.record(range.len(), advise_range(kind, range));
+        }
+        report
     }
 
     /// Allocates a thunk-sized object through the Phase-1 `aos_alloc_thunk`
@@ -465,6 +561,21 @@ impl Chunk {
         self.cursor = end;
         Ok(ptr)
     }
+
+    fn unused_tail_range(&self) -> MemoryAdviceRange {
+        let len = self.mapped_bytes.saturating_sub(self.cursor);
+        if len == 0 {
+            return MemoryAdviceRange::empty();
+        }
+        let ptr = self.ptr.as_ptr().wrapping_add(self.cursor);
+        let Some(ptr) = std::ptr::NonNull::new(ptr) else {
+            return MemoryAdviceRange::empty();
+        };
+        // SAFETY: `ptr` starts inside this chunk's live anonymous mapping at the
+        // current bump cursor, and `len` extends only to the mapping end. Bytes
+        // at or above the cursor have not been handed out as live heap objects.
+        unsafe { MemoryAdviceRange::from_raw_parts(ptr, len) }
+    }
 }
 
 impl Drop for Chunk {
@@ -575,6 +686,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_arena_advice_reports_no_chunk_tails() {
+        let arena = BumpArena::new();
+        let report = arena.advise_unused_tail(MemoryAdviceKind::Dead);
+
+        assert_eq!(report.kind(), MemoryAdviceKind::Dead);
+        assert_eq!(report.chunks(), 0);
+        assert_eq!(report.requested_bytes(), 0);
+        assert_eq!(report.applied(), 0);
+        assert_eq!(report.unsupported(), 0);
+        assert_eq!(report.empty_ranges(), 0);
+        assert_eq!(report.rejected(), 0);
+    }
+
+    #[test]
     fn custom_initial_chunk_size_is_word_rounded() {
         let mut arena = BumpArena::with_initial_chunk_bytes(9).expect("arena creates");
         let allocation = arena
@@ -584,6 +709,40 @@ mod tests {
         let stats = arena.stats();
         assert_eq!(stats.reserved_bytes, 16);
         assert!(stats.mapped_bytes >= system_page_size().expect("page size"));
+    }
+
+    #[test]
+    fn unused_tail_advice_excludes_live_prefix_and_preserves_accounting() {
+        let page_size = system_page_size().expect("page size");
+        let chunk_bytes = page_size.checked_mul(2).expect("two pages fit");
+        let mut arena = BumpArena::with_initial_chunk_bytes(chunk_bytes).expect("arena creates");
+        let first = arena
+            .aos_alloc_raw(1, 1, 7)
+            .expect("first allocation succeeds");
+        let stats_before = arena.stats();
+
+        let report = arena.advise_unused_tail(MemoryAdviceKind::Dead);
+
+        assert_eq!(report.kind(), MemoryAdviceKind::Dead);
+        assert_eq!(report.chunks(), 1);
+        assert_eq!(
+            report.requested_bytes(),
+            stats_before.mapped_bytes - stats_before.used_bytes
+        );
+        assert_eq!(
+            report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+            1
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(report.applied(), 1);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(report.unsupported(), 1);
+        assert_eq!(arena.stats(), stats_before);
+
+        let second = arena
+            .aos_alloc_raw(page_size, 1, 8)
+            .expect("advised tail remains allocatable");
+        assert!(second.ptr.as_ptr() as usize > first.ptr.as_ptr() as usize);
     }
 
     #[test]
