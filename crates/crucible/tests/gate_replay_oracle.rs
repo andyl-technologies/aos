@@ -16,9 +16,9 @@ use crucible::{
     RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerNodeId, SchedulerState, SchedulingNodeKind,
-    SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode, bake, check_assertion_violation_reproduction, compare_event_log_determinism,
-    instantiate, reduce, step,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, check_assertion_violation_reproduction,
+    compare_event_log_determinism, instantiate, reduce, step,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -295,7 +295,8 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked = bake(&world)?;
+    let baked =
+        baked_with_search_frontier_choices(&world, vec![rng_decision("operation/search", 9)])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let store = MemoryDagStore::new();
     let saved = step(&genesis, rng_decision("operation/save", 7));
@@ -330,7 +331,6 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
 
     let search = graph.search(
         &genesis,
-        vec![rng_decision("operation/search", 9)],
         FrontierReductionPolicy::none(),
         MaterializationPolicy::thin_only(),
         MaterializationTrigger::Cold,
@@ -492,16 +492,18 @@ fn gate_replay_oracle_samples_temporal_graph_search_fat_materializations()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked = bake(&world)?;
-    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let config = SearchReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-graph-search")?;
-    let search = graph.search_with_replay_oracle_sampling(
-        &genesis,
+    let baked = baked_with_search_frontier_choices(
+        &world,
         vec![
             rng_decision("search-oracle/a", 1),
             rng_decision("search-oracle/b", 2),
             rng_decision("search-oracle/c", 3),
         ],
+    )?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let config = SearchReplayOracleSamplingConfig::new(1, 1, "gate-replay-oracle-graph-search")?;
+    let search = graph.search_with_replay_oracle_sampling(
+        &genesis,
         FrontierReductionPolicy::none(),
         MaterializationPolicy::with_budget(3),
         MaterializationTrigger::RepeatedForkSource,
@@ -559,17 +561,19 @@ fn gate_replay_oracle_search_sampling_rate_can_skip_materializations() -> Result
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked = bake(&world)?;
-    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let config =
-        SearchReplayOracleSamplingConfig::new(1, u64::MAX, "gate-replay-oracle-graph-search-skip")?;
-    let search = graph.search_with_replay_oracle_sampling(
-        &genesis,
+    let baked = baked_with_search_frontier_choices(
+        &world,
         vec![
             rng_decision("search-oracle/skip-a", 1),
             rng_decision("search-oracle/skip-b", 2),
             rng_decision("search-oracle/skip-c", 3),
         ],
+    )?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let config =
+        SearchReplayOracleSamplingConfig::new(1, u64::MAX, "gate-replay-oracle-graph-search-skip")?;
+    let search = graph.search_with_replay_oracle_sampling(
+        &genesis,
         FrontierReductionPolicy::none(),
         MaterializationPolicy::with_budget(3),
         MaterializationTrigger::RepeatedForkSource,
@@ -611,9 +615,9 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     }])?;
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let baked = bake(&world)?;
-    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let decision = rng_decision("search-oracle/corrupt", 4);
+    let baked = baked_with_search_frontier_choices(&world, vec![decision.clone()])?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let child = step(&genesis, decision.clone());
     let corrupt_checkpoint = Checkpoint::from_recorded_configuration(
         &child,
@@ -639,7 +643,6 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
 
     let error = match graph.search_with_replay_oracle_sampling(
         &genesis,
-        vec![decision],
         FrontierReductionPolicy::none(),
         MaterializationPolicy::with_budget(1),
         MaterializationTrigger::RepeatedForkSource,
@@ -1427,6 +1430,36 @@ fn rng_decision(stream: &str, value: u64) -> Decision {
         stream: RngStreamId::from_name(stream),
         value,
     })
+}
+
+fn baked_with_search_frontier_choices(
+    world: &World,
+    decisions: Vec<Decision>,
+) -> Result<GenesisCheckpoint, Box<dyn Error>> {
+    let mut baked = bake(world)?;
+    baked.checkpoint = checkpoint_with_search_frontier_choices(baked.checkpoint, decisions);
+    Ok(baked)
+}
+
+fn checkpoint_with_search_frontier_choices(
+    mut checkpoint: Checkpoint,
+    decisions: Vec<Decision>,
+) -> Checkpoint {
+    let state = checkpoint
+        .state
+        .as_ref()
+        .expect("test checkpoint must be materialized");
+    let mut scheduler = state.scheduler.clone();
+    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    checkpoint.state = Some(MaterializedState::from_components_with_event_log_segments(
+        state.vm_snapshots.clone(),
+        state.device_overlays.clone(),
+        scheduler,
+        state.decision_rng.clone(),
+        state.event_log,
+        state.event_log_segments.clone(),
+    ));
+    checkpoint
 }
 
 fn materialized_node_blobs(

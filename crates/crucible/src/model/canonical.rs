@@ -218,6 +218,13 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
         hasher.write_bytes(super::membership_fault_material(fault).as_bytes());
     }
     write_active_fault_table(hasher, &state.active_fault_table);
+    hasher.write_u64(state.search_frontier.choices().len() as u64);
+    for choice in state.search_frontier.choices() {
+        hasher.write_u64(choice.decisions().len() as u64);
+        for decision in choice.decisions() {
+            write_decision(hasher, decision);
+        }
+    }
 }
 
 fn write_active_fault_table(hasher: &mut MaterialHasher, table: &ActiveFaultTable) {

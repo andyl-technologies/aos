@@ -223,11 +223,11 @@
       }
       {
         label = "graph search operation API";
-        needle = "pub fn search<I>(";
+        needle = "pub fn search(";
       }
       {
         label = "graph active search replay-oracle API";
-        needle = "pub fn search_with_replay_oracle_sampling<I>(";
+        needle = "pub fn search_with_replay_oracle_sampling(";
       }
       {
         label = "graph search samples inline replay oracle";
@@ -1027,12 +1027,14 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.grep
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {

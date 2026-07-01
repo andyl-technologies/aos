@@ -1248,6 +1248,28 @@ in rec {
         phase6.savevmCompleteness
       ];
     };
+    stateSpaceSearch = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.stateSpaceSearch";
+      gate = import ./phase6-state-space-search.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.stateSpaceSearch";
+        taskIds = ["T-ADV-7"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.restoreStrategies.rawGate
+          phase6.savevmCompleteness.rawGate
+          phase6.gates.replayOracle.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.restoreStrategies
+        phase6.savevmCompleteness
+        phase6.gates.replayOracle
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

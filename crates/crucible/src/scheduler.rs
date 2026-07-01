@@ -33,12 +33,13 @@ use crate::{
     AssertionId, AssertionQuantifierKind, BackendError, BackendInput, CombinedFaults,
     CombinedNetworkFaults, CombinedNodeFaults, CombinedPartitionFault, Configuration, ContentHash,
     ControlFaultAction, ControlFaultDecision, Decision, DecisionRecorder, DecisionRngState,
-    DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault, FaultId,
-    FaultRateBasisPoints, FaultTag, Icount, LinkId, MarkerId, MembershipFault, NodeCounter, NodeId,
-    NodeLifecycle, PartitionDirection, PreemptionDecision, PreemptionKind, RestartPolicy,
-    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId,
-    VirtualTime, World, WorldLookaheadEdge, WorldStaticTopology, step,
+    DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState, Fault,
+    FaultDecision, FaultId, FaultRateBasisPoints, FaultTag, Icount, LinkId, MarkerId,
+    MembershipFault, NodeCounter, NodeId, NodeLifecycle, PartitionDirection, PendingFrame,
+    PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
+    ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, Shift,
+    SimDuration, SimInstant, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
+    WorldLookaheadEdge, WorldStaticTopology, step,
 };
 
 const SCHEDULER_ACTOR_RNG_DOMAIN: &str = "crucible.scheduler.actor";
@@ -3301,6 +3302,72 @@ fn merge_node_deliveries(
         .into_iter()
         .cloned()
         .collect()
+}
+
+fn pending_frames_from_scheduled_events(
+    events: &[ScheduledEvent],
+) -> BTreeMap<NodeId, Vec<PendingFrame>> {
+    let mut pending_frames: BTreeMap<NodeId, Vec<PendingFrame>> = BTreeMap::new();
+    for event in events {
+        let ScheduledEventPayload::BackendInput(input) = &event.payload else {
+            continue;
+        };
+        pending_frames
+            .entry(event.key.consumer().node.clone())
+            .or_default()
+            .push(PendingFrame {
+                source: event.key.producer().node.clone(),
+                sequence: event.key.sequence(),
+                delivery_icount: Icount {
+                    retired: event.key.virtual_time().ticks,
+                },
+                payload: ContentHash::from_bytes(&input.payload),
+            });
+    }
+    pending_frames
+}
+
+fn search_frontier_choices_from_scheduled_events(
+    _configuration: Configuration,
+    events: &[ScheduledEvent],
+) -> SearchFrontierChoices {
+    let mut choices = Vec::new();
+    for event in ordered_scheduled_events(events) {
+        let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
+            continue;
+        };
+        if choice.rate.basis_points() > 0 {
+            choices.push(probabilistic_fault_search_choice(event, choice, 0, true));
+        }
+        if u32::from(choice.rate.basis_points()) < FaultRateBasisPoints::DENOMINATOR {
+            choices.push(probabilistic_fault_search_choice(
+                event,
+                choice,
+                u64::from(choice.rate.basis_points()),
+                false,
+            ));
+        }
+    }
+    SearchFrontierChoices::from_decision_sequences(choices)
+}
+
+fn probabilistic_fault_search_choice(
+    event: &ScheduledEvent,
+    choice: &SchedulerResolveFaultChoice,
+    value: u64,
+    fired: bool,
+) -> Vec<Decision> {
+    vec![
+        Decision::RngDraw(RngDecision {
+            stream: choice.stream.clone(),
+            value,
+        }),
+        Decision::FaultFires(FaultDecision {
+            at: event.key.virtual_time(),
+            fault: choice.fault.clone(),
+            fired,
+        }),
+    ]
 }
 
 /// Returns the RESOLVE payload class for `event`.
@@ -7781,9 +7848,14 @@ impl SingleScheduler {
     #[must_use]
     pub fn materialized_scheduler_state(&self) -> SchedulerState {
         let mut state = SchedulerState::empty();
+        state.pending_frames = pending_frames_from_scheduled_events(&self.pending_events);
         state.event_sequences = self.event_sequences.clone();
         state.active_fault_tags = self.trigger_actions.active_faults.clone();
         state.recompute_active_fault_table();
+        state.search_frontier = search_frontier_choices_from_scheduled_events(
+            self.configuration.clone(),
+            &self.pending_events,
+        );
         state
     }
 
@@ -12215,6 +12287,39 @@ mod tests {
     }
 
     #[test]
+    fn search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_branches() {
+        let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.scheduler.search-frontier",
+            "scenario=probabilistic-fault",
+        ));
+        let consumer = scheduler_node("vm-a", SchedulingNodeKind::Vm);
+        let producer = scheduler_node("control", SchedulingNodeKind::ControlPlane);
+        let fault = FaultId {
+            name: String::from("packet-loss"),
+        };
+        let event = probabilistic_fault_event(13, &consumer, &producer, 0, fault.clone());
+
+        let choices = search_frontier_choices_from_scheduled_events(configuration, &[event]);
+        let outcomes = choices
+            .decisions()
+            .iter()
+            .map(|decision| match decision {
+                Decision::FaultFires(fired) if fired.fault == fault => fired.fired,
+                other => panic!("unexpected search frontier decision: {other:?}"),
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(choices.decisions().len(), 2);
+        assert!(choices.choices().iter().all(|choice| {
+            matches!(
+                choice.decisions(),
+                [Decision::RngDraw(_), Decision::FaultFires(_)]
+            )
+        }));
+        assert_eq!(outcomes, BTreeSet::from([false, true]));
+    }
+
+    #[test]
     fn scheduler_errors_render_all_variants_deterministically() {
         let backend = SchedulerError::from(BackendError::Rejected {
             message: String::from("backend refused"),
@@ -12381,6 +12486,24 @@ mod tests {
         ScheduledEvent {
             key: event_key(virtual_time, consumer, producer, sequence),
             payload: ScheduledEventPayload::FaultActivation(fault),
+        }
+    }
+
+    fn probabilistic_fault_event(
+        virtual_time: u64,
+        consumer: &SchedulerNodeId,
+        producer: &SchedulerNodeId,
+        sequence: u64,
+        fault: FaultId,
+    ) -> ScheduledEvent {
+        ScheduledEvent {
+            key: event_key(virtual_time, consumer, producer, sequence),
+            payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
+                fault,
+                stream: RngStreamId::from_name("test-probabilistic-fault"),
+                rate: FaultRateBasisPoints::from_basis_points(5_000)
+                    .unwrap_or_else(|error| panic!("test rate should be valid: {error}")),
+            }),
         }
     }
 
