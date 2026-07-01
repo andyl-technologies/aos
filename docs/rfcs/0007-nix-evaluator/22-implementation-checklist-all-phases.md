@@ -5053,6 +5053,17 @@ and helps the oracle directly.
       destination-alignment rejection. This remains scheduling metadata only;
       reading or writing object bytes, reserving semispace pages, forwarding
       pointers, root/field writeback, and remembered-set mutation remain open.
+- [x] Current minor-GC forwarding-pointer planning precursor:
+      `ratchet-value::heap::gc::MinorGcForwardingPointerPlan::from_object_copy_plan`
+      turns the object-copy schedule into deterministic forwarding-pointer
+      metadata in copy order. Each pointer records the from-space source,
+      relocated destination address, copy-vs-promote action, destination
+      generation, and forwarded heap value that a later collector step would
+      install in the source object's forwarding slot. Unit tests cover
+      copied-young, promoted-old, forwarded-value generation, and empty
+      schedules. This remains header-installation metadata only; object-header
+      mutation, object-byte copying, root/field writeback, semispace management,
+      and remembered-set mutation remain open.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` turns a
       caller-supplied root/field reference sequence and a validated relocation

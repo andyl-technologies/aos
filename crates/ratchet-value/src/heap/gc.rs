@@ -1194,6 +1194,97 @@ impl MinorGcObjectCopyPlan {
     }
 }
 
+/// One forwarding pointer that would be installed for a copied survivor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcForwardingPointer {
+    copy: MinorGcObjectCopy,
+}
+
+impl MinorGcForwardingPointer {
+    /// Returns the object-copy metadata that owns this forwarding pointer.
+    pub const fn copy(self) -> MinorGcObjectCopy {
+        self.copy
+    }
+
+    /// Returns the from-space object address to receive the forwarding pointer.
+    pub const fn source(self) -> GcHeapAddress {
+        self.copy.source()
+    }
+
+    /// Returns the relocated destination address stored by the pointer.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.copy.destination()
+    }
+
+    /// Returns whether this forwarding pointer targets young or old space.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.copy.action()
+    }
+
+    /// Returns the generation stored in the forwarded heap value.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        self.copy.destination_generation()
+    }
+
+    /// Returns the heap value metadata that the forwarding pointer represents.
+    pub const fn forwarded_value(self) -> ResolvedValueGeneration {
+        self.copy.relocated_value()
+    }
+}
+
+/// Forwarding-pointer installation metadata for a planned minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcForwardingPointerPlan {
+    pointers: Vec<MinorGcForwardingPointer>,
+}
+
+impl MinorGcForwardingPointerPlan {
+    /// Builds forwarding-pointer metadata from an object-copy schedule.
+    ///
+    /// Pointers are emitted in object-copy order. Each pointer records the
+    /// from-space source object and the relocated young or old heap value that a
+    /// later collector step would install in that object's forwarding slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if forwarding-pointer storage cannot be
+    /// reserved or if the forwarding-pointer count overflows.
+    pub fn from_object_copy_plan(
+        copy_plan: &MinorGcObjectCopyPlan,
+    ) -> Result<Self, GenerationalGcError> {
+        let mut pointers = Vec::new();
+        for copy in copy_plan.copies() {
+            let pointers_len = pointers
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcForwardingPointerLengthOverflow)?;
+            pointers.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcForwardingPointerAllocationFailed {
+                    pointers: pointers_len,
+                }
+            })?;
+            pointers.push(MinorGcForwardingPointer { copy: *copy });
+        }
+
+        Ok(Self { pointers })
+    }
+
+    /// Returns forwarding-pointer metadata in object-copy order.
+    pub fn pointers(&self) -> &[MinorGcForwardingPointer] {
+        &self.pointers
+    }
+
+    /// Returns the number of forwarding pointers to install.
+    pub fn len(&self) -> usize {
+        self.pointers.len()
+    }
+
+    /// Returns whether no forwarding pointers are planned.
+    pub fn is_empty(&self) -> bool {
+        self.pointers.is_empty()
+    }
+}
+
 /// One root or field reference that must be rewritten after minor-GC relocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcReferenceRewrite {
@@ -2234,6 +2325,15 @@ pub enum GenerationalGcError {
     MinorGcObjectCopyAllocationFailed {
         /// The requested object-copy-plan capacity.
         copies: usize,
+    },
+    /// The minor-GC forwarding-pointer plan length overflowed.
+    #[error("minor-GC forwarding-pointer length overflow")]
+    MinorGcForwardingPointerLengthOverflow,
+    /// The minor-GC forwarding-pointer plan could not reserve storage.
+    #[error("failed to reserve {pointers} minor-GC forwarding pointers")]
+    MinorGcForwardingPointerAllocationFailed {
+        /// The requested forwarding-pointer-plan capacity.
+        pointers: usize,
     },
     /// The minor-GC reference rewrite plan length overflowed.
     #[error("minor-GC reference rewrite length overflow")]
@@ -3735,6 +3835,91 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[test]
+    fn minor_gc_forwarding_pointer_plan_maps_object_copies_to_forwarded_values() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+        let copy_plan = MinorGcObjectCopyPlan::from_relocation_plan(
+            &relocation_plan,
+            &[
+                NurseryObjectLayout::new(copy, 24, 8),
+                NurseryObjectLayout::new(promote, 40, 16),
+            ],
+        )
+        .expect("object-copy plan builds");
+
+        let forwarding_plan = MinorGcForwardingPointerPlan::from_object_copy_plan(&copy_plan)
+            .expect("forwarding plan builds");
+
+        assert_eq!(forwarding_plan.len(), 2);
+        assert!(!forwarding_plan.is_empty());
+        assert_eq!(forwarding_plan.pointers()[0].copy(), copy_plan.copies()[0]);
+        assert_eq!(forwarding_plan.pointers()[0].source(), copy);
+        assert_eq!(
+            forwarding_plan.pointers()[0].destination(),
+            copy_destination
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[0].forwarded_value(),
+            ResolvedValueGeneration::young(copy_destination)
+        );
+        assert_eq!(forwarding_plan.pointers()[1].source(), promote);
+        assert_eq!(
+            forwarding_plan.pointers()[1].destination(),
+            promote_destination
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(
+            forwarding_plan.pointers()[1].forwarded_value(),
+            ResolvedValueGeneration::old(promote_destination)
+        );
+
+        let empty_forwarding_plan =
+            MinorGcForwardingPointerPlan::from_object_copy_plan(&MinorGcObjectCopyPlan::default())
+                .expect("empty forwarding plan builds");
+        assert_eq!(empty_forwarding_plan.len(), 0);
+        assert!(empty_forwarding_plan.is_empty());
     }
 
     #[test]

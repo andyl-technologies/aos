@@ -1050,6 +1050,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       destination-alignment rejection. This is still scheduling metadata only:
       it does not read or write object bytes, reserve semispace pages, install
       forwarding pointers, rewrite roots/fields, or mutate remembered sets.
+- [x] Current minor-GC forwarding-pointer planning precursor:
+      `ratchet-value::heap::gc::MinorGcForwardingPointerPlan::from_object_copy_plan`
+      turns the object-copy schedule into deterministic forwarding-pointer
+      metadata in copy order. Each pointer records the from-space source, the
+      relocated destination address, copy-vs-promote action, destination
+      generation, and forwarded heap value that a later collector step would
+      install in the source object's forwarding slot. Tests cover copied-young,
+      promoted-old, forwarded-value generation, and empty schedules. This is
+      still header-installation metadata only: it does not mutate object headers,
+      read or write object bytes, rewrite roots/fields, reserve semispace pages,
+      or mutate remembered sets.
 - [x] Current minor-GC reference-rewrite precursor:
       `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` converts a
       caller-supplied root/field reference sequence plus a validated relocation
