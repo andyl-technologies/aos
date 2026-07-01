@@ -1098,6 +1098,11 @@ in rec {
       attrPath = "checks.crucible.phase4.workloadLoadPatterns";
       taskIds = ["T-WL-4"];
     };
+    workloadVirtualTimeShapes = import ./phase4-workload-virtual-time-shapes.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.workloadVirtualTimeShapes";
+      taskIds = ["T-WL-5"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

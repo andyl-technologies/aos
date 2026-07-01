@@ -1,14 +1,16 @@
-//! Checks RFC-0010 T-WL-4 load-pattern mappings.
+//! Checks RFC-0010 T-WL-4 and T-WL-5 load-pattern mappings.
 
 #![forbid(unsafe_code)]
 
 use crucible::{
     Action, EngineError, Fault, FaultPlanEntry, GuestWorkloadBinary,
-    GuestWorkloadLoadPatternFixture, GuestWorkloadPattern, GuestWorkloadSpikeMode, Icount,
-    MembershipFault, NetworkFault, NodeFault, NodeTemplate, Plan, Predicate, ScenarioBuilder, Seed,
-    WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX,
-    WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER,
-    WhiteBoxPolicy,
+    GuestWorkloadLoadPatternFixture, GuestWorkloadPattern, GuestWorkloadSpikeMode,
+    GuestWorkloadTimeSource, Icount, MembershipFault, NetworkFault, NodeFault, NodeTemplate, Plan,
+    Predicate, Properties, ScenarioBuilder, ScenarioDefForm, Seed,
+    WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED, WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES,
+    WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX, WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER,
+    WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER,
+    WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME, WhiteBoxPolicy,
 };
 
 #[test]
@@ -26,8 +28,11 @@ fn load_pattern_mappings_are_plain_cmdline_parameters() {
     );
     assert_eq!(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, "load_pattern");
     assert_eq!(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, "spike_mode");
+    assert_eq!(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, "load_time_source");
     assert!(WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES);
     assert!(!WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX);
+    assert!(WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME);
+    assert!(!WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED);
 
     let selected = GuestWorkloadPattern::Steady.selected_cmdline("console=ttyS0 quiet");
     assert_eq!(selected, "console=ttyS0 quiet load_pattern=steady");
@@ -50,6 +55,14 @@ fn load_pattern_mappings_are_plain_cmdline_parameters() {
     assert_eq!(
         GuestWorkloadSpikeMode::from_cmdline(&spike_selected),
         Some(GuestWorkloadSpikeMode::StartNodeBurst)
+    );
+
+    let time_selected =
+        GuestWorkloadTimeSource::VirtualTime.selected_cmdline("console=ttyS0 load_time_source=old");
+    assert_eq!(time_selected, "console=ttyS0 load_time_source=virtual_time");
+    assert_eq!(
+        GuestWorkloadTimeSource::from_cmdline(&time_selected),
+        Some(GuestWorkloadTimeSource::VirtualTime)
     );
 }
 
@@ -80,6 +93,10 @@ fn spike_fixture_can_be_guest_virtual_time_rate() -> Result<(), EngineError> {
         fixture.spike_mode(),
         Some(GuestWorkloadSpikeMode::VirtualTimeRate)
     );
+    assert_eq!(
+        fixture.time_source(),
+        Some(GuestWorkloadTimeSource::VirtualTime)
+    );
     assert_empty_plan(fixture.plan());
 
     let node = only_node(fixture.world().nodes());
@@ -90,6 +107,10 @@ fn spike_fixture_can_be_guest_virtual_time_rate() -> Result<(), EngineError> {
     assert_eq!(
         node.guest_workload_spike_mode(),
         Some(GuestWorkloadSpikeMode::VirtualTimeRate)
+    );
+    assert_eq!(
+        node.guest_workload_time_source(),
+        Some(GuestWorkloadTimeSource::VirtualTime)
     );
     assert!(node.cmdline.contains("base_rate_per_sec=10"));
     assert!(node.cmdline.contains("peak_rate_per_sec=500"));
@@ -105,6 +126,10 @@ fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
         fixture.spike_mode(),
         Some(GuestWorkloadSpikeMode::StartNodeBurst)
     );
+    assert_eq!(
+        fixture.time_source(),
+        Some(GuestWorkloadTimeSource::VirtualTime)
+    );
     assert_eq!(fixture.world().nodes().len(), 2);
     assert!(
         fixture
@@ -113,6 +138,9 @@ fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
             .iter()
             .all(|node| node.guest_workload_pattern() == Some(GuestWorkloadPattern::Spike))
     );
+    assert!(fixture.world().nodes().iter().all(|node| {
+        node.guest_workload_time_source() == Some(GuestWorkloadTimeSource::VirtualTime)
+    }));
 
     let graph = fixture
         .plan()
@@ -160,12 +188,20 @@ fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
 fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     let fixture = GuestWorkloadLoadPatternFixture::cardinality_growth()?;
     assert_eq!(fixture.pattern(), GuestWorkloadPattern::CardinalityGrowth);
+    assert_eq!(
+        fixture.time_source(),
+        Some(GuestWorkloadTimeSource::VirtualTime)
+    );
     assert_empty_plan(fixture.plan());
 
     let node = only_node(fixture.world().nodes());
     assert_eq!(
         node.guest_workload_pattern(),
         Some(GuestWorkloadPattern::CardinalityGrowth)
+    );
+    assert_eq!(
+        node.guest_workload_time_source(),
+        Some(GuestWorkloadTimeSource::VirtualTime)
     );
     assert!(node.cmdline.contains("initial_keys=8"));
     assert!(node.cmdline.contains("key_growth_per_sec=4"));
@@ -222,6 +258,14 @@ fn load_pattern_fixtures_change_scenario_identity_without_global_seed() -> Resul
     assert_ne!(cardinality.id(), correlated.id());
     assert_eq!(steady.seed(), cardinality.seed());
     assert_eq!(cardinality.seed(), correlated.seed());
+    Ok(())
+}
+
+#[test]
+fn time_varying_load_fixtures_reproduce_bit_identically() -> Result<(), EngineError> {
+    assert_fixture_reproduces(GuestWorkloadLoadPatternFixture::spike_virtual_time_rate)?;
+    assert_fixture_reproduces(GuestWorkloadLoadPatternFixture::spike_start_node_burst)?;
+    assert_fixture_reproduces(GuestWorkloadLoadPatternFixture::cardinality_growth)?;
     Ok(())
 }
 
@@ -295,6 +339,108 @@ fn load_pattern_reserved_parameters_reject_unknown_and_duplicate_values() {
             .seed(Seed::from_u64(7))
             .build(),
     );
+
+    assert_unsupported_time_source(
+        ScenarioBuilder::new()
+            .node(
+                "client",
+                NodeTemplate::fixed_icount(Icount { retired: 1 }).cmdline(
+                    "console=ttyS0 load_pattern=cardinality_growth load_time_source=host_wall_clock",
+                ),
+            )
+            .seed(Seed::from_u64(7))
+            .build(),
+        "host_wall_clock",
+    );
+
+    assert_duplicate_time_source(
+        ScenarioBuilder::new()
+            .node(
+                "client",
+                NodeTemplate::fixed_icount(Icount { retired: 1 }).cmdline(
+                    "console=ttyS0 load_time_source=virtual_time load_time_source=virtual_time",
+                ),
+            )
+            .seed(Seed::from_u64(7))
+            .build(),
+    );
+
+    assert_missing_virtual_time_source(
+        ScenarioBuilder::new()
+            .node(
+                "client",
+                NodeTemplate::fixed_icount(Icount { retired: 1 })
+                    .cmdline("console=ttyS0 load_pattern=cardinality_growth"),
+            )
+            .seed(Seed::from_u64(7))
+            .build(),
+    );
+
+    assert_missing_virtual_time_source(
+        ScenarioBuilder::new()
+            .node(
+                "client",
+                NodeTemplate::fixed_icount(Icount { retired: 1 })
+                    .cmdline("console=ttyS0 load_pattern=spike spike_mode=virtual_time_rate"),
+            )
+            .seed(Seed::from_u64(7))
+            .build(),
+    );
+
+    assert_stray_time_source(
+        ScenarioBuilder::new()
+            .node(
+                "client",
+                NodeTemplate::fixed_icount(Icount { retired: 1 })
+                    .cmdline("console=ttyS0 load_pattern=steady load_time_source=virtual_time"),
+            )
+            .seed(Seed::from_u64(7))
+            .build(),
+    );
+}
+
+fn assert_fixture_reproduces(
+    build: fn() -> Result<GuestWorkloadLoadPatternFixture, EngineError>,
+) -> Result<(), EngineError> {
+    let seed = Seed::from_u64(7);
+    let first = build()?;
+    let second = build()?;
+    let first_form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        first.world(),
+        first.plan(),
+        &Properties::empty(),
+        seed,
+        10,
+    )?;
+    let second_form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        second.world(),
+        second.plan(),
+        &Properties::empty(),
+        seed,
+        10,
+    )?;
+
+    assert_eq!(
+        first.world().canonical_bytes(),
+        second.world().canonical_bytes()
+    );
+    assert_eq!(
+        first.plan().canonical_bytes(),
+        second.plan().canonical_bytes()
+    );
+    assert_eq!(
+        first_form.to_compact_binary(),
+        second_form.to_compact_binary()
+    );
+    assert_eq!(
+        first_form.to_canonical_toml()?,
+        second_form.to_canonical_toml()?
+    );
+    assert_eq!(
+        first_form.scenario_def().id(),
+        second_form.scenario_def().id()
+    );
+    Ok(())
 }
 
 fn assert_empty_plan(plan: &Plan) {
@@ -354,5 +500,40 @@ fn assert_stray_spike_mode<T: std::fmt::Debug>(result: Result<T, EngineError>) {
     match result {
         Err(EngineError::WorldNodeWorkloadSpikeModeWithoutSpikePattern { .. }) => {}
         other => panic!("expected stray workload spike mode rejection, got {other:?}"),
+    }
+}
+
+fn assert_unsupported_time_source<T: std::fmt::Debug>(
+    result: Result<T, EngineError>,
+    expected: &str,
+) {
+    match result {
+        Err(EngineError::WorldNodeUnsupportedWorkloadTimeSource { value, .. }) => {
+            assert_eq!(value, expected);
+        }
+        other => panic!("expected unsupported workload time source {expected}, got {other:?}"),
+    }
+}
+
+fn assert_duplicate_time_source<T: std::fmt::Debug>(result: Result<T, EngineError>) {
+    match result {
+        Err(EngineError::WorldNodeDuplicateWorkloadTimeSource { .. }) => {}
+        other => panic!("expected duplicate workload time source rejection, got {other:?}"),
+    }
+}
+
+fn assert_missing_virtual_time_source<T: std::fmt::Debug>(result: Result<T, EngineError>) {
+    match result {
+        Err(EngineError::WorldNodeWorkloadTimeVaryingPatternMissingVirtualTimeSource {
+            ..
+        }) => {}
+        other => panic!("expected missing virtual-time source rejection, got {other:?}"),
+    }
+}
+
+fn assert_stray_time_source<T: std::fmt::Debug>(result: Result<T, EngineError>) {
+    match result {
+        Err(EngineError::WorldNodeWorkloadTimeSourceWithoutTimeVaryingPattern { .. }) => {}
+        other => panic!("expected stray workload time source rejection, got {other:?}"),
     }
 }
