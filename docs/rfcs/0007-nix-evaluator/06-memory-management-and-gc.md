@@ -1074,9 +1074,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       zero-budget rejection, derived headroom, cheap-reclaim saturation, the
       Tier-A-vs-Tier-B boundary, safepoint-level Continue/Spill/Tier-B
       classification, whole-heap worker/permanent aggregation, the three current
-      action paths, and the sub-page/unsupported advice-capacity guard. No
-      CLI/env/daemon configuration, actual CA-store spill, live RSS sampler, or
-      collector installation is wired yet, so the full row above remains open.
+      action paths, and the sub-page/unsupported advice-capacity guard. The
+      `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now flows through
+      `NixEvalConfig` into native-eval `TreeWalkOptions` as a validated
+      `HeapMemoryBudget`. Daemon policy, live RSS sampling, actual CA-store
+      spill, and collector installation are not wired yet, so the full row above
+      remains open.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 

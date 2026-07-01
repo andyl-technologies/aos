@@ -84,6 +84,21 @@ fn eval_cache_option_defaults_off_and_can_be_enabled() {
 }
 
 #[test]
+fn heap_memory_budget_option_can_be_configured() {
+    let budget = HeapMemoryBudget::new(4096).expect("budget is non-zero");
+    let mut options = TreeWalkOptions::new();
+
+    assert_eq!(options.heap_memory_budget(), None);
+    options.set_heap_memory_budget(budget);
+    assert_eq!(options.heap_memory_budget(), Some(budget));
+    options.clear_heap_memory_budget();
+    assert_eq!(options.heap_memory_budget(), None);
+
+    let options = TreeWalkOptions::with_heap_memory_budget(budget);
+    assert_eq!(options.heap_memory_budget(), Some(budget));
+}
+
+#[test]
 fn force_cache_materialization_costs_can_be_configured() {
     let costs = MaterializationCosts::new(20, 3, 4, 5);
     let mut options = TreeWalkOptions::new();

@@ -58,6 +58,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub eval_system: Option<String>,
 
+    /// Set native evaluator max resident bytes
+    #[arg(long, value_name = "BYTES", global = true)]
+    pub max_rss: Option<usize>,
+
     /// Evaluate with normal impure Nix semantics
     #[arg(long, global = true, conflicts_with_all = ["pure_eval", "restrict_eval"])]
     pub impure_eval: bool,
@@ -1061,6 +1065,13 @@ mod tests {
     }
 
     #[test]
+    fn global_max_rss_is_accepted_after_subcommand() {
+        let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.bc", "--max-rss", "4096"]);
+
+        assert_eq!(cli.max_rss, Some(4096));
+    }
+
+    #[test]
     fn global_impure_eval_policy_is_accepted_after_subcommand() {
         let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.bc", "--impure-eval"]);
 
@@ -1272,6 +1283,26 @@ mod tests {
         ]);
 
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn max_rss_has_no_clap_env_binding() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                use clap::CommandFactory;
+
+                let command = Cli::command();
+                let max_rss = command
+                    .get_arguments()
+                    .find(|arg| arg.get_id() == "max_rss")
+                    .expect("max-rss argument is registered");
+
+                assert_eq!(max_rss.get_env(), None);
+            })
+            .expect("parser test thread should spawn")
+            .join()
+            .expect("parser test thread should finish");
     }
 
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Cli {

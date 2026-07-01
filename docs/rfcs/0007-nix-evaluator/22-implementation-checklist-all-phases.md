@@ -5393,9 +5393,11 @@ and helps the oracle directly.
       ordering, saturating reclaim accounting, safepoint-level
       Continue/Spill/Tier-B classification, whole-heap worker/permanent
       aggregation, the three current action paths, and the sub-page/unsupported
-      advice-capacity guard. CLI/env/daemon configuration, live RSS sampling,
-      CA-store spill, cold hash-consed page eviction, and collector installation
-      remain open under the full memory-management rows.
+      advice-capacity guard. The `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now
+      flows through `NixEvalConfig` into native-eval `TreeWalkOptions` as a
+      validated `HeapMemoryBudget`. Daemon policy, live RSS sampling, CA-store
+      spill, cold hash-consed page eviction, and collector installation remain
+      open under the full memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

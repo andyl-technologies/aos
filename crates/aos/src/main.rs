@@ -551,6 +551,9 @@ fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
     if let Some(system) = &cli.eval_system {
         eval_config.set_current_system(system)?;
     }
+    if let Some(max_rss) = cli.max_rss {
+        eval_config.set_heap_memory_budget_bytes(max_rss)?;
+    }
     for path in &cli.eval_allowed_paths {
         eval_config.add_allowed_path(path.clone())?;
     }
@@ -638,6 +641,7 @@ mod tests {
         let cli = Cli {
             restrict_eval: true,
             eval_system: Some("aos-test-target".to_string()),
+            max_rss: Some(4096),
             trace_verbose: true,
             eval_allowed_paths: vec!["/aos/src".to_string()],
             eval_allowed_uris: vec!["https://cache.example/".to_string()],
@@ -648,6 +652,7 @@ mod tests {
 
         assert_eq!(config.eval_mode(), NixEvalMode::Restricted);
         assert_eq!(config.current_system(), Some("aos-test-target"));
+        assert_eq!(config.heap_memory_budget_bytes(), Some(4096));
         assert_eq!(config.allowed_paths(), ["/aos/src"]);
         assert_eq!(config.allowed_uris(), ["https://cache.example/"]);
         assert!(config.trace_verbose());
@@ -660,6 +665,17 @@ mod tests {
 
         assert_eq!(config.eval_mode(), NixEvalMode::Ambient);
         Ok(())
+    }
+
+    #[test]
+    fn eval_config_from_cli_rejects_zero_max_rss() {
+        let cli = Cli {
+            max_rss: Some(0),
+            ..base_nix_diff_cli()
+        };
+
+        let error = eval_config_from_cli(&cli).expect_err("zero max rss should be invalid");
+        assert!(error.to_string().contains("greater than zero"));
     }
 
     #[test]
@@ -691,6 +707,7 @@ mod tests {
             json: true,
             trace_verbose: false,
             eval_system: None,
+            max_rss: None,
             impure_eval: false,
             pure_eval: false,
             restrict_eval: false,

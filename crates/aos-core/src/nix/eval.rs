@@ -35,6 +35,7 @@ use aos_nix::eval::tree_walk::NixSearchPathEntry;
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
     eval::{EvalMode, IfdRealizationError, IfdRealizer, TreeWalkOptions},
+    heap::HeapMemoryBudget,
 };
 
 /// A `.drv` closure produced by an evaluator without requiring filesystem reads.
@@ -533,6 +534,7 @@ pub struct NixEvalConfig {
     working_dir: Option<PathBuf>,
     home_dir: Option<PathBuf>,
     native_cache_root: Option<PathBuf>,
+    heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
 
@@ -654,6 +656,11 @@ impl NixEvalConfig {
     /// its enable switch, but it does not persist demand-graph records yet.
     pub fn native_cache_root(&self) -> Option<&Path> {
         self.native_cache_root.as_deref()
+    }
+
+    /// Returns the configured native heap high-water budget in bytes, if set.
+    pub const fn heap_memory_budget_bytes(&self) -> Option<usize> {
+        self.heap_memory_budget_bytes
     }
 
     /// Returns whether `builtins.traceVerbose` should emit trace output.
@@ -957,6 +964,24 @@ impl NixEvalConfig {
         self.native_cache_root = None;
     }
 
+    /// Replaces the native heap high-water budget in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `max_resident_bytes` is zero.
+    pub fn set_heap_memory_budget_bytes(&mut self, max_resident_bytes: usize) -> Result<()> {
+        if max_resident_bytes == 0 {
+            anyhow::bail!("native heap memory budget must be greater than zero bytes");
+        }
+        self.heap_memory_budget_bytes = Some(max_resident_bytes);
+        Ok(())
+    }
+
+    /// Clears the native heap high-water budget.
+    pub fn clear_heap_memory_budget(&mut self) {
+        self.heap_memory_budget_bytes = None;
+    }
+
     /// Configures whether `builtins.traceVerbose` should emit trace output.
     pub fn set_trace_verbose(&mut self, trace_verbose: bool) {
         self.trace_verbose = trace_verbose;
@@ -976,6 +1001,7 @@ impl NixEvalConfig {
             working_dir: None,
             home_dir: None,
             native_cache_root: None,
+            heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
 
@@ -993,6 +1019,9 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
             config.set_aos_nix_cache_env_var(value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
+            config.set_aos_nix_max_rss_env_var(value);
         }
         match std::env::current_dir() {
             Ok(working_dir) => config.working_dir = Some(working_dir),
@@ -1020,6 +1049,34 @@ impl NixEvalConfig {
                 "invalid AOS_NIX_CACHE value; disabling native evaluator cache"
             );
             self.clear_native_cache_root();
+        }
+    }
+
+    fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            self.clear_heap_memory_budget();
+            return;
+        }
+        match trimmed.parse::<usize>() {
+            Ok(bytes) => {
+                if let Err(error) = self.set_heap_memory_budget_bytes(bytes) {
+                    tracing::warn!(
+                        error = %error,
+                        value,
+                        "invalid AOS_NIX_MAX_RSS value; disabling native heap memory budget"
+                    );
+                    self.clear_heap_memory_budget();
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_MAX_RSS value; disabling native heap memory budget"
+                );
+                self.clear_heap_memory_budget();
+            }
         }
     }
 
@@ -1159,7 +1216,10 @@ fn eval_env_vars_from_process() -> BTreeMap<Vec<u8>, Vec<u8>> {
 }
 
 fn is_evaluator_control_env_var(name: &[u8]) -> bool {
-    matches!(name, b"AOS_NIX_NATIVE" | b"AOS_NIX_NATIVE_VERIFY")
+    matches!(
+        name,
+        b"AOS_NIX_NATIVE" | b"AOS_NIX_NATIVE_VERIFY" | b"AOS_NIX_MAX_RSS"
+    )
 }
 
 #[cfg(unix)]
@@ -2416,6 +2476,9 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_persist_cache_root(cache_root.join("persist"));
         options.set_eval_cache_enabled(true);
     }
+    if let Some(max_resident_bytes) = config.heap_memory_budget_bytes() {
+        options.set_heap_memory_budget(HeapMemoryBudget::new(max_resident_bytes)?);
+    }
     options.set_trace_verbose(config.trace_verbose());
     Ok(options)
 }
@@ -2988,6 +3051,24 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_tracks_native_heap_memory_budget() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.clear_heap_memory_budget();
+
+        assert_eq!(config.heap_memory_budget_bytes(), None);
+        config.set_heap_memory_budget_bytes(4096)?;
+        assert_eq!(config.heap_memory_budget_bytes(), Some(4096));
+        config.clear_heap_memory_budget();
+        assert_eq!(config.heap_memory_budget_bytes(), None);
+
+        let error = config
+            .set_heap_memory_budget_bytes(0)
+            .expect_err("zero byte budget is invalid");
+        assert!(error.to_string().contains("greater than zero"));
+        Ok(())
+    }
+
+    #[test]
     fn eval_config_keeps_nix_env_bindings_in_get_env_snapshot() -> Result<()> {
         let mut config =
             NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
@@ -3020,6 +3101,7 @@ mod tests {
         config.set_eval_env_var_bytes(b"AOS_ARBITRARY_ENV".to_vec(), b"present".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE".to_vec(), b"1".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE_VERIFY".to_vec(), b"1".to_vec());
+        config.set_eval_env_var_bytes(b"AOS_NIX_MAX_RSS".to_vec(), b"4096".to_vec());
         config.set_nix_path_env("nixpkgs=/aos/nixpkgs");
         config.set_working_dir(working_dir.path())?;
 
@@ -3038,6 +3120,7 @@ mod tests {
         assert!(!is_evaluator_control_env_var(b"AOS_ARBITRARY_ENV"));
         assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE"));
         assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE_VERIFY"));
+        assert!(is_evaluator_control_env_var(b"AOS_NIX_MAX_RSS"));
         assert_eq!(config.eval_env_vars.get(b"AOS_NIX_NATIVE".as_slice()), None);
         assert_eq!(
             config
@@ -3045,8 +3128,13 @@ mod tests {
                 .get(b"AOS_NIX_NATIVE_VERIFY".as_slice()),
             None
         );
+        assert_eq!(
+            config.eval_env_vars.get(b"AOS_NIX_MAX_RSS".as_slice()),
+            None
+        );
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE"), None);
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE_VERIFY"), None);
+        assert_eq!(command_env_bytes(&command, b"AOS_NIX_MAX_RSS"), None);
         assert_eq!(command_env_bytes(&command, b"STALE_COMMAND_ENV"), None);
         assert_eq!(command.get_current_dir(), Some(working_dir.path()));
         Ok(())
@@ -3124,6 +3212,24 @@ mod tests {
         let options = tree_walk_options_from_config(&config)?;
 
         assert!(options.trace_verbose());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_heap_memory_budget_to_native_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.set_heap_memory_budget_bytes(4096)?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(
+            options
+                .heap_memory_budget()
+                .map(|budget| budget.max_resident_bytes()),
+            Some(4096)
+        );
         Ok(())
     }
 

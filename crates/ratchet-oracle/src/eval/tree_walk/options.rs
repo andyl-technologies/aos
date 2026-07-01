@@ -209,6 +209,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with a configured high-water heap budget.
+    pub fn with_heap_memory_budget(heap_memory_budget: HeapMemoryBudget) -> Self {
+        let mut options = Self::default();
+        options.set_heap_memory_budget(heap_memory_budget);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -583,6 +590,16 @@ impl TreeWalkOptions {
         self.force_cache_materialization_costs = costs;
     }
 
+    /// Replaces the high-water heap budget for this evaluator.
+    pub fn set_heap_memory_budget(&mut self, heap_memory_budget: HeapMemoryBudget) {
+        self.heap_memory_budget = Some(heap_memory_budget);
+    }
+
+    /// Clears the high-water heap budget for this evaluator.
+    pub fn clear_heap_memory_budget(&mut self) {
+        self.heap_memory_budget = None;
+    }
+
     /// Configures one exact indirect flake-reference resolution.
     ///
     /// The `indirect` key uses the same canonical string form returned by
@@ -740,6 +757,11 @@ impl TreeWalkOptions {
     /// Returns the durable materialization costs for forced-expression payloads.
     pub const fn force_cache_materialization_costs(&self) -> MaterializationCosts {
         self.force_cache_materialization_costs
+    }
+
+    /// Returns the configured high-water heap budget, if one is available.
+    pub const fn heap_memory_budget(&self) -> Option<HeapMemoryBudget> {
+        self.heap_memory_budget
     }
 
     /// Returns the configured target for an exact indirect flake reference.

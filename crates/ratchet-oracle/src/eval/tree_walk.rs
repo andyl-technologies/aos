@@ -72,6 +72,7 @@ use crate::compile::{
     IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode,
     IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
+use crate::heap::HeapMemoryBudget;
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
 use crate::string::{
@@ -351,6 +352,7 @@ pub struct TreeWalkOptions {
     persist_cache_root: Option<PathBuf>,
     eval_cache_enabled: bool,
     force_cache_materialization_costs: MaterializationCosts,
+    heap_memory_budget: Option<HeapMemoryBudget>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -381,6 +383,7 @@ impl Default for TreeWalkOptions {
             persist_cache_root: None,
             eval_cache_enabled: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
+            heap_memory_budget: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
