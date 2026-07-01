@@ -6,8 +6,10 @@
 //! values. Later Phase-3 work can install the precise generational collector
 //! behind the same worker `aos_alloc_*` entry-point surface.
 
-use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind};
-use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample};
+use crate::heap::arena::{
+    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaStats, BumpArena, HeapObjectKind,
+};
+use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind};
 
 /// The installed runtime allocation strategy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -817,6 +819,13 @@ impl RuntimeAllocator {
         }
     }
 
+    /// Advises unused bytes at the end of chunks owned by this allocator.
+    pub fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
+        match &self.backend {
+            RuntimeAllocatorBackend::TierAOneShot(arena) => arena.advise_unused_tail(kind),
+        }
+    }
+
     /// Returns allocation-safepoint accounting for this allocator domain.
     pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
         self.safepoints
@@ -998,6 +1007,11 @@ impl PermanentSharedAllocator {
     /// Returns current permanent shared allocation accounting.
     pub(crate) fn stats(&self) -> ArenaStats {
         self.arena.stats()
+    }
+
+    /// Advises unused bytes at the end of permanent shared arena chunks.
+    pub(crate) fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
+        self.arena.advise_unused_tail(kind)
     }
 
     /// Returns allocation-safepoint accounting for permanent shared storage.
@@ -1321,6 +1335,45 @@ mod tests {
         assert_eq!(
             AllocationSafepointState::default().last_memory_budget_decision(loose_budget, 0, 0),
             None
+        );
+    }
+
+    #[test]
+    fn runtime_allocators_report_unused_tail_advice() {
+        let mut worker =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(65536).expect("worker creates");
+        worker.aos_alloc_thunk().expect("worker allocates");
+
+        let worker_report = worker.advise_unused_tail(MemoryAdviceKind::Dead);
+
+        assert_eq!(worker_report.kind(), MemoryAdviceKind::Dead);
+        assert_eq!(worker_report.chunks(), 1);
+        assert!(worker_report.requested_bytes() > 0);
+        assert_eq!(
+            worker_report.applied()
+                + worker_report.unsupported()
+                + worker_report.empty_ranges()
+                + worker_report.rejected(),
+            1
+        );
+
+        let mut permanent =
+            PermanentSharedAllocator::with_initial_chunk_bytes(65536).expect("permanent creates");
+        permanent
+            .aos_alloc_string(1)
+            .expect("permanent string allocates");
+
+        let permanent_report = permanent.advise_unused_tail(MemoryAdviceKind::Dead);
+
+        assert_eq!(permanent_report.kind(), MemoryAdviceKind::Dead);
+        assert_eq!(permanent_report.chunks(), 1);
+        assert!(permanent_report.requested_bytes() > 0);
+        assert_eq!(
+            permanent_report.applied()
+                + permanent_report.unsupported()
+                + permanent_report.empty_ranges()
+                + permanent_report.rejected(),
+            1
         );
     }
 

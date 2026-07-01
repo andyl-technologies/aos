@@ -38,7 +38,7 @@ mod primop;
 mod roots;
 mod thunk;
 
-pub use arena::EvalHeapMemoryBudgetDecision;
+pub use arena::{EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetDecision};
 pub use roots::{
     AllocationCollectorPollHeapFieldWriteback, AllocationCollectorPollHeapFieldWritebackPlan,
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,

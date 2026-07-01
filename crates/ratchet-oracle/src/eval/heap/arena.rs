@@ -4,7 +4,10 @@ use std::hash::{Hash, Hasher};
 
 use xxhash_rust::xxh3::Xxh3;
 
-use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample};
+use crate::heap::{
+    ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
+    MemoryAdviceKind,
+};
 
 use super::*;
 
@@ -75,6 +78,83 @@ impl EvalHeapMemoryBudgetDecision {
     /// Returns whether the response asks the runtime to install Tier B.
     pub const fn requests_tier_b(self) -> bool {
         matches!(self.response, HeapMemoryBudgetResponse::InstallTierB { .. })
+    }
+}
+
+/// Memory-advice reports for both evaluator heap allocation domains.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapMemoryAdviceReport {
+    kind: MemoryAdviceKind,
+    worker: ArenaMemoryAdviceReport,
+    permanent: ArenaMemoryAdviceReport,
+}
+
+impl EvalHeapMemoryAdviceReport {
+    const fn new(
+        kind: MemoryAdviceKind,
+        worker: ArenaMemoryAdviceReport,
+        permanent: ArenaMemoryAdviceReport,
+    ) -> Self {
+        Self {
+            kind,
+            worker,
+            permanent,
+        }
+    }
+
+    /// Returns the advice kind requested for both allocation domains.
+    pub const fn kind(self) -> MemoryAdviceKind {
+        self.kind
+    }
+
+    /// Returns the worker-domain arena advice report.
+    pub const fn worker(self) -> ArenaMemoryAdviceReport {
+        self.worker
+    }
+
+    /// Returns the permanent-shared arena advice report.
+    pub const fn permanent(self) -> ArenaMemoryAdviceReport {
+        self.permanent
+    }
+
+    /// Returns how many arena chunks were considered across both domains.
+    pub const fn chunks(self) -> usize {
+        self.worker.chunks().saturating_add(self.permanent.chunks())
+    }
+
+    /// Returns the total unused-tail bytes passed to the advice shim.
+    pub const fn requested_bytes(self) -> usize {
+        self.worker
+            .requested_bytes()
+            .saturating_add(self.permanent.requested_bytes())
+    }
+
+    /// Returns how many chunk-tail advice calls the operating system accepted.
+    pub const fn applied(self) -> usize {
+        self.worker
+            .applied()
+            .saturating_add(self.permanent.applied())
+    }
+
+    /// Returns how many chunk-tail advice calls had no platform lowering.
+    pub const fn unsupported(self) -> usize {
+        self.worker
+            .unsupported()
+            .saturating_add(self.permanent.unsupported())
+    }
+
+    /// Returns how many chunk tails contained no complete page to advise.
+    pub const fn empty_ranges(self) -> usize {
+        self.worker
+            .empty_ranges()
+            .saturating_add(self.permanent.empty_ranges())
+    }
+
+    /// Returns how many chunk-tail advice calls the platform rejected.
+    pub const fn rejected(self) -> usize {
+        self.worker
+            .rejected()
+            .saturating_add(self.permanent.rejected())
     }
 }
 
@@ -157,6 +237,18 @@ impl EvalHeap {
             cold_hash_consed_bytes,
         );
         EvalHeapMemoryBudgetDecision::new(budget, sample, worker_stats, permanent_stats)
+    }
+
+    /// Advises unused bytes at the end of both heap allocation domains.
+    ///
+    /// This forwards to each underlying arena's unused-tail advice hook and does
+    /// not select dead regions, spill hash-consed values, or install a collector.
+    pub fn advise_unused_tails(&self, kind: MemoryAdviceKind) -> EvalHeapMemoryAdviceReport {
+        EvalHeapMemoryAdviceReport::new(
+            kind,
+            self.allocator.advise_unused_tail(kind),
+            self.permanent_allocator.advise_unused_tail(kind),
+        )
     }
 
     /// Installs one GC-stress polling policy for both worker and permanent

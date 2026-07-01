@@ -1085,13 +1085,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       `madvise`; non-Linux targets report unsupported; empty or sub-page ranges
       are a no-op; OS rejection remains advisory. `BumpArena::advise_unused_tail`
       now applies that shim only to bytes at or above each chunk's bump cursor
-      and reports per-arena outcome counts through `ArenaMemoryAdviceReport`.
-      Tests cover range metadata, helper dispatch, Linux page trimming and
-      `MADV_DONTNEED`, platform flag mapping, empty arenas, complete unused-tail
-      pages, unchanged arena accounting, and post-advice allocation reuse.
-      Selecting dead regions, advising live cold hash-consed pages, CA-store
-      spill/rematerialization, budget-triggered dispatch, and collector
-      installation remain open in the surrounding rows.
+      and reports per-arena outcome counts through `ArenaMemoryAdviceReport`;
+      `RuntimeAllocator`, `PermanentSharedAllocator`, and `EvalHeap` now expose
+      safe unused-tail advice reports for worker and permanent domains without
+      choosing when to run them. Tests cover range metadata, helper dispatch,
+      Linux page trimming and `MADV_DONTNEED`, platform flag mapping, empty
+      arenas, complete unused-tail pages, unchanged arena accounting,
+      post-advice allocation reuse, runtime allocator forwarding, and
+      whole-heap worker/permanent aggregation. Selecting dead regions, advising
+      live cold hash-consed pages, CA-store spill/rematerialization,
+      budget-triggered dispatch, and collector installation remain open in the
+      surrounding rows.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

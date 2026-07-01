@@ -5401,15 +5401,19 @@ and helps the oracle directly.
       `BumpArena::advise_unused_tail` now exposes a safe arena-owned integration
       point that advises only bytes at or above each chunk's bump cursor, reports
       outcome counts in `ArenaMemoryAdviceReport`, preserves arena accounting,
-      and leaves advised tails available for later allocations. Tests cover
-      range metadata, zero-length no-op behavior, typed helper dispatch,
-      non-Linux unsupported behavior, Linux full-page trimming, a Linux
-      anonymous-`mmap` `MADV_DONTNEED` call, Linux flag mapping, empty arenas,
-      complete unused-tail pages, unchanged accounting, and post-advice
-      allocation reuse. Integrating the shim with live resident-set sampling,
-      CA-store spill, live cold hash-consed page selection, region-pop/dead-page
-      selection, and collector-installation policy remains open under the full
-      memory-management rows.
+      and leaves advised tails available for later allocations. `RuntimeAllocator`,
+      `PermanentSharedAllocator`, and `EvalHeap` now expose safe unused-tail
+      advice reports for worker and permanent domains without deciding when
+      policy should invoke them. Tests cover range metadata, zero-length no-op
+      behavior, typed helper dispatch, non-Linux unsupported behavior, Linux
+      full-page trimming, a Linux anonymous-`mmap` `MADV_DONTNEED` call, Linux
+      flag mapping, empty arenas, complete unused-tail pages, unchanged
+      accounting, post-advice allocation reuse, runtime allocator forwarding,
+      and whole-heap worker/permanent aggregation. Integrating the shim with
+      live resident-set sampling, CA-store spill, live cold hash-consed page
+      selection, region-pop/dead-page selection, budget-triggered dispatch, and
+      collector-installation policy remains open under the full memory-management
+      rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

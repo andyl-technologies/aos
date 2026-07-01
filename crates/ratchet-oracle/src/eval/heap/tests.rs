@@ -6,10 +6,10 @@ use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
     GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget,
-    HeapMemoryBudgetResponse, HeapMemorySample, MinorGcDestinationBases, MinorGcForwardingSlot,
-    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, MinorGcRelocationPlan,
-    MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge, RememberedSet,
-    ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind, MinorGcDestinationBases,
+    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
+    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge,
+    RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -425,6 +425,41 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     );
     assert!(tier_b_decision.requires_runtime_action());
     assert!(tier_b_decision.requests_tier_b());
+}
+
+#[test]
+fn whole_heap_unused_tail_advice_reports_both_allocation_domains() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+
+    let report = heap.advise_unused_tails(MemoryAdviceKind::Dead);
+
+    assert_eq!(report.kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.worker().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.permanent().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.worker().chunks(), 1);
+    assert_eq!(report.permanent().chunks(), 1);
+    assert_eq!(report.chunks(), 2);
+    assert_eq!(
+        report.requested_bytes(),
+        report.worker().requested_bytes() + report.permanent().requested_bytes()
+    );
+    assert_eq!(
+        report.requested_bytes(),
+        (worker_stats.mapped_bytes - worker_stats.used_bytes)
+            + (permanent_stats.mapped_bytes - permanent_stats.used_bytes)
+    );
+    assert_eq!(
+        report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+        2
+    );
+    assert_eq!(heap.arena_stats(), worker_stats);
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats);
 }
 
 #[test]
