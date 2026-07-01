@@ -25,6 +25,6 @@ topic files.
 | [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph: content-addressed closure validation | Proposed |
 | [0006](0006-secure-boot/README.md) | 2026-06-13 | Full Secure Boot integration — sign, measure, attest | Implemented (all phases CI-green) |
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
-| [0012](0012-golden-image-installer/README.md) | 2026-06-26 | Golden image installer — single-ESP image (sd-boot + UKI + EROFS `rootfs.bin`) that self-expands at first boot via the operator's Ignition layout | Proposed — change plan in [`implementation.md`](0012-golden-image-installer/implementation.md) |
+| [0012](0012-golden-image-installer/README.md) | 2026-06-26 | Golden image installer — single-ESP image (sd-boot + UKI + EROFS `rootfs.bin`) that self-expands at first boot via RFC-0011's systemd-repart `CopyBlocks=` substrate | Proposed — change plan in [`implementation.md`](0012-golden-image-installer/implementation.md) |
 
 Numbering is chronological by the date the design entered the tree.
