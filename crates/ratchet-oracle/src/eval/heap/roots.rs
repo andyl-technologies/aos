@@ -20,11 +20,13 @@ use super::*;
 use crate::eval::thunk::ThunkState;
 use crate::heap::{
     GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan,
+    MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
     MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
     MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewritePlan,
-    MinorGcRelocationDestination, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
-    NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout, RememberedEdge, RememberedSet,
-    RememberedSetEpoch, RememberedSetSnapshot, ResolvedValueGeneration,
+    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
+    MinorGcRememberedSetRefreshPlan, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
+    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    ResolvedValueGeneration,
 };
 use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
@@ -947,6 +949,41 @@ impl AllocationCollectorPollMinorGcPlan {
         MinorGcReferenceRewritePlan::from_references(relocation_plan, self.reference_values())
     }
 
+    /// Builds materialized relocation destinations for this poll plan.
+    ///
+    /// The returned wrapper keeps destination-allocation requirements, aligned
+    /// placement offsets, and materialized relocation destinations together for
+    /// callers that need to inspect or validate each step before building
+    /// commit metadata. This still does not allocate destination storage or
+    /// choose the semispace base addresses itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if nursery layout metadata does not match
+    /// this plan, if allocation or placement metadata cannot reserve storage or
+    /// overflows, or if materialized destinations from `bases` are invalid for
+    /// this plan.
+    pub fn relocation_destination_plan(
+        &self,
+        nursery_layouts: &[NurseryObjectLayout],
+        bases: MinorGcDestinationBases,
+    ) -> Result<AllocationCollectorPollMinorGcRelocationDestinations, GenerationalGcError> {
+        let allocation_plan =
+            MinorGcDestinationAllocationPlan::from_minor_gc_plan(&self.plan, nursery_layouts)?;
+        let placement_plan =
+            MinorGcDestinationPlacementPlan::from_allocation_plan(&allocation_plan)?;
+        let relocation_destinations = MinorGcRelocationDestinationPlan::from_placement_plan(
+            &self.plan,
+            &placement_plan,
+            bases,
+        )?;
+        Ok(AllocationCollectorPollMinorGcRelocationDestinations {
+            allocation_plan,
+            placement_plan,
+            relocation_destinations,
+        })
+    }
+
     /// Builds ordered minor-GC commit metadata for this poll plan.
     ///
     /// The returned value keeps this plan's copied reference-slot labels next to
@@ -991,6 +1028,36 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns the planned young-generation survivor frontier.
     pub const fn plan(&self) -> &MinorGcPlan {
         &self.plan
+    }
+}
+
+/// Materialized relocation destinations for an allocation-poll minor-GC plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollMinorGcRelocationDestinations {
+    allocation_plan: MinorGcDestinationAllocationPlan,
+    placement_plan: MinorGcDestinationPlacementPlan,
+    relocation_destinations: MinorGcRelocationDestinationPlan,
+}
+
+impl AllocationCollectorPollMinorGcRelocationDestinations {
+    /// Returns destination allocation requirements in survivor-frontier order.
+    pub const fn allocation_plan(&self) -> &MinorGcDestinationAllocationPlan {
+        &self.allocation_plan
+    }
+
+    /// Returns aligned destination placements in survivor-frontier order.
+    pub const fn placement_plan(&self) -> &MinorGcDestinationPlacementPlan {
+        &self.placement_plan
+    }
+
+    /// Returns the materialized relocation-destination plan.
+    pub const fn relocation_destinations(&self) -> &MinorGcRelocationDestinationPlan {
+        &self.relocation_destinations
+    }
+
+    /// Returns materialized relocation destinations in survivor-frontier order.
+    pub fn destinations(&self) -> &[MinorGcRelocationDestination] {
+        self.relocation_destinations.destinations()
     }
 }
 

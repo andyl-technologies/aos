@@ -910,6 +910,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       slot metadata only: it does not hold mutable evaluator roots, update
       object fields, identify the concrete remembered source field, rewrite
       remembered source fields, or apply the rewrite plan to live runtime state.
+- [x] Current allocation-poll destination-planning bridge precursor:
+      `AllocationCollectorPollMinorGcPlan::relocation_destination_plan` connects
+      the poll survivor frontier to the existing lower-level destination
+      allocation, aligned placement, and relocation-destination materialization
+      planners. It takes caller-supplied nursery layouts plus caller-chosen
+      nursery/old destination bases, keeps each intermediate plan together, and
+      validates materialized destinations against the poll plan's survivor
+      frontier. Tests now derive copied-young and promoted-old relocation
+      destinations through this bridge and assert allocation/reserved byte
+      accounting. This is still metadata only: it does not reserve semispace
+      pages, choose destination bases, allocate object storage, bind byte
+      buffers to real objects, or manage nursery/old generation spaces.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level

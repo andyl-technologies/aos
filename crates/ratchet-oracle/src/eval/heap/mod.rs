@@ -40,11 +40,12 @@ mod thunk;
 
 pub use roots::{
     AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
-    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollNurseryField,
-    AllocationCollectorPollNurseryFields, AllocationCollectorPollReferenceSlot,
-    AllocationCollectorPollReferenceSource, AllocationCollectorPollScan, CapturedRootOwner,
-    EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource,
-    HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
+    AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
+    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
+    AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
+    EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
+    StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;

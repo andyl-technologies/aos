@@ -5,10 +5,10 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcForwardingSlot,
-    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, MinorGcRelocationDestination,
-    MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge, RememberedSet,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcDestinationBases,
+    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
+    MinorGcRelocationDestination, MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge,
+    RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -1526,16 +1526,34 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         }
     );
 
-    let lambda_destination = static_gc_address(0x1000_0000);
-    let child_destination = static_gc_address(0x1000_1000);
-    let sibling_destination = static_gc_address(0x1000_2000);
-    let relocation_destinations = [
-        MinorGcRelocationDestination::new(gc_address(lambda), lambda_destination),
-        MinorGcRelocationDestination::new(gc_address(child), child_destination),
-        MinorGcRelocationDestination::new(gc_address(sibling), sibling_destination),
+    let nursery_layouts = [
+        NurseryObjectLayout::new(gc_address(lambda), 16, 8),
+        NurseryObjectLayout::new(gc_address(child), 16, 8),
+        NurseryObjectLayout::new(gc_address(sibling), 16, 8),
     ];
+    let destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan builds");
+    assert_eq!(destinations.allocation_plan().nursery_bytes(), 48);
+    assert_eq!(destinations.allocation_plan().old_bytes(), 0);
+    assert_eq!(destinations.placement_plan().nursery_reserved_bytes(), 48);
+    assert_eq!(destinations.placement_plan().old_reserved_bytes(), 0);
+    assert_eq!(destinations.destinations().len(), 3);
+    let lambda_destination = destinations.destinations()[0].destination();
+    let child_destination = destinations.destinations()[1].destination();
+    let sibling_destination = destinations.destinations()[2].destination();
+    assert_eq!(lambda_destination, static_gc_address(0x1000_0000));
+    assert_eq!(child_destination, static_gc_address(0x1000_0010));
+    assert_eq!(sibling_destination, static_gc_address(0x1000_0020));
+    let relocation_destinations = destinations.destinations();
     let relocation_plan =
-        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), &relocation_destinations)
+        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), relocation_destinations)
             .expect("relocation plan builds");
     let rewrite_plan = planned
         .reference_rewrite_plan(&relocation_plan)
@@ -1553,14 +1571,8 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         rewrite_plan.rewrites()[2].destination(),
         sibling_destination
     );
-
-    let nursery_layouts = [
-        NurseryObjectLayout::new(gc_address(lambda), 16, 8),
-        NurseryObjectLayout::new(gc_address(child), 16, 8),
-        NurseryObjectLayout::new(gc_address(sibling), 16, 8),
-    ];
     let commit = planned
-        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .commit_plan(relocation_destinations, &nursery_layouts)
         .expect("commit plan builds");
     assert_eq!(commit.reference_slots(), planned.reference_slots());
     assert_eq!(commit.commit_plan().object_copies().copies().len(), 3);
@@ -1607,7 +1619,7 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert!(commit.commit_plan().next_remembered_set().is_empty());
 
     let short_commit = planned
-        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .commit_plan(relocation_destinations, &nursery_layouts)
         .expect("short-buffer commit plan builds");
     let mut no_object_byte_copies: Vec<MinorGcObjectByteCopyBuffer<'_>> = Vec::new();
     let mut no_forwarding_slots = Vec::new();
@@ -1631,7 +1643,7 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert_eq!(short_remembered_set, remembered_set);
 
     let occupied_commit = planned
-        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .commit_plan(relocation_destinations, &nursery_layouts)
         .expect("occupied-slot commit plan builds");
     let occupied_lambda_source_bytes = [9u8; 16];
     let occupied_child_source_bytes = [8u8; 16];
@@ -1834,6 +1846,66 @@ fn collector_poll_minor_gc_commit_plan_rejects_stale_relocation_destinations() {
 }
 
 #[test]
+fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("minor-GC plan builds");
+
+    let old_base = static_gc_address(0x3000_0000);
+    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 24, 8)];
+    let destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), old_base),
+        )
+        .expect("destination plan builds");
+
+    assert_eq!(destinations.allocation_plan().nursery_bytes(), 0);
+    assert_eq!(destinations.allocation_plan().old_bytes(), 24);
+    assert_eq!(destinations.placement_plan().nursery_reserved_bytes(), 0);
+    assert_eq!(destinations.placement_plan().old_reserved_bytes(), 24);
+    assert_eq!(destinations.destinations().len(), 1);
+    assert_eq!(destinations.destinations()[0].destination(), old_base);
+    let relocation_plan = destinations
+        .relocation_destinations()
+        .relocation_plan(planned.plan())
+        .expect("relocation plan rebuilds");
+    assert_eq!(
+        relocation_plan.relocations()[0].destination_generation(),
+        HeapGeneration::Old
+    );
+    let commit = planned
+        .commit_plan(destinations.destinations(), &nursery_layouts)
+        .expect("commit plan builds");
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[0].destination_generation(),
+        HeapGeneration::Old
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_plan_rejects_unremembered_permanent_to_worker_edge() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
@@ -1946,13 +2018,26 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         }
     );
 
-    let child_destination = static_gc_address(0x1000_2000);
-    let relocation_destinations = [MinorGcRelocationDestination::new(
-        gc_address(child),
-        child_destination,
-    )];
+    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
+    let destinations = planned
+        .relocation_destination_plan(
+            &nursery_layouts,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_2000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("destination plan builds");
+    assert_eq!(destinations.allocation_plan().nursery_bytes(), 16);
+    assert_eq!(destinations.allocation_plan().old_bytes(), 0);
+    assert_eq!(destinations.placement_plan().nursery_reserved_bytes(), 16);
+    assert_eq!(destinations.placement_plan().old_reserved_bytes(), 0);
+    assert_eq!(destinations.destinations().len(), 1);
+    let child_destination = destinations.destinations()[0].destination();
+    assert_eq!(child_destination, static_gc_address(0x1000_2000));
+    let relocation_destinations = destinations.destinations();
     let relocation_plan =
-        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), &relocation_destinations)
+        MinorGcRelocationPlan::from_minor_gc_plan(planned.plan(), relocation_destinations)
             .expect("relocation plan builds");
     let rewrite_plan = planned
         .reference_rewrite_plan(&relocation_plan)
@@ -1963,9 +2048,8 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     assert_eq!(rewrite_plan.rewrites()[0].destination(), child_destination);
 
     assert_eq!(planned.remembered_set(), &remembered_set);
-    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
     let commit = planned
-        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .commit_plan(relocation_destinations, &nursery_layouts)
         .expect("commit plan builds");
     assert_eq!(commit.reference_slots(), planned.reference_slots());
     assert_eq!(
@@ -1978,7 +2062,7 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     );
 
     let mismatch_commit = planned
-        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .commit_plan(relocation_destinations, &nursery_layouts)
         .expect("reference-mismatch commit plan builds");
     let mismatch_child_source_bytes = [5u8; 16];
     let mut mismatch_child_destination_bytes = [0u8; 16];
