@@ -21,6 +21,7 @@ use crucible_sim::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer};
 use crate::trigger::{Action, Event, EventGraph, EventGraphError, FirePolicy, LogLevel};
 
@@ -10726,6 +10727,67 @@ impl TemporalGraph {
         self.replay_checkpoint(configuration, &checkpoint)
     }
 
+    /// Validates any advanced operation through the single temporal graph path.
+    ///
+    /// This is the unifying-view check for fork/save/resume/replay/search/fuzz/
+    /// reproduction/minimization outputs: typed operation evidence is first
+    /// checked for an internally consistent operation output and reduced to one
+    /// configuration, then that configuration is recorded in the graph,
+    /// realized once with [`instantiate`], compared to the pure reducer,
+    /// converted into a checkpoint, and checked by the replay oracle against
+    /// the same thin graph derivation used by ordinary resume and save paths.
+    /// The model-side single-VM fingerprint is the realized runtime state
+    /// identity, matching `gate:single-vm-fingerprint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when `operation` evidence is internally
+    /// inconsistent or does not match the recomputed unified report,
+    /// [`EngineError::MissingBakedGenesis`] when the graph cannot realize its
+    /// configuration, [`EngineError::ReplayTargetMismatch`] when the realized
+    /// runtime does not match the reduced configuration state, or another
+    /// [`EngineError`] from checkpoint materialization or replay-oracle
+    /// validation.
+    pub fn validate_unified_operation(
+        &mut self,
+        operation: &UnifiedGraphOperationEvidence,
+    ) -> Result<UnifiedGraphOperationReport, EngineError> {
+        let operation_kind = operation.kind();
+        let configuration = operation.configuration()?;
+        let report = self.validate_unified_configuration(operation_kind, &configuration)?;
+        operation.validate_report(self, &configuration, &report)?;
+        Ok(report)
+    }
+
+    fn validate_unified_configuration(
+        &mut self,
+        operation: UnifiedGraphOperationKind,
+        configuration: &Configuration,
+    ) -> Result<UnifiedGraphOperationReport, EngineError> {
+        self.record_checkpoint_closure(configuration)?;
+        let runtime = instantiate(self, configuration)?;
+        let reduced = reduce(&configuration.def, &configuration.schedule)?;
+        if runtime.id != reduced.id {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: reduced.id,
+                actual: runtime.id,
+            });
+        }
+        let checkpoint = materialized_checkpoint_for_runtime(configuration, runtime.clone())?;
+        let replay_oracle = self.replay_checkpoint(configuration, &checkpoint)?;
+        Ok(UnifiedGraphOperationReport {
+            operation,
+            graph: self.id,
+            configuration: configuration.id(),
+            schedule: configuration.schedule.content_hash(),
+            checkpoint: checkpoint.id,
+            reduced_state: reduced.id,
+            runtime_state: runtime.id,
+            single_vm_fingerprint: ExecutionFingerprint { hash: runtime.id },
+            replay_oracle,
+        })
+    }
+
     /// Searches one frontier by realizing, reducing, deduplicating, and materializing children.
     ///
     /// The frontier is first realized through [`Self::resume`], so expansion uses
@@ -13296,6 +13358,817 @@ pub struct TemporalGraphSave {
     pub store_keys: TemporalGraphStoreKeys,
 }
 
+/// Advanced operation admitted through the single temporal graph realization path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UnifiedGraphOperationKind {
+    /// User-facing resume of a graph tip.
+    Resume,
+    /// Interactive fork from an existing graph configuration.
+    Fork,
+    /// Save of a graph configuration to a checkpoint/store closure.
+    Save,
+    /// Replay-oracle validation of a graph configuration.
+    Replay,
+    /// State-space search reached this configuration.
+    StateSpaceSearch,
+    /// Coverage-guided fuzzing produced this configuration.
+    CoverageGuidedFuzzing,
+    /// A self-contained reproduction artifact names this configuration.
+    ReproductionArtifact,
+    /// Failure minimization produced this configuration.
+    Minimization,
+}
+
+/// Typed evidence that an advanced feature produced a temporal-graph configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UnifiedGraphOperationEvidence {
+    /// User-facing resume output plus the configuration that was resumed.
+    Resume {
+        /// Configuration supplied to `resume`.
+        configuration: Configuration,
+        /// Runtime output returned by `resume`.
+        runtime: TemporalGraphRuntime,
+    },
+    /// Interactive fork output.
+    Fork(TemporalGraphFork),
+    /// Save output plus the configuration that was saved.
+    Save {
+        /// Configuration supplied to `save`.
+        configuration: Configuration,
+        /// Save output returned by the temporal graph.
+        save: TemporalGraphSave,
+    },
+    /// Replay-oracle output plus the configuration that was replayed.
+    Replay {
+        /// Configuration supplied to `replay`.
+        configuration: Configuration,
+        /// Replay-oracle output returned by the temporal graph.
+        replay: ReplayOracleCheck,
+    },
+    /// Failure discovered by a state-space search run.
+    StateSpaceSearch {
+        /// Temporal graph snapshot supplied to the search operation.
+        graph: TemporalGraph,
+        /// Concrete scenario form used for reproduction artifacts.
+        scenario: ScenarioDefForm,
+        /// Root configuration supplied to the search operation.
+        root: Configuration,
+        /// Frontier ordering strategy used by the search operation.
+        strategy: SearchStrategy,
+        /// Expansion budget supplied to the search operation.
+        budget: SearchBudget,
+        /// Checkpoint materialization policy supplied to the search operation.
+        materialization_policy: MaterializationPolicy,
+        /// Materialization trigger supplied to the search operation.
+        trigger: MaterializationTrigger,
+        /// Read-only failure oracle supplied to the search operation.
+        failure_oracle: SearchFailureOracle,
+        /// Full deterministic search output.
+        run: TemporalGraphSearchRun,
+        /// Discovered failure admitted through the unified graph path.
+        failure: SearchDiscoveredFailure,
+    },
+    /// Candidate generated by a coverage-guided fuzzing run.
+    CoverageGuidedFuzzing {
+        /// Scenario family sampled by the fuzzing run.
+        family: ScenarioFamily,
+        /// Full deterministic fuzzing run output.
+        run: CoverageGuidedFuzzRun,
+        /// Coverage feedback fingerprints consumed by the run.
+        feedback_fingerprints: Vec<ContentHash>,
+        /// Iteration admitted through the unified graph path.
+        iteration: CoverageGuidedFuzzIteration,
+    },
+    /// Self-contained finding reproduction artifact.
+    ReproductionArtifact(FindingReproductionArtifact),
+    /// Failure-preserving minimization run.
+    Minimization(MinimizationRun),
+}
+
+impl UnifiedGraphOperationEvidence {
+    /// Returns the operation kind carried by this evidence.
+    #[must_use]
+    pub const fn kind(&self) -> UnifiedGraphOperationKind {
+        match self {
+            Self::Resume { .. } => UnifiedGraphOperationKind::Resume,
+            Self::Fork(_) => UnifiedGraphOperationKind::Fork,
+            Self::Save { .. } => UnifiedGraphOperationKind::Save,
+            Self::Replay { .. } => UnifiedGraphOperationKind::Replay,
+            Self::StateSpaceSearch { .. } => UnifiedGraphOperationKind::StateSpaceSearch,
+            Self::CoverageGuidedFuzzing { .. } => UnifiedGraphOperationKind::CoverageGuidedFuzzing,
+            Self::ReproductionArtifact(_) => UnifiedGraphOperationKind::ReproductionArtifact,
+            Self::Minimization(_) => UnifiedGraphOperationKind::Minimization,
+        }
+    }
+
+    /// Returns the configuration proven by this operation evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`],
+    /// [`EngineError::RuntimeConfigurationMismatch`],
+    /// [`EngineError::CheckpointConfigurationMismatch`],
+    /// [`EngineError::ReproductionArtifactReplayMismatch`], or
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the supplied
+    /// evidence does not internally identify one consistent operation output.
+    pub fn configuration(&self) -> Result<Configuration, EngineError> {
+        match self {
+            Self::Resume {
+                configuration,
+                runtime,
+            } => {
+                expect_runtime_configuration(runtime, configuration)?;
+                Ok(configuration.clone())
+            }
+            Self::Fork(fork) => configuration_from_fork(fork),
+            Self::Save {
+                configuration,
+                save,
+            } => {
+                expect_content_hash(save.configuration, configuration.id(), "save-configuration")?;
+                expect_content_hash(save.checkpoint, configuration.id(), "save-checkpoint")?;
+                Ok(configuration.clone())
+            }
+            Self::Replay {
+                configuration,
+                replay,
+            } => {
+                expect_content_hash(
+                    replay.configuration,
+                    configuration.id(),
+                    "replay-configuration",
+                )?;
+                expect_content_hash(
+                    replay.fat_checkpoint,
+                    configuration.id(),
+                    "replay-fat-checkpoint",
+                )?;
+                expect_content_hash(
+                    replay.thin_checkpoint,
+                    configuration.id(),
+                    "replay-thin-checkpoint",
+                )?;
+                Ok(configuration.clone())
+            }
+            Self::StateSpaceSearch {
+                graph,
+                scenario,
+                root,
+                strategy,
+                budget,
+                materialization_policy,
+                trigger,
+                failure_oracle,
+                run,
+                failure,
+            } => configuration_from_state_space_search(
+                graph,
+                scenario,
+                root,
+                *strategy,
+                *budget,
+                *materialization_policy,
+                *trigger,
+                failure_oracle,
+                run,
+                failure,
+            ),
+            Self::CoverageGuidedFuzzing {
+                family,
+                run,
+                feedback_fingerprints,
+                iteration,
+            } => configuration_from_coverage_guided_fuzzing(
+                family,
+                run,
+                feedback_fingerprints,
+                iteration,
+            ),
+            Self::ReproductionArtifact(finding) => configuration_from_validated_finding(finding),
+            Self::Minimization(run) => configuration_from_minimization_run(run),
+        }
+    }
+
+    fn validate_report(
+        &self,
+        graph: &TemporalGraph,
+        configuration: &Configuration,
+        report: &UnifiedGraphOperationReport,
+    ) -> Result<(), EngineError> {
+        match self {
+            Self::Resume { runtime, .. } => {
+                expect_content_hash(runtime.runtime.id, report.runtime_state, "resume-runtime")?;
+                expect_content_hash(runtime.checkpoint, report.checkpoint, "resume-checkpoint")
+            }
+            Self::Fork(fork) => {
+                expect_content_hash(fork.branch.id(), report.configuration, "fork-branch")?;
+                expect_content_hash(
+                    fork.branch_checkpoint.id,
+                    report.checkpoint,
+                    "fork-branch-checkpoint",
+                )
+            }
+            Self::Save { save, .. } => {
+                expect_content_hash(save.configuration, report.configuration, "save-report")?;
+                expect_content_hash(save.checkpoint, report.checkpoint, "save-checkpoint")?;
+                if save.checkpoint_kind != CheckpointKind::Fat {
+                    return Err(unified_operation_evidence_mismatch(
+                        self.operation_label(),
+                        "save-checkpoint-kind",
+                    ));
+                }
+                let expected = temporal_graph_store_keys_for_configuration(graph, configuration)?;
+                if save.store_keys != expected {
+                    return Err(unified_operation_evidence_mismatch(
+                        self.operation_label(),
+                        "save-store-keys",
+                    ));
+                }
+                Ok(())
+            }
+            Self::Replay { replay, .. } => {
+                if replay != &report.replay_oracle {
+                    return Err(unified_operation_evidence_mismatch(
+                        self.operation_label(),
+                        "replay-oracle-output",
+                    ));
+                }
+                Ok(())
+            }
+            Self::StateSpaceSearch {
+                graph: search_graph,
+                failure,
+                ..
+            } => {
+                if search_graph.id != graph.id {
+                    return Err(unified_operation_evidence_mismatch(
+                        self.operation_label(),
+                        "search-graph",
+                    ));
+                }
+                expect_content_hash(
+                    failure.configuration,
+                    report.configuration,
+                    "search-report-configuration",
+                )?;
+                expect_content_hash(
+                    failure.reproduction_artifact.finding_fingerprint,
+                    failure.fingerprint,
+                    "search-report-fingerprint",
+                )
+            }
+            Self::CoverageGuidedFuzzing { iteration, .. } => expect_content_hash(
+                iteration.configuration_id(),
+                report.configuration,
+                "fuzz-report-configuration",
+            ),
+            Self::ReproductionArtifact(finding) => {
+                expect_content_hash(
+                    finding.configuration,
+                    report.configuration,
+                    "reproduction-report-configuration",
+                )?;
+                expect_content_hash(
+                    finding.replay.state,
+                    report.reduced_state,
+                    "reproduction-report-state",
+                )
+            }
+            Self::Minimization(run) => {
+                expect_content_hash(
+                    run.minimized.configuration,
+                    report.configuration,
+                    "minimization-report-configuration",
+                )?;
+                expect_content_hash(
+                    run.minimized.replay.state,
+                    report.reduced_state,
+                    "minimization-report-state",
+                )
+            }
+        }
+    }
+
+    fn operation_label(&self) -> &'static str {
+        operation_kind_label(self.kind())
+    }
+}
+
+fn operation_kind_label(kind: UnifiedGraphOperationKind) -> &'static str {
+    match kind {
+        UnifiedGraphOperationKind::Resume => "resume",
+        UnifiedGraphOperationKind::Fork => "fork",
+        UnifiedGraphOperationKind::Save => "save",
+        UnifiedGraphOperationKind::Replay => "replay",
+        UnifiedGraphOperationKind::StateSpaceSearch => "state-space-search",
+        UnifiedGraphOperationKind::CoverageGuidedFuzzing => "coverage-guided-fuzzing",
+        UnifiedGraphOperationKind::ReproductionArtifact => "reproduction-artifact",
+        UnifiedGraphOperationKind::Minimization => "minimization",
+    }
+}
+
+fn unified_operation_evidence_mismatch(
+    operation: &'static str,
+    reason: &'static str,
+) -> EngineError {
+    EngineError::UnifiedOperationEvidenceMismatch { operation, reason }
+}
+
+fn expect_content_hash(
+    actual: ContentHash,
+    expected: ContentHash,
+    _field: &'static str,
+) -> Result<(), EngineError> {
+    if actual != expected {
+        return Err(EngineError::ReplayTargetMismatch { expected, actual });
+    }
+    Ok(())
+}
+
+fn expect_runtime_configuration(
+    runtime: &TemporalGraphRuntime,
+    configuration: &Configuration,
+) -> Result<(), EngineError> {
+    if runtime.configuration != configuration.id() {
+        return Err(EngineError::RuntimeConfigurationMismatch {
+            runtime: runtime.runtime.id,
+            expected: configuration.id(),
+            actual: runtime.configuration,
+        });
+    }
+    if runtime.runtime.configuration != configuration.id() {
+        return Err(EngineError::RuntimeConfigurationMismatch {
+            runtime: runtime.runtime.id,
+            expected: configuration.id(),
+            actual: runtime.runtime.configuration,
+        });
+    }
+    expect_content_hash(runtime.checkpoint, configuration.id(), "runtime-checkpoint")?;
+    let reduced = reduce(&configuration.def, &configuration.schedule)?;
+    expect_content_hash(runtime.runtime.id, reduced.id, "runtime-state")
+}
+
+fn expect_checkpoint_configuration(
+    checkpoint: &Checkpoint,
+    configuration: &Configuration,
+) -> Result<(), EngineError> {
+    if checkpoint.configuration != configuration.id() {
+        return Err(EngineError::CheckpointConfigurationMismatch {
+            checkpoint: checkpoint.id,
+            expected: configuration.id(),
+            actual: checkpoint.configuration,
+        });
+    }
+    if checkpoint.id != configuration.id() {
+        return Err(EngineError::CheckpointIdentityMismatch {
+            checkpoint: checkpoint.id,
+            expected: configuration.id(),
+            actual: checkpoint.id,
+        });
+    }
+    Ok(())
+}
+
+fn configuration_from_fork(fork: &TemporalGraphFork) -> Result<Configuration, EngineError> {
+    let base = configuration_prefix_with_id(&fork.branch, fork.base.configuration)?;
+    expect_runtime_configuration(&fork.base, &base)?;
+    expect_checkpoint_configuration(&fork.branch_checkpoint, &fork.branch)?;
+    Ok(fork.branch.clone())
+}
+
+fn configuration_prefix_with_id(
+    configuration: &Configuration,
+    expected: ContentHash,
+) -> Result<Configuration, EngineError> {
+    for len in 0..=configuration.schedule.len() {
+        let schedule = configuration
+            .schedule
+            .prefix(len)
+            .map_err(EngineError::SchedulePrefix)?;
+        let prefix = Configuration {
+            def: configuration.def.clone(),
+            schedule,
+        };
+        if prefix.id() == expected {
+            return Ok(prefix);
+        }
+    }
+    Err(EngineError::ReplayTargetMismatch {
+        expected,
+        actual: configuration.id(),
+    })
+}
+
+fn configuration_from_state_space_search(
+    graph: &TemporalGraph,
+    scenario: &ScenarioDefForm,
+    root: &Configuration,
+    strategy: SearchStrategy,
+    budget: SearchBudget,
+    materialization_policy: MaterializationPolicy,
+    trigger: MaterializationTrigger,
+    failure_oracle: &SearchFailureOracle,
+    run: &TemporalGraphSearchRun,
+    failure: &SearchDiscoveredFailure,
+) -> Result<Configuration, EngineError> {
+    let mut replay_graph = graph.clone();
+    let expected_run = replay_graph.search_with_strategy_and_failure_oracle(
+        scenario,
+        root,
+        strategy,
+        budget,
+        materialization_policy,
+        trigger,
+        failure_oracle,
+    )?;
+    if &expected_run != run {
+        return Err(unified_operation_evidence_mismatch(
+            "state-space-search",
+            "search-run-output",
+        ));
+    }
+    if !run.discovered_failures.contains(failure) {
+        return Err(unified_operation_evidence_mismatch(
+            "state-space-search",
+            "search-failure-output",
+        ));
+    }
+    let configuration = configuration_from_validated_finding(&failure.reproduction_artifact)?;
+    if failure.reproduction_artifact.discovery_path != FindingDiscoveryPath::StateSpaceSearch {
+        return Err(unified_operation_evidence_mismatch(
+            "state-space-search",
+            "search-discovery-path",
+        ));
+    }
+    expect_content_hash(
+        failure.configuration,
+        configuration.id(),
+        "search-failure-configuration",
+    )?;
+    expect_content_hash(
+        failure.fingerprint,
+        failure.reproduction_artifact.finding_fingerprint,
+        "search-failure-fingerprint",
+    )?;
+    Ok(configuration)
+}
+
+fn configuration_from_coverage_guided_fuzzing(
+    family: &ScenarioFamily,
+    run: &CoverageGuidedFuzzRun,
+    feedback_fingerprints: &[ContentHash],
+    iteration: &CoverageGuidedFuzzIteration,
+) -> Result<Configuration, EngineError> {
+    let expected =
+        coverage_guided_fuzz_run_from_fingerprints(family, run.config, feedback_fingerprints)?;
+    if &expected != run {
+        return Err(unified_operation_evidence_mismatch(
+            "coverage-guided-fuzzing",
+            "run-output",
+        ));
+    }
+    let expected_iteration = run
+        .iterations
+        .get(iteration.sequence as usize)
+        .ok_or_else(|| {
+            unified_operation_evidence_mismatch("coverage-guided-fuzzing", "iteration-sequence")
+        })?;
+    if expected_iteration != iteration {
+        return Err(unified_operation_evidence_mismatch(
+            "coverage-guided-fuzzing",
+            "iteration-output",
+        ));
+    }
+    Ok(iteration.configuration.clone())
+}
+
+fn coverage_guided_fuzz_run_from_fingerprints(
+    family: &ScenarioFamily,
+    config: CoverageGuidedFuzzConfig,
+    feedback_fingerprints: &[ContentHash],
+) -> Result<CoverageGuidedFuzzRun, EngineError> {
+    let cardinality = family.space().cardinality()?;
+    let mut iterations = Vec::new();
+    let mut seen_coverage = BTreeSet::new();
+    let mut corpus = vec![coverage_guided_fuzz_seed_corpus_entry(config, cardinality)];
+
+    for sequence in 0..config.iterations {
+        let coverage_fingerprint =
+            coverage_guided_feedback_fingerprint_for_sequence(feedback_fingerprints, sequence);
+        let selected_corpus_entry = coverage_guided_fuzz_select_corpus_entry(
+            config,
+            sequence,
+            coverage_fingerprint,
+            &corpus,
+        );
+        let energy = coverage_guided_fuzz_energy(config, sequence, coverage_fingerprint);
+        let sample_index =
+            coverage_guided_fuzz_sample_index(config, sequence, coverage_fingerprint, cardinality);
+        let scenario = family.instantiate_sample(sample_index)?;
+        let params = scenario.params();
+        let root = scenario.genesis_configuration();
+        let mutation =
+            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let configuration = try_step(root.configuration(), mutation.clone())?;
+        let new_coverage = coverage_fingerprint != ContentHash::default()
+            && seen_coverage.insert(coverage_fingerprint);
+        if new_coverage {
+            corpus.push(configuration.id());
+        }
+        iterations.push(CoverageGuidedFuzzIteration {
+            sequence,
+            sample_index,
+            params,
+            scenario,
+            selected_corpus_entry,
+            energy,
+            configuration,
+            mutation,
+            coverage_fingerprint,
+            new_coverage,
+        });
+    }
+
+    let coverage_biased_order = coverage_guided_fuzz_order(&iterations);
+    Ok(CoverageGuidedFuzzRun {
+        config,
+        iterations,
+        coverage_biased_order,
+    })
+}
+
+fn coverage_guided_feedback_fingerprint_for_sequence(
+    feedback_fingerprints: &[ContentHash],
+    sequence: u64,
+) -> ContentHash {
+    if feedback_fingerprints.is_empty() {
+        return ContentHash::default();
+    }
+    let index = (sequence % feedback_fingerprints.len() as u64) as usize;
+    feedback_fingerprints[index]
+}
+
+fn configuration_from_finding_artifact(
+    finding: &FindingReproductionArtifact,
+) -> Result<Configuration, EngineError> {
+    let configuration = Configuration {
+        def: finding.artifact.scenario_def(),
+        schedule: finding.artifact.schedule().clone(),
+    };
+    expect_content_hash(
+        finding.configuration,
+        configuration.id(),
+        "finding-configuration",
+    )?;
+    Ok(configuration)
+}
+
+fn configuration_from_validated_finding(
+    finding: &FindingReproductionArtifact,
+) -> Result<Configuration, EngineError> {
+    let replay = finding.artifact.replay()?;
+    if replay != finding.replay {
+        return Err(EngineError::ReproductionArtifactReplayMismatch {
+            artifact: finding.artifact.id(),
+            expected: finding.replay.state,
+            actual: replay.state,
+        });
+    }
+    configuration_from_finding_artifact(finding)
+}
+
+fn configuration_from_minimization_run(
+    run: &MinimizationRun,
+) -> Result<Configuration, EngineError> {
+    configuration_from_validated_finding(&run.original)?;
+    expect_content_hash(
+        run.original.finding_fingerprint,
+        run.target_fingerprint,
+        "minimization-original-fingerprint",
+    )?;
+    expect_content_hash(
+        run.minimized.finding_fingerprint,
+        run.target_fingerprint,
+        "minimization-minimized-fingerprint",
+    )?;
+    if run.minimized.discovery_path != run.original.discovery_path {
+        return Err(unified_operation_evidence_mismatch(
+            "minimization",
+            "discovery-path",
+        ));
+    }
+
+    let minimized = configuration_from_validated_finding(&run.minimized)?;
+    let candidates = minimization_candidates(
+        run.seed,
+        run.original.artifact.id(),
+        run.original.artifact.schedule(),
+    );
+    if run.attempts.len() > candidates.len() {
+        return Err(unified_operation_evidence_mismatch(
+            "minimization",
+            "attempt-count",
+        ));
+    }
+
+    let mut accepted = None;
+    for (index, attempt) in run.attempts.iter().enumerate() {
+        let candidate = candidates
+            .get(index)
+            .ok_or_else(|| unified_operation_evidence_mismatch("minimization", "attempt-count"))?;
+        if attempt.sequence != index as u64 {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "attempt-sequence",
+            ));
+        }
+        if attempt.removed_indices != candidate.removed_indices {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "removed-indices",
+            ));
+        }
+        if attempt.removed_decisions != candidate.removed_decisions {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "removed-decisions",
+            ));
+        }
+        expect_content_hash(
+            attempt.candidate_schedule,
+            candidate.schedule.content_hash(),
+            "minimization-candidate-schedule",
+        )?;
+
+        let candidate_configuration = Configuration {
+            def: run.original.artifact.scenario_def(),
+            schedule: candidate.schedule.clone(),
+        };
+        let candidate_finding = FindingReproductionArtifact::capture(
+            run.original.discovery_path,
+            run.target_fingerprint,
+            run.original.artifact.scenario_form(),
+            &candidate_configuration,
+        )?;
+        expect_content_hash(
+            attempt.candidate_artifact,
+            candidate_finding.artifact.id(),
+            "minimization-candidate-artifact",
+        )?;
+        expect_content_hash(
+            attempt.replayed_state,
+            candidate_finding.replay.state,
+            "minimization-replayed-state",
+        )?;
+        if attempt.accepted != (attempt.observed_fingerprint == Some(run.target_fingerprint)) {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "accepted-fingerprint",
+            ));
+        }
+        if attempt.accepted {
+            accepted = Some(candidate_finding);
+            if index + 1 != run.attempts.len() {
+                return Err(unified_operation_evidence_mismatch(
+                    "minimization",
+                    "attempts-after-accepted",
+                ));
+            }
+            break;
+        }
+    }
+
+    match accepted {
+        Some(candidate) if candidate == run.minimized => {}
+        Some(_) => {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "minimized-candidate",
+            ));
+        }
+        None if run.attempts.len() == candidates.len() && run.minimized == run.original => {}
+        None => {
+            return Err(unified_operation_evidence_mismatch(
+                "minimization",
+                "unaccepted-minimized",
+            ));
+        }
+    }
+
+    Ok(minimized)
+}
+
+fn temporal_graph_store_keys_for_configuration(
+    graph: &TemporalGraph,
+    frontier: &Configuration,
+) -> Result<TemporalGraphStoreKeys, EngineError> {
+    let chain = graph.checkpoint_parent_chain(frontier.id())?;
+    let genesis =
+        graph
+            .genesis_snapshot(&frontier.def)
+            .ok_or(EngineError::MissingBakedGenesis {
+                scenario: frontier.def.id,
+            })?;
+
+    let scenario_def = ContentHash::from_bytes(&scenario_def_store_bytes(&frontier.def));
+    let genesis_snapshot = ContentHash::from_bytes(&checkpoint_store_bytes(&genesis.checkpoint));
+    let mut checkpoint_nodes = BTreeMap::new();
+    let mut cached_snapshots = BTreeMap::new();
+    let mut cow_deltas = BTreeMap::new();
+    let mut schedule_deltas = Vec::new();
+    let mut event_log_segments = Vec::new();
+
+    for checkpoint in &chain {
+        checkpoint_nodes.insert(
+            checkpoint.id,
+            ContentHash::from_bytes(&checkpoint_store_bytes(checkpoint)),
+        );
+        insert_checkpoint_cow_delta_store_keys(
+            checkpoint,
+            &mut cow_deltas,
+            &mut schedule_deltas,
+            &mut event_log_segments,
+        );
+        if let Some(snapshot) = graph.cached_snapshots.get(&checkpoint.id) {
+            cached_snapshots.insert(
+                snapshot.id,
+                ContentHash::from_bytes(&checkpoint_store_bytes(snapshot)),
+            );
+            insert_checkpoint_cow_delta_store_keys(
+                snapshot,
+                &mut cow_deltas,
+                &mut schedule_deltas,
+                &mut event_log_segments,
+            );
+        }
+    }
+
+    Ok(TemporalGraphStoreKeys {
+        checkpoint_nodes,
+        cached_snapshots,
+        cow_deltas,
+        reproduction_artifact: DagStoreReproductionArtifact::new(
+            scenario_def,
+            genesis_snapshot,
+            schedule_deltas,
+        )
+        .with_event_log_segment_keys(event_log_segments),
+    })
+}
+
+fn insert_checkpoint_cow_delta_store_keys(
+    checkpoint: &Checkpoint,
+    cow_deltas: &mut BTreeMap<CowDeltaRef, ContentHash>,
+    schedule_deltas: &mut Vec<ContentHash>,
+    event_log_segments: &mut Vec<ContentHash>,
+) {
+    for cow_ref in checkpoint.cow_delta_refs() {
+        if cow_deltas.contains_key(&cow_ref) {
+            continue;
+        }
+        let delta_key = match cow_ref.kind {
+            CowDeltaKind::ScheduleDelta => {
+                let key = ContentHash::from_bytes(&schedule_delta_store_bytes(
+                    &checkpoint.schedule_delta,
+                ));
+                schedule_deltas.push(key);
+                key
+            }
+            CowDeltaKind::EventLogSegment => {
+                event_log_segments.push(cow_ref.content);
+                cow_ref.content
+            }
+            CowDeltaKind::VmMemory | CowDeltaKind::DeviceOverlay => {
+                ContentHash::from_bytes(&cow_delta_store_bytes(cow_ref))
+            }
+        };
+        cow_deltas.insert(cow_ref, delta_key);
+    }
+}
+
+/// Replay-oracle and single-VM-fingerprint evidence for one graph operation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UnifiedGraphOperationReport {
+    /// Operation being validated through the unified temporal graph path.
+    pub operation: UnifiedGraphOperationKind,
+    /// Temporal graph handle used for validation.
+    pub graph: ContentHash,
+    /// Configuration admitted by the operation.
+    pub configuration: ContentHash,
+    /// Recorded schedule content address for the configuration.
+    pub schedule: ContentHash,
+    /// Checkpoint materialized from the single realized runtime.
+    pub checkpoint: ContentHash,
+    /// Reduced state denoted by the configuration.
+    pub reduced_state: ContentHash,
+    /// Runtime state returned by [`instantiate`].
+    pub runtime_state: ContentHash,
+    /// Model-side single-VM fingerprint for the realized runtime.
+    pub single_vm_fingerprint: ExecutionFingerprint,
+    /// Replay-oracle check comparing the realized checkpoint with thin replay.
+    pub replay_oracle: ReplayOracleCheck,
+}
+
 /// Result of a graph-level runtime realization.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphRuntime {
@@ -15071,6 +15944,13 @@ pub enum EngineError {
         /// The configuration produced by replaying the suffix.
         actual: ContentHash,
     },
+    /// Typed operation evidence did not match the operation output it claims.
+    UnifiedOperationEvidenceMismatch {
+        /// Stable operation label.
+        operation: &'static str,
+        /// Stable reason for the evidence rejection.
+        reason: &'static str,
+    },
     /// Pure temporal replay cannot advance a retained event-log offset.
     EventLogReplayUnsupported {
         /// The configuration replay started from.
@@ -15412,6 +16292,12 @@ impl fmt::Display for EngineError {
             }
             Self::ReplayTargetMismatch { .. } => {
                 f.write_str("replayed suffix did not produce requested configuration")
+            }
+            Self::UnifiedOperationEvidenceMismatch { operation, reason } => {
+                write!(
+                    f,
+                    "unified {operation} operation evidence is inconsistent: {reason}"
+                )
             }
             Self::EventLogReplayUnsupported { events, .. } => {
                 write!(

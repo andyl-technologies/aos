@@ -1173,11 +1173,22 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   original finding fingerprint; and the gate proves repeated same-seed runs produce
   the same shortest artifact while rejecting non-reproducing starts and stale
   public replay evidence.
-- [ ] **T-ADV-16** Implement and test the unifying view: assert fork/save/resume/
+- [x] **T-ADV-16** Implement and test the unifying view: assert fork/save/resume/
   replay/search/fuzz/minimize are all operations on the one temporal graph via the
   one `instantiate`, validated by the single replay-oracle + single-VM-fingerprint
   check, with no abstract spec engine and no second execution path. — satisfies
   [ADV-32]; spec §22.9; cross-ref 05 §9/§11, 07 §10.
+  Completed by `checks.crucible.phase6.unifyingView`: `TemporalGraph` now exposes
+  `validate_unified_operation`, which takes typed operation evidence, proves it
+  carries an internally consistent operation output, records the named
+  configuration in the graph, realizes it through the single `instantiate`
+  entrypoint, checks the reduced state against the runtime state, materializes
+  the runtime into a checkpoint, and validates it with the same replay-oracle
+  path while reporting the single-VM fingerprint. The gate feeds that one report
+  path with evidence from resume, fork, save, replay, state-space search,
+  coverage-guided fuzzing, self-contained reproduction artifacts, and
+  minimization, proves they all validate on the same temporal graph id, and
+  rejects mismatched or forged operation evidence before graph admission.
 - [x] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
   signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
   deterministically-maintained rarity table; assertion-proximity from the 18
