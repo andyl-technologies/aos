@@ -919,6 +919,17 @@ harness, never cut for scope.
       `ratchet-core`'s allocation helper symbol table. This prevents drift
       between the oracle allocator surface and future JIT registration metadata,
       but it is not yet exported C ABI glue or Cranelift registration.
+- [x] Current runtime symbol-manifest precursor:
+      `ratchet-core::runtime_abi::runtime_symbol_manifest()` builds the
+      deterministic, lexicographically sorted symbol table that future
+      `JITBuilder::symbol` setup can consume before attaching executable
+      addresses. The manifest combines every `aos_*` helper and every declared
+      `nix.builtin.*` builtin, validates duplicate final symbol names, and tags
+      helper entries by `RuntimeHelperRole` while tagging builtin entries
+      separately. Tests cover full helper/builtin coverage, sorted uniqueness,
+      duplicate rejection, and representative helper/builtin lookups. This is
+      registration metadata only; exported wrappers, Cranelift module
+      construction, address binding, and compiled artifact relinking remain open.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

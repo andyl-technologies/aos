@@ -5,9 +5,11 @@
 //! artifacts will reference. Builtins use `nix.builtin.<name>` and runtime
 //! helpers use `aos_<verb>[_<qualifier>]`, matching RFC-0007 §10.
 
-use std::str;
+use std::{collections::BTreeSet, str};
 
 use thiserror::Error;
+
+use crate::builtins::BUILTINS;
 
 /// The stable prefix for builtin runtime symbol names.
 pub const BUILTIN_SYMBOL_PREFIX: &str = "nix.builtin.";
@@ -132,6 +134,94 @@ pub const fn runtime_helper_symbols() -> &'static [RuntimeHelperSymbol] {
     RUNTIME_HELPER_SYMBOLS
 }
 
+/// The runtime symbol family served by a manifest entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolKind {
+    /// A non-builtin helper registered under an `aos_*` symbol.
+    Helper(RuntimeHelperRole),
+    /// A Nix builtin registered under a `nix.builtin.*` symbol.
+    Builtin,
+}
+
+/// One stable runtime symbol that future native tiers register.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolManifestEntry {
+    name: String,
+    kind: RuntimeSymbolKind,
+}
+
+impl RuntimeSymbolManifestEntry {
+    fn new(name: String, kind: RuntimeSymbolKind) -> Self {
+        Self { name, kind }
+    }
+
+    /// Returns the stable symbol name registered with a native symbol table.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the runtime symbol family served by this entry.
+    pub const fn kind(&self) -> RuntimeSymbolKind {
+        self.kind
+    }
+}
+
+/// Builds the stable runtime symbol manifest for future native tiers.
+///
+/// The manifest combines all `aos_*` helper symbols and all declared
+/// `nix.builtin.*` builtin symbols into one deterministic, lexicographically
+/// sorted table. Future `JITBuilder::symbol` registration can consume this
+/// manifest before attaching executable addresses from the active runtime.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError::NonUtf8BuiltinName`] if a builtin suffix is
+/// not valid UTF-8. Returns [`RuntimeSymbolNameError::DuplicateRuntimeSymbol`]
+/// if the combined helper and builtin inventories contain the same final symbol
+/// name more than once.
+pub fn runtime_symbol_manifest() -> Result<Vec<RuntimeSymbolManifestEntry>, RuntimeSymbolNameError>
+{
+    let mut entries = Vec::with_capacity(runtime_helper_symbols().len() + BUILTINS.len());
+    let mut seen = BTreeSet::new();
+
+    for helper in runtime_helper_symbols().iter().copied() {
+        push_manifest_entry(
+            &mut entries,
+            &mut seen,
+            RuntimeSymbolManifestEntry::new(
+                helper.name().to_owned(),
+                RuntimeSymbolKind::Helper(helper.role()),
+            ),
+        )?;
+    }
+
+    for builtin in BUILTINS.iter().copied() {
+        push_manifest_entry(
+            &mut entries,
+            &mut seen,
+            RuntimeSymbolManifestEntry::new(
+                builtin.runtime_symbol().to_symbol_string()?,
+                RuntimeSymbolKind::Builtin,
+            ),
+        )?;
+    }
+
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+fn push_manifest_entry(
+    entries: &mut Vec<RuntimeSymbolManifestEntry>,
+    seen: &mut BTreeSet<String>,
+    entry: RuntimeSymbolManifestEntry,
+) -> Result<(), RuntimeSymbolNameError> {
+    if !seen.insert(entry.name.clone()) {
+        return Err(RuntimeSymbolNameError::DuplicateRuntimeSymbol { symbol: entry.name });
+    }
+    entries.push(entry);
+    Ok(())
+}
+
 /// An invalid stable runtime symbol name.
 #[derive(Clone, Debug, Error)]
 pub enum RuntimeSymbolNameError {
@@ -143,6 +233,12 @@ pub enum RuntimeSymbolNameError {
         /// The UTF-8 validation failure.
         #[source]
         source: str::Utf8Error,
+    },
+    /// A final runtime symbol name appeared more than once.
+    #[error("runtime symbol {symbol:?} appears more than once")]
+    DuplicateRuntimeSymbol {
+        /// The duplicated final symbol name.
+        symbol: String,
     },
 }
 
@@ -233,5 +329,107 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(write_barriers, BTreeSet::from(["aos_gc_write_barrier"]));
+    }
+
+    #[test]
+    fn runtime_symbol_manifest_combines_helpers_and_builtins() {
+        let manifest = runtime_symbol_manifest().expect("manifest builds");
+
+        assert_eq!(
+            manifest.len(),
+            runtime_helper_symbols().len() + BUILTINS.len()
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.name() == "aos_gc_write_barrier")
+                .map(RuntimeSymbolManifestEntry::kind),
+            Some(RuntimeSymbolKind::Helper(RuntimeHelperRole::WriteBarrier))
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.name() == "nix.builtin.derivationStrict")
+                .map(RuntimeSymbolManifestEntry::kind),
+            Some(RuntimeSymbolKind::Builtin)
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.name() == "nix.builtin.foldl'")
+                .map(RuntimeSymbolManifestEntry::kind),
+            Some(RuntimeSymbolKind::Builtin)
+        );
+
+        for helper in runtime_helper_symbols().iter().copied() {
+            assert_eq!(
+                manifest
+                    .iter()
+                    .find(|entry| entry.name() == helper.name())
+                    .map(RuntimeSymbolManifestEntry::kind),
+                Some(RuntimeSymbolKind::Helper(helper.role())),
+                "{} helper appears in the manifest",
+                helper.name()
+            );
+        }
+
+        for builtin in BUILTINS.iter().copied() {
+            let symbol = builtin
+                .runtime_symbol()
+                .to_symbol_string()
+                .expect("builtin symbol is UTF-8");
+            assert_eq!(
+                manifest
+                    .iter()
+                    .find(|entry| entry.name() == symbol)
+                    .map(RuntimeSymbolManifestEntry::kind),
+                Some(RuntimeSymbolKind::Builtin),
+                "{symbol} builtin appears in the manifest"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_symbol_manifest_is_sorted_and_unique() {
+        let manifest = runtime_symbol_manifest().expect("manifest builds");
+        let mut previous = None;
+        let mut seen = BTreeSet::new();
+
+        for entry in &manifest {
+            assert!(
+                seen.insert(entry.name().to_owned()),
+                "{} appears twice",
+                entry.name()
+            );
+            if let Some(previous) = previous {
+                assert!(
+                    previous < entry.name(),
+                    "{previous} before {}",
+                    entry.name()
+                );
+            }
+            previous = Some(entry.name());
+        }
+    }
+
+    #[test]
+    fn runtime_symbol_manifest_rejects_duplicates_before_registration() {
+        let mut entries = Vec::new();
+        let mut seen = BTreeSet::new();
+        let duplicate = RuntimeSymbolManifestEntry::new(
+            "aos_duplicate".to_owned(),
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::Allocation),
+        );
+
+        push_manifest_entry(&mut entries, &mut seen, duplicate.clone())
+            .expect("first symbol records");
+        let error = push_manifest_entry(&mut entries, &mut seen, duplicate)
+            .expect_err("duplicate symbol rejects");
+
+        assert!(matches!(
+            error,
+            RuntimeSymbolNameError::DuplicateRuntimeSymbol { .. }
+        ));
+        assert_eq!(entries.len(), 1);
     }
 }

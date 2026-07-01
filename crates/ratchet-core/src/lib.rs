@@ -41,8 +41,9 @@ pub use ir::{
 };
 pub use runtime_abi::{
     BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, RUNTIME_HELPER_SYMBOL_PREFIX,
-    RUNTIME_HELPER_SYMBOLS, RuntimeHelperRole, RuntimeHelperSymbol, RuntimeSymbolNameError,
-    runtime_helper_symbols,
+    RUNTIME_HELPER_SYMBOLS, RuntimeHelperRole, RuntimeHelperSymbol, RuntimeSymbolKind,
+    RuntimeSymbolManifestEntry, RuntimeSymbolNameError, runtime_helper_symbols,
+    runtime_symbol_manifest,
 };
 pub use scope::{
     FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst,

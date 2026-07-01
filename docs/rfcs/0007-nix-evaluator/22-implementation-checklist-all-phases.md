@@ -5184,6 +5184,18 @@ and helps the oracle directly.
       This is symbol inventory and dispatch metadata only; no unsafe C exports,
       Cranelift symbol registration, or Tier-B collector body swap is
       implemented here.
+- [x] Current runtime symbol-manifest precursor:
+      `ratchet-core::runtime_abi::runtime_symbol_manifest()` builds the
+      deterministic, lexicographically sorted symbol table that future
+      `JITBuilder::symbol` setup can consume before attaching executable
+      addresses. The manifest combines every `aos_*` helper and every declared
+      `nix.builtin.*` builtin, validates duplicate final symbol names, and tags
+      helper entries by `RuntimeHelperRole` while tagging builtin entries
+      separately. Tests cover full helper/builtin coverage, sorted uniqueness,
+      duplicate rejection, and representative helper/builtin lookups. This is
+      registration metadata only; exported wrappers, Cranelift module
+      construction, address binding, compiled-artifact relinking, and native
+      trap transfer remain open.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

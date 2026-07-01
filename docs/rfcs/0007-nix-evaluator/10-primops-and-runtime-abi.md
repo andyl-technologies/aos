@@ -772,9 +772,15 @@ harness, never cut for scope.
       current `aos_*` helper-name set, and a
       `Builtin::runtime_symbol()` view that renders every declared builtin as
       `nix.builtin.<visible-name>` with UTF-8 validation for future
-      string-keyed JIT registration. This is safe metadata only; no
-      `unsafe extern "C"` wrappers, `JITBuilder::symbol` registration, compiled
-      artifact relinking, or native ABI entrypoints are claimed here.
+      string-keyed JIT registration. `runtime_symbol_manifest()` now combines all
+      helper and builtin symbols into one deterministic, lexicographically sorted
+      `RuntimeSymbolManifestEntry` table, validates duplicate final names before
+      registration, and tags helpers by `RuntimeHelperRole` while tagging builtin
+      entries separately. Tests pin helper/builtin coverage, ordering,
+      uniqueness, duplicate rejection, and representative builtin/helper entries.
+      This is safe metadata only; no `unsafe extern "C"` wrappers,
+      `JITBuilder::symbol` address registration, compiled artifact relinking, or
+      native ABI entrypoints are claimed here.
 - [x] Current allocation ABI-signature precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
       success-path native parameter and typed pointer-result shape for every
