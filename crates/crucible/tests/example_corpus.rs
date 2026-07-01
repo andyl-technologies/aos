@@ -3,17 +3,19 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    Action, AssertionPhase, Decision, ExampleCorpusError, ExampleScenarioRunOutcome,
-    GuestWorkloadBinary, GuestWorkloadParameterKey, HAPPY_PATH_SCENARIO_NAME,
-    HostAssertionOutcomeKind, MembershipFault, PARTITION_RECOVERY_SCENARIO_NAME, Predicate,
-    Property, ScenarioDefForm, WhiteBoxPolicy, built_in_example_corpus, happy_path_scenario,
-    partition_recovery_scenario, run_example_scenario, verify_example_scenario_runs,
+    Action, AssertionPhase, CRASH_RESTART_SCENARIO_NAME, Decision, ExampleCorpusError,
+    ExampleScenarioRunOutcome, FramePredicate, GuestWorkloadBinary, GuestWorkloadParameterKey,
+    HAPPY_PATH_SCENARIO_NAME, HostAssertionOutcomeKind, IoEventKind, MembershipFault,
+    ObservableEventPayload, PARTITION_RECOVERY_SCENARIO_NAME, Predicate, Property, RestartPolicy,
+    ScenarioDefForm, SchedulerTopologyChangeTrigger, WhiteBoxPolicy, built_in_example_corpus,
+    crash_restart_scenario, happy_path_scenario, partition_recovery_scenario, run_example_scenario,
+    verify_example_scenario_runs,
 };
 
 #[test]
 fn happy_path_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCorpusError> {
     let corpus = built_in_example_corpus()?;
-    assert_eq!(corpus.len(), 2);
+    assert_eq!(corpus.len(), 3);
     let fixture = corpus
         .iter()
         .find(|fixture| fixture.name == HAPPY_PATH_SCENARIO_NAME)
@@ -37,6 +39,22 @@ fn partition_recovery_is_shipped_as_builtin_corpus_fixture() -> Result<(), Examp
         .expect("partition recovery should be shipped in the built-in corpus");
 
     assert_eq!(fixture.rfc_section, "33.A.2");
+    assert!(fixture.zero_guest_components);
+    assert!(!fixture.requires_white_box);
+    assert_eq!(fixture.scenario.world().nodes().len(), 3);
+    assert_eq!(fixture.scenario.world().links().len(), 3);
+    Ok(())
+}
+
+#[test]
+fn crash_restart_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCorpusError> {
+    let corpus = built_in_example_corpus()?;
+    let fixture = corpus
+        .iter()
+        .find(|fixture| fixture.name == CRASH_RESTART_SCENARIO_NAME)
+        .expect("crash restart should be shipped in the built-in corpus");
+
+    assert_eq!(fixture.rfc_section, "33.A.3");
     assert!(fixture.zero_guest_components);
     assert!(!fixture.requires_white_box);
     assert_eq!(fixture.scenario.world().nodes().len(), 3);
@@ -189,6 +207,127 @@ fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpu
 }
 
 #[test]
+fn crash_restart_uses_observable_trigger_graph() -> Result<(), ExampleCorpusError> {
+    let fixture = crash_restart_scenario()?;
+    let world = fixture.scenario.world();
+    assert_eq!(world.nodes().len(), 3);
+    for node in world.nodes() {
+        assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
+        assert!(node.kernel.is_some());
+        assert!(node.root_image.is_some());
+        assert!(node.cmdline.contains("store.role=replica"));
+        assert!(node.cmdline.contains("cluster=crucible-a3"));
+    }
+    assert!(fixture.observations().iter().any(|event| matches!(
+        event.payload(),
+        ObservableEventPayload::IoCompletion {
+            node,
+            kind: IoEventKind::BlockWrite,
+            payload,
+        } if node.name == "db-1" && payload.windows(b"region=wal".len()).any(|window| window == b"region=wal")
+    )));
+
+    let assertion_names = fixture
+        .scenario
+        .properties()
+        .assertions()
+        .iter()
+        .map(|assertion| assertion.id.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(assertion_names.contains(&"data-not-lost"));
+    assert!(assertion_names.contains(&"reconverges"));
+    for assertion in fixture.scenario.properties().assertions() {
+        assert_black_box_property(&assertion.property);
+    }
+    let data_not_lost = fixture
+        .scenario
+        .properties()
+        .assertions()
+        .iter()
+        .find(|assertion| assertion.id.name == "data-not-lost")
+        .expect("crash restart declares data-not-lost assertion");
+    assert!(matches!(
+        &data_not_lost.property,
+        Property::Always {
+            predicate: Predicate::Not { predicate },
+        } if matches!(
+            predicate.as_ref(),
+            Predicate::NetworkMatch {
+                predicate: FramePredicate::Contains(bytes),
+                ..
+            } if bytes == b"data_lost=true"
+        )
+    ));
+    let reconverges = fixture
+        .scenario
+        .properties()
+        .assertions()
+        .iter()
+        .find(|assertion| assertion.id.name == "reconverges")
+        .expect("crash restart declares reconverges assertion");
+    assert!(matches!(
+        &reconverges.property,
+        Property::Eventually {
+            trigger: Predicate::NodeState { node, state },
+            ..
+        } if node.name == "db-1" && *state == crucible::NodeLifecycle::Crashed
+    ));
+
+    let graph = fixture
+        .scenario
+        .plan()
+        .event_graph()
+        .expect("crash restart uses graph-native trigger choreography");
+    assert_eq!(graph.events().len(), 3);
+    let crash_after_commit = &graph.events()[0];
+    let restart = &graph.events()[1];
+    let pass_on_reconverge = &graph.events()[2];
+
+    assert_eq!(crash_after_commit.id.name, "crash-after-commit");
+    assert_crash_after_commit_trigger_shape(
+        crash_after_commit
+            .trigger
+            .as_ref()
+            .expect("crash trigger observes lifecycle and WAL write"),
+    );
+    assert!(matches!(
+        &crash_after_commit.action,
+        Action::InjectFault {
+            tag,
+            fault: MembershipFault::Crash { node, restart },
+        } if tag.name == "kill" && node.name == "db-1" && *restart == RestartPolicy::FromReadyPoint
+    ));
+
+    assert_eq!(restart.id.name, "restart");
+    assert!(matches!(
+        restart.trigger.as_ref().expect("restart is after-triggered"),
+        Predicate::After { duration, of }
+            if duration.nanos == 5_000_000_000 && of.name == "crash-after-commit"
+    ));
+    let Action::Group(actions) = &restart.action else {
+        panic!("restart must heal the crash and StartNode db-1 as a group");
+    };
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::HealFault { tag } if tag.name == "kill"
+    )));
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::StartNode { node } if node.name == "db-1"
+    )));
+
+    assert_eq!(pass_on_reconverge.id.name, "pass-on-reconverge");
+    assert!(action_passes(&pass_on_reconverge.action));
+    assert_crash_reconvergence_trigger_shape(
+        pass_on_reconverge
+            .trigger
+            .as_ref()
+            .expect("pass-on-reconverge has observable convergence trigger"),
+    );
+    Ok(())
+}
+
+#[test]
 fn happy_path_round_trips_as_reproducible_scenario_material() -> Result<(), ExampleCorpusError> {
     let fixture = happy_path_scenario()?;
     let toml = fixture.scenario.to_canonical_toml()?;
@@ -228,6 +367,36 @@ fn partition_recovery_round_trips_as_reproducible_scenario_material()
     assert!(toml.contains("pass-on-converge"));
     assert!(toml.contains("no-split-brain"));
     assert!(toml.contains("converges-after-heal"));
+
+    let from_toml = ScenarioDefForm::from_canonical_toml(&toml)?;
+    let from_binary = ScenarioDefForm::from_compact_binary(&fixture.scenario.to_compact_binary())?;
+    assert_eq!(from_toml.id(), fixture.scenario.id());
+    assert_eq!(from_binary.id(), fixture.scenario.id());
+    assert_eq!(
+        from_toml.canonical_bytes(),
+        fixture.scenario.canonical_bytes()
+    );
+    assert_eq!(
+        from_binary.canonical_bytes(),
+        fixture.scenario.canonical_bytes()
+    );
+    Ok(())
+}
+
+#[test]
+fn crash_restart_round_trips_as_reproducible_scenario_material() -> Result<(), ExampleCorpusError> {
+    let fixture = crash_restart_scenario()?;
+    let toml = fixture.scenario.to_canonical_toml()?;
+    assert!(toml.contains("id = \"db-0\""));
+    assert!(toml.contains("id = \"db-1\""));
+    assert!(toml.contains("id = \"db-2\""));
+    assert!(toml.contains("cluster=crucible-a3"));
+    assert!(toml.contains("crash-after-commit"));
+    assert!(toml.contains("restart"));
+    assert!(toml.contains("pass-on-reconverge"));
+    assert!(toml.contains("data-not-lost"));
+    assert!(toml.contains("reconverges"));
+    assert!(toml.contains("from_ready_point") || toml.contains("from-ready-point"));
 
     let from_toml = ScenarioDefForm::from_canonical_toml(&toml)?;
     let from_binary = ScenarioDefForm::from_compact_binary(&fixture.scenario.to_compact_binary())?;
@@ -369,6 +538,129 @@ fn partition_recovery_run_passes_and_verify_runs_are_byte_identical()
 }
 
 #[test]
+fn crash_restart_run_passes_and_verify_runs_are_byte_identical() -> Result<(), ExampleCorpusError> {
+    let fixture = crash_restart_scenario()?;
+    let run = run_example_scenario(&fixture)?;
+    assert_eq!(run.scenario_name, CRASH_RESTART_SCENARIO_NAME);
+    assert_eq!(run.outcome, ExampleScenarioRunOutcome::Passed);
+    assert!(!run.canonical_event_log.is_empty());
+    assert!(!run.fingerprint_stream.is_empty());
+    assert!(!run.assertion_report.verdict().is_failed());
+    assert!(run.assertion_report.violations().is_empty());
+
+    let outcome_names = run
+        .assertion_report
+        .outcomes()
+        .iter()
+        .map(|outcome| outcome.assertion.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(outcome_names.contains(&"data-not-lost"));
+    assert!(outcome_names.contains(&"reconverges"));
+    assert!(
+        run.firings
+            .iter()
+            .any(|firing| firing.event().name == "pass-on-reconverge")
+    );
+    assert_eq!(
+        outcome_kind(&run, "data-not-lost"),
+        HostAssertionOutcomeKind::Passed
+    );
+    assert_eq!(
+        outcome_kind(&run, "reconverges"),
+        HostAssertionOutcomeKind::Satisfied
+    );
+    assert_eq!(run.reproduction.scenario_form().id(), fixture.scenario.id());
+    assert_eq!(run.scheduler_crash_applications.len(), 1);
+    assert_eq!(run.scheduler_crash_applications[0].node.name, "db-1");
+    assert_eq!(
+        run.scheduler_crash_applications[0].restart,
+        RestartPolicy::FromReadyPoint
+    );
+    assert_eq!(run.scheduler_crash_applications[0].removed_edges.len(), 4);
+    assert_eq!(run.scheduler_restart_applications.len(), 1);
+    assert_eq!(run.scheduler_restart_applications[0].node.name, "db-1");
+    assert!(run.scheduler_restart_applications[0].restarted);
+    assert_eq!(
+        run.scheduler_restart_applications[0].restart,
+        RestartPolicy::FromReadyPoint
+    );
+    assert_eq!(
+        run.scheduler_restart_applications[0].restored_edges.len(),
+        4
+    );
+    assert!(
+        run.scheduler_topology_change_applications
+            .iter()
+            .any(|application| application.trigger
+                == SchedulerTopologyChangeTrigger::FaultActivation)
+    );
+    assert!(
+        run.scheduler_topology_change_applications
+            .iter()
+            .any(|application| application.trigger == SchedulerTopologyChangeTrigger::Heal)
+    );
+    assert_eq!(run.reproduction.replay()?.scenario, fixture.scenario.id());
+    assert_eq!(run.reproduction.schedule().decisions().len(), 3);
+    assert!(
+        run.reproduction
+            .schedule()
+            .decisions()
+            .iter()
+            .all(|decision| matches!(decision, Decision::Override(_)))
+    );
+    assert!(
+        run.reproduction
+            .schedule()
+            .decisions()
+            .iter()
+            .any(|decision| match decision {
+                Decision::Override(override_decision) => {
+                    override_decision.choice.name.contains("io-completion")
+                        && override_decision.choice.name.contains("block-write")
+                }
+                Decision::DeliveryOrder(_)
+                | Decision::FaultFires(_)
+                | Decision::RngDraw(_)
+                | Decision::Preemption(_)
+                | Decision::AppRandom(_)
+                | Decision::ControlFault(_) => false,
+            })
+    );
+    assert!(
+        run.reproduction
+            .schedule()
+            .decisions()
+            .iter()
+            .all(|decision| match decision {
+                Decision::Override(override_decision) =>
+                    !override_decision
+                        .choice
+                        .name
+                        .contains("assertion-state-changed")
+                        && !override_decision
+                            .choice
+                            .name
+                            .contains("node-state|30|db-1|crashed"),
+                Decision::DeliveryOrder(_)
+                | Decision::FaultFires(_)
+                | Decision::RngDraw(_)
+                | Decision::Preemption(_)
+                | Decision::AppRandom(_)
+                | Decision::ControlFault(_) => false,
+            })
+    );
+    assert_eq!(run.replayed_canonical_event_log, run.canonical_event_log);
+    assert_eq!(run.replayed_fingerprint_stream, run.fingerprint_stream);
+
+    let verified = verify_example_scenario_runs(&fixture, 5)?;
+    assert_eq!(verified.scenario_name, CRASH_RESTART_SCENARIO_NAME);
+    assert_eq!(verified.runs, 5);
+    assert_eq!(verified.canonical_event_log, run.canonical_event_log);
+    assert_eq!(verified.fingerprint_stream, run.fingerprint_stream);
+    Ok(())
+}
+
+#[test]
 fn verify_requires_at_least_one_run() -> Result<(), ExampleCorpusError> {
     let fixture = happy_path_scenario()?;
     let error =
@@ -474,6 +766,77 @@ fn assert_convergence_trigger_shape(predicate: &Predicate) {
         predicate,
         Predicate::Once { predicate }
             if matches!(predicate.as_ref(), Predicate::NetworkMatch { link: Some(link), .. } if link.name == "db-0--db-1")
+    )));
+    assert!(
+        predicates
+            .iter()
+            .any(|predicate| matches!(predicate, Predicate::Quiescent))
+    );
+}
+
+fn assert_crash_after_commit_trigger_shape(predicate: &Predicate) {
+    assert_black_box_predicate(predicate);
+    let Predicate::AllOf { predicates } = predicate else {
+        panic!("crash-after-commit trigger must combine lifecycle and WAL write observations");
+    };
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::NodeState { node, state }
+            if node.name == "db-1" && *state == crucible::NodeLifecycle::Started
+    )));
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::Once { predicate }
+            if matches!(
+                predicate.as_ref(),
+                Predicate::IoPattern { node, kind }
+                    if node.name == "db-1" && *kind == IoEventKind::BlockWrite
+            )
+    )));
+}
+
+fn assert_crash_reconvergence_trigger_shape(predicate: &Predicate) {
+    assert_black_box_predicate(predicate);
+    let Predicate::AllOf { predicates } = predicate else {
+        panic!(
+            "pass-on-reconverge trigger must combine restart, heal, convergence, and quiescence"
+        );
+    };
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::Once { predicate }
+            if matches!(
+                predicate.as_ref(),
+                Predicate::NodeState { node, state }
+                    if node.name == "db-1" && *state == crucible::NodeLifecycle::Started
+            )
+    )));
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::Not { predicate }
+            if matches!(predicate.as_ref(), Predicate::FaultActive { tag } if tag.name == "kill")
+    )));
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::Once { predicate }
+            if matches!(
+                predicate.as_ref(),
+                Predicate::NetworkMatch {
+                    predicate: FramePredicate::Contains(bytes),
+                    ..
+                } if bytes == b"committed_write_survived=true"
+            )
+    )));
+    assert!(predicates.iter().any(|predicate| matches!(
+        predicate,
+        Predicate::Once { predicate }
+            if matches!(
+                predicate.as_ref(),
+                Predicate::NetworkMatch {
+                    predicate: FramePredicate::Contains(bytes),
+                    ..
+                } if bytes == b"raft_log_match"
+            )
     )));
     assert!(
         predicates

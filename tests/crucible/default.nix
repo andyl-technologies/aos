@@ -1181,6 +1181,11 @@ in rec {
       attrPath = "checks.crucible.phase7.partitionRecoveryExample";
       taskIds = ["T-EX-2"];
     };
+    crashRestartExample = import ./phase7-crash-restart-example.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.crashRestartExample";
+      taskIds = ["T-EX-3"];
+    };
     reproductionArtifactFormat = import ./phase7-reproduction-artifact-format.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.reproductionArtifactFormat";

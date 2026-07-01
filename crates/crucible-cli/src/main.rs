@@ -1292,9 +1292,10 @@ mod tests {
             .iter()
             .map(|verified| verified.scenario_name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(report.verified.len(), 2);
+        assert_eq!(report.verified.len(), 3);
         assert!(scenario_names.contains(&"happy-path.scn"));
         assert!(scenario_names.contains(&"partition-recovery.scn"));
+        assert!(scenario_names.contains(&"crash-restart.scn"));
         assert!(report.verified.iter().all(|verified| verified.runs == 5));
         dispatch(&cli)?;
 

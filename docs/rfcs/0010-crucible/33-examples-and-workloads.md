@@ -463,6 +463,36 @@ event graph can also gate further work on.
 deterministic; the crash icount, the 5s restart offset, and the reconvergence are
 all functions of `(scenario, seed, schedule)`.
 
+Implementation note (T-EX-3): `crucible::example_corpus` ships the
+`crash-restart.scn` corpus fixture as a three-node, three-link
+content-addressed `ScenarioDefForm` with unmodified store images and no guest
+component dependency. Its `crash-after-commit` event uses only black-box
+host-visible lifecycle and deterministic block-write observations to prove
+`db-1` was a committing replica before injecting `InjectFault("kill",
+Crash(db-1, FromReadyPoint))`; the replay fixture records the WAL region in the
+I/O payload. The runner builds idle VM scheduler nodes and bidirectional
+lookahead edges from the declared world so the crash action exercises the normal
+node-crash scheduler path, removes the four directed edges incident to `db-1`,
+and restores them on heal. After trigger actions enqueue crash/heal topology
+effects, the runner applies those queued topology changes at the checked
+boundary before evaluating `Quiescent`, so the leaf consumes real
+scheduler-owned quiescence evidence rather than a synthetic default. It records
+the scheduler crash/restart/topology applications produced by
+`apply_trigger_firings`, then appends causal lifecycle facts from the applied
+trigger actions rather than scripting crash/restart outcomes in the replay
+schedule.
+The `restart` event uses the `After(5s, "crash-after-commit")` trigger and a
+`HealFault("kill")` + `StartNode(db-1)` action group; the resulting restart
+lifecycle fact is likewise derived from the applied `StartNode` while the
+scheduler restart application proves the crash fault healed with
+`FromReadyPoint`. `data-not-lost` is represented as an `Always` black-box safety
+assertion against `data_lost=true` evidence, while the pass event requires
+positive `committed_write_survived=true` and `raft_log_match` convergence
+frames. The captured reproduction schedule contains only the started/WAL-write
+trigger observation, the relative restart boundary, and the convergence frame,
+and replays to byte-identical canonical event-log bytes and fingerprint streams
+across five independent local reductions.
+
 ### A.4 Fault campaign / exploration — a parameterized family, fuzzed with coverage
 
 **What it shows.** Move from one scenario to a *space* of scenarios: a
@@ -1081,10 +1111,20 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `no-split-brain`/`converges-after-heal`, captures a replayable multi-step
   reproduction schedule, is exercised by `crucible selftest`, and verifies five
   independent local reductions as byte-identical.
-- [ ] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
+- [x] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
   with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
   `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
   [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
+  Completed by `checks.crucible.phase7.crashRestartExample`: the built-in
+  `crash-restart.scn` fixture is exported from `crucible::example_corpus`, uses
+  the observable WAL-write crash trigger, `Fault::Crash` with
+  `RestartPolicy::FromReadyPoint`, an `After`-anchored `HealFault` +
+  `StartNode` restart event, derived crash/restart lifecycle facts, and
+  scheduler crash/restart/topology application evidence for the declared
+  triangle; it checks `data-not-lost` as an `Always` black-box safety assertion
+  and `reconverges` as crash-triggered bounded liveness, is exercised by
+  `crucible selftest`, and verifies five independent local reductions as
+  byte-identical.
 - [ ] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
   `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
   reduces to a self-contained artifact that `crucible replay` reproduces

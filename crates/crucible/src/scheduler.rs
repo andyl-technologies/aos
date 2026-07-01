@@ -9259,6 +9259,23 @@ impl SingleScheduler {
         Ok(())
     }
 
+    /// Applies queued topology changes at the current scheduler boundary.
+    ///
+    /// This is the topology-only portion of the authoritative quantum boundary.
+    /// Callers that already own a checked event-log boundary can use it after
+    /// deterministic trigger actions enqueue crash, heal, partition, or latency
+    /// topology changes, without also running PICK/RUN/RESOLVE for a synthetic
+    /// scheduler quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by the scheduler topology boundary,
+    /// including topology activations armed in the past or inconsistent
+    /// activation rendezvous state.
+    pub fn apply_queued_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
+        self.apply_topology_changes_at_boundary()
+    }
+
     fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
         if self.topology_changes.is_empty() {
             return Ok(false);
