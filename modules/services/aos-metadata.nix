@@ -31,12 +31,11 @@ in {
   options.aos.provisioning.metadataAgent = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = !config.aos.provisioning.ignition.enable;
+      default = true;
       description = ''
         Enable the RFC-0011 `aos metadata` transport-only fetch agent (detects
         the platform and stages the operator `host.nix` into the initrd).
-        Defaults on whenever Ignition is disabled (the new path replaces
-        Ignition's fetch stage).
+        Default on — it is the new path's `fetch` stage.
       '';
     };
 
