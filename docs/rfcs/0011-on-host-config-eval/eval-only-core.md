@@ -290,3 +290,46 @@ body is on the manifest path. CS2 already did this for unit job-scripts (F2-A:
    Surface: ~40 files reference `ignition`/`butane`; the core ignition files are
    ~1250 lines. This is a focused migration best done as a dedicated change with
    boot/fleet re-validation after each step, not folded into the eval-only core.
+
+### Phase C is blocked on two unimplemented pieces (found by attempting it)
+
+An end-to-end attempt at Phase C got far — the whole ladder validated on the
+builder: flip Ignition off by default; `server` + `server-rfc0011` **boot** on
+the new path; `apm upgrade --system` **succeeds** (after making `activate`'s
+Ignition rendering conditional); `apm-install-at-boot` and `package-preset`
+migrated to bake their intent into `/etc`; `pkgs.ignition` removed from **every**
+system closure; the ~430-line stage-unit block + gate deleted. `checks.eval`,
+`rfc-0011-characterization` (golden regenerated), and the boot/upgrade VM tests
+were all green.
+
+Then `checks.fleet.install-from-image` **failed**: *"agent did not become ready
+before manifest timeout"*. Root cause — two genuine gaps the removal exposed:
+
+1. **The manifest materializer is unimplemented.** `aos-eval.service` writes
+   `/run/aos/manifest.json` but nothing applies it: `activate` re-ran Ignition to
+   render per-host `/etc`, and on the new path it simply leaves the per-gen lower
+   empty (baked image `/etc` only). So a `host.nix` has **no runtime effect on
+   either path** today — the RFC's own note ("a later changeset rewires
+   consumption") is load-bearing. Applying `configManifest` (the artifact this
+   document's eval-only core produces byte-identically) is the missing runtime
+   half of RFC-0011.
+
+2. **The fleet test harness delivers per-VM identity via Ignition.** Each fleet
+   VM gets its `10-fleet-eth0.network` (its IP) and `/etc/ssh/authorized_keys/
+   root` from an Ignition `storage.files` fragment on an `fw_cfg`/`instanceMetadata`
+   channel, consumed by the in-image Ignition binary. Remove Ignition and
+   image-boot VMs come up with no test network and no SSH key, so the driver
+   can't reach them. (Agent-over-serial tests like `apm-system-upgrade` still
+   pass, which is why the break only surfaced at `install-from-image`.) The
+   new-path equivalent is per-VM identity delivered via the metadata agent +
+   materializer (piece 1) — i.e. Phase C's fleet migration *depends on* the
+   materializer.
+
+Conclusion: **full Ignition removal is gated on the manifest materializer.**
+Until `activate`/`apm` apply `configManifest` to `/etc` (and the fleet harness
+delivers per-VM identity through that path), Ignition remains load-bearing for
+per-host config and for fleet identity. The eval-only core (this document) is the
+*producer* half and is complete + validated; the *consumer* (materializer) is the
+next major RFC-0011 workstream, and Phase C removal follows it. The removal
+attempt above was reset back out to keep the tree fleet-green with the new path
+as a validated opt-in (`server-rfc0011`).

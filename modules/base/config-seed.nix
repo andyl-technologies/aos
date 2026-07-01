@@ -20,7 +20,7 @@
   lib,
   ...
 }: {
-  config = {
+  config = lib.mkIf (!config.aos.provisioning.ignition.enable) {
     boot.initrd.systemd.services."aos-config-seed" = {
       description = "Seed the per-generation /etc lower for on-host config (RFC-0011)";
       wantedBy = ["initrd-fs.target"];

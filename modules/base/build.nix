@@ -531,6 +531,7 @@ in {
             -e "s|@bash@|${pkgs.bash}|g" \
             -e "s|@coreutils@|${pkgs.coreutils}|g" \
             -e "s|@util-linux@|${pkgs.util-linux}|g" \
+            -e "s|@ignition@|${pkgs.ignition}|g" \
             -e "s|@apm@|${pkgs.aos}|g" \
             ${./activate.sh.in} > "$out"
           chmod +x "$out"

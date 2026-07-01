@@ -306,22 +306,19 @@ in {
       # the signed PCR policy (PCR 11, signature-flexible) plus PCR 7
       # pinned by value, and a recovery key escrowed off the volume.
       # Later boots: unlock via the TPM2 token, no passphrase. Ordered
-      # after the disks backend (which creates the partition) and before
+      # after ignition-disks (which creates the partition) and before
       # mount-var (which mounts /dev/mapper/var — see ignition.nix).
       boot.initrd.systemd.services."aos-var-crypt" = {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         wantedBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
-        # Only ORDER after the disks backend, don't Require it: on a reboot
-        # (var already provisioned) the disks unit is condition-skipped, and
+        # Only ORDER after ignition-disks, don't Require it: on a reboot
+        # (var already provisioned) ignition-disks is condition-skipped, and
         # Requires would not pull it in. No ConditionPathExists on the var
         # device either — for a crypto_LUKS partition udev surfaces
         # /dev/disk/by-partlabel/var late, which would condition-skip this
         # whole unit on the unlock boot; the script waits for it instead.
-        # Both backend names are listed; systemd ignores `After=` on a unit
-        # that doesn't exist, so this is correct on the Ignition path
-        # (ignition-disks) and the RFC-0011 path (systemd-repart).
-        after = ["ignition-disks.service" "aos-repart.service" "systemd-udev-settle.service"];
+        after = ["ignition-disks.service" "systemd-udev-settle.service"];
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"
