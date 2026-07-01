@@ -1159,11 +1159,20 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   campaign/family handles, stored artifact bytes reload into the same replay
   evidence, retained corpus descriptor drift is rejected, and mismatched scenario
   forms are rejected explicitly.
-- [ ] **T-ADV-15** Implement the deterministic minimization (shrinking) pass that
+- [x] **T-ADV-15** Implement the deterministic minimization (shrinking) pass that
   reduces the schedule/fault set while preserving the same failure (assertion fold
   predicate), with a seeded candidate order and per-candidate oracle/fingerprint
   validation, emitting a stable minimal artifact. — satisfies [ADV-30], [ADV-31];
   spec §22.8.2; cross-ref 18, 19.
+  Completed by `checks.crucible.phase6.minimization`: `FindingReproductionArtifact`
+  now exposes a deterministic `minimize` pass that enumerates shorter recorded
+  schedule subsequences in shortest-first seeded content-address order, including
+  candidates that remove recorded fault decisions; every candidate is captured and
+  replayed as a self-contained artifact before the assertion-fold
+  failure-fingerprint oracle can accept it; accepted candidates must preserve the
+  original finding fingerprint; and the gate proves repeated same-seed runs produce
+  the same shortest artifact while rejecting non-reproducing starts and stale
+  public replay evidence.
 - [ ] **T-ADV-16** Implement and test the unifying view: assert fork/save/resume/
   replay/search/fuzz/minimize are all operations on the one temporal graph via the
   one `instantiate`, validated by the single replay-oracle + single-VM-fingerprint
