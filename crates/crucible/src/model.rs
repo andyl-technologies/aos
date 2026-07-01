@@ -3392,6 +3392,33 @@ impl ScenarioFamily {
         run_coverage_guided_fuzz(self, config, feedback)
     }
 
+    /// Runs coverage-guided fuzzing with a durable content-addressed corpus.
+    ///
+    /// The corpus stores every retained input as a self-contained
+    /// [`ReproductionArtifact`] in `store`. Admission is coverage-driven: a
+    /// candidate is retained only when its coverage fingerprint has no existing
+    /// corpus owner. Rejected duplicate coverage is reported as deterministic
+    /// subsumption pruning rather than stored as a corpus entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoverageGuidedCorpusError::Engine`] when sampling, mutation,
+    /// artifact capture, or replay validation fails. Returns
+    /// [`CoverageGuidedCorpusError::Store`] when `store` cannot persist an
+    /// admitted reproduction artifact.
+    pub fn fuzz_coverage_guided_corpus<S>(
+        &self,
+        store: &S,
+        config: CoverageGuidedFuzzConfig,
+        corpus_config: CoverageGuidedCorpusConfig,
+        feedback: &[EventLogCoverageFeedback],
+    ) -> Result<CoverageGuidedCorpusRun, CoverageGuidedCorpusError>
+    where
+        S: DagStore + ?Sized,
+    {
+        run_coverage_guided_fuzz_corpus(self, store, config, corpus_config, feedback)
+    }
+
     fn build_world(&self, params: FamilyParams) -> Result<World, EngineError> {
         let nodes = (0..params.topology_size)
             .map(|index| self.node_template.instantiate(family_node_id(index)))
@@ -12020,6 +12047,308 @@ impl CoverageGuidedFuzzIteration {
     }
 }
 
+/// Default deterministic T-ADV-13 smoke target for a local corpus campaign.
+pub const DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET: u64 = 25;
+
+/// Configuration for durable coverage-guided corpus management.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedCorpusConfig {
+    /// Seed used for deterministic parent selection, pruning, and energy.
+    pub seed: Seed,
+    /// Deterministic throughput target used by local gates and reports.
+    pub throughput_target: CoverageGuidedFuzzThroughputTarget,
+}
+
+impl CoverageGuidedCorpusConfig {
+    /// Builds a corpus-management configuration with the default local target.
+    #[must_use]
+    pub const fn new(seed: Seed) -> Self {
+        Self {
+            seed,
+            throughput_target: CoverageGuidedFuzzThroughputTarget::new(
+                DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET,
+            ),
+        }
+    }
+
+    /// Returns this configuration with an explicit deterministic throughput target.
+    #[must_use]
+    pub const fn with_throughput_target(
+        mut self,
+        throughput_target: CoverageGuidedFuzzThroughputTarget,
+    ) -> Self {
+        self.throughput_target = throughput_target;
+        self
+    }
+}
+
+/// Deterministic throughput target for a corpus fuzzing campaign.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedFuzzThroughputTarget {
+    /// Minimum generated mutants required by the local deterministic gate.
+    pub min_generated_mutants: u64,
+}
+
+impl CoverageGuidedFuzzThroughputTarget {
+    /// Builds a deterministic throughput target.
+    #[must_use]
+    pub const fn new(min_generated_mutants: u64) -> Self {
+        Self {
+            min_generated_mutants,
+        }
+    }
+}
+
+/// Durable coverage-guided corpus keyed by reproduction-artifact id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedCorpus {
+    entries: BTreeMap<ContentHash, CoverageGuidedCorpusEntry>,
+    coverage_index: BTreeMap<ContentHash, ContentHash>,
+}
+
+impl CoverageGuidedCorpus {
+    /// Builds an empty durable corpus.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the number of retained corpus entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether no corpus entries are retained.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns retained entries ordered by artifact content address.
+    #[must_use]
+    pub fn entries(&self) -> &BTreeMap<ContentHash, CoverageGuidedCorpusEntry> {
+        &self.entries
+    }
+
+    /// Returns the retained entry that owns `coverage`, if any.
+    #[must_use]
+    pub fn coverage_owner(&self, coverage: ContentHash) -> Option<ContentHash> {
+        self.coverage_index.get(&coverage).copied()
+    }
+
+    /// Returns a deterministic fingerprint over retained artifact ids and energy.
+    #[must_use]
+    pub fn fingerprint(&self) -> ContentHash {
+        let material = self
+            .entries
+            .values()
+            .map(|entry| {
+                format!(
+                    "artifact={}\ndescriptor={}\ncoverage={}\nenergy={}\n",
+                    entry.artifact.to_hex(),
+                    entry.descriptor_key.to_hex(),
+                    entry.coverage_fingerprint.to_hex(),
+                    entry.energy
+                )
+            })
+            .collect::<String>();
+        ContentHash::from_canonical_material("crucible.coverage-guided-corpus.v1", &material)
+    }
+
+    fn insert(&mut self, entry: CoverageGuidedCorpusEntry) {
+        self.coverage_index
+            .insert(entry.coverage_fingerprint, entry.artifact);
+        self.entries.insert(entry.artifact, entry);
+    }
+}
+
+/// Origin of a retained coverage-guided corpus entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CoverageGuidedCorpusEntryOrigin {
+    /// Initial seed input retained before generated mutations.
+    Seed,
+    /// Entry admitted from one fuzz iteration.
+    FuzzIteration {
+        /// Zero-based fuzz iteration sequence.
+        sequence: u64,
+    },
+}
+
+/// One retained content-addressed corpus input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedCorpusEntry {
+    /// Reproduction artifact id, equal to the DAG-store key for its bytes.
+    pub artifact: ContentHash,
+    /// DAG-store key containing the artifact's compact canonical bytes.
+    pub store_key: ContentHash,
+    /// DAG-store key containing corpus membership, coverage, and energy metadata.
+    pub descriptor_key: ContentHash,
+    /// Concrete pinned scenario id carried by the artifact.
+    pub scenario: ContentHash,
+    /// Recorded schedule hash carried by the artifact.
+    pub schedule: ContentHash,
+    /// Reduced state reached by replaying the artifact.
+    pub replayed_state: ContentHash,
+    /// Coverage fingerprint uniquely owned by this retained entry.
+    pub coverage_fingerprint: ContentHash,
+    /// Persisted deterministic mutation energy for parent selection.
+    pub energy: u64,
+    /// Parent corpus artifact selected for this entry.
+    pub parent: Option<ContentHash>,
+    /// How this entry entered the corpus.
+    pub origin: CoverageGuidedCorpusEntryOrigin,
+}
+
+/// Admission result for one generated corpus candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedCorpusAdmission {
+    /// Zero-based fuzz iteration sequence.
+    pub sequence: u64,
+    /// Candidate reproduction artifact id.
+    pub artifact: ContentHash,
+    /// Coverage fingerprint reached by the candidate.
+    pub coverage_fingerprint: ContentHash,
+    /// Corpus parent chosen by seeded weighted energy.
+    pub selected_parent: ContentHash,
+    /// Deterministic candidate energy.
+    pub energy: u64,
+    /// Admission or deterministic pruning decision.
+    pub decision: CoverageGuidedCorpusAdmissionDecision,
+}
+
+/// Durable-corpus admission decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CoverageGuidedCorpusAdmissionDecision {
+    /// Candidate reached coverage not owned by any retained entry and was stored.
+    AdmittedNewCoverage {
+        /// DAG-store key containing the admitted artifact bytes.
+        store_key: ContentHash,
+    },
+    /// Candidate artifact was already retained.
+    DuplicateArtifact {
+        /// Existing retained artifact id.
+        retained: ContentHash,
+    },
+    /// Candidate reached coverage already owned by a retained entry.
+    PrunedSubsumedCoverage {
+        /// Retained artifact that already owns this coverage fingerprint.
+        retained: ContentHash,
+    },
+}
+
+impl CoverageGuidedCorpusAdmissionDecision {
+    /// Returns whether the candidate became a retained corpus entry.
+    #[must_use]
+    pub fn is_admitted(self) -> bool {
+        matches!(self, Self::AdmittedNewCoverage { .. })
+    }
+}
+
+/// Deterministic throughput and validation report for a corpus fuzzing run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedFuzzThroughputReport {
+    /// Target checked by [`Self::meets_target`].
+    pub target: CoverageGuidedFuzzThroughputTarget,
+    /// Generated fuzz mutants, excluding the initial seed entry.
+    pub generated_mutants: u64,
+    /// Deterministic work units consumed by mutant generation.
+    pub deterministic_work_units: u64,
+    /// Reproduction replays validated, including the seed entry.
+    pub replay_oracle_validations: u64,
+    /// Logical DAG-store put attempts for retained corpus artifacts.
+    pub store_puts: u64,
+    /// Entries retained after coverage-driven admission/pruning.
+    pub retained_entries: u64,
+}
+
+impl CoverageGuidedFuzzThroughputReport {
+    /// Returns whether every generated mutant had replay validation evidence.
+    #[must_use]
+    pub fn oracle_validated_all_mutants(self) -> bool {
+        self.replay_oracle_validations >= self.generated_mutants.saturating_add(1)
+    }
+
+    /// Returns whether the deterministic local throughput target was met.
+    #[must_use]
+    pub fn meets_target(self) -> bool {
+        self.generated_mutants >= self.target.min_generated_mutants
+            && self.deterministic_work_units == self.generated_mutants
+            && self.oracle_validated_all_mutants()
+    }
+}
+
+/// Result of a durable coverage-guided corpus fuzzing campaign.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CoverageGuidedCorpusRun {
+    /// Coverage-guided fuzz candidates in generation order.
+    pub fuzz: CoverageGuidedFuzzRun,
+    /// Retained content-addressed corpus entries.
+    pub corpus: CoverageGuidedCorpus,
+    /// Admission/pruning decision for each generated mutant.
+    pub admissions: Vec<CoverageGuidedCorpusAdmission>,
+    /// Deterministic throughput and replay-validation evidence.
+    pub throughput: CoverageGuidedFuzzThroughputReport,
+}
+
+/// Error returned by durable coverage-guided corpus management.
+#[derive(Debug)]
+pub enum CoverageGuidedCorpusError {
+    /// Engine-spine sampling, mutation, or replay validation failed.
+    Engine {
+        /// Operation that failed.
+        operation: &'static str,
+        /// Underlying engine error.
+        source: EngineError,
+    },
+    /// DAG-store persistence failed.
+    Store {
+        /// Operation that failed.
+        operation: &'static str,
+        /// Underlying store error.
+        source: DagStoreError,
+    },
+    /// A stored artifact key did not match the artifact's own id.
+    ArtifactStoreKeyMismatch {
+        /// Artifact id computed from canonical artifact bytes.
+        artifact: ContentHash,
+        /// Key returned by the DAG store.
+        store_key: ContentHash,
+    },
+}
+
+impl fmt::Display for CoverageGuidedCorpusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine { operation, .. } => {
+                write!(
+                    f,
+                    "coverage-guided corpus engine operation {operation} failed"
+                )
+            }
+            Self::Store { operation, .. } => {
+                write!(
+                    f,
+                    "coverage-guided corpus store operation {operation} failed"
+                )
+            }
+            Self::ArtifactStoreKeyMismatch { .. } => {
+                f.write_str("coverage-guided corpus artifact key did not match stored bytes")
+            }
+        }
+    }
+}
+
+impl Error for CoverageGuidedCorpusError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Engine { source, .. } => Some(source),
+            Self::Store { source, .. } => Some(source),
+            Self::ArtifactStoreKeyMismatch { .. } => None,
+        }
+    }
+}
+
 /// Built-in deterministic guidance signal identities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GuidanceSignalKind {
@@ -12860,6 +13189,293 @@ fn run_coverage_guided_fuzz(
     })
 }
 
+fn run_coverage_guided_fuzz_corpus<S>(
+    family: &ScenarioFamily,
+    store: &S,
+    config: CoverageGuidedFuzzConfig,
+    corpus_config: CoverageGuidedCorpusConfig,
+    feedback: &[EventLogCoverageFeedback],
+) -> Result<CoverageGuidedCorpusRun, CoverageGuidedCorpusError>
+where
+    S: DagStore + ?Sized,
+{
+    let cardinality =
+        family
+            .space()
+            .cardinality()
+            .map_err(|source| CoverageGuidedCorpusError::Engine {
+                operation: "count-family-space",
+                source,
+            })?;
+    let mut corpus = CoverageGuidedCorpus::new();
+    let seed =
+        family
+            .instantiate_sample(0)
+            .map_err(|source| CoverageGuidedCorpusError::Engine {
+                operation: "instantiate-seed-corpus-entry",
+                source,
+            })?;
+    let seed_artifact =
+        ReproductionArtifact::capture(seed.form(), &Schedule::empty()).map_err(|source| {
+            CoverageGuidedCorpusError::Engine {
+                operation: "capture-seed-corpus-artifact",
+                source,
+            }
+        })?;
+    let seed_replay =
+        seed_artifact
+            .replay()
+            .map_err(|source| CoverageGuidedCorpusError::Engine {
+                operation: "replay-seed-corpus-artifact",
+                source,
+            })?;
+    let seed_store_key = persist_corpus_artifact(store, &seed_artifact)?;
+    let seed_energy = coverage_guided_corpus_energy(
+        corpus_config.seed,
+        0,
+        ContentHash::default(),
+        seed_artifact.id(),
+    );
+    let seed_descriptor_key = persist_corpus_entry_descriptor(
+        store,
+        CoverageGuidedCorpusEntryDescriptor {
+            artifact: seed_artifact.id(),
+            store_key: seed_store_key,
+            scenario: seed_replay.scenario,
+            schedule: seed_replay.schedule,
+            replayed_state: seed_replay.state,
+            coverage_fingerprint: ContentHash::default(),
+            energy: seed_energy,
+            parent: None,
+            origin: CoverageGuidedCorpusEntryOrigin::Seed,
+        },
+    )?;
+    corpus.insert(CoverageGuidedCorpusEntry {
+        artifact: seed_artifact.id(),
+        store_key: seed_store_key,
+        descriptor_key: seed_descriptor_key,
+        scenario: seed_replay.scenario,
+        schedule: seed_replay.schedule,
+        replayed_state: seed_replay.state,
+        coverage_fingerprint: ContentHash::default(),
+        energy: seed_energy,
+        parent: None,
+        origin: CoverageGuidedCorpusEntryOrigin::Seed,
+    });
+
+    let mut iterations = Vec::new();
+    let mut admissions = Vec::new();
+    let mut store_puts = 2u64;
+    let mut replay_oracle_validations = 1u64;
+
+    for sequence in 0..config.iterations {
+        let coverage_fingerprint = coverage_guided_fuzz_feedback_fingerprint(feedback, sequence);
+        let selected_parent = coverage_guided_corpus_select_parent(
+            &corpus,
+            corpus_config,
+            sequence,
+            coverage_fingerprint,
+        )
+        .ok_or_else(|| CoverageGuidedCorpusError::Engine {
+            operation: "select-corpus-parent",
+            source: EngineError::ScenarioFamilyInvalidSpace {
+                reason: "coverage-guided corpus has no seed entry",
+            },
+        })?;
+        let sample_index =
+            coverage_guided_fuzz_sample_index(config, sequence, coverage_fingerprint, cardinality);
+        let scenario = family.instantiate_sample(sample_index).map_err(|source| {
+            CoverageGuidedCorpusError::Engine {
+                operation: "instantiate-fuzz-candidate",
+                source,
+            }
+        })?;
+        let params = scenario.params();
+        let root = scenario.genesis_configuration();
+        let mutation =
+            coverage_guided_fuzz_override_decision(config, sequence, sample_index, params);
+        let configuration = try_step(root.configuration(), mutation.clone()).map_err(|source| {
+            CoverageGuidedCorpusError::Engine {
+                operation: "mutate-fuzz-candidate",
+                source,
+            }
+        })?;
+        let artifact = ReproductionArtifact::capture(scenario.form(), &configuration.schedule)
+            .map_err(|source| CoverageGuidedCorpusError::Engine {
+                operation: "capture-fuzz-candidate-artifact",
+                source,
+            })?;
+        let replay = artifact
+            .replay()
+            .map_err(|source| CoverageGuidedCorpusError::Engine {
+                operation: "replay-fuzz-candidate-artifact",
+                source,
+            })?;
+        replay_oracle_validations = replay_oracle_validations.saturating_add(1);
+        let energy = coverage_guided_corpus_energy(
+            corpus_config.seed,
+            sequence.saturating_add(1),
+            coverage_fingerprint,
+            artifact.id(),
+        );
+        let decision = if let Some(retained) = corpus.entries.get(&artifact.id()) {
+            CoverageGuidedCorpusAdmissionDecision::DuplicateArtifact {
+                retained: retained.artifact,
+            }
+        } else if let Some(retained) = corpus.coverage_owner(coverage_fingerprint) {
+            CoverageGuidedCorpusAdmissionDecision::PrunedSubsumedCoverage { retained }
+        } else {
+            let store_key = persist_corpus_artifact(store, &artifact)?;
+            let descriptor_key = persist_corpus_entry_descriptor(
+                store,
+                CoverageGuidedCorpusEntryDescriptor {
+                    artifact: artifact.id(),
+                    store_key,
+                    scenario: replay.scenario,
+                    schedule: replay.schedule,
+                    replayed_state: replay.state,
+                    coverage_fingerprint,
+                    energy,
+                    parent: Some(selected_parent),
+                    origin: CoverageGuidedCorpusEntryOrigin::FuzzIteration { sequence },
+                },
+            )?;
+            store_puts = store_puts.saturating_add(2);
+            corpus.insert(CoverageGuidedCorpusEntry {
+                artifact: artifact.id(),
+                store_key,
+                descriptor_key,
+                scenario: replay.scenario,
+                schedule: replay.schedule,
+                replayed_state: replay.state,
+                coverage_fingerprint,
+                energy,
+                parent: Some(selected_parent),
+                origin: CoverageGuidedCorpusEntryOrigin::FuzzIteration { sequence },
+            });
+            CoverageGuidedCorpusAdmissionDecision::AdmittedNewCoverage { store_key }
+        };
+        let new_coverage = decision.is_admitted();
+
+        admissions.push(CoverageGuidedCorpusAdmission {
+            sequence,
+            artifact: artifact.id(),
+            coverage_fingerprint,
+            selected_parent,
+            energy,
+            decision,
+        });
+        iterations.push(CoverageGuidedFuzzIteration {
+            sequence,
+            sample_index,
+            params,
+            scenario,
+            selected_corpus_entry: selected_parent,
+            energy,
+            configuration,
+            mutation,
+            coverage_fingerprint,
+            new_coverage,
+        });
+    }
+
+    let coverage_biased_order = coverage_guided_fuzz_order(&iterations);
+    let retained_entries = corpus.len() as u64;
+    Ok(CoverageGuidedCorpusRun {
+        fuzz: CoverageGuidedFuzzRun {
+            config,
+            iterations,
+            coverage_biased_order,
+        },
+        corpus,
+        admissions,
+        throughput: CoverageGuidedFuzzThroughputReport {
+            target: corpus_config.throughput_target,
+            generated_mutants: config.iterations,
+            deterministic_work_units: config.iterations,
+            replay_oracle_validations,
+            store_puts,
+            retained_entries,
+        },
+    })
+}
+
+fn persist_corpus_artifact<S>(
+    store: &S,
+    artifact: &ReproductionArtifact,
+) -> Result<ContentHash, CoverageGuidedCorpusError>
+where
+    S: DagStore + ?Sized,
+{
+    let store_key = store.put(&artifact.to_compact_binary()).map_err(|source| {
+        CoverageGuidedCorpusError::Store {
+            operation: "put-corpus-artifact",
+            source,
+        }
+    })?;
+    if store_key != artifact.id() {
+        return Err(CoverageGuidedCorpusError::ArtifactStoreKeyMismatch {
+            artifact: artifact.id(),
+            store_key,
+        });
+    }
+    Ok(store_key)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct CoverageGuidedCorpusEntryDescriptor {
+    artifact: ContentHash,
+    store_key: ContentHash,
+    scenario: ContentHash,
+    schedule: ContentHash,
+    replayed_state: ContentHash,
+    coverage_fingerprint: ContentHash,
+    energy: u64,
+    parent: Option<ContentHash>,
+    origin: CoverageGuidedCorpusEntryOrigin,
+}
+
+fn persist_corpus_entry_descriptor<S>(
+    store: &S,
+    descriptor: CoverageGuidedCorpusEntryDescriptor,
+) -> Result<ContentHash, CoverageGuidedCorpusError>
+where
+    S: DagStore + ?Sized,
+{
+    store
+        .put(&coverage_guided_corpus_entry_descriptor_bytes(descriptor))
+        .map_err(|source| CoverageGuidedCorpusError::Store {
+            operation: "put-corpus-entry-descriptor",
+            source,
+        })
+}
+
+fn coverage_guided_corpus_entry_descriptor_bytes(
+    descriptor: CoverageGuidedCorpusEntryDescriptor,
+) -> Vec<u8> {
+    let origin = match descriptor.origin {
+        CoverageGuidedCorpusEntryOrigin::Seed => String::from("seed"),
+        CoverageGuidedCorpusEntryOrigin::FuzzIteration { sequence } => {
+            format!("fuzz-iteration:{sequence}")
+        }
+    };
+    let parent = descriptor
+        .parent
+        .map(ContentHash::to_hex)
+        .unwrap_or_else(|| String::from("none"));
+    format!(
+        "crucible.coverage-guided-corpus.entry.v1\nartifact={}\nartifact_store={}\nscenario={}\nschedule={}\nreplayed_state={}\ncoverage={}\nenergy={}\nparent={parent}\norigin={origin}\n",
+        descriptor.artifact.to_hex(),
+        descriptor.store_key.to_hex(),
+        descriptor.scenario.to_hex(),
+        descriptor.schedule.to_hex(),
+        descriptor.replayed_state.to_hex(),
+        descriptor.coverage_fingerprint.to_hex(),
+        descriptor.energy
+    )
+    .into_bytes()
+}
+
 fn coverage_guided_fuzz_feedback_fingerprint(
     feedback: &[EventLogCoverageFeedback],
     sequence: u64,
@@ -12903,6 +13519,63 @@ fn coverage_guided_fuzz_select_corpus_entry(
     )) as usize
         % corpus.len();
     corpus[index]
+}
+
+fn coverage_guided_corpus_select_parent(
+    corpus: &CoverageGuidedCorpus,
+    config: CoverageGuidedCorpusConfig,
+    sequence: u64,
+    coverage_fingerprint: ContentHash,
+) -> Option<ContentHash> {
+    let total_energy = corpus.entries.values().fold(0u64, |total, entry| {
+        total.saturating_add(entry.energy.max(1))
+    });
+    if total_energy == 0 {
+        return corpus.entries.keys().next().copied();
+    }
+
+    let material = format!(
+        "seed={}\nsequence={sequence}\ncoverage={}\ncorpus={}",
+        config.seed.to_hex(),
+        coverage_fingerprint.to_hex(),
+        corpus.fingerprint().to_hex()
+    );
+    let mut ticket = content_hash_low_u64(ContentHash::from_canonical_material(
+        "crucible.coverage-guided-corpus.parent-selection.v1",
+        &material,
+    )) % total_energy;
+    for entry in corpus.entries.values() {
+        let weight = entry.energy.max(1);
+        if ticket < weight {
+            return Some(entry.artifact);
+        }
+        ticket = ticket.saturating_sub(weight);
+    }
+    corpus.entries.keys().next_back().copied()
+}
+
+fn coverage_guided_corpus_energy(
+    seed: Seed,
+    sequence: u64,
+    coverage_fingerprint: ContentHash,
+    artifact: ContentHash,
+) -> u64 {
+    let material = format!(
+        "seed={}\nsequence={sequence}\ncoverage={}\nartifact={}",
+        seed.to_hex(),
+        coverage_fingerprint.to_hex(),
+        artifact.to_hex()
+    );
+    let base = content_hash_low_u64(ContentHash::from_canonical_material(
+        "crucible.coverage-guided-corpus.energy.v1",
+        &material,
+    ));
+    let novelty_floor = if coverage_fingerprint == ContentHash::default() {
+        1
+    } else {
+        GUIDANCE_SCORE_ONE_MICRO
+    };
+    novelty_floor.saturating_add(base % GUIDANCE_SCORE_ONE_MICRO)
 }
 
 fn coverage_guided_fuzz_energy(

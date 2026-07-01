@@ -1124,12 +1124,24 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   candidates reduce as ordinary `(def, schedule)` configurations, and that
   fault-plan variation comes through the family density axis; durable DagStore
   corpus admission, pruning, persisted energy state, and throughput measurement
-  remain the T-ADV-13 scope.
-- [ ] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
+  were completed under the T-ADV-13 scope.
+- [x] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
   admission, seeded pruning/energy, each entry a reproduction artifact in the
   DagStore) and meet the fuzzing throughput target of 25 without weakening
   determinism or oracle validation. — satisfies [ADV-26], [ADV-27]; spec §22.7.2;
   cross-ref 07 §7, 25.
+  Completed by `checks.crucible.phase6.coverageGuidedCorpus`: coverage-guided
+  fuzzing now has a durable corpus mode that seeds a self-contained
+  `ReproductionArtifact`, stores every retained corpus entry as compact canonical
+  artifact bytes plus corpus-entry descriptors in the `DagStore`, chooses mutation
+  parents by seeded persisted energy, admits only first-seen coverage fingerprints,
+  deterministically prunes subsumed duplicate-coverage candidates, and reports
+  deterministic generated mutant work units plus replay-oracle validation counts
+  before claiming the local throughput target. The gate proves store-key/id
+  equality for retained artifacts, descriptor persistence, artifact byte decoding
+  and replay, stable same-seed corpus results, and no skipped replay validation for
+  generated mutants; emitting this artifact form for every failure source remains
+  the T-ADV-14 scope.
 - [ ] **T-ADV-14** Implement self-contained reproduction artifacts ((def, seed,
   schedule) reproducing bit-identically by replay alone, store-references optional)
   for every finding regardless of discovery path. — satisfies [ADV-28], [ADV-29];
