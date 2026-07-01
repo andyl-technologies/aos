@@ -18,6 +18,7 @@ use std::ptr::NonNull;
 
 use super::*;
 use crate::eval::thunk::ThunkState;
+use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
 
 const ROOTS_TABLE: &str = "roots";
@@ -683,6 +684,29 @@ impl PartialEq for PreciseHeapScan {
 
 impl Eq for PreciseHeapScan {}
 
+/// A collector-poll request paired with a precise heap graph snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollScan {
+    poll: AllocationCollectorPoll,
+    scan: PreciseHeapScan,
+}
+
+impl AllocationCollectorPollScan {
+    fn new(poll: AllocationCollectorPoll, scan: PreciseHeapScan) -> Self {
+        Self { poll, scan }
+    }
+
+    /// Returns the allocation safepoint collector-poll request.
+    pub const fn poll(&self) -> AllocationCollectorPoll {
+        self.poll
+    }
+
+    /// Returns the precise heap graph reachable at the poll safepoint.
+    pub const fn scan(&self) -> &PreciseHeapScan {
+        &self.scan
+    }
+}
+
 impl EvalHeap {
     /// Returns permanent roots held by the heap's hash-cons tables.
     ///
@@ -770,6 +794,25 @@ impl EvalHeap {
         }
 
         Ok(scan)
+    }
+
+    /// Builds the precise heap graph for an allocation collector-poll request.
+    ///
+    /// This is a pre-collector snapshot: it validates and scans the supplied
+    /// explicit roots, then pairs the resulting graph with the allocation
+    /// safepoint poll request that triggered the scan. It does not invoke a
+    /// collector, relocate objects, or retain mutable relocation slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if precise root scanning fails.
+    pub fn scan_collector_poll_roots(
+        &self,
+        poll: AllocationCollectorPoll,
+        root_set: &EvalRootSet,
+    ) -> Result<AllocationCollectorPollScan, EvalHeapError> {
+        let scan = self.scan_precise_roots(root_set)?;
+        Ok(AllocationCollectorPollScan::new(poll, scan))
     }
 
     fn push_interned_table_roots<'a>(

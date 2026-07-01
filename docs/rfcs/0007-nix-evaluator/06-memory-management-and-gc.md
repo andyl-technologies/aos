@@ -871,6 +871,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       sequence requests. This is a dispatch request only: it does not build the
       live root set, call a collector, relocate values, or make collection
       observable under the tree-walk oracle.
+- [x] Current allocation-poll precise-scan snapshot precursor:
+      `EvalHeap::scan_collector_poll_roots` pairs an
+      `AllocationCollectorPoll` with a validated `AllocationCollectorPollScan`
+      built from a caller-supplied explicit `EvalRootSet`. The snapshot carries
+      the original allocation poll request and the `PreciseHeapScan` graph that
+      a future collector would consume. Tests cover a real GC-stress allocation
+      poll, precise root scanning through the reachable object graph, and
+      preservation of the triggering `aos_alloc_*` entry point. This still does
+      not construct tree-walk roots automatically from a poll, invoke a
+      collector, produce mutable relocation slots, or update references.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

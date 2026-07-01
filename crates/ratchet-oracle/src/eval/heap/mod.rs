@@ -38,8 +38,9 @@ mod roots;
 mod thunk;
 
 pub use roots::{
-    CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
-    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
+    EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
+    StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;

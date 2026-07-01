@@ -4,7 +4,7 @@ use super::super::ThunkState;
 use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
-use crate::runtime::alloc::AllocationGcPollReason;
+use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
 use crate::string::{ContextElement, StringContext};
 use crate::syntax::SymbolTable;
@@ -1315,6 +1315,44 @@ fn precise_root_scan_filters_inline_values_and_walks_typed_fields() {
     );
     assert!(list_edges[0].value().raw_eq(leaf));
     assert!(object_for(&scan, leaf).edges().is_empty());
+}
+
+#[test]
+fn collector_poll_root_scan_pairs_poll_request_with_precise_heap_graph() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let leaf = heap
+        .alloc_string(NixString::from_bytes(b"leaf".to_vec()))
+        .expect("leaf string allocates");
+    let root = heap
+        .alloc_list(NixList::new(vec![Value::int(1), leaf]))
+        .expect("list allocates");
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, root)
+        .expect("heap root records");
+
+    let snapshot = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+
+    assert_eq!(snapshot.poll(), poll);
+    assert_eq!(snapshot.scan().roots().len(), 1);
+    assert_eq!(snapshot.scan().objects().len(), 2);
+    assert!(snapshot.scan().objects()[0].value().raw_eq(root));
+    assert!(snapshot.scan().objects()[1].value().raw_eq(leaf));
+    assert_eq!(
+        snapshot.poll().reason(),
+        AllocationGcPollReason::GcStressEverySafepoint
+    );
+    assert_eq!(
+        snapshot.poll().entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
 }
 
 #[test]

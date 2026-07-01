@@ -5021,6 +5021,16 @@ and helps the oracle directly.
       and permanent-shared GC-stress requests, and sequence saturation. This is
       a collector dispatch request only; live-root construction, collector
       invocation, relocation, and byte-green GC-stress execution remain open.
+- [x] Current allocation-poll precise-scan snapshot precursor:
+      `EvalHeap::scan_collector_poll_roots` pairs an allocation collector-poll
+      request with a validated `AllocationCollectorPollScan` built from an
+      explicit caller-supplied `EvalRootSet`. The snapshot retains the original
+      poll metadata and the `PreciseHeapScan` graph that future collector
+      dispatch will consume. Tests cover a real GC-stress allocation poll,
+      precise traversal of the reachable object graph, and preservation of the
+      triggering `aos_alloc_*` entry point. It does not automatically derive
+      tree-walk roots from the poll, invoke a collector, expose mutable
+      relocation slots, or update references.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
