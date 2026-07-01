@@ -432,6 +432,100 @@ fn owned_eval_plans_gc_stress_boundary_permanent_relocation_destinations() {
 }
 
 #[test]
+fn owned_eval_plans_gc_stress_boundary_worker_commit_metadata() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let nursery_base = static_gc_address(0x1000_0000);
+
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_relocation_plans(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("boundary scan builds paired relocation plan");
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans.permanent_shared().is_none());
+    let worker_plan = plans.worker().expect("worker paired plan records");
+    assert_eq!(worker_plan.minor_gc_plan().plan().survivors().len(), 1);
+    assert_eq!(
+        worker_plan.relocation_destinations().destinations()[0].destination(),
+        nursery_base
+    );
+    let commit = worker_plan
+        .commit_plan()
+        .expect("paired boundary plan builds commit metadata");
+    assert_eq!(
+        commit.reference_slots(),
+        worker_plan.minor_gc_plan().reference_slots()
+    );
+    assert_eq!(commit.commit_plan().object_copies().copies().len(), 1);
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        commit.commit_plan().forwarding_pointers().pointers().len(),
+        1
+    );
+    assert_eq!(
+        commit
+            .root_writeback_plan()
+            .expect("root writeback metadata builds")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn owned_eval_plans_gc_stress_boundary_permanent_commit_metadata() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_relocation_plans(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("permanent boundary scan builds paired relocation plan");
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans.worker().is_none());
+    let permanent_plan = plans
+        .permanent_shared()
+        .expect("permanent paired plan records");
+    assert!(permanent_plan.minor_gc_plan().plan().is_empty());
+    assert!(
+        permanent_plan
+            .relocation_destinations()
+            .destinations()
+            .is_empty()
+    );
+    let commit = permanent_plan
+        .commit_plan()
+        .expect("empty permanent boundary plan builds commit metadata");
+    assert!(commit.commit_plan().object_copies().is_empty());
+    assert!(commit.commit_plan().reference_rewrites().is_empty());
+    assert!(
+        commit
+            .root_writeback_plan()
+            .expect("empty root writeback metadata builds")
+            .is_empty()
+    );
+}
+
+#[test]
 fn owned_eval_without_gc_stress_has_no_boundary_relocation_destinations() {
     let ir = lower("x: x");
     let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
@@ -447,6 +541,24 @@ fn owned_eval_without_gc_stress_has_no_boundary_relocation_destinations() {
 
     assert!(outcome.gc_stress_boundary_scans().is_empty());
     assert!(destinations.is_empty());
+}
+
+#[test]
+fn owned_eval_without_gc_stress_has_no_boundary_relocation_plans() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_relocation_plans(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary scans produce empty paired plans");
+
+    assert!(outcome.gc_stress_boundary_scans().is_empty());
+    assert!(plans.is_empty());
 }
 
 #[test]

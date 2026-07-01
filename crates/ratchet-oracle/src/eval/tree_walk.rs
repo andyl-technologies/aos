@@ -46,10 +46,11 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
-    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
+    AllocationCollectorPollMinorGcRelocationDestinations, AllocationCollectorPollScan, EvalHeap,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -75,8 +76,8 @@ use crate::compile::{
     IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
 use crate::heap::{
-    GenerationalGcTier, HeapMemoryBudget, MinorGcDestinationBases, MinorGcPromotionPolicy,
-    RememberedSet,
+    GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcDestinationBases,
+    MinorGcPromotionPolicy, RememberedSet,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
@@ -322,8 +323,9 @@ pub(crate) use options::{
 };
 pub use outcome::{
     EvalDerivation, EvalGcStressBoundaryMinorGcPlans,
-    EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryScans, EvalOutcome,
-    EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,
+    EvalGcStressBoundaryMinorGcRelocationDestinations, EvalGcStressBoundaryMinorGcRelocationPlan,
+    EvalGcStressBoundaryMinorGcRelocationPlans, EvalGcStressBoundaryScans, EvalOutcome, EvalStats,
+    EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,
     IfdRealizationError, IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
