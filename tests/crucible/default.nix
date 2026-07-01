@@ -1587,6 +1587,24 @@ in rec {
         phase6.unifyingView
       ];
     };
+    readOnlyDebugInspection = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
+      gate = import ./phase6-read-only-debug-inspection.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
+        taskIds = ["T-DBG-2"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.debugAttach.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.debugAttach
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

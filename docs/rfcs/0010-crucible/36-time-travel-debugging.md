@@ -907,11 +907,22 @@ touching the canonical run.
   QEMU's raw gdbstub endpoint, and forwards debugger bytes outside the scheduler
   hot path. The tests assert both the four-channel contract and local proxy
   mediation, with no per-quantum timing or frame payload.
-- [ ] **T-DBG-2** Implement read-only inspection that appends no causal entry,
+- [x] **T-DBG-2** Implement read-only inspection that appends no causal entry,
   mutates no config, and advances no virtual time, with a gate test that the
   canonical causal subsequence is byte-identical with/without a debugger and that
   attach/inspect/detach are recorded only as observational entries. — satisfies
   [DBG-8], [DBG-9], [DBG-10]; spec §36.3.1.
+  Completed by `checks.crucible.phase6.readOnlyDebugInspection`:
+  `TemporalGraph::read_only_debug_inspection` records attach/inspect/detach as
+  `diagnostic` event-log entries whose class is observational, uses an immutable
+  graph receiver, captures before/after graph, checkpoint, runtime icount,
+  scheduler-state, and virtual-time footprints, and exposes `proves_read_only()`
+  for the debugger contract. Observations are stamped with the graph-derived
+  checkpoint time, and a requested coordinate that differs from that checkpoint
+  fails the read-only proof. The gate compares the canonical causal subsequence
+  with and without the API-generated debugger observations, proves it is
+  byte-identical, and asserts that register, memory, backtrace, thread/vCPU, and
+  watchpoint reads append no causal entry and advance no virtual time.
 - [ ] **T-DBG-3** Implement canonical breakpoints as hardware/out-of-band (17a
   `Condition` predicate or QEMU hardware breakpoint), transparently satisfying a
   client software-breakpoint request where a mechanism exists and **refusing**

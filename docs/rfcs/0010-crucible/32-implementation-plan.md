@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:ef986bb32b74329c`
+Checklist sync digest: `rfc0010-checklist-v1:4341b29a3301e819`
 
 ## The phase ladder
 
@@ -222,6 +222,10 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   (pluggable signals + bandit), interleaving, and app-random search
   (`T-ADV-17 … T-ADV-21`): `T-ADV-1 … T-ADV-21` ([`22`](22-advanced-features.md)).
 - Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-8` ([`36`](36-time-travel-debugging.md)).
+  `T-DBG-1` is green through `checks.crucible.phase6.debugAttach`; `T-DBG-2`
+  is green through `checks.crucible.phase6.readOnlyDebugInspection`, which proves
+  read-only debugger observations do not alter config, virtual time, or the
+  canonical causal event-log subsequence.
 - Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks

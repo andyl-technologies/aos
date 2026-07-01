@@ -22,7 +22,11 @@ use crucible_sim::{
 use serde::{Deserialize, Serialize};
 
 use crate::backend::ExecutionFingerprint;
-use crate::scheduler::{EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer};
+use crate::scheduler::{
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalProjection,
+    EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, SchedulerEventLogClass,
+    SchedulerEventLogEntry, event_log_causal_projection,
+};
 use crate::trigger::{Action, Event, EventGraph, EventGraphError, FirePolicy, LogLevel};
 
 mod canonical;
@@ -10724,6 +10728,67 @@ impl TemporalGraph {
         })
     }
 
+    /// Records read-only debugger observations without mutating the temporal graph.
+    ///
+    /// The immutable receiver is part of the contract: inspection cannot record
+    /// graph state, append decisions, or advance virtual time through this API.
+    /// The report captures graph/checkpoint/runtime footprints before and after
+    /// building the debugger event-log view, then compares canonical causal
+    /// projections of the supplied no-debug log and the debug-observed log.
+    #[must_use]
+    pub fn read_only_debug_inspection(
+        &self,
+        attach: &DebugAttachReport,
+        request: &DebugReadOnlyInspectionRequest,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> DebugReadOnlyInspectionReport {
+        let footprint_before =
+            DebugReadOnlyInspectionFootprint::capture(self, attach, request.virtual_time);
+        let observation_time = footprint_before.virtual_time;
+        let causal_event_log_before = event_log_causal_projection(event_log);
+        let mut event_log_with_observations = event_log.to_vec();
+        let mut observational_entries = Vec::with_capacity(request.inspections.len() + 2);
+        let mut sequence = u64::try_from(event_log.len()).unwrap_or(u64::MAX);
+
+        observational_entries.push(debug_read_only_observation_entry(
+            sequence,
+            observation_time,
+            DebugReadOnlyInspectionEvent::Attach,
+            attach,
+        ));
+        sequence = sequence.saturating_add(1);
+        for inspection in &request.inspections {
+            observational_entries.push(debug_read_only_observation_entry(
+                sequence,
+                observation_time,
+                DebugReadOnlyInspectionEvent::Inspect(*inspection),
+                attach,
+            ));
+            sequence = sequence.saturating_add(1);
+        }
+        observational_entries.push(debug_read_only_observation_entry(
+            sequence,
+            observation_time,
+            DebugReadOnlyInspectionEvent::Detach,
+            attach,
+        ));
+
+        event_log_with_observations.extend(observational_entries.iter().cloned());
+        let causal_event_log_after = event_log_causal_projection(&event_log_with_observations);
+        let footprint_after =
+            DebugReadOnlyInspectionFootprint::capture(self, attach, request.virtual_time);
+
+        DebugReadOnlyInspectionReport {
+            footprint_before,
+            footprint_after,
+            requested_virtual_time: request.virtual_time,
+            causal_event_log_before,
+            causal_event_log_after,
+            observational_entries,
+            event_log_with_observations,
+        }
+    }
+
     /// Forks from `base` by instantiating it and appending `decisions`.
     ///
     /// The returned branch is recorded as a thin checkpoint in the same DAG.
@@ -14398,6 +14463,318 @@ impl DebugAttachReport {
         self.channel_set.is_four_channel_debug_session()
             && self.gdbstub.is_out_of_band_debug_proxy()
     }
+}
+
+/// One read-only debugger inspection operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DebugReadOnlyInspectionKind {
+    /// Reads architectural registers from the attached node.
+    RegisterRead,
+    /// Reads guest memory from the attached node.
+    MemoryRead,
+    /// Walks the guest stack or backtrace without changing execution.
+    Backtrace,
+    /// Enumerates threads or vCPUs visible to the debugger.
+    ThreadEnumeration,
+    /// Reads a watchpoint value without arming a deterministic trigger.
+    WatchpointValueRead,
+}
+
+impl DebugReadOnlyInspectionKind {
+    /// Returns the stable diagnostic suffix for this inspection kind.
+    #[must_use]
+    pub const fn diagnostic_suffix(self) -> &'static str {
+        match self {
+            Self::RegisterRead => "register_read",
+            Self::MemoryRead => "memory_read",
+            Self::Backtrace => "backtrace",
+            Self::ThreadEnumeration => "thread_enumeration",
+            Self::WatchpointValueRead => "watchpoint_value_read",
+        }
+    }
+}
+
+/// A batch of read-only debugger inspections at one virtual-time coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReadOnlyInspectionRequest {
+    /// Virtual-time coordinate reported for the read-only debugger observations.
+    pub virtual_time: VirtualTime,
+    /// Ordered read-only debugger operations performed during the attach.
+    pub inspections: Vec<DebugReadOnlyInspectionKind>,
+}
+
+impl DebugReadOnlyInspectionRequest {
+    /// Builds a read-only debugger inspection request.
+    #[must_use]
+    pub fn new<I>(virtual_time: VirtualTime, inspections: I) -> Self
+    where
+        I: IntoIterator<Item = DebugReadOnlyInspectionKind>,
+    {
+        Self {
+            virtual_time,
+            inspections: inspections.into_iter().collect(),
+        }
+    }
+}
+
+/// Checkpoint fields captured before and after read-only debugger inspection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReadOnlyCheckpointFootprint {
+    /// Checkpoint identity.
+    pub id: ContentHash,
+    /// Configuration denoted by the checkpoint.
+    pub configuration: ContentHash,
+    /// Whether the checkpoint is loadable or thin/replay-only.
+    pub kind: CheckpointKind,
+    /// Virtual-time coordinate recorded for the checkpoint.
+    pub virtual_time: VirtualTime,
+    /// Event-log offset retained by a materialized checkpoint, when present.
+    pub event_log: EventLogOffset,
+}
+
+/// Graph/runtime footprint captured around read-only debugger inspection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReadOnlyInspectionFootprint {
+    /// Temporal graph identity.
+    pub graph: ContentHash,
+    /// Recorded configuration identities in stable order.
+    pub recorded_configurations: Vec<ContentHash>,
+    /// Recorded checkpoint-node identities and non-identity state in stable order.
+    pub checkpoint_nodes: Vec<DebugReadOnlyCheckpointFootprint>,
+    /// Cached loadable snapshot identities and non-identity state in stable order.
+    pub cached_snapshots: Vec<DebugReadOnlyCheckpointFootprint>,
+    /// Baked genesis scenario identities in stable order.
+    pub baked_genesis: Vec<ContentHash>,
+    /// Configuration realized by the attached debugger session.
+    pub attached_configuration: ContentHash,
+    /// Checkpoint realized by the attached debugger session.
+    pub attached_checkpoint: ContentHash,
+    /// Whether the attached checkpoint exists in the graph footprint.
+    pub attached_checkpoint_recorded: bool,
+    /// Runtime-state identity realized by the attached debugger session.
+    pub attached_runtime: ContentHash,
+    /// Runtime state's configuration identity.
+    pub attached_runtime_configuration: ContentHash,
+    /// Runtime node icounts at the attached checkpoint.
+    pub attached_runtime_node_icounts: BTreeMap<NodeId, Icount>,
+    /// Runtime node blob references at the attached checkpoint.
+    pub attached_runtime_node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Scheduler-owned state reconstructed at the attached checkpoint.
+    pub attached_runtime_scheduler: SchedulerState,
+    /// Runtime event-log offset from which deterministic execution would resume.
+    pub attached_runtime_event_log: EventLogOffset,
+    /// Graph-derived virtual time at the attached checkpoint.
+    pub virtual_time: VirtualTime,
+}
+
+impl DebugReadOnlyInspectionFootprint {
+    fn capture(
+        graph: &TemporalGraph,
+        attach: &DebugAttachReport,
+        fallback_virtual_time: VirtualTime,
+    ) -> Self {
+        let checkpoint = graph
+            .checkpoint_nodes
+            .get(&attach.checkpoint)
+            .or_else(|| graph.cached_snapshots.get(&attach.checkpoint));
+        Self {
+            graph: graph.id,
+            recorded_configurations: graph.recorded_configurations.keys().copied().collect(),
+            checkpoint_nodes: checkpoint_footprints(&graph.checkpoint_nodes),
+            cached_snapshots: checkpoint_footprints(&graph.cached_snapshots),
+            baked_genesis: graph.baked_genesis.keys().copied().collect(),
+            attached_configuration: attach.configuration,
+            attached_checkpoint: attach.checkpoint,
+            attached_checkpoint_recorded: checkpoint.is_some(),
+            attached_runtime: attach.runtime.runtime.id,
+            attached_runtime_configuration: attach.runtime.runtime.configuration,
+            attached_runtime_node_icounts: attach.runtime.runtime.node_icounts.clone(),
+            attached_runtime_node_blobs: attach.runtime.runtime.node_blobs.clone(),
+            attached_runtime_scheduler: attach.runtime.runtime.scheduler.clone(),
+            attached_runtime_event_log: attach.runtime.runtime.event_log,
+            virtual_time: checkpoint
+                .map(|checkpoint| checkpoint.virtual_time)
+                .unwrap_or(fallback_virtual_time),
+        }
+    }
+}
+
+/// Evidence that debugger inspection preserved deterministic execution state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugReadOnlyInspectionReport {
+    /// Graph/runtime footprint before emitting debugger observations.
+    pub footprint_before: DebugReadOnlyInspectionFootprint,
+    /// Graph/runtime footprint after emitting debugger observations.
+    pub footprint_after: DebugReadOnlyInspectionFootprint,
+    /// Virtual-time coordinate requested by the debugger operation.
+    pub requested_virtual_time: VirtualTime,
+    /// Canonical causal event-log projection without debugger observations.
+    pub causal_event_log_before: EventLogCausalProjection,
+    /// Canonical causal event-log projection with debugger observations.
+    pub causal_event_log_after: EventLogCausalProjection,
+    /// Observational diagnostics generated for attach, read-only reads, and detach.
+    pub observational_entries: Vec<SchedulerEventLogEntry>,
+    /// Full event-log view after appending read-only debugger observations.
+    pub event_log_with_observations: Vec<SchedulerEventLogEntry>,
+}
+
+impl DebugReadOnlyInspectionReport {
+    /// Returns whether the temporal graph footprint is unchanged.
+    #[must_use]
+    pub fn graph_unchanged(&self) -> bool {
+        self.footprint_before == self.footprint_after
+    }
+
+    /// Returns whether the inspected configuration identity is unchanged.
+    #[must_use]
+    pub fn configuration_unchanged(&self) -> bool {
+        self.footprint_before.attached_configuration == self.footprint_after.attached_configuration
+    }
+
+    /// Returns whether the inspected checkpoint identity is unchanged.
+    #[must_use]
+    pub fn checkpoint_unchanged(&self) -> bool {
+        self.footprint_before.attached_checkpoint == self.footprint_after.attached_checkpoint
+            && self.footprint_before.attached_checkpoint_recorded
+            && self.footprint_after.attached_checkpoint_recorded
+    }
+
+    /// Returns whether the inspected runtime-state identity is unchanged.
+    #[must_use]
+    pub fn runtime_unchanged(&self) -> bool {
+        self.footprint_before.attached_runtime == self.footprint_after.attached_runtime
+            && self.footprint_before.attached_runtime_configuration
+                == self.footprint_after.attached_runtime_configuration
+            && self.footprint_before.attached_runtime_node_icounts
+                == self.footprint_after.attached_runtime_node_icounts
+            && self.footprint_before.attached_runtime_node_blobs
+                == self.footprint_after.attached_runtime_node_blobs
+            && self.footprint_before.attached_runtime_scheduler
+                == self.footprint_after.attached_runtime_scheduler
+            && self.footprint_before.attached_runtime_event_log
+                == self.footprint_after.attached_runtime_event_log
+    }
+
+    /// Returns whether the requested inspection time is the attached checkpoint time.
+    #[must_use]
+    pub fn requested_virtual_time_matches_checkpoint(&self) -> bool {
+        self.requested_virtual_time == self.footprint_before.virtual_time
+            && self.requested_virtual_time == self.footprint_after.virtual_time
+    }
+
+    /// Returns whether the read-only inspection advanced no virtual time.
+    #[must_use]
+    pub fn virtual_time_unchanged(&self) -> bool {
+        self.footprint_before.virtual_time == self.footprint_after.virtual_time
+    }
+
+    /// Returns whether the before/after causal projections are byte-identical.
+    #[must_use]
+    pub fn causal_subsequence_byte_identical(&self) -> bool {
+        self.causal_event_log_before.canonical_bytes()
+            == self.causal_event_log_after.canonical_bytes()
+    }
+
+    /// Returns whether every generated debugger entry is observational.
+    #[must_use]
+    pub fn observational_entries_are_non_causal(&self) -> bool {
+        self.observational_entries
+            .iter()
+            .all(|entry| entry.class() == SchedulerEventLogClass::Observational)
+    }
+
+    /// Returns whether this report satisfies the full read-only debugger contract.
+    #[must_use]
+    pub fn proves_read_only(&self) -> bool {
+        self.graph_unchanged()
+            && self.configuration_unchanged()
+            && self.checkpoint_unchanged()
+            && self.runtime_unchanged()
+            && self.requested_virtual_time_matches_checkpoint()
+            && self.virtual_time_unchanged()
+            && self.causal_subsequence_byte_identical()
+            && self.observational_entries_are_non_causal()
+    }
+}
+
+fn checkpoint_footprints(
+    checkpoints: &BTreeMap<ContentHash, Checkpoint>,
+) -> Vec<DebugReadOnlyCheckpointFootprint> {
+    checkpoints
+        .values()
+        .map(|checkpoint| DebugReadOnlyCheckpointFootprint {
+            id: checkpoint.id,
+            configuration: checkpoint.configuration,
+            kind: checkpoint.kind,
+            virtual_time: checkpoint.virtual_time,
+            event_log: checkpoint
+                .state
+                .as_ref()
+                .map(|state| state.event_log)
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DebugReadOnlyInspectionEvent {
+    Attach,
+    Inspect(DebugReadOnlyInspectionKind),
+    Detach,
+}
+
+impl DebugReadOnlyInspectionEvent {
+    fn diagnostic_name(self) -> String {
+        match self {
+            Self::Attach => String::from("debug.attach"),
+            Self::Inspect(kind) => format!("debug.inspect.{}", kind.diagnostic_suffix()),
+            Self::Detach => String::from("debug.detach"),
+        }
+    }
+
+    const fn phase(self) -> &'static str {
+        match self {
+            Self::Attach => "attach",
+            Self::Inspect(_) => "inspect",
+            Self::Detach => "detach",
+        }
+    }
+}
+
+fn debug_read_only_observation_entry(
+    sequence: u64,
+    at: VirtualTime,
+    event: DebugReadOnlyInspectionEvent,
+    attach: &DebugAttachReport,
+) -> SchedulerEventLogEntry {
+    let mut details = BTreeMap::new();
+    details.insert(
+        String::from("phase"),
+        EventAttributeValue::String(String::from(event.phase())),
+    );
+    details.insert(
+        String::from("configuration"),
+        EventAttributeValue::String(attach.configuration.to_hex()),
+    );
+    details.insert(
+        String::from("checkpoint"),
+        EventAttributeValue::String(attach.checkpoint.to_hex()),
+    );
+    details.insert(
+        String::from("runtime_state"),
+        EventAttributeValue::String(attach.runtime.runtime.id.to_hex()),
+    );
+    details.insert(
+        String::from("node"),
+        EventAttributeValue::Node(attach.gdbstub.node.clone()),
+    );
+    details.insert(String::from("read_only"), EventAttributeValue::Bool(true));
+    details.insert(String::from("causal"), EventAttributeValue::Bool(false));
+    SchedulerEventLogEntry::diagnostic(
+        sequence,
+        at,
+        EventDiagnosticPayload::new(event.diagnostic_name(), EventLevel::Debug, details),
+    )
 }
 
 /// Result of a graph-level fork operation.
