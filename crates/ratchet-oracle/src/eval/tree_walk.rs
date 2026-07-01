@@ -72,7 +72,7 @@ use crate::compile::{
     IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode,
     IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
-use crate::heap::HeapMemoryBudget;
+use crate::heap::{GenerationalGcTier, HeapMemoryBudget, RememberedSet};
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::GcStressPolicy;
 use crate::runtime::builtins::*;
@@ -355,6 +355,7 @@ pub struct TreeWalkOptions {
     force_cache_materialization_costs: MaterializationCosts,
     heap_memory_budget: Option<HeapMemoryBudget>,
     gc_stress_policy: GcStressPolicy,
+    thunk_resolve_barrier_tier: GenerationalGcTier,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
@@ -388,6 +389,7 @@ impl Default for TreeWalkOptions {
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             heap_memory_budget: None,
             gc_stress_policy: GcStressPolicy::disabled(),
+            thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]
@@ -846,6 +848,7 @@ pub struct TreeWalk {
     active_primop_arg_roots: Vec<EvalPrimOpArg>,
     active_primop_arg_frames: Vec<ActivePrimopArgFrame>,
     suspended_env_roots: Vec<SuspendedTreeWalkEnv>,
+    thunk_resolve_remembered_set: RememberedSet,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers

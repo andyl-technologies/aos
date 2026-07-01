@@ -19,6 +19,7 @@ pub struct EvalOutcome {
     pub(crate) impure_input_trace_complete: bool,
     pub(crate) persist_force_cache_hit_keys: Vec<PersistNodeMetadataKey>,
     pub(crate) derivations: Vec<EvalDerivation>,
+    pub(crate) thunk_resolve_remembered_set: RememberedSet,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
 }
 
@@ -38,6 +39,10 @@ impl std::fmt::Debug for EvalOutcome {
                 &self.impure_input_trace_complete,
             )
             .field("derivations", &self.derivations)
+            .field(
+                "thunk_resolve_remembered_set",
+                &self.thunk_resolve_remembered_set,
+            )
             .field(
                 "cheap_memory_advice_report",
                 &self.cheap_memory_advice_report,
@@ -98,6 +103,11 @@ impl EvalOutcome {
     /// Returns derivations observed while evaluating the root expression.
     pub fn derivations(&self) -> &[EvalDerivation] {
         &self.derivations
+    }
+
+    /// Returns the remembered set populated by thunk-resolution write barriers.
+    pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
+        &self.thunk_resolve_remembered_set
     }
 
     /// Returns the post-evaluation cheap heap advice report, if one was requested.

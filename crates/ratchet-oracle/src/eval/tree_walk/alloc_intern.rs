@@ -763,8 +763,14 @@ impl TreeWalk {
             }
             ForceClaim::Claimed(guard) => {
                 self.push_active_force_root(id, span, value)?;
-                let result =
-                    self.force_memoized_claimed_thunk(id, span, forced_payload, &thunk, guard);
+                let result = self.force_memoized_claimed_thunk(
+                    id,
+                    span,
+                    value,
+                    forced_payload,
+                    &thunk,
+                    guard,
+                );
                 self.pop_active_force_root(value);
                 result
             }
@@ -775,6 +781,7 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         span: Span,
+        source_thunk: Value,
         forced_payload: u64,
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
@@ -789,9 +796,7 @@ impl TreeWalk {
         if memoization_admitted
             && let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
         {
-            let value = guard.finish(value).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-            })?;
+            let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
             self.unmark_lazy_identity_thunk_payload(forced_payload);
             return Ok(value);
         }
@@ -914,9 +919,7 @@ impl TreeWalk {
         let value = result?;
         let impure_trace =
             impure_trace_cursor.map(|cursor| self.force_cache_impure_input_trace_segment(cursor));
-        let value = guard
-            .finish(value)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
         if let Some(active_force_cache_node) = active_force_cache_node {
             let dependency = active_force_cache_node.node();
             self.replace_active_memo_reads(active_force_cache_node);
@@ -941,5 +944,28 @@ impl TreeWalk {
             );
         }
         Ok(value)
+    }
+
+    fn finish_forced_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+        guard: ForceGuard<'_>,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let tier = self.options.thunk_resolve_barrier_tier();
+        if tier == GenerationalGcTier::OneShotArena {
+            return guard.finish(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+            });
+        }
+        let mut barrier = self
+            .heap
+            .thunk_resolve_write_barrier(tier, source_thunk, &mut self.thunk_resolve_remembered_set)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        guard
+            .finish_with_barrier(value, &mut barrier)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))
     }
 }

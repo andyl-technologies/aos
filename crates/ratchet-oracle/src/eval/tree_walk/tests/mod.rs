@@ -255,6 +255,7 @@ mod fetchurl;
 mod filesystem_1;
 mod filesystem_2;
 mod flake;
+mod gc;
 mod hash;
 mod hash_file_surface;
 mod numeric;

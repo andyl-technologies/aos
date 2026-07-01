@@ -740,6 +740,35 @@ impl EvalHeap {
         }
     }
 
+    /// Replaces a heap record's allocation domain in evaluator tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not an evaluator heap
+    /// value. Returns [`EvalHeapError::UnknownPointer`] if the heap handle does
+    /// not belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`]
+    /// if the handle belongs to this heap but references another typed record.
+    #[cfg(test)]
+    pub(crate) fn set_allocation_domain_for_test(
+        &mut self,
+        value: Value,
+        domain: HeapAllocationDomain,
+    ) -> Result<(), EvalHeapError> {
+        let (tag, ptr) = any_value_heap_ptr(value)?;
+        let address = ptr.as_ptr() as usize;
+        let record = self
+            .records
+            .iter_mut()
+            .find(|record| record.ptr.as_ptr() as usize == address)
+            .ok_or_else(|| EvalHeapError::unknown(tag, ptr))?;
+        let actual = record.object.tag();
+        if actual != tag {
+            return Err(EvalHeapError::record_type_mismatch(tag, actual, ptr));
+        }
+        record.allocation_domain = domain;
+        Ok(())
+    }
+
     /// Returns the number of typed objects registered in this heap.
     pub fn len(&self) -> usize {
         self.records.len()

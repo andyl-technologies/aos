@@ -135,6 +135,7 @@ fn eval_whnf_owned_with_evaluator(
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
+        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         cheap_memory_advice_report,
     })
 }
@@ -247,6 +248,7 @@ fn eval_instantiation_attr_path_with_evaluator(
         impure_input_trace_complete: evaluator.impure_input_trace_complete,
         persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
+        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         cheap_memory_advice_report,
     })
 }

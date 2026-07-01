@@ -5631,8 +5631,14 @@ and helps the oracle directly.
       insertion for a permanent-to-young publication, inline/external no-op
       classification, non-thunk source rejection, and the current caller-owned
       invariant that the adapter must be paired with the matching force guard.
-      The actual daemon card table, mutable generation updates, automatic
-      tree-walk forcing integration, and Tier-B collector integration remain open
+      `TreeWalkOptions` can now select the thunk-resolution barrier tier;
+      tree-walk forcing publishes newly evaluated and force-cache replayed thunk
+      results through the heap-backed barrier when daemon mode is selected, and
+      exposes the tree-walk-owned `RememberedSet` on `TreeWalk`/`EvalOutcome`.
+      Required old/permanent-to-young edges are recorded there; replayed
+      permanent-shared payloads remain no-op barrier writes. The actual daemon
+      card table, mutable generation updates, and Tier-B collector integration
+      remain open
       under `heap/gc.rs`.
 - [x] Current safe-crate prerequisite already in place: the monolithic
       `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`

@@ -223,6 +223,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with a configured thunk-resolution barrier tier.
+    pub fn with_thunk_resolve_barrier_tier(tier: GenerationalGcTier) -> Self {
+        let mut options = Self::default();
+        options.set_thunk_resolve_barrier_tier(tier);
+        options
+    }
+
     /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
     pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
         let mut options = Self::default();
@@ -624,6 +631,11 @@ impl TreeWalkOptions {
         self.gc_stress_policy = GcStressPolicy::disabled();
     }
 
+    /// Selects the generational tier used for thunk-resolution write barriers.
+    pub fn set_thunk_resolve_barrier_tier(&mut self, tier: GenerationalGcTier) {
+        self.thunk_resolve_barrier_tier = tier;
+    }
+
     /// Enables post-evaluation cheap heap advice for owned evaluation outcomes.
     pub fn set_heap_cheap_memory_advice_min_idle_epochs(&mut self, min_idle_epochs: u64) {
         self.heap_cheap_memory_advice_min_idle_epochs = Some(min_idle_epochs);
@@ -801,6 +813,11 @@ impl TreeWalkOptions {
     /// Returns the configured GC-stress polling policy.
     pub const fn gc_stress_policy(&self) -> GcStressPolicy {
         self.gc_stress_policy
+    }
+
+    /// Returns the configured thunk-resolution barrier tier.
+    pub const fn thunk_resolve_barrier_tier(&self) -> GenerationalGcTier {
+        self.thunk_resolve_barrier_tier
     }
 
     /// Returns the idle-epoch threshold for post-evaluation cheap heap advice.

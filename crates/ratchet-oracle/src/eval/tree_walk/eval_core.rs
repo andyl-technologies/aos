@@ -358,6 +358,7 @@ impl TreeWalk {
             active_primop_arg_roots: Vec::new(),
             active_primop_arg_frames: Vec::new(),
             suspended_env_roots: Vec::new(),
+            thunk_resolve_remembered_set: RememberedSet::new(),
             lazy_identity_thunks: BTreeSet::new(),
             lazy_foldl_initial_thunks: BTreeSet::new(),
         }
@@ -407,6 +408,11 @@ impl TreeWalk {
     /// Returns the evaluator heap that owns heap-backed values.
     pub const fn heap(&self) -> &EvalHeap {
         &self.heap
+    }
+
+    /// Returns the remembered set populated by thunk-resolution write barriers.
+    pub const fn thunk_resolve_remembered_set(&self) -> &RememberedSet {
+        &self.thunk_resolve_remembered_set
     }
 
     /// Returns user-facing trace output emitted so far.

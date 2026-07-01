@@ -1444,8 +1444,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       insertion for a permanent-to-young publication, inline/external no-op
       classification, non-thunk source rejection, and the current caller-owned
       invariant that the adapter must be paired with the matching force guard.
-      The real daemon card table, mutable runtime generation updates, automatic
-      use by tree-walk forcing, and full Tier-B collector integration remain open
+      `TreeWalkOptions` can now select the thunk-resolution barrier tier, and
+      `TreeWalk::force_value` publishes both newly evaluated and force-cache
+      replayed thunk results through the heap-backed barrier when daemon mode is
+      selected. Required old/permanent-to-young edges are recorded into a
+      tree-walk-owned `RememberedSet` exposed on `TreeWalk` and `EvalOutcome`
+      for diagnostics and tests; replayed permanent-shared payloads remain
+      no-op barrier writes. The real daemon card table, mutable runtime
+      generation updates, and full Tier-B collector integration remain open
       in the row above.
 - [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
