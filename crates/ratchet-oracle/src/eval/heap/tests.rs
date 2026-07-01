@@ -2650,6 +2650,129 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
 }
 
 #[test]
+fn collector_poll_minor_gc_keeps_hash_consed_roots_out_of_survivor_frontier() {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("thunk allocates");
+    let lambda = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lambda allocates");
+    let primop = heap
+        .alloc_primop(EvalPrimOp::new(symbol))
+        .expect("primop allocates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"hash-consed".to_vec()))
+        .expect("string allocates");
+    let path = heap
+        .alloc_path(NixString::from_bytes(b"/nix/store/source".to_vec()))
+        .expect("path allocates");
+    let list = heap
+        .alloc_list(NixList::new(vec![Value::int(1), Value::bool(true)]))
+        .expect("list allocates");
+    let attrs = heap
+        .alloc_attrs(9, attrs_with_value(Value::int(3)))
+        .expect("attrs allocates");
+    let expected_cold_hash_consed_bytes = record_layout_size(&heap, string)
+        + record_layout_size(&heap, path)
+        + record_layout_size(&heap, list)
+        + record_layout_size(&heap, attrs);
+    let poll = heap
+        .permanent_allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("permanent allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    for (slot, value) in [string, path, list, attrs].into_iter().enumerate() {
+        roots
+            .try_push_value_stack(slot, value)
+            .expect("hash-consed root records");
+    }
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+
+    assert_eq!(
+        [string, path, list, attrs].map(|value| allocation_domain(&heap, value)),
+        [HeapAllocationDomain::PermanentShared; 4]
+    );
+    assert_eq!(
+        [thunk, lambda, primop].map(|value| allocation_domain(&heap, value)),
+        [HeapAllocationDomain::Worker; 3]
+    );
+    assert_eq!(
+        heap.cold_hash_consed_bytes(0),
+        expected_cold_hash_consed_bytes
+    );
+    assert_eq!(
+        planned.roots(),
+        &[
+            ResolvedValueGeneration::Heap {
+                address: gc_address(string),
+                generation: HeapGeneration::Permanent,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(path),
+                generation: HeapGeneration::Permanent,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(list),
+                generation: HeapGeneration::Permanent,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(attrs),
+                generation: HeapGeneration::Permanent,
+            },
+        ]
+    );
+    assert!(planned.plan().survivors().is_empty());
+    assert_eq!(planned.nursery_objects().len(), 3);
+    assert!(
+        planned
+            .nursery_objects()
+            .iter()
+            .any(|object| object.address() == gc_address(thunk))
+    );
+    assert!(
+        planned
+            .nursery_objects()
+            .iter()
+            .any(|object| object.address() == gc_address(lambda))
+    );
+    assert!(
+        planned
+            .nursery_objects()
+            .iter()
+            .any(|object| object.address() == gc_address(primop))
+    );
+    assert_eq!(planned.reference_slots().len(), 4);
+    assert!(planned.reference_slots().iter().all(|slot| matches!(
+        slot.value(),
+        ResolvedValueGeneration::Heap {
+            generation: HeapGeneration::Permanent,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn collector_poll_minor_gc_commit_plan_rejects_foreign_destination_plan() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());

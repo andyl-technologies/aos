@@ -1453,7 +1453,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       no-op barrier writes. The real daemon card table, mutable runtime
       generation updates, and full Tier-B collector integration remain open
       in the row above.
-- [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
+- [x] Hash-consed values allocated in non-collected permanent space, bypassing
+      promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
+      Closed by the current permanent-shared allocation surface: canonical
+      strings, paths, list spines, and flat attrsets are side-table-marked
+      `PermanentShared`, counted by cold hash-consed accounting, and enter
+      collector-poll minor-GC plans as permanent roots rather than survivor
+      frontier objects. Thunks, lambdas, and primop wrappers remain
+      worker-domain nursery candidates and are excluded from hash-consed cold
+      accounting. Daemon lifetime, worker-arena reset/drop admission, and full
+      Tier-B collector integration remain open in the broader heap/GC rows.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
 
 ### Region inference (§5)

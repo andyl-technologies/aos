@@ -5369,7 +5369,9 @@ and helps the oracle directly.
       record that placement in the typed side table; thunks, lambdas, and
       primop wrappers remain worker-domain allocations. Tests pin split
       accounting, domain-marked records, unchanged cons-table reuse, and the
-      current cross-domain caveat that permanent list/attr containers may hold
+      current collector-poll contract that hash-consed roots are permanent
+      minor-GC roots rather than survivor-frontier objects. They also preserve
+      the cross-domain caveat that permanent list/attr containers may hold
       worker-domain child handles visible to precise root scanning. The real
       daemon lifetime model, worker-arena reset/drop admission policy, exported
       ABI, and Tier-B collector integration remain open under the broader
