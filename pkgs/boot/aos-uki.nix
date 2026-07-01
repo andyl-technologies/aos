@@ -102,6 +102,19 @@ in
           # trailing-newline rules consistently.
           printf '%s' "${cmdline}" > cmdline
 
+          # sd-boot derives a UKI menu entry's *sort key* from the
+          # IMAGE_ID/ID field of the embedded os-release (systemd's
+          # bootspec_pick_name_version_sort_key). Whenever a sort key is
+          # present, sd-boot orders entries by version and never consults the
+          # filename. AOS instead orders the menu by *generation*, encoded in
+          # the ESP filename `aos-<generation>-<hash>.efi` (see
+          # crates/aos-package/src/esp.rs). So strip ID/IMAGE_ID here: with no
+          # sort key, sd-boot falls back to ordering by filename, placing the
+          # newest generation first regardless of the version strings. Only
+          # the sort key is affected — PRETTY_NAME and VERSION remain, so the
+          # menu title and version display are unchanged.
+          sed -E '/^(ID|IMAGE_ID)=/d' ${osRelease} > os-release.menu
+
           # Resolve the kernel's actual vmlinuz path — the kernel
           # derivation names it with the upstream version suffix
           # (vmlinuz-6.18.12). ukify rejects glob patterns passed
@@ -122,7 +135,7 @@ in
             --linux="$vmlinuz" \
             --initrd=${initrd}/initrd.img \
             --cmdline=@cmdline \
-            --os-release=@${osRelease} \
+            --os-release=@os-release.menu \
             ${signArgs} \
             ${pcrArgs} \
             --output=$out/aos-${name}-${version}.efi

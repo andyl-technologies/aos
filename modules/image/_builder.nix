@@ -6,7 +6,7 @@
 ##!   Partition 1 (ESP)    — vfat, sized to its contents x2 (A/B headroom)
 ##!                          EFI/BOOT/BOOTX64.EFI              (UEFI fallback)
 ##!                          EFI/systemd/systemd-bootx64.efi   (sd-boot canonical)
-##!                          EFI/Linux/aos-<toplevel-hash>.efi (UKI)
+##!                          EFI/Linux/aos-1-<toplevel-hash>.efi (gen-1 UKI)
 ##!                          loader/loader.conf                (sd-boot config)
 ##!   Partition 2 (root-a) — rootFsType (erofs/ext4), sized to the rootfs image
 ##!
@@ -35,9 +35,15 @@
   toplevel = system.config.system.build.toplevel;
   toplevelStorePath = toString toplevel;
   toplevelStoreHash = builtins.substring 0 32 (baseNameOf toplevelStorePath);
-  # The ESP UKI entry name is derived from the toplevel store hash. apm uses
-  # the same convention when reconciling retained generations at runtime.
-  ukiFilename = "aos-${toplevelStoreHash}.efi";
+  # The ESP UKI entry name is `aos-<generation>-<toplevel-hash>.efi`. The
+  # leading generation number orders the sd-boot menu newest-first (sd-boot
+  # sorts entries by filename descending; see `esp_uki_name` in
+  # crates/aos-package/src/esp.rs). The image's baked-in generation is always
+  # 1: the first-boot seed (modules/services/ignition.nix) records the image's
+  # toplevel as `gen-1`. apm's `esp_uki_name` uses the same convention when
+  # reconciling retained generations at runtime, so this entry needs no
+  # re-copy once apm first reconciles.
+  ukiFilename = "aos-1-${toplevelStoreHash}.efi";
   ukiOutputFilename = "aos-${system.config.aos.system.name}-${version}.efi";
   # Kernel command line baked into system.build.uki.
   kernelParams = lib.concatStringsSep " " (

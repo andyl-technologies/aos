@@ -9,9 +9,12 @@
 //! ESP layout owned here:
 //! ```text
 //! /boot/
-//!   EFI/Linux/aos-<tophash>.efi   one UKI per retained generation
-//!   loader/loader.conf            `default aos-<current-tophash>.efi`
+//!   EFI/Linux/aos-<gen>-<tophash>.efi   one UKI per retained generation
+//!   loader/loader.conf                  `default aos-<cur-gen>-<tophash>.efi`
 //! ```
+//!
+//! The leading `<gen>` orders the sd-boot menu newest-first; see
+//! [`esp_uki_name`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
@@ -66,12 +69,24 @@ impl Default for EspPaths {
     }
 }
 
-/// Return the ESP UKI filename for a toplevel store path.
+/// Return the ESP UKI filename for a generation's toplevel store path.
 ///
-/// The normal form is `aos-<32-character-store-hash>.efi`. If the path does
-/// not look like a Nix store path, a deterministic SHA-256 based fallback is
-/// used so callers still get a stable filename.
-pub fn esp_uki_name(toplevel_store_path: &str) -> String {
+/// The form is `aos-<generation>-<32-character-store-hash>.efi`. The leading
+/// generation number is what orders the boot menu: these entries carry no
+/// `sort-key` and share a `VERSION_ID`, so sd-boot falls back to ordering by
+/// filename, and does so *descending* (its `boot_entry_compare` tie-break is
+/// `-strverscmp_improved(a->id, b->id)`). `strverscmp_improved` compares the
+/// generation's digit run numerically — so `10` sorts above `2` — which places
+/// the newest generation at the top of the menu, matching NixOS's newest-first
+/// behavior. The store hash keeps the name content-addressed by toplevel (and
+/// unique) as the secondary component; it is never reached in the ordering
+/// because distinct generations always differ in the leading number.
+///
+/// The number is emitted bare (no zero-padding) so it never has leading zeros,
+/// keeping the numeric comparison unambiguous. If the path does not look like a
+/// Nix store path, a deterministic SHA-256 based fallback hash is used so
+/// callers still get a stable filename.
+pub fn esp_uki_name(generation: u32, toplevel_store_path: &str) -> String {
     let base = Path::new(toplevel_store_path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -85,7 +100,7 @@ pub fn esp_uki_name(toplevel_store_path: &str) -> String {
         let digest = Sha256::digest(toplevel_store_path.as_bytes());
         hex::encode(digest).chars().take(32).collect()
     };
-    format!("aos-{hash}.efi")
+    format!("aos-{generation}-{hash}.efi")
 }
 
 /// Build the retained generation set for ESP reconciliation.
@@ -222,7 +237,7 @@ fn place_generation_uki(
     linux_dir: &Path,
     printer: &Printer,
 ) -> Result<()> {
-    let name = esp_uki_name(&generation.toplevel);
+    let name = esp_uki_name(generation.number, &generation.toplevel);
     let target = linux_dir.join(&name);
     if target.exists() {
         return Ok(());
@@ -256,7 +271,7 @@ fn write_loader_conf(
     let current_name = retained
         .iter()
         .find(|generation| generation.number == current)
-        .map(|generation| esp_uki_name(&generation.toplevel));
+        .map(|generation| esp_uki_name(generation.number, &generation.toplevel));
     let default = current_name
         .filter(|name| linux_dir.join(name).exists())
         .unwrap_or_else(|| "aos-*".to_string());
@@ -295,7 +310,12 @@ fn protected_names(
 ) -> BTreeSet<String> {
     let by_number: BTreeMap<u32, String> = retained
         .iter()
-        .map(|generation| (generation.number, esp_uki_name(&generation.toplevel)))
+        .map(|generation| {
+            (
+                generation.number,
+                esp_uki_name(generation.number, &generation.toplevel),
+            )
+        })
         .collect();
     let mut protected: BTreeSet<String> = by_number.values().cloned().collect();
     if let Some(name) = by_number.get(&current) {
@@ -445,17 +465,48 @@ mod tests {
 
     #[test]
     fn esp_uki_name_uses_toplevel_store_hash() {
-        let name = esp_uki_name("/nix/store/0123456789abcdefghijklmnopqrstuv-aos-system-toplevel");
-        assert_eq!(name, "aos-0123456789abcdefghijklmnopqrstuv.efi");
+        let name =
+            esp_uki_name(3, "/nix/store/0123456789abcdefghijklmnopqrstuv-aos-system-toplevel");
+        assert_eq!(name, "aos-3-0123456789abcdefghijklmnopqrstuv.efi");
     }
 
     #[test]
     fn esp_uki_name_has_stable_fallback() {
-        let first = esp_uki_name("/not-a-store-path");
-        let second = esp_uki_name("/not-a-store-path");
+        let first = esp_uki_name(1, "/not-a-store-path");
+        let second = esp_uki_name(1, "/not-a-store-path");
         assert_eq!(first, second);
-        assert!(first.starts_with("aos-"));
+        assert!(first.starts_with("aos-1-"));
         assert!(first.ends_with(".efi"));
+    }
+
+    #[test]
+    fn esp_uki_name_encodes_generation_as_leading_numeric_field() {
+        // sd-boot orders entries by filename descending, comparing runs of
+        // digits numerically (`strverscmp_improved`). What this function must
+        // guarantee is that the generation is the leading numeric field after
+        // `aos-` and shares the trailing hash across generations, so the digit
+        // run alone decides ordering. The descending numeric sort itself is
+        // sd-boot's job (verified against its source), not reproduced here —
+        // Rust's lexical `str` ordering would disagree (it ranks "9" above
+        // "10"), which is exactly why the number must not be zero-padded and
+        // why we do not assert a lexical sort.
+        let top = "/nix/store/0123456789abcdefghijklmnopqrstuv-aos-system-toplevel";
+        for generation in [1u32, 2, 9, 10, 123] {
+            let name = esp_uki_name(generation, top);
+            assert_eq!(
+                name,
+                format!("aos-{generation}-0123456789abcdefghijklmnopqrstuv.efi")
+            );
+            // The field between the first two dashes is exactly the number,
+            // with no padding (no leading zero) that could perturb the
+            // numeric comparison.
+            let field = name
+                .strip_prefix("aos-")
+                .and_then(|rest| rest.split('-').next())
+                .unwrap();
+            assert_eq!(field, generation.to_string());
+            assert!(!field.starts_with('0'));
+        }
     }
 
     #[test]
@@ -515,7 +566,7 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("published.efi"), b"uki-2").unwrap();
 
-        let gen1_name = esp_uki_name("/nix/store/11111111111111111111111111111111-aos");
+        let gen1_name = esp_uki_name(1, "/nix/store/11111111111111111111111111111111-aos");
         fs::write(paths.linux_dir.join(&gen1_name), b"existing").unwrap();
         fs::write(paths.linux_dir.join("aos-stale.efi"), b"stale").unwrap();
         fs::write(paths.linux_dir.join("other.efi"), b"other").unwrap();
@@ -541,7 +592,7 @@ mod tests {
 
         reconcile_with_paths(&retained, 2, Some(1), &printer, &paths, false).unwrap();
 
-        let gen2_name = esp_uki_name("/nix/store/22222222222222222222222222222222-aos");
+        let gen2_name = esp_uki_name(2, "/nix/store/22222222222222222222222222222222-aos");
         assert_eq!(
             fs::read(paths.linux_dir.join(&gen1_name)).unwrap(),
             b"existing"
@@ -558,6 +609,7 @@ mod tests {
             !paths
                 .linux_dir
                 .join(esp_uki_name(
+                    3,
                     "/nix/store/33333333333333333333333333333333-aos"
                 ))
                 .exists()
