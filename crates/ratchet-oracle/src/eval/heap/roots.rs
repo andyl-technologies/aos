@@ -751,12 +751,30 @@ impl AllocationCollectorPollScan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollNurseryFields {
     address: GcHeapAddress,
-    fields: Vec<ResolvedValueGeneration>,
+    fields: Vec<AllocationCollectorPollNurseryField>,
+    field_values: Vec<ResolvedValueGeneration>,
 }
 
 impl AllocationCollectorPollNurseryFields {
-    fn new(address: GcHeapAddress, fields: Vec<ResolvedValueGeneration>) -> Self {
-        Self { address, fields }
+    fn new(
+        address: GcHeapAddress,
+        fields: Vec<AllocationCollectorPollNurseryField>,
+    ) -> Result<Self, EvalHeapError> {
+        let mut field_values = Vec::new();
+        field_values.try_reserve_exact(fields.len()).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_NURSERY_FIELD_VALUES_TABLE,
+                entries: fields.len(),
+            }
+        })?;
+        for field in &fields {
+            field_values.push(field.value());
+        }
+        Ok(Self {
+            address,
+            fields,
+            field_values,
+        })
     }
 
     /// Returns the young object whose fields were scanned.
@@ -764,9 +782,36 @@ impl AllocationCollectorPollNurseryFields {
         self.address
     }
 
-    /// Returns the object's precise outgoing field metadata.
-    pub fn fields(&self) -> &[ResolvedValueGeneration] {
+    /// Returns the object's precise outgoing fields.
+    pub fn fields(&self) -> &[AllocationCollectorPollNurseryField] {
         &self.fields
+    }
+
+    fn field_values(&self) -> &[ResolvedValueGeneration] {
+        &self.field_values
+    }
+}
+
+/// One precise outgoing field copied from a young object for minor-GC planning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollNurseryField {
+    source: HeapEdgeSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollNurseryField {
+    fn new(source: HeapEdgeSource, value: ResolvedValueGeneration) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the object-field label from the typed heap scanner.
+    pub const fn source(&self) -> &HeapEdgeSource {
+        &self.source
+    }
+
+    /// Returns the heap value copied from the field.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
     }
 }
 
@@ -788,7 +833,9 @@ pub enum AllocationCollectorPollReferenceSource {
         /// The survivor object whose field was copied.
         object: GcHeapAddress,
         /// The field index in the object's precise nursery-field order.
-        field: usize,
+        field_index: usize,
+        /// The object-field label from the typed heap scanner.
+        source: HeapEdgeSource,
     },
 }
 
@@ -1304,7 +1351,10 @@ impl EvalHeap {
                 }
             })?;
             for edge in edges {
-                fields.push(self.resolved_generation_for_value(edge.value())?);
+                fields.push(AllocationCollectorPollNurseryField::new(
+                    edge.source().clone(),
+                    self.resolved_generation_for_value(edge.value())?,
+                ));
             }
 
             let entries = nursery_fields.len().checked_add(1).ok_or(
@@ -1318,7 +1368,7 @@ impl EvalHeap {
                     entries,
                 }
             })?;
-            nursery_fields.push(AllocationCollectorPollNurseryFields::new(address, fields));
+            nursery_fields.push(AllocationCollectorPollNurseryFields::new(address, fields)?);
         }
         Ok(nursery_fields)
     }
@@ -1354,14 +1404,15 @@ impl EvalHeap {
 
         for survivor in plan.survivors() {
             let fields = nursery_fields_for_survivor(nursery_fields, survivor.address())?;
-            for (field, value) in fields.fields().iter().copied().enumerate() {
+            for (field_index, field) in fields.fields().iter().enumerate() {
                 push_reference_slot(
                     &mut reference_slots,
                     AllocationCollectorPollReferenceSource::NurseryField {
                         object: survivor.address(),
-                        field,
+                        field_index,
+                        source: field.source().clone(),
                     },
-                    value,
+                    field.value(),
                 )?;
             }
         }
@@ -1423,7 +1474,10 @@ fn nursery_field_views(
         }
     })?;
     for object in nursery_fields {
-        views.push(NurseryObjectFields::new(object.address(), object.fields()));
+        views.push(NurseryObjectFields::new(
+            object.address(),
+            object.field_values(),
+        ));
     }
     Ok(views)
 }

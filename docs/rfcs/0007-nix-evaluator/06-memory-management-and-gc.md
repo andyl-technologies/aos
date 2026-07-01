@@ -901,15 +901,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       `AllocationCollectorPollMinorGcPlan` now carries a deterministic,
       labeled reference-slot sequence for the future rewrite step: explicit
       roots from the poll scan, remembered-edge targets in snapshot order, and
-      precise fields of planned young survivors in survivor order. The helper
-      `reference_rewrite_plan` delegates that sequence to
-      `MinorGcReferenceRewritePlan` once a relocation map exists, preserving
-      slot indices so tests can link each rewrite back to its copied root,
-      remembered edge, or survivor field. Tests cover root and nursery-field
-      rewrites plus remembered-edge rewrites. This is still copied slot
-      metadata only: it does not hold mutable evaluator roots, update object
-      fields, rewrite remembered source fields, or apply the rewrite plan to
-      live runtime state.
+      precise `HeapEdgeSource`-labeled fields of planned young survivors in
+      survivor order. The helper `reference_rewrite_plan` delegates that
+      sequence to `MinorGcReferenceRewritePlan` once a relocation map exists,
+      preserving slot indices so tests can link each rewrite back to its copied
+      root, remembered edge, or survivor field. Tests cover root and
+      nursery-field rewrites plus remembered-edge rewrites. This is still copied
+      slot metadata only: it does not hold mutable evaluator roots, update
+      object fields, identify the concrete remembered source field, rewrite
+      remembered source fields, or apply the rewrite plan to live runtime state.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

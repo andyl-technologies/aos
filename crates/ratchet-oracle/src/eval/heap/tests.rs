@@ -1384,8 +1384,12 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     let child = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("child thunk allocates");
-    let frame = EvalFrame::new(1).expect("frame allocates");
+    let sibling = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(8)))
+        .expect("sibling thunk allocates");
+    let frame = EvalFrame::new(2).expect("frame allocates");
     frame.set(0, child).expect("slot writes");
+    frame.set(1, sibling).expect("slot writes");
     let env = EvalEnv::capture(&[frame]).expect("env captures");
     let lambda = heap
         .alloc_lambda(EvalLambda::new(
@@ -1425,24 +1429,49 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
             generation: HeapGeneration::Young,
         }]
     );
-    assert_eq!(planned.nursery_objects().len(), 2);
-    assert_eq!(planned.nursery_fields().len(), 2);
+    assert_eq!(planned.nursery_objects().len(), 3);
+    assert_eq!(planned.nursery_fields().len(), 3);
     let lambda_fields = planned
         .nursery_fields()
         .iter()
         .find(|fields| fields.address() == gc_address(lambda))
         .expect("lambda field metadata records");
+    assert_eq!(lambda_fields.fields().len(), 2);
     assert_eq!(
-        lambda_fields.fields(),
-        &[ResolvedValueGeneration::Heap {
+        lambda_fields.fields()[0].source(),
+        &HeapEdgeSource::CapturedEnv {
+            owner: CapturedRootOwner::Lambda,
+            frame: 0,
+            slot: 0,
+        }
+    );
+    assert_eq!(
+        lambda_fields.fields()[0].value(),
+        ResolvedValueGeneration::Heap {
             address: gc_address(child),
             generation: HeapGeneration::Young,
-        }]
+        }
     );
-    assert_eq!(planned.plan().survivors().len(), 2);
+    assert_eq!(
+        lambda_fields.fields()[1].source(),
+        &HeapEdgeSource::CapturedEnv {
+            owner: CapturedRootOwner::Lambda,
+            frame: 0,
+            slot: 1,
+        }
+    );
+    assert_eq!(
+        lambda_fields.fields()[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(sibling),
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(planned.plan().survivors().len(), 3);
     assert_eq!(planned.plan().survivors()[0].address(), gc_address(lambda));
     assert_eq!(planned.plan().survivors()[1].address(), gc_address(child));
-    assert_eq!(planned.reference_slots().len(), 2);
+    assert_eq!(planned.plan().survivors()[2].address(), gc_address(sibling));
+    assert_eq!(planned.reference_slots().len(), 3);
     assert_eq!(
         planned.reference_slots()[0].source(),
         &AllocationCollectorPollReferenceSource::Root {
@@ -1460,7 +1489,12 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         planned.reference_slots()[1].source(),
         &AllocationCollectorPollReferenceSource::NurseryField {
             object: gc_address(lambda),
-            field: 0,
+            field_index: 0,
+            source: HeapEdgeSource::CapturedEnv {
+                owner: CapturedRootOwner::Lambda,
+                frame: 0,
+                slot: 0,
+            },
         }
     );
     assert_eq!(
@@ -1470,27 +1504,54 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
             generation: HeapGeneration::Young,
         }
     );
+    assert_eq!(
+        planned.reference_slots()[2].source(),
+        &AllocationCollectorPollReferenceSource::NurseryField {
+            object: gc_address(lambda),
+            field_index: 1,
+            source: HeapEdgeSource::CapturedEnv {
+                owner: CapturedRootOwner::Lambda,
+                frame: 0,
+                slot: 1,
+            },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[2].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(sibling),
+            generation: HeapGeneration::Young,
+        }
+    );
 
     let lambda_destination = static_gc_address(0x1000_0000);
     let child_destination = static_gc_address(0x1000_1000);
+    let sibling_destination = static_gc_address(0x1000_2000);
     let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
         planned.plan(),
         &[
             MinorGcRelocationDestination::new(gc_address(lambda), lambda_destination),
             MinorGcRelocationDestination::new(gc_address(child), child_destination),
+            MinorGcRelocationDestination::new(gc_address(sibling), sibling_destination),
         ],
     )
     .expect("relocation plan builds");
     let rewrite_plan = planned
         .reference_rewrite_plan(&relocation_plan)
         .expect("reference rewrite plan builds");
-    assert_eq!(rewrite_plan.rewrites().len(), 2);
+    assert_eq!(rewrite_plan.rewrites().len(), 3);
     assert_eq!(rewrite_plan.rewrites()[0].slot(), 0);
     assert_eq!(rewrite_plan.rewrites()[0].source(), gc_address(lambda));
     assert_eq!(rewrite_plan.rewrites()[0].destination(), lambda_destination);
     assert_eq!(rewrite_plan.rewrites()[1].slot(), 1);
     assert_eq!(rewrite_plan.rewrites()[1].source(), gc_address(child));
     assert_eq!(rewrite_plan.rewrites()[1].destination(), child_destination);
+    assert_eq!(rewrite_plan.rewrites()[2].slot(), 2);
+    assert_eq!(rewrite_plan.rewrites()[2].source(), gc_address(sibling));
+    assert_eq!(
+        rewrite_plan.rewrites()[2].destination(),
+        sibling_destination
+    );
 }
 
 #[test]
