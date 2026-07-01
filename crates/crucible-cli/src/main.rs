@@ -1287,9 +1287,15 @@ mod tests {
         let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
         let report = run_selftest(&cli)?;
 
-        assert_eq!(report.verified.len(), 1);
-        assert_eq!(report.verified[0].scenario_name, "happy-path.scn");
-        assert_eq!(report.verified[0].runs, 5);
+        let scenario_names = report
+            .verified
+            .iter()
+            .map(|verified| verified.scenario_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(report.verified.len(), 2);
+        assert!(scenario_names.contains(&"happy-path.scn"));
+        assert!(scenario_names.contains(&"partition-recovery.scn"));
+        assert!(report.verified.iter().all(|verified| verified.runs == 5));
         dispatch(&cli)?;
 
         Ok(())
