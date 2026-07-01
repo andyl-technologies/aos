@@ -922,6 +922,7 @@ mod tests {
             requires_features: Vec::new(),
             expose: None,
             expose_artifact: None,
+            config_module: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
@@ -1104,7 +1105,10 @@ mod tests {
         // compare equal.
         let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let nix32 = normalize_sha256_nix32(sri);
-        assert_ne!(sri, nix32, "the two spellings must differ for the test to bite");
+        assert_ne!(
+            sri, nix32,
+            "the two spellings must differ for the test to bite"
+        );
 
         let digest = match digest_map(sri) {
             serde_json::Value::Object(map) => map
@@ -1112,7 +1116,10 @@ mod tests {
                 .map(|(key, value)| {
                     (
                         key,
-                        value.as_str().expect("digest values are strings").to_string(),
+                        value
+                            .as_str()
+                            .expect("digest values are strings")
+                            .to_string(),
                     )
                 })
                 .collect::<BTreeMap<String, String>>(),

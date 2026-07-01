@@ -1,10 +1,10 @@
 # lib/testing/fleet.nix — Multi-VM test orchestrator (QEMU-only).
 #
 # Each machine boots through the production initrd path (stage-1 systemd
-# → ignition stages → switch-root → stage-2 systemd) with an aos-metadata
-# ISO9660 disk attached. Per-machine identity (hostname, /etc/hosts,
-# eth0 .network) ships in that ISO as ignition `storage.files` — the
-# rootfs disk is identical across every machine of a given system variant.
+# → systemd-repart substrate → switch-root → stage-2 systemd). Per-machine
+# identity (hostname, /etc/hosts, eth0 .network, the guest-agent unit) is
+# baked into the image's /etc via `extendModules` (the RFC-0011 new path),
+# so no metadata channel is attached.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
 # UDP multicast carrying Ethernet frames — so no host bridge or tap setup
 # is required. CAP_NET_ADMIN is not needed.
@@ -19,8 +19,8 @@
 #                                       `aos test fleet <suite>`.
 #   - `mkFleetTestInteractive {…}`    — outside-sandbox launcher with a
 #                                       second user-mode NIC + hostfwd:22
-#                                       and an SSH-key fragment delivered
-#                                       through ignition. Reachable via
+#                                       and an SSH-key baked into the image
+#                                       /etc. Reachable via
 #                                       `aos test fleet <suite> --interactive
 #                                                  --ssh-authorized-key …`.
 #
@@ -32,8 +32,6 @@
   lib,
 }: let
   vmLib = import ./vm.nix {inherit pkgs lib;};
-  metadataLib = import ./metadata.nix {inherit pkgs lib;};
-
   # ── MAC scheme (mirrors NixOS qemu-common.nix) ─────────────────────
   # 52:54:00:12:<vlan>:<machine>. The fleet's primary mcast NIC uses
   # vlan byte 0 (in keeping with the original convention here). The
@@ -48,77 +46,6 @@
 
   uriEncode = lib.uriEncode;
   dataUrl = content: "data:,${uriEncode content}";
-
-  mkFleetPackageFragment = m: let
-    hasPackage = package: builtins.elem package m.packages;
-    mkDir = path: {
-      inherit path;
-      mode = 493; # 0755
-      overwrite = true;
-    };
-    mkFile = path: text: {
-      inherit path;
-      mode = 420; # 0644
-      overwrite = true;
-      contents.source = dataUrl text;
-    };
-    mkLink = path: target: {
-      inherit path target;
-      hard = false;
-      overwrite = true;
-    };
-    agentPackage = m.system.config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
-    agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
-    agentUnit = ''
-      [Unit]
-      Description=AOS VM Test Guest Agent
-
-      [Service]
-      Type=simple
-      ExecStart=${agentPath}
-      Restart=on-failure
-      RestartSec=1
-      Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
-
-      [Install]
-      WantedBy=multi-user.target
-    '';
-    agentDirs = lib.optionals (hasPackage "aos-test-agent") [
-      (mkDir "/etc/systemd/system")
-      (mkDir "/etc/systemd/system/multi-user.target.wants")
-    ];
-    agentFiles =
-      lib.optional (hasPackage "aos-test-agent")
-      (mkFile "/etc/systemd/system/aos-test-agent.service" agentUnit);
-    agentLinks =
-      lib.optional (hasPackage "aos-test-agent")
-      (mkLink "/etc/systemd/system/multi-user.target.wants/aos-test-agent.service" "../aos-test-agent.service");
-  in
-    if m.packages == []
-    then {
-      storage = {
-        directories = [];
-        files = [];
-        links = [];
-      };
-    }
-    else {
-      storage = {
-        directories =
-          [
-            (mkDir "/etc/aos/packages.d")
-          ]
-          ++ agentDirs;
-        files =
-          [
-            (mkFile "/etc/aos/packages.d/fleet-seed" (
-              lib.concatMapStrings (package: "${package}\n") m.packages
-            ))
-          ]
-          ++ agentFiles;
-        links = agentLinks;
-      };
-    };
 
   # ── Per-machine derivation order ───────────────────────────────────
   # Drives IP, MAC, banner ordering. `lib.imap` is the AOS lib's
@@ -142,9 +69,14 @@
       m = machines.${mname};
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
+      # Provisioning path (only "newpath" now — Ignition removed): bakes per-VM
+      # identity into the image's /etc via `extendModules` and provisions the
+      # substrate with systemd-repart.
+      provisioning = m.provisioning or "newpath";
       packages = m.packages or [];
       # `baked` /var seeds the agent at build time; every other shape
-      # relies on the package ignition fragment.
+      # relies on the package fragment (Ignition) or a baked
+      # `systemd.services.aos-test-agent` unit (new path).
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
       agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
       packagesWithAgent =
@@ -162,12 +94,13 @@
             (the server profile already does).
           '';
     in {
-      inherit (m) system instanceMetadata;
-      inherit bootMode varProvisioning;
+      inherit (m) system;
+      inherit bootMode varProvisioning provisioning bakesAgent;
       packages = packagesWithAgent;
       # `extraClosures` / `varSizeMiB` / `imageDiskMiB` default on the
       # fleet machine type, so the `or` fallbacks only matter for callers
       # bypassing fleet-spec validation.
+      extraModules = m.extraModules or [];
       extraClosures = m.extraClosures or [];
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
@@ -188,39 +121,70 @@
     lib.concatStringsSep "\n"
     (builtins.map (m: "${m.ip} ${m.name}") machinesWithIndex);
 
-  # ── Per-machine identity fragment (ignition) ───────────────────────
-  # Hostname, /etc/hosts, and the eth0 .network file. In production,
-  # the platform delivers equivalent fragments via cloud-init
-  # userdata or IPMI virtual media. Here the harness synthesises them
-  # from the fleet topology.
+  # ── New-path identity module (baked via extendModules) ─────────────
+  # The RFC-0011 replacement for the Ignition storage.files fragments above.
+  # Instead of delivering hostname / hosts / .network / ssh-key / agent-unit
+  # over a metadata channel at first boot, they are baked straight into the
+  # machine image's `/etc` (the system EROFS, gen-0) by overlaying this module
+  # onto the machine's already-evaluated system with `extendModules`. On the
+  # new path the initrd `aos-config-seed` leaves the per-gen `/etc` lower empty,
+  # so all of `/etc` comes from this baked EROFS — exactly what these entries
+  # populate. The same module flips the machine onto the new provisioning
+  # substrate (Ignition off, systemd-repart on).
   #
-  # The .network matches by `MACAddress=` (not `Name=eth0`) so the
-  # binding is robust against future changes in interface naming. With
-  # `net.ifnames=0` already in the kernel cmdline, the primary mcast
-  # virtio-net NIC is `eth0` deterministically — but matching by MAC
-  # is the level at which the policy actually wants to live.
-  mkFleetIdentityFragment = hostsEntries: m: {
-    storage.files = [
+  #   `bakeAgentUnit` — emit `systemd.services.aos-test-agent` here. False for
+  #   `baked`-var kernel machines, whose /var seed already carries the unit
+  #   (avoids a duplicate unit definition); true for image / repart machines
+  #   that ship no baked seed.
+  #   `sshAuthorizedKey` — non-null only in the interactive launcher; adds the
+  #   root pubkey (mode 0600) and a DHCP .network for the debug NIC.
+  mkNewpathModule = {
+    m,
+    hostsEntries,
+    bakeAgentUnit,
+    sshAuthorizedKey ? null,
+  }: {
+    lib,
+    pkgs,
+    config,
+    ...
+  }: let
+    agentPackage = config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
+    agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
+  in {
+    # New-path provisioning: systemd-repart carves the substrate only when there
+    # is free space to carve into — image boot (ESP + root-a, swap/var carved on
+    # first boot) or an explicit `repart` /var. A `baked`-var kernel machine
+    # already ships a formatted /var, so repart stays off and the neutral
+    # `mount-var` runs with no carver (disksUnit = null).
+    aos.provisioning.repart.enable =
+      m.bootMode == "image" || m.varProvisioning == "repart";
+
+    # Fleet machines are driven through the guest agent (virtio-serial), never
+    # an interactive serial console. The debug profile's initrd serial debug
+    # shell runs `agetty --autologin` on ttyS0 with TTYVHangup, which corrupts
+    # the serial log the harness captures and obscures stage-1 boot output.
+    # Mask it (harmless if the debug profile isn't present).
+    boot.initrd.systemd.maskedUnits = ["debug-shell-serial.service"];
+
+    # Image-boot machines take their cmdline from the UKI, not the driver's
+    # `-append`; match the kernel-boot append so the serial log stays
+    # informative (`forward_to_console` — systemd unit progress after journald
+    # starts) and NICs enumerate deterministically as ethN (`net.ifnames=0`).
+    aos.boot.kernelParams = [
+      "systemd.journald.forward_to_console=1"
+      "net.ifnames=0"
+    ];
+
+    aos.networking.hostName = m.name;
+
+    environment.etc =
       {
-        path = "/etc/hostname";
-        mode = 420; # 0644
-        overwrite = true;
-        contents.source = dataUrl "${m.name}\n";
-      }
-      {
-        path = "/etc/hosts";
-        mode = 420;
-        overwrite = true;
-        contents.source = dataUrl ''
+        "hosts".text = ''
           127.0.0.1 localhost
           ${hostsEntries}
         '';
-      }
-      {
-        path = "/etc/systemd/network/10-fleet-eth0.network";
-        mode = 420;
-        overwrite = true;
-        contents.source = dataUrl ''
+        "systemd/network/10-fleet-eth0.network".text = ''
           [Match]
           MACAddress=${m.mac}
 
@@ -228,182 +192,63 @@
           Address=${m.ip}/24
         '';
       }
-    ];
-  };
-
-  # ── Debug fragment for interactive mode ────────────────────────────
-  # Two files, only present when `mkFleetTestInteractive` is used:
-  #   - /etc/ssh/authorized_keys/root  — root pubkey, mode 0600. The
-  #     authorizedKeysFile default in modules/security/ssh.nix is
-  #     "/etc/ssh/authorized_keys/%u", so root login uses this exact
-  #     path. Ignition auto-creates the parent directory; the existing
-  #     tmpfiles rule (modules/security/ssh.nix:469) is idempotent
-  #     when it runs at stage-2.
-  #   - /etc/systemd/network/20-debug-eth1.network — DHCP on the
-  #     user-mode NIC the launcher attaches alongside the fleet's
-  #     primary mcast NIC. Matches by MAC for symmetry with the
-  #     fleet identity fragment.
-  mkDebugFragment = sshAuthorizedKey: m: {
-    storage.files = [
-      {
-        path = "/etc/ssh/authorized_keys/root";
-        mode = 384; # 0600
-        overwrite = true;
-        contents.source = dataUrl "${sshAuthorizedKey}\n";
+      // lib.optionalAttrs (m.packages != []) {
+        "aos/packages.d/fleet-seed".text =
+          lib.concatMapStrings (p: "${p}\n") m.packages;
       }
-      {
-        path = "/etc/systemd/network/20-debug-eth1.network";
-        mode = 420;
-        overwrite = true;
-        contents.source = dataUrl ''
+      // lib.optionalAttrs (sshAuthorizedKey != null) {
+        "ssh/authorized_keys/root" = {
+          text = "${sshAuthorizedKey}\n";
+          mode = "0600";
+        };
+        "systemd/network/20-debug-eth1.network".text = ''
           [Match]
           MACAddress=${m.debugMac}
 
           [Network]
           DHCP=ipv4
         '';
-      }
-    ];
+      };
+
+    systemd.services = lib.optionalAttrs bakeAgentUnit {
+      "aos-test-agent" = {
+        description = "AOS VM Test Guest Agent";
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = agentPath;
+          Restart = "on-failure";
+          RestartSec = 1;
+          Environment = "PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin";
+        };
+      };
+    };
   };
 
-  # ── Compose final ignition for one machine ──────────────────────────
-  # Identity fragment is always present; the optional debug fragment is
-  # layered between identity and user metadata; user-supplied
-  # `instanceMetadata` then layers on top. Identity files use stable
-  # paths (`/etc/hostname`, `/etc/hosts`,
-  # `/etc/systemd/network/10-fleet-eth0.network`); the debug fragment
-  # adds two more (`/etc/ssh/authorized_keys/root`,
-  # `/etc/systemd/network/20-debug-eth1.network`). A user fragment
-  # writing to any of those produces a duplicate-`path` error at
-  # ignition-validate time. We catch it earlier — at evalModules time
-  # — with a useful message naming the offending paths.
-  composeIgnition = {
-    name,
-    identity,
-    debug ? null,
-  }: m: let
-    mIdentity = identity m;
-    mDebug =
-      if debug != null
-      then debug m
-      else {storage.files = [];};
-
-    mPackages = mkFleetPackageFragment m;
-    identityPaths = builtins.map (f: f.path) mIdentity.storage.files;
-    debugPaths = builtins.map (f: f.path) mDebug.storage.files;
-    packageStorage = mPackages.storage;
-    packageFiles = packageStorage.files or [];
-    packageLinks = packageStorage.links or [];
-    packageDirs = packageStorage.directories or [];
-    packagePaths =
-      builtins.map (f: f.path) packageFiles
-      ++ builtins.map (l: l.path) packageLinks
-      ++ builtins.map (d: d.path) packageDirs;
-    reservedPaths = identityPaths ++ debugPaths ++ packagePaths;
-
-    userCfg =
-      if m.instanceMetadata != null
-      then m.instanceMetadata.config
-      else {};
-
-    # `storage` is `nullOr submodule` (lib/formats/ignition.nix:392)
-    # with default null — `userCfg.storage` exists but may BE null,
-    # so a literal `userCfg.storage or {}` would not catch it
-    # (`or` only catches missing-attr errors). Unwrap explicitly.
-    # The same applies down the `ignition.config.merge` and
-    # `storage.files` chains: a config that only sets `storage.disks`
-    # (an image-boot install config) renders every other submodule as
-    # null, not `{}`.
-    maybeNull = x: default:
-      if x == null
-      then default
-      else x;
-    userStorage = maybeNull (userCfg.storage or null) {};
-
-    userIgnition = maybeNull (userCfg.ignition or null) {};
-    userIgnitionConfig = maybeNull (userIgnition.config or null) {};
-    userMerges = maybeNull (userIgnitionConfig.merge or null) [];
-    userFiles = maybeNull (userStorage.files or null) [];
-    userLinks = maybeNull (userStorage.links or null) [];
-    userDirs = maybeNull (userStorage.directories or null) [];
-    userEntries =
-      builtins.map (f: {inherit (f) path;}) userFiles
-      ++ builtins.map (l: {inherit (l) path;}) userLinks
-      ++ builtins.map (d: {inherit (d) path;}) userDirs;
-
-    # Kernel-boot "ignition" var: the base disk ships boot+root-a+swap
-    # only; ignition creates and formats /var (partition 4) on first boot
-    # in the trailing free space the driver makes by growing the per-run
-    # copy. Mirrors production (modules/services/ignition.nix) and lets
-    # machines differing only in /var size share one base image. sizeMiB=0
-    # fills the grown tail; the agent then arrives via the aos-test-agent
-    # package fragment rather than a baked /var seed.
-    varStorage =
-      if (m.varProvisioning or "baked") == "ignition"
-      then {
-        disks = [
-          {
-            device = "/dev/vda";
-            wipeTable = false;
-            partitions = [
-              {
-                number = 4;
-                label = "var";
-                sizeMiB = 0;
-              }
-            ];
-          }
-        ];
-        filesystems = [
-          {
-            device = "/dev/disk/by-partlabel/var";
-            format = "ext4";
-            label = "aos-var";
-            wipeFilesystem = false;
-          }
-        ];
-      }
-      else {};
-
-    collisions =
-      builtins.filter
-      (f: builtins.elem f.path reservedPaths)
-      userEntries;
-  in
-    if collisions != []
+  # The effective system for a machine: the baked new-path system on the new
+  # path, or the unmodified evaluated system on the Ignition path. `debug` is
+  # the interactive SSH key (nullable). Used for image/kernel/initrd/disk.
+  mkEffectiveSystem = {
+    m,
+    hostsEntries,
+    sshAuthorizedKey ? null,
+  }:
+    if m.provisioning == "newpath"
     then
-      throw ''
-        fleet '${name}': machine "${m.name}" instanceMetadata.config.storage
-        collides with reserved path(s):
-          ${lib.concatStringsSep ", " (builtins.map (f: f.path) collisions)}
-        Reserved paths: ${lib.concatStringsSep ", " reservedPaths}.
-        Pick a different path, or move the override into a package or harness fragment.
-      ''
-    else
-      userCfg
-      // {
-        ignition =
-          userIgnition
-          // {
-            config =
-              userIgnitionConfig
-              // {
-                merge = userMerges;
-              };
-          };
-        storage =
-          userStorage
-          // varStorage
-          // {
-            files =
-              mIdentity.storage.files
-              ++ mDebug.storage.files
-              ++ packageFiles
-              ++ userFiles;
-            links = packageLinks ++ userLinks;
-            directories = packageDirs ++ userDirs;
-          };
-      };
+      m.system.extendModules {
+        modules =
+          [
+            (mkNewpathModule {
+              inherit m hostsEntries sshAuthorizedKey;
+              bakeAgentUnit =
+                (!m.bakesAgent) && builtins.elem "aos-test-agent" m.packages;
+            })
+          ]
+          # Per-VM config baked into /etc (the new-path replacement for a
+          # machine's Ignition storage.files) — e.g. k3s node config.
+          ++ m.extraModules;
+      }
+    else m.system;
 
   # ── Per-machine builds ─────────────────────────────────────────────
   # `disk` is a function of `{system, extraClosures, varSizeMiB}`.
@@ -413,48 +258,37 @@
   # mode the SSH-key+DHCP fragment changes the ignition input, so
   # interactive ISOs hash differently from sandboxed-test ISOs.
   mkMachineBuilds = {
-    name,
     machinesWithIndex,
-    identity,
-    debug ? null,
+    hostsEntries,
+    sshAuthorizedKey ? null,
   }:
     builtins.map (
-      m:
+      m: let
+        # Every machine bakes per-VM identity + provisioning into its image /etc
+        # via extendModules (the new path); nothing rides a metadata channel.
+        effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
+      in
         {
-          inherit (m) name ip mac debugMac index system packages bootMode tpm varProvisioning varSizeMiB memoryMiB;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB provisioning;
+          system = effectiveSystem;
         }
         // (
           if m.bootMode == "image"
           then {
-            # Image boot: the production raw image IS the disk; the
-            # composed ignition config (identity + packages + user
-            # fragment) rides fw_cfg as a bare config.json, validated
-            # against the FULL profile — storage.disks/filesystems are
-            # exactly what these machines exercise.
             inherit (m) imageDiskMiB;
-            image = m.system.config.system.build.image.raw;
-            imageName = "aos-${m.system.config.aos.system.name}.img";
-            ignitionConfigDrv = metadataLib.mkIgnitionConfig {
-              name = "${name}-${m.name}";
-              ignitionConfig = composeIgnition {inherit name identity debug;} m;
-              allowStorageHardware = true;
-            };
+            image = effectiveSystem.config.system.build.image.raw;
+            imageName = "aos-${effectiveSystem.config.aos.system.name}.img";
           }
           else {
-            kernel = m.system.config.system.build.kernel;
-            initrd = m.system.config.system.build.initrd;
+            kernel = effectiveSystem.config.system.build.kernel;
+            initrd = effectiveSystem.config.system.build.initrd;
             disk = vmLib.mkTestDisk {
-              system = m.system;
+              system = effectiveSystem;
               inherit (m) extraClosures varSizeMiB varProvisioning;
             };
-            # "ignition" var provisioning emits storage.disks/filesystems
-            # in composeIgnition, which the restrictive metadata profile
-            # rejects — accept the full profile for those machines.
-            metadataISO = metadataLib.mkMetadataIso {
-              name = "${name}-${m.name}";
-              ignitionConfig = composeIgnition {inherit name identity debug;} m;
-              allowStorageHardware = m.varProvisioning == "ignition";
-            };
+            # Identity baked into /etc, so no metadata channel — `metadataISO =
+            # null` tells the manifest to omit the SCSI CD-ROM.
+            metadataISO = null;
           }
         )
     )
@@ -471,8 +305,7 @@
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
-    identity = mkFleetIdentityFragment hostsEntries;
-    machineBuilds = mkMachineBuilds {inherit name machinesWithIndex identity;};
+    machineBuilds = mkMachineBuilds {inherit machinesWithIndex hostsEntries;};
 
     # Driver manifest. One entry per fleet machine; transport pinned to
     # qemu. The driver consumes this JSON and starts each VM in order,
@@ -505,7 +338,8 @@
                   boot = "image";
                   disk = "${builtins.toString mb.image}/${mb.imageName}";
                   disk_size_mib = mb.imageDiskMiB;
-                  fw_cfg = "${builtins.toString mb.ignitionConfigDrv}/config.json";
+                  # Identity is baked into the image /etc, so no fw_cfg channel.
+                  fw_cfg = null;
                   firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
                   firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
                   metadata = null;
@@ -516,12 +350,18 @@
                     kernel = builtins.toString mb.kernel;
                     initrd = "${builtins.toString mb.initrd}/initrd.img";
                     disk = "${builtins.toString mb.disk}/disk.img";
-                    metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
+                    # `null` on the new path: identity is baked into /etc, so no
+                    # metadata ISO is attached (driver omits the SCSI CD-ROM).
+                    metadata =
+                      if mb.metadataISO == null
+                      then null
+                      else "${builtins.toString mb.metadataISO}/metadata.iso";
                   }
-                  // (lib.optionalAttrs (mb.varProvisioning == "ignition") {
+                  // (lib.optionalAttrs (mb.varProvisioning == "ignition" || mb.varProvisioning == "repart") {
                     # Base disk ships no /var; grow the per-run copy by this
-                    # many MiB so ignition has room to create+format /var on
-                    # first boot (driver: aos_test_driver/qemu.py).
+                    # many MiB so the disks backend (ignition-disks or
+                    # systemd-repart) has room to create /var on first boot
+                    # (driver: aos_test_driver/qemu.py).
                     var_size_mib = mb.varSizeMiB;
                   })
               )
@@ -624,10 +464,8 @@
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
-    identity = mkFleetIdentityFragment hostsEntries;
-    debug = mkDebugFragment sshAuthorizedKey;
     machineBuilds = mkMachineBuilds {
-      inherit name machinesWithIndex identity debug;
+      inherit machinesWithIndex hostsEntries sshAuthorizedKey;
     };
 
     # SSH host port = $AOS_FLEET_SSH_BASE + machine index, resolved at

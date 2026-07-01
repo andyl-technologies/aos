@@ -134,6 +134,37 @@ fn apr_keys_register_reports_failing_key_command() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn apr_keys_register_tolerates_key_command_trailing_newline() -> Result<()> {
+    // A real secret-manager pipeline — e.g. `op item get ... | jq -r .value` —
+    // appends a newline to a key that is already newline-terminated, yielding a
+    // double `\n`. The strict in-process OpenSSH reader used to reject that with
+    // a "pre-encapsulation boundary" error; registration must tolerate it.
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let (trust_key, key_path) = write_keypair(&home, "core", [61_u8; 32], "louis")?;
+    write_registry_config(&home, "core")?;
+
+    // `cat <key>; echo` re-emits the newline-terminated key and appends a second
+    // newline — the exact byte sequence `jq -r` produces.
+    let key_command = format!("cat {}; echo", key_path.display());
+    let output = run_apr(
+        &home,
+        &[
+            "keys",
+            "register",
+            "louis",
+            "--key-command",
+            &key_command,
+            "--registry",
+            "core",
+        ],
+    )?;
+    assert!(output.contains(&trust_key), "{output}");
+
+    Ok(())
+}
+
 fn write_keypair(
     home: &Path,
     registry: &str,

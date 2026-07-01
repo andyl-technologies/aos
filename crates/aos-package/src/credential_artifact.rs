@@ -349,7 +349,7 @@ fn credential_lookup(credentials: &[CredentialMeta]) -> BTreeMap<&str, &Credenti
         .collect()
 }
 
-fn validate_provisionable_source(
+pub(crate) fn validate_provisionable_source(
     package: &str,
     credential: &CredentialMeta,
     source: &str,
@@ -772,6 +772,7 @@ mod tests {
                     uses: Vec::new(),
                 }),
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -804,6 +805,7 @@ mod tests {
             requires_features: Vec::new(),
             expose,
             expose_artifact: None,
+            config_module: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),

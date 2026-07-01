@@ -22,64 +22,7 @@
   lib,
   pkgs,
   systems,
-}: let
-  # Same A/B + swap layout as the other image-boot tests, except /var is
-  # NOT formatted by ignition: aos-var-crypt owns it (plain on the Setup
-  # boot, then LUKS2 once enforcing).
-  rootSizeMiB = 6144;
-  swapSizeMiB = 1024;
-  diskProvision = {
-    storage = {
-      disks = [
-        {
-          device = "/dev/vda";
-          wipeTable = false;
-          partitions = [
-            {
-              number = 2;
-              label = "root-a";
-              sizeMiB = rootSizeMiB;
-              resize = true;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 3;
-              label = "root-b";
-              sizeMiB = rootSizeMiB;
-              typeGuid = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
-            }
-            {
-              number = 4;
-              label = "swap";
-              sizeMiB = swapSizeMiB;
-              typeGuid = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
-            }
-            {
-              number = 5;
-              label = "var";
-              sizeMiB = 0; # rest of the disk
-            }
-          ];
-        }
-      ];
-      filesystems = [
-        {
-          device = "/dev/disk/by-partlabel/root-b";
-          format = "ext4";
-          label = "aos-root-b";
-          wipeFilesystem = false;
-        }
-        # /var is deliberately NOT formatted by ignition. aos-var-crypt
-        # owns its filesystem: plain ext4 on the Setup boot, LUKS2 once
-        # enforcing. If ignition managed /var (format=ext4,
-        # wipeFilesystem=false), it would FAIL on the unlock reboot — the
-        # partition is then crypto_LUKS, not the ext4 it expects — and that
-        # failure cascades (aos-var-crypt/mount-var require ignition-disks)
-        # into a stuck initrd.
-      ];
-    };
-  };
-in {
+}: {
   name = "measured-boot";
   # Image boot + enroll + three reboots (enforcing seal, then unattended
   # unlock). Budget like secure-boot plus an extra reboot.
@@ -91,16 +34,16 @@ in {
   bootTimeout = 600;
 
   machines = {
+    # New path: systemd-repart carves swap + var. /var is left RAW (repart
+    # omits Format= under measured boot) — aos-var-crypt owns its filesystem:
+    # plain ext4 on the Setup boot, LUKS2 once enforcing.
     target = {
       system = systems.server-measured-boot;
       bootMode = "image";
+      provisioning = "newpath";
       imageDiskMiB = 16384;
       tpm = true;
       packages = ["aos-test-agent"];
-      instanceMetadata = {
-        format = "ignition";
-        config = diskProvision;
-      };
     };
   };
 

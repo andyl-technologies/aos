@@ -77,6 +77,9 @@ pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
         }
         ["rev-parse", rest @ ..] => rev_parse(dir, rest),
         ["rev-list", rest @ ..] => rev_list(dir, rest),
+        ["merge-base", "--is-ancestor", ancestor, descendant] => {
+            merge_base_is_ancestor(dir, ancestor, descendant)
+        }
         ["for-each-ref", rest @ ..] => for_each_ref(dir, rest),
         ["cat-file", "-e", spec] => Ok(match resolve_blob_bytes(&open(dir)?, spec)? {
             Some(_) => Output::ok_str(""),
@@ -98,6 +101,7 @@ pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
             Ok(Output::ok_str(""))
         }
         ["update-ref", name, oid] => update_ref(dir, name, oid),
+        ["read-tree", "-u", "--reset", treeish] => read_tree_reset(dir, treeish),
         ["status", rest @ ..] => status(dir, rest),
         ["ls-files", rest @ ..] => ls_files(dir, rest),
         ["diff", rest @ ..] => diff(dir, rest),
@@ -107,6 +111,7 @@ pub(crate) fn dispatch(dir: &Path, args: &[&str]) -> Result<Output> {
         ["merge", rest @ ..] => merge(dir, rest),
         ["push", rest @ ..] => push(dir, rest),
         ["pull", rest @ ..] => pull(dir, rest),
+        ["fetch", rest @ ..] => fetch(dir, rest),
         _ => bail!("unsupported git invocation: git {}", args.join(" ")),
     }
 }
@@ -287,35 +292,31 @@ fn rev_list_unpushed_count(repo: &Repository) -> Result<Output> {
 
 /// `git for-each-ref --format=<fmt> <pattern>...`.
 ///
-/// Implements the single format the registry tooling needs —
-/// `%(refname)%00%(refname:short)%00%(objectname)%00` — expanded over the
-/// given `refs/...` prefix patterns. Output matches git: one expanded line per
-/// matching ref, sorted ascending by full refname, each terminated by a
-/// newline. `%00` expands to a NUL byte and `%(objectname)` to the ref's
-/// resolved object id (symbolic refs are followed to their target).
+/// Expands the `--format` string over every ref under the given `refs/...`
+/// prefix patterns, one line per matching ref, sorted ascending by full
+/// refname and each terminated by a newline (matching git). The supported
+/// placeholders cover what `apr` requests: `%(refname)`, `%(refname:short)`,
+/// `%(objectname)` (symbolic refs are followed to their target),
+/// `%(contents:subject)` (the first line of the pointed-to commit/tag message),
+/// and the escapes `%00` (NUL) and `%09` (tab). When no `--format` is given,
+/// git's default `%(objectname) %(refname)` is used.
 ///
 /// # Errors
 ///
-/// Returns an error for a format string other than the one above; no other
-/// `for-each-ref` shape is invoked by `apr`.
+/// Returns an error if the repository cannot be opened or its refs listed.
 fn for_each_ref(dir: &Path, rest: &[&str]) -> Result<Output> {
-    const FORMAT: &str = "%(refname)%00%(refname:short)%00%(objectname)%00";
     let format = rest
         .iter()
         .copied()
-        .find_map(|arg| arg.strip_prefix("--format="));
-    if format != Some(FORMAT) {
-        bail!(
-            "unsupported git for-each-ref format: {}",
-            format.unwrap_or("<none>")
-        );
-    }
+        .find_map(|arg| arg.strip_prefix("--format="))
+        .unwrap_or("%(objectname) %(refname)");
     let patterns: Vec<&str> = rest
         .iter()
         .copied()
         .filter(|arg| !arg.starts_with('-'))
         .collect();
     let repo = open(dir)?;
+    let want_subject = format.contains("%(contents:subject)");
     let mut rows: Vec<(String, String)> = Vec::new();
     for reference in repo.references().context("listing references")? {
         let reference = reference?;
@@ -340,7 +341,13 @@ fn for_each_ref(dir: &Path, rest: &[&str]) -> Result<Output> {
             .strip_prefix("refs/remotes/")
             .and_then(|rest| rest.strip_suffix("/HEAD"))
             .unwrap_or_else(|| reference.shorthand().unwrap_or(name));
-        rows.push((name.to_string(), format!("{name}\0{short}\0{oid}\0")));
+        let subject = if want_subject {
+            ref_subject(&repo, oid)
+        } else {
+            String::new()
+        };
+        let line = expand_ref_format(format, name, short, &oid.to_string(), &subject);
+        rows.push((name.to_string(), line));
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = String::new();
@@ -348,6 +355,46 @@ fn for_each_ref(dir: &Path, rest: &[&str]) -> Result<Output> {
         let _ = writeln!(out, "{line}");
     }
     Ok(Output::ok_str(out))
+}
+
+/// Expand the supported `for-each-ref` `--format` placeholders for one ref.
+///
+/// `%(refname:short)` is substituted before `%(refname)` so the longer token
+/// wins; `%00`/`%09` map to NUL/tab.
+fn expand_ref_format(format: &str, refname: &str, short: &str, oid: &str, subject: &str) -> String {
+    format
+        .replace("%(refname:short)", short)
+        .replace("%(refname)", refname)
+        .replace("%(objectname)", oid)
+        .replace("%(contents:subject)", subject)
+        .replace("%00", "\0")
+        .replace("%09", "\t")
+}
+
+/// The subject line (first line of the message) of the commit or annotated tag
+/// that `oid` resolves to, or an empty string when it has none.
+fn ref_subject(repo: &git2::Repository, oid: git2::Oid) -> String {
+    let Ok(object) = repo.find_object(oid, None) else {
+        return String::new();
+    };
+    if let Some(tag) = object.as_tag() {
+        return first_line(tag.message().ok().flatten());
+    }
+    match object.peel_to_commit() {
+        Ok(commit) => first_line(commit.message().ok()),
+        Err(_) => String::new(),
+    }
+}
+
+/// The first line of `message` (git's "subject"), trimmed; empty when absent.
+fn first_line(message: Option<&str>) -> String {
+    message
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// `git cat-file -p <spec>` / `git show <spec>` for blobs and tag/commit objects.
@@ -719,11 +766,14 @@ fn diff(dir: &Path, rest: &[&str]) -> Result<Output> {
     Ok(Output::ok_str(out))
 }
 
-/// `git log [--oneline] [-N] [--pretty=format:<fmt>] [-- <path>]`.
+/// `git log [--oneline] [-N] [--pretty=format:<fmt>|--format=<fmt>] [<rev>]
+/// [-- <path>]`.
 ///
-/// Supports the `--oneline` shorthand and the `%H %h %s %ct %x1f %x1e %n %%`
+/// Supports the `--oneline` shorthand and the `%H %h %s %B %ct %x1f %x1e %n %%`
 /// pretty placeholders that `apr` uses; output is the per-commit formatted
-/// records joined verbatim.
+/// records joined verbatim. When one or more `<rev>` arguments are given the
+/// walk is seeded from them instead of `HEAD`, and `--format=` is accepted as
+/// an alias for `--pretty=format:`.
 fn log(dir: &Path, rest: &[&str]) -> Result<Output> {
     let repo = open(dir)?;
     let limit = rest
@@ -734,16 +784,40 @@ fn log(dir: &Path, rest: &[&str]) -> Result<Output> {
         .position(|a| *a == "--")
         .and_then(|i| rest.get(i + 1))
         .copied();
+    // Revisions are the non-flag positionals before any `--` path separator.
+    let revs: Vec<&str> = match rest.iter().position(|a| *a == "--") {
+        Some(separator) => &rest[..separator],
+        None => rest,
+    }
+    .iter()
+    .copied()
+    .filter(|a| !a.starts_with('-'))
+    .collect();
     let format = rest
         .iter()
         .find_map(|a| a.strip_prefix("--pretty=format:"))
+        .or_else(|| rest.iter().find_map(|a| a.strip_prefix("--format=")))
         .map(ToString::to_string)
         // `--oneline` is shorthand for the abbreviated hash plus the subject.
         .unwrap_or_else(|| "%h %s".to_string());
 
     let mut walk = repo.revwalk().context("creating revwalk")?;
-    if walk.push_head().is_err() {
-        return Ok(Output::ok_str(""));
+    if revs.is_empty() {
+        if walk.push_head().is_err() {
+            return Ok(Output::ok_str(""));
+        }
+    } else {
+        for rev in revs {
+            let object = match repo.revparse_single(rev) {
+                Ok(object) => object,
+                Err(e) => return Ok(Output::fail(e.message().to_string())),
+            };
+            let commit = match object.peel_to_commit() {
+                Ok(commit) => commit,
+                Err(e) => return Ok(Output::fail(e.message().to_string())),
+            };
+            walk.push(commit.id()).context("seeding revwalk")?;
+        }
     }
     let mut out = String::new();
     let mut shown = 0;
@@ -781,6 +855,7 @@ fn format_commit(commit: &git2::Commit<'_>, format: &str) -> String {
             continue;
         }
         match chars.next() {
+            Some('B') => out.push_str(commit.message().ok().unwrap_or("")),
             Some('H') => out.push_str(&commit.id().to_string()),
             Some('h') => out.push_str(&short),
             Some('s') => out.push_str(commit.summary().ok().flatten().unwrap_or("")),
@@ -841,13 +916,39 @@ fn branch(dir: &Path, rest: &[&str]) -> Result<Output> {
         .iter()
         .copied()
         .find(|a| !a.starts_with('-') && *a != "--");
-    if rest.contains(&"-d") {
+    let force_delete = rest.contains(&"-D");
+    if rest.contains(&"-d") || force_delete {
         let Some(name) = name else {
             bail!("git branch -d requires a name");
         };
         let mut b = repo
             .find_branch(name, git2::BranchType::Local)
             .with_context(|| format!("finding branch {name}"))?;
+        // `-d` is the merge-safe delete: refuse a branch whose tip is not
+        // reachable from HEAD (git2's `Branch::delete` is unconditional, i.e.
+        // `-D` semantics, so the check is ours to enforce). `-D` force-deletes.
+        if !force_delete {
+            let branch_oid = b
+                .get()
+                .peel_to_commit()
+                .with_context(|| format!("reading branch {name} tip"))?
+                .id();
+            let head_oid = repo
+                .head()
+                .context("resolving HEAD")?
+                .peel_to_commit()
+                .context("HEAD commit")?
+                .id();
+            let merged = branch_oid == head_oid
+                || repo
+                    .graph_descendant_of(head_oid, branch_oid)
+                    .unwrap_or(false);
+            if !merged {
+                return Ok(Output::fail(format!(
+                    "the branch '{name}' is not fully merged"
+                )));
+            }
+        }
         b.delete()
             .with_context(|| format!("deleting branch {name}"))?;
         return Ok(Output::ok_str(""));
@@ -941,7 +1042,15 @@ fn merge(dir: &Path, rest: &[&str]) -> Result<Output> {
         let object = repo
             .find_object(their_commit.id(), None)
             .context("merge target")?;
-        repo.checkout_tree(&object, None)
+        // Force the working tree/index to the fast-forward target. git2's
+        // default SAFE checkout diffs against HEAD, which we just advanced to
+        // `their_commit`; every fast-forwarded file would then look like a
+        // local modification and be skipped, leaving the working tree stale
+        // (so `apr show`/`apr packages` would read pre-merge data). A real
+        // `git` fast-forward resets the working tree to the target, so force.
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.force();
+        repo.checkout_tree(&object, Some(&mut checkout))
             .context("checking out merge result")?;
         return Ok(Output::ok_str("Fast-forward\n"));
     }
@@ -1027,13 +1136,112 @@ fn push(dir: &Path, rest: &[&str]) -> Result<Output> {
     }
 }
 
+/// `git read-tree -u --reset <treeish>` via libgit2.
+///
+/// Resets both the index and the working tree to `<treeish>`, discarding local
+/// modifications (the `--reset` + `-u` semantics `apr change merge` uses to
+/// stage a draft's tree before re-committing it).
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the revision does not
+/// resolve to a tree, or the checkout/index update fails.
+fn read_tree_reset(dir: &Path, treeish: &str) -> Result<Output> {
+    let repo = open(dir)?;
+    let tree = repo
+        .revparse_single(treeish)
+        .with_context(|| format!("resolving {treeish}"))?
+        .peel_to_tree()
+        .with_context(|| format!("{treeish} is not a tree"))?;
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force().remove_untracked(true);
+    repo.checkout_tree(tree.as_object(), Some(&mut checkout))
+        .context("resetting working tree to tree")?;
+    let mut index = repo.index().context("opening index")?;
+    index.read_tree(&tree).context("reading tree into index")?;
+    index.write().context("writing index")?;
+    Ok(Output::ok_str(""))
+}
+
+/// `git merge-base --is-ancestor <ancestor> <descendant>` via libgit2.
+///
+/// Succeeds (exit 0, [`Output::success`] true) when `<ancestor>` is reachable
+/// from `<descendant>` — i.e. is an ancestor of it, or the two are the same
+/// commit — and fails (non-zero) otherwise, matching git's exit-code contract.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or either revision does
+/// not resolve to a commit.
+fn merge_base_is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<Output> {
+    let repo = open(dir)?;
+    let resolve = |spec: &str| -> Result<git2::Oid> {
+        Ok(repo
+            .revparse_single(spec)
+            .with_context(|| format!("resolving {spec}"))?
+            .peel_to_commit()
+            .with_context(|| format!("{spec} is not a commit"))?
+            .id())
+    };
+    let ancestor_oid = resolve(ancestor)?;
+    let descendant_oid = resolve(descendant)?;
+    let is_ancestor = ancestor_oid == descendant_oid
+        || repo
+            .graph_descendant_of(descendant_oid, ancestor_oid)
+            .unwrap_or(false);
+    Ok(if is_ancestor {
+        Output::ok_str("")
+    } else {
+        Output::fail(String::new())
+    })
+}
+
+/// `git fetch <remote> [<refspec>...] [--force]` via libgit2.
+///
+/// Fetches the named refspecs (or the remote's configured refspecs when none
+/// are given) into their local destination refs, without touching the working
+/// tree. The first non-flag argument is the remote (defaulting to `origin`);
+/// the rest are refspecs. `--force` and other flags are accepted but ignored —
+/// a leading `+` on a refspec already forces the update — and a git-level
+/// failure (e.g. an unreachable remote) is reported through [`Output`].
+fn fetch(dir: &Path, args: &[&str]) -> Result<Output> {
+    let repo = open(dir)?;
+    let mut remote_name = "origin";
+    let mut refspecs: Vec<&str> = Vec::new();
+    let mut saw_remote = false;
+    for arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        if saw_remote {
+            refspecs.push(arg);
+        } else {
+            remote_name = arg;
+            saw_remote = true;
+        }
+    }
+    let mut remote = repo
+        .find_remote(remote_name)
+        .with_context(|| format!("finding remote {remote_name}"))?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(crate::registry::repo::credentials);
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+    match remote.fetch(&refspecs, Some(&mut fetch_opts), None) {
+        Ok(()) => Ok(Output::ok_str("")),
+        Err(e) => Ok(Output::fail(e.message().to_string())),
+    }
+}
+
 /// `git pull [--rebase]` from `origin` into the current branch.
 ///
-/// Fetches the remote's configured refspecs and fast-forwards; a non-fast
-/// merge creates a merge commit (the `--rebase` flag is accepted but a
-/// fast-forward, when possible, is equivalent and preferred).
-fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
+/// Fetches the remote's configured refspecs and fast-forwards when possible.
+/// For a divergent history, `--rebase` replays the local commits on top of the
+/// fetched commit (keeping the branch linear); without it a merge commit is
+/// created.
+fn pull(dir: &Path, rest: &[&str]) -> Result<Output> {
     let repo = open(dir)?;
+    let rebase = rest.iter().any(|arg| *arg == "--rebase");
     let mut remote = repo
         .find_remote("origin")
         .context("finding remote origin")?;
@@ -1068,7 +1276,36 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
         return Ok(Output::ok_str("Fast-forward\n"));
     }
 
-    // Non-fast-forward: merge the fetched commit into HEAD.
+    let sig = commit_identity(&repo)?;
+
+    // Divergent history with `--rebase`: replay the local commits onto the
+    // fetched commit so the branch stays linear (no merge commit).
+    if rebase {
+        let head_ann = {
+            let head = repo.head().context("resolving HEAD")?;
+            repo.reference_to_annotated_commit(&head)
+                .context("annotating HEAD")?
+        };
+        let mut rb = repo
+            .rebase(Some(&head_ann), Some(&fetched), None, None)
+            .context("starting rebase")?;
+        while let Some(op) = rb.next() {
+            op.context("rebase operation")?;
+            if repo.index().context("rebase index")?.has_conflicts() {
+                rb.abort().ok();
+                return Ok(Output::fail("pull --rebase has conflicts"));
+            }
+            rb.commit(None, &sig, None)
+                .context("committing rebased change")?;
+        }
+        rb.finish(None).context("finishing rebase")?;
+        return Ok(Output::ok_str("Rebased\n"));
+    }
+
+    // Non-fast-forward merge: create a merge commit and force the working tree
+    // to the merged result. git2's default SAFE checkout diffs against HEAD and
+    // would skip files that differ from it, leaving the worktree stale (the
+    // same hazard as the fast-forward path above).
     let head_commit = repo
         .head()
         .context("HEAD")?
@@ -1083,7 +1320,6 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
     }
     let tree_oid = merged.write_tree_to(&repo).context("writing merged tree")?;
     let tree = repo.find_tree(tree_oid).context("merged tree")?;
-    let sig = commit_identity(&repo)?;
     repo.commit(
         Some("HEAD"),
         &sig,
@@ -1094,7 +1330,9 @@ fn pull(dir: &Path, _rest: &[&str]) -> Result<Output> {
     )
     .context("merge commit")?;
     let merged_obj = repo.find_object(tree_oid, None).context("merged object")?;
-    repo.checkout_tree(&merged_obj, None)
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_tree(&merged_obj, Some(&mut checkout))
         .context("checking out merge")?;
     Ok(Output::ok_str("Merge made by the 'recursive' strategy.\n"))
 }
@@ -1178,22 +1416,82 @@ mod tests {
         assert!(out.stdout.is_empty());
     }
 
-    /// Only the one format `apr` uses is supported; any other shape is a
-    /// programming error and surfaces as `Err`, not a silent empty result.
+    /// The `--format` string is expanded generally: `%(objectname)`, the `%09`
+    /// tab escape, `%(refname)`, and `%(contents:subject)` each interpolate per
+    /// matching ref (the shape `apr change list` uses).
     #[test]
-    fn for_each_ref_rejects_unknown_format() {
-        let (tmp, _) = repo_with_remote();
-        // `Output` is not `Debug`, so match instead of `expect_err`.
-        let message = match dispatch(
+    fn for_each_ref_expands_general_format() {
+        let (tmp, oid) = repo_with_remote();
+        let out = dispatch(
             tmp.path(),
-            &["for-each-ref", "--format=%(refname)", "refs/heads"],
-        ) {
-            Ok(_) => panic!("unknown format must error"),
-            Err(err) => err.to_string(),
-        };
+            &[
+                "for-each-ref",
+                "--format=%(objectname)%09%(refname)",
+                "refs/heads",
+            ],
+        )
+        .expect("dispatch");
+        assert!(out.success);
+        let text = String::from_utf8(out.stdout).expect("utf8 output");
+        assert_eq!(text, format!("{oid}\trefs/heads/stable\n"));
+    }
+
+    /// `git log -1 --format=%B <rev>` returns the *named* revision's full
+    /// message body, not HEAD's — the path `apr change` reads a draft's body
+    /// through. Regression for the libgit2 port, which only understood
+    /// `--pretty=format:` and always walked from HEAD, so an explicit rev plus
+    /// `--format=%B` silently degraded to `%h %s` of the tip commit.
+    #[test]
+    fn log_format_body_reads_named_revision() {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = git2::Repository::init(tmp.path()).expect("init");
+        let sig = git2::Signature::now("Test", "test@test").expect("signature");
+        let tree = repo
+            .find_tree(
+                repo.treebuilder(None)
+                    .expect("treebuilder")
+                    .write()
+                    .expect("write tree"),
+            )
+            .expect("tree");
+        // The older commit carries a multi-line body and is an ancestor of HEAD.
+        let first = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "first subject\n\nfirst body line\n",
+                &tree,
+                &[],
+            )
+            .expect("first commit");
+        let first_commit = repo.find_commit(first).expect("find first");
+        // HEAD advances past it with a different message.
+        repo.commit(
+            Some("refs/heads/main"),
+            &sig,
+            &sig,
+            "second subject\n\nsecond body line\n",
+            &tree,
+            &[&first_commit],
+        )
+        .expect("second commit");
+        repo.set_head("refs/heads/main").expect("set head");
+
+        let out = dispatch(
+            tmp.path(),
+            &["log", "-1", "--format=%B", &first.to_string()],
+        )
+        .expect("dispatch");
+        assert!(out.success);
+        let text = String::from_utf8(out.stdout).expect("utf8 output");
+        // The full raw body of the named commit (which `%s` would truncate to
+        // its subject), plus `log`'s trailing record-separator newline.
+        let body = first_commit.message().expect("message");
+        assert_eq!(text, format!("{body}\n"));
         assert!(
-            message.contains("unsupported git for-each-ref format"),
-            "unexpected error: {message}"
+            !text.contains("second"),
+            "log must read the named rev, not HEAD: {text:?}"
         );
     }
 }

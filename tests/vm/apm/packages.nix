@@ -806,9 +806,9 @@ in {
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/install-with-deps.toml" \
         "$WRAPPER_HASH" "published wrapper metadata records store hash"
-      assert_file_contains "$REG_DIR/packages/i/install-with-deps.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$DEP_HASH" "published wrapper metadata records dependency reference"
-      assert_file_contains "$REG_DIR/closures/$WRAPPER_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$DEP_HASH" "published wrapper closure records dependency"
 
       $APR cache generate \
@@ -1117,9 +1117,9 @@ in {
         --maintainer idempotent-workflow@example.invalid \
         --registry idemp-reg \
         --no-commit
-      assert_file_contains "$REG_DIR/packages/i/idemp-wrapper.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$IDEMP_HASH" "published wrapper metadata records idempkg reference"
-      assert_file_contains "$REG_DIR/closures/$WRAPPER_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$IDEMP_HASH" "published wrapper closure records idempkg"
 
       $APR cache generate \
@@ -1512,9 +1512,9 @@ in {
         --maintainer download-workflow@example.invalid \
         --registry download-reg \
         --no-commit
-      assert_file_contains "$REG_DIR/packages/d/download-only-wrapper.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$DEP_HASH" "published wrapper metadata records dependency"
-      assert_file_contains "$REG_DIR/closures/$WRAPPER_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$WRAPPER_HASH")/$WRAPPER_HASH" \
         "$DEP_HASH" "published wrapper closure records dependency"
 
       $APR cache generate \
@@ -1639,7 +1639,7 @@ in {
       export USER=downloadcorrupt
       PROFILE="/var/lib/profiles/per-user/downloadcorrupt"
       mkdir -p "$HOME"
-      $APM registry add file:///tmp/download-origin.git \
+      $APM registry add --no-verify file:///tmp/download-origin.git \
         --name download-reg \
         --branch "$DEFAULT_BRANCH" > /tmp/download-corrupt-registry-add.out 2>&1 || {
         cat /tmp/download-corrupt-registry-add.out
@@ -2742,13 +2742,13 @@ in {
         --maintainer remove-workflow@example.invalid \
         --registry remove-reg \
         --no-commit
-      assert_file_contains "$REG_DIR/packages/r/remove-left.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$LEFT_HASH")/$LEFT_HASH" \
         "$DEP_HASH" "published remove-left metadata records shared dependency"
-      assert_file_contains "$REG_DIR/packages/r/remove-right.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$RIGHT_HASH")/$RIGHT_HASH" \
         "$DEP_HASH" "published remove-right metadata records shared dependency"
-      assert_file_contains "$REG_DIR/closures/$LEFT_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$LEFT_HASH")/$LEFT_HASH" \
         "$DEP_HASH" "published remove-left closure records shared dependency"
-      assert_file_contains "$REG_DIR/closures/$RIGHT_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$RIGHT_HASH")/$RIGHT_HASH" \
         "$DEP_HASH" "published remove-right closure records shared dependency"
 
       $APR cache generate \
@@ -4159,9 +4159,9 @@ in {
       REG_DIR="$REG_STORAGE/lifecycle-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_version 1.0.0 "$RUNTIME_V1_STORE" "$TOOL_V1_STORE"
-      assert_file_contains "$REG_DIR/packages/l/lifecycle-tool.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$TOOL_V1_HASH")/$TOOL_V1_HASH" \
         "$RUNTIME_V1_HASH" "published v1 tool metadata records runtime reference"
-      assert_file_contains "$REG_DIR/closures/$TOOL_V1_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$TOOL_V1_HASH")/$TOOL_V1_HASH" \
         "$RUNTIME_V1_HASH" "published v1 tool closure records runtime"
 
       $APR cache generate \
@@ -4250,7 +4250,7 @@ in {
       publish_version 2.0.0 "$RUNTIME_V2_STORE" "$TOOL_V2_STORE"
       assert_file_contains "$REG_DIR/packages/l/lifecycle-tool.toml" \
         "$TOOL_V2_HASH" "published v2 tool metadata records new store path"
-      assert_file_contains "$REG_DIR/packages/l/lifecycle-tool.toml" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$TOOL_V2_HASH")/$TOOL_V2_HASH" \
         "$RUNTIME_V2_HASH" "published v2 tool metadata records runtime reference"
       $APR cache generate \
         --registry lifecycle-reg \
@@ -4944,7 +4944,7 @@ in {
         "$SOURCE_V1_SRC_STORE" "published sourceful metadata records distinct source path"
       assert_file_contains "$REG_DIR/packages/s/sourceclosure.toml" \
         "$SOURCE_CLOSURE_SRC_STORE" "published sourceclosure metadata records source root"
-      assert_file_contains "$REG_DIR/closures/$SURFACE_HASH" \
+      assert_file_contains "$REG_DIR/store/$(printf %.2s "$SURFACE_HASH")/$SURFACE_HASH" \
         "$LEAF_HASH" "published surfacepkg closure records dependency"
       nix-store -q --references "$SOURCE_CLOSURE_SRC_STORE" > /tmp/surface-sourceclosure-refs.out
       assert_file_contains /tmp/surface-sourceclosure-refs.out "$SOURCE_CLOSURE_DEP_STORE" \

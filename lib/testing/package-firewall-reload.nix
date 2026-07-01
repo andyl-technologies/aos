@@ -29,14 +29,14 @@ in
       import time
 
       def assert_package_ports():
-          ruleset = vm.succeed("nft list ruleset")
+          ruleset = vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
           assert "5353" in ruleset, ruleset
           assert "aos-pkg-expose-smoke-forward" in ruleset, ruleset
 
       def wait_package_ports():
           last_ruleset = ""
           for _ in range(50):
-              last_ruleset = vm.succeed("nft list ruleset")
+              last_ruleset = vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
               if "5353" in last_ruleset and "aos-pkg-expose-smoke-forward" in last_ruleset:
                   return
               time.sleep(0.1)
@@ -44,7 +44,7 @@ in
           assert "aos-pkg-expose-smoke-forward" in last_ruleset, last_ruleset
 
       def assert_package_ports_absent():
-          ruleset = vm.succeed("nft list ruleset")
+          ruleset = vm.succeed("${pkgs.nftables}/sbin/nft list ruleset")
           assert "5353" not in ruleset, ruleset
           assert "aos-pkg-expose-smoke-forward" not in ruleset, ruleset
 

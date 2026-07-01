@@ -17,6 +17,15 @@
     pkgs = self;
   };
 
+  # RFC-0011 config-module renderer: turns a package-authored `configModule`
+  # arg into the package's second `config` output (a pure-data store path
+  # carrying `module.nix` + a declared-interface manifest). Wired into
+  # mkDerivation below the same way `expose` is.
+  configModuleRenderer = import ./build-support/_config-module-renderer.nix {
+    inherit lib;
+    pkgs = self;
+  };
+
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
   # the scrubPhase from lib/derivations.nix can rewrite build-toolchain
@@ -38,11 +47,25 @@
       if args ? expose
       then {expose = renderedExpose;}
       else {};
+    renderedConfigModule =
+      if args ? configModule
+      then
+        configModuleRenderer.render {
+          inherit packageName;
+          configModule = args.configModule;
+        }
+      else null;
+    configModuleAttrs =
+      if args ? configModule
+      then {configModule = renderedConfigModule;}
+      else {};
     lowerArgs =
-      args
+      # `configModule` is an mkDerivation-level arg consumed here, not passed
+      # down to the raw builder (mirrors how `expose` is handled).
+      (builtins.removeAttrs args ["configModule"])
       // {
         buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
-        passthru = (args.passthru or {}) // exposeAttrs;
+        passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
@@ -137,6 +160,35 @@
           stdenv.gzip
           stdenv.bash
         ];
+      }
+    );
+
+  fetchNpmDeps = args:
+    lib.fetchNpmDeps (
+      args
+      // {
+        nodejs = self.nodejs;
+        python3 = self.python3;
+        caCertificates = self.ca-certificates;
+        inherit bootstrapTools;
+        extraPaths = [
+          stdenv.coreutils
+          stdenv.tar
+          stdenv.gzip
+          stdenv.bash
+          stdenv.gnumake
+          stdenv.sed
+          stdenv.grep
+          stdenv.gawk
+          stdenv.findutils
+          self.git
+        ];
+        extraLibPaths =
+          [
+            self.openssl
+            self.zlib
+          ]
+          ++ (args.extraLibPaths or []);
       }
     );
 
@@ -382,7 +434,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       self
       // {
-        inherit mkDerivation fetchurl;
+        inherit mkDerivation fetchurl callPackage;
       }
     );
   in
@@ -444,7 +496,7 @@
       # --- Plumbing ---
       inherit mkDerivation fetchurl lib;
       inherit mkCargoPackage mkGoPackage mkBazelPackage;
-      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchBazelDeps;
+      inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
       inherit bootstrapTools;
       fakeHash = lib.fakeHash;
       # --- Build infrastructure ---

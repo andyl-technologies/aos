@@ -115,8 +115,8 @@
     else "ok";
 
   # --- aos.apm.installAtBoot --------------------------------------------
-  # Host-authored package intent renders as an Ignition storage.files
-  # fragment: desired.toml plus registry config/trust anchors.
+  # Host-authored package intent bakes into the image /etc (RFC-0011 new path):
+  # desired.toml plus registry config / trust anchors, as `environment.etc`.
   installAtBootSystem = mkSystem [
     ../../systems/server.nix
     {
@@ -133,52 +133,39 @@
       };
     }
   ];
-  installAtBootIgnition = installAtBootSystem.config.aos.apm.installAtBoot.ignitionConfig;
-  findIgnitionFile = path: files: let
-    matches = builtins.filter (f: f.path == path) files;
+  installAtBootEtc = installAtBootSystem.config.aos.apm.installAtBoot.etc;
+  findEtcEntry = path:
+    if installAtBootEtc ? ${path}
+    then installAtBootEtc.${path}
+    else throw "aos.apm.installAtBoot did not bake /etc/${path}";
+  installAtBootDesired = findEtcEntry "aos/packages.d/desired.toml";
+  installAtBootRegistry = findEtcEntry "apm/registries.d/example.toml";
+  installAtBootTrustedKeys = findEtcEntry "apm/trusted-keys.d/example.pub";
+  apmInstallAtBootEtc = let
+    desiredText = installAtBootDesired.text;
+    registryText = installAtBootRegistry.text;
+    trustedKeysText = installAtBootTrustedKeys.text;
   in
-    if matches == []
-    then throw "aos.apm.installAtBoot did not generate ignition file ${path}"
-    else builtins.head matches;
-  findIgnitionDir = path: dirs:
-    if builtins.any (d: d.path == path) dirs
-    then path
-    else throw "aos.apm.installAtBoot did not generate ignition directory ${path}";
-  installAtBootDesiredFile =
-    findIgnitionFile "/etc/aos/packages.d/desired.toml" installAtBootIgnition.storage.files;
-  installAtBootRegistryFile =
-    findIgnitionFile "/etc/apm/registries.d/example.toml" installAtBootIgnition.storage.files;
-  installAtBootTrustedKeysFile =
-    findIgnitionFile "/etc/apm/trusted-keys.d/example.pub" installAtBootIgnition.storage.files;
-  apmInstallAtBootIgnition = let
-    desiredSource = installAtBootDesiredFile.contents.source;
-    registrySource = installAtBootRegistryFile.contents.source;
-    trustedKeysSource = installAtBootTrustedKeysFile.contents.source;
-  in
-    if findIgnitionDir "/etc/aos/packages.d" installAtBootIgnition.storage.directories == null
-    then "unreachable"
-    else if installAtBootDesiredFile.mode != 384
+    if installAtBootDesired.mode != "0600"
     then throw "aos.apm.installAtBoot desired.toml must be mode 0600"
-    else if findIgnitionDir "/etc/apm/registries.d" installAtBootIgnition.storage.directories == null
-    then "unreachable"
-    else if !(containsStr "packages%20%3D%20%5B%22web%22%2C%20%22worker%22%5D" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded package list: ${desiredSource}"
-    else if !(containsStr "%5Bconfig.web.env%5D" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded config table: ${desiredSource}"
-    else if !(containsStr "TOKEN%20%3D%20%22%3Ctag%3E%7C%7Bx%7D%22" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded config value: ${desiredSource}"
-    else if !(containsStr "%5Bcredentials.web%5D" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded credential table: ${desiredSource}"
-    else if !(containsStr "join-token%20%3D%20%22secret%20value%22" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded credential value: ${desiredSource}"
-    else if !(containsStr "%5Bcredentials.worker.join-token%5D" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded system credential table: ${desiredSource}"
-    else if !(containsStr "system-credential%20%3D%20%22bootstrap-token%22" desiredSource)
-    then throw "aos.apm.installAtBoot desired.toml is missing encoded system credential reference: ${desiredSource}"
-    else if !(containsStr "name%20%3D%20%22example%22" registrySource)
-    then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registrySource}"
-    else if !(containsStr "example%3AEd25519%3AQUJDREVGR0g%3D" trustedKeysSource)
-    then throw "aos.apm.installAtBoot trusted keys file is missing the trust anchor: ${trustedKeysSource}"
+    else if !(containsStr ''packages = ["web", "worker"]'' desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the package list: ${desiredText}"
+    else if !(containsStr "[config.web.env]" desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the config table: ${desiredText}"
+    else if !(containsStr ''TOKEN = "<tag>|{x}"'' desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the config value: ${desiredText}"
+    else if !(containsStr "[credentials.web]" desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the credential table: ${desiredText}"
+    else if !(containsStr ''join-token = "secret value"'' desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the credential value: ${desiredText}"
+    else if !(containsStr "[credentials.worker.join-token]" desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the system credential table: ${desiredText}"
+    else if !(containsStr ''system-credential = "bootstrap-token"'' desiredText)
+    then throw "aos.apm.installAtBoot desired.toml is missing the system credential reference: ${desiredText}"
+    else if !(containsStr ''name = "example"'' registryText)
+    then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registryText}"
+    else if !(containsStr "example:Ed25519:QUJDREVGR0g=" trustedKeysText)
+    then throw "aos.apm.installAtBoot trusted keys file is missing the trust anchor: ${trustedKeysText}"
     else builtins.seq installAtBootSystem.config.system.build.toplevel.name "ok";
 
   invalidInstallAtBootConfigSystem = mkSystem [
@@ -476,7 +463,7 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"

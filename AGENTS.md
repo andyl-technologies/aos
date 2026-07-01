@@ -90,6 +90,40 @@ nix develop
 nix run . -- <subcommand>
 ```
 
+### Incremental builds
+
+`nix build` / `nix run` rebuild the whole `pkgs.aos` derivation hermetically and
+are slow to iterate on. For a fast edit–build–run loop on the Rust code, build
+with `cargo` in the dev-shell environment via `nix develop -c` — a single
+non-interactive command (a bare `nix develop` only opens an interactive shell) —
+then run the resulting binary directly:
+
+```sh
+# Build (incremental). `nix develop -c` execs its argument directly (no shell),
+# so pass cargo the workspace with --manifest-path rather than `cd`-ing:
+nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
+
+# Run the freshly built binary directly — its OpenSSL rpath is baked in:
+crates/target/debug/aos <subcommand>
+```
+
+- **Build through `nix develop -c`.** The dev shell points `openssl-sys` at the
+  AOS OpenSSL and bakes its `rpath` into the linked binary (via a per-target
+  `CARGO_TARGET_*_RUSTFLAGS`), so it runs with no `patchelf` or
+  `LD_LIBRARY_PATH`. A cargo build in a bare shell produces a binary that can't
+  find OpenSSL at load time.
+- **Run `crates/target/debug/<bin>` directly — not `cargo run`.** The rpath is
+  baked in, so the binary finds OpenSSL on its own. `cargo run` would instead add
+  the OpenSSL lib dir to `LD_LIBRARY_PATH` for the process it spawns; that leaks
+  into the `nix` / `git` subprocesses the CLI shells out to and breaks them by
+  overriding their own newer OpenSSL. (Wrap the run in `nix develop -c …` only to
+  make the CLI use the AOS-built `nix` / `git` instead of the host's.)
+- **Choose the tool by binary name.** The binary is *multicall* and dispatches on
+  `argv[0]`: `cargo build … --bin apr` / `--bin apm` yield correctly-named
+  binaries, and `crates/target/debug/apr …` behaves as `aos package registry …`.
+- `crates/target/debug/` is independent of the flake-installed `aos`; `nix run`
+  and any installed CLI keep the last packaged build until rebuilt.
+
 ### Subcommands
 
 | Command       | Description                                             |

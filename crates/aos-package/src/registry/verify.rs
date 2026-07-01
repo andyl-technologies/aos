@@ -22,27 +22,16 @@ use std::path::Path;
 use crate::security::verify_tag_signature;
 use anyhow::{Context, Result, bail};
 
-/// The target type recorded in a git tag object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TagTarget {
-    /// The tag points at another tag (a channel tag's hop to a release tag).
-    Tag,
-    /// The tag points directly at a commit (a release tag).
-    Commit,
-}
-
-/// Parsed fields from a git tag object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TagObject {
-    /// The tag name embedded in the object (`tag` header).
-    pub name: String,
-    /// Object id the tag points at (`object` header).
-    pub object: String,
-    /// Type of the pointed-at object (`type` header).
-    pub target_type: TagTarget,
-    /// Tagger timestamp in Unix seconds, when parseable.
-    pub tagger_when: Option<i64>,
-}
+// The tag-object header parser, the `TagObject`/`TagTarget` types, and the
+// name-binding check are the *pure* core of tag verification. They live in
+// `aos-registry-surface` so the same code runs on a native server, a
+// Cloudflare Worker, and in the browser (the registry web-surface SPA), and
+// are re-exported here so `apm`'s git-CLI path and every existing caller of
+// `aos_package::registry::verify::{TagObject, TagTarget, parse_tag_object,
+// verify_name_binding}` keep working against the canonical definitions.
+pub use aos_registry_surface::tagobject::{
+    TagObject, TagTarget, parse_tag_object, verify_name_binding,
+};
 
 /// Verified release selected by a channel partition tag chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,25 +51,6 @@ pub fn read_tag_object(repo: &Path, oid: &str) -> Result<TagObject> {
     let body = crate::registry::repo::object_body_blocking(repo, oid)
         .with_context(|| format!("reading tag object {oid}"))?;
     parse_tag_object(&String::from_utf8_lossy(&body))
-}
-
-/// Verify that the embedded git tag-name equals the expected serving-path name.
-///
-/// This binds a tag object to the channel or release name it was served
-/// under, preventing a valid tag from being replayed at a different path.
-///
-/// # Errors
-///
-/// Returns an error when the embedded name differs from `expected_name`.
-pub fn verify_name_binding(tag: &TagObject, expected_name: &str) -> Result<()> {
-    if tag.name != expected_name {
-        bail!(
-            "tag name-binding mismatch: embedded tag name '{}' does not match expected '{}'",
-            tag.name,
-            expected_name,
-        );
-    }
-    Ok(())
 }
 
 /// Verify `channel tag -> semver tag -> commit` and return the trusted release.
@@ -148,63 +118,10 @@ pub fn verify_tag_chain(
     })
 }
 
-/// Parse the header section of a raw git tag object.
-///
-/// Only the headers before the first blank line are read; the tag message
-/// and signature block are ignored.
-///
-/// # Errors
-///
-/// Returns an error when the `tag`, `object`, or `type` header is missing,
-/// or when the target type is neither `tag` nor `commit`.
-pub fn parse_tag_object(content: &str) -> Result<TagObject> {
-    let mut object = None;
-    let mut target_type = None;
-    let mut name = None;
-    let mut tagger_when = None;
-
-    for line in content.lines() {
-        if line.is_empty() {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("object ") {
-            object = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("type ") {
-            target_type = Some(match rest {
-                "tag" => TagTarget::Tag,
-                "commit" => TagTarget::Commit,
-                other => bail!("unsupported tag target type '{other}'"),
-            });
-        } else if let Some(rest) = line.strip_prefix("tag ") {
-            name = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("tagger ") {
-            tagger_when = parse_tagger_when(rest);
-        }
-    }
-
-    Ok(TagObject {
-        name: name.ok_or_else(|| anyhow::anyhow!("tag object missing tag header"))?,
-        object: object.ok_or_else(|| anyhow::anyhow!("tag object missing object header"))?,
-        target_type: target_type
-            .ok_or_else(|| anyhow::anyhow!("tag object missing type header"))?,
-        tagger_when,
-    })
-}
-
 /// Resolve a tag ref to its tag *object* id (not the peeled commit).
 fn resolve_tag_object(repo: &Path, tag: &str) -> Result<String> {
     crate::registry::repo::rev_parse_blocking(repo, &format!("{tag}^{{tag}}"))
         .with_context(|| format!("resolving tag object for {tag}"))
-}
-
-/// Extract the Unix timestamp from a `tagger Name <email> <secs> <tz>` line.
-fn parse_tagger_when(tagger: &str) -> Option<i64> {
-    // Git tagger header is: "Name <email> <unix-seconds> <tz>".
-    tagger
-        .split_whitespace()
-        .rev()
-        .nth(1)
-        .and_then(|s| s.parse::<i64>().ok())
 }
 
 #[cfg(test)]

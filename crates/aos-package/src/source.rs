@@ -21,7 +21,8 @@ use anyhow::{Context, Result, bail};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror,
+    DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror_chain,
+    split_mirror_chain,
 };
 use super::profile::Profile;
 use super::profile::meta;
@@ -525,10 +526,12 @@ async fn fetch_source_from_registry_cache(
             anyhow::anyhow!("registry '{registry_name}' is not configured for source fetch")
         })?;
 
-    let mirror_url = resolve_mirror(&config.scope.registries_path(), registry);
+    let chain = resolve_mirror_chain(&config.scope.registries_path(), registry);
+    let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
     let request = DownloadRequest {
         store_path: source_drv.to_string(),
         mirror_url,
+        fallback_mirrors,
     };
 
     let engine = Arc::new(default_engine());
@@ -693,6 +696,7 @@ priority = 500
                 source_nar_hash: String::new(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -854,6 +858,7 @@ references = []
                 source_nar_hash: String::new(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -887,6 +892,7 @@ references = []
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -925,6 +931,7 @@ references = []
                 source_nar_hash: "sha256:source".into(),
                 expose: None,
                 expose_artifact: None,
+                config_module: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

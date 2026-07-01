@@ -18,12 +18,14 @@ mod build;
 mod cache;
 mod doc;
 mod gc;
+mod hub;
 mod package;
 mod prefetch;
 mod server;
 mod test;
 
 pub use cache::*;
+pub use hub::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
@@ -189,12 +191,22 @@ pub enum Commands {
         #[command(subcommand)]
         command: TokenCmd,
     },
+    /// Cross-cloud metadata agent (initrd user-data fetch)
+    Metadata {
+        #[command(subcommand)]
+        command: MetadataCmd,
+    },
     /// Package manager (apm)
     Package(PackageArgs),
     /// Binary cache client (push, pull, prefetch, list)
     Cache {
         #[command(subcommand)]
         command: CacheCmd,
+    },
+    /// Registry hub client (interacts with an aos-hub via its API)
+    Hub {
+        #[command(subcommand)]
+        command: HubCmd,
     },
     /// Profile a closure for leaked build/dev artifacts
     Profile {
@@ -243,6 +255,14 @@ pub enum ProfileCmd {
         /// Referenced dependency to justify
         dependency: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MetadataCmd {
+    /// Detect the platform and probe offline config-drives
+    Detect,
+    /// Fetch and stash untrusted user-data + instance facts
+    Fetch,
 }
 
 #[derive(Subcommand)]
