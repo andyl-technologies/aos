@@ -325,11 +325,40 @@ before manifest timeout"*. Root cause — two genuine gaps the removal exposed:
    materializer (piece 1) — i.e. Phase C's fleet migration *depends on* the
    materializer.
 
-Conclusion: **full Ignition removal is gated on the manifest materializer.**
-Until `activate`/`apm` apply `configManifest` to `/etc` (and the fleet harness
-delivers per-VM identity through that path), Ignition remains load-bearing for
-per-host config and for fleet identity. The eval-only core (this document) is the
-*producer* half and is complete + validated; the *consumer* (materializer) is the
-next major RFC-0011 workstream, and Phase C removal follows it. The removal
-attempt above was reset back out to keep the tree fleet-green with the new path
-as a validated opt-in (`server-rfc0011`).
+Conclusion at the time of the attempt: full Ignition removal is gated on the
+manifest materializer. The removal attempt was reset back out to keep the tree
+fleet-green with the new path as a validated opt-in (`server-rfc0011`).
+
+### Update: the materializer is now implemented (the block is on the fleet redesign)
+
+The *consumer* half has since been built and validated, so a `host.nix` can now
+take runtime effect:
+
+- `crates/aos-package/src/config_eval/materialize.rs` + `apm __materialize
+  --manifest <p> --etc-root <p>` applies a `configManifest`'s `/etc` tree
+  (`text` entries with octal mode, relative install `symlink`s, absolute
+  `store-symlink`s) and its job scripts (under `aos-job-scripts/<key>`) into a
+  per-generation lower, rewriting `#aos-jobscript:<key>#` unit-body placeholders
+  to their runtime paths. Idempotent.
+- `activate` (`modules/base/activate.sh.in`) now selects the per-gen `/etc`
+  backend by which source is present: Ignition fetch+files when
+  `/run/ignition/platform.env` exists, else `apm __materialize` when
+  `/run/aos/manifest.json` exists, else the baked image `/etc`. This also fixed
+  a latent gap where the opt-in new path booted but `activate` (upgrade)
+  hard-failed on the missing `platform.env`.
+- Validated: 6 `materialize.rs` unit tests; `pkgs.aos` builds hermetically;
+  `checks.config-materialize` feeds the **real** server `configManifest` to the
+  **real** `apm __materialize` and asserts the applied `/etc` (text/mode,
+  store-symlink into /nix/store, relative `.wants` link, job-script
+  materialization + placeholder rewrite); `checks.fleet.apm-system-upgrade`
+  (Ignition path) and `systems.server-rfc0011.checks.system-boot` (new path)
+  both green.
+
+So both halves of RFC-0011's core mechanism — the eval-only **producer** and the
+materializer **consumer** — are now implemented and validated. What still gates
+**full Ignition removal** is narrower: the *fleet test harness redesign*
+(deliver each VM's per-VM identity as a signed `host.nix` that the metadata
+agent stages and `activate` materializes, instead of an Ignition `storage.files`
+fragment), plus a booted-VM e2e that exercises that signed-`host.nix` → eval →
+materialize path on-box. Those are integration/test-infrastructure work on top
+of the now-existing runtime, not a missing runtime primitive.
