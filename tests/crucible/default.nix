@@ -1338,6 +1338,30 @@ in rec {
         phase6.searchReductions
       ];
     };
+    coverageFeedback = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.coverageFeedback";
+      gate = import ./phase6-coverage-feedback.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.coverageFeedback";
+        taskIds = ["T-ADV-11"];
+        dependencies = [
+          phase2.gates.singleVmFingerprint.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase4.eventLogCoverage
+          phase6.searchStrategies.rawGate
+          phase6.basicBlockCoverage.rawGate
+        ];
+      };
+      dependencies = [
+        phase2.gates.singleVmFingerprint
+        phase1.gates.contentAddress
+        phase4.gates.e2eDeterminism
+        phase4.eventLogCoverage
+        phase6.searchStrategies
+        phase6.basicBlockCoverage
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

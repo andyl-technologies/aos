@@ -1247,6 +1247,56 @@ pub fn coverage_fingerprint_from_event_log(entries: &[SchedulerEventLogEntry]) -
     event_log_coverage_projection(entries).content_hash()
 }
 
+/// A consumer of the shared event-log coverage feedback signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventLogCoverageFeedbackConsumer {
+    /// State-space search frontier ordering.
+    Search,
+    /// Coverage-guided fuzzing corpus and energy decisions.
+    CoverageGuidedFuzzing,
+}
+
+/// The single coverage feedback signal read by search and fuzzing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventLogCoverageFeedback {
+    projection: EventLogCoverageProjection,
+}
+
+impl EventLogCoverageFeedback {
+    /// Builds coverage feedback from the unified event log.
+    #[must_use]
+    pub fn from_event_log(entries: &[SchedulerEventLogEntry]) -> Self {
+        Self {
+            projection: event_log_coverage_projection(entries),
+        }
+    }
+
+    /// Returns the shared coverage projection backing every consumer view.
+    #[must_use]
+    pub const fn projection(&self) -> &EventLogCoverageProjection {
+        &self.projection
+    }
+
+    /// Returns the deterministic coverage fingerprint.
+    #[must_use]
+    pub fn fingerprint(&self) -> ContentHash {
+        self.projection.content_hash()
+    }
+
+    /// Returns the deterministic feedback fingerprint for one consumer.
+    ///
+    /// Search and coverage-guided fuzzing intentionally receive the same digest:
+    /// both are readers of the event-log coverage projection, not owners of a
+    /// parallel coverage record.
+    #[must_use]
+    pub fn fingerprint_for(&self, consumer: EventLogCoverageFeedbackConsumer) -> ContentHash {
+        match consumer {
+            EventLogCoverageFeedbackConsumer::Search
+            | EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing => self.fingerprint(),
+        }
+    }
+}
+
 /// One event-log entry retained by the assertion-proximity projection.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventLogAssertionProximityProjectionEntry {
