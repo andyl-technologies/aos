@@ -29,8 +29,9 @@ pub use concurrent_gc::{
     classify_thunk_mutation_barrier,
 };
 pub use gc::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, RememberedEdge,
-    RememberedSet, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcPlan,
+    MinorGcPromotionPolicy, MinorGcSurvivor, MinorGcSurvivorAction, NurseryObjectAge,
+    RememberedEdge, RememberedSet, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
     ThunkResolveWriteBarrier, classify_thunk_resolve_write_barrier,
     record_thunk_resolve_write_barrier,
 };

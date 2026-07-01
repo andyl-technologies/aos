@@ -4947,6 +4947,19 @@ and helps the oracle directly.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).
+- [x] Current minor-GC frontier precursor:
+      `ratchet-value::heap::gc::MinorGcPlan` builds the initial young-object
+      frontier for a future Tier-B minor collection from precise roots plus a
+      caller-supplied remembered set that must be complete for the same
+      collection epoch and target current nursery objects. It filters inline,
+      old, and permanent roots out of the young frontier, deduplicates young
+      roots and remembered targets in discovery order, validates that every live
+      young seed has unique nursery age metadata, and applies an age-based
+      copy-to-next-nursery vs promote-to-old policy. This is a survivor frontier
+      and promotion plan only; remembered-set epoch validation, object field
+      expansion, relocation/writeback, nursery semispace storage, old-generation
+      collection, GC-stress mode, and byte-green Tier-B harness execution remain
+      open in the full collector row above.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

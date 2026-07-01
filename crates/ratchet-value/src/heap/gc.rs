@@ -1,11 +1,13 @@
 //! Generational-GC policy surfaces for runtime heap objects.
 //!
 //! The active runtime does not yet include the daemon collector. This module
-//! defines the precise write-barrier decision table for the one mutating Nix
-//! heap transition: resolving a blackholed thunk to its forced value. The table
-//! is deliberately narrow so later collector code records old-to-young edges in
-//! one place instead of spreading field-store barriers across immutable value
-//! constructors.
+//! defines two precise policy surfaces for the future Tier-B daemon heap: the
+//! write-barrier decision table for the one mutating Nix heap transition
+//! (`Blackhole -> Forced(value)`) and the initial minor-GC frontier planner that
+//! combines young roots with the remembered old/permanent-to-young edge set. The
+//! barrier table is deliberately narrow so later collector code records
+//! old-to-young edges in one place instead of spreading field-store barriers
+//! across immutable value constructors.
 
 use crate::value::tag::POINTER_TAG_MASK;
 
@@ -273,6 +275,244 @@ impl RememberedSet {
     }
 }
 
+/// Minor-collection age metadata for one young-generation object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NurseryObjectAge {
+    address: GcHeapAddress,
+    survived_minor_collections: u32,
+}
+
+impl NurseryObjectAge {
+    /// Creates age metadata for a nursery object.
+    pub const fn new(address: GcHeapAddress, survived_minor_collections: u32) -> Self {
+        Self {
+            address,
+            survived_minor_collections,
+        }
+    }
+
+    /// Returns the young-generation object address.
+    pub const fn address(self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the number of minor collections already survived.
+    pub const fn survived_minor_collections(self) -> u32 {
+        self.survived_minor_collections
+    }
+}
+
+/// Age threshold that promotes nursery survivors into the old generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcPromotionPolicy {
+    promote_after_survivals: u32,
+}
+
+impl MinorGcPromotionPolicy {
+    /// Creates a promotion policy from a survivor-count threshold.
+    ///
+    /// A threshold of zero promotes every survivor immediately. A threshold of
+    /// `N` promotes an object once the current minor collection would make its
+    /// survived-minor count at least `N`.
+    pub const fn new(promote_after_survivals: u32) -> Self {
+        Self {
+            promote_after_survivals,
+        }
+    }
+
+    /// Returns the survivor-count threshold that triggers promotion.
+    pub const fn promote_after_survivals(self) -> u32 {
+        self.promote_after_survivals
+    }
+
+    const fn action_for_survivor(self, next_survivals: u32) -> MinorGcSurvivorAction {
+        if next_survivals >= self.promote_after_survivals {
+            MinorGcSurvivorAction::PromoteToOld
+        } else {
+            MinorGcSurvivorAction::CopyToNursery
+        }
+    }
+}
+
+/// The copying action selected for a live nursery object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MinorGcSurvivorAction {
+    /// Copy the object to the next nursery semispace.
+    CopyToNursery,
+    /// Promote the object to the old generation.
+    PromoteToOld,
+}
+
+/// One young object that a minor collection must preserve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcSurvivor {
+    address: GcHeapAddress,
+    previous_survivals: u32,
+    next_survivals: u32,
+    action: MinorGcSurvivorAction,
+}
+
+impl MinorGcSurvivor {
+    /// Returns the live young object address.
+    pub const fn address(self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the survived-minor count before the current collection.
+    pub const fn previous_survivals(self) -> u32 {
+        self.previous_survivals
+    }
+
+    /// Returns the survived-minor count after the current collection.
+    pub const fn next_survivals(self) -> u32 {
+        self.next_survivals
+    }
+
+    /// Returns whether this survivor is copied or promoted.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.action
+    }
+}
+
+/// A minor-collection frontier plan for the young generation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcPlan {
+    survivors: Vec<MinorGcSurvivor>,
+}
+
+impl MinorGcPlan {
+    /// Builds the initial young-object frontier for a minor collection.
+    ///
+    /// Inline, old-generation, and permanent roots do not enter the minor-GC
+    /// frontier. Young roots and remembered-set targets are deduplicated in
+    /// discovery order, then classified according to the promotion policy.
+    /// The caller must pass the remembered set for the same collection epoch:
+    /// it must contain every current old/permanent-to-young edge and its targets
+    /// must refer to objects still present in `nursery_objects`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if frontier storage cannot be reserved,
+    /// if the frontier length overflows, if a young frontier object has no
+    /// nursery age metadata, or if duplicate nursery age metadata is supplied.
+    pub fn from_roots_and_remembered(
+        roots: impl IntoIterator<Item = ResolvedValueGeneration>,
+        remembered_set: &RememberedSet,
+        nursery_objects: &[NurseryObjectAge],
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<Self, GenerationalGcError> {
+        validate_unique_nursery_objects(nursery_objects)?;
+        let mut frontier = MinorGcFrontier::new();
+        for root in roots {
+            if let ResolvedValueGeneration::Heap {
+                address,
+                generation: HeapGeneration::Young,
+            } = root
+            {
+                frontier.insert(address)?;
+            }
+        }
+        for edge in remembered_set.edges() {
+            frontier.insert(edge.target())?;
+        }
+
+        let mut survivors = Vec::new();
+        for address in frontier.addresses {
+            let age = nursery_age_for(nursery_objects, address)?;
+            let next_survivals = age.survived_minor_collections.saturating_add(1);
+            let action = promotion_policy.action_for_survivor(next_survivals);
+            let survivors_len = survivors
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcSurvivorLengthOverflow)?;
+            survivors.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcSurvivorAllocationFailed {
+                    survivors: survivors_len,
+                }
+            })?;
+            survivors.push(MinorGcSurvivor {
+                address,
+                previous_survivals: age.survived_minor_collections,
+                next_survivals,
+                action,
+            });
+        }
+
+        Ok(Self { survivors })
+    }
+
+    /// Returns planned young-generation survivors in frontier order.
+    pub fn survivors(&self) -> &[MinorGcSurvivor] {
+        &self.survivors
+    }
+
+    /// Returns the number of live young objects in the initial frontier.
+    pub fn len(&self) -> usize {
+        self.survivors.len()
+    }
+
+    /// Returns whether the initial young-object frontier is empty.
+    pub fn is_empty(&self) -> bool {
+        self.survivors.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+struct MinorGcFrontier {
+    addresses: Vec<GcHeapAddress>,
+}
+
+impl MinorGcFrontier {
+    const fn new() -> Self {
+        Self {
+            addresses: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, address: GcHeapAddress) -> Result<(), GenerationalGcError> {
+        if self.addresses.contains(&address) {
+            return Ok(());
+        }
+        let objects = self
+            .addresses
+            .len()
+            .checked_add(1)
+            .ok_or(GenerationalGcError::MinorGcFrontierLengthOverflow)?;
+        self.addresses
+            .try_reserve_exact(1)
+            .map_err(|_| GenerationalGcError::MinorGcFrontierAllocationFailed { objects })?;
+        self.addresses.push(address);
+        Ok(())
+    }
+}
+
+fn validate_unique_nursery_objects(
+    nursery_objects: &[NurseryObjectAge],
+) -> Result<(), GenerationalGcError> {
+    for (index, object) in nursery_objects.iter().enumerate() {
+        if nursery_objects[index + 1..]
+            .iter()
+            .any(|other| other.address == object.address)
+        {
+            return Err(GenerationalGcError::DuplicateNurseryObjectAge {
+                address: object.address,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn nursery_age_for(
+    nursery_objects: &[NurseryObjectAge],
+    address: GcHeapAddress,
+) -> Result<NurseryObjectAge, GenerationalGcError> {
+    nursery_objects
+        .iter()
+        .copied()
+        .find(|object| object.address == address)
+        .ok_or(GenerationalGcError::MissingNurseryObjectAge { address })
+}
+
 /// Classifies and records the write barrier for a thunk-resolution write.
 ///
 /// # Errors
@@ -311,6 +551,36 @@ pub enum GenerationalGcError {
     RememberedSetAllocationFailed {
         /// The requested remembered-set capacity.
         edges: usize,
+    },
+    /// The minor-GC frontier length overflowed.
+    #[error("minor-GC frontier length overflow")]
+    MinorGcFrontierLengthOverflow,
+    /// The minor-GC frontier could not reserve storage.
+    #[error("failed to reserve {objects} minor-GC frontier objects")]
+    MinorGcFrontierAllocationFailed {
+        /// The requested frontier capacity.
+        objects: usize,
+    },
+    /// The minor-GC survivor plan length overflowed.
+    #[error("minor-GC survivor length overflow")]
+    MinorGcSurvivorLengthOverflow,
+    /// The minor-GC survivor plan could not reserve storage.
+    #[error("failed to reserve {survivors} minor-GC survivors")]
+    MinorGcSurvivorAllocationFailed {
+        /// The requested survivor-plan capacity.
+        survivors: usize,
+    },
+    /// A young frontier object had no age metadata.
+    #[error("missing nursery age metadata for 0x{address:x}", address = address.address_bits())]
+    MissingNurseryObjectAge {
+        /// The young object missing nursery metadata.
+        address: GcHeapAddress,
+    },
+    /// A young object appeared more than once in the nursery age table.
+    #[error("duplicate nursery age metadata for 0x{address:x}", address = address.address_bits())]
+    DuplicateNurseryObjectAge {
+        /// The duplicated young object.
+        address: GcHeapAddress,
     },
 }
 
@@ -466,5 +736,144 @@ mod tests {
 
         assert_eq!(action, ThunkResolveWriteBarrier::NotRequired);
         assert_eq!(set.edges(), &[edge]);
+    }
+
+    #[test]
+    fn minor_gc_plan_uses_young_roots_and_remembered_targets_only() {
+        let root = address(0x1000);
+        let remembered = address(0x2000);
+        let ignored_old = address(0x3000);
+        let ignored_permanent = address(0x4000);
+        let mut remembered_set = RememberedSet::new();
+        remembered_set
+            .record(RememberedEdge::new(address(0x5000), remembered))
+            .expect("remembered edge records");
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::Inline,
+                ResolvedValueGeneration::young(root),
+                ResolvedValueGeneration::old(ignored_old),
+                ResolvedValueGeneration::permanent(ignored_permanent),
+            ],
+            &remembered_set,
+            &[
+                NurseryObjectAge::new(root, 0),
+                NurseryObjectAge::new(remembered, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(plan.len(), 2);
+        assert!(!plan.is_empty());
+        assert_eq!(plan.survivors()[0].address(), root);
+        assert_eq!(plan.survivors()[1].address(), remembered);
+        assert!(
+            plan.survivors()
+                .iter()
+                .all(|survivor| survivor.action() == MinorGcSurvivorAction::CopyToNursery)
+        );
+    }
+
+    #[test]
+    fn minor_gc_plan_deduplicates_roots_and_distinct_remembered_sources() {
+        let young = address(0x1000);
+        let mut remembered_set = RememberedSet::new();
+        remembered_set
+            .record(RememberedEdge::new(address(0x3000), young))
+            .expect("remembered edge records");
+        remembered_set
+            .record(RememberedEdge::new(address(0x4000), young))
+            .expect("same young target from a distinct source records");
+
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(young),
+                ResolvedValueGeneration::young(young),
+            ],
+            &remembered_set,
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(plan.survivors().len(), 1);
+        assert_eq!(plan.survivors()[0].address(), young);
+    }
+
+    #[test]
+    fn minor_gc_plan_applies_age_based_promotion_policy() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            &RememberedSet::new(),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(plan.survivors()[0].previous_survivals(), 0);
+        assert_eq!(plan.survivors()[0].next_survivals(), 1);
+        assert_eq!(
+            plan.survivors()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(plan.survivors()[1].previous_survivals(), 1);
+        assert_eq!(plan.survivors()[1].next_survivals(), 2);
+        assert_eq!(
+            plan.survivors()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+    }
+
+    #[test]
+    fn zero_survival_threshold_promotes_every_minor_gc_survivor() {
+        let young = address(0x1000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            &RememberedSet::new(),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(plan.survivors()[0].next_survivals(), 1);
+        assert_eq!(
+            plan.survivors()[0].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+    }
+
+    #[test]
+    fn minor_gc_plan_rejects_missing_or_duplicate_nursery_metadata() {
+        let young = address(0x1000);
+        assert_eq!(
+            MinorGcPlan::from_roots_and_remembered(
+                [ResolvedValueGeneration::young(young)],
+                &RememberedSet::new(),
+                &[],
+                MinorGcPromotionPolicy::new(2),
+            ),
+            Err(GenerationalGcError::MissingNurseryObjectAge { address: young })
+        );
+        assert_eq!(
+            MinorGcPlan::from_roots_and_remembered(
+                [ResolvedValueGeneration::young(young)],
+                &RememberedSet::new(),
+                &[
+                    NurseryObjectAge::new(young, 0),
+                    NurseryObjectAge::new(young, 1)
+                ],
+                MinorGcPromotionPolicy::new(2),
+            ),
+            Err(GenerationalGcError::DuplicateNurseryObjectAge { address: young })
+        );
     }
 }
