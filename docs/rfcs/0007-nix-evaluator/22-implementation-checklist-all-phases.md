@@ -5231,6 +5231,18 @@ and helps the oracle directly.
       allocation poll, retain mutable root/field relocation slots, copy objects,
       install forwarding pointers, mutate references, or run GC-stress
       collection.
+- [x] Current allocation-poll reference-slot precursor:
+      `AllocationCollectorPollMinorGcPlan` carries a deterministic, labeled
+      reference-slot sequence for the future rewrite step: explicit roots from
+      the poll scan, remembered-edge targets in snapshot order, and precise
+      fields of planned young survivors in survivor order. The
+      `reference_rewrite_plan` helper delegates that sequence to
+      `MinorGcReferenceRewritePlan` once a relocation map exists, preserving
+      slot indices so tests can link rewrites back to copied roots, remembered
+      edges, and survivor fields. Unit tests cover root and nursery-field
+      rewrites plus remembered-edge rewrites. This remains copied slot metadata
+      only; mutable evaluator roots, object-field writeback, remembered-source
+      field mutation, and live runtime-state application remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5313,6 +5325,14 @@ and helps the oracle directly.
       mutating collector: mutable relocation slots, root/field writeback,
       object copying, forwarding pointers, card-table ownership, and JIT
       stack-map integration remain open.
+- [x] Current `heap/roots.rs` reference-slot bridge precursor:
+      `AllocationCollectorPollReferenceSlot` labels the copied references that
+      would need relocation after a minor collection: root slots, remembered
+      edge targets, and fields of planned nursery survivors. The slot sequence
+      feeds `MinorGcReferenceRewritePlan` with stable indices, but does not yet
+      own or mutate the underlying evaluator storage. Real relocation slots for
+      tree-walk roots, copied object fields, remembered old/permanent fields,
+      and later JIT stack-map entries remain open.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

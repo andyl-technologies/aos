@@ -19,9 +19,9 @@ use std::ptr::NonNull;
 use super::*;
 use crate::eval::thunk::ThunkState;
 use crate::heap::{
-    GcHeapAddress, HeapGeneration, MinorGcPlan, MinorGcPromotionPolicy, NurseryObjectAge,
-    NurseryObjectFields, RememberedEdge, RememberedSetEpoch, RememberedSetSnapshot,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcPlan, MinorGcPromotionPolicy,
+    MinorGcReferenceRewritePlan, MinorGcRelocationPlan, NurseryObjectAge, NurseryObjectFields,
+    RememberedEdge, RememberedSetEpoch, RememberedSetSnapshot, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
@@ -35,6 +35,7 @@ const MINOR_GC_ROOTS_TABLE: &str = "minor-GC roots";
 const MINOR_GC_NURSERY_OBJECTS_TABLE: &str = "minor-GC nursery objects";
 const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
+const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 
 /// A precise root slot and the heap value stored in it.
 #[derive(Clone, Debug)]
@@ -769,6 +770,51 @@ impl AllocationCollectorPollNurseryFields {
     }
 }
 
+/// The copied root or field location represented by a collector-poll reference slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AllocationCollectorPollReferenceSource {
+    /// A copied explicit root slot from the poll scan.
+    Root {
+        /// The root location reported by the tree-walk scanner.
+        source: EvalRootSource,
+    },
+    /// A copied remembered-set edge target.
+    RememberedEdge {
+        /// The remembered old-or-permanent to young edge.
+        edge: RememberedEdge,
+    },
+    /// A copied precise field from a planned young survivor.
+    NurseryField {
+        /// The survivor object whose field was copied.
+        object: GcHeapAddress,
+        /// The field index in the object's precise nursery-field order.
+        field: usize,
+    },
+}
+
+/// One copied root or field reference that can feed reference-rewrite planning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollReferenceSlot {
+    source: AllocationCollectorPollReferenceSource,
+    value: ResolvedValueGeneration,
+}
+
+impl AllocationCollectorPollReferenceSlot {
+    fn new(source: AllocationCollectorPollReferenceSource, value: ResolvedValueGeneration) -> Self {
+        Self { source, value }
+    }
+
+    /// Returns the copied root or field location represented by this slot.
+    pub const fn source(&self) -> &AllocationCollectorPollReferenceSource {
+        &self.source
+    }
+
+    /// Returns the reference value copied from the slot.
+    pub const fn value(&self) -> ResolvedValueGeneration {
+        self.value
+    }
+}
+
 /// A collector-poll snapshot converted into minor-GC planner inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollMinorGcPlan {
@@ -776,6 +822,7 @@ pub struct AllocationCollectorPollMinorGcPlan {
     roots: Vec<ResolvedValueGeneration>,
     nursery_objects: Vec<NurseryObjectAge>,
     nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+    reference_slots: Vec<AllocationCollectorPollReferenceSlot>,
     plan: MinorGcPlan,
 }
 
@@ -785,6 +832,7 @@ impl AllocationCollectorPollMinorGcPlan {
         roots: Vec<ResolvedValueGeneration>,
         nursery_objects: Vec<NurseryObjectAge>,
         nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+        reference_slots: Vec<AllocationCollectorPollReferenceSlot>,
         plan: MinorGcPlan,
     ) -> Self {
         Self {
@@ -792,6 +840,7 @@ impl AllocationCollectorPollMinorGcPlan {
             roots,
             nursery_objects,
             nursery_fields,
+            reference_slots,
             plan,
         }
     }
@@ -814,6 +863,30 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns generated field metadata for current young oracle-heap objects.
     pub fn nursery_fields(&self) -> &[AllocationCollectorPollNurseryFields] {
         &self.nursery_fields
+    }
+
+    /// Returns the copied root and field references in rewrite-slot order.
+    pub fn reference_slots(&self) -> &[AllocationCollectorPollReferenceSlot] {
+        &self.reference_slots
+    }
+
+    /// Returns reference values in rewrite-slot order.
+    pub fn reference_values(&self) -> impl Iterator<Item = ResolvedValueGeneration> + '_ {
+        self.reference_slots.iter().map(|slot| slot.value())
+    }
+
+    /// Builds a minor-GC reference-rewrite plan from this poll plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if any young reference in this plan does
+    /// not have a relocation entry or if the rewrite plan cannot reserve
+    /// storage.
+    pub fn reference_rewrite_plan(
+        &self,
+        relocation_plan: &MinorGcRelocationPlan,
+    ) -> Result<MinorGcReferenceRewritePlan, GenerationalGcError> {
+        MinorGcReferenceRewritePlan::from_references(relocation_plan, self.reference_values())
     }
 
     /// Returns the planned young-generation survivor frontier.
@@ -979,12 +1052,19 @@ impl EvalHeap {
             &nursery_field_views,
             promotion_policy,
         )?;
+        let reference_slots = self.minor_gc_reference_slots_for_plan(
+            poll_scan,
+            remembered_set,
+            &plan,
+            &nursery_fields,
+        )?;
 
         Ok(AllocationCollectorPollMinorGcPlan::new(
             poll_scan.poll(),
             roots,
             nursery_objects,
             nursery_fields,
+            reference_slots,
             plan,
         ))
     }
@@ -1243,6 +1323,52 @@ impl EvalHeap {
         Ok(nursery_fields)
     }
 
+    fn minor_gc_reference_slots_for_plan(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+        remembered_set: RememberedSetSnapshot<'_>,
+        plan: &MinorGcPlan,
+        nursery_fields: &[AllocationCollectorPollNurseryFields],
+    ) -> Result<Vec<AllocationCollectorPollReferenceSlot>, EvalHeapError> {
+        let mut reference_slots = Vec::new();
+        for root in poll_scan.scan().roots() {
+            push_reference_slot(
+                &mut reference_slots,
+                AllocationCollectorPollReferenceSource::Root {
+                    source: root.source().clone(),
+                },
+                self.resolved_generation_for_value(root.value())?,
+            )?;
+        }
+
+        for edge in remembered_set.edges() {
+            push_reference_slot(
+                &mut reference_slots,
+                AllocationCollectorPollReferenceSource::RememberedEdge { edge: *edge },
+                ResolvedValueGeneration::Heap {
+                    address: edge.target(),
+                    generation: HeapGeneration::Young,
+                },
+            )?;
+        }
+
+        for survivor in plan.survivors() {
+            let fields = nursery_fields_for_survivor(nursery_fields, survivor.address())?;
+            for (field, value) in fields.fields().iter().copied().enumerate() {
+                push_reference_slot(
+                    &mut reference_slots,
+                    AllocationCollectorPollReferenceSource::NurseryField {
+                        object: survivor.address(),
+                        field,
+                    },
+                    value,
+                )?;
+            }
+        }
+
+        Ok(reference_slots)
+    }
+
     fn record_for_scannable_value(&self, value: Value) -> Result<&HeapRecord, EvalHeapError> {
         let (tag, ptr) = heap_ptr(value)?;
         let record = self.record_or_unknown(tag, ptr)?;
@@ -1300,6 +1426,39 @@ fn nursery_field_views(
         views.push(NurseryObjectFields::new(object.address(), object.fields()));
     }
     Ok(views)
+}
+
+fn nursery_fields_for_survivor(
+    nursery_fields: &[AllocationCollectorPollNurseryFields],
+    address: GcHeapAddress,
+) -> Result<&AllocationCollectorPollNurseryFields, EvalHeapError> {
+    nursery_fields
+        .iter()
+        .find(|fields| fields.address() == address)
+        .ok_or(EvalHeapError::GenerationalGc(
+            GenerationalGcError::MissingNurseryObjectFields { address },
+        ))
+}
+
+fn push_reference_slot(
+    slots: &mut Vec<AllocationCollectorPollReferenceSlot>,
+    source: AllocationCollectorPollReferenceSource,
+    value: ResolvedValueGeneration,
+) -> Result<(), EvalHeapError> {
+    let entries = slots
+        .len()
+        .checked_add(1)
+        .ok_or(EvalHeapError::RootScanLengthOverflow {
+            table: MINOR_GC_REFERENCE_SLOTS_TABLE,
+        })?;
+    slots
+        .try_reserve_exact(1)
+        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+            table: MINOR_GC_REFERENCE_SLOTS_TABLE,
+            entries,
+        })?;
+    slots.push(AllocationCollectorPollReferenceSlot::new(source, value));
+    Ok(())
 }
 
 fn gc_address_for_value(value: Value) -> Result<GcHeapAddress, EvalHeapError> {

@@ -40,6 +40,7 @@ mod thunk;
 
 pub use roots::{
     AllocationCollectorPollMinorGcPlan, AllocationCollectorPollNurseryFields,
+    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
     EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
     StackMapSlot,

@@ -5,8 +5,8 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, HeapGeneration, MinorGcPromotionPolicy, RememberedEdge, RememberedSet,
-    ResolvedValueGeneration,
+    GcHeapAddress, HeapGeneration, MinorGcPromotionPolicy, MinorGcRelocationDestination,
+    MinorGcRelocationPlan, RememberedEdge, RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -52,6 +52,10 @@ fn allocation_domain(heap: &EvalHeap, value: Value) -> HeapAllocationDomain {
 fn gc_address(value: Value) -> GcHeapAddress {
     GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
         .expect("heap pointers are valid GC addresses")
+}
+
+fn static_gc_address(address_bits: usize) -> GcHeapAddress {
+    GcHeapAddress::new(address_bits).expect("test address is a valid GC address")
 }
 
 #[test]
@@ -1438,6 +1442,55 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert_eq!(planned.plan().survivors().len(), 2);
     assert_eq!(planned.plan().survivors()[0].address(), gc_address(lambda));
     assert_eq!(planned.plan().survivors()[1].address(), gc_address(child));
+    assert_eq!(planned.reference_slots().len(), 2);
+    assert_eq!(
+        planned.reference_slots()[0].source(),
+        &AllocationCollectorPollReferenceSource::Root {
+            source: EvalRootSource::ValueStack { slot: 0 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(lambda),
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::NurseryField {
+            object: gc_address(lambda),
+            field: 0,
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let lambda_destination = static_gc_address(0x1000_0000);
+    let child_destination = static_gc_address(0x1000_1000);
+    let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+        planned.plan(),
+        &[
+            MinorGcRelocationDestination::new(gc_address(lambda), lambda_destination),
+            MinorGcRelocationDestination::new(gc_address(child), child_destination),
+        ],
+    )
+    .expect("relocation plan builds");
+    let rewrite_plan = planned
+        .reference_rewrite_plan(&relocation_plan)
+        .expect("reference rewrite plan builds");
+    assert_eq!(rewrite_plan.rewrites().len(), 2);
+    assert_eq!(rewrite_plan.rewrites()[0].slot(), 0);
+    assert_eq!(rewrite_plan.rewrites()[0].source(), gc_address(lambda));
+    assert_eq!(rewrite_plan.rewrites()[0].destination(), lambda_destination);
+    assert_eq!(rewrite_plan.rewrites()[1].slot(), 1);
+    assert_eq!(rewrite_plan.rewrites()[1].source(), gc_address(child));
+    assert_eq!(rewrite_plan.rewrites()[1].destination(), child_destination);
 }
 
 #[test]
@@ -1525,6 +1578,50 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     );
     assert_eq!(planned.plan().survivors().len(), 1);
     assert_eq!(planned.plan().survivors()[0].address(), gc_address(child));
+    assert_eq!(planned.reference_slots().len(), 2);
+    assert_eq!(
+        planned.reference_slots()[0].source(),
+        &AllocationCollectorPollReferenceSource::Root {
+            source: EvalRootSource::ValueStack { slot: 0 },
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(root),
+            generation: HeapGeneration::Permanent,
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].source(),
+        &AllocationCollectorPollReferenceSource::RememberedEdge {
+            edge: RememberedEdge::new(gc_address(root), gc_address(child)),
+        }
+    );
+    assert_eq!(
+        planned.reference_slots()[1].value(),
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    let child_destination = static_gc_address(0x1000_2000);
+    let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+        planned.plan(),
+        &[MinorGcRelocationDestination::new(
+            gc_address(child),
+            child_destination,
+        )],
+    )
+    .expect("relocation plan builds");
+    let rewrite_plan = planned
+        .reference_rewrite_plan(&relocation_plan)
+        .expect("reference rewrite plan builds");
+    assert_eq!(rewrite_plan.rewrites().len(), 1);
+    assert_eq!(rewrite_plan.rewrites()[0].slot(), 1);
+    assert_eq!(rewrite_plan.rewrites()[0].source(), gc_address(child));
+    assert_eq!(rewrite_plan.rewrites()[0].destination(), child_destination);
 }
 
 #[test]
