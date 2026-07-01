@@ -98,6 +98,10 @@
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
             initrd = evaluated.config.system.build.initrd;
+            # The signed UKI, published as a `format=uki` companion image
+            # alongside the toplevel so OTA installs get a per-generation
+            # boot entry (`apr release --image <uki> --image-format uki`).
+            uki = evaluated.config.system.build.uki;
             image = evaluated.config.system.build.image;
           };
           # VM test derivations — produced inside the module system by
