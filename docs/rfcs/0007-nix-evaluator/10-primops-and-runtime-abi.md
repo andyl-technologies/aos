@@ -761,9 +761,9 @@ harness, never cut for scope.
       ([06](06-memory-management-and-gc.md) §2).
 - [ ] Frozen runtime/JIT allocation indirection remains: `aos_alloc_*` exported
       as `unsafe extern "C"` or equivalent runtime symbols, registered with
-      `JITBuilder::symbol`, selected by the startup allocator/vtable strategy,
-      routed through every tier/primop allocation path, and swappable between
-      bump-arena and generational bodies with byte-identical JIT output
+      `JITBuilder::symbol`, bound to the selected allocator vtable at native
+      startup, routed through every tier/primop allocation path, and swappable
+      between bump-arena and generational bodies with byte-identical JIT output
       ([§3.1](#31-what-lives-in-it)) — P3/P6, `S-8`.
 - [ ] Frozen, stable symbol naming scheme (`nix.builtin.<name>`, `aos_<verb>`) so persisted compiled-IR artifacts re-link across runs ([§3.3](#33-symbol-naming-and-stability)) — P2/P6, `R-14`.
 - [x] Current stable-symbol naming precursor: `ratchet-core::runtime_abi`
@@ -781,8 +781,18 @@ harness, never cut for scope.
       `aos_alloc_*` helper and resolves from the frozen symbol name. Tests keep
       that signature inventory aligned with `ratchet-core`'s allocation helper
       symbols. This remains metadata only; no exported wrappers,
-      allocation-failure/trap convention, Cranelift registration, startup
-      allocator selection, or compiled-symbol relinking is implemented here.
+      allocation-failure/trap convention, Cranelift registration, native startup
+      binding, or compiled-symbol relinking is implemented here.
+- [x] Current allocation-vtable precursor:
+      internal `ratchet-oracle::runtime::alloc::RuntimeAllocationVTable`
+      dispatch is selected from the installed `RuntimeAllocator` backend and
+      carries typed safe Rust function pointers for every frozen `aos_alloc_*`
+      route. The public tree-walk allocator entry points dispatch through that
+      table before reaching the current Tier-A `BumpArena` bodies, and tests
+      exercise both selected-table metadata and direct crate-internal vtable
+      allocation calls. This is internal safe startup dispatch only; it does not
+      export wrappers, define the native failure/trap convention, register
+      Cranelift symbols, install a Tier-B table, or relink compiled artifacts.
 
 ### Perfect-hash builtin dispatch
 

@@ -908,9 +908,9 @@ harness, never cut for scope.
       ([06](06-memory-management-and-gc.md) §2).
 - [ ] Frozen runtime/JIT allocation indirection remains: `aos_alloc_*` exported
       as `unsafe extern "C"` or equivalent runtime symbols, registered with
-      `JITBuilder::symbol`, selected by the startup allocator/vtable strategy,
-      routed through every tier/primop allocation path, and swappable between
-      bump-arena and generational bodies with byte-identical compiled code
+      `JITBuilder::symbol`, bound to the selected allocator vtable at native
+      startup, routed through every tier/primop allocation path, and swappable
+      between bump-arena and generational bodies with byte-identical compiled code
       ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
 - [x] Current allocation-symbol binding precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationEntryPoint` exposes and
@@ -925,8 +925,17 @@ harness, never cut for scope.
       same order as the allocation entry-point inventory, and resolves from the
       frozen symbol name for future registration code. This remains metadata only;
       exported `unsafe extern "C"` wrappers, allocation-failure/trap behavior,
-      `JITBuilder::symbol` registration, startup vtable selection, and Tier-B body
+      `JITBuilder::symbol` registration, native startup binding, and Tier-B body
       swapping remain open.
+- [x] Current allocation-vtable precursor:
+      internal `RuntimeAllocationVTable` dispatch is selected from the installed
+      `RuntimeAllocator` backend and carries typed safe Rust function pointers for
+      every frozen `aos_alloc_*` route. The tree-walk allocator entry points
+      dispatch through that table before reaching the current Tier-A `BumpArena`
+      bodies, and tests exercise both selected-table metadata and direct vtable
+      allocation calls inside the crate. This is internal safe Rust dispatch
+      only; exported wrappers, Cranelift symbol registration, native failure/trap
+      semantics, and Tier-B vtable installation remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT

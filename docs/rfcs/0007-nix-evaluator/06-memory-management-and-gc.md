@@ -839,8 +839,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       runtime allocation inventory exactly matches the `ratchet-core`
       `RuntimeHelperRole::Allocation` symbol table and rejects non-allocation
       helpers. This pins the dispatch inventory only; it does not export
-      `unsafe extern "C"` functions, register Cranelift symbols, select a
-      startup allocator vtable, or swap in the Tier-B collector body.
+      `unsafe extern "C"` functions, register Cranelift symbols, or swap in the
+      Tier-B collector body.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` pins success-path helper signature metadata
       for every `aos_alloc_*` route: the runtime context parameter first,
@@ -853,7 +853,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       future registration code can consume the same inventory. This is signature
       metadata only; it still does not export `unsafe extern "C"` functions, define
       the allocation-failure/trap convention, register symbols with Cranelift,
-      choose the startup allocator vtable, or swap in the Tier-B collector body.
+      or swap in the Tier-B collector body.
+- [x] Current allocation-vtable precursor:
+      internal `RuntimeAllocationVTable` dispatch is selected from the installed
+      `RuntimeAllocator` backend and carries typed safe Rust function pointers for
+      every frozen `aos_alloc_*` route. The existing public allocator entry points
+      now dispatch through that table before reaching the Tier-A `BumpArena`
+      bodies, and tests assert both default/configured allocator construction and
+      direct crate-internal vtable calls preserve the expected safepoint entry
+      points. This is internal safe Rust startup dispatch only; it does not export
+      `unsafe extern "C"` functions, define the allocation-failure/trap
+      convention, register symbols with Cranelift, or install a Tier-B collector
+      table.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
@@ -869,9 +880,9 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
-      `aos_alloc_string` / `aos_alloc_thunk` symbols, startup allocator vtable
-      selection, every-tier/every-primop routing through those symbols, and
-      collector/JIT swapping without caller recompilation (§2) — **M0** (within
+      `aos_alloc_string` / `aos_alloc_thunk` symbols, native registration against
+      the selected allocator vtable, every-tier/every-primop routing through those
+      symbols, and collector/JIT swapping without caller recompilation (§2) — **M0** (within
       **P3**), `S-8`.
 - [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
 - [x] Current allocation-safepoint metadata precursor:

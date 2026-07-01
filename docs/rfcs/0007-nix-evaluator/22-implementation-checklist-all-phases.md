@@ -5182,8 +5182,8 @@ and helps the oracle directly.
       runtime allocation inventory exactly matches `ratchet-core`'s
       `RuntimeHelperRole::Allocation` table and rejects non-allocation symbols.
       This is symbol inventory and dispatch metadata only; no unsafe C exports,
-      Cranelift symbol registration, startup allocator vtable selection, or
-      Tier-B collector body swap is implemented here.
+      Cranelift symbol registration, or Tier-B collector body swap is
+      implemented here.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context
@@ -5195,9 +5195,20 @@ and helps the oracle directly.
       every helper. The signature descriptor also resolves from a frozen symbol
       name so future registration code can consume the same inventory. This is
       metadata only; actual exported `unsafe extern "C"` functions, the
-      allocation-failure/trap convention, Cranelift symbol registration, startup
-      allocator vtable selection, every-tier/primop routing, and Tier-B collector
-      body swapping remain open.
+      allocation-failure/trap convention, Cranelift symbol registration, native
+      startup binding, every-tier/primop routing, and Tier-B collector body
+      swapping remain open.
+- [x] Current allocation-vtable precursor:
+      internal `RuntimeAllocationVTable` dispatch is selected from the installed
+      `RuntimeAllocator` backend and carries typed safe Rust function pointers for
+      every frozen `aos_alloc_*` route. The existing public allocator entry
+      points now dispatch through that table before reaching the Tier-A
+      `BumpArena` bodies, and tests assert both default/configured allocator
+      construction and direct crate-internal vtable calls preserve the expected
+      safepoint entry points. This is internal safe Rust startup dispatch only; no
+      unsafe C exports, native failure/trap convention, Cranelift symbol
+      registration, Tier-B table, or compiled-artifact relinking is implemented
+      here.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,

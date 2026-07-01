@@ -159,6 +159,165 @@ pub const fn runtime_allocation_abi_signatures() -> &'static [RuntimeAllocationA
     RUNTIME_ALLOCATION_ABI_SIGNATURES
 }
 
+type RuntimeAllocationAttrsFn =
+    fn(&mut RuntimeAllocator, shape: u32, slots: u32) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationConsFn = fn(&mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationLambdaFn = fn(&mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationListFn =
+    fn(&mut RuntimeAllocator, len: usize) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationRawFn = fn(
+    &mut RuntimeAllocator,
+    size: usize,
+    align: usize,
+    type_tag: u32,
+) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationStringFn =
+    fn(&mut RuntimeAllocator, len: usize) -> Result<ArenaAllocation, ArenaError>;
+type RuntimeAllocationThunkFn = fn(&mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError>;
+
+/// A selected safe allocation dispatch table for one runtime allocator backend.
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeAllocationVTable {
+    tier: RuntimeAllocatorTier,
+    entrypoints: &'static [RuntimeAllocationEntryPoint],
+    abi_signatures: &'static [RuntimeAllocationAbiSignature],
+    alloc_attrs: RuntimeAllocationAttrsFn,
+    alloc_cons: RuntimeAllocationConsFn,
+    alloc_lambda: RuntimeAllocationLambdaFn,
+    alloc_list: RuntimeAllocationListFn,
+    alloc_raw: RuntimeAllocationRawFn,
+    alloc_string: RuntimeAllocationStringFn,
+    alloc_thunk: RuntimeAllocationThunkFn,
+}
+
+impl RuntimeAllocationVTable {
+    /// Returns the allocator tier served by this dispatch table.
+    pub(crate) const fn tier(&self) -> RuntimeAllocatorTier {
+        self.tier
+    }
+
+    /// Returns the allocation entry points implemented by this table.
+    pub(crate) const fn entrypoints(&self) -> &'static [RuntimeAllocationEntryPoint] {
+        self.entrypoints
+    }
+
+    /// Returns the frozen ABI signatures implemented by this table.
+    pub(crate) const fn abi_signatures(&self) -> &'static [RuntimeAllocationAbiSignature] {
+        self.abi_signatures
+    }
+
+    /// Allocates an attribute-set heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_attrs(
+        &self,
+        allocator: &mut RuntimeAllocator,
+        shape: u32,
+        slots: u32,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_attrs)(allocator, shape, slots)
+    }
+
+    /// Allocates a cons-cell heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_cons(
+        &self,
+        allocator: &mut RuntimeAllocator,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_cons)(allocator)
+    }
+
+    /// Allocates a lambda-sized heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_lambda(
+        &self,
+        allocator: &mut RuntimeAllocator,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_lambda)(allocator)
+    }
+
+    /// Allocates a contiguous list heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_list(
+        &self,
+        allocator: &mut RuntimeAllocator,
+        len: usize,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_list)(allocator, len)
+    }
+
+    /// Allocates raw heap storage through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_raw(
+        &self,
+        allocator: &mut RuntimeAllocator,
+        size: usize,
+        align: usize,
+        type_tag: u32,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_raw)(allocator, size, align, type_tag)
+    }
+
+    /// Allocates a string heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_string(
+        &self,
+        allocator: &mut RuntimeAllocator,
+        len: usize,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_string)(allocator, len)
+    }
+
+    /// Allocates a thunk-sized heap object through this table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if the selected allocation strategy cannot reserve
+    /// the requested object.
+    pub(crate) fn aos_alloc_thunk(
+        &self,
+        allocator: &mut RuntimeAllocator,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        (self.alloc_thunk)(allocator)
+    }
+}
+
+const TIER_A_ONE_SHOT_ALLOCATION_VTABLE: RuntimeAllocationVTable = RuntimeAllocationVTable {
+    tier: RuntimeAllocatorTier::TierAOneShot,
+    entrypoints: RUNTIME_ALLOCATION_ENTRYPOINTS,
+    abi_signatures: RUNTIME_ALLOCATION_ABI_SIGNATURES,
+    alloc_attrs: tier_a_alloc_attrs,
+    alloc_cons: tier_a_alloc_cons,
+    alloc_lambda: tier_a_alloc_lambda,
+    alloc_list: tier_a_alloc_list,
+    alloc_raw: tier_a_alloc_raw,
+    alloc_string: tier_a_alloc_string,
+    alloc_thunk: tier_a_alloc_thunk,
+};
+
 impl RuntimeAllocationEntryPoint {
     /// Returns the stable runtime symbol name for this allocation entry point.
     pub const fn symbol_name(self) -> &'static str {
@@ -837,6 +996,17 @@ impl RuntimeAllocator {
         }
     }
 
+    /// Returns the safe allocation dispatch table for the installed backend.
+    fn allocation_vtable(&self) -> &'static RuntimeAllocationVTable {
+        let vtable = match &self.backend {
+            RuntimeAllocatorBackend::TierAOneShot(_) => &TIER_A_ONE_SHOT_ALLOCATION_VTABLE,
+        };
+        debug_assert_eq!(vtable.tier(), self.tier());
+        debug_assert_eq!(vtable.entrypoints(), runtime_allocation_entrypoints());
+        debug_assert_eq!(vtable.abi_signatures(), runtime_allocation_abi_signatures());
+        vtable
+    }
+
     /// Returns current allocation accounting for the installed strategy.
     pub fn stats(&self) -> ArenaStats {
         match &self.backend {
@@ -924,9 +1094,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_thunk(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_thunk()?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocThunk, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_thunk(self)
     }
 
     /// Allocates a lambda-sized heap object through `aos_alloc_lambda`.
@@ -936,9 +1104,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_lambda(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_lambda()?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocLambda, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_lambda(self)
     }
 
     /// Allocates an attribute-set heap object through `aos_alloc_attrs`.
@@ -952,9 +1118,7 @@ impl RuntimeAllocator {
         shape: u32,
         slots: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_attrs(shape, slots)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocAttrs, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_attrs(self, shape, slots)
     }
 
     /// Allocates a cons-cell heap object through `aos_alloc_cons`.
@@ -964,9 +1128,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_cons(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_cons()?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocCons, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_cons(self)
     }
 
     /// Allocates a contiguous list heap object through `aos_alloc_list`.
@@ -976,9 +1138,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_list(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocList, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_list(self, len)
     }
 
     /// Allocates a string heap object through `aos_alloc_string`.
@@ -988,9 +1148,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_string(len)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocString, allocation);
-        Ok(allocation)
+        self.allocation_vtable().aos_alloc_string(self, len)
     }
 
     /// Allocates raw heap storage through `aos_alloc_raw`.
@@ -1005,9 +1163,8 @@ impl RuntimeAllocator {
         align: usize,
         type_tag: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        let allocation = self.arena_mut().aos_alloc_raw(size, align, type_tag)?;
-        self.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocRaw, allocation);
-        Ok(allocation)
+        self.allocation_vtable()
+            .aos_alloc_raw(self, size, align, type_tag)
     }
 
     fn arena_mut(&mut self) -> &mut BumpArena {
@@ -1027,6 +1184,63 @@ impl RuntimeAllocator {
         self.safepoints
             .record(tier, entrypoint, allocation, stats, gc_stress_policy);
     }
+}
+
+fn tier_a_alloc_thunk(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_thunk()?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocThunk, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_lambda(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_lambda()?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocLambda, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_attrs(
+    allocator: &mut RuntimeAllocator,
+    shape: u32,
+    slots: u32,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_attrs(shape, slots)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocAttrs, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_cons(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_cons()?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocCons, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_list(
+    allocator: &mut RuntimeAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_list(len)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocList, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_string(
+    allocator: &mut RuntimeAllocator,
+    len: usize,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_string(len)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocString, allocation);
+    Ok(allocation)
+}
+
+fn tier_a_alloc_raw(
+    allocator: &mut RuntimeAllocator,
+    size: usize,
+    align: usize,
+    type_tag: u32,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocator.arena_mut().aos_alloc_raw(size, align, type_tag)?;
+    allocator.record_allocation_safepoint(RuntimeAllocationEntryPoint::AosAllocRaw, allocation);
+    Ok(allocation)
 }
 
 #[derive(Debug)]
@@ -1550,6 +1764,112 @@ mod tests {
         );
         assert_eq!(runtime_entrypoint_symbols, allocation_symbols);
         assert_eq!(runtime_signature_symbols, allocation_symbols);
+    }
+
+    #[test]
+    fn runtime_allocator_selects_tier_a_allocation_vtable() {
+        let default_allocator = RuntimeAllocator::default();
+        let configured_allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
+
+        for allocator in [&default_allocator, &configured_allocator] {
+            let vtable = allocator.allocation_vtable();
+
+            assert_eq!(vtable.tier(), RuntimeAllocatorTier::TierAOneShot);
+            assert_eq!(vtable.entrypoints(), runtime_allocation_entrypoints());
+            assert_eq!(vtable.abi_signatures(), runtime_allocation_abi_signatures());
+        }
+    }
+
+    #[test]
+    fn tier_a_allocation_vtable_routes_every_worker_entrypoint() {
+        let mut allocator =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
+        let vtable = allocator.allocation_vtable();
+
+        let thunk = vtable
+            .aos_alloc_thunk(&mut allocator)
+            .expect("thunk allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            1,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocThunk,
+            thunk,
+            allocator.stats(),
+        );
+
+        let lambda = vtable
+            .aos_alloc_lambda(&mut allocator)
+            .expect("lambda allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            2,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocLambda,
+            lambda,
+            allocator.stats(),
+        );
+
+        let attrs = vtable
+            .aos_alloc_attrs(&mut allocator, 7, 2)
+            .expect("attrs allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            3,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocAttrs,
+            attrs,
+            allocator.stats(),
+        );
+
+        let cons = vtable
+            .aos_alloc_cons(&mut allocator)
+            .expect("cons allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            4,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocCons,
+            cons,
+            allocator.stats(),
+        );
+
+        let list = vtable
+            .aos_alloc_list(&mut allocator, 3)
+            .expect("list allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            5,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocList,
+            list,
+            allocator.stats(),
+        );
+
+        let string = vtable
+            .aos_alloc_string(&mut allocator, 5)
+            .expect("string allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            6,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            string,
+            allocator.stats(),
+        );
+
+        let raw = vtable
+            .aos_alloc_raw(&mut allocator, 8, 8, 0x7261_7770)
+            .expect("raw allocates");
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            7,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocRaw,
+            raw,
+            allocator.stats(),
+        );
     }
 
     #[test]
