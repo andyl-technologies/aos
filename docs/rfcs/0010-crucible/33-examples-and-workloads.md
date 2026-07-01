@@ -779,6 +779,15 @@ The mapping, as a table:
                          loss + crash over a virtual-time window; A.4 family fuzzing
 ```
 
+Implementation note (T-WL-4): `GuestWorkloadPattern` and
+`GuestWorkloadSpikeMode` encode `load_pattern=...` and `spike_mode=...` as plain
+guest cmdline scenario parameters. `GuestWorkloadLoadPatternFixture` provides
+steady, spike-via-virtual-time-rate, spike-via-`StartNode`, cardinality-growth,
+and correlated-failure examples. The spike burst fixture is an `EventGraph`
+plan that holds the burst node with `NotYetJoined`, then heals that hold and
+fires `StartNode` at virtual time; the correlated-failure fixture is a
+`FaultPlan` campaign. No application-load-generation subsystem is introduced.
+
 - **[WL-7]** The classic load shapes (steady, spike, cardinality growth,
   correlated failure) MUST be expressible as properties of the **guest program
   plus scenario parameters**, not as host-side generator subsystems: steady = an
@@ -968,10 +977,15 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `WorldNode` parsing, changes scenario identity through content-addressed world
   material while leaving global `Seed` unchanged, and builds with
   `WhiteBoxPolicy::Disabled`.
-- [ ] **T-WL-4** Implement the four load-pattern mappings (steady / spike via
+- [x] **T-WL-4** Implement the four load-pattern mappings (steady / spike via
   VT-rate or `StartNode` burst / cardinality growth / correlated-failure campaign)
   as guest-program-plus-scenario-parameter constructions with no load-generation
   subsystem; provide a fixture per pattern. — satisfies [WL-7], [WL-9]; spec §B.3.
+  Completed by `checks.crucible.phase4.workloadLoadPatterns`: the model exposes
+  validated `load_pattern=...` and `spike_mode=...` guest cmdline scenario
+  parameters, fixture constructors for every classic pattern, a virtual-time
+  rate spike fixture, a `StartNode` burst fixture, and a correlated-failure
+  `FaultPlan` campaign without adding a host load-generation subsystem.
 - [ ] **T-WL-5** Enforce that all time-varying load shapes derive from virtual time
   (guest VT clock or VT-scheduled events), never host wall-clock; assert spike and
   cardinality-growth fixtures reproduce bit-identically. — satisfies [WL-8]; spec

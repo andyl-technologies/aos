@@ -1093,6 +1093,11 @@ in rec {
       attrPath = "checks.crucible.phase4.workloadSeed";
       taskIds = ["T-WL-3"];
     };
+    workloadLoadPatterns = import ./phase4-workload-load-patterns.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.workloadLoadPatterns";
+      taskIds = ["T-WL-4"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";
