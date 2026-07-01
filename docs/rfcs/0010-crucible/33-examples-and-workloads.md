@@ -368,6 +368,24 @@ given run. **Reproduce:** `crucible verify partition-recovery.scn --runs 3` is
 byte-identical; a hypothetical convergence failure would print a `crucible replay`
 line for the exact `(seed, scenario, schedule)` that exhibited it.
 
+Implementation note (T-EX-2): `crucible::example_corpus` ships the
+`partition-recovery.scn` corpus fixture as a three-node, three-link
+content-addressed `ScenarioDefForm` with unmodified store images and no guest
+component dependency. Its `wait-ready` event uses only observable console and
+basic-block coverage leaves, then applies a grouped `InjectFault("split",
+Isolate(db-0))` plus `ArmTimer("heal-after", 10s)` action through the
+`SingleScheduler` trigger-action path, which models the `db-0 | db-1,db-2`
+split under one stable heal tag. The runner appends the host-visible
+`split-active` assertion-state transition only after the assertion evaluator
+reports the injected split active, advances to the timer boundary for
+`HealFault("split")`, and passes only after the split-active state, healed fault
+state, an observed `reconcile_ack` frame, and quiescence all hold.
+`no-split-brain` is represented as the black-box absence of `split_brain=true`
+network evidence, while `converges-after-heal` is triggered by the
+`split-active` assertion state and satisfied by `raft_log_match`; the captured
+reproduction schedule replays to byte-identical canonical event-log bytes and
+fingerprint streams.
+
 ### A.3 Node crash + restart — convergence after a mid-run crash
 
 **What it shows.** Crash a node mid-run, restart it from its baked ready point,
@@ -1051,11 +1069,18 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   reproduction artifact with the canonical observation script in its schedule,
   is exercised by `crucible selftest`, and verifies five independent local
   reductions as byte-identical.
-- [ ] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
+- [x] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
   observable trigger graph (AllOf readiness + relative-timer heal + observable
   convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`
   and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
   cross-ref 17a §17a.5.1.
+  Completed by `checks.crucible.phase7.partitionRecoveryExample`: the built-in
+  `partition-recovery.scn` fixture is exported from `crucible::example_corpus`,
+  uses the observable readiness graph, grouped partition injection plus
+  relative timer, timer-driven heal, and observable convergence pass event, checks
+  `no-split-brain`/`converges-after-heal`, captures a replayable multi-step
+  reproduction schedule, is exercised by `crucible selftest`, and verifies five
+  independent local reductions as byte-identical.
 - [ ] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
   with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
   `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],

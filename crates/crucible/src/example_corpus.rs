@@ -10,20 +10,22 @@ use std::error::Error;
 use std::fmt;
 
 use crate::model::{
-    AssertionDef, AssertionId, ChoiceTag, ContentAddressedBlobRef, ContentHash, Decision,
-    EngineError, FramePredicate, GuestWorkloadBinary, GuestWorkloadParameterKey,
-    GuestWorkloadScalarParameter, LinkId, LinkLossProbability, NodeId, NodeLifecycle, NodeTemplate,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, ReproductionArtifact,
-    ScenarioDefForm, Schedule, SchedulingPoint, Seed, SimDuration, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, AssertionPhase, ChoiceTag, CodePoint, ContentAddressedBlobRef,
+    ContentHash, Decision, EngineError, FaultTag, FramePredicate, GuestWorkloadBinary,
+    GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, LinkId, LinkLossProbability,
+    MembershipFault, NodeId, NodeLifecycle, NodeTemplate, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ScenarioDefForm,
+    Schedule, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TimerId, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crate::scheduler::{
-    EventLog, SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerQuiescence,
+    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
+    SchedulerQuiescence, SingleScheduler,
 };
 use crate::trigger::{
     Action, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
-    EventFirings, EventGraph, EventGraphState, HostAssertionEvaluator, HostAssertionReport,
-    ObservableEvent, ObservableEventPayload,
+    EventFirings, EventGraph, EventGraphState, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent, ObservableEventPayload,
 };
 
 /// Version label for the built-in worked-example corpus.
@@ -31,6 +33,9 @@ pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v1";
 
 /// Stable corpus name for the RFC-0010 A.1 happy-path example.
 pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
+
+/// Stable corpus name for the RFC-0010 A.2 partition-recovery example.
+pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
 pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = false;
@@ -41,8 +46,11 @@ pub const EXAMPLE_CORPUS_WHITE_BOX_REQUIRED: bool = false;
 const HAPPY_PATH_RUNS: usize = 5;
 const HAPPY_PATH_DEADLINE_TICKS: u64 = 60_000_000_000;
 const HAPPY_PATH_TERMINAL_TICKS: u64 = 38;
+const PARTITION_HEAL_DELAY_TICKS: u64 = 10_000_000_000;
+const PARTITION_CONVERGENCE_DEADLINE_TICKS: u64 = 30_000_000_000;
 const HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX: &str = "example-corpus/happy-path/observation/";
 const HAPPY_PATH_REPLAY_BOUNDARY_POINT: &str = "example-corpus/happy-path/boundary";
+const EXAMPLE_REPLAY_STEP_POINT_PREFIX: &str = "example-corpus/replay-step/";
 
 /// A built-in scenario fixture shipped with Crucible.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +66,7 @@ pub struct ExampleScenarioFixture {
     /// Whether the fixture requires white-box guest-host observations.
     pub requires_white_box: bool,
     observations: Vec<ObservableEvent>,
+    steps: Vec<ExampleReplayStep>,
 }
 
 impl ExampleScenarioFixture {
@@ -232,7 +241,7 @@ impl From<SchedulerError> for ExampleCorpusError {
 /// Returns [`ExampleCorpusError::Engine`] if a shipped scenario fixture no
 /// longer validates or serializes.
 pub fn built_in_example_corpus() -> Result<Vec<ExampleScenarioFixture>, ExampleCorpusError> {
-    Ok(vec![happy_path_scenario()?])
+    Ok(vec![happy_path_scenario()?, partition_recovery_scenario()?])
 }
 
 /// Builds the RFC-0010 A.1 happy-path client/server scenario fixture.
@@ -307,13 +316,59 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
         10,
     )?;
 
+    let observations = happy_path_observations();
+    let steps = happy_path_replay_steps(&observations);
     Ok(ExampleScenarioFixture {
         name: HAPPY_PATH_SCENARIO_NAME.to_owned(),
         rfc_section: String::from("33.A.1"),
         scenario,
         zero_guest_components: true,
         requires_white_box: false,
-        observations: happy_path_observations(),
+        observations,
+        steps,
+    })
+}
+
+/// Builds the RFC-0010 A.2 three-node partition-recovery scenario fixture.
+///
+/// # Errors
+///
+/// Returns [`ExampleCorpusError::Engine`] if the scenario's world, event graph,
+/// properties, or canonical form fail validation.
+pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusError> {
+    let kernel = example_blob("partition-recovery-any-kernel");
+    let root = example_blob("partition-recovery-unmodified-store-root-image");
+    let world = World::from_nodes_and_links(
+        vec![
+            partition_node("db-0", kernel.clone(), root.clone()),
+            partition_node("db-1", kernel.clone(), root.clone()),
+            partition_node("db-2", kernel, root),
+        ],
+        vec![
+            partition_link("db-0", "db-1")?,
+            partition_link("db-1", "db-2")?,
+            partition_link("db-0", "db-2")?,
+        ],
+    )?;
+    let properties = partition_recovery_properties(&world)?;
+    let plan = partition_recovery_plan(&world, &properties)?;
+    let scenario = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        Seed::from_u64(99),
+        10,
+    )?;
+    let steps = partition_recovery_replay_steps();
+
+    Ok(ExampleScenarioFixture {
+        name: PARTITION_RECOVERY_SCENARIO_NAME.to_owned(),
+        rfc_section: String::from("33.A.2"),
+        scenario,
+        zero_guest_components: true,
+        requires_white_box: false,
+        observations: flatten_observations(&steps),
+        steps,
     })
 }
 
@@ -333,16 +388,13 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
 pub fn run_example_scenario(
     fixture: &ExampleScenarioFixture,
 ) -> Result<ExampleScenarioRunReport, ExampleCorpusError> {
-    let primary = run_example_scenario_material(
-        &fixture.name,
-        &fixture.scenario,
-        &fixture.observations,
-        HAPPY_PATH_TERMINAL_TICKS,
-    )?;
-    let reproduction = ReproductionArtifact::capture(
-        &fixture.scenario,
-        &happy_path_schedule(&fixture.observations),
-    )?;
+    let primary = run_example_scenario_material(&fixture.name, &fixture.scenario, &fixture.steps)?;
+    let schedule = if fixture.name == HAPPY_PATH_SCENARIO_NAME {
+        happy_path_schedule(&fixture.observations)?
+    } else {
+        example_schedule(&fixture.name, &fixture.steps)?
+    };
+    let reproduction = ReproductionArtifact::capture(&fixture.scenario, &schedule)?;
     let replayed = replay_example_scenario_artifact(&fixture.name, &reproduction)?;
     if replayed.canonical_event_log != primary.canonical_event_log
         || replayed.fingerprint_stream != primary.fingerprint_stream
@@ -418,6 +470,164 @@ pub fn verify_example_scenario_runs(
 pub fn verify_happy_path_default_runs() -> Result<ExampleScenarioVerifyReport, ExampleCorpusError> {
     let fixture = happy_path_scenario()?;
     verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
+}
+
+/// Verifies the partition-recovery example with the RFC sketch's default count.
+///
+/// # Errors
+///
+/// Returns the errors documented by [`partition_recovery_scenario`] and
+/// [`verify_example_scenario_runs`].
+pub fn verify_partition_recovery_default_runs()
+-> Result<ExampleScenarioVerifyReport, ExampleCorpusError> {
+    let fixture = partition_recovery_scenario()?;
+    verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
+}
+
+fn partition_node(
+    name: &str,
+    kernel: ContentAddressedBlobRef,
+    root_image: ContentAddressedBlobRef,
+) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: 512,
+        cmdline: String::from("console=ttyS0 quiet store.role=replica cluster=crucible-a2"),
+        ready_point: ReadyPoint::ConsoleMarker {
+            marker: String::from("ready to accept connections"),
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: 7,
+        kernel: Some(kernel),
+        root_image: Some(root_image),
+        initrd: None,
+    }
+}
+
+fn partition_link(from: &str, to: &str) -> Result<crate::model::LinkDef, EngineError> {
+    crate::model::LinkDef::with_transport(
+        node(from),
+        node(to),
+        SimDuration { nanos: 5_000_000 },
+        SimDuration { nanos: 1_000_000 },
+        LinkLossProbability::ZERO,
+        None,
+    )
+}
+
+fn partition_recovery_properties(world: &World) -> Result<Properties, EngineError> {
+    Properties::from_assertions_for_world(
+        world,
+        vec![
+            AssertionDef {
+                id: AssertionId::from_name("split-active"),
+                message: String::from("partition fault must become active"),
+                property: Property::Sometimes {
+                    predicate: Predicate::fault_active(partition_fault_tag()),
+                },
+            },
+            AssertionDef {
+                id: AssertionId::from_name("no-split-brain"),
+                message: String::from("the store must not publish split-brain evidence"),
+                property: Property::Always {
+                    predicate: Predicate::not(Predicate::network_match(
+                        None,
+                        FramePredicate::contains(b"split_brain=true".to_vec()),
+                    )),
+                },
+            },
+            AssertionDef {
+                id: AssertionId::from_name("converges-after-heal"),
+                message: String::from("replicas must reconcile after the healed partition"),
+                property: Property::Eventually {
+                    trigger: Predicate::assertion_state(
+                        AssertionId::from_name("split-active"),
+                        AssertionPhase::Satisfied,
+                    ),
+                    property: Predicate::network_match(
+                        Some(LinkId::from_name("db-0--db-1")),
+                        FramePredicate::contains(b"raft_log_match".to_vec()),
+                    ),
+                    deadline: VirtualTime {
+                        ticks: PARTITION_CONVERGENCE_DEADLINE_TICKS,
+                    },
+                },
+            },
+        ],
+    )
+}
+
+fn partition_recovery_plan(world: &World, properties: &Properties) -> Result<Plan, EngineError> {
+    let heal_timer = partition_heal_timer();
+    let graph = EventGraph::builder()
+        .event("wait-ready")
+        .when(Predicate::all_of(vec![
+            Predicate::console_match(
+                node("db-0"),
+                RegexProgram::from_pattern("ready to accept connections"),
+            ),
+            Predicate::console_match(
+                node("db-1"),
+                RegexProgram::from_pattern("ready to accept connections"),
+            ),
+            Predicate::console_match(
+                node("db-2"),
+                RegexProgram::from_pattern("ready to accept connections"),
+            ),
+            Predicate::once(Predicate::coverage_point(
+                node("db-0"),
+                CodePoint::guest_address(0x4010),
+            )),
+        ]))
+        .action(Action::group(vec![
+            Action::inject_fault(
+                partition_fault_tag(),
+                MembershipFault::Isolate { node: node("db-0") },
+            ),
+            Action::arm_timer(
+                heal_timer.clone(),
+                SimDuration {
+                    nanos: PARTITION_HEAL_DELAY_TICKS,
+                },
+            ),
+        ]))
+        .event("heal")
+        .when(Predicate::timer(heal_timer))
+        .action(Action::heal_fault(partition_fault_tag()))
+        .event("pass-on-converge")
+        .when(Predicate::all_of(vec![
+            Predicate::once(Predicate::assertion_state(
+                AssertionId::from_name("split-active"),
+                AssertionPhase::Satisfied,
+            )),
+            Predicate::not(Predicate::fault_active(partition_fault_tag())),
+            Predicate::once(Predicate::network_match(
+                Some(LinkId::from_name("db-0--db-1")),
+                FramePredicate::contains(b"reconcile_ack".to_vec()),
+            )),
+            Predicate::quiescent(),
+        ]))
+        .action(Action::pass())
+        .build_with_assertions_for_world(
+            properties
+                .assertions()
+                .iter()
+                .map(|assertion| assertion.id.clone()),
+            world,
+        )
+        .map_err(|source| EngineError::ScenarioSerialization {
+            reason: source.to_string(),
+        })?;
+    Plan::from_event_graph_with_assertions_for_world(
+        world,
+        properties
+            .assertions()
+            .iter()
+            .map(|assertion| assertion.id.clone()),
+        graph,
+    )
 }
 
 fn happy_path_properties(world: &World) -> Result<Properties, EngineError> {
@@ -520,6 +730,68 @@ fn happy_path_observations() -> Vec<ObservableEvent> {
     ]
 }
 
+fn happy_path_replay_steps(observations: &[ObservableEvent]) -> Vec<ExampleReplayStep> {
+    observations
+        .iter()
+        .cloned()
+        .map(|observation| ExampleReplayStep::Observations(vec![observation]))
+        .chain(std::iter::once(ExampleReplayStep::QuantumBoundary(
+            HAPPY_PATH_TERMINAL_TICKS,
+        )))
+        .collect()
+}
+
+fn partition_recovery_replay_steps() -> Vec<ExampleReplayStep> {
+    vec![
+        ExampleReplayStep::Observations(vec![
+            ObservableEvent::console_output(
+                VirtualTime { ticks: 10 },
+                node("db-0"),
+                b"db-0 ready to accept connections\n".to_vec(),
+            ),
+            ObservableEvent::console_output(
+                VirtualTime { ticks: 10 },
+                node("db-1"),
+                b"db-1 ready to accept connections\n".to_vec(),
+            ),
+            ObservableEvent::console_output(
+                VirtualTime { ticks: 10 },
+                node("db-2"),
+                b"db-2 ready to accept connections\n".to_vec(),
+            ),
+            ObservableEvent::coverage_block(Icount { retired: 10 }, node("db-0"), 0x4000, 0x20),
+        ]),
+        ExampleReplayStep::QuantumBoundary(10 + PARTITION_HEAL_DELAY_TICKS),
+        ExampleReplayStep::Observations(vec![ObservableEvent::network_delivered(
+            VirtualTime {
+                ticks: 20 + PARTITION_HEAL_DELAY_TICKS,
+            },
+            Some(LinkId::from_name("db-0--db-1")),
+            b"reconcile_ack raft_log_match term=7 index=42".to_vec(),
+        )]),
+    ]
+}
+
+fn flatten_observations(steps: &[ExampleReplayStep]) -> Vec<ObservableEvent> {
+    steps
+        .iter()
+        .flat_map(|step| match step {
+            ExampleReplayStep::Observations(observations) => observations.clone(),
+            ExampleReplayStep::QuantumBoundary(_) => Vec::new(),
+        })
+        .collect()
+}
+
+fn partition_fault_tag() -> FaultTag {
+    FaultTag::from_name("split")
+}
+
+fn partition_heal_timer() -> TimerId {
+    TimerId {
+        name: String::from("heal-after"),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExampleScenarioRunCore {
     canonical_event_log: Vec<u8>,
@@ -528,11 +800,16 @@ struct ExampleScenarioRunCore {
     firings: EventFirings,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ExampleReplayStep {
+    Observations(Vec<ObservableEvent>),
+    QuantumBoundary(u64),
+}
+
 fn run_example_scenario_material(
     scenario_name: &str,
     scenario: &ScenarioDefForm,
-    observations: &[ObservableEvent],
-    boundary_ticks: u64,
+    steps: &[ExampleReplayStep],
 ) -> Result<ExampleScenarioRunCore, ExampleCorpusError> {
     let graph = scenario
         .plan()
@@ -540,44 +817,63 @@ fn run_example_scenario_material(
         .ok_or_else(|| ExampleCorpusError::DidNotPass {
             scenario: scenario_name.to_owned(),
         })?;
-    let mut log = EventLog::new();
+    let mut scheduler = SingleScheduler::new(
+        SchedulerLivenessScenario::from_canonical_material(
+            scenario_name,
+            Shift { bits: 0 },
+            16,
+            SimInstant {
+                nanos: scenario_run_time_limit(steps),
+            },
+            Vec::new(),
+            Vec::new(),
+        )
+        .with_trigger_world(scenario.world()),
+    )?;
     let mut canonical_event_log = Vec::new();
     let mut assertion_oracle = BlackBoxHostOracle;
     let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())
         .with_world_white_box_policies(scenario.world());
+    let mut state = EventGraphState::new();
+    let mut pass_firings = None;
 
-    for observation in observations {
-        let observation_segment =
-            log.append_observable_events(std::iter::once(observation.clone()))?;
-        canonical_event_log.extend_from_slice(&observation_segment.segment_bytes);
-        assertion_evaluator.observe_prefix(log.condition_prefix(), &mut assertion_oracle);
+    for step in steps {
+        let append = match step {
+            ExampleReplayStep::Observations(observations) => {
+                scheduler.append_observable_events(observations.clone())?
+            }
+            ExampleReplayStep::QuantumBoundary(ticks) => scheduler.append_evaluation_boundary(
+                VirtualTime { ticks: *ticks },
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )?,
+        };
+        canonical_event_log.extend_from_slice(&append.segment_bytes);
+        if let Some(firings) = settle_example_step(
+            &mut scheduler,
+            graph,
+            &mut state,
+            scenario.world(),
+            &mut assertion_evaluator,
+            &mut assertion_oracle,
+            &mut canonical_event_log,
+        )? {
+            pass_firings = Some(firings);
+        }
     }
-    let boundary_segment = log.append_evaluation_boundary(
-        VirtualTime {
-            ticks: boundary_ticks,
-        },
-        SchedulerEvaluationBoundaryKind::Quantum,
-    )?;
-    canonical_event_log.extend_from_slice(&boundary_segment.segment_bytes);
 
-    let assertion_report =
-        assertion_evaluator.finalize_prefix(log.condition_prefix(), &mut assertion_oracle);
+    let Some(firings) = pass_firings else {
+        return Err(ExampleCorpusError::DidNotPass {
+            scenario: scenario_name.to_owned(),
+        });
+    };
+    let assertion_report = assertion_evaluator.finalize_prefix(
+        scheduler.condition_event_log_prefix(),
+        &mut assertion_oracle,
+    );
     if assertion_report.verdict().is_failed() {
         return Err(ExampleCorpusError::AssertionsFailed {
             scenario: scenario_name.to_owned(),
             failures: assertion_report.verdict().failures().len(),
-        });
-    }
-
-    let mut pass =
-        ConditionEvaluationPass::from_log_prefix(log.condition_prefix().clone(), NoNamedLeaves)
-            .with_scheduler_quiescence(SchedulerQuiescence::default())
-            .with_world_white_box_policies(scenario.world());
-    let mut state = EventGraphState::new();
-    let firings = pass.evaluate_event_graph(graph, &mut state);
-    if !firings.iter().any(|firing| action_passes(firing.action())) {
-        return Err(ExampleCorpusError::DidNotPass {
-            scenario: scenario_name.to_owned(),
         });
     }
 
@@ -591,6 +887,107 @@ fn run_example_scenario_material(
     })
 }
 
+fn settle_example_step(
+    scheduler: &mut SingleScheduler,
+    graph: &EventGraph,
+    state: &mut EventGraphState,
+    world: &World,
+    assertion_evaluator: &mut HostAssertionEvaluator,
+    assertion_oracle: &mut BlackBoxHostOracle,
+    canonical_event_log: &mut Vec<u8>,
+) -> Result<Option<EventFirings>, ExampleCorpusError> {
+    let mut pass_firings = None;
+    loop {
+        observe_assertions_and_append_state_events(
+            scheduler,
+            canonical_event_log,
+            assertion_evaluator,
+            assertion_oracle,
+        )?;
+        let firings = evaluate_example_graph(scheduler, graph, state, world);
+        if firings.is_empty() {
+            break;
+        }
+        if firings.iter().any(|firing| action_passes(firing.action())) {
+            pass_firings = Some(firings.clone());
+        }
+        let action_append = scheduler.apply_trigger_firings(&firings)?;
+        canonical_event_log.extend_from_slice(&action_append.segment_bytes);
+    }
+    Ok(pass_firings)
+}
+
+fn observe_assertions_and_append_state_events(
+    scheduler: &mut SingleScheduler,
+    canonical_event_log: &mut Vec<u8>,
+    assertion_evaluator: &mut HostAssertionEvaluator,
+    assertion_oracle: &mut BlackBoxHostOracle,
+) -> Result<(), ExampleCorpusError> {
+    let outcomes = assertion_evaluator
+        .observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+    let events = outcomes
+        .iter()
+        .filter_map(assertion_state_event_from_outcome)
+        .collect::<Vec<_>>();
+    if events.is_empty() {
+        return Ok(());
+    }
+    let append = scheduler.append_observable_events(events)?;
+    canonical_event_log.extend_from_slice(&append.segment_bytes);
+    assertion_evaluator.observe_prefix(scheduler.condition_event_log_prefix(), assertion_oracle);
+    Ok(())
+}
+
+fn assertion_state_event_from_outcome(outcome: &HostAssertionOutcome) -> Option<ObservableEvent> {
+    let state = match outcome.kind {
+        HostAssertionOutcomeKind::Satisfied => AssertionPhase::Satisfied,
+        HostAssertionOutcomeKind::Violated => AssertionPhase::Violated,
+        HostAssertionOutcomeKind::Passed
+        | HostAssertionOutcomeKind::Warning
+        | HostAssertionOutcomeKind::NeverEvaluated
+        | HostAssertionOutcomeKind::NeverTriggered
+        | HostAssertionOutcomeKind::NeverReachedWarn
+        | HostAssertionOutcomeKind::NeverReachedFail => return None,
+    };
+    Some(ObservableEvent::assertion_state_changed(
+        outcome.at,
+        outcome.assertion.clone(),
+        state,
+    ))
+}
+
+fn evaluate_example_graph(
+    scheduler: &SingleScheduler,
+    graph: &EventGraph,
+    state: &mut EventGraphState,
+    world: &World,
+) -> EventFirings {
+    let mut pass = ConditionEvaluationPass::from_log_prefix(
+        scheduler.condition_event_log_prefix().clone(),
+        NoNamedLeaves,
+    )
+    .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
+    .with_scheduler_quiescence(SchedulerQuiescence::default())
+    .with_world_white_box_policies(world);
+    pass.evaluate_event_graph(graph, state)
+}
+
+fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {
+    steps
+        .iter()
+        .map(|step| match step {
+            ExampleReplayStep::Observations(observations) => observations
+                .iter()
+                .map(|observation| observation.at().ticks)
+                .max()
+                .unwrap_or(0),
+            ExampleReplayStep::QuantumBoundary(ticks) => *ticks,
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
 fn replay_example_scenario_artifact(
     scenario_name: &str,
     reproduction: &ReproductionArtifact,
@@ -601,47 +998,88 @@ fn replay_example_scenario_artifact(
             scenario: scenario_name.to_owned(),
         });
     }
-    let replay_script = example_script_from_schedule(scenario_name, reproduction.schedule())?;
-    run_example_scenario_material(
-        scenario_name,
-        reproduction.scenario_form(),
-        &replay_script.observations,
-        replay_script.boundary_ticks,
+    let replay_steps = example_script_from_schedule(scenario_name, reproduction.schedule())?;
+    run_example_scenario_material(scenario_name, reproduction.scenario_form(), &replay_steps)
+}
+
+fn happy_path_schedule(observations: &[ObservableEvent]) -> Result<Schedule, ExampleCorpusError> {
+    example_schedule(
+        HAPPY_PATH_SCENARIO_NAME,
+        &happy_path_replay_steps(observations),
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ExampleReplayScript {
-    observations: Vec<ObservableEvent>,
-    boundary_ticks: u64,
-}
-
-fn happy_path_schedule(observations: &[ObservableEvent]) -> Schedule {
+fn example_schedule(
+    scenario_name: &str,
+    steps: &[ExampleReplayStep],
+) -> Result<Schedule, ExampleCorpusError> {
     let mut schedule = Schedule::empty();
-    for (index, observation) in observations.iter().enumerate() {
+    for (index, step) in steps.iter().enumerate() {
         schedule = schedule.appended(Decision::Override(OverrideDecision {
             point: SchedulingPoint {
-                key: format!("{HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX}{index}"),
+                key: example_replay_step_point(scenario_name, index),
             },
             choice: ChoiceTag {
-                name: encode_observation(observation),
+                name: encode_replay_step(scenario_name, step)?,
             },
         }));
     }
-    schedule.appended(Decision::Override(OverrideDecision {
-        point: SchedulingPoint {
-            key: HAPPY_PATH_REPLAY_BOUNDARY_POINT.to_owned(),
-        },
-        choice: ChoiceTag {
-            name: format!("quantum-boundary|{HAPPY_PATH_TERMINAL_TICKS}"),
-        },
-    }))
+    Ok(schedule)
 }
 
 fn example_script_from_schedule(
     scenario_name: &str,
     schedule: &Schedule,
-) -> Result<ExampleReplayScript, ExampleCorpusError> {
+) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
+    if schedule.decisions().iter().any(|decision| {
+        matches!(decision, Decision::Override(override_decision) if override_decision.point.key == HAPPY_PATH_REPLAY_BOUNDARY_POINT || override_decision.point.key.starts_with(HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX))
+    }) {
+        return legacy_happy_path_script_from_schedule(scenario_name, schedule);
+    }
+
+    let mut steps = Vec::new();
+    let expected_prefix = format!("{EXAMPLE_REPLAY_STEP_POINT_PREFIX}{scenario_name}/");
+    for decision in schedule.decisions() {
+        let Decision::Override(override_decision) = decision else {
+            return Err(invalid_replay_schedule(
+                scenario_name,
+                "schedule contains a non-override decision",
+            ));
+        };
+        let Some(index) = override_decision.point.key.strip_prefix(&expected_prefix) else {
+            return Err(invalid_replay_schedule(
+                scenario_name,
+                format!(
+                    "unknown replay scheduling point `{}`",
+                    override_decision.point.key
+                ),
+            ));
+        };
+        let expected_index = steps.len().to_string();
+        if index != expected_index {
+            return Err(invalid_replay_schedule(
+                scenario_name,
+                format!("step index `{index}` did not follow `{expected_index}`"),
+            ));
+        }
+        steps.push(decode_replay_step(
+            scenario_name,
+            &override_decision.choice.name,
+        )?);
+    }
+    if steps.is_empty() {
+        return Err(invalid_replay_schedule(
+            scenario_name,
+            "schedule is missing replay steps",
+        ));
+    }
+    Ok(steps)
+}
+
+fn legacy_happy_path_script_from_schedule(
+    scenario_name: &str,
+    schedule: &Schedule,
+) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
     let mut observations = Vec::new();
     let mut boundary_ticks = None;
     for decision in schedule.decisions() {
@@ -694,43 +1132,102 @@ fn example_script_from_schedule(
             "schedule is missing the replay boundary",
         ));
     };
-    Ok(ExampleReplayScript {
-        observations,
-        boundary_ticks,
-    })
+    let mut steps = happy_path_replay_steps(&observations);
+    if let Some(ExampleReplayStep::QuantumBoundary(ticks)) = steps.last_mut() {
+        *ticks = boundary_ticks;
+    }
+    Ok(steps)
 }
 
-fn encode_observation(observation: &ObservableEvent) -> String {
+fn example_replay_step_point(scenario_name: &str, index: usize) -> String {
+    format!("{EXAMPLE_REPLAY_STEP_POINT_PREFIX}{scenario_name}/{index}")
+}
+
+fn encode_replay_step(
+    scenario_name: &str,
+    step: &ExampleReplayStep,
+) -> Result<String, ExampleCorpusError> {
+    match step {
+        ExampleReplayStep::Observations(observations) => {
+            let mut encoded = Vec::with_capacity(observations.len());
+            for observation in observations {
+                encoded.push(encode_observation(scenario_name, observation)?);
+            }
+            Ok(format!("observations|{}", encoded.join(";")))
+        }
+        ExampleReplayStep::QuantumBoundary(ticks) => Ok(format!("quantum-boundary|{ticks}")),
+    }
+}
+
+fn decode_replay_step(
+    scenario_name: &str,
+    encoded: &str,
+) -> Result<ExampleReplayStep, ExampleCorpusError> {
+    if let Some(observations) = encoded.strip_prefix("observations|") {
+        let observations = if observations.is_empty() {
+            Vec::new()
+        } else {
+            observations
+                .split(';')
+                .map(|observation| decode_observation(scenario_name, observation))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        return Ok(ExampleReplayStep::Observations(observations));
+    }
+    Ok(ExampleReplayStep::QuantumBoundary(decode_boundary_ticks(
+        scenario_name,
+        encoded,
+    )?))
+}
+
+fn encode_observation(
+    scenario_name: &str,
+    observation: &ObservableEvent,
+) -> Result<String, ExampleCorpusError> {
     match observation.payload() {
-        ObservableEventPayload::ConsoleOutput { node, bytes } => format!(
+        ObservableEventPayload::ConsoleOutput { node, bytes } => Ok(format!(
             "console-output|{}|{}|{}",
             observation.at().ticks,
             node.name,
             bytes_hex(bytes)
-        ),
-        ObservableEventPayload::NetworkDelivered { link, payload } => format!(
+        )),
+        ObservableEventPayload::NetworkDelivered { link, payload } => Ok(format!(
             "network-delivered|{}|{}|{}",
             observation.at().ticks,
             link.as_ref().map(|link| link.name.as_str()).unwrap_or("-"),
             bytes_hex(payload)
-        ),
-        ObservableEventPayload::NodeState { node, state } => format!(
+        )),
+        ObservableEventPayload::CoverageBlock {
+            execution_icount,
+            node,
+            guest_pc,
+            block_len,
+        } => Ok(format!(
+            "coverage-block|{}|{}|{}|{}",
+            execution_icount.retired, node.name, guest_pc, block_len
+        )),
+        ObservableEventPayload::NodeState { node, state } => Ok(format!(
             "node-state|{}|{}|{}",
             observation.at().ticks,
             node.name,
             encode_node_lifecycle(*state)
-        ),
-        ObservableEventPayload::CoverageBlock { .. }
-        | ObservableEventPayload::CoverageMarker { .. }
+        )),
+        ObservableEventPayload::AssertionStateChanged { name, state } => Ok(format!(
+            "assertion-state-changed|{}|{}|{}",
+            observation.at().ticks,
+            name.name,
+            encode_assertion_phase(*state)
+        )),
+        ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::IoCompletion { .. }
-        | ObservableEventPayload::AssertionStateChanged { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
-        | ObservableEventPayload::GuestAssertionMarker { .. } => {
-            String::from("unsupported-observation")
-        }
+        | ObservableEventPayload::GuestAssertionMarker { .. } => Err(invalid_replay_schedule(
+            scenario_name,
+            "unsupported observation kind in example replay script",
+        )),
     }
 }
 
@@ -762,6 +1259,23 @@ fn decode_observation(
             node(node_name),
             decode_node_lifecycle(scenario_name, state)?,
         )),
+        ["coverage-block", retired, node_name, guest_pc, block_len] => {
+            Ok(ObservableEvent::coverage_block(
+                Icount {
+                    retired: decode_u64(scenario_name, retired, "coverage icount")?,
+                },
+                node(node_name),
+                decode_u64(scenario_name, guest_pc, "coverage guest pc")?,
+                decode_u32(scenario_name, block_len, "coverage block length")?,
+            ))
+        }
+        ["assertion-state-changed", ticks, assertion_name, state] => {
+            Ok(ObservableEvent::assertion_state_changed(
+                decode_ticks(scenario_name, ticks)?,
+                AssertionId::from_name(*assertion_name),
+                decode_assertion_phase(scenario_name, state)?,
+            ))
+        }
         _ => Err(invalid_replay_schedule(
             scenario_name,
             format!("invalid observation record `{encoded}`"),
@@ -795,6 +1309,15 @@ fn decode_u64(scenario_name: &str, value: &str, label: &str) -> Result<u64, Exam
     })
 }
 
+fn decode_u32(scenario_name: &str, value: &str, label: &str) -> Result<u32, ExampleCorpusError> {
+    value.parse::<u32>().map_err(|_| {
+        invalid_replay_schedule(
+            scenario_name,
+            format!("{label} `{value}` is not an unsigned integer"),
+        )
+    })
+}
+
 fn encode_node_lifecycle(state: NodeLifecycle) -> &'static str {
     match state {
         NodeLifecycle::Started => "started",
@@ -816,6 +1339,27 @@ fn decode_node_lifecycle(
         _ => Err(invalid_replay_schedule(
             scenario_name,
             format!("unknown node lifecycle `{state}`"),
+        )),
+    }
+}
+
+fn encode_assertion_phase(state: AssertionPhase) -> &'static str {
+    match state {
+        AssertionPhase::Satisfied => "satisfied",
+        AssertionPhase::Violated => "violated",
+    }
+}
+
+fn decode_assertion_phase(
+    scenario_name: &str,
+    state: &str,
+) -> Result<AssertionPhase, ExampleCorpusError> {
+    match state {
+        "satisfied" => Ok(AssertionPhase::Satisfied),
+        "violated" => Ok(AssertionPhase::Violated),
+        _ => Err(invalid_replay_schedule(
+            scenario_name,
+            format!("unknown assertion phase `{state}`"),
         )),
     }
 }
