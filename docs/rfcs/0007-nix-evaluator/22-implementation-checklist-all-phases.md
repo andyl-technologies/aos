@@ -4990,6 +4990,20 @@ and helps the oracle directly.
       saturating reclaim accounting. CLI/env/daemon configuration, live RSS
       sampling, CA-store spill, `madvise`, and collector installation remain
       open under the full memory-management rows.
+- [x] Current `madvise` portability precursor:
+      `ratchet-value::heap::advice` provides an advisory-memory API over
+      `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with
+      non-empty raw-range construction kept at an explicit unsafe heap boundary.
+      Linux trims requests to full pages wholly contained by the supplied range
+      before lowering to `madvise`; non-Linux targets return an unsupported
+      outcome without touching memory; empty or sub-page ranges are a no-op; OS
+      rejection remains an advisory outcome rather than a correctness failure.
+      Tests cover range metadata, zero-length no-op behavior, typed helper
+      dispatch, non-Linux unsupported behavior, Linux full-page trimming, a
+      Linux anonymous-`mmap` `MADV_DONTNEED` call, and Linux flag mapping.
+      Integrating the shim with live resident-set sampling, CA-store spill,
+      region-pop/dead-page selection, and collector-installation policy remains
+      open under the full memory-management rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

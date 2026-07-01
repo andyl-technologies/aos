@@ -5,12 +5,17 @@
 //! Later phases add precise GC and daemon-mode collectors behind the same
 //! allocation entry-point shape.
 
+pub mod advice;
 pub mod arena;
 pub mod budget;
 pub mod concurrent_gc;
 pub mod gc;
 pub mod region;
 
+pub use advice::{
+    MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold, advise_dead,
+    advise_evict, advise_free, advise_huge, advise_range,
+};
 pub use arena::{
     ArenaAllocation, ArenaError, ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
 };
