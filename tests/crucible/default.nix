@@ -19,6 +19,7 @@
         ''
           set -eu
           : "$GATE"
+          : "$DEPENDENCY_PATHS"
           mkdir -p "$out"
           {
             printf 'PASS\n'
@@ -30,6 +31,7 @@
       PATH = "${pkgs.coreutils}/bin";
       ATTR_PATH = attrPath;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
+      DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
       GATE = gate;
     })
     // {
@@ -1154,6 +1156,26 @@ in rec {
     };
   };
   phase6 = {
+    advancedDependencyLadder = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+      gate = import ./phase6-advanced-dependency-ladder.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+        taskIds = ["T-ADV-1"];
+        dependencies = [
+          phase2.gates.singleVmFingerprint.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase5.gates.controlResponsive.rawGate
+        ];
+      };
+      dependencies = [
+        phase2.gates.singleVmFingerprint
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase5.gates.controlResponsive
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

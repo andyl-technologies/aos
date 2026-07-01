@@ -954,11 +954,26 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
 > are sequenced strictly after the determinism, save/restore-oracle, and
 > control-plane foundations they depend on ([ADV-1], [G-5], [PLAN-4]).
 
-- [ ] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
+- [x] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
   that the advanced-feature phases are sequenced exact-determinism →
   oracle-validated save/restore → fork → search → fuzzing, with no rung's tasks
   scheduled before the lower rung's gate is green. — satisfies [ADV-1], [ADV-2],
   [ADV-3]; spec §22.1.
+  Completed by `checks.crucible.phase6.advancedDependencyLadder`: the
+  `crucible-harness::phase_plan` module now carries an executable
+  `ADVANCED_FEATURE_TASK_ORDER` over the exact-determinism, save/restore, fork,
+  search, coverage-feedback, and fuzzing rungs. The checker requires the
+  determinism, replay-oracle, and control-plane phase gates to occur before
+  phase-6 ADV work, parses this authoritative checklist to keep every
+  `T-ADV-1` through `T-ADV-21` task in the executable ladder, and inspects the
+  real `tests/crucible/default.nix` check graph so scheduled ADV checks must be
+  wrapped in `greenBeforeAdvance` with the lower green gates and earlier ADV
+  task checks they depend on. Phase-6 check imports must also pass explicit
+  `taskIds` at the scheduling site so defaulted task IDs in imported files
+  cannot hide future ADV work from the ladder. It rejects synthetic drifts where
+  fuzzing is scheduled before coverage/search, where a foundational gate is
+  moved too late, or where a future ADV check is wired outside the dependency
+  ladder.
 - [ ] **T-ADV-2** Wire pause/resume/stop for exploration drivers as session
   commands serviced at quantum boundaries (no engine lock), observation-class, with
   resume+continue bit-identical to an uninterrupted run. — satisfies [ADV-4],
