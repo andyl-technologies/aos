@@ -2837,6 +2837,8 @@ pub struct HostAssertionViolation {
     pub message: String,
     /// Assertion quantifier or guest marker flavor that failed.
     pub quantifier: AssertionQuantifierKind,
+    /// Catalog event kind for the event-log site that produced the violation.
+    pub event_kind: String,
     /// Exact guest instruction count when the site is icount-stamped.
     pub at_icount: Option<Icount>,
     /// Exact virtual-time site where the violation was attributed.
@@ -4699,6 +4701,7 @@ fn host_assertion_violations_from_outcomes(
                 assertion: outcome.assertion.clone(),
                 message: outcome.message.clone(),
                 quantifier: outcome.quantifier,
+                event_kind: String::from("assertion_state_changed"),
                 at_icount: evidence.at_icount,
                 at_virtual_time: outcome.at,
                 node: evidence.node.clone(),
@@ -4711,6 +4714,7 @@ fn host_assertion_violations_from_outcomes(
         left.assertion
             .cmp(&right.assertion)
             .then_with(|| left.quantifier.cmp(&right.quantifier))
+            .then_with(|| left.event_kind.cmp(&right.event_kind))
             .then_with(|| left.at_virtual_time.cmp(&right.at_virtual_time))
             .then_with(|| left.node.cmp(&right.node))
             .then_with(|| left.detail.cmp(&right.detail))

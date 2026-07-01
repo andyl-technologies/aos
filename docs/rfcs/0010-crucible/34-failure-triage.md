@@ -847,12 +847,25 @@ recomputable byte-for-byte from what was already stored.
 > and minimization foundations they depend on ([ADV-30], [ASRT-27], [OBS-21],
 > [HARN-27], [PLAN-4]).
 
-- [ ] **T-TRI-1** Implement the `FailureSignature` tuple computed from the
+- [x] **T-TRI-1** Implement the `FailureSignature` tuple computed from the
   recorded run alone (ScenarioDef + Schedule + causal subsequence) with the
   `failure_kind`/property/`first_failing_point`/`coverage_class`/`causal_slice_hash`
   fields read from the violation record (18) and the causal projection / bisection
   (19, 24), never from re-execution. — satisfies [TRI-1], [TRI-2], [TRI-3], [TRI-4]; spec §34.2,
   §34.2.1, §34.2.4.
+  Completed by `checks.crucible.phase6.failureSignature`: the model now exposes
+  `FailureSignature`, `FailureRecordedEventLog`, `FailureKind`,
+  `FailurePropertyKey`, `FailureFirstFailingPoint`, `FailureCoverageClass`, and
+  `FailurePropertyViolationRecord`; property-violation signatures bind and read
+  the property id, quantifier, event kind, and node from the deterministic
+  `HostAssertionViolation` record, while divergence signatures bind and read the event
+  kind and node from a bisection point that must exist in the checked recorded
+  causal projection. The checked event-log wrapper binds the projection metadata
+  and recorded coverage fingerprint to the same reproduction artifact, derives
+  the coverage class from that metadata-bound fingerprint, leaves
+  `causal_slice_hash` absent until the cone-scoped T-TRI-2 normalization, and
+  omits discovery path and finding fingerprint so discovery campaign state cannot
+  perturb the signature.
 - [ ] **T-TRI-2** Implement the three critical normalizations — absolute icount
   report-only, `faulting_node` under the symmetry-canonical relabeling (07 §9),
   and `causal_slice_hash` over the cone (19 §19.6.2) — and prove each prevents its
