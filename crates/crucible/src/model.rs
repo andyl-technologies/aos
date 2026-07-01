@@ -9485,14 +9485,20 @@ impl SavevmCompletenessHedge {
         }
     }
 
-    /// Builds a hedge that keeps checkpoints touching `devices` thin.
+    /// Builds a hedge that keeps checkpoints thin when `devices` are unreliable.
+    ///
+    /// Without complete device-touch provenance from the backend, known
+    /// unreliable device snapshots force the conservative replay path by
+    /// default. Supplied fat checkpoints still flow through
+    /// [`Self::allows_checkpoint`] and are rejected if their materialized state
+    /// touches one of the unreliable devices.
     #[must_use]
     pub fn with_unreliable_devices<I>(devices: I) -> Self
     where
         I: IntoIterator<Item = DeviceId>,
     {
         Self {
-            fat_snapshot_default: true,
+            fat_snapshot_default: false,
             unreliable_devices: devices.into_iter().collect(),
         }
     }
