@@ -4957,6 +4957,19 @@ and helps the oracle directly.
       centralized `aos_alloc_*`-shaped methods. The actual exported
       `unsafe extern "C"`/JIT-symbol ABI and multi-strategy GC swapping remain
       open in the row above.
+- [x] Current permanent-shared allocation precursor:
+      `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
+      with accounting separate from the Tier-A worker allocator, and `EvalHeap`
+      owns both domains. Hash-consed reusable values — strings, paths, list
+      spines, and flat attrsets — allocate through permanent shared storage and
+      record that placement in the typed side table; thunks, lambdas, and
+      primop wrappers remain worker-domain allocations. Tests pin split
+      accounting, domain-marked records, unchanged cons-table reuse, and the
+      current cross-domain caveat that permanent list/attr containers may hold
+      worker-domain child handles visible to precise root scanning. The real
+      daemon lifetime model, worker-arena reset/drop admission policy, exported
+      ABI, and Tier-B collector integration remain open under the broader
+      heap/GC rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

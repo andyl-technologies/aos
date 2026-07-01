@@ -39,12 +39,22 @@ fn attrs_with_ordered_entries(first: &[u8], second: &[u8]) -> FlatAttrs {
     .expect("attrset builds")
 }
 
+fn allocation_domain(heap: &EvalHeap, value: Value) -> HeapAllocationDomain {
+    heap.allocation_domain(value)
+        .expect("heap record has an allocation domain")
+}
+
 #[test]
 fn default_heap_uses_tier_a_runtime_allocator() {
     let heap = EvalHeap::new();
 
     assert_eq!(heap.allocator_tier(), RuntimeAllocatorTier::TierAOneShot);
+    assert_eq!(
+        heap.permanent_allocator_tier(),
+        RuntimeAllocatorTier::PermanentShared
+    );
     assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
 
 #[test]
@@ -60,7 +70,12 @@ fn allocates_string_values_and_recovers_contents() {
         heap.get_string(value).expect("string exists").bytes(),
         b"hello"
     );
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]
@@ -107,7 +122,12 @@ fn identical_string_values_reuse_heap_record() {
             .bytes(),
         b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg"
     );
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, second),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]
@@ -389,7 +409,12 @@ fn allocates_path_values_and_recovers_bytes() {
         heap.get_path(value).expect("path exists").bytes(),
         b"/tmp/source"
     );
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]
@@ -412,7 +437,12 @@ fn identical_path_values_reuse_heap_record() {
         heap.get_path(second).expect("second path exists").bytes(),
         b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source"
     );
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, second),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]
@@ -445,7 +475,12 @@ fn allocates_list_values_and_recovers_spine() {
     assert_eq!(list.len(), 2);
     assert_eq!(list.get(0).expect("first element").as_int(), Ok(1));
     assert_eq!(list.get(1).expect("second element").as_bool(), Ok(true));
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]
@@ -498,6 +533,67 @@ fn list_values_with_same_thunk_identity_reuse_heap_record() {
 }
 
 #[test]
+fn permanent_container_records_can_reference_worker_domain_children() {
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"child").expect("child symbol interns");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    let thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let list = heap
+        .alloc_list(NixList::new(vec![thunk]))
+        .expect("list allocates");
+    let attrs = heap
+        .alloc_attrs(
+            7,
+            FlatAttrs::new(vec![AttrEntry::new(key, thunk)], &symbols).expect("attrs build"),
+        )
+        .expect("attrs allocate");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, list)
+        .expect("list root records");
+    roots
+        .try_push_value_stack(1, attrs)
+        .expect("attrs root records");
+
+    assert_eq!(
+        allocation_domain(&heap, thunk),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        allocation_domain(&heap, list),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(
+        allocation_domain(&heap, attrs),
+        HeapAllocationDomain::PermanentShared
+    );
+
+    let scan = heap.scan_precise_roots(&roots).expect("scan succeeds");
+    let list_edges = object_for(&scan, list).edges();
+    assert_eq!(list_edges.len(), 1);
+    assert_eq!(
+        list_edges[0].source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert!(list_edges[0].value().raw_eq(thunk));
+
+    let attrs_edges = object_for(&scan, attrs).edges();
+    assert_eq!(attrs_edges.len(), 1);
+    assert_eq!(
+        attrs_edges[0].source(),
+        &HeapEdgeSource::AttrBinding {
+            shape: 7,
+            slot: 0,
+            key,
+        }
+    );
+    assert!(attrs_edges[0].value().raw_eq(thunk));
+    assert!(object_for(&scan, thunk).edges().is_empty());
+}
+
+#[test]
 fn list_values_with_distinct_thunk_identities_do_not_collapse() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
     let first_thunk = heap
@@ -531,6 +627,11 @@ fn allocates_thunk_values_and_recovers_body() {
     assert_eq!(thunk.body(), Some(body));
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
     assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::Worker
+    );
 }
 
 #[test]
@@ -574,6 +675,11 @@ fn allocates_lambda_values_and_recovers_closure() {
     assert_eq!(lambda.frame(), frame);
     assert!(lambda.env().frames().is_empty());
     assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::Worker
+    );
 }
 
 #[test]
@@ -601,6 +707,11 @@ fn allocates_primop_values_and_recovers_record() {
     assert_eq!(primop.args()[0].span(), Span::new(4, 8));
     assert!(primop.args()[0].value().raw_eq(Value::int(3)));
     assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::Worker
+    );
 }
 
 #[test]
@@ -658,6 +769,13 @@ fn lambdas_primops_and_thunks_are_not_hash_consed() {
             .all(|record| record.structural_hash.is_none()),
         "effectful heap records must not participate in structural consing"
     );
+    assert!(
+        heap.records
+            .iter()
+            .all(|record| record.allocation_domain == HeapAllocationDomain::Worker),
+        "effectful heap records must stay in the worker allocation domain"
+    );
+    assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
 
 #[test]
@@ -691,7 +809,12 @@ fn allocates_attr_values_and_recovers_entries() {
     let attrs = heap.get_attrs(value).expect("attrs exist");
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs.get(key).expect("name exists").as_int(), Ok(7));
-    assert_eq!(heap.arena_stats().chunks, 1);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats().chunks, 1);
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::PermanentShared
+    );
 }
 
 #[test]

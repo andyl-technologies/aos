@@ -11,6 +11,7 @@ impl EvalHeap {
     pub fn new() -> Self {
         Self {
             allocator: RuntimeAllocator::tier_a_one_shot(),
+            permanent_allocator: PermanentSharedAllocator::new(),
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
@@ -29,6 +30,8 @@ impl EvalHeap {
         Ok(Self {
             allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
+            permanent_allocator: PermanentSharedAllocator::with_initial_chunk_bytes(chunk_bytes)
+                .map_err(EvalHeapError::Arena)?,
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
@@ -42,9 +45,38 @@ impl EvalHeap {
         self.allocator.stats()
     }
 
+    /// Returns current permanent shared allocation accounting.
+    pub fn permanent_arena_stats(&self) -> ArenaStats {
+        self.permanent_allocator.stats()
+    }
+
     /// Returns the runtime allocation tier backing this heap.
     pub fn allocator_tier(&self) -> RuntimeAllocatorTier {
         self.allocator.tier()
+    }
+
+    /// Returns the runtime allocation tier backing permanent shared values.
+    pub fn permanent_allocator_tier(&self) -> RuntimeAllocatorTier {
+        self.permanent_allocator.tier()
+    }
+
+    /// Returns the allocation domain that owns `value`'s typed heap record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::Value`] if `value` is not an evaluator heap
+    /// value. Returns [`EvalHeapError::UnknownPointer`] if the heap handle does
+    /// not belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`]
+    /// if the handle belongs to this heap but references another typed record.
+    pub fn allocation_domain(&self, value: Value) -> Result<HeapAllocationDomain, EvalHeapError> {
+        let (tag, ptr) = any_value_heap_ptr(value)?;
+        let record = self.record_or_unknown(tag, ptr)?;
+        let actual = record.object.tag();
+        if actual == tag {
+            Ok(record.allocation_domain)
+        } else {
+            Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+        }
     }
 
     /// Returns the number of typed objects registered in this heap.
@@ -74,7 +106,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .allocator
+            .permanent_allocator
             .aos_alloc_string(string.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -94,6 +126,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::String(string),
@@ -119,7 +152,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .allocator
+            .permanent_allocator
             .aos_alloc_string(path.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -139,6 +172,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Path(path),
@@ -164,7 +198,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .allocator
+            .permanent_allocator
             .aos_alloc_list(list.len())
             .map_err(EvalHeapError::Arena)
         {
@@ -184,6 +218,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::List(list),
@@ -212,7 +247,7 @@ impl EvalHeap {
             HashConsReservation::Vacant(slot) => slot,
         };
         let allocation = match self
-            .allocator
+            .permanent_allocator
             .aos_alloc_attrs(shape, slots)
             .map_err(EvalHeapError::Arena)
         {
@@ -232,6 +267,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: Some(hash),
+            allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Attrs { shape, attrs },
@@ -260,6 +296,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
@@ -287,6 +324,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
@@ -314,6 +352,7 @@ impl EvalHeap {
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
             structural_hash: None,
+            allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
@@ -938,6 +977,43 @@ fn value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalH
         )),
         actual => Err(EvalHeapError::Value(ValueError::Type {
             expected: "string, path, list, or attrs",
+            actual,
+        })),
+    }
+}
+
+fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
+    match value.tag() {
+        ValueTag::String => Ok((
+            ValueTag::String,
+            value.as_string_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Path => Ok((
+            ValueTag::Path,
+            value.as_path_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::List => Ok((
+            ValueTag::List,
+            value.as_list_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Attrs => Ok((
+            ValueTag::Attrs,
+            value.as_attrs_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Lambda => Ok((
+            ValueTag::Lambda,
+            value.as_lambda_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Primop => Ok((
+            ValueTag::Primop,
+            value.as_primop_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        ValueTag::Thunk => Ok((
+            ValueTag::Thunk,
+            value.as_thunk_ptr().map_err(EvalHeapError::Value)?,
+        )),
+        actual => Err(EvalHeapError::Value(ValueError::Type {
+            expected: "evaluator heap value",
             actual,
         })),
     }

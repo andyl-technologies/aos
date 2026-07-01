@@ -22,7 +22,7 @@ use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats};
 use crate::list::NixList;
-use crate::runtime::alloc::{RuntimeAllocator, RuntimeAllocatorTier};
+use crate::runtime::alloc::{PermanentSharedAllocator, RuntimeAllocator, RuntimeAllocatorTier};
 use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
@@ -160,6 +160,7 @@ pub struct EvalPrimOp {
 #[derive(Debug)]
 pub struct EvalHeap {
     allocator: RuntimeAllocator,
+    permanent_allocator: PermanentSharedAllocator,
     records: Vec<HeapRecord>,
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,
@@ -177,9 +178,19 @@ impl Default for EvalHeap {
 struct HeapRecord {
     ptr: NonNull<HeapObject>,
     structural_hash: Option<HotXxh3Hash>,
+    allocation_domain: HeapAllocationDomain,
     value_hash: Cell<Option<ValueHash>>,
     captured_value_hash: Cell<Option<ValueHash>>,
     object: HeapObjectValue,
+}
+
+/// The allocation domain that owns a typed evaluator heap record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeapAllocationDomain {
+    /// A per-worker allocator owns the record for the current evaluation.
+    Worker,
+    /// Permanent shared storage owns a hash-consed reusable value record.
+    PermanentShared,
 }
 
 /// The result of writing a canonical value hash onto a heap record.

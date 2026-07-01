@@ -1,9 +1,10 @@
 //! Runtime allocation strategy dispatch for evaluator heap objects.
 //!
 //! The tree-walk oracle allocates through this layer instead of naming a heap
-//! backend directly. Today the installed strategy is the Tier-A one-shot bump
-//! arena; later Phase-3 work can install the precise generational collector
-//! behind the same `aos_alloc_*` entry-point surface.
+//! backend directly. Today the installed worker strategy is the Tier-A one-shot
+//! bump arena, with a separate permanent-shared bump arena for hash-consed
+//! values. Later Phase-3 work can install the precise generational collector
+//! behind the same worker `aos_alloc_*` entry-point surface.
 
 use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena};
 
@@ -12,6 +13,8 @@ use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats, BumpArena};
 pub enum RuntimeAllocatorTier {
     /// One-shot CLI evaluation backed by a never-free bump arena.
     TierAOneShot,
+    /// Hash-consed shared values backed by a non-collected permanent arena.
+    PermanentShared,
 }
 
 /// Routes heap allocations through the active runtime allocation strategy.
@@ -69,7 +72,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_thunk(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_thunk()
+        self.arena_mut().aos_alloc_thunk()
     }
 
     /// Allocates a lambda-sized heap object through `aos_alloc_lambda`.
@@ -79,7 +82,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_lambda(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_lambda()
+        self.arena_mut().aos_alloc_lambda()
     }
 
     /// Allocates an attribute-set heap object through `aos_alloc_attrs`.
@@ -93,7 +96,7 @@ impl RuntimeAllocator {
         shape: u32,
         slots: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_attrs(shape, slots)
+        self.arena_mut().aos_alloc_attrs(shape, slots)
     }
 
     /// Allocates a cons-cell heap object through `aos_alloc_cons`.
@@ -103,7 +106,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_cons(&mut self) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_cons()
+        self.arena_mut().aos_alloc_cons()
     }
 
     /// Allocates a contiguous list heap object through `aos_alloc_list`.
@@ -113,7 +116,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_list(len)
+        self.arena_mut().aos_alloc_list(len)
     }
 
     /// Allocates a string heap object through `aos_alloc_string`.
@@ -123,7 +126,7 @@ impl RuntimeAllocator {
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
     pub fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_string(len)
+        self.arena_mut().aos_alloc_string(len)
     }
 
     /// Allocates raw heap storage through `aos_alloc_raw`.
@@ -138,10 +141,10 @@ impl RuntimeAllocator {
         align: usize,
         type_tag: u32,
     ) -> Result<ArenaAllocation, ArenaError> {
-        self.tier_a_mut().aos_alloc_raw(size, align, type_tag)
+        self.arena_mut().aos_alloc_raw(size, align, type_tag)
     }
 
-    fn tier_a_mut(&mut self) -> &mut BumpArena {
+    fn arena_mut(&mut self) -> &mut BumpArena {
         match &mut self.backend {
             RuntimeAllocatorBackend::TierAOneShot(arena) => arena,
         }
@@ -151,6 +154,80 @@ impl RuntimeAllocator {
 #[derive(Debug)]
 enum RuntimeAllocatorBackend {
     TierAOneShot(BumpArena),
+}
+
+/// Allocates reusable hash-consed values in permanent shared storage.
+#[derive(Debug)]
+pub(crate) struct PermanentSharedAllocator {
+    arena: BumpArena,
+}
+
+impl Default for PermanentSharedAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PermanentSharedAllocator {
+    /// Creates a permanent-shared allocator.
+    pub(crate) fn new() -> Self {
+        Self {
+            arena: BumpArena::new(),
+        }
+    }
+
+    /// Creates a permanent-shared allocator with an explicit first chunk size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::InvalidChunkSize`] when `chunk_bytes` is zero, or
+    /// [`ArenaError::SizeOverflow`] if rounding the chunk size overflows.
+    pub(crate) fn with_initial_chunk_bytes(chunk_bytes: usize) -> Result<Self, ArenaError> {
+        Ok(Self {
+            arena: BumpArena::with_initial_chunk_bytes(chunk_bytes)?,
+        })
+    }
+
+    /// Returns the allocator tier for permanent shared storage.
+    pub(crate) const fn tier(&self) -> RuntimeAllocatorTier {
+        RuntimeAllocatorTier::PermanentShared
+    }
+
+    /// Returns current permanent shared allocation accounting.
+    pub(crate) fn stats(&self) -> ArenaStats {
+        self.arena.stats()
+    }
+
+    /// Allocates a permanent-shared attribute-set heap object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_attrs(
+        &mut self,
+        shape: u32,
+        slots: u32,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        self.arena.aos_alloc_attrs(shape, slots)
+    }
+
+    /// Allocates a permanent-shared contiguous list heap object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
+        self.arena.aos_alloc_list(len)
+    }
+
+    /// Allocates a permanent-shared string or path heap object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError`] if permanent storage cannot reserve the object.
+    pub(crate) fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
+        self.arena.aos_alloc_string(len)
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +283,37 @@ mod tests {
             HeapObjectKind::Raw {
                 type_tag: 0x7261_7770,
             }
+        );
+
+        let stats = allocator.stats();
+        assert_eq!(stats.chunks, 1);
+        assert!(stats.used_bytes > 0);
+    }
+
+    #[test]
+    fn permanent_shared_allocator_routes_only_reusable_value_shapes() {
+        let mut allocator =
+            PermanentSharedAllocator::with_initial_chunk_bytes(256).expect("allocator creates");
+
+        assert_eq!(allocator.tier(), RuntimeAllocatorTier::PermanentShared);
+        assert_eq!(allocator.stats(), ArenaStats::default());
+        assert_eq!(
+            allocator
+                .aos_alloc_attrs(7, 2)
+                .expect("attrs allocates")
+                .kind,
+            HeapObjectKind::Attrs { shape: 7, slots: 2 }
+        );
+        assert_eq!(
+            allocator.aos_alloc_list(3).expect("list allocates").kind,
+            HeapObjectKind::List { len: 3 }
+        );
+        assert_eq!(
+            allocator
+                .aos_alloc_string(5)
+                .expect("string allocates")
+                .kind,
+            HeapObjectKind::String { len: 5 }
         );
 
         let stats = allocator.stats();

@@ -857,6 +857,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       CLI-wide Tier-A default, and byte-green differential proof under Tier A
       (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first).
 - [ ] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
+- [x] Current permanent-shared arena precursor:
+      `ratchet-oracle::runtime::alloc::PermanentSharedAllocator` provides a
+      separate permanent domain with accounting independent from the Tier-A
+      worker allocator, and `EvalHeap` owns both domains. Canonical hash-consed
+      strings, paths, list spines, and flat attrsets allocate through the
+      permanent domain and keep side-table records marked `PermanentShared`;
+      thunks, lambdas, and primop wrappers stay in the worker domain. Tests pin
+      split accounting, worker/permanent placement, and the current caveat that
+      permanent list/attr containers may still reference worker-domain child
+      handles that precise root scanning must see. The exported allocator ABI,
+      process-wide daemon lifetime, worker-arena reset/drop admission policy,
+      and Tier-B collector integration remain open in the rows above and below.
 - [ ] Configurable high-water memory budget (one knob) driving the three escalating responses (§3.6) — **P3**, `C-17`.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
