@@ -3875,6 +3875,116 @@ impl FindingReproductionArtifact {
             replay,
         })
     }
+
+    /// Shrinks this finding while preserving its failure fingerprint.
+    ///
+    /// The minimizer enumerates every shorter recorded schedule subsequence in
+    /// deterministic shortest-first order, with seeded content-address tie-breaks.
+    /// Every candidate is replayed as a self-contained artifact before
+    /// `failure_fingerprint` is consulted, and the first preserving candidate is
+    /// therefore the stable shortest artifact under the supplied failure oracle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] or
+    /// [`EngineError::ReproductionArtifactReplayMismatch`] when this public value
+    /// does not match its embedded artifact/replay evidence, or when the starting
+    /// artifact does not reproduce this finding's fingerprint. Returns other
+    /// [`EngineError`] values when candidate capture, replay validation, or the
+    /// caller-supplied failure oracle fails.
+    pub fn minimize<F>(
+        &self,
+        config: MinimizationConfig,
+        mut failure_fingerprint: F,
+    ) -> Result<MinimizationRun, EngineError>
+    where
+        F: FnMut(&FindingReproductionArtifact) -> Result<Option<ContentHash>, EngineError>,
+    {
+        let original = self.validated()?;
+        let target = original.finding_fingerprint;
+        let initial = failure_fingerprint(&original)?;
+        if initial != Some(target) {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: target,
+                actual: initial.unwrap_or_default(),
+            });
+        }
+
+        let mut attempts = Vec::new();
+        let mut minimized = original.clone();
+        let candidates = minimization_candidates(
+            config.seed,
+            original.artifact.id(),
+            original.artifact.schedule(),
+        );
+
+        for (sequence, candidate) in candidates.into_iter().enumerate() {
+            let configuration = Configuration {
+                def: original.artifact.scenario_def(),
+                schedule: candidate.schedule,
+            };
+            let finding = FindingReproductionArtifact::capture(
+                original.discovery_path,
+                target,
+                original.artifact.scenario_form(),
+                &configuration,
+            )?;
+            let observed_fingerprint = failure_fingerprint(&finding)?;
+            let accepted_candidate = observed_fingerprint == Some(target);
+            attempts.push(MinimizationAttempt {
+                sequence: sequence as u64,
+                removed_indices: candidate.removed_indices,
+                removed_decisions: candidate.removed_decisions,
+                candidate_artifact: finding.artifact.id(),
+                candidate_schedule: finding.artifact.schedule().content_hash(),
+                replayed_state: finding.replay.state,
+                observed_fingerprint,
+                accepted: accepted_candidate,
+            });
+
+            if accepted_candidate {
+                minimized = finding;
+                break;
+            }
+        }
+
+        Ok(MinimizationRun {
+            seed: config.seed,
+            target_fingerprint: target,
+            original,
+            minimized,
+            attempts,
+        })
+    }
+
+    fn validated(&self) -> Result<Self, EngineError> {
+        let replay = self.artifact.replay()?;
+        if replay != self.replay {
+            return Err(EngineError::ReproductionArtifactReplayMismatch {
+                artifact: self.artifact.id(),
+                expected: self.replay.state,
+                actual: replay.state,
+            });
+        }
+        let configuration = Configuration {
+            def: self.artifact.scenario_def(),
+            schedule: self.artifact.schedule().clone(),
+        };
+        let configuration_id = configuration.id();
+        if configuration_id != self.configuration {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: self.configuration,
+                actual: configuration_id,
+            });
+        }
+        Ok(Self {
+            discovery_path: self.discovery_path,
+            finding_fingerprint: self.finding_fingerprint,
+            configuration: configuration_id,
+            artifact: self.artifact.clone(),
+            replay,
+        })
+    }
 }
 
 /// Error returned when rebuilding a finding reproduction artifact from storage.
@@ -3938,6 +4048,82 @@ impl Error for FindingReproductionArtifactError {
             Self::RetainedCorpusEntryMismatch { .. } => None,
         }
     }
+}
+
+/// Configuration for deterministic finding minimization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinimizationConfig {
+    /// Seed used to order candidate removals with content-address tie-breaks.
+    pub seed: Seed,
+}
+
+impl MinimizationConfig {
+    /// Builds a minimization configuration.
+    #[must_use]
+    pub const fn new(seed: Seed) -> Self {
+        Self { seed }
+    }
+}
+
+/// One replay-validated candidate considered by minimization.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MinimizationAttempt {
+    /// Deterministic attempt sequence number.
+    pub sequence: u64,
+    /// Original schedule decision indexes removed for this candidate.
+    pub removed_indices: Vec<usize>,
+    /// Original schedule decisions removed for this candidate.
+    pub removed_decisions: Vec<Decision>,
+    /// Candidate self-contained artifact id.
+    pub candidate_artifact: ContentHash,
+    /// Candidate schedule content address.
+    pub candidate_schedule: ContentHash,
+    /// State reached by replaying the candidate artifact.
+    pub replayed_state: ContentHash,
+    /// Failure fingerprint observed by the oracle for this candidate.
+    pub observed_fingerprint: Option<ContentHash>,
+    /// Whether the candidate preserved the target failure and was accepted.
+    pub accepted: bool,
+}
+
+/// Result of deterministic failure-preserving minimization.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MinimizationRun {
+    /// Seed used for candidate ordering.
+    pub seed: Seed,
+    /// Failure fingerprint that every accepted candidate preserves.
+    pub target_fingerprint: ContentHash,
+    /// Original self-contained finding artifact.
+    pub original: FindingReproductionArtifact,
+    /// Stable minimized self-contained finding artifact.
+    pub minimized: FindingReproductionArtifact,
+    /// Replay-validated candidates considered in deterministic order.
+    pub attempts: Vec<MinimizationAttempt>,
+}
+
+impl MinimizationRun {
+    /// Returns the number of accepted shrink candidates.
+    #[must_use]
+    pub fn accepted_attempts(&self) -> usize {
+        self.attempts
+            .iter()
+            .filter(|attempt| attempt.accepted)
+            .count()
+    }
+
+    /// Returns whether minimization removed at least one recorded decision.
+    #[must_use]
+    pub fn shrank(&self) -> bool {
+        self.minimized.artifact.schedule().len() < self.original.artifact.schedule().len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MinimizationCandidate {
+    removed_indices: Vec<usize>,
+    removed_decisions: Vec<Decision>,
+    schedule: Schedule,
+    order_key: ContentHash,
 }
 
 /// Successful replay-oracle verification of a reproduction artifact.
@@ -4383,6 +4569,22 @@ impl Schedule {
         Self {
             decisions: Vec::new(),
         }
+    }
+
+    /// Builds a schedule from decisions in recorded order.
+    ///
+    /// The caller owns semantic validity of the sequence; validation happens when
+    /// the schedule is reduced against a [`ScenarioDef`].
+    #[must_use]
+    pub fn from_decisions<I>(decisions: I) -> Self
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        decisions
+            .into_iter()
+            .fold(Self::empty(), |schedule, decision| {
+                schedule.appended(decision)
+            })
     }
 
     /// Returns whether the schedule has no decisions.
@@ -15803,11 +16005,121 @@ fn partial_order_canonical_representative(
 }
 
 fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
-    decisions
-        .into_iter()
-        .fold(Schedule::empty(), |schedule, decision| {
-            schedule.appended(decision)
-        })
+    Schedule::from_decisions(decisions)
+}
+
+fn minimization_candidates(
+    seed: Seed,
+    artifact: ContentHash,
+    schedule: &Schedule,
+) -> Vec<MinimizationCandidate> {
+    let decisions = schedule.decisions();
+    let mut candidates = Vec::new();
+    for kept_len in 0..decisions.len() {
+        collect_minimization_candidates_for_len(
+            seed,
+            artifact,
+            decisions,
+            kept_len,
+            0,
+            &mut Vec::new(),
+            &mut candidates,
+        );
+    }
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.schedule.len(),
+            candidate.order_key,
+            candidate.removed_indices.clone(),
+        )
+    });
+    candidates
+}
+
+fn collect_minimization_candidates_for_len(
+    seed: Seed,
+    artifact: ContentHash,
+    decisions: &[Decision],
+    kept_len: usize,
+    start: usize,
+    kept_indices: &mut Vec<usize>,
+    candidates: &mut Vec<MinimizationCandidate>,
+) {
+    if kept_indices.len() == kept_len {
+        candidates.push(minimization_candidate_from_kept_indices(
+            seed,
+            artifact,
+            decisions,
+            kept_indices,
+        ));
+        return;
+    }
+    let remaining = kept_len - kept_indices.len();
+    let max_start = decisions.len().saturating_sub(remaining);
+    for index in start..=max_start {
+        kept_indices.push(index);
+        collect_minimization_candidates_for_len(
+            seed,
+            artifact,
+            decisions,
+            kept_len,
+            index + 1,
+            kept_indices,
+            candidates,
+        );
+        kept_indices.pop();
+    }
+}
+
+fn minimization_candidate_from_kept_indices(
+    seed: Seed,
+    artifact: ContentHash,
+    decisions: &[Decision],
+    kept_indices: &[usize],
+) -> MinimizationCandidate {
+    let kept = kept_indices.iter().copied().collect::<BTreeSet<_>>();
+    let schedule = Schedule::from_decisions(
+        kept_indices
+            .iter()
+            .copied()
+            .map(|index| decisions[index].clone()),
+    );
+    let removed_indices = (0..decisions.len())
+        .filter(|index| !kept.contains(index))
+        .collect::<Vec<_>>();
+    let removed_decisions = removed_indices
+        .iter()
+        .copied()
+        .map(|index| decisions[index].clone())
+        .collect::<Vec<_>>();
+    MinimizationCandidate {
+        order_key: minimization_candidate_key(seed, artifact, &schedule, &removed_indices),
+        removed_indices,
+        removed_decisions,
+        schedule,
+    }
+}
+
+fn minimization_candidate_key(
+    seed: Seed,
+    artifact: ContentHash,
+    schedule: &Schedule,
+    removed_indices: &[usize],
+) -> ContentHash {
+    let removed = removed_indices
+        .iter()
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    ContentHash::from_canonical_material(
+        "crucible.minimization.candidate.v1",
+        &format!(
+            "seed={}\nartifact={}\nkept_schedule={}\nremoved={removed}",
+            seed.to_hex(),
+            content_hash_hex(artifact),
+            content_hash_hex(schedule.content_hash())
+        ),
+    )
 }
 
 fn partial_order_reduction_key(
