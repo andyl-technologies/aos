@@ -5355,9 +5355,12 @@ and helps the oracle directly.
       zero-period rejection, default-disabled behavior, every-safepoint polling,
       lifetime-sequence periodic polling, saturation polling, permanent-shared
       polling, and heap-level installation across both domains. This is
-      poll-intent metadata only; building the live root set, invoking the
-      collector, actually collecting at every safepoint, exported C ABI symbols,
-      and write-barrier dispatch integration remain open.
+      poll-intent metadata only. `TreeWalkOptions` can now install the policy on
+      the evaluator heap, and tree-walk tests cover worker-domain lambda
+      allocation and permanent-shared string allocation poll reasons. Building
+      the live root set, invoking the collector, actually collecting at every
+      safepoint, exported C ABI symbols, and write-barrier dispatch integration
+      remain open.
 - [x] Current permanent-shared allocation precursor:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`

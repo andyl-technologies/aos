@@ -1020,8 +1020,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       saturates. Tests cover zero-period rejection, default-disabled behavior,
       every-safepoint polling, lifetime-sequence periodic polling, saturation
       polling, permanent-shared allocation polling, and heap-level installation
-      across both domains. This is poll intent only: no live root set is built
-      and no collector or GC-stress collection is invoked yet.
+      across both domains. `TreeWalkOptions` can now install the same policy on
+      the evaluator heap, with tests covering worker-domain lambda allocation and
+      permanent-shared string allocation poll reasons. This is poll intent only:
+      tree-walk does not invoke a collector or perform GC-stress collection yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
@@ -1485,6 +1487,11 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 - [ ] Moving collector preserves value identity (precise reference update) and never leaks allocation order/addresses into `.drv`; deterministic iteration comes from shape/sorted-key order, not allocation order (§8) — every GC phase, harness byte-green.
 - [ ] GC-stress mode (collect at every safepoint) to flush missing roots / barrier bugs (§8) — **P3** onward.
+- [x] Current tree-walk GC-stress option precursor: `TreeWalkOptions` can
+      configure the existing `GcStressPolicy` for evaluator heap allocations,
+      and worker/permanent allocation safepoints record collector-poll reasons
+      under that policy. This is still a safepoint-poll hook only: no collector
+      is invoked at those polls and no root/field relocation is applied.
 
 ## References
 

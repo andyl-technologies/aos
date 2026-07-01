@@ -3,6 +3,7 @@
 use super::*;
 use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
 use crate::heap::MemoryAdviceKind;
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 #[test]
 fn evaluates_inline_scalar_literals() {
@@ -132,6 +133,89 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
     }
     assert!(action.requests_tier_b());
+}
+
+#[test]
+fn gc_stress_policy_option_can_be_configured() {
+    let policy = GcStressPolicy::every_n_safepoints(2).expect("period is non-zero");
+    let mut options = TreeWalkOptions::new();
+
+    assert!(options.gc_stress_policy().is_disabled());
+    options.set_gc_stress_policy(policy);
+    assert_eq!(options.gc_stress_policy(), policy);
+    options.clear_gc_stress_policy();
+    assert!(options.gc_stress_policy().is_disabled());
+
+    let options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    assert_eq!(
+        options.gc_stress_policy(),
+        GcStressPolicy::every_safepoint()
+    );
+}
+
+#[test]
+fn gc_stress_policy_option_marks_tree_walk_heap_allocation_safepoints() {
+    let policy = GcStressPolicy::every_safepoint();
+    let default_worker =
+        eval_whnf_owned(&lower("x: x")).expect("lambda expression evaluates without stress");
+    let worker_outcome = eval_whnf_owned_with_options(
+        &lower("x: x"),
+        TreeWalkOptions::with_gc_stress_policy(policy),
+    )
+    .expect("lambda expression evaluates");
+
+    assert_eq!(worker_outcome.value().tag(), default_worker.value().tag());
+    assert_eq!(worker_outcome.heap().allocator_gc_stress_policy(), policy);
+    assert_eq!(
+        worker_outcome.heap().permanent_allocator_gc_stress_policy(),
+        policy
+    );
+    let worker_safepoint = worker_outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("worker allocation safepoint records");
+    assert_eq!(
+        worker_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert_eq!(
+        worker_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+
+    let default_permanent =
+        eval_whnf_owned(&lower("\"stress\"")).expect("string expression evaluates without stress");
+    let permanent_outcome = eval_whnf_owned_with_options(
+        &lower("\"stress\""),
+        TreeWalkOptions::with_gc_stress_policy(policy),
+    )
+    .expect("string expression evaluates");
+    assert_eq!(
+        permanent_outcome
+            .heap()
+            .get_string(permanent_outcome.value())
+            .expect("stress result is heap-owned string")
+            .bytes(),
+        default_permanent
+            .heap()
+            .get_string(default_permanent.value())
+            .expect("default result is heap-owned string")
+            .bytes()
+    );
+    let permanent_safepoint = permanent_outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("permanent allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
 }
 
 #[test]

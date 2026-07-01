@@ -216,6 +216,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with a GC-stress polling policy.
+    pub fn with_gc_stress_policy(policy: GcStressPolicy) -> Self {
+        let mut options = Self::default();
+        options.set_gc_stress_policy(policy);
+        options
+    }
+
     /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
     pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
         let mut options = Self::default();
@@ -607,6 +614,16 @@ impl TreeWalkOptions {
         self.heap_memory_budget = None;
     }
 
+    /// Installs a GC-stress polling policy for evaluator heap allocations.
+    pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
+        self.gc_stress_policy = policy;
+    }
+
+    /// Disables GC-stress polling for evaluator heap allocations.
+    pub fn clear_gc_stress_policy(&mut self) {
+        self.gc_stress_policy = GcStressPolicy::disabled();
+    }
+
     /// Enables post-evaluation cheap heap advice for owned evaluation outcomes.
     pub fn set_heap_cheap_memory_advice_min_idle_epochs(&mut self, min_idle_epochs: u64) {
         self.heap_cheap_memory_advice_min_idle_epochs = Some(min_idle_epochs);
@@ -779,6 +796,11 @@ impl TreeWalkOptions {
     /// Returns the configured high-water heap budget, if one is available.
     pub const fn heap_memory_budget(&self) -> Option<HeapMemoryBudget> {
         self.heap_memory_budget
+    }
+
+    /// Returns the configured GC-stress polling policy.
+    pub const fn gc_stress_policy(&self) -> GcStressPolicy {
+        self.gc_stress_policy
     }
 
     /// Returns the idle-epoch threshold for post-evaluation cheap heap advice.

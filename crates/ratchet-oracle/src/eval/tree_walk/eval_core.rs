@@ -306,6 +306,7 @@ impl TreeWalk {
         let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
         let parse_cache = options.parse_cache_root().map(ParseCache::new);
         let mut heap = EvalHeap::new();
+        heap.set_gc_stress_policy(options.gc_stress_policy());
         if let Some(heap_memory_budget) = options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(

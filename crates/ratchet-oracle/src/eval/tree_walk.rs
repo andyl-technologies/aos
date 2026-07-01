@@ -74,6 +74,7 @@ use crate::compile::{
 };
 use crate::heap::HeapMemoryBudget;
 use crate::list::{NixList, NixListError};
+use crate::runtime::alloc::GcStressPolicy;
 use crate::runtime::builtins::*;
 use crate::string::{
     ContextElement, ContextKind, NixString, NixStringError, StringContext, try_clone_bytes,
@@ -353,6 +354,7 @@ pub struct TreeWalkOptions {
     eval_cache_enabled: bool,
     force_cache_materialization_costs: MaterializationCosts,
     heap_memory_budget: Option<HeapMemoryBudget>,
+    gc_stress_policy: GcStressPolicy,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     #[cfg(test)]
@@ -385,6 +387,7 @@ impl Default for TreeWalkOptions {
             eval_cache_enabled: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             heap_memory_budget: None,
+            gc_stress_policy: GcStressPolicy::disabled(),
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             #[cfg(test)]
