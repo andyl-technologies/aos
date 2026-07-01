@@ -580,6 +580,69 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
             .heap_field_writebacks()
             .is_empty()
     );
+    let mut root_slots = preflight.root_writeback_slots().to_vec();
+    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
+    let report = preflight
+        .reference_writeback_plan()
+        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
+        .expect("caller-owned writeback slots apply");
+    assert_eq!(report.root_writebacks(), 1);
+    assert_eq!(report.heap_field_writebacks(), 0);
+    assert_eq!(
+        root_slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+}
+
+#[test]
+fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
+    let ir = lower("let captured = x: x; in y: captured");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("capturing lambda evaluates under GC stress");
+    let nursery_base = static_gc_address(0x1000_0000);
+
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("capturing boundary scan builds commit preflight metadata");
+
+    let preflight = preflights.worker().expect("worker preflight records");
+    assert_eq!(preflight.root_writeback_slots().len(), 1);
+    assert!(!preflight.heap_field_writeback_slots().is_empty());
+
+    let mut root_slots = preflight.root_writeback_slots().to_vec();
+    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
+    let report = preflight
+        .reference_writeback_plan()
+        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
+        .expect("mixed caller-owned writeback slots apply");
+
+    assert_eq!(report.root_writebacks(), root_slots.len());
+    assert_eq!(report.heap_field_writebacks(), heap_field_slots.len());
+    for (slot, writeback) in root_slots.iter().zip(
+        preflight
+            .reference_writeback_plan()
+            .root_writebacks()
+            .writebacks(),
+    ) {
+        assert_eq!(slot.value(), writeback.replacement());
+    }
+    for (slot, writeback) in heap_field_slots.iter().zip(
+        preflight
+            .reference_writeback_plan()
+            .heap_field_writebacks()
+            .writebacks(),
+    ) {
+        assert_eq!(slot.value(), writeback.replacement());
+    }
 }
 
 #[test]
@@ -631,6 +694,15 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
         }
     )));
     assert!(preflight.reference_writeback_plan().is_empty());
+    assert!(preflight.root_writeback_slots().is_empty());
+    assert!(preflight.heap_field_writeback_slots().is_empty());
+    let mut root_slots = preflight.root_writeback_slots().to_vec();
+    let mut heap_field_slots = preflight.heap_field_writeback_slots().to_vec();
+    let report = preflight
+        .reference_writeback_plan()
+        .apply_to_slots(&mut root_slots, &mut heap_field_slots)
+        .expect("empty caller-owned writeback slots apply");
+    assert_eq!(report.writebacks(), 0);
 }
 
 #[test]

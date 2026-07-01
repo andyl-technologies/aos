@@ -9,6 +9,9 @@ type IfdRealizerCallback =
 
 const BOUNDARY_MINOR_GC_ROOT_REFERENCE_VALUES_TABLE: &str =
     "boundary minor-GC root reference values";
+const BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE: &str = "boundary minor-GC root writeback slots";
+const BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
+    "boundary minor-GC heap-field writeback slots";
 
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -255,6 +258,8 @@ pub struct EvalGcStressBoundaryMinorGcCommitPreflight {
     forwarding_slots: Vec<MinorGcForwardingSlot>,
     reference_buffer: Vec<ResolvedValueGeneration>,
     reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
+    root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+    heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
 }
 
 impl EvalGcStressBoundaryMinorGcCommitPreflight {
@@ -265,6 +270,8 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         forwarding_slots: Vec<MinorGcForwardingSlot>,
         reference_buffer: Vec<ResolvedValueGeneration>,
         reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
+        root_writeback_slots: Vec<AllocationCollectorPollRootWritebackSlot>,
+        heap_field_writeback_slots: Vec<AllocationCollectorPollHeapFieldWritebackSlot>,
     ) -> Self {
         Self {
             relocation_plan,
@@ -272,6 +279,8 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
             forwarding_slots,
             reference_buffer,
             reference_writeback_plan,
+            root_writeback_slots,
+            heap_field_writeback_slots,
         }
     }
 
@@ -298,6 +307,16 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     /// Returns root and heap-field reference writebacks in commit order.
     pub const fn reference_writeback_plan(&self) -> &AllocationCollectorPollReferenceWritebackPlan {
         &self.reference_writeback_plan
+    }
+
+    /// Returns caller-owned root writeback slots copied from the plan.
+    pub fn root_writeback_slots(&self) -> &[AllocationCollectorPollRootWritebackSlot] {
+        &self.root_writeback_slots
+    }
+
+    /// Returns caller-owned heap-field writeback slots copied from the plan.
+    pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
+        &self.heap_field_writeback_slots
     }
 }
 
@@ -376,6 +395,53 @@ fn boundary_minor_gc_root_reference_values(
     }
 
     Ok(root_values)
+}
+
+fn boundary_minor_gc_root_writeback_slots(
+    plan: &AllocationCollectorPollReferenceWritebackPlan,
+) -> Result<Vec<AllocationCollectorPollRootWritebackSlot>, EvalHeapError> {
+    let writebacks = plan.root_writebacks().writebacks();
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(writebacks.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_ROOT_WRITEBACK_SLOTS_TABLE,
+            entries: writebacks.len(),
+        }
+    })?;
+
+    for writeback in writebacks {
+        slots.push(AllocationCollectorPollRootWritebackSlot::new(
+            writeback.source().clone(),
+            writeback.expected(),
+        ));
+    }
+
+    Ok(slots)
+}
+
+fn boundary_minor_gc_heap_field_writeback_slots(
+    plan: &AllocationCollectorPollReferenceWritebackPlan,
+) -> Result<Vec<AllocationCollectorPollHeapFieldWritebackSlot>, EvalHeapError> {
+    let writebacks = plan.heap_field_writebacks().writebacks();
+    let mut slots = Vec::new();
+    slots.try_reserve_exact(writebacks.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_HEAP_FIELD_WRITEBACK_SLOTS_TABLE,
+            entries: writebacks.len(),
+        }
+    })?;
+
+    for writeback in writebacks {
+        slots.push(AllocationCollectorPollHeapFieldWritebackSlot::new(
+            writeback.validation_object(),
+            writeback.writeback_object(),
+            writeback.field_index(),
+            writeback.source().clone(),
+            writeback.expected(),
+        ));
+    }
+
+    Ok(slots)
 }
 
 /// A tree-walk evaluation result with its owning evaluator heap.
@@ -626,10 +692,11 @@ impl EvalOutcome {
     /// This derives paired boundary relocation plans, builds the borrowed commit
     /// metadata long enough to validate and extract owned object byte-copy
     /// requests, empty forwarding slots, copied reference buffers, and reference
-    /// writeback metadata, then returns those artifacts beside the paired
-    /// relocation plan. It still does not bind object byte buffers, mutate
-    /// forwarding slots, rewrite roots or heap fields, publish remembered sets,
-    /// reserve semispace storage, or invoke a collector.
+    /// writeback metadata plus caller-owned writeback slot buffers, then returns
+    /// those artifacts beside the paired relocation plan. It still does not bind
+    /// object byte buffers, mutate forwarding slots, rewrite live roots or heap
+    /// fields, publish remembered sets, reserve semispace storage, or invoke a
+    /// collector.
     ///
     /// # Errors
     ///
@@ -666,7 +733,14 @@ impl EvalOutcome {
         let root_values = boundary_minor_gc_root_reference_values(
             relocation_plan.minor_gc_plan().reference_slots(),
         )?;
-        let (object_byte_copy_plan, forwarding_slots, reference_buffer, reference_writeback_plan) = {
+        let (
+            object_byte_copy_plan,
+            forwarding_slots,
+            reference_buffer,
+            reference_writeback_plan,
+            root_writeback_slots,
+            heap_field_writeback_slots,
+        ) = {
             let commit_plan = relocation_plan.commit_plan()?;
             let object_byte_copy_plan = self
                 .heap
@@ -678,11 +752,17 @@ impl EvalOutcome {
             let reference_writeback_plan = self
                 .heap
                 .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
+            let root_writeback_slots =
+                boundary_minor_gc_root_writeback_slots(&reference_writeback_plan)?;
+            let heap_field_writeback_slots =
+                boundary_minor_gc_heap_field_writeback_slots(&reference_writeback_plan)?;
             (
                 object_byte_copy_plan,
                 forwarding_slots,
                 reference_buffer,
                 reference_writeback_plan,
+                root_writeback_slots,
+                heap_field_writeback_slots,
             )
         };
 
@@ -692,6 +772,8 @@ impl EvalOutcome {
             forwarding_slots,
             reference_buffer,
             reference_writeback_plan,
+            root_writeback_slots,
+            heap_field_writeback_slots,
         ))
     }
 

@@ -46,14 +46,14 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
-    AllocationCollectorPollMinorGcRelocationDestinations,
+    AllocationCollectorPollHeapFieldWritebackSlot, AllocationCollectorPollMinorGcCommitPlan,
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollMinorGcRelocationDestinations,
     AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollReferenceSlot,
     AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
-    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollScan, EvalHeap,
-    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
-    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWritebackSlot,
+    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
+    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
+    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
