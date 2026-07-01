@@ -7,7 +7,9 @@
 //! symbol text. It does not export native functions or install symbols in a JIT
 //! module.
 
-use crate::compile::RuntimeHelperRole;
+use crate::compile::{
+    RuntimeHelperRole, RuntimeSymbolKind, RuntimeSymbolNameError, runtime_symbol_manifest,
+};
 
 use super::alloc::{RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint};
 use super::barrier::{RuntimeWriteBarrierAbiSignature, RuntimeWriteBarrierEntryPoint};
@@ -29,6 +31,78 @@ pub const RUNTIME_HELPER_BINDINGS: &[RuntimeHelperBinding] = &[
 /// Returns the safe runtime-helper binding inventory.
 pub const fn runtime_helper_bindings() -> &'static [RuntimeHelperBinding] {
     RUNTIME_HELPER_BINDINGS
+}
+
+/// One runtime symbol's current safe binding status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeSymbolBindingStatus {
+    /// A helper symbol that already has a safe Rust binding.
+    BoundHelper(RuntimeHelperBinding),
+    /// A helper symbol reserved by the core ABI but not yet bound in this crate.
+    UnboundHelper(RuntimeHelperRole),
+    /// A builtin runtime symbol reserved by the core ABI.
+    Builtin,
+}
+
+/// One runtime symbol and its current safe binding status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSymbolBindingManifestEntry {
+    symbol_name: String,
+    status: RuntimeSymbolBindingStatus,
+}
+
+impl RuntimeSymbolBindingManifestEntry {
+    fn new(symbol_name: String, status: RuntimeSymbolBindingStatus) -> Self {
+        Self {
+            symbol_name,
+            status,
+        }
+    }
+
+    /// Returns the stable runtime symbol name.
+    pub fn symbol_name(&self) -> &str {
+        &self.symbol_name
+    }
+
+    /// Returns the symbol's current safe binding status.
+    pub const fn status(&self) -> RuntimeSymbolBindingStatus {
+        self.status
+    }
+}
+
+/// Result returned when building the runtime symbol binding manifest.
+pub type RuntimeSymbolBindingManifestResult =
+    Result<Vec<RuntimeSymbolBindingManifestEntry>, RuntimeSymbolNameError>;
+
+/// Builds the oracle-side safe runtime symbol binding manifest.
+///
+/// The manifest preserves [`runtime_symbol_manifest`] order while classifying
+/// each frozen runtime symbol as a currently bound helper, an unbound future
+/// helper, or a builtin. Later native registration can use this as a preflight
+/// before attaching executable addresses.
+///
+/// # Errors
+///
+/// Returns [`RuntimeSymbolNameError`] if the core runtime symbol manifest cannot
+/// be built.
+pub fn runtime_symbol_binding_manifest() -> RuntimeSymbolBindingManifestResult {
+    runtime_symbol_manifest()?
+        .into_iter()
+        .map(|entry| {
+            let status = match entry.kind() {
+                RuntimeSymbolKind::Helper(role) => {
+                    RuntimeHelperBinding::from_symbol_name(entry.name())
+                        .map(RuntimeSymbolBindingStatus::BoundHelper)
+                        .unwrap_or(RuntimeSymbolBindingStatus::UnboundHelper(role))
+                }
+                RuntimeSymbolKind::Builtin => RuntimeSymbolBindingStatus::Builtin,
+            };
+            Ok(RuntimeSymbolBindingManifestEntry::new(
+                entry.name().to_owned(),
+                status,
+            ))
+        })
+        .collect()
 }
 
 /// The native failure behavior promised by a runtime helper binding.
@@ -103,7 +177,9 @@ impl RuntimeHelperBinding {
 
 #[cfg(test)]
 mod tests {
-    use crate::compile::{RuntimeHelperRole, runtime_helper_symbols};
+    use std::collections::BTreeSet;
+
+    use crate::compile::{RuntimeHelperRole, runtime_helper_symbols, runtime_symbol_manifest};
 
     use super::*;
     use crate::runtime::alloc::runtime_allocation_abi_signatures;
@@ -227,5 +303,95 @@ mod tests {
             RuntimeHelperBinding::from_symbol_name("nix.builtin.derivationStrict"),
             None
         );
+    }
+
+    #[test]
+    fn runtime_symbol_binding_manifest_preserves_core_symbol_order() {
+        let core_manifest = runtime_symbol_manifest().expect("core manifest builds");
+        let binding_manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+
+        let core_symbols = core_manifest
+            .iter()
+            .map(|entry| entry.name())
+            .collect::<Vec<_>>();
+        let binding_symbols = binding_manifest
+            .iter()
+            .map(RuntimeSymbolBindingManifestEntry::symbol_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(binding_symbols, core_symbols);
+    }
+
+    #[test]
+    fn runtime_symbol_binding_manifest_marks_bound_helpers() {
+        let manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+        let bound_helpers = manifest
+            .iter()
+            .filter_map(|entry| match entry.status() {
+                RuntimeSymbolBindingStatus::BoundHelper(binding) => {
+                    Some((entry.symbol_name(), binding))
+                }
+                RuntimeSymbolBindingStatus::UnboundHelper(_)
+                | RuntimeSymbolBindingStatus::Builtin => None,
+            })
+            .collect::<Vec<_>>();
+        let expected_helpers = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .map(|binding| (binding.symbol_name(), binding))
+            .collect::<Vec<_>>();
+
+        assert_eq!(bound_helpers, expected_helpers);
+    }
+
+    #[test]
+    fn runtime_symbol_binding_manifest_marks_unbound_helpers_and_builtins() {
+        let manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "aos_force")
+                .map(RuntimeSymbolBindingManifestEntry::status),
+            Some(RuntimeSymbolBindingStatus::UnboundHelper(
+                RuntimeHelperRole::ForcingControl
+            ))
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "aos_apply")
+                .map(RuntimeSymbolBindingManifestEntry::status),
+            Some(RuntimeSymbolBindingStatus::UnboundHelper(
+                RuntimeHelperRole::CallControl
+            ))
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .find(|entry| entry.symbol_name() == "nix.builtin.derivationStrict")
+                .map(RuntimeSymbolBindingManifestEntry::status),
+            Some(RuntimeSymbolBindingStatus::Builtin)
+        );
+    }
+
+    #[test]
+    fn runtime_symbol_binding_manifest_bound_symbols_match_safe_inventory() {
+        let manifest = runtime_symbol_binding_manifest().expect("binding manifest builds");
+        let bound_symbols = manifest
+            .iter()
+            .filter_map(|entry| match entry.status() {
+                RuntimeSymbolBindingStatus::BoundHelper(_) => Some(entry.symbol_name()),
+                RuntimeSymbolBindingStatus::UnboundHelper(_)
+                | RuntimeSymbolBindingStatus::Builtin => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let helper_binding_symbols = runtime_helper_bindings()
+            .iter()
+            .copied()
+            .map(RuntimeHelperBinding::symbol_name)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(bound_symbols, helper_binding_symbols);
     }
 }

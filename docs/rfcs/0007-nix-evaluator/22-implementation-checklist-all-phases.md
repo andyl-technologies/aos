@@ -5196,6 +5196,17 @@ and helps the oracle directly.
       registration metadata only; exported wrappers, Cranelift module
       construction, address binding, compiled-artifact relinking, and native
       trap transfer remain open.
+- [x] Current runtime symbol binding-manifest precursor:
+      `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
+      consumes the full `ratchet-core` runtime symbol manifest and preserves its
+      deterministic order while classifying each symbol as a currently bound
+      allocation/write-barrier helper, an unbound future helper role, or a
+      builtin. Tests cross-check order parity with the core manifest, exact
+      safe-helper coverage, representative unbound helpers such as `aos_force`
+      and `aos_apply`, and builtin classification. This is binding-status
+      metadata only; it attaches no function pointers, exports no native
+      wrappers, registers no Cranelift symbols, and leaves builtin,
+      forcing/call/attr/error helper addresses unbound.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records success-path helper signature
       metadata for each `aos_alloc_*` entry point: a leading runtime context

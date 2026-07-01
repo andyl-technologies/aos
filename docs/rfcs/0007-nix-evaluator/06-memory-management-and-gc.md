@@ -907,6 +907,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       registration manifest only; it does not export `unsafe extern "C"`
       functions, implement trap transfer, register Cranelift symbols, or add
       bindings for forcing/call/attr/error helpers.
+- [x] Current runtime symbol binding-manifest precursor:
+      `runtime::helpers::runtime_symbol_binding_manifest()` consumes
+      `ratchet-core`'s full helper/builtin runtime symbol manifest and preserves
+      its deterministic order while classifying each symbol as a currently bound
+      allocation/write-barrier helper, an unbound future helper role, or a
+      builtin. Tests pin order parity with the core manifest, exact safe-helper
+      coverage, representative unbound helper roles, and builtin classification.
+      This is binding-status metadata only; it attaches no function pointers,
+      exports no native wrappers, performs no Cranelift registration, and leaves
+      forcing/call/attr/error helpers plus all builtin bodies unbound.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /

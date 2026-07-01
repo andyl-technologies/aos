@@ -930,6 +930,16 @@ harness, never cut for scope.
       duplicate rejection, and representative helper/builtin lookups. This is
       registration metadata only; exported wrappers, Cranelift module
       construction, address binding, and compiled artifact relinking remain open.
+- [x] Current runtime symbol binding-manifest precursor:
+      `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
+      consumes the core runtime symbol manifest and preserves its order while
+      classifying each symbol as a currently bound allocation/write-barrier
+      helper, an unbound future helper role, or a builtin. Tests cross-check
+      core-manifest order, exact safe-helper binding coverage, representative
+      unbound helpers such as `aos_force` and `aos_apply`, and a representative
+      builtin symbol. This is binding-status metadata only; it attaches no
+      function pointers, exports no wrappers, registers no Cranelift symbols,
+      and leaves builtin/forcing/call/attr/error helper addresses unbound.
 - [x] Current allocation ABI-signature precursor:
       `RuntimeAllocationAbiSignature` records the success-path native parameter
       and typed pointer-result shape for each `aos_alloc_*` helper, preserves the

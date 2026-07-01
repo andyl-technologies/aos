@@ -781,6 +781,15 @@ harness, never cut for scope.
       This is safe metadata only; no `unsafe extern "C"` wrappers,
       `JITBuilder::symbol` address registration, compiled artifact relinking, or
       native ABI entrypoints are claimed here.
+- [x] Current runtime symbol binding-manifest precursor:
+      `ratchet-oracle::runtime::helpers::runtime_symbol_binding_manifest()`
+      consumes the core stable-symbol manifest and preserves its deterministic
+      order while classifying each symbol as a currently bound safe helper, an
+      unbound future helper role, or a builtin. Tests pin order parity with
+      `ratchet-core`, exact bound-helper coverage, representative unbound helper
+      roles, and builtin classification. This is status metadata only; it does
+      not attach addresses, export native wrappers, register `JITBuilder`
+      symbols, bind builtin bodies, or make compiled artifacts relinkable.
 - [x] Current allocation ABI-signature precursor:
       `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
       success-path native parameter and typed pointer-result shape for every
