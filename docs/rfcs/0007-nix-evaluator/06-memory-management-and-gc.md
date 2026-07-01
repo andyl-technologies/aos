@@ -1491,9 +1491,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       matching commit metadata from the paired report.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_preflights` then
       validates and extracts owned object byte-copy requests, empty forwarding
-      slot buffers, and root/heap-field reference writeback metadata from those
-      paired plans. These helpers still do not bind live object-byte buffers,
-      reserve semispace storage, or commit mutations.
+      slot buffers, copied reference buffers, and root/heap-field reference
+      writeback metadata from those paired plans. These helpers still do not
+      bind live object-byte buffers, reserve semispace storage, or commit
+      mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and

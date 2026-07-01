@@ -5679,9 +5679,10 @@ and helps the oracle directly.
       matching commit metadata from the paired report.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_preflights` then
       validates and extracts owned object byte-copy requests, empty forwarding
-      slot buffers, and root/heap-field reference writeback metadata from those
-      paired plans. These helpers still do not bind live object-byte buffers,
-      reserve semispace storage, or commit mutations. The force,
+      slot buffers, copied reference buffers, and root/heap-field reference
+      writeback metadata from those paired plans. These helpers still do not
+      bind live object-byte buffers, reserve semispace storage, or commit
+      mutations. The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
       register/unregister active or suspended safepoint frames, including

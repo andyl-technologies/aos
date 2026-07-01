@@ -48,10 +48,12 @@ use super::env::{
 use super::heap::{
     AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
     AllocationCollectorPollMinorGcRelocationDestinations,
-    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollReferenceWritebackPlan,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
-    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollReferenceSlot,
+    AllocationCollectorPollReferenceSource, AllocationCollectorPollReferenceWritebackPlan,
+    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollScan, EvalHeap,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapMemoryBudgetAction,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -78,7 +80,7 @@ use crate::compile::{
 };
 use crate::heap::{
     GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcPromotionPolicy, RememberedSet,
+    MinorGcForwardingSlot, MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};

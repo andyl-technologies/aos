@@ -565,6 +565,10 @@ fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
         gc_address(outcome.value())
     );
     assert!(preflight.forwarding_slots()[0].is_empty());
+    assert_eq!(
+        preflight.reference_buffer(),
+        &[ResolvedValueGeneration::young(gc_address(outcome.value()))]
+    );
     assert_eq!(preflight.reference_writeback_plan().len(), 1);
     assert_eq!(
         preflight.reference_writeback_plan().root_writebacks().len(),
@@ -611,6 +615,21 @@ fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
     );
     assert!(preflight.object_byte_copy_plan().is_empty());
     assert!(preflight.forwarding_slots().is_empty());
+    assert_eq!(
+        preflight.reference_buffer(),
+        preflight
+            .relocation_plan()
+            .minor_gc_plan()
+            .reference_values()
+            .collect::<Vec<_>>()
+    );
+    assert!(preflight.reference_buffer().iter().all(|value| matches!(
+        value,
+        ResolvedValueGeneration::Heap {
+            generation: HeapGeneration::Permanent,
+            ..
+        }
+    )));
     assert!(preflight.reference_writeback_plan().is_empty());
 }
 

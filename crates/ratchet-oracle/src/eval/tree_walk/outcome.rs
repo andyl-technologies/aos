@@ -7,6 +7,9 @@ use crate::compile::EffectClass;
 type IfdRealizerCallback =
     dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
 
+const BOUNDARY_MINOR_GC_ROOT_REFERENCE_VALUES_TABLE: &str =
+    "boundary minor-GC root reference values";
+
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EvalGcStressBoundaryScans {
@@ -250,6 +253,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitPreflight {
     relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
     object_byte_copy_plan: AllocationCollectorPollObjectByteCopyPlan,
     forwarding_slots: Vec<MinorGcForwardingSlot>,
+    reference_buffer: Vec<ResolvedValueGeneration>,
     reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
 }
 
@@ -259,12 +263,14 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
         object_byte_copy_plan: AllocationCollectorPollObjectByteCopyPlan,
         forwarding_slots: Vec<MinorGcForwardingSlot>,
+        reference_buffer: Vec<ResolvedValueGeneration>,
         reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
     ) -> Self {
         Self {
             relocation_plan,
             object_byte_copy_plan,
             forwarding_slots,
+            reference_buffer,
             reference_writeback_plan,
         }
     }
@@ -282,6 +288,11 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
     /// Returns empty forwarding slots in forwarding-pointer order.
     pub fn forwarding_slots(&self) -> &[MinorGcForwardingSlot] {
         &self.forwarding_slots
+    }
+
+    /// Returns copied reference values in commit-buffer order.
+    pub fn reference_buffer(&self) -> &[ResolvedValueGeneration] {
+        &self.reference_buffer
     }
 
     /// Returns root and heap-field reference writebacks in commit order.
@@ -332,6 +343,39 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
     pub const fn permanent_shared(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitPreflight> {
         self.permanent_shared.as_ref()
     }
+}
+
+fn boundary_minor_gc_root_reference_values(
+    reference_slots: &[AllocationCollectorPollReferenceSlot],
+) -> Result<Vec<AllocationCollectorPollRootReferenceValue>, EvalHeapError> {
+    let root_count = reference_slots
+        .iter()
+        .filter(|slot| {
+            matches!(
+                slot.source(),
+                AllocationCollectorPollReferenceSource::Root { .. }
+            )
+        })
+        .count();
+    let mut root_values = Vec::new();
+    root_values.try_reserve_exact(root_count).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: BOUNDARY_MINOR_GC_ROOT_REFERENCE_VALUES_TABLE,
+            entries: root_count,
+        }
+    })?;
+
+    for slot in reference_slots {
+        let AllocationCollectorPollReferenceSource::Root { source } = slot.source() else {
+            continue;
+        };
+        root_values.push(AllocationCollectorPollRootReferenceValue::new(
+            source.clone(),
+            slot.value(),
+        ));
+    }
+
+    Ok(root_values)
 }
 
 /// A tree-walk evaluation result with its owning evaluator heap.
@@ -581,11 +625,11 @@ impl EvalOutcome {
     ///
     /// This derives paired boundary relocation plans, builds the borrowed commit
     /// metadata long enough to validate and extract owned object byte-copy
-    /// requests, empty forwarding slots, and reference writeback metadata, then
-    /// returns those artifacts beside the paired relocation plan. It still does
-    /// not bind object byte buffers, mutate forwarding slots, rewrite roots or
-    /// heap fields, publish remembered sets, reserve semispace storage, or invoke
-    /// a collector.
+    /// requests, empty forwarding slots, copied reference buffers, and reference
+    /// writeback metadata, then returns those artifacts beside the paired
+    /// relocation plan. It still does not bind object byte buffers, mutate
+    /// forwarding slots, rewrite roots or heap fields, publish remembered sets,
+    /// reserve semispace storage, or invoke a collector.
     ///
     /// # Errors
     ///
@@ -619,18 +663,25 @@ impl EvalOutcome {
         &self,
         relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
     ) -> Result<EvalGcStressBoundaryMinorGcCommitPreflight, EvalHeapError> {
-        let (object_byte_copy_plan, forwarding_slots, reference_writeback_plan) = {
+        let root_values = boundary_minor_gc_root_reference_values(
+            relocation_plan.minor_gc_plan().reference_slots(),
+        )?;
+        let (object_byte_copy_plan, forwarding_slots, reference_buffer, reference_writeback_plan) = {
             let commit_plan = relocation_plan.commit_plan()?;
             let object_byte_copy_plan = self
                 .heap
                 .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
             let forwarding_slots = commit_plan.forwarding_slot_buffer()?;
+            let reference_buffer = self
+                .heap
+                .collector_poll_minor_gc_reference_buffer(&commit_plan, &root_values)?;
             let reference_writeback_plan = self
                 .heap
                 .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
             (
                 object_byte_copy_plan,
                 forwarding_slots,
+                reference_buffer,
                 reference_writeback_plan,
             )
         };
@@ -639,6 +690,7 @@ impl EvalOutcome {
             relocation_plan,
             object_byte_copy_plan,
             forwarding_slots,
+            reference_buffer,
             reference_writeback_plan,
         ))
     }
