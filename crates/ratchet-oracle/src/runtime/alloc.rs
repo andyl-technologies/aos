@@ -826,6 +826,15 @@ impl RuntimeAllocator {
         }
     }
 
+    /// Returns unused-tail bytes this allocator can lower to page advice.
+    pub fn supported_unused_tail_advice_bytes(&self) -> usize {
+        match &self.backend {
+            RuntimeAllocatorBackend::TierAOneShot(arena) => {
+                arena.supported_unused_tail_advice_bytes()
+            }
+        }
+    }
+
     /// Returns allocation-safepoint accounting for this allocator domain.
     pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
         self.safepoints
@@ -1012,6 +1021,11 @@ impl PermanentSharedAllocator {
     /// Advises unused bytes at the end of permanent shared arena chunks.
     pub(crate) fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
         self.arena.advise_unused_tail(kind)
+    }
+
+    /// Returns unused-tail bytes this allocator can lower to page advice.
+    pub(crate) fn supported_unused_tail_advice_bytes(&self) -> usize {
+        self.arena.supported_unused_tail_advice_bytes()
     }
 
     /// Returns allocation-safepoint accounting for permanent shared storage.
@@ -1343,12 +1357,18 @@ mod tests {
         let mut worker =
             RuntimeAllocator::tier_a_with_initial_chunk_bytes(65536).expect("worker creates");
         worker.aos_alloc_thunk().expect("worker allocates");
+        let worker_supported_tail_advice_bytes = worker.supported_unused_tail_advice_bytes();
 
         let worker_report = worker.advise_unused_tail(MemoryAdviceKind::Dead);
 
         assert_eq!(worker_report.kind(), MemoryAdviceKind::Dead);
         assert_eq!(worker_report.chunks(), 1);
         assert!(worker_report.requested_bytes() > 0);
+        #[cfg(target_os = "linux")]
+        assert!(worker_supported_tail_advice_bytes > 0);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(worker_supported_tail_advice_bytes, 0);
+        assert!(worker_supported_tail_advice_bytes <= worker_report.requested_bytes());
         assert_eq!(
             worker_report.applied()
                 + worker_report.unsupported()
@@ -1362,12 +1382,18 @@ mod tests {
         permanent
             .aos_alloc_string(1)
             .expect("permanent string allocates");
+        let permanent_supported_tail_advice_bytes = permanent.supported_unused_tail_advice_bytes();
 
         let permanent_report = permanent.advise_unused_tail(MemoryAdviceKind::Dead);
 
         assert_eq!(permanent_report.kind(), MemoryAdviceKind::Dead);
         assert_eq!(permanent_report.chunks(), 1);
         assert!(permanent_report.requested_bytes() > 0);
+        #[cfg(target_os = "linux")]
+        assert!(permanent_supported_tail_advice_bytes > 0);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(permanent_supported_tail_advice_bytes, 0);
+        assert!(permanent_supported_tail_advice_bytes <= permanent_report.requested_bytes());
         assert_eq!(
             permanent_report.applied()
                 + permanent_report.unsupported()

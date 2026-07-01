@@ -1065,13 +1065,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `AllocationMemoryBudgetDecision` for later runtime dispatch. `EvalHeap`
       also exposes whole-heap classification over the saturating sum of worker
       and permanent mapped arena bytes, preserving both domain accounting
-      snapshots in `EvalHeapMemoryBudgetDecision`. Tests pin zero-budget
-      rejection, derived headroom, cheap-reclaim saturation, the
+      snapshots in `EvalHeapMemoryBudgetDecision`.
+      `EvalHeap::respond_to_memory_budget_with_unused_tail_advice` now executes
+      the implemented cheap reclaim path by deriving dead arena bytes from
+      supported page-advisable worker/permanent tails, applying dead-page advice
+      for `SpillCold` and before `RequestTierB`, and reporting when advice is
+      still insufficient without crediting cold hash-cons reclaim. Tests pin
+      zero-budget rejection, derived headroom, cheap-reclaim saturation, the
       Tier-A-vs-Tier-B boundary, safepoint-level Continue/Spill/Tier-B
-      classification, and whole-heap worker/permanent aggregation. No
-      CLI/env/daemon configuration, actual CA-store spill, `madvise` call, live
-      RSS sampler, or collector installation is wired yet, so the full row above
-      remains open.
+      classification, whole-heap worker/permanent aggregation, the three current
+      action paths, and the sub-page/unsupported advice-capacity guard. No
+      CLI/env/daemon configuration, actual CA-store spill, live RSS sampler, or
+      collector installation is wired yet, so the full row above remains open.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 
@@ -1093,9 +1098,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       arenas, complete unused-tail pages, unchanged arena accounting,
       post-advice allocation reuse, runtime allocator forwarding, and
       whole-heap worker/permanent aggregation. Selecting dead regions, advising
-      live cold hash-consed pages, CA-store spill/rematerialization,
-      budget-triggered dispatch, and collector installation remain open in the
-      surrounding rows.
+      live cold hash-consed pages, CA-store spill/rematerialization, full budget
+      dispatch, and collector installation remain open in the surrounding rows.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

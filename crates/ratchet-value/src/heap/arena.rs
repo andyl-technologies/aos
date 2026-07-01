@@ -255,6 +255,23 @@ impl BumpArena {
         report
     }
 
+    /// Returns unused-tail bytes this platform can lower to page advice.
+    ///
+    /// Non-Linux platforms return zero because the advice shim reports
+    /// unsupported outcomes there. Linux counts only complete pages wholly
+    /// contained in each chunk tail, matching the shim's page trimming.
+    pub fn supported_unused_tail_advice_bytes(&self) -> usize {
+        if !cfg!(target_os = "linux") {
+            return 0;
+        }
+        let Ok(page_size) = system_page_size() else {
+            return 0;
+        };
+        self.chunks.iter().fold(0usize, |bytes, chunk| {
+            bytes.saturating_add(chunk.supported_unused_tail_advice_bytes(page_size))
+        })
+    }
+
     /// Allocates a thunk-sized object through the Phase-1 `aos_alloc_thunk`
     /// entry-point shape.
     ///
@@ -576,6 +593,10 @@ impl Chunk {
         // at or above the cursor have not been handed out as live heap objects.
         unsafe { MemoryAdviceRange::from_raw_parts(ptr, len) }
     }
+
+    fn supported_unused_tail_advice_bytes(&self, page_size: usize) -> usize {
+        supported_advice_bytes_in_range(self.unused_tail_range(), page_size)
+    }
 }
 
 impl Drop for Chunk {
@@ -654,6 +675,35 @@ fn round_up(value: usize, align: usize) -> Result<usize, ArenaError> {
     align_up(value, align)
 }
 
+fn supported_advice_bytes_in_range(range: MemoryAdviceRange, page_size: usize) -> usize {
+    if range.is_empty() || page_size == 0 {
+        return 0;
+    }
+    let start = range.ptr().as_ptr() as usize;
+    let Some(end) = start.checked_add(range.len()) else {
+        return 0;
+    };
+    let Some(aligned_start) = round_up_to_multiple(start, page_size) else {
+        return 0;
+    };
+    let aligned_end = round_down_to_multiple(end, page_size);
+    aligned_end.saturating_sub(aligned_start)
+}
+
+fn round_up_to_multiple(value: usize, multiple: usize) -> Option<usize> {
+    debug_assert!(multiple != 0);
+    let remainder = value % multiple;
+    if remainder == 0 {
+        return Some(value);
+    }
+    value.checked_add(multiple - remainder)
+}
+
+fn round_down_to_multiple(value: usize, multiple: usize) -> usize {
+    debug_assert!(multiple != 0);
+    value - (value % multiple)
+}
+
 fn system_page_size() -> Result<usize, ArenaError> {
     let page_size = {
         // SAFETY: `sysconf(_SC_PAGESIZE)` is a side-effect-free libc query. The
@@ -690,6 +740,7 @@ mod tests {
         let arena = BumpArena::new();
         let report = arena.advise_unused_tail(MemoryAdviceKind::Dead);
 
+        assert_eq!(arena.supported_unused_tail_advice_bytes(), 0);
         assert_eq!(report.kind(), MemoryAdviceKind::Dead);
         assert_eq!(report.chunks(), 0);
         assert_eq!(report.requested_bytes(), 0);
@@ -720,6 +771,7 @@ mod tests {
             .aos_alloc_raw(1, 1, 7)
             .expect("first allocation succeeds");
         let stats_before = arena.stats();
+        let supported_tail_advice_bytes = arena.supported_unused_tail_advice_bytes();
 
         let report = arena.advise_unused_tail(MemoryAdviceKind::Dead);
 
@@ -737,12 +789,25 @@ mod tests {
         assert_eq!(report.applied(), 1);
         #[cfg(not(target_os = "linux"))]
         assert_eq!(report.unsupported(), 1);
+        #[cfg(target_os = "linux")]
+        assert!(supported_tail_advice_bytes > 0);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(supported_tail_advice_bytes, 0);
+        assert!(supported_tail_advice_bytes <= report.requested_bytes());
         assert_eq!(arena.stats(), stats_before);
 
         let second = arena
             .aos_alloc_raw(page_size, 1, 8)
             .expect("advised tail remains allocatable");
         assert!(second.ptr.as_ptr() as usize > first.ptr.as_ptr() as usize);
+    }
+
+    #[test]
+    fn subpage_unused_tail_has_no_supported_advice_bytes() {
+        let mut arena = BumpArena::with_initial_chunk_bytes(128).expect("arena creates");
+        arena.aos_alloc_raw(1, 1, 7).expect("allocation succeeds");
+
+        assert_eq!(arena.supported_unused_tail_advice_bytes(), 0);
     }
 
     #[test]

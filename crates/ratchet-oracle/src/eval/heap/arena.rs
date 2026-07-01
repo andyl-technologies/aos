@@ -158,6 +158,60 @@ impl EvalHeapMemoryAdviceReport {
     }
 }
 
+/// The budget-policy action currently executable by [`EvalHeap`].
+///
+/// This action only covers the cheap arena-tail advice that is implemented
+/// today. CA-store spill, cold hash-cons page selection, and Tier-B collector
+/// installation remain separate future steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalHeapMemoryBudgetAction {
+    /// The heap stayed below the derived soft limit and no reclaim work ran.
+    ContinueTierA {
+        /// The budget decision that selected this action.
+        decision: EvalHeapMemoryBudgetDecision,
+    },
+    /// The heap advised unused chunk tails and remains in Tier A.
+    AdviseUnusedTails {
+        /// The budget decision that selected this action.
+        decision: EvalHeapMemoryBudgetDecision,
+        /// The worker/permanent advice report produced by this action.
+        report: EvalHeapMemoryAdviceReport,
+    },
+    /// Unused-tail advice ran, but Tier B is still required by the classifier.
+    RequestTierB {
+        /// The budget decision that selected this action.
+        decision: EvalHeapMemoryBudgetDecision,
+        /// The worker/permanent advice report produced before requesting Tier B.
+        report: EvalHeapMemoryAdviceReport,
+    },
+}
+
+impl EvalHeapMemoryBudgetAction {
+    /// Returns the budget decision that selected this action.
+    pub const fn decision(self) -> EvalHeapMemoryBudgetDecision {
+        match self {
+            Self::ContinueTierA { decision }
+            | Self::AdviseUnusedTails { decision, .. }
+            | Self::RequestTierB { decision, .. } => decision,
+        }
+    }
+
+    /// Returns the operating-system advice report produced by this action.
+    pub const fn advice_report(self) -> Option<EvalHeapMemoryAdviceReport> {
+        match self {
+            Self::ContinueTierA { .. } => None,
+            Self::AdviseUnusedTails { report, .. } | Self::RequestTierB { report, .. } => {
+                Some(report)
+            }
+        }
+    }
+
+    /// Returns whether the action reports that Tier B is still needed.
+    pub const fn requests_tier_b(self) -> bool {
+        matches!(self, Self::RequestTierB { .. })
+    }
+}
+
 impl EvalHeap {
     /// Creates an empty evaluator heap.
     pub fn new() -> Self {
@@ -249,6 +303,51 @@ impl EvalHeap {
             self.allocator.advise_unused_tail(kind),
             self.permanent_allocator.advise_unused_tail(kind),
         )
+    }
+
+    /// Returns whole-heap unused-tail bytes this platform can lower to page advice.
+    pub fn supported_unused_tail_advice_bytes(&self) -> usize {
+        self.allocator
+            .supported_unused_tail_advice_bytes()
+            .saturating_add(
+                self.permanent_allocator
+                    .supported_unused_tail_advice_bytes(),
+            )
+    }
+
+    /// Classifies memory pressure and applies the currently implemented cheap
+    /// reclaim action.
+    ///
+    /// The method estimates dead arena bytes from unused worker/permanent arena
+    /// tails that the active advice shim can lower, classifies the whole heap
+    /// with no cold hash-cons reclaim estimate, and applies destructive
+    /// dead-page advice to unused tails when the classifier asks for reclaim. It
+    /// does not spill cold hash-consed values or install Tier B; those states
+    /// are reflected in the returned action for future runtime dispatch.
+    pub fn respond_to_memory_budget_with_unused_tail_advice(
+        &self,
+        budget: HeapMemoryBudget,
+    ) -> EvalHeapMemoryBudgetAction {
+        let worker_stats = self.arena_stats();
+        let permanent_stats = self.permanent_arena_stats();
+        let dead_arena_bytes = self.supported_unused_tail_advice_bytes();
+        let sample =
+            whole_heap_memory_budget_sample(worker_stats, permanent_stats, dead_arena_bytes, 0);
+        let decision =
+            EvalHeapMemoryBudgetDecision::new(budget, sample, worker_stats, permanent_stats);
+        match decision.response() {
+            HeapMemoryBudgetResponse::ContinueTierA { .. } => {
+                EvalHeapMemoryBudgetAction::ContinueTierA { decision }
+            }
+            HeapMemoryBudgetResponse::SpillCold { .. } => {
+                let report = self.advise_unused_tails(MemoryAdviceKind::Dead);
+                EvalHeapMemoryBudgetAction::AdviseUnusedTails { decision, report }
+            }
+            HeapMemoryBudgetResponse::InstallTierB { .. } => {
+                let report = self.advise_unused_tails(MemoryAdviceKind::Dead);
+                EvalHeapMemoryBudgetAction::RequestTierB { decision, report }
+            }
+        }
     }
 
     /// Installs one GC-stress polling policy for both worker and permanent

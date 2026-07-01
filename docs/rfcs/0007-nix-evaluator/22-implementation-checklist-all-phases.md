@@ -5383,13 +5383,19 @@ and helps the oracle directly.
       `AllocationMemoryBudgetDecision` for later runtime dispatch. `EvalHeap`
       also exposes whole-heap classification over the saturating sum of worker
       and permanent mapped arena bytes, preserving both domain accounting
-      snapshots in `EvalHeapMemoryBudgetDecision`. Tests cover zero-budget
-      rejection, headroom derivation, spill-before-collector ordering,
-      saturating reclaim accounting, safepoint-level Continue/Spill/Tier-B
-      classification, and whole-heap worker/permanent aggregation.
-      CLI/env/daemon configuration, live RSS sampling, CA-store spill,
-      `madvise`, and collector installation remain open under the full
-      memory-management rows.
+      snapshots in `EvalHeapMemoryBudgetDecision`.
+      `EvalHeap::respond_to_memory_budget_with_unused_tail_advice` now executes
+      the implemented cheap reclaim path by deriving dead arena bytes from
+      supported page-advisable worker/permanent tails, applying dead-page advice
+      for `SpillCold` and before `RequestTierB`, and reporting when advice is
+      still insufficient without crediting cold hash-cons reclaim. Tests cover
+      zero-budget rejection, headroom derivation, spill-before-collector
+      ordering, saturating reclaim accounting, safepoint-level
+      Continue/Spill/Tier-B classification, whole-heap worker/permanent
+      aggregation, the three current action paths, and the sub-page/unsupported
+      advice-capacity guard. CLI/env/daemon configuration, live RSS sampling,
+      CA-store spill, cold hash-consed page eviction, and collector installation
+      remain open under the full memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with
@@ -5411,9 +5417,9 @@ and helps the oracle directly.
       accounting, post-advice allocation reuse, runtime allocator forwarding,
       and whole-heap worker/permanent aggregation. Integrating the shim with
       live resident-set sampling, CA-store spill, live cold hash-consed page
-      selection, region-pop/dead-page selection, budget-triggered dispatch, and
-      collector-installation policy remains open under the full memory-management
-      rows.
+      selection, region-pop/dead-page selection, full budget-triggered dispatch,
+      and collector-installation policy remains open under the full
+      memory-management rows.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

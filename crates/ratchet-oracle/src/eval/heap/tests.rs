@@ -463,6 +463,179 @@ fn whole_heap_unused_tail_advice_reports_both_allocation_domains() {
 }
 
 #[test]
+fn memory_budget_action_continues_without_advice_below_soft_limit() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let resident_bytes = heap
+        .arena_stats()
+        .mapped_bytes
+        .checked_add(heap.permanent_arena_stats().mapped_bytes)
+        .expect("resident bytes fit");
+    let budget = HeapMemoryBudget::new(resident_bytes.checked_mul(2).expect("budget doubles"))
+        .expect("budget is non-zero");
+
+    let action = heap.respond_to_memory_budget_with_unused_tail_advice(budget);
+
+    assert!(matches!(
+        action,
+        EvalHeapMemoryBudgetAction::ContinueTierA { .. }
+    ));
+    assert_eq!(action.advice_report(), None);
+    assert!(!action.requests_tier_b());
+    assert_eq!(
+        action.decision().response(),
+        HeapMemoryBudgetResponse::ContinueTierA {
+            headroom_bytes: budget.soft_limit_bytes() - resident_bytes,
+            projected_resident_bytes: resident_bytes,
+        }
+    );
+}
+
+#[test]
+fn memory_budget_action_does_not_credit_subpage_or_unsupported_tail_advice() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    let unused_tail_bytes = (worker_stats.mapped_bytes - worker_stats.used_bytes)
+        + (permanent_stats.mapped_bytes - permanent_stats.used_bytes);
+    assert_eq!(heap.supported_unused_tail_advice_bytes(), 0);
+    let budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
+
+    let action = heap.respond_to_memory_budget_with_unused_tail_advice(budget);
+
+    let EvalHeapMemoryBudgetAction::AdviseUnusedTails { decision, report } = action else {
+        panic!("near-budget response should still attempt unused-tail advice");
+    };
+    assert_eq!(decision.sample().dead_arena_bytes(), 0);
+    assert_eq!(decision.sample().cold_hash_consed_bytes(), 0);
+    assert_eq!(
+        decision.response(),
+        HeapMemoryBudgetResponse::SpillCold {
+            desired_reclaim_bytes: resident_bytes - budget.soft_limit_bytes(),
+            available_reclaim_bytes: 0,
+            projected_resident_bytes: resident_bytes,
+        }
+    );
+    assert_eq!(action.advice_report(), Some(report));
+    assert_eq!(report.requested_bytes(), unused_tail_bytes);
+    assert_eq!(
+        report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+        2
+    );
+}
+
+#[test]
+fn memory_budget_action_advises_unused_tails_for_spill_response() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    let unused_tail_bytes = (worker_stats.mapped_bytes - worker_stats.used_bytes)
+        + (permanent_stats.mapped_bytes - permanent_stats.used_bytes);
+    let supported_tail_advice_bytes = heap.supported_unused_tail_advice_bytes();
+    let budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
+
+    let action = heap.respond_to_memory_budget_with_unused_tail_advice(budget);
+
+    let EvalHeapMemoryBudgetAction::AdviseUnusedTails { decision, report } = action else {
+        panic!("spill response should advise unused tails");
+    };
+    assert_eq!(
+        decision.sample().dead_arena_bytes(),
+        supported_tail_advice_bytes
+    );
+    assert_eq!(decision.sample().cold_hash_consed_bytes(), 0);
+    let desired_reclaim_bytes = resident_bytes - budget.soft_limit_bytes();
+    let reclaim_bytes = desired_reclaim_bytes.min(supported_tail_advice_bytes);
+    assert_eq!(
+        decision.response(),
+        HeapMemoryBudgetResponse::SpillCold {
+            desired_reclaim_bytes,
+            available_reclaim_bytes: supported_tail_advice_bytes,
+            projected_resident_bytes: resident_bytes - reclaim_bytes,
+        }
+    );
+    assert_eq!(action.advice_report(), Some(report));
+    assert!(!action.requests_tier_b());
+    assert_eq!(report.kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.chunks(), 2);
+    assert_eq!(report.requested_bytes(), unused_tail_bytes);
+    assert!(supported_tail_advice_bytes <= report.requested_bytes());
+    assert_eq!(
+        report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+        2
+    );
+    assert_eq!(heap.arena_stats(), worker_stats);
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats);
+}
+
+#[test]
+fn memory_budget_action_advises_unused_tails_before_tier_b_request() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    let unused_tail_bytes = (worker_stats.mapped_bytes - worker_stats.used_bytes)
+        + (permanent_stats.mapped_bytes - permanent_stats.used_bytes);
+    let supported_tail_advice_bytes = heap.supported_unused_tail_advice_bytes();
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+
+    let action = heap.respond_to_memory_budget_with_unused_tail_advice(budget);
+
+    let EvalHeapMemoryBudgetAction::RequestTierB { decision, report } = action else {
+        panic!("over-budget response should request Tier B");
+    };
+    assert_eq!(
+        decision.sample().dead_arena_bytes(),
+        supported_tail_advice_bytes
+    );
+    assert_eq!(decision.sample().cold_hash_consed_bytes(), 0);
+    let desired_reclaim_bytes = resident_bytes - budget.soft_limit_bytes();
+    let reclaim_bytes = desired_reclaim_bytes.min(supported_tail_advice_bytes);
+    let projected_resident_bytes = resident_bytes - reclaim_bytes;
+    assert_eq!(
+        decision.response(),
+        HeapMemoryBudgetResponse::InstallTierB {
+            desired_reclaim_bytes,
+            available_reclaim_bytes: supported_tail_advice_bytes,
+            projected_resident_bytes,
+            over_budget_bytes: projected_resident_bytes - budget.max_resident_bytes(),
+        }
+    );
+    assert_eq!(action.advice_report(), Some(report));
+    assert!(action.requests_tier_b());
+    assert_eq!(report.kind(), MemoryAdviceKind::Dead);
+    assert_eq!(report.chunks(), 2);
+    assert_eq!(report.requested_bytes(), unused_tail_bytes);
+    assert!(supported_tail_advice_bytes <= report.requested_bytes());
+}
+
+#[test]
 fn multiple_string_values_keep_distinct_heap_records() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     let first = heap
