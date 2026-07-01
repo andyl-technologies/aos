@@ -2452,13 +2452,14 @@ fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
 ///
 /// The `aos`/`apm`/`apr` wrappers replace `PATH` with a minimal hermetic tool
 /// set (bash/git/nix/…) and stash the caller's original `PATH` in
-/// `AOS_HOST_PATH`. These SB helpers are *not* in the hermetic set, so a bare
-/// `Command::new` for one of them fails with `NotFound` under the wrappers. We
-/// therefore run them with `PATH` = hermetic entries followed by
-/// `AOS_HOST_PATH`, mirroring [`crate::gitcmd`]'s transport handling: AOS-built
-/// tools keep priority, while host-provided `sbverify`/`objcopy`/
-/// `systemd-measure` become reachable. Outside the wrappers (`AOS_HOST_PATH`
-/// unset) the process `PATH` is left untouched.
+/// `AOS_HOST_PATH`. The wrapper ships all three SB helpers in that hermetic
+/// set — `sbverify` (sbsigntools), `objcopy` (binutils), and `systemd-measure`
+/// (a thin `bin/` wrapper over systemd's `lib/systemd/systemd-measure`) — so
+/// they resolve without any host dependency. We still run them with `PATH` =
+/// hermetic entries followed by `AOS_HOST_PATH`, mirroring [`crate::gitcmd`]'s
+/// transport handling: AOS-built tools keep priority, while a host build of the
+/// same helper stays reachable as a fallback. Outside the wrappers
+/// (`AOS_HOST_PATH` unset) the process `PATH` is left untouched.
 fn sb_tool_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     if let Some(path) = host_augmented_path() {

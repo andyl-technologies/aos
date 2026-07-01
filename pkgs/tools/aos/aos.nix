@@ -4,6 +4,7 @@
   mkCargoPackage,
   fetchCargoDeps,
   bash,
+  binutils,
   git-minimal,
   nix,
   openssh,
@@ -20,8 +21,10 @@
   policycoreutils,
   pkg-config,
   protobuf,
+  sbsigntools,
   semodule-utils,
   systemd,
+  systemd-measure,
   tpm2-tools,
   which,
   zlib,
@@ -48,11 +51,26 @@
   #                 `systemctl status` capture (display-only — the reconcile
   #                 itself drives systemd over D-Bus); without it on PATH the
   #                 capture fails ENOENT and masks the real diagnostic
+  #   sbsigntools   sbverify: `apr publish`/`apr release --image-format uki`
+  #                 derive Secure Boot facts from the signed UKI (registry_ops
+  #                 `derive_sb_facts`). Kept hermetic so publishing a UKI image
+  #                 never depends on a host-provided sbverify.
+  #   binutils      objcopy: dumps the UKI's `.sbat` section when cataloging a
+  #                 *signed* UKI (registry_ops `extract_sbat_entries`). Only
+  #                 reached for signed images, but shipped so that path is
+  #                 hermetic too.
+  #   systemd-measure recompute a signed UKI's `expected_pcr11` fact for
+  #                 measured-boot images (registry_ops `extract_expected_pcr11`).
+  #                 systemd ships this helper under `lib/systemd`, not `bin`, so
+  #                 it is not reachable via the `systemd` entry above; this thin
+  #                 wrapper (pkgs/boot/systemd-measure.nix) symlinks just that
+  #                 binary into a `bin/` and reuses the same systemd, adding no
+  #                 new closure.
   # These are declared as runtimeDeps below (not just buildDeps) so the
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix systemd zstd which];
+  runtimeTools = [bash binutils nix sbsigntools systemd systemd-measure zstd which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;
