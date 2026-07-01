@@ -74,6 +74,32 @@ fn whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off() {
     );
 }
 
+#[test]
+fn app_random_compiled_in_zero_requests_is_fingerprint_identical() {
+    let disabled = run_channel_material(
+        WhiteBoxPolicy::Disabled,
+        MarkerMode::Off,
+        b"same-workload",
+        20,
+    );
+    let compiled_in_zero = run_channel_material(
+        WhiteBoxPolicy::Enabled,
+        MarkerMode::Off,
+        b"same-workload",
+        20,
+    );
+
+    assert_eq!(
+        disabled.determinism_material(),
+        compiled_in_zero.determinism_material()
+    );
+    assert_eq!(disabled.event_log, compiled_in_zero.event_log);
+
+    let comparison =
+        compare_event_log_determinism(&disabled.event_log, &compiled_in_zero.event_log);
+    assert!(comparison.passes());
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MarkerMode {
     Off,

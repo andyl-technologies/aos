@@ -671,6 +671,9 @@ impl Error for TemporalGraphStoreError {
     }
 }
 
+/// Default app-random draw cap for scenarios that do not opt into a tighter cap.
+pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
+
 /// A handle to an immutable scenario definition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
@@ -678,6 +681,8 @@ pub struct ScenarioDef {
     id: ContentHash,
     /// The root entropy carried by this scenario definition.
     seed: Seed,
+    /// The maximum number of app-random decisions admitted for one run.
+    app_random_draw_cap: u64,
 }
 
 impl ScenarioDef {
@@ -691,6 +696,12 @@ impl ScenarioDef {
     #[must_use]
     pub fn seed(&self) -> Seed {
         self.seed
+    }
+
+    /// Returns the configured app-random draw cap for this scenario.
+    #[must_use]
+    pub fn app_random_draw_cap(&self) -> u64 {
+        self.app_random_draw_cap
     }
 
     /// Builds a scenario definition from canonical material.
@@ -710,10 +721,35 @@ impl ScenarioDef {
     /// from scenario identity.
     #[must_use]
     pub fn from_canonical_material_with_seed(domain: &str, material: &str, seed: Seed) -> Self {
-        let material = format!("{material}\n{}", seed_material(seed));
+        Self::from_canonical_material_with_seed_and_app_random_draw_cap(
+            domain,
+            material,
+            seed,
+            DEFAULT_APP_RANDOM_DRAW_CAP,
+        )
+    }
+
+    /// Builds a scenario definition from canonical material, root seed, and
+    /// app-random draw cap.
+    ///
+    /// The cap is included in the returned content address so app-random policy
+    /// cannot drift from scenario identity.
+    #[must_use]
+    pub fn from_canonical_material_with_seed_and_app_random_draw_cap(
+        domain: &str,
+        material: &str,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Self {
+        let material = format!(
+            "{material}\n{}\n{}",
+            seed_material(seed),
+            app_random_draw_cap_material(app_random_draw_cap)
+        );
         Self {
             id: ContentHash::from_canonical_material(domain, &material),
             seed,
+            app_random_draw_cap,
         }
     }
 }
@@ -994,6 +1030,22 @@ impl World {
         self.scenario_def_from_components(&Plan::empty(), &Properties::empty(), seed)
     }
 
+    /// Builds the canonical scenario definition for this world, empty plan,
+    /// empty properties, `seed`, and app-random draw cap.
+    #[must_use]
+    pub fn scenario_def_with_seed_and_app_random_draw_cap(
+        &self,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> ScenarioDef {
+        self.scenario_def_from_components_with_app_random_draw_cap(
+            &Plan::empty(),
+            &Properties::empty(),
+            seed,
+            app_random_draw_cap,
+        )
+    }
+
     /// Builds the canonical scenario definition for this world, plan,
     /// properties, and seed.
     ///
@@ -1106,6 +1158,31 @@ impl World {
                 &material,
             ),
             seed,
+            app_random_draw_cap: DEFAULT_APP_RANDOM_DRAW_CAP,
+        }
+    }
+
+    fn scenario_def_from_components_with_app_random_draw_cap(
+        &self,
+        plan: &Plan,
+        properties: &Properties,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> ScenarioDef {
+        let material = scenario_world_plan_properties_seed_app_random_cap_material(
+            self,
+            plan,
+            properties,
+            seed,
+            app_random_draw_cap,
+        );
+        ScenarioDef {
+            id: ContentHash::from_canonical_material(
+                "crucible.model.world-plan-properties-seed-scenario.v1",
+                &material,
+            ),
+            seed,
+            app_random_draw_cap,
         }
     }
 }
@@ -2589,6 +2666,7 @@ pub struct ScenarioDefForm {
     plan: Plan,
     properties: Properties,
     seed: Seed,
+    app_random_draw_cap: u64,
 }
 
 impl ScenarioDefForm {
@@ -2608,6 +2686,34 @@ impl ScenarioDefForm {
         properties: &Properties,
         seed: Seed,
     ) -> Result<Self, EngineError> {
+        Self::from_components_with_app_random_draw_cap(
+            world,
+            plan,
+            properties,
+            seed,
+            DEFAULT_APP_RANDOM_DRAW_CAP,
+        )
+    }
+
+    /// Builds a serialized-form scenario from independently addressed
+    /// components and an app-random draw cap.
+    ///
+    /// The constructor validates that the plan and properties layer over `world`
+    /// before the form can be serialized. The cap is part of the reconstructed
+    /// scenario definition identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world identity error when `world` carries non-canonical identity,
+    /// a plan validation error when `plan` cannot layer over the static world, or a
+    /// properties validation error when `properties` references undeclared nodes.
+    pub fn from_components_with_app_random_draw_cap(
+        world: &World,
+        plan: &Plan,
+        properties: &Properties,
+        seed: Seed,
+        app_random_draw_cap: u64,
+    ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
         let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
         match plan.event_graph() {
@@ -2623,8 +2729,9 @@ impl ScenarioDefForm {
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
-            properties,
+            properties: properties.clone(),
             seed,
+            app_random_draw_cap,
         })
     }
 
@@ -2652,11 +2759,22 @@ impl ScenarioDefForm {
         self.seed
     }
 
+    /// Returns the serialized app-random draw cap component.
+    #[must_use]
+    pub fn app_random_draw_cap(&self) -> u64 {
+        self.app_random_draw_cap
+    }
+
     /// Reconstructs the immutable scenario definition handle.
     #[must_use]
     pub fn scenario_def(&self) -> ScenarioDef {
         self.world
-            .scenario_def_from_components(&self.plan, &self.properties, self.seed)
+            .scenario_def_from_components_with_app_random_draw_cap(
+                &self.plan,
+                &self.properties,
+                self.seed,
+                self.app_random_draw_cap,
+            )
     }
 
     /// Returns the content address of the reconstructed scenario definition.
@@ -2721,11 +2839,12 @@ impl ScenarioDefForm {
     /// Returns the canonical bytes used to compute this scenario definition's id.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        scenario_world_plan_properties_seed_material(
+        scenario_world_plan_properties_seed_app_random_cap_material(
             &self.world,
             &self.plan,
             &self.properties,
             self.seed,
+            self.app_random_draw_cap,
         )
         .into_bytes()
     }
@@ -8758,7 +8877,7 @@ impl TemporalGraph {
         let base_runtime = self.resume(base)?;
         let mut branch = base.clone();
         for decision in decisions {
-            branch = step(&branch, decision);
+            branch = try_step(&branch, decision)?;
         }
         let branch_checkpoint = self.record_thin_checkpoint(&branch)?;
         Ok(TemporalGraphFork {
@@ -9068,7 +9187,7 @@ impl TemporalGraph {
         self.record_checkpoint_closure(frontier)?;
         let mut children = BTreeMap::new();
         for decision in decisions {
-            let configuration = step(frontier, decision.clone());
+            let configuration = try_step(frontier, decision.clone())?;
             children.entry(configuration.id()).or_insert(FrontierChild {
                 decision,
                 configuration,
@@ -9116,7 +9235,7 @@ impl TemporalGraph {
         let mut children = BTreeMap::new();
         let mut covered = Vec::new();
         for decision in decisions {
-            let configuration = step(frontier, decision.clone());
+            let configuration = try_step(frontier, decision.clone())?;
             if let Some(cover) = partial_order_cover(
                 self,
                 frontier,
@@ -9181,7 +9300,7 @@ impl TemporalGraph {
         decision: Decision,
     ) -> Result<Checkpoint, EngineError> {
         self.record_checkpoint_closure(parent)?;
-        let child = step(parent, decision);
+        let child = try_step(parent, decision)?;
         self.record_checkpoint_closure(&child)?;
         self.checkpoint_node(child.id())
             .cloned()
@@ -10220,11 +10339,35 @@ pub struct RuntimeState {
 }
 
 /// Appends one decision to a configuration without materializing runtime state.
-#[must_use]
-pub fn step(config: &Configuration, decision: Decision) -> Configuration {
-    Configuration {
+///
+/// # Errors
+///
+/// Returns [`EngineError::AppRandomDrawCapExceeded`] when appending `decision`
+/// would put the configuration above its per-scenario app-random draw cap.
+pub fn try_step(config: &Configuration, decision: Decision) -> Result<Configuration, EngineError> {
+    let next = Configuration {
         def: config.def.clone(),
         schedule: config.schedule.appended(decision),
+    };
+    validate_app_random_draw_cap(&next.def, &next.schedule)?;
+    Ok(next)
+}
+
+/// Appends one decision to a configuration without materializing runtime state.
+///
+/// Prefer [`try_step`] in fallible engine paths. This compatibility helper is
+/// intentionally loud when a caller tries to build an over-cap app-random
+/// configuration.
+///
+/// # Panics
+///
+/// Panics when appending `decision` would put the configuration above its
+/// per-scenario app-random draw cap.
+#[must_use]
+pub fn step(config: &Configuration, decision: Decision) -> Configuration {
+    match try_step(config, decision) {
+        Ok(next) => next,
+        Err(error) => panic!("configuration step rejected: {error}"),
     }
 }
 
@@ -10232,13 +10375,33 @@ pub fn step(config: &Configuration, decision: Decision) -> Configuration {
 ///
 /// # Errors
 ///
-/// This reducer is total for the current pure execution spine and therefore
-/// does not currently return an error. The `Result` shape is retained for later
-/// semantic validation as richer `Decision` variants become executable.
+/// Returns [`EngineError::AppRandomDrawCapExceeded`] when `schedule` contains
+/// more [`Decision::AppRandom`] entries than `def` admits.
 pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError> {
+    validate_app_random_draw_cap(def, schedule)?;
     Ok(State {
         id: canonical::reduced_state_hash(def, schedule),
     })
+}
+
+fn validate_app_random_draw_cap(def: &ScenarioDef, schedule: &Schedule) -> Result<(), EngineError> {
+    let actual = count_app_random_decisions(schedule);
+    if actual > def.app_random_draw_cap {
+        return Err(EngineError::AppRandomDrawCapExceeded {
+            scenario: def.id,
+            cap: def.app_random_draw_cap,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn count_app_random_decisions(schedule: &Schedule) -> u64 {
+    schedule
+        .decisions()
+        .iter()
+        .filter(|decision| matches!(decision, Decision::AppRandom(_)))
+        .count() as u64
 }
 
 /// Materializes `config` into a live runtime through `graph`.
@@ -10639,6 +10802,15 @@ pub enum EngineError {
         /// The content address recomputed from parsed content.
         actual: ContentHash,
     },
+    /// A schedule contains more app-random decisions than its scenario admits.
+    AppRandomDrawCapExceeded {
+        /// The scenario whose app-random cap was exceeded.
+        scenario: ContentHash,
+        /// The configured per-scenario draw cap.
+        cap: u64,
+        /// The number of app-random decisions present in the schedule.
+        actual: u64,
+    },
     /// A scenario family has an invalid finite parameter space.
     ScenarioFamilyInvalidSpace {
         /// Stable reason for the parameter-space rejection.
@@ -10877,6 +11049,12 @@ impl fmt::Display for EngineError {
                     "scenario serialized {component} id does not match parsed content"
                 )
             }
+            Self::AppRandomDrawCapExceeded { cap, actual, .. } => {
+                write!(
+                    f,
+                    "app-random draw count {actual} exceeds scenario cap {cap}"
+                )
+            }
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")
             }
@@ -10974,7 +11152,7 @@ fn replay_suffix(
 
     let mut replayed = start.clone();
     for decision in suffix.decisions() {
-        replayed = step(&replayed, decision.clone());
+        replayed = try_step(&replayed, decision.clone())?;
     }
 
     if replayed.id() != target.id() {
@@ -13582,6 +13760,7 @@ struct ScenarioDefToml {
 struct ScenarioHeaderToml {
     id: String,
     seed: String,
+    app_random_draw_cap: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14186,6 +14365,7 @@ fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
+            app_random_draw_cap: form.app_random_draw_cap,
         },
         world: world_to_toml(&form.world),
         plan: plan_to_toml(&form.plan),
@@ -14205,7 +14385,13 @@ fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, Eng
     let properties = resolve_properties_dsl_for_context(&world, &plan, &raw_properties)?;
     validate_serialized_id("properties", properties_id, properties.content_hash())?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
+    let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        seed,
+        toml.scenario.app_random_draw_cap,
+    )?;
     let expected = parse_content_hash_ref(&toml.scenario.id)?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
@@ -15979,6 +16165,7 @@ fn write_scenario_form_binary(form: &ScenarioDefForm, writer: &mut ScenarioBinar
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
     writer.write_seed(form.seed);
+    writer.write_u64(form.app_random_draw_cap);
 }
 
 fn read_scenario_form_binary(
@@ -15989,7 +16176,14 @@ fn read_scenario_form_binary(
     let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
     let seed = reader.read_seed()?;
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;
+    let app_random_draw_cap = reader.read_u64()?;
+    let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        seed,
+        app_random_draw_cap,
+    )?;
     validate_serialized_id("scenario", expected, form.id())?;
     Ok(form)
 }
@@ -18556,12 +18750,29 @@ fn scenario_world_plan_properties_seed_material(
     properties: &Properties,
     seed: Seed,
 ) -> String {
+    scenario_world_plan_properties_seed_app_random_cap_material(
+        world,
+        plan,
+        properties,
+        seed,
+        DEFAULT_APP_RANDOM_DRAW_CAP,
+    )
+}
+
+fn scenario_world_plan_properties_seed_app_random_cap_material(
+    world: &World,
+    plan: &Plan,
+    properties: &Properties,
+    seed: Seed,
+    app_random_draw_cap: u64,
+) -> String {
     format!(
-        "world_ref={}\nplan_ref={}\nproperties_ref={}\n{}",
+        "world_ref={}\nplan_ref={}\nproperties_ref={}\n{}\n{}",
         content_hash_hex(canonical_world_identity(world)),
         content_hash_hex(plan.content_hash()),
         content_hash_hex(properties.content_hash()),
-        seed_material(seed)
+        seed_material(seed),
+        app_random_draw_cap_material(app_random_draw_cap)
     )
 }
 
@@ -19271,6 +19482,10 @@ fn seed_material(seed: Seed) -> String {
     format!("seed_bytes={}", seed.to_hex())
 }
 
+fn app_random_draw_cap_material(app_random_draw_cap: u64) -> String {
+    format!("app_random_draw_cap={app_random_draw_cap}")
+}
+
 fn optional_label_material(prefix: &str, label: Option<&str>) -> String {
     match label {
         Some(label) => format!(
@@ -19451,9 +19666,10 @@ where
 
 fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     format!(
-        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n",
+        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n{}\n",
         content_hash_hex(def.id),
-        seed_material(def.seed)
+        seed_material(def.seed),
+        app_random_draw_cap_material(def.app_random_draw_cap)
     )
     .into_bytes()
 }

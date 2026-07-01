@@ -954,8 +954,22 @@ the transport layer by construction.
   icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random
   reply-range client of that guest-memory path, and reruns the random-request
   doorbell-frame and marker-payload golden-vector tests.
-- [ ] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
+- [x] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
   hash; exceeding fails loud) and prove the engine functions with zero app-random
   requests (fingerprint-identical with app-random compiled in vs out); add the
   `get-random <width> [tag]` verb to `crucible-guest` from the single-source ABI. —
   satisfies [GHC-38], [GHC-27]; spec §16.5.3, §16.6.
+  Completed by `checks.crucible.phase4.guestHostAppRandomCap`: `ScenarioDef`
+  now carries the app-random draw cap into the scenario definition hash and DAG
+  store material, and `ScenarioDefForm` round-trips it through TOML and compact
+  binary artifacts. `DecisionRecorder`, checked `try_step`, and `reduce`
+  enforce the cap through typed `AppRandomDrawCapExceeded` errors for live
+  requests, explorer overrides, direct configuration stepping, and manually
+  supplied schedules, including resumed schedules whose prior
+  `Decision::AppRandom` entries already consume draw budget. The
+  `guest_host_channel_determinism` test adds a zero-request compiled-in-unused
+  run fingerprint-identical to the white-box-disabled run, while the gate keeps
+  binding the phase2 no-decisions/no-replies byte identity proof. The guest ABI
+  side is covered by the existing `crucible-guest get-random <width> [tag]`
+  parser, single-source protocol payload encoding, reply readback, and
+  malformed-width rejection tests.

@@ -1072,6 +1072,11 @@ in rec {
       taskIds = ["T-GHC-16"];
       phase0S5 = phase0.s5VirtualMemory;
     };
+    guestHostAppRandomCap = import ./phase4-guest-host-app-random-cap.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostAppRandomCap";
+      taskIds = ["T-GHC-17"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

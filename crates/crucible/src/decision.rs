@@ -23,6 +23,7 @@ pub struct DecisionRecorder {
     configuration: Configuration,
     rng: DecisionRng,
     streams: BTreeMap<RngStreamId, DecisionStream>,
+    app_random_draws: u64,
 }
 
 impl DecisionRecorder {
@@ -35,10 +36,12 @@ impl DecisionRecorder {
     pub fn new(configuration: Configuration) -> Self {
         let rng = configuration.def.seed().decision_rng();
         let streams = hydrate_streams(&rng, configuration.schedule.decisions());
+        let app_random_draws = count_app_random_draws(configuration.schedule.decisions());
         Self {
             configuration,
             rng,
             streams,
+            app_random_draws,
         }
     }
 
@@ -103,7 +106,9 @@ impl DecisionRecorder {
     /// # Errors
     ///
     /// Returns [`DecisionRecordError::InvalidAppRandomWidth`] when `width` is
-    /// zero or greater than 64 bits.
+    /// zero or greater than 64 bits. Returns
+    /// [`DecisionRecordError::AppRandomDrawCapExceeded`] when the scenario's
+    /// app-random draw cap has already been reached.
     pub fn serve_app_random(
         &mut self,
         node: crate::NodeId,
@@ -122,7 +127,9 @@ impl DecisionRecorder {
     /// # Errors
     ///
     /// Returns [`DecisionRecordError::InvalidAppRandomWidth`] when `width` is
-    /// zero or greater than 64 bits.
+    /// zero or greater than 64 bits. Returns
+    /// [`DecisionRecordError::AppRandomDrawCapExceeded`] when the scenario's
+    /// app-random draw cap has already been reached.
     pub fn serve_app_random_request(
         &mut self,
         node: crate::NodeId,
@@ -141,6 +148,7 @@ impl DecisionRecorder {
         request_id: Option<u64>,
     ) -> Result<u64, DecisionRecordError> {
         validate_app_random_width(width)?;
+        self.reserve_app_random_draw()?;
 
         let (stream_position, raw_value) = self.draw_stream_value(&stream);
         self.append_decision(Decision::RngDraw(RngDecision {
@@ -170,7 +178,9 @@ impl DecisionRecorder {
     /// Returns [`DecisionRecordError::InvalidAppRandomWidth`] when the recorded
     /// width is zero or greater than 64 bits. Returns
     /// [`DecisionRecordError::InvalidAppRandomValue`] when `value` does not fit
-    /// in the recorded bit width.
+    /// in the recorded bit width. Returns
+    /// [`DecisionRecordError::AppRandomDrawCapExceeded`] when the scenario's
+    /// app-random draw cap has already been reached.
     pub fn serve_app_random_override(
         &mut self,
         decision: AppRandomDecision,
@@ -182,6 +192,7 @@ impl DecisionRecorder {
                 value: decision.value,
             });
         }
+        self.reserve_app_random_draw()?;
 
         let value = decision.value;
         self.append_decision(Decision::AppRandom(decision));
@@ -262,6 +273,18 @@ impl DecisionRecorder {
     fn append_decision(&mut self, decision: Decision) {
         self.configuration = step(&self.configuration, decision);
     }
+
+    fn reserve_app_random_draw(&mut self) -> Result<(), DecisionRecordError> {
+        let cap = self.configuration.def.app_random_draw_cap();
+        if self.app_random_draws >= cap {
+            return Err(DecisionRecordError::AppRandomDrawCapExceeded {
+                cap,
+                attempted: self.app_random_draws.saturating_add(1),
+            });
+        }
+        self.app_random_draws += 1;
+        Ok(())
+    }
 }
 
 /// An error produced while recording an intended-randomness decision.
@@ -278,6 +301,13 @@ pub enum DecisionRecordError {
         width: u8,
         /// The recorded value that does not fit.
         value: u64,
+    },
+    /// The scenario app-random draw cap has been reached.
+    AppRandomDrawCapExceeded {
+        /// The configured per-scenario draw cap.
+        cap: u64,
+        /// The one-based draw ordinal that would exceed `cap`.
+        attempted: u64,
     },
     /// The configured round-robin switch quantum is zero.
     InvalidRoundRobinQuantum,
@@ -300,6 +330,9 @@ impl fmt::Display for DecisionRecordError {
             }
             Self::InvalidAppRandomValue { width, value } => {
                 write!(f, "app-random value {value} does not fit width {width}")
+            }
+            Self::AppRandomDrawCapExceeded { cap, attempted } => {
+                write!(f, "app-random draw {attempted} exceeds scenario cap {cap}")
             }
             Self::InvalidRoundRobinQuantum => {
                 write!(f, "round-robin switch quantum must be nonzero")
@@ -339,6 +372,13 @@ fn value_fits_width(value: u64, width: u8) -> bool {
     width == 64 || value < (1_u64 << width)
 }
 
+fn count_app_random_draws(decisions: &[Decision]) -> u64 {
+    decisions
+        .iter()
+        .filter(|decision| matches!(decision, Decision::AppRandom(_)))
+        .count() as u64
+}
+
 fn hydrate_streams(
     rng: &DecisionRng,
     decisions: &[Decision],
@@ -360,7 +400,10 @@ fn hydrate_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NodeId, ScenarioDef, Seed};
+    use crate::{
+        EngineError, NodeId, Plan, Properties, ScenarioDef, ScenarioDefForm, Schedule, Seed, World,
+        reduce, try_step,
+    };
 
     #[test]
     fn decision_recorder_records_rng_draws_and_fault_outcomes() {
@@ -513,6 +556,161 @@ mod tests {
             Err(DecisionRecordError::InvalidAppRandomWidth { width: 65 })
         );
         assert!(recorder.schedule().is_empty());
+    }
+
+    #[test]
+    fn decision_recorder_enforces_app_random_draw_cap() {
+        let config = Configuration::genesis(scenario_from_seed_and_app_random_draw_cap(
+            Seed::from_u64(0x0010_c017),
+            1,
+        ));
+        let stream = rng_stream("node-a/app");
+        let mut recorder = DecisionRecorder::new(config);
+
+        assert!(matches!(
+            recorder.serve_app_random_request(node("node-a"), stream.clone(), 7, 8),
+            Ok(_)
+        ));
+        assert_eq!(
+            recorder.serve_app_random_request(node("node-a"), stream, 8, 8),
+            Err(DecisionRecordError::AppRandomDrawCapExceeded {
+                cap: 1,
+                attempted: 2,
+            })
+        );
+        assert_eq!(recorder.schedule().len(), 2);
+    }
+
+    #[test]
+    fn decision_recorder_counts_existing_app_random_decisions_against_cap() {
+        let config = Configuration::genesis(scenario_from_seed_and_app_random_draw_cap(
+            Seed::from_u64(0x0010_c018),
+            1,
+        ));
+        let stream = rng_stream("node-a/app");
+        let mut recorder = DecisionRecorder::new(config);
+
+        assert!(matches!(
+            recorder.serve_app_random(node("node-a"), stream.clone(), 8),
+            Ok(_)
+        ));
+        let mut resumed = DecisionRecorder::new(recorder.into_configuration());
+
+        assert_eq!(
+            resumed.serve_app_random(node("node-a"), stream, 8),
+            Err(DecisionRecordError::AppRandomDrawCapExceeded {
+                cap: 1,
+                attempted: 2,
+            })
+        );
+        assert_eq!(resumed.schedule().len(), 2);
+    }
+
+    #[test]
+    fn decision_recorder_app_random_override_obeys_draw_cap() {
+        let config = Configuration::genesis(scenario_from_seed_and_app_random_draw_cap(
+            Seed::from_u64(0x0010_c019),
+            1,
+        ));
+        let stream = rng_stream("node-a/app");
+        let mut recorder = DecisionRecorder::new(config);
+
+        assert_eq!(
+            recorder.serve_app_random_override(AppRandomDecision {
+                node: node("node-a"),
+                stream: stream.clone(),
+                request_id: 1,
+                width: 8,
+                value: 0x5a,
+            }),
+            Ok(0x5a)
+        );
+        assert_eq!(
+            recorder.serve_app_random_override(AppRandomDecision {
+                node: node("node-a"),
+                stream,
+                request_id: 2,
+                width: 8,
+                value: 0x11,
+            }),
+            Err(DecisionRecordError::AppRandomDrawCapExceeded {
+                cap: 1,
+                attempted: 2,
+            })
+        );
+        assert_eq!(recorder.schedule().len(), 1);
+    }
+
+    #[test]
+    fn app_random_draw_cap_is_scenario_hash_material() {
+        let seed = Seed::from_u64(0x0010_c01a);
+        let loose = scenario_from_seed_and_app_random_draw_cap(seed, 2);
+        let tight = scenario_from_seed_and_app_random_draw_cap(seed, 1);
+        let default = scenario_from_seed(seed);
+
+        assert_ne!(loose.id(), tight.id());
+        assert_ne!(default.id(), tight.id());
+        assert_eq!(loose.app_random_draw_cap(), 2);
+        assert_eq!(tight.app_random_draw_cap(), 1);
+        assert_eq!(
+            default.app_random_draw_cap(),
+            crate::DEFAULT_APP_RANDOM_DRAW_CAP
+        );
+    }
+
+    #[test]
+    fn app_random_draw_cap_round_trips_through_scenario_form_serialization() {
+        let world = World::from_nodes(Vec::new()).expect("empty world should build");
+        let form = ScenarioDefForm::from_components_with_app_random_draw_cap(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(0x0010_c01b),
+            3,
+        )
+        .expect("scenario form with app-random cap should build");
+        let toml = form
+            .to_canonical_toml()
+            .expect("scenario form TOML should serialize");
+        let from_toml =
+            ScenarioDefForm::from_canonical_toml(&toml).expect("scenario form TOML should parse");
+        let from_binary = ScenarioDefForm::from_compact_binary(&form.to_compact_binary())
+            .expect("scenario form binary should parse");
+
+        assert!(toml.contains("app_random_draw_cap = 3"));
+        assert_eq!(from_toml.id(), form.id());
+        assert_eq!(from_toml.app_random_draw_cap(), 3);
+        assert_eq!(from_binary.id(), form.id());
+        assert_eq!(from_binary.app_random_draw_cap(), 3);
+    }
+
+    #[test]
+    fn app_random_draw_cap_fails_loud_in_checked_step_and_reduce() {
+        let config = Configuration::genesis(scenario_from_seed_and_app_random_draw_cap(
+            Seed::from_u64(0x0010_c01c),
+            1,
+        ));
+        let first = app_random_decision(1);
+        let second = app_random_decision(2);
+        let stepped = try_step(&config, first.clone()).expect("first app-random draw fits cap");
+        let over_cap_schedule = Schedule::empty().appended(first).appended(second.clone());
+
+        assert_eq!(
+            try_step(&stepped, second),
+            Err(EngineError::AppRandomDrawCapExceeded {
+                scenario: config.def.id(),
+                cap: 1,
+                actual: 2,
+            })
+        );
+        assert_eq!(
+            reduce(&config.def, &over_cap_schedule),
+            Err(EngineError::AppRandomDrawCapExceeded {
+                scenario: config.def.id(),
+                cap: 1,
+                actual: 2,
+            })
+        );
     }
 
     #[test]
@@ -820,6 +1018,25 @@ mod tests {
             "scenario=stub",
             seed,
         )
+    }
+
+    fn scenario_from_seed_and_app_random_draw_cap(seed: Seed, cap: u64) -> ScenarioDef {
+        ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
+            "crucible.test.decision",
+            "scenario=stub",
+            seed,
+            cap,
+        )
+    }
+
+    fn app_random_decision(request_id: u64) -> Decision {
+        Decision::AppRandom(AppRandomDecision {
+            node: node("node-a"),
+            stream: rng_stream("node-a/app"),
+            request_id,
+            width: 8,
+            value: request_id,
+        })
     }
 
     fn node(name: &str) -> NodeId {
