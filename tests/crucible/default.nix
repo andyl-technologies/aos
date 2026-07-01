@@ -1228,6 +1228,26 @@ in rec {
         phase6.restoreStrategies
       ];
     };
+    explorationFork = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.explorationFork";
+      gate = import ./phase6-exploration-fork.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.explorationFork";
+        taskIds = ["T-ADV-3"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.explorationLifecycle.rawGate
+          phase6.savevmCompleteness.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.explorationLifecycle
+        phase6.savevmCompleteness
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

@@ -986,13 +986,21 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   land within the one-quantum lifecycle bound, asserts lifecycle commands do not
   appear as scheduler-owned control operations, and compares a paused/resumed run
   against an uninterrupted run for identical schedule and event-log replay.
-- [ ] **T-ADV-3** Implement fork as `instantiate` of a non-tip configuration plus
+- [x] **T-ADV-3** Implement fork as `instantiate` of a non-tip configuration plus
   divergent `step`s, CoW-shared with the parent, with no fork-specific realization
   path; assert the child is an independent session actor that cannot mutate the
   parent; ensure `save`/`fork` produce only controlled deterministic checkpoints
   and never a detach-to-live-non-deterministic-QEMU debug mode. — satisfies
   [ADV-6], [ADV-7], [ADV-9], [ADV-33]; spec §22.3, §22.3.1; cross-ref 05 §6, 07
   §5, 20 §7.
+  Completed by `checks.crucible.phase6.explorationFork`: the session engine now
+  exposes `fork_child`, accepts only paused or stopped parents, delegates branch
+  creation to `TemporalGraph::fork`, and returns a normal child `SessionActor`
+  with its own mailbox and live snapshot loaded at the forked branch
+  configuration. The gate forks from an interior non-tip prefix with a divergent
+  decision, asserts the branch is a thin checkpoint parented at the fork point,
+  runs and stops the child actor, and proves the parent boundary snapshot is
+  unchanged.
 - [ ] **T-ADV-4** Validate every fork by the replay oracle (same
   `gate:replay-oracle` as restore), localizing any divergence by bisection; assert
   fork adds no new correctness obligation. — satisfies [ADV-8]; spec §22.3;
