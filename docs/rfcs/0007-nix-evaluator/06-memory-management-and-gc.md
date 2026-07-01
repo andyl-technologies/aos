@@ -993,6 +993,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       This is only relocation mapping: it does not allocate destination storage,
       copy object bytes, install forwarding pointers, rewrite roots/fields, or
       manage semispaces.
+- [x] Current minor-GC reference-rewrite precursor:
+      `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` converts a
+      caller-supplied root/field reference sequence plus a validated relocation
+      map into deterministic slot rewrite metadata. It filters inline, old, and
+      permanent references, maps copied survivors back to young destinations,
+      maps promoted survivors to old destinations, preserves duplicate young
+      references as distinct slot rewrites, and rejects any young reference
+      missing from the relocation map. Tests cover copied/promoted generation
+      mapping, duplicate-slot preservation, non-young filtering, and missing
+      relocation rejection. This is metadata only: no root slot, object field,
+      forwarding pointer, remembered set, or semispace is mutated.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

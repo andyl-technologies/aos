@@ -528,6 +528,22 @@ impl MinorGcRelocation {
     pub const fn action(self) -> MinorGcSurvivorAction {
         self.survivor.action()
     }
+
+    /// Returns the generation that will own the relocated object.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        match self.action() {
+            MinorGcSurvivorAction::CopyToNursery => HeapGeneration::Young,
+            MinorGcSurvivorAction::PromoteToOld => HeapGeneration::Old,
+        }
+    }
+
+    /// Returns the relocated heap value metadata for this survivor.
+    pub const fn relocated_value(self) -> ResolvedValueGeneration {
+        ResolvedValueGeneration::Heap {
+            address: self.destination,
+            generation: self.destination_generation(),
+        }
+    }
 }
 
 /// A relocation map for a planned minor collection.
@@ -598,6 +614,117 @@ impl MinorGcRelocationPlan {
     /// Returns whether the relocation plan is empty.
     pub fn is_empty(&self) -> bool {
         self.relocations.is_empty()
+    }
+}
+
+/// One root or field reference that must be rewritten after minor-GC relocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcReferenceRewrite {
+    slot: usize,
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+    destination_generation: HeapGeneration,
+}
+
+impl MinorGcReferenceRewrite {
+    /// Returns the caller-supplied reference slot index.
+    pub const fn slot(self) -> usize {
+        self.slot
+    }
+
+    /// Returns the young from-space address currently stored in the slot.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the heap value metadata that must replace the old reference.
+    pub const fn replacement(self) -> ResolvedValueGeneration {
+        ResolvedValueGeneration::Heap {
+            address: self.destination,
+            generation: self.destination_generation,
+        }
+    }
+
+    /// Returns the relocated address that must replace the old address.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns the relocated object's generation after the minor collection.
+    pub const fn destination_generation(self) -> HeapGeneration {
+        self.destination_generation
+    }
+}
+
+/// A root and field reference rewrite plan for a minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcReferenceRewritePlan {
+    rewrites: Vec<MinorGcReferenceRewrite>,
+}
+
+impl MinorGcReferenceRewritePlan {
+    /// Builds rewrite metadata from scanned references and a relocation plan.
+    ///
+    /// The caller supplies a deterministic root/field reference sequence. Inline,
+    /// old-generation, and permanent references are ignored. Every young
+    /// reference must have a relocation entry, and duplicate references are kept
+    /// as separate rewrites because each slot must be updated independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if rewrite storage cannot be reserved, if
+    /// the reference slot index overflows, or if a young reference has no
+    /// relocation in `relocation_plan`.
+    pub fn from_references(
+        relocation_plan: &MinorGcRelocationPlan,
+        references: impl IntoIterator<Item = ResolvedValueGeneration>,
+    ) -> Result<Self, GenerationalGcError> {
+        let mut rewrites = Vec::new();
+        let mut slot = 0usize;
+        for reference in references {
+            if let ResolvedValueGeneration::Heap {
+                address,
+                generation: HeapGeneration::Young,
+            } = reference
+            {
+                let relocation = relocation_for(relocation_plan, address)?;
+                let rewrites_len = rewrites
+                    .len()
+                    .checked_add(1)
+                    .ok_or(GenerationalGcError::MinorGcReferenceRewriteLengthOverflow)?;
+                rewrites.try_reserve_exact(1).map_err(|_| {
+                    GenerationalGcError::MinorGcReferenceRewriteAllocationFailed {
+                        rewrites: rewrites_len,
+                    }
+                })?;
+                rewrites.push(MinorGcReferenceRewrite {
+                    slot,
+                    source: address,
+                    destination: relocation.destination(),
+                    destination_generation: relocation.destination_generation(),
+                });
+            }
+            slot = slot
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcReferenceSlotIndexOverflow)?;
+        }
+
+        Ok(Self { rewrites })
+    }
+
+    /// Returns rewrites in caller-supplied reference order.
+    pub fn rewrites(&self) -> &[MinorGcReferenceRewrite] {
+        &self.rewrites
+    }
+
+    /// Returns the number of reference slots that require rewriting.
+    pub fn len(&self) -> usize {
+        self.rewrites.len()
+    }
+
+    /// Returns whether no references require rewriting.
+    pub fn is_empty(&self) -> bool {
+        self.rewrites.is_empty()
     }
 }
 
@@ -861,6 +988,18 @@ fn relocation_destination_for(
         .ok_or(GenerationalGcError::MissingMinorGcRelocationDestination { address })
 }
 
+fn relocation_for(
+    relocation_plan: &MinorGcRelocationPlan,
+    address: GcHeapAddress,
+) -> Result<MinorGcRelocation, GenerationalGcError> {
+    relocation_plan
+        .relocations()
+        .iter()
+        .copied()
+        .find(|relocation| relocation.source() == address)
+        .ok_or(GenerationalGcError::MissingMinorGcReferenceRelocation { address })
+}
+
 fn nursery_fields_for<'a>(
     nursery_fields: &'a [NurseryObjectFields<'a>],
     address: GcHeapAddress,
@@ -998,6 +1137,18 @@ pub enum GenerationalGcError {
         /// The requested relocation-plan capacity.
         relocations: usize,
     },
+    /// The minor-GC reference rewrite plan length overflowed.
+    #[error("minor-GC reference rewrite length overflow")]
+    MinorGcReferenceRewriteLengthOverflow,
+    /// The minor-GC reference rewrite plan could not reserve storage.
+    #[error("failed to reserve {rewrites} minor-GC reference rewrites")]
+    MinorGcReferenceRewriteAllocationFailed {
+        /// The requested reference-rewrite capacity.
+        rewrites: usize,
+    },
+    /// The caller-supplied reference slot index overflowed.
+    #[error("minor-GC reference slot index overflow")]
+    MinorGcReferenceSlotIndexOverflow,
     /// A young frontier object had no age metadata.
     #[error("missing nursery age metadata for 0x{address:x}", address = address.address_bits())]
     MissingNurseryObjectAge {
@@ -1053,6 +1204,12 @@ pub enum GenerationalGcError {
         from: GcHeapAddress,
         /// The invalid destination address.
         destination: GcHeapAddress,
+    },
+    /// A young root or field reference had no relocation metadata.
+    #[error("missing minor-GC reference relocation for 0x{address:x}", address = address.address_bits())]
+    MissingMinorGcReferenceRelocation {
+        /// The young reference missing relocation metadata.
+        address: GcHeapAddress,
     },
 }
 
@@ -1620,6 +1777,127 @@ mod tests {
                     destination: second,
                 }
             )
+        );
+    }
+
+    #[test]
+    fn minor_gc_reference_rewrite_plan_maps_young_slots_through_relocations() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(copy, copy_destination),
+                MinorGcRelocationDestination::new(promote, promote_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+
+        let rewrite_plan = MinorGcReferenceRewritePlan::from_references(
+            &relocation_plan,
+            [
+                ResolvedValueGeneration::Inline,
+                ResolvedValueGeneration::old(address(0x3000)),
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::permanent(address(0x4000)),
+                ResolvedValueGeneration::young(promote),
+                ResolvedValueGeneration::young(copy),
+            ],
+        )
+        .expect("rewrite plan builds");
+
+        assert_eq!(rewrite_plan.len(), 3);
+        assert!(!rewrite_plan.is_empty());
+        assert_eq!(rewrite_plan.rewrites()[0].slot(), 2);
+        assert_eq!(rewrite_plan.rewrites()[0].source(), copy);
+        assert_eq!(rewrite_plan.rewrites()[0].destination(), copy_destination);
+        assert_eq!(
+            rewrite_plan.rewrites()[0].destination_generation(),
+            HeapGeneration::Young
+        );
+        assert_eq!(
+            rewrite_plan.rewrites()[0].replacement(),
+            ResolvedValueGeneration::young(copy_destination)
+        );
+        assert_eq!(rewrite_plan.rewrites()[1].slot(), 4);
+        assert_eq!(rewrite_plan.rewrites()[1].source(), promote);
+        assert_eq!(
+            rewrite_plan.rewrites()[1].destination(),
+            promote_destination
+        );
+        assert_eq!(
+            rewrite_plan.rewrites()[1].destination_generation(),
+            HeapGeneration::Old
+        );
+        assert_eq!(
+            rewrite_plan.rewrites()[1].replacement(),
+            ResolvedValueGeneration::old(promote_destination)
+        );
+        assert_eq!(rewrite_plan.rewrites()[2].slot(), 5);
+        assert_eq!(rewrite_plan.rewrites()[2].source(), copy);
+        assert_eq!(
+            rewrite_plan.rewrites()[2].replacement(),
+            ResolvedValueGeneration::young(copy_destination)
+        );
+    }
+
+    #[test]
+    fn minor_gc_reference_rewrite_plan_rejects_unplanned_young_references() {
+        let planned = address(0x1000);
+        let missing = address(0x2000);
+        let destination = address(0x9000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(planned)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(planned, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[MinorGcRelocationDestination::new(planned, destination)],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(
+            MinorGcReferenceRewritePlan::from_references(
+                &relocation_plan,
+                [
+                    ResolvedValueGeneration::old(address(0x3000)),
+                    ResolvedValueGeneration::young(missing),
+                ],
+            ),
+            Err(GenerationalGcError::MissingMinorGcReferenceRelocation { address: missing })
+        );
+        assert_eq!(
+            MinorGcReferenceRewritePlan::from_references(
+                &relocation_plan,
+                [
+                    ResolvedValueGeneration::Inline,
+                    ResolvedValueGeneration::old(address(0x4000)),
+                    ResolvedValueGeneration::permanent(address(0x5000)),
+                ],
+            )
+            .expect("non-young references need no rewrites")
+            .rewrites(),
+            &[]
         );
     }
 

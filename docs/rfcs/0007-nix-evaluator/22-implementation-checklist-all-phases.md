@@ -4994,6 +4994,17 @@ and helps the oracle directly.
       stale-source, and from-space destination rejection. This is still only map
       construction; destination allocation, object copying, forwarding pointers,
       root/field writeback, and semispace management remain open.
+- [x] Current minor-GC reference-rewrite precursor:
+      `ratchet-value::heap::gc::MinorGcReferenceRewritePlan` turns a
+      caller-supplied root/field reference sequence and a validated relocation
+      map into deterministic slot rewrite metadata. It ignores inline, old, and
+      permanent references, maps copied survivors to young destination values,
+      maps promoted survivors to old destination values, keeps duplicate young
+      references as separate slot rewrites, and rejects any young reference not
+      present in the relocation map. Unit tests cover copied/promoted generation
+      mapping, duplicate-slot preservation, non-young filtering, and missing
+      relocation rejection. This remains metadata only; mutating roots, fields,
+      forwarding pointers, remembered sets, and semispaces remains open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
