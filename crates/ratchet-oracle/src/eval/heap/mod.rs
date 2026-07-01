@@ -425,6 +425,34 @@ pub enum EvalHeapError {
         /// The caller-supplied reference value.
         actual: ResolvedValueGeneration,
     },
+    /// A live reference buffer cannot be derived for copied root-only slots yet.
+    #[error(
+        "collector-poll minor-GC reference slot {index} is not heap-field-backed: {root_source:?}"
+    )]
+    CollectorPollReferenceSlotNotHeapBacked {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The copied root source that still needs external mutable storage.
+        root_source: EvalRootSource,
+    },
+    /// A heap-field-backed reference slot no longer points at the same field.
+    #[error(
+        "collector-poll minor-GC reference slot {index} source mismatch: expected {expected:?}, found {actual:?}"
+    )]
+    CollectorPollReferenceSlotSourceMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The precise field source captured by the poll plan.
+        expected: HeapEdgeSource,
+        /// The current field source at the saved index, if any.
+        actual: Option<HeapEdgeSource>,
+    },
+    /// A heap-field-backed reference slot object no longer belongs to this heap.
+    #[error("collector-poll minor-GC reference slot object does not belong to this heap: 0x{address:x}", address = address.address_bits())]
+    UnknownCollectorPollReferenceSlotAddress {
+        /// The unrecognized reference-slot object address.
+        address: GcHeapAddress,
+    },
     /// The generational minor-GC planner rejected the oracle snapshot.
     #[error("collector-poll minor-GC planning error: {0}")]
     GenerationalGc(#[from] GenerationalGcError),

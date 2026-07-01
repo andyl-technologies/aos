@@ -940,8 +940,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       frontier, and derives object-copy sizes from the validated placement plan.
       The bridge keeps the poll plan's labeled
       reference slots beside the validated commit plan so tests can relate
-      low-level rewrites back to copied roots, remembered source fields, and nursery
-      fields. Tests cover empty remembered-set commits, copied-young
+      low-level rewrites back to copied roots, remembered source fields, and
+      nursery fields. Tests cover empty remembered-set commits, copied-young
       remembered-edge retention, and rejection of a destination plan built for a
       different poll survivor frontier or promotion policy. This is still
       metadata only: it does not
@@ -955,14 +955,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       The bridge first checks that caller-owned reference values still match
       every copied poll reference label/value, then delegates byte-copy buffers,
       forwarding slots, reference rewrites, and remembered-set publication to
-      the validated commit plan. Tests cover successful empty-remembered-set
-      application, retained copied-young remembered-edge publication,
-      incomplete or mismatched reference-buffer rejection before lower-level
-      mutation, and lower-level stale-buffer error mapping without partial
-      mutation. This is still a caller-buffer application surface only: it does
-      not allocate destination storage, bind buffers to live heap objects or
-      headers, mutate tree-walk roots/fields in place, identify remembered
-      source fields, or manage semispaces.
+      the validated commit plan. `EvalHeap` can now derive a live reference
+      buffer for heap-field-backed slots by re-reading remembered-source and
+      nursery-field labels from the side table, while rejecting copied root slots
+      that still need external mutable storage. Tests cover successful
+      empty-remembered-set application, retained copied-young remembered-edge
+      publication, heap-field reference-buffer derivation, root-slot rejection,
+      stale field-label rejection, incomplete or mismatched reference-buffer
+      rejection before lower-level mutation, and lower-level stale-buffer error
+      mapping without partial mutation. This is still a caller-buffer application
+      surface only: it does not allocate destination storage, bind byte buffers
+      to live heap objects or headers, mutate tree-walk roots/fields in place,
+      mutate remembered source fields, or manage semispaces.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

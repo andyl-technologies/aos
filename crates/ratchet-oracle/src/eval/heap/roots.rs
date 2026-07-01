@@ -42,6 +42,7 @@ const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
 const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
+const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 
 /// A precise root slot and the heap value stored in it.
 #[derive(Clone, Debug)]
@@ -1458,6 +1459,38 @@ impl EvalHeap {
         Ok(plan.relocation_destination_plan(&nursery_layouts, bases)?)
     }
 
+    /// Derives a reference buffer for heap-field-backed commit slots.
+    ///
+    /// This is a live side-table binding precursor for remembered-source fields
+    /// and copied nursery fields. It validates that each saved field index still
+    /// points at the same [`HeapEdgeSource`] label before reading the current
+    /// value. Copied tree-walk/JIT root slots are rejected because [`EvalHeap`]
+    /// does not own their mutable storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if any reference slot is root-backed, if a saved
+    /// field object no longer belongs to the heap, if a saved field index or label
+    /// is stale, if current field scanning fails, or if the reference buffer cannot
+    /// reserve storage.
+    pub fn collector_poll_minor_gc_heap_field_reference_buffer(
+        &self,
+        commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
+    ) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+        let reference_slots = commit_plan.reference_slots();
+        let mut references = Vec::new();
+        references
+            .try_reserve_exact(reference_slots.len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_REFERENCE_BUFFER_TABLE,
+                entries: reference_slots.len(),
+            })?;
+        for (index, slot) in reference_slots.iter().enumerate() {
+            references.push(self.current_heap_field_reference_value(index, slot.source())?);
+        }
+        Ok(references)
+    }
+
     fn push_interned_table_roots<'a>(
         &self,
         roots: &mut EvalRootSet,
@@ -1823,6 +1856,62 @@ impl EvalHeap {
         }
     }
 
+    fn current_heap_field_reference_value(
+        &self,
+        index: usize,
+        source: &AllocationCollectorPollReferenceSource,
+    ) -> Result<ResolvedValueGeneration, EvalHeapError> {
+        match source {
+            AllocationCollectorPollReferenceSource::Root { source } => {
+                Err(EvalHeapError::CollectorPollReferenceSlotNotHeapBacked {
+                    index,
+                    root_source: source.clone(),
+                })
+            }
+            AllocationCollectorPollReferenceSource::RememberedEdge {
+                edge,
+                field_index,
+                source,
+            } => self.current_heap_field_reference_value_at(
+                index,
+                edge.source(),
+                *field_index,
+                source,
+            ),
+            AllocationCollectorPollReferenceSource::NurseryField {
+                object,
+                field_index,
+                source,
+            } => self.current_heap_field_reference_value_at(index, *object, *field_index, source),
+        }
+    }
+
+    fn current_heap_field_reference_value_at(
+        &self,
+        index: usize,
+        object: GcHeapAddress,
+        field_index: usize,
+        expected_source: &HeapEdgeSource,
+    ) -> Result<ResolvedValueGeneration, EvalHeapError> {
+        let record = self.record_for_reference_slot_object(object)?;
+        let edges = self.scan_record_edges(record)?;
+        let Some(edge) = edges.get(field_index) else {
+            return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+                index,
+                expected: expected_source.clone(),
+                actual: None,
+            });
+        };
+        if edge.source() != expected_source {
+            return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
+                index,
+                expected: expected_source.clone(),
+                actual: Some(edge.source().clone()),
+            });
+        }
+        self.resolved_generation_for_value(edge.value())
+    }
+
     fn record_for_scannable_value(&self, value: Value) -> Result<&HeapRecord, EvalHeapError> {
         let (tag, ptr) = heap_ptr(value)?;
         let record = self.record_or_unknown(tag, ptr)?;
@@ -1880,6 +1969,16 @@ impl EvalHeap {
             ));
         }
         Ok(record)
+    }
+
+    fn record_for_reference_slot_object(
+        &self,
+        address: GcHeapAddress,
+    ) -> Result<&HeapRecord, EvalHeapError> {
+        self.records
+            .iter()
+            .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .ok_or(EvalHeapError::UnknownCollectorPollReferenceSlotAddress { address })
     }
 
     fn validate_collector_poll_plan_allocation_state(

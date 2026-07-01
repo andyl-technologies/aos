@@ -5288,14 +5288,19 @@ and helps the oracle directly.
       that caller-owned reference values still match every copied poll reference
       label/value before delegating object-byte copies, forwarding-slot
       installation, reference rewrites, and remembered-set publication to the
-      already validated lower-level `MinorGcCommitPlan`. Unit tests cover
-      successful empty-remembered-set application, retained copied-young
-      remembered-edge publication, incomplete or mismatched reference-buffer
-      rejection before lower-level mutation, and lower-level stale-buffer error
-      mapping without partial mutation. This remains a caller-buffer application
-      surface only; destination storage allocation, binding buffers to live heap
-      objects or object headers, tree-walk root/object-field mutation,
-      remembered-source field mutation, and semispace management remain open.
+      already validated lower-level `MinorGcCommitPlan`. `EvalHeap` can derive a
+      live reference buffer for heap-field-backed slots by re-reading
+      remembered-source and nursery-field labels from the side table, while
+      rejecting copied root slots that still need external mutable storage. Unit
+      tests cover successful empty-remembered-set application, retained
+      copied-young remembered-edge publication, heap-field reference-buffer
+      derivation, root-slot rejection, stale field-label rejection, incomplete or
+      mismatched reference-buffer rejection before lower-level mutation, and
+      lower-level stale-buffer error mapping without partial mutation. This
+      remains a caller-buffer application surface only; destination storage
+      allocation, binding byte buffers to live heap objects or object headers,
+      tree-walk root/object-field mutation, remembered-source field mutation, and
+      semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5414,10 +5419,13 @@ and helps the oracle directly.
       caller-owned reference values still match copied
       `AllocationCollectorPollReferenceSlot` label values, then applies the
       validated lower-level commit plan to caller-owned byte-copy buffers,
-      forwarding slots, reference values, and remembered-set state. This
-      connects the roots bridge to commit-buffer preflight/application tests,
-      but still does not provide live tree-walk root writeback, object-field
-      writeback, old/permanent field mutation, or JIT stack-map writeback slots.
+      forwarding slots, reference values, and remembered-set state.
+      `EvalHeap::collector_poll_minor_gc_heap_field_reference_buffer` can bind
+      remembered-source and nursery-field slots back to current side-table fields
+      for the reference buffer while rejecting copied root slots. This connects
+      the roots bridge to commit-buffer preflight/application tests, but still
+      does not provide live tree-walk root writeback, object-field writeback,
+      old/permanent field mutation, or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,
