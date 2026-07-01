@@ -244,6 +244,96 @@ impl EvalGcStressBoundaryMinorGcRelocationPlans {
     }
 }
 
+/// Owned commit-preflight metadata derived from a boundary relocation plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitPreflight {
+    relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
+    object_byte_copy_plan: AllocationCollectorPollObjectByteCopyPlan,
+    forwarding_slots: Vec<MinorGcForwardingSlot>,
+    reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitPreflight {
+    /// Creates owned commit-preflight metadata for one allocator tier.
+    pub(crate) const fn new(
+        relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
+        object_byte_copy_plan: AllocationCollectorPollObjectByteCopyPlan,
+        forwarding_slots: Vec<MinorGcForwardingSlot>,
+        reference_writeback_plan: AllocationCollectorPollReferenceWritebackPlan,
+    ) -> Self {
+        Self {
+            relocation_plan,
+            object_byte_copy_plan,
+            forwarding_slots,
+            reference_writeback_plan,
+        }
+    }
+
+    /// Returns the paired boundary relocation plan used for preflight metadata.
+    pub const fn relocation_plan(&self) -> &EvalGcStressBoundaryMinorGcRelocationPlan {
+        &self.relocation_plan
+    }
+
+    /// Returns object byte-copy requests in commit order.
+    pub const fn object_byte_copy_plan(&self) -> &AllocationCollectorPollObjectByteCopyPlan {
+        &self.object_byte_copy_plan
+    }
+
+    /// Returns empty forwarding slots in forwarding-pointer order.
+    pub fn forwarding_slots(&self) -> &[MinorGcForwardingSlot] {
+        &self.forwarding_slots
+    }
+
+    /// Returns root and heap-field reference writebacks in commit order.
+    pub const fn reference_writeback_plan(&self) -> &AllocationCollectorPollReferenceWritebackPlan {
+        &self.reference_writeback_plan
+    }
+}
+
+/// Commit-preflight metadata derived from GC-stress boundary scans.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcCommitPreflights {
+    worker: Option<EvalGcStressBoundaryMinorGcCommitPreflight>,
+    permanent_shared: Option<EvalGcStressBoundaryMinorGcCommitPreflight>,
+}
+
+impl EvalGcStressBoundaryMinorGcCommitPreflights {
+    /// Creates a commit-preflight report from per-allocator results.
+    pub(crate) const fn new(
+        worker: Option<EvalGcStressBoundaryMinorGcCommitPreflight>,
+        permanent_shared: Option<EvalGcStressBoundaryMinorGcCommitPreflight>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier produced commit-preflight metadata.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced commit-preflight metadata.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's commit-preflight metadata, if any.
+    pub const fn worker(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitPreflight> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's commit-preflight metadata, if any.
+    pub const fn permanent_shared(&self) -> Option<&EvalGcStressBoundaryMinorGcCommitPreflight> {
+        self.permanent_shared.as_ref()
+    }
+}
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 pub struct EvalOutcome {
     pub(crate) value: Value,
@@ -484,6 +574,72 @@ impl EvalOutcome {
         Ok(EvalGcStressBoundaryMinorGcRelocationPlans::new(
             worker,
             permanent_shared,
+        ))
+    }
+
+    /// Builds owned commit-preflight metadata from GC-stress boundary scans.
+    ///
+    /// This derives paired boundary relocation plans, builds the borrowed commit
+    /// metadata long enough to validate and extract owned object byte-copy
+    /// requests, empty forwarding slots, and reference writeback metadata, then
+    /// returns those artifacts beside the paired relocation plan. It still does
+    /// not bind object byte buffers, mutate forwarding slots, rewrite roots or
+    /// heap fields, publish remembered sets, reserve semispace storage, or invoke
+    /// a collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary relocation planning fails, if commit
+    /// metadata cannot be built, if heap-backed byte-copy or writeback validation
+    /// fails, or if forwarding-slot storage cannot be reserved.
+    pub fn gc_stress_boundary_minor_gc_commit_preflights(
+        &self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitPreflights, EvalHeapError> {
+        let plans = self.gc_stress_boundary_minor_gc_relocation_plans(promotion_policy, bases)?;
+        let EvalGcStressBoundaryMinorGcRelocationPlans {
+            worker,
+            permanent_shared,
+        } = plans;
+        let worker = worker
+            .map(|plan| self.gc_stress_boundary_minor_gc_commit_preflight(plan))
+            .transpose()?;
+        let permanent_shared = permanent_shared
+            .map(|plan| self.gc_stress_boundary_minor_gc_commit_preflight(plan))
+            .transpose()?;
+
+        Ok(EvalGcStressBoundaryMinorGcCommitPreflights::new(
+            worker,
+            permanent_shared,
+        ))
+    }
+
+    fn gc_stress_boundary_minor_gc_commit_preflight(
+        &self,
+        relocation_plan: EvalGcStressBoundaryMinorGcRelocationPlan,
+    ) -> Result<EvalGcStressBoundaryMinorGcCommitPreflight, EvalHeapError> {
+        let (object_byte_copy_plan, forwarding_slots, reference_writeback_plan) = {
+            let commit_plan = relocation_plan.commit_plan()?;
+            let object_byte_copy_plan = self
+                .heap
+                .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
+            let forwarding_slots = commit_plan.forwarding_slot_buffer()?;
+            let reference_writeback_plan = self
+                .heap
+                .collector_poll_minor_gc_reference_writeback_plan(&commit_plan)?;
+            (
+                object_byte_copy_plan,
+                forwarding_slots,
+                reference_writeback_plan,
+            )
+        };
+
+        Ok(EvalGcStressBoundaryMinorGcCommitPreflight::new(
+            relocation_plan,
+            object_byte_copy_plan,
+            forwarding_slots,
+            reference_writeback_plan,
         ))
     }
 

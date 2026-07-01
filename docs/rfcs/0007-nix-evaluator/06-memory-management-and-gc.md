@@ -1488,8 +1488,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       layouts and materializing caller-supplied nursery/old destination bases;
       `EvalOutcome::gc_stress_boundary_minor_gc_relocation_plans` retains each
       boundary survivor plan next to its destinations so callers can derive
-      matching commit metadata from the paired report. These helpers still do
-      not reserve semispace storage or commit mutations.
+      matching commit metadata from the paired report.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_preflights` then
+      validates and extracts owned object byte-copy requests, empty forwarding
+      slot buffers, and root/heap-field reference writeback metadata from those
+      paired plans. These helpers still do not bind live object-byte buffers,
+      reserve semispace storage, or commit mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and
@@ -1502,11 +1506,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       relocation-destination planning for worker, permanent-shared, and
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
-      stale same-domain poll rejection, and stack cleanup after force/primop
-      failures. This still does not infer arbitrary Rust locals without explicit
-      value-stack registration, bind mutable relocation slots, invoke a
-      collector, or consume JIT stack maps; those remain open in the full
-      precise-root row above.
+      boundary commit-preflight reports for worker, permanent-shared, and
+      stress-disabled outcomes, stale same-domain poll rejection, and stack
+      cleanup after force/primop failures. This still does not infer arbitrary
+      Rust locals without explicit value-stack registration, bind mutable
+      relocation slots, invoke a collector, or consume JIT stack maps; those
+      remain open in the full precise-root row above.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the

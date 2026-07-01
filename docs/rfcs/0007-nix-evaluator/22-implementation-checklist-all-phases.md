@@ -5676,8 +5676,12 @@ and helps the oracle directly.
       layouts and materializing caller-supplied nursery/old destination bases;
       `EvalOutcome::gc_stress_boundary_minor_gc_relocation_plans` retains each
       boundary survivor plan next to its destinations so callers can derive
-      matching commit metadata from the paired report. These helpers still do
-      not reserve semispace storage or commit mutations. The force,
+      matching commit metadata from the paired report.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_preflights` then
+      validates and extracts owned object byte-copy requests, empty forwarding
+      slot buffers, and root/heap-field reference writeback metadata from those
+      paired plans. These helpers still do not bind live object-byte buffers,
+      reserve semispace storage, or commit mutations. The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
       register/unregister active or suspended safepoint frames, including
@@ -5691,11 +5695,12 @@ and helps the oracle directly.
       relocation-destination planning for worker, permanent-shared, and
       stress-disabled outcomes, boundary paired relocation/commit-metadata
       planning for worker, permanent-shared, and stress-disabled outcomes,
-      stale same-domain poll rejection, recursive-force cleanup, and
-      first-class primop error cleanup. This remains a root-set precursor:
-      arbitrary Rust locals still need explicit value-stack registration, and
-      mutable relocation slots, collector invocation, and JIT stack maps remain
-      open in the full precise-root row above.
+      boundary commit-preflight reports for worker, permanent-shared, and
+      stress-disabled outcomes, stale same-domain poll rejection, recursive-force
+      cleanup, and first-class primop error cleanup. This remains a root-set
+      precursor: arbitrary Rust locals still need explicit value-stack
+      registration, and mutable relocation slots, collector invocation, and JIT
+      stack maps remain open in the full precise-root row above.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` classifies the single generational write
       barrier for `Blackhole -> Forced(value)`, records only

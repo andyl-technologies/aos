@@ -526,6 +526,113 @@ fn owned_eval_plans_gc_stress_boundary_permanent_commit_metadata() {
 }
 
 #[test]
+fn owned_eval_reports_gc_stress_boundary_worker_commit_preflight() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let nursery_base = static_gc_address(0x1000_0000);
+
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+        )
+        .expect("boundary scan builds commit preflight metadata");
+
+    assert_eq!(preflights.len(), 1);
+    assert!(preflights.permanent_shared().is_none());
+    let preflight = preflights.worker().expect("worker preflight records");
+    assert_eq!(
+        preflight
+            .relocation_plan()
+            .minor_gc_plan()
+            .plan()
+            .survivors()
+            .len(),
+        1
+    );
+    assert_eq!(preflight.object_byte_copy_plan().len(), 1);
+    assert_eq!(
+        preflight.object_byte_copy_plan().requests()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(preflight.forwarding_slots().len(), 1);
+    assert_eq!(
+        preflight.forwarding_slots()[0].source(),
+        gc_address(outcome.value())
+    );
+    assert!(preflight.forwarding_slots()[0].is_empty());
+    assert_eq!(preflight.reference_writeback_plan().len(), 1);
+    assert_eq!(
+        preflight.reference_writeback_plan().root_writebacks().len(),
+        1
+    );
+    assert!(
+        preflight
+            .reference_writeback_plan()
+            .heap_field_writebacks()
+            .is_empty()
+    );
+}
+
+#[test]
+fn owned_eval_reports_gc_stress_boundary_permanent_commit_preflight() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("permanent boundary scan builds commit preflight metadata");
+
+    assert_eq!(preflights.len(), 1);
+    assert!(preflights.worker().is_none());
+    let preflight = preflights
+        .permanent_shared()
+        .expect("permanent preflight records");
+    assert!(
+        preflight
+            .relocation_plan()
+            .minor_gc_plan()
+            .plan()
+            .is_empty()
+    );
+    assert!(preflight.object_byte_copy_plan().is_empty());
+    assert!(preflight.forwarding_slots().is_empty());
+    assert!(preflight.reference_writeback_plan().is_empty());
+}
+
+#[test]
+fn owned_eval_without_gc_stress_has_no_boundary_commit_preflights() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
+    let preflights = outcome
+        .gc_stress_boundary_minor_gc_commit_preflights(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary scans produce empty commit preflight metadata");
+
+    assert!(outcome.gc_stress_boundary_scans().is_empty());
+    assert!(preflights.is_empty());
+}
+
+#[test]
 fn owned_eval_without_gc_stress_has_no_boundary_relocation_destinations() {
     let ir = lower("x: x");
     let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
