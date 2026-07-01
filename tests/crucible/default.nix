@@ -1599,6 +1599,22 @@ in rec {
         phase6.minimization
       ];
     };
+    signaturePolicy = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.signaturePolicy";
+      gate = import ./phase6-signature-policy.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.signaturePolicy";
+        taskIds = ["T-TRI-3"];
+        dependencies = [
+          phase6.failureNormalization.rawGate
+          phase1.gates.contentAddress.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.failureNormalization
+        phase1.gates.contentAddress
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {
