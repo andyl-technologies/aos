@@ -693,11 +693,35 @@ pub const WORKLOAD_SEED_SCENARIO_PARAMETER: &str = "wseed";
 
 const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
 
+/// Kernel command-line key that selects a classic in-guest load pattern.
+///
+/// The pattern is plain scenario configuration on [`WorldNode::cmdline`]. It
+/// changes the world content address and scenario identity without introducing a
+/// host-side load-generation subsystem.
+pub const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER: &str = "load_pattern";
+
+const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX: &str = "load_pattern=";
+
+/// Kernel command-line key that selects how a spike pattern is expressed.
+///
+/// The mode is a scenario parameter consumed by the in-guest workload. A spike
+/// can also be represented by starting a declared baked node through the
+/// ordinary [`Plan`] event-graph control path.
+pub const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER: &str = "spike_mode";
+
+const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX: &str = "spike_mode=";
+
 /// Whether explicit workload seeds can be delivered without white-box support.
 pub const WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES: bool = true;
 
 /// Whether explicit workload seeds require the optional guest-host channel.
 pub const WORKLOAD_SEED_REQUIRES_WHITE_BOX: bool = false;
+
+/// Whether load-pattern configuration can be delivered without white-box support.
+pub const WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES: bool = true;
+
+/// Whether load-pattern configuration requires the optional guest-host channel.
+pub const WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX: bool = false;
 
 /// Whether Crucible's application traffic originates inside guest VMs.
 ///
@@ -855,6 +879,402 @@ impl GuestWorkloadSeed {
     #[must_use]
     pub fn selected_cmdline(self, base_cmdline: &str) -> String {
         cmdline_with_guest_workload_seed(base_cmdline, self)
+    }
+}
+
+/// A classic application load pattern expressed by an in-guest workload.
+///
+/// This is a scenario-parameter vocabulary. The engine does not synthesize
+/// application records for these patterns; it only observes and steers the
+/// declared world through ordinary plan primitives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadPattern {
+    /// A loop with a stable configured in-guest request or operation rate.
+    Steady,
+    /// A rate spike expressed by guest virtual time or a planned node start.
+    Spike,
+    /// A key-space policy that grows cardinality from guest virtual time.
+    CardinalityGrowth,
+    /// A workload observed under a correlated fault campaign in the plan.
+    CorrelatedFailure,
+}
+
+impl GuestWorkloadPattern {
+    /// The supported in-guest load-pattern vocabulary.
+    pub const SUPPORTED: [Self; 4] = [
+        Self::Steady,
+        Self::Spike,
+        Self::CardinalityGrowth,
+        Self::CorrelatedFailure,
+    ];
+
+    /// Returns the scenario-parameter value for this load pattern.
+    #[must_use]
+    pub const fn scenario_parameter_value(self) -> &'static str {
+        match self {
+            Self::Steady => "steady",
+            Self::Spike => "spike",
+            Self::CardinalityGrowth => "cardinality_growth",
+            Self::CorrelatedFailure => "correlated_failure",
+        }
+    }
+
+    /// Returns the human-readable load-pattern name used by diagnostics and docs.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Steady => "steady",
+            Self::Spike => "spike",
+            Self::CardinalityGrowth => "cardinality growth",
+            Self::CorrelatedFailure => "correlated failure",
+        }
+    }
+
+    /// Parses a load pattern from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        match value {
+            "steady" => Some(Self::Steady),
+            "spike" => Some(Self::Spike),
+            "cardinality_growth" => Some(Self::CardinalityGrowth),
+            "correlated_failure" => Some(Self::CorrelatedFailure),
+            _ => None,
+        }
+    }
+
+    /// Parses the first supported load pattern from a kernel command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_pattern_parameter(cmdline)
+    }
+
+    /// Renders this pattern as a workload scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(self) -> String {
+        format!(
+            "{WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this load pattern selected.
+    ///
+    /// Existing `load_pattern=...` tokens are replaced so the command line
+    /// carries one stable load-pattern selection.
+    #[must_use]
+    pub fn selected_cmdline(self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_pattern(base_cmdline, self)
+    }
+}
+
+/// The way an in-guest spike pattern is parameterized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadSpikeMode {
+    /// The guest changes its operation rate as a function of virtual time.
+    VirtualTimeRate,
+    /// A declared burst node is started through an event-graph `StartNode`.
+    StartNodeBurst,
+}
+
+impl GuestWorkloadSpikeMode {
+    /// The supported spike-expression vocabulary.
+    pub const SUPPORTED: [Self; 2] = [Self::VirtualTimeRate, Self::StartNodeBurst];
+
+    /// Returns the scenario-parameter value for this spike mode.
+    #[must_use]
+    pub const fn scenario_parameter_value(self) -> &'static str {
+        match self {
+            Self::VirtualTimeRate => "virtual_time_rate",
+            Self::StartNodeBurst => "start_node_burst",
+        }
+    }
+
+    /// Returns the human-readable spike-mode name used by diagnostics and docs.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::VirtualTimeRate => "virtual-time rate",
+            Self::StartNodeBurst => "StartNode burst",
+        }
+    }
+
+    /// Parses a spike mode from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        match value {
+            "virtual_time_rate" => Some(Self::VirtualTimeRate),
+            "start_node_burst" => Some(Self::StartNodeBurst),
+            _ => None,
+        }
+    }
+
+    /// Parses the first supported spike mode from a kernel command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_spike_mode_parameter(cmdline)
+    }
+
+    /// Renders this mode as a workload scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(self) -> String {
+        format!(
+            "{WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this spike mode selected.
+    ///
+    /// Existing `spike_mode=...` tokens are replaced so the command line carries
+    /// one stable spike-mode selection.
+    #[must_use]
+    pub fn selected_cmdline(self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_spike_mode(base_cmdline, self)
+    }
+}
+
+/// A load-pattern fixture assembled from guest program configuration and a plan.
+///
+/// Fixtures are intentionally small examples of guest-program-plus-scenario-
+/// parameter constructions. They do not introduce a host application traffic
+/// generator; spike bursts and correlated failures use existing [`Plan`]
+/// primitives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuestWorkloadLoadPatternFixture {
+    pattern: GuestWorkloadPattern,
+    spike_mode: Option<GuestWorkloadSpikeMode>,
+    world: World,
+    plan: Plan,
+}
+
+impl GuestWorkloadLoadPatternFixture {
+    /// Builds the steady-load fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world validation error if the fixture topology or reserved
+    /// command-line parameters are invalid.
+    pub fn steady() -> Result<Self, EngineError> {
+        let cmdline = workload_pattern_cmdline(
+            "console=ttyS0 rate_per_sec=100",
+            GuestWorkloadPattern::Steady,
+            None,
+        );
+        let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
+        Ok(Self {
+            pattern: GuestWorkloadPattern::Steady,
+            spike_mode: None,
+            world,
+            plan: Plan::empty(),
+        })
+    }
+
+    /// Builds the virtual-time-rate spike fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world validation error if the fixture topology or reserved
+    /// command-line parameters are invalid.
+    pub fn spike_virtual_time_rate() -> Result<Self, EngineError> {
+        let cmdline = workload_pattern_cmdline(
+            concat!(
+                "console=ttyS0 base_rate_per_sec=10 peak_rate_per_sec=500 ",
+                "spike_at_ticks=50 spike_duration_ticks=10"
+            ),
+            GuestWorkloadPattern::Spike,
+            Some(GuestWorkloadSpikeMode::VirtualTimeRate),
+        );
+        let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
+        Ok(Self {
+            pattern: GuestWorkloadPattern::Spike,
+            spike_mode: Some(GuestWorkloadSpikeMode::VirtualTimeRate),
+            world,
+            plan: Plan::empty(),
+        })
+    }
+
+    /// Builds the planned `StartNode` burst spike fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world or event-graph validation error if the fixture topology,
+    /// reserved command-line parameters, or planned start action are invalid.
+    pub fn spike_start_node_burst() -> Result<Self, EngineError> {
+        let steady_cmdline = workload_pattern_cmdline(
+            "console=ttyS0 base_rate_per_sec=10",
+            GuestWorkloadPattern::Spike,
+            Some(GuestWorkloadSpikeMode::StartNodeBurst),
+        );
+        let burst_cmdline = workload_pattern_cmdline(
+            "console=ttyS0 burst_rate_per_sec=500",
+            GuestWorkloadPattern::Spike,
+            Some(GuestWorkloadSpikeMode::StartNodeBurst),
+        );
+        let burst_node = NodeId {
+            name: String::from("client-burst"),
+        };
+        let hold_tag = FaultTag::from_name("burst-not-yet-joined");
+        let world = World::from_nodes(vec![
+            workload_pattern_node("client-steady", steady_cmdline),
+            workload_pattern_node("client-burst", burst_cmdline),
+        ])?;
+        let graph = EventGraph::new_for_world(
+            vec![
+                Event::once(
+                    EventId::from_name("hold-burst-at-genesis"),
+                    None,
+                    Action::inject_fault(
+                        hold_tag.clone(),
+                        MembershipFault::NotYetJoined {
+                            node: burst_node.clone(),
+                        },
+                    ),
+                ),
+                Event::once(
+                    EventId::from_name("start-burst-at-vt"),
+                    Some(Predicate::at(VirtualTime { ticks: 50 })),
+                    Action::group(vec![
+                        Action::heal_fault(hold_tag),
+                        Action::start_node(burst_node),
+                    ]),
+                ),
+            ],
+            &world,
+        )
+        .map_err(event_graph_plan_error)?;
+        let plan = Plan::from_event_graph_for_world(&world, graph)?;
+        Ok(Self {
+            pattern: GuestWorkloadPattern::Spike,
+            spike_mode: Some(GuestWorkloadSpikeMode::StartNodeBurst),
+            world,
+            plan,
+        })
+    }
+
+    /// Builds the cardinality-growth fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world validation error if the fixture topology or reserved
+    /// command-line parameters are invalid.
+    pub fn cardinality_growth() -> Result<Self, EngineError> {
+        let cmdline = workload_pattern_cmdline(
+            concat!(
+                "console=ttyS0 initial_keys=8 key_growth_per_sec=4 ",
+                "key_cap=1024"
+            ),
+            GuestWorkloadPattern::CardinalityGrowth,
+            None,
+        );
+        let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
+        Ok(Self {
+            pattern: GuestWorkloadPattern::CardinalityGrowth,
+            spike_mode: None,
+            world,
+            plan: Plan::empty(),
+        })
+    }
+
+    /// Builds the correlated-failure-campaign fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a world or fault-plan validation error if the fixture topology,
+    /// reserved command-line parameters, or fault campaign is invalid.
+    pub fn correlated_failure_campaign() -> Result<Self, EngineError> {
+        let left = workload_pattern_node(
+            "client-a",
+            workload_pattern_cmdline(
+                "console=ttyS0 rate_per_sec=50",
+                GuestWorkloadPattern::CorrelatedFailure,
+                None,
+            ),
+        );
+        let right = workload_pattern_node(
+            "client-b",
+            workload_pattern_cmdline(
+                "console=ttyS0 rate_per_sec=50",
+                GuestWorkloadPattern::CorrelatedFailure,
+                None,
+            ),
+        );
+        let link = LinkDef::new(left.id.clone(), right.id.clone())?;
+        let link_id = workload_pattern_link_id(&link);
+        let crash_node = right.id.clone();
+        let world = World::from_nodes_and_links(vec![left, right], vec![link])?;
+        let entries = vec![
+            FaultPlanEntry::At {
+                at: VirtualTime { ticks: 20 },
+                duration: FaultDuration::from_nanos(10),
+                tag: FaultTag::from_name("correlated-partition"),
+                fault: Fault::Network(NetworkFault::Partition {
+                    link: link_id.clone(),
+                    direction: PartitionDirection::Bidirectional,
+                }),
+            },
+            FaultPlanEntry::At {
+                at: VirtualTime { ticks: 20 },
+                duration: FaultDuration::from_nanos(10),
+                tag: FaultTag::from_name("correlated-loss"),
+                fault: Fault::Network(NetworkFault::Loss {
+                    link: link_id,
+                    rate: FaultRateBasisPoints::from_basis_points(2_500)?,
+                }),
+            },
+            FaultPlanEntry::PermanentAt {
+                at: VirtualTime { ticks: 20 },
+                tag: FaultTag::from_name("correlated-crash"),
+                fault: Fault::Node(NodeFault::Crash {
+                    node: crash_node,
+                    restart: RestartPolicy::StayDown,
+                }),
+            },
+        ];
+        let plan = Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(entries))?;
+        Ok(Self {
+            pattern: GuestWorkloadPattern::CorrelatedFailure,
+            spike_mode: None,
+            world,
+            plan,
+        })
+    }
+
+    /// Returns the fixture's load pattern.
+    #[must_use]
+    pub fn pattern(&self) -> GuestWorkloadPattern {
+        self.pattern
+    }
+
+    /// Returns the fixture's spike mode, when the pattern is a spike fixture.
+    #[must_use]
+    pub fn spike_mode(&self) -> Option<GuestWorkloadSpikeMode> {
+        self.spike_mode
+    }
+
+    /// Returns the content-addressed world assembled by this fixture.
+    #[must_use]
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// Returns the plan assembled by this fixture.
+    #[must_use]
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
+
+    /// Builds a scenario definition for this fixture with empty properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plan validation error if the fixture plan no longer layers over
+    /// its world.
+    pub fn scenario_def(&self, seed: Seed) -> Result<ScenarioDef, EngineError> {
+        self.world.scenario_def_with_plan_properties_and_seed(
+            &self.plan,
+            &Properties::empty(),
+            seed,
+        )
     }
 }
 
@@ -1557,6 +1977,27 @@ impl NodeTemplate {
     #[must_use]
     pub fn guest_workload_seed(mut self, seed: GuestWorkloadSeed) -> Self {
         self.cmdline = seed.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Selects an in-guest load pattern by scenario parameter.
+    ///
+    /// The pattern is encoded as `load_pattern=...` in the guest command line,
+    /// keeping the load shape in the content-addressed world instead of a
+    /// host-side load-generation subsystem.
+    #[must_use]
+    pub fn guest_workload_pattern(mut self, pattern: GuestWorkloadPattern) -> Self {
+        self.cmdline = pattern.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Selects the spike-pattern mode by scenario parameter.
+    ///
+    /// The mode is encoded as `spike_mode=...` in the guest command line and is
+    /// consumed by the selected in-guest workload.
+    #[must_use]
+    pub fn guest_workload_spike_mode(mut self, mode: GuestWorkloadSpikeMode) -> Self {
+        self.cmdline = mode.selected_cmdline(&self.cmdline);
         self
     }
 
@@ -3867,6 +4308,18 @@ impl WorldNode {
     #[must_use]
     pub fn guest_workload_seed(&self) -> Option<GuestWorkloadSeed> {
         GuestWorkloadSeed::from_cmdline(&self.cmdline)
+    }
+
+    /// Returns the in-guest load pattern selected by this node, if any.
+    #[must_use]
+    pub fn guest_workload_pattern(&self) -> Option<GuestWorkloadPattern> {
+        GuestWorkloadPattern::from_cmdline(&self.cmdline)
+    }
+
+    /// Returns the spike mode selected by this node, if any.
+    #[must_use]
+    pub fn guest_workload_spike_mode(&self) -> Option<GuestWorkloadSpikeMode> {
+        GuestWorkloadSpikeMode::from_cmdline(&self.cmdline)
     }
 }
 
@@ -10944,6 +11397,40 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
+    /// A world node selected an unsupported load-pattern value.
+    WorldNodeUnsupportedWorkloadPattern {
+        /// The invalid node.
+        node: NodeId,
+        /// The unsupported load-pattern scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one load-pattern value.
+    WorldNodeDuplicateWorkloadPattern {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A world node selected an unsupported spike-mode value.
+    WorldNodeUnsupportedWorkloadSpikeMode {
+        /// The invalid node.
+        node: NodeId,
+        /// The unsupported spike-mode scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one spike-mode value.
+    WorldNodeDuplicateWorkloadSpikeMode {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A world node selected `load_pattern=spike` without selecting a spike mode.
+    WorldNodeWorkloadSpikePatternMissingMode {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A world node selected a spike mode without selecting `load_pattern=spike`.
+    WorldNodeWorkloadSpikeModeWithoutSpikePattern {
+        /// The invalid node.
+        node: NodeId,
+    },
     /// A plan membership fault references an undeclared node.
     PlanFaultUnknownNode {
         /// The undeclared node.
@@ -11268,6 +11755,30 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeDuplicateWorkloadSeed { .. } => {
                 f.write_str("world node selects more than one workload seed")
+            }
+            Self::WorldNodeUnsupportedWorkloadPattern { value, .. } => {
+                write!(
+                    f,
+                    "world node workload pattern value {value} is unsupported"
+                )
+            }
+            Self::WorldNodeDuplicateWorkloadPattern { .. } => {
+                f.write_str("world node selects more than one workload pattern")
+            }
+            Self::WorldNodeUnsupportedWorkloadSpikeMode { value, .. } => {
+                write!(
+                    f,
+                    "world node workload spike mode value {value} is unsupported"
+                )
+            }
+            Self::WorldNodeDuplicateWorkloadSpikeMode { .. } => {
+                f.write_str("world node selects more than one workload spike mode")
+            }
+            Self::WorldNodeWorkloadSpikePatternMissingMode { .. } => {
+                f.write_str("world node selects a spike workload pattern without a spike mode")
+            }
+            Self::WorldNodeWorkloadSpikeModeWithoutSpikePattern { .. } => {
+                f.write_str("world node selects a workload spike mode without a spike pattern")
             }
             Self::PlanFaultUnknownNode { .. } => {
                 f.write_str("plan membership fault references an undeclared node")
@@ -12416,6 +12927,9 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
         }
         validate_world_node_workload(node)?;
         validate_world_node_workload_seed(node)?;
+        validate_world_node_workload_pattern(node)?;
+        validate_world_node_workload_spike_mode(node)?;
+        validate_world_node_workload_pattern_consistency(node)?;
     }
 
     Ok(())
@@ -12463,6 +12977,68 @@ fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError
         selected = true;
     }
     Ok(())
+}
+
+fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX)
+        else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkloadPattern {
+                node: node.id.clone(),
+            });
+        }
+        if GuestWorkloadPattern::from_scenario_parameter_value(value).is_none() {
+            return Err(EngineError::WorldNodeUnsupportedWorkloadPattern {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        }
+        selected = true;
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX) else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkloadSpikeMode {
+                node: node.id.clone(),
+            });
+        }
+        if GuestWorkloadSpikeMode::from_scenario_parameter_value(value).is_none() {
+            return Err(EngineError::WorldNodeUnsupportedWorkloadSpikeMode {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        }
+        selected = true;
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_pattern_consistency(node: &WorldNode) -> Result<(), EngineError> {
+    let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
+    let spike_mode = GuestWorkloadSpikeMode::from_cmdline(&node.cmdline);
+
+    match (pattern, spike_mode) {
+        (Some(GuestWorkloadPattern::Spike), None) => {
+            Err(EngineError::WorldNodeWorkloadSpikePatternMissingMode {
+                node: node.id.clone(),
+            })
+        }
+        (Some(GuestWorkloadPattern::Spike), Some(_)) | (_, None) => Ok(()),
+        (_, Some(_)) => Err(EngineError::WorldNodeWorkloadSpikeModeWithoutSpikePattern {
+            node: node.id.clone(),
+        }),
+    }
 }
 
 fn validate_world_links(nodes: &[WorldNode], links: &[LinkDef]) -> Result<(), EngineError> {
@@ -18858,6 +19434,22 @@ fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSee
     })
 }
 
+fn parse_guest_workload_pattern_parameter(cmdline: &str) -> Option<GuestWorkloadPattern> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadPattern::from_scenario_parameter_value)
+    })
+}
+
+fn parse_guest_workload_spike_mode_parameter(cmdline: &str) -> Option<GuestWorkloadSpikeMode> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadSpikeMode::from_scenario_parameter_value)
+    })
+}
+
 fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
     let selection = workload.scenario_parameter();
     let mut rendered = String::new();
@@ -18882,6 +19474,70 @@ fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> S
     }
     push_cmdline_token(&mut rendered, &selection);
     rendered
+}
+
+fn cmdline_with_guest_workload_pattern(cmdline: &str, pattern: GuestWorkloadPattern) -> String {
+    let selection = pattern.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn cmdline_with_guest_workload_spike_mode(cmdline: &str, mode: GuestWorkloadSpikeMode) -> String {
+    let selection = mode.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
+fn workload_pattern_cmdline(
+    base_cmdline: &str,
+    pattern: GuestWorkloadPattern,
+    spike_mode: Option<GuestWorkloadSpikeMode>,
+) -> String {
+    let cmdline = GuestWorkloadBinary::ClientLoop.selected_cmdline(base_cmdline);
+    let cmdline = pattern.selected_cmdline(&cmdline);
+    match spike_mode {
+        Some(mode) => mode.selected_cmdline(&cmdline),
+        None => cmdline,
+    }
+}
+
+fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
+    WorldNode {
+        id: NodeId {
+            name: String::from(name),
+        },
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline,
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }
+}
+
+fn workload_pattern_link_id(link: &LinkDef) -> LinkId {
+    let (left, right) = link.endpoints();
+    LinkId::from_name(format!("{}--{}", left.name, right.name))
 }
 
 fn push_cmdline_token(cmdline: &mut String, token: &str) {
