@@ -172,6 +172,9 @@ struct DebugArgs {
     /// Open at the recorded failure point.
     #[arg(long, action = ArgAction::SetTrue)]
     at_failure: bool,
+    /// Listen for gdb-protocol clients here.
+    #[arg(long, value_name = "ADDR")]
+    gdb_listen: Option<String>,
 }
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
@@ -1405,12 +1408,15 @@ mod tests {
             "debug",
             report.path.to_str().unwrap_or("."),
             "--at-failure",
+            "--gdb-listen",
+            "127.0.0.1:9000",
         ]);
         assert!(matches!(
             debug_cli.command,
             Commands::Debug(DebugArgs {
                 artifact: Some(_),
                 at_failure: true,
+                gdb_listen: Some(_),
             })
         ));
         assert_eq!(
