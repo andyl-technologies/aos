@@ -24,10 +24,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
-    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalProjection,
-    EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ScheduledEventPayload,
-    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    event_log_causal_projection,
+    ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
+    EventLevel, EventLogCausalProjection, EventLogCoverageFeedback,
+    EventLogCoverageFeedbackConsumer, ScheduledEventPayload, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, event_log_causal_projection,
 };
 use crate::trigger::{
     Action, Condition, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
@@ -10182,6 +10182,7 @@ pub struct TemporalGraph {
     checkpoint_nodes: BTreeMap<ContentHash, Checkpoint>,
     cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
     baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
+    non_canonical_debug_branches: BTreeMap<ContentHash, DebugNonCanonicalBranch>,
 }
 
 impl TemporalGraph {
@@ -10194,6 +10195,7 @@ impl TemporalGraph {
             checkpoint_nodes: BTreeMap::new(),
             cached_snapshots: BTreeMap::new(),
             baked_genesis: BTreeMap::new(),
+            non_canonical_debug_branches: BTreeMap::new(),
         }
     }
 
@@ -10849,6 +10851,77 @@ impl TemporalGraph {
             memory_patch_used: false,
             requires_allow_mutate: false,
         })
+    }
+
+    /// Forks an attached debugger into a marked non-canonical debug branch.
+    ///
+    /// The branch is recorded as debug metadata rather than as a
+    /// [`Configuration`]. Decision-expressible edits and control-log operations
+    /// are retained separately from the debug-edit script for arbitrary
+    /// guest-state changes. The canonical graph/checkpoint/runtime footprint and
+    /// causal event-log projection are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::DebugGotoAttachMismatch`] when `attach` does not
+    /// realize `request.current`. Returns
+    /// [`EngineError::DebugNonCanonicalBranchMissingTriggerEvidence`] when the
+    /// request trigger is not backed by a corresponding operator action.
+    pub fn debug_non_canonical_branch(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugNonCanonicalBranchRequest,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<DebugNonCanonicalBranchReport, EngineError> {
+        if attach.configuration != request.current.id() {
+            return Err(EngineError::DebugGotoAttachMismatch {
+                attached: attach.configuration,
+                requested_current: request.current.id(),
+            });
+        }
+        if !request.trigger_has_evidence() {
+            return Err(EngineError::DebugNonCanonicalBranchMissingTriggerEvidence {
+                trigger: request.trigger,
+                configuration: request.current.id(),
+            });
+        }
+
+        let footprint_before = DebugReadOnlyInspectionFootprint::capture(self, attach, request.at);
+        let causal_event_log_before =
+            canonical_run_event_log_projection_without_debug_branches(event_log);
+        let marker_sequence = next_event_log_sequence(event_log);
+        let branch = DebugNonCanonicalBranch::from_request(attach, request, marker_sequence);
+        let mut event_log_with_fork_marker = event_log.to_vec();
+        event_log_with_fork_marker.push(branch.fork_marker.entry.clone());
+        let causal_event_log_after =
+            canonical_run_event_log_projection_without_debug_branches(&event_log_with_fork_marker);
+        self.non_canonical_debug_branches
+            .insert(branch.id, branch.clone());
+        let footprint_after = DebugReadOnlyInspectionFootprint::capture(self, attach, request.at);
+
+        Ok(DebugNonCanonicalBranchReport {
+            branch,
+            canonical_footprint_before: footprint_before,
+            canonical_footprint_after: footprint_after,
+            causal_event_log_before,
+            causal_event_log_after,
+            event_log_with_fork_marker,
+        })
+    }
+
+    /// Returns a recorded non-canonical debug branch by id.
+    #[must_use]
+    pub fn debug_non_canonical_branch_view(
+        &self,
+        branch: ContentHash,
+    ) -> Option<&DebugNonCanonicalBranch> {
+        self.non_canonical_debug_branches.get(&branch)
+    }
+
+    /// Returns the number of non-canonical debug branches recorded as graph metadata.
+    #[must_use]
+    pub fn debug_non_canonical_branch_count(&self) -> usize {
+        self.non_canonical_debug_branches.len()
     }
 
     /// Moves an attached debug session to `request.target` using restore-plus-replay.
@@ -15774,6 +15847,255 @@ fn debug_read_only_observation_entry(
     )
 }
 
+fn debug_non_canonical_branch_id(
+    attach: &DebugAttachReport,
+    request: &DebugNonCanonicalBranchRequest,
+) -> ContentHash {
+    ContentHash::from_canonical_material(
+        "crucible.debug.non-canonical-branch.v1",
+        &debug_non_canonical_branch_material(attach, request),
+    )
+}
+
+fn debug_non_canonical_branch_material(
+    attach: &DebugAttachReport,
+    request: &DebugNonCanonicalBranchRequest,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "fork_point={}",
+        content_hash_hex(request.current.id())
+    ));
+    lines.push(format!(
+        "checkpoint={}",
+        content_hash_hex(attach.checkpoint)
+    ));
+    lines.push(format!(
+        "runtime={}",
+        content_hash_hex(attach.runtime.runtime.id)
+    ));
+    lines.push(format!("at_ticks={}", request.at.ticks));
+    lines.push(format!("trigger={}", request.trigger.label()));
+    lines.push(format!("actions={}", request.actions.len()));
+    for (index, action) in request.actions.iter().enumerate() {
+        push_debug_non_canonical_action_lines(index, action, &mut lines);
+    }
+    lines.join("\n")
+}
+
+fn push_debug_non_canonical_action_lines(
+    index: usize,
+    action: &DebugNonCanonicalBranchAction,
+    lines: &mut Vec<String>,
+) {
+    let prefix = format!("debug_action.{index}");
+    match action {
+        DebugNonCanonicalBranchAction::Decision(decision) => {
+            lines.push(format!("{prefix}.kind=decision"));
+            push_decision_lines(index, decision, lines);
+        }
+        DebugNonCanonicalBranchAction::ControlOperation(operation) => {
+            lines.push(format!("{prefix}.kind=control-operation"));
+            push_debug_control_operation_lines(&prefix, operation, lines);
+        }
+        DebugNonCanonicalBranchAction::GuestEdit(edit) => {
+            lines.push(format!("{prefix}.kind=guest-edit"));
+            push_debug_guest_edit_lines(&prefix, edit, lines);
+        }
+        DebugNonCanonicalBranchAction::OperatorControl(kind) => {
+            lines.push(format!("{prefix}.kind=operator-control"));
+            lines.push(format!("{prefix}.operator_control={}", kind.label()));
+        }
+    }
+}
+
+fn push_debug_control_operation_lines(
+    prefix: &str,
+    operation: &ControlOperation,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("{prefix}.sequence={}", operation.sequence));
+    lines.push(format!(
+        "{prefix}.control_kind={}",
+        debug_control_operation_kind_label(&operation.kind)
+    ));
+    match &operation.kind {
+        ControlOperationKind::InjectFault { tag, fault } => {
+            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
+            lines.push(format!("{prefix}.tag={}", tag.name));
+            lines.push(fault.canonical_material());
+        }
+        ControlOperationKind::HealFault { tag } => {
+            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
+            lines.push(format!("{prefix}.tag={}", tag.name));
+        }
+        ControlOperationKind::Pause
+        | ControlOperationKind::Resume
+        | ControlOperationKind::Step
+        | ControlOperationKind::Snapshot
+        | ControlOperationKind::Fork
+        | ControlOperationKind::Inject
+        | ControlOperationKind::Query => {}
+    }
+}
+
+fn debug_control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
+    match kind {
+        ControlOperationKind::Pause => "pause",
+        ControlOperationKind::Resume => "resume",
+        ControlOperationKind::Step => "step",
+        ControlOperationKind::Snapshot => "snapshot",
+        ControlOperationKind::Fork => "fork",
+        ControlOperationKind::Inject => "inject",
+        ControlOperationKind::InjectFault { .. } => "inject-fault",
+        ControlOperationKind::HealFault { .. } => "heal-fault",
+        ControlOperationKind::Query => "query",
+    }
+}
+
+fn push_debug_guest_edit_lines(prefix: &str, edit: &DebugGuestEdit, lines: &mut Vec<String>) {
+    lines.push(format!("{prefix}.node_len={}", edit.node.name.len()));
+    lines.push(format!("{prefix}.node={}", edit.node.name));
+    lines.push(format!("{prefix}.edit_kind={}", edit.kind.label()));
+    lines.push(format!("{prefix}.target_len={}", edit.target.len()));
+    lines.push(format!("{prefix}.target={}", edit.target));
+    lines.push(format!("{prefix}.bytes_len={}", edit.bytes.len()));
+    lines.push(format!("{prefix}.bytes={}", debug_hex_bytes(&edit.bytes)));
+    push_debug_coordinate_lines(&format!("{prefix}.coordinate"), &edit.coordinate, lines);
+}
+
+fn debug_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn push_debug_coordinate_lines(
+    prefix: &str,
+    coordinate: &DebugCoordinate,
+    lines: &mut Vec<String>,
+) {
+    match coordinate {
+        DebugCoordinate::Configuration(configuration) => {
+            lines.push(format!("{prefix}.kind=configuration"));
+            lines.push(format!(
+                "{prefix}.configuration={}",
+                content_hash_hex(configuration.id())
+            ));
+        }
+        DebugCoordinate::Checkpoint(checkpoint) => {
+            lines.push(format!("{prefix}.kind=checkpoint"));
+            lines.push(format!(
+                "{prefix}.checkpoint={}",
+                content_hash_hex(*checkpoint)
+            ));
+        }
+        DebugCoordinate::EventSequence(sequence) => {
+            lines.push(format!("{prefix}.kind=event-sequence"));
+            lines.push(format!("{prefix}.sequence={sequence}"));
+        }
+        DebugCoordinate::VirtualTime(time) => {
+            lines.push(format!("{prefix}.kind=virtual-time"));
+            lines.push(format!("{prefix}.ticks={}", time.ticks));
+        }
+        DebugCoordinate::NodeIcount { node, icount } => {
+            lines.push(format!("{prefix}.kind=node-icount"));
+            lines.push(format!("{prefix}.node_len={}", node.name.len()));
+            lines.push(format!("{prefix}.node={}", node.name));
+            lines.push(format!("{prefix}.retired={}", icount.retired));
+        }
+    }
+}
+
+fn debug_non_canonical_fork_marker(
+    branch: ContentHash,
+    fork_point: ContentHash,
+    fork_checkpoint: ContentHash,
+    request: &DebugNonCanonicalBranchRequest,
+    sequence: u64,
+) -> DebugNonCanonicalForkMarker {
+    let mut details = BTreeMap::new();
+    details.insert(
+        String::from("branch"),
+        EventAttributeValue::String(branch.to_hex()),
+    );
+    details.insert(
+        String::from("fork_point"),
+        EventAttributeValue::String(fork_point.to_hex()),
+    );
+    details.insert(
+        String::from("trigger"),
+        EventAttributeValue::String(String::from(request.trigger.label())),
+    );
+    details.insert(
+        String::from("non_canonical"),
+        EventAttributeValue::Bool(true),
+    );
+    details.insert(String::from("canonical"), EventAttributeValue::Bool(false));
+    details.insert(
+        String::from("inside_virtual_time"),
+        EventAttributeValue::Bool(true),
+    );
+    details.insert(
+        String::from("one_execution_path"),
+        EventAttributeValue::Bool(true),
+    );
+    details.insert(
+        String::from("model_reproducible"),
+        EventAttributeValue::Bool(false),
+    );
+    let schedule_delta = debug_non_canonical_schedule_delta(request).content_hash();
+    let entry = SchedulerEventLogEntry::fork_marker(
+        sequence,
+        request.at,
+        fork_checkpoint,
+        schedule_delta,
+        details,
+    );
+    DebugNonCanonicalForkMarker {
+        branch,
+        fork_point,
+        entry,
+    }
+}
+
+fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u64 {
+    event_log
+        .last()
+        .map_or(0, |entry| entry.sequence().saturating_add(1))
+}
+
+fn canonical_run_event_log_projection_without_debug_branches(
+    entries: &[SchedulerEventLogEntry],
+) -> EventLogCausalProjection {
+    let canonical_entries = entries
+        .iter()
+        .filter(|entry| !is_debug_non_canonical_fork_marker_entry(entry))
+        .cloned()
+        .collect::<Vec<_>>();
+    event_log_causal_projection(&canonical_entries)
+}
+
+fn is_debug_non_canonical_fork_marker_entry(entry: &SchedulerEventLogEntry) -> bool {
+    entry.event_payload().kind() == "fork"
+        && entry.event_payload().attribute("non_canonical")
+            == Some(&EventAttributeValue::Bool(true))
+        && entry.event_payload().attribute("canonical") == Some(&EventAttributeValue::Bool(false))
+}
+
+fn debug_non_canonical_schedule_delta(request: &DebugNonCanonicalBranchRequest) -> Schedule {
+    Schedule::from_decisions(request.actions.iter().filter_map(|action| match action {
+        DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
+        DebugNonCanonicalBranchAction::ControlOperation(_)
+        | DebugNonCanonicalBranchAction::GuestEdit(_)
+        | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+    }))
+}
+
 /// Client-visible breakpoint request flavor at the debug protocol boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DebugBreakpointClientKind {
@@ -15915,6 +16237,570 @@ impl DebugBreakpointReport {
             self.requested_client_kind,
             DebugBreakpointClientKind::Software
         ) && self.is_canonical_out_of_band()
+    }
+}
+
+/// First operator action that forces a debug session off the canonical run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugNonCanonicalBranchTrigger {
+    /// A raw guest register write was requested.
+    GuestRegisterWrite,
+    /// A raw guest memory write was requested.
+    GuestMemoryWrite,
+    /// A guest-memory software-breakpoint patch was required.
+    MemoryPatchBreakpoint,
+    /// The operator continued execution outside the canonical schedule.
+    OperatorContinue,
+    /// The operator stepped execution outside the canonical schedule.
+    OperatorStep,
+    /// The operator supplied a model-expressible decision or control operation.
+    ScheduleExpressibleEdit,
+}
+
+impl DebugNonCanonicalBranchTrigger {
+    /// Returns the stable trigger label used in graph and event-log markers.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GuestRegisterWrite => "guest-register-write",
+            Self::GuestMemoryWrite => "guest-memory-write",
+            Self::MemoryPatchBreakpoint => "memory-patch-breakpoint",
+            Self::OperatorContinue => "operator-continue",
+            Self::OperatorStep => "operator-step",
+            Self::ScheduleExpressibleEdit => "schedule-expressible-edit",
+        }
+    }
+}
+
+/// Arbitrary guest-state edit kind recorded in a debug-edit script.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugGuestEditKind {
+    /// Raw architectural register write.
+    RegisterWrite,
+    /// Raw guest memory write.
+    MemoryWrite,
+    /// Guest-memory breakpoint patch.
+    MemoryPatchBreakpoint,
+}
+
+impl DebugGuestEditKind {
+    /// Returns the stable edit-kind label used in debug-edit scripts.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RegisterWrite => "register-write",
+            Self::MemoryWrite => "memory-write",
+            Self::MemoryPatchBreakpoint => "memory-patch-breakpoint",
+        }
+    }
+}
+
+/// One arbitrary guest-state edit on a non-canonical debug branch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugGuestEdit {
+    /// Node whose guest-visible state is edited.
+    pub node: NodeId,
+    /// Kind of guest-visible state mutation.
+    pub kind: DebugGuestEditKind,
+    /// Debug coordinate at which the edit applies.
+    pub coordinate: DebugCoordinate,
+    /// Stable operator-facing target, such as a register name or address.
+    pub target: String,
+    /// Exact bytes written or patched by the operator.
+    pub bytes: Vec<u8>,
+}
+
+impl DebugGuestEdit {
+    /// Builds an arbitrary guest-state edit.
+    #[must_use]
+    pub fn new(
+        node: NodeId,
+        kind: DebugGuestEditKind,
+        coordinate: DebugCoordinate,
+        target: impl Into<String>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            node,
+            kind,
+            coordinate,
+            target: target.into(),
+            bytes: bytes.into(),
+        }
+    }
+}
+
+/// Operator-owned execution control that creates a non-canonical branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugOperatorControlKind {
+    /// Continue execution under operator control.
+    Continue,
+    /// Step execution under operator control.
+    Step,
+}
+
+impl DebugOperatorControlKind {
+    /// Returns the stable control label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Step => "step",
+        }
+    }
+}
+
+/// One operator action recorded on a non-canonical debug branch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugNonCanonicalBranchAction {
+    /// A schedule-expressible decision recorded per the control/session log.
+    Decision(Decision),
+    /// A control-log operation admitted at a virtual-time boundary.
+    ControlOperation(ControlOperation),
+    /// An arbitrary guest-state edit recorded in the debug-edit script.
+    GuestEdit(DebugGuestEdit),
+    /// Free operator execution control outside the canonical schedule.
+    OperatorControl(DebugOperatorControlKind),
+}
+
+impl DebugNonCanonicalBranchAction {
+    /// Builds a schedule-expressible decision action.
+    #[must_use]
+    pub fn decision(decision: Decision) -> Self {
+        Self::Decision(decision)
+    }
+
+    /// Builds a control-log operation action.
+    #[must_use]
+    pub fn control_operation(operation: ControlOperation) -> Self {
+        Self::ControlOperation(operation)
+    }
+
+    /// Builds an arbitrary guest-edit action.
+    #[must_use]
+    pub fn guest_edit(edit: DebugGuestEdit) -> Self {
+        Self::GuestEdit(edit)
+    }
+
+    /// Builds an operator-control action.
+    #[must_use]
+    pub const fn operator_control(kind: DebugOperatorControlKind) -> Self {
+        Self::OperatorControl(kind)
+    }
+}
+
+/// Request to fork an attached debugger into a non-canonical branch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugNonCanonicalBranchRequest {
+    /// Canonical configuration where the debugger is currently attached.
+    pub current: Configuration,
+    /// Virtual-time boundary at which the first operator action applies.
+    pub at: VirtualTime,
+    /// First action category that forces the branch.
+    pub trigger: DebugNonCanonicalBranchTrigger,
+    /// Ordered operator actions recorded on the branch.
+    pub actions: Vec<DebugNonCanonicalBranchAction>,
+}
+
+impl DebugNonCanonicalBranchRequest {
+    /// Builds a non-canonical branch request.
+    #[must_use]
+    pub fn new(
+        current: Configuration,
+        at: VirtualTime,
+        trigger: DebugNonCanonicalBranchTrigger,
+    ) -> Self {
+        Self {
+            current,
+            at,
+            trigger,
+            actions: Vec::new(),
+        }
+    }
+
+    /// Appends one operator action to this branch request.
+    #[must_use]
+    pub fn with_action(mut self, action: DebugNonCanonicalBranchAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    fn trigger_has_evidence(&self) -> bool {
+        self.actions
+            .first()
+            .is_some_and(|action| self.trigger.matches_first_action(action))
+    }
+}
+
+impl DebugNonCanonicalBranchTrigger {
+    fn matches_first_action(self, action: &DebugNonCanonicalBranchAction) -> bool {
+        match self {
+            Self::GuestRegisterWrite => {
+                matches!(action, DebugNonCanonicalBranchAction::GuestEdit(edit)
+                    if edit.kind == DebugGuestEditKind::RegisterWrite)
+            }
+            Self::GuestMemoryWrite => {
+                matches!(action, DebugNonCanonicalBranchAction::GuestEdit(edit)
+                    if edit.kind == DebugGuestEditKind::MemoryWrite)
+            }
+            Self::MemoryPatchBreakpoint => {
+                matches!(action, DebugNonCanonicalBranchAction::GuestEdit(edit)
+                    if edit.kind == DebugGuestEditKind::MemoryPatchBreakpoint)
+            }
+            Self::OperatorContinue => matches!(
+                action,
+                DebugNonCanonicalBranchAction::OperatorControl(DebugOperatorControlKind::Continue)
+            ),
+            Self::OperatorStep => matches!(
+                action,
+                DebugNonCanonicalBranchAction::OperatorControl(DebugOperatorControlKind::Step)
+            ),
+            Self::ScheduleExpressibleEdit => matches!(
+                action,
+                DebugNonCanonicalBranchAction::Decision(_)
+                    | DebugNonCanonicalBranchAction::ControlOperation(_)
+            ),
+        }
+    }
+}
+
+/// One ordered entry in a branch-local debug-edit script.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugEditScriptEntry {
+    /// Zero-based entry sequence within the debug-edit script.
+    pub sequence: u64,
+    /// Exact arbitrary guest-state edit performed by the operator.
+    pub edit: DebugGuestEdit,
+}
+
+/// Script of arbitrary guest-state edits hung off a non-canonical fork point.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugEditScript {
+    /// Canonical configuration where the debug branch forked.
+    pub fork_point: ContentHash,
+    /// Ordered arbitrary edits and their coordinates.
+    pub entries: Vec<DebugEditScriptEntry>,
+    /// Whether this script is a model-reproducible `(seed, scenario, schedule)` artifact.
+    pub model_reproducible: bool,
+}
+
+impl DebugEditScript {
+    fn from_actions(fork_point: ContentHash, actions: &[DebugNonCanonicalBranchAction]) -> Self {
+        let entries = actions
+            .iter()
+            .filter_map(|action| match action {
+                DebugNonCanonicalBranchAction::GuestEdit(edit) => Some(edit.clone()),
+                DebugNonCanonicalBranchAction::Decision(_)
+                | DebugNonCanonicalBranchAction::ControlOperation(_)
+                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+            })
+            .enumerate()
+            .map(|(sequence, edit)| DebugEditScriptEntry {
+                sequence: sequence as u64,
+                edit,
+            })
+            .collect();
+        Self {
+            fork_point,
+            entries,
+            model_reproducible: false,
+        }
+    }
+
+    /// Returns whether arbitrary edits are explicitly never model-reproducible.
+    #[must_use]
+    pub fn is_never_model_reproducible(&self) -> bool {
+        !self.model_reproducible
+    }
+}
+
+/// Event-log fork marker for a non-canonical debug branch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugNonCanonicalForkMarker {
+    /// Stable branch identity marked in the event log.
+    pub branch: ContentHash,
+    /// Canonical configuration where the branch forked.
+    pub fork_point: ContentHash,
+    /// Event-log entry that carries the non-canonical fork marker.
+    pub entry: SchedulerEventLogEntry,
+}
+
+impl DebugNonCanonicalForkMarker {
+    /// Returns whether the marker visibly identifies a non-canonical fork.
+    #[must_use]
+    pub fn visibly_marks_non_canonical_fork(&self) -> bool {
+        self.entry.class() == SchedulerEventLogClass::Causal
+            && self.entry.event_payload().kind() == "fork"
+            && self.entry.event_payload().attribute("non_canonical")
+                == Some(&EventAttributeValue::Bool(true))
+            && self.entry.event_payload().attribute("canonical")
+                == Some(&EventAttributeValue::Bool(false))
+            && self.entry.event_payload().attribute("branch")
+                == Some(&EventAttributeValue::String(self.branch.to_hex()))
+            && self.entry.event_payload().attribute("fork_point")
+                == Some(&EventAttributeValue::String(self.fork_point.to_hex()))
+            && self
+                .entry
+                .event_payload()
+                .attribute("from_checkpoint_id")
+                .is_some()
+            && self
+                .entry
+                .event_payload()
+                .attribute("schedule_delta")
+                .is_some()
+    }
+}
+
+/// Live status shown for a non-canonical debug branch.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugNonCanonicalLiveStatus {
+    /// Branch identity displayed in the live mirror/status surface.
+    pub branch: ContentHash,
+    /// Canonical configuration where the branch forked.
+    pub fork_point: ContentHash,
+    /// Checkpoint used as the live branch source.
+    pub checkpoint: ContentHash,
+    /// Runtime used as the live branch source.
+    pub runtime: ContentHash,
+    /// Stable live status label.
+    pub label: String,
+    /// Whether the branch is canonical.
+    pub canonical: bool,
+    /// Whether the branch is inside Crucible virtual time.
+    pub inside_virtual_time: bool,
+    /// Whether the branch remains on the single deterministic execution path.
+    pub one_execution_path: bool,
+}
+
+impl DebugNonCanonicalLiveStatus {
+    /// Returns whether the live status cannot be confused with a canonical run.
+    #[must_use]
+    pub fn visibly_distinguishes_branch(&self) -> bool {
+        !self.canonical
+            && self.label == "non-canonical-debug-branch"
+            && self.checkpoint != ContentHash::default()
+            && self.runtime != ContentHash::default()
+            && self.inside_virtual_time
+            && self.one_execution_path
+    }
+}
+
+/// Metadata for a branch created by debugger mutation or operator control.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugNonCanonicalBranch {
+    /// Stable non-canonical branch identity.
+    pub id: ContentHash,
+    /// Canonical configuration where the branch forked.
+    pub fork_point: ContentHash,
+    /// Checkpoint where the debugger was attached at the fork point.
+    pub fork_checkpoint: ContentHash,
+    /// Runtime state attached before branching.
+    pub fork_runtime: ContentHash,
+    /// First operator action category that forced the fork.
+    pub trigger: DebugNonCanonicalBranchTrigger,
+    /// Decision-expressible edits recorded per the control/session log.
+    pub schedule_expressible_decisions: Vec<Decision>,
+    /// Control-log operations recorded at virtual-time boundaries.
+    pub control_log_entries: Vec<ControlOperation>,
+    /// Free operator-control actions that forced a non-canonical branch.
+    pub operator_controls: Vec<DebugOperatorControlKind>,
+    /// Debug-edit script for arbitrary guest-state changes.
+    pub debug_edit_script: DebugEditScript,
+    /// Non-canonical fork marker appended to the event-log view.
+    pub fork_marker: DebugNonCanonicalForkMarker,
+    /// Live status/mirror view for this branch.
+    pub live_status: DebugNonCanonicalLiveStatus,
+    /// Whether the branch was created from an already-instantiated fork source.
+    pub ordinary_fork_instantiated: bool,
+    /// Whether divergent operator actions are attached to the fork source.
+    pub divergent_actions_recorded: bool,
+    /// Whether the branch is excluded from replay-oracle checking.
+    pub replay_oracle_excluded: bool,
+    /// Whether the branch is a `(seed, scenario, schedule)` reproduction artifact.
+    pub seed_scenario_schedule_artifact: bool,
+}
+
+impl DebugNonCanonicalBranch {
+    fn from_request(
+        attach: &DebugAttachReport,
+        request: &DebugNonCanonicalBranchRequest,
+        marker_sequence: u64,
+    ) -> Self {
+        let fork_point = request.current.id();
+        let id = debug_non_canonical_branch_id(attach, request);
+        let debug_edit_script = DebugEditScript::from_actions(fork_point, &request.actions);
+        let schedule_expressible_decisions = request
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
+                DebugNonCanonicalBranchAction::ControlOperation(_)
+                | DebugNonCanonicalBranchAction::GuestEdit(_)
+                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+            })
+            .collect();
+        let control_log_entries = request
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                DebugNonCanonicalBranchAction::ControlOperation(operation) => {
+                    Some(operation.clone())
+                }
+                DebugNonCanonicalBranchAction::Decision(_)
+                | DebugNonCanonicalBranchAction::GuestEdit(_)
+                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+            })
+            .collect();
+        let operator_controls = request
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                DebugNonCanonicalBranchAction::OperatorControl(kind) => Some(*kind),
+                DebugNonCanonicalBranchAction::Decision(_)
+                | DebugNonCanonicalBranchAction::ControlOperation(_)
+                | DebugNonCanonicalBranchAction::GuestEdit(_) => None,
+            })
+            .collect();
+        let fork_marker = debug_non_canonical_fork_marker(
+            id,
+            fork_point,
+            attach.checkpoint,
+            request,
+            marker_sequence,
+        );
+        let live_status = DebugNonCanonicalLiveStatus {
+            branch: id,
+            fork_point,
+            checkpoint: attach.checkpoint,
+            runtime: attach.runtime.runtime.id,
+            label: String::from("non-canonical-debug-branch"),
+            canonical: false,
+            inside_virtual_time: true,
+            one_execution_path: true,
+        };
+
+        Self {
+            id,
+            fork_point,
+            fork_checkpoint: attach.checkpoint,
+            fork_runtime: attach.runtime.runtime.id,
+            trigger: request.trigger,
+            schedule_expressible_decisions,
+            control_log_entries,
+            operator_controls,
+            debug_edit_script,
+            fork_marker,
+            live_status,
+            ordinary_fork_instantiated: attach.uses_instantiated_runtime(),
+            divergent_actions_recorded: !request.actions.is_empty(),
+            replay_oracle_excluded: true,
+            seed_scenario_schedule_artifact: false,
+        }
+    }
+
+    /// Returns whether this branch is visibly non-canonical everywhere exposed.
+    #[must_use]
+    pub fn visibly_marked_non_canonical(&self) -> bool {
+        self.fork_marker.visibly_marks_non_canonical_fork()
+            && self.live_status.visibly_distinguishes_branch()
+    }
+
+    /// Returns whether this branch is excluded from replay-oracle checking.
+    #[must_use]
+    pub const fn excluded_from_replay_oracle(&self) -> bool {
+        self.replay_oracle_excluded
+    }
+
+    /// Returns whether this branch cannot be emitted as a model reproduction artifact.
+    #[must_use]
+    pub const fn excluded_from_seed_scenario_schedule_artifacts(&self) -> bool {
+        !self.seed_scenario_schedule_artifact
+    }
+
+    /// Returns whether the branch remains inside Crucible's virtual-time execution path.
+    #[must_use]
+    pub fn inside_virtual_time_single_execution_path(&self) -> bool {
+        self.live_status.inside_virtual_time && self.live_status.one_execution_path
+    }
+
+    /// Returns whether this branch has the ordinary fork source shape.
+    #[must_use]
+    pub fn ordinary_fork_shape(&self) -> bool {
+        self.ordinary_fork_instantiated
+            && self.divergent_actions_recorded
+            && self.live_status.checkpoint == self.fork_checkpoint
+            && self.live_status.runtime == self.fork_runtime
+    }
+
+    /// Returns whether schedule-expressible edits are retained in control/session form.
+    #[must_use]
+    pub fn records_schedule_expressible_edits(&self) -> bool {
+        !self.schedule_expressible_decisions.is_empty() || !self.control_log_entries.is_empty()
+    }
+
+    /// Returns whether arbitrary guest edits are retained only as a debug-edit script.
+    #[must_use]
+    pub fn records_arbitrary_guest_edits_as_debug_script(&self) -> bool {
+        !self.debug_edit_script.entries.is_empty()
+            && self.debug_edit_script.is_never_model_reproducible()
+    }
+}
+
+/// Report proving a debug mutation fork preserved the canonical run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugNonCanonicalBranchReport {
+    /// Recorded non-canonical branch metadata.
+    pub branch: DebugNonCanonicalBranch,
+    /// Canonical graph/runtime footprint before recording branch metadata.
+    pub canonical_footprint_before: DebugReadOnlyInspectionFootprint,
+    /// Canonical graph/runtime footprint after recording branch metadata.
+    pub canonical_footprint_after: DebugReadOnlyInspectionFootprint,
+    /// Canonical causal event-log projection before the fork marker view.
+    pub causal_event_log_before: EventLogCausalProjection,
+    /// Canonical causal event-log projection after the fork marker view.
+    pub causal_event_log_after: EventLogCausalProjection,
+    /// Event log view including the non-canonical fork marker.
+    pub event_log_with_fork_marker: Vec<SchedulerEventLogEntry>,
+}
+
+impl DebugNonCanonicalBranchReport {
+    /// Returns whether the canonical run stayed bit-identical.
+    #[must_use]
+    pub fn canonical_run_bit_identical(&self) -> bool {
+        self.canonical_footprint_before == self.canonical_footprint_after
+            && self.causal_event_log_before.canonical_bytes()
+                == self.causal_event_log_after.canonical_bytes()
+    }
+
+    /// Returns whether the branch is excluded from replay and reproduction artifacts.
+    #[must_use]
+    pub fn excluded_from_oracles_and_artifacts(&self) -> bool {
+        self.branch.excluded_from_replay_oracle()
+            && self.branch.excluded_from_seed_scenario_schedule_artifacts()
+            && self.branch.debug_edit_script.is_never_model_reproducible()
+    }
+
+    /// Returns whether every visible surface marks the branch non-canonical.
+    #[must_use]
+    pub fn visibly_marked_non_canonical(&self) -> bool {
+        self.branch.visibly_marked_non_canonical()
+    }
+
+    /// Returns whether the branch stays inside virtual time and the one execution path.
+    #[must_use]
+    pub fn inside_virtual_time_single_execution_path(&self) -> bool {
+        self.branch.inside_virtual_time_single_execution_path()
+    }
+
+    /// Returns whether all T-DBG-6 invariants are satisfied.
+    #[must_use]
+    pub fn proves_non_canonical_debug_branch(&self) -> bool {
+        self.canonical_run_bit_identical()
+            && self.excluded_from_oracles_and_artifacts()
+            && self.visibly_marked_non_canonical()
+            && self.inside_virtual_time_single_execution_path()
+            && self.branch.ordinary_fork_shape()
     }
 }
 
@@ -18391,6 +19277,13 @@ pub enum EngineError {
         /// Client breakpoint kind that could not be satisfied canonically.
         requested_client_kind: DebugBreakpointClientKind,
     },
+    /// A non-canonical debug branch trigger lacked a matching first recorded action.
+    DebugNonCanonicalBranchMissingTriggerEvidence {
+        /// Trigger that was not backed by an action.
+        trigger: DebugNonCanonicalBranchTrigger,
+        /// Configuration where the branch was requested.
+        configuration: ContentHash,
+    },
     /// A debug `goto` request did not start at the attached configuration.
     DebugGotoAttachMismatch {
         /// Configuration currently attached.
@@ -18815,6 +19708,9 @@ impl fmt::Display for EngineError {
             }
             Self::DebugBreakpointRequiresAllowMutate { .. } => f.write_str(
                 "canonical debug breakpoint requires guest-memory mutation; rerun with --allow-mutate to fork a non-canonical debug branch",
+            ),
+            Self::DebugNonCanonicalBranchMissingTriggerEvidence { .. } => f.write_str(
+                "non-canonical debug branch trigger is missing matching first operator action evidence",
             ),
             Self::DebugGotoAttachMismatch { .. } => {
                 f.write_str("debug goto current coordinate does not match attached configuration")
