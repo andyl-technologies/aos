@@ -224,8 +224,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             Ok(())
         }
+        Commands::Selftest(_) => {
+            let report = run_selftest(cli)?;
+            if !cli.quiet {
+                for verified in report.verified {
+                    println!(
+                        "crucible: selftest {} PASS runs={}",
+                        verified.scenario_name, verified.runs
+                    );
+                }
+            }
+            Ok(())
+        }
         Commands::Verify(_)
-        | Commands::Selftest(_)
         | Commands::Save(_)
         | Commands::Resume(_)
         | Commands::Fork(_)
@@ -236,6 +247,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Serve(_)
         | Commands::Completions(_) => Ok(()),
     }
+}
+
+fn run_selftest(_cli: &Cli) -> Result<SelftestReport, CliError> {
+    let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
+    let mut verified = Vec::with_capacity(corpus.len());
+    for fixture in corpus {
+        verified
+            .push(crucible::verify_example_scenario_runs(&fixture, 5).map_err(CliError::Selftest)?);
+    }
+    Ok(SelftestReport { verified })
 }
 
 fn replay_reproduction_artifact(
@@ -1104,10 +1125,16 @@ struct FailureArtifactReport {
 }
 
 #[derive(Debug)]
+struct SelftestReport {
+    verified: Vec<crucible::ExampleScenarioVerifyReport>,
+}
+
+#[derive(Debug)]
 enum CliError {
     Io(io::Error),
     Artifact(String),
     Identity(String),
+    Selftest(crucible::ExampleCorpusError),
 }
 
 impl CliError {
@@ -1116,6 +1143,7 @@ impl CliError {
             Self::Io(_) => 5,
             Self::Artifact(_) => 5,
             Self::Identity(_) => 3,
+            Self::Selftest(_) => 1,
         }
     }
 }
@@ -1126,6 +1154,7 @@ impl fmt::Display for CliError {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Artifact(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
+            Self::Selftest(error) => write!(formatter, "selftest failed: {error}"),
         }
     }
 }
@@ -1136,6 +1165,7 @@ impl Error for CliError {
             Self::Io(error) => Some(error),
             Self::Artifact(_) => None,
             Self::Identity(_) => None,
+            Self::Selftest(error) => Some(error),
         }
     }
 }
@@ -1250,6 +1280,19 @@ mod tests {
         };
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
+        let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
+        let report = run_selftest(&cli)?;
+
+        assert_eq!(report.verified.len(), 1);
+        assert_eq!(report.verified[0].scenario_name, "happy-path.scn");
+        assert_eq!(report.verified[0].runs, 5);
+        dispatch(&cli)?;
+
+        Ok(())
     }
 
     #[test]
