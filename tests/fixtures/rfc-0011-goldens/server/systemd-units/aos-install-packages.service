@@ -1,5 +1,5 @@
 [Unit]
-After=ignition-files.service aos-config-seed.service aos-seed-profiles.service nix-overlay-setup.service
+After=ignition-files.service aos-seed-profiles.service nix-overlay-setup.service
 Before=aos-preset.service multi-user.target
 ConditionPathExists=/etc/aos/packages.d/desired.toml
 Description=Reconcile AOS desired packages

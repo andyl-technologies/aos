@@ -306,19 +306,6 @@ in {
 
     aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
 
-    # RFC-0011 new path: bake the desired-packages list straight into the
-    # read-only image `/etc`. On the legacy Ignition path this file was written
-    # to the writable `/var/etc` at first boot by `installAtBootIgnitionConfig`;
-    # the new path has no Ignition stage, so the list (which is image-fixed for
-    # a baked install-at-boot image) is materialised directly. `0600` because it
-    # may carry first-boot credentials. `aos-install-packages.service` reads it
-    # (its `ConditionPathExists` guard then fires). The registries it references
-    # are baked independently by `modules/base/apm-registries.nix`.
-    environment.etc."aos/packages.d/desired.toml" = lib.mkIf cfg.enable {
-      text = desiredToml;
-      mode = "0600";
-    };
-
     # The only package on the system PATH is the aos/apm/apr CLI. Everything
     # it shells out to (git-minimal, tar, nix, systemctl, …) rides in via its
     # runtimeDeps and the hermetic wrapper in `pkgs/tools/aos/aos.nix`, so it
@@ -402,13 +389,8 @@ in {
         "aos-preset.service"
         "multi-user.target"
       ];
-      # Order after whichever "files" backend materialised /etc: the legacy
-      # Ignition stage (`ignition-files.service`) or the new-path seed
-      # (`aos-config-seed.service`). systemd ignores `After=` on units that do
-      # not exist, so listing both is correct on either path.
       after = [
         "ignition-files.service"
-        "aos-config-seed.service"
         "aos-seed-profiles.service"
         "nix-overlay-setup.service"
       ];

@@ -81,12 +81,11 @@ in {
     ## Ignition disk units then gate themselves off.
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = false;
       description = ''
         Provision substrate with systemd-repart convention drop-ins in the
-        initrd. Idempotent: adds only missing partitions and grows growable
-        ones every boot. Default on (RFC-0011) — it is the `disks` backend the
-        neutral boot units order against.
+        initrd instead of Ignition's disks/growfs/gpt-relocate. Idempotent:
+        adds only missing partitions and grows growable ones every boot.
       '';
     };
   };

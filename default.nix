@@ -332,6 +332,7 @@ in {
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
+    ignition-format = import ./lib/testing/ignition-format.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};

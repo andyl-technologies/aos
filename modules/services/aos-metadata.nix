@@ -29,15 +29,8 @@
   cfg = config.aos.provisioning.metadataAgent;
 in {
   options.aos.provisioning.metadataAgent = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Enable the RFC-0011 `aos metadata` transport-only fetch agent (detects
-        the platform and stages the operator `host.nix` into the initrd).
-        Default on — it is the new path's `fetch` stage.
-      '';
-    };
+    enable =
+      lib.mkEnableOption "the RFC-0011 `aos metadata` transport-only fetch agent";
 
     stashDir = lib.mkOption {
       type = lib.types.str;

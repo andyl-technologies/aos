@@ -66,12 +66,338 @@
     (lib.makeSearchPath "sbin" ignitionTools)
   ];
 
-  # Provisioning-backend names the neutral boot units order against. RFC-0011:
-  # disks are carved by the `systemd-repart` substrate (modules/services/
-  # repart.nix) and the first-boot `/etc` seed is created by
-  # `aos-config-seed.service` (modules/base/config-seed.nix).
-  disksUnit = "aos-repart.service";
-  filesUnit = "aos-config-seed.service";
+  # RFC-0011: when the systemd-repart convention substrate owns disk carving
+  # (modules/services/repart.nix), the Ignition grow/relocate units stand down —
+  # repart adds/grows partitions and rewrites the GPT itself. Default false, so
+  # the Ignition path is unchanged on every existing system.
+  repartEnabled = config.aos.provisioning.repart.enable;
+
+  # RFC-0011 cutover gate. Default true → every existing system keeps the
+  # Ignition provisioning graph and evaluates byte-identically. A new-path
+  # system sets this false and enables `aos.metadata`/`aos.provisioning.repart`/
+  # `aos.config.evalAtBoot`, which provide the fetch/disks/files backends below.
+  ignitionEnabled = config.aos.provisioning.ignition.enable;
+
+  # Provisioning-backend indirection. The neutral boot units order against the
+  # *active* disks/files backend by name; with Ignition on these resolve to the
+  # Ignition stage units (byte-identical), and with it off to the `systemd-repart`
+  # substrate + the on-host config-gen seed.
+  disksUnit =
+    if ignitionEnabled
+    then "ignition-disks.service"
+    else "aos-repart.service";
+  filesUnit =
+    if ignitionEnabled
+    then "ignition-files.service"
+    else "aos-config-seed.service";
+
+  # Shared config for every ignition stage unit: inherit the platform
+  # env from aos-platform-detect, wire PATH for the shell-outs, and
+  # run a oneshot that stays active across subsequent stages. `root`
+  # defaults to `/sysroot` (which is what the fetch / disks / mount
+  # stages want); the files stage overrides it to the per-gen
+  # /run/etc/ignition-<gen> path. The per-gen path lives in the
+  # initrd's `/run` tmpfs so that systemd-initrd's `mount --move /run
+  # /sysroot/run` during switch_root carries it (and its sub-mounts)
+  # into stage-2 — see the note above `run-etc-setup.service` below.
+  stageServiceConfig = {
+    stage,
+    root ? "/sysroot",
+  }: {
+    Type = "oneshot";
+    RemainAfterExit = true;
+    EnvironmentFile = "/run/ignition/platform.env";
+    ExecStart = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=${root} --stage=${stage} --log-to-stdout";
+    StandardOutput = "journal+console";
+    StandardError = "journal+console";
+  };
+
+  # The Ignition-specific initrd stage units, gated by `ignitionEnabled`.
+  ignitionStageServices = {
+    "aos-platform-detect" = {
+      description = "AOS platform auto-detect (ignition)";
+      wantedBy = ["initrd-root-fs.target"];
+      before = ["ignition-fetch.service"];
+      requires = [
+        "systemd-udevd.service"
+        "systemd-udev-trigger.service"
+      ];
+      after = [
+        "systemd-udevd.service"
+        "systemd-udev-trigger.service"
+      ];
+      unitConfig.DefaultDependencies = "no";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.aos-platform-detect}/bin/aos-platform-detect";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+    };
+
+    # Bring up DHCP networking before ignition-fetch, but ONLY on
+    # network-dependent platforms. aos-platform-detect drops
+    # /run/ignition/need-network for cloud platforms; the
+    # ConditionPathExists makes this gate a no-op (and, crucially, pull in
+    # nothing) on file/qemu/metal. The whole initrd.target closure is one
+    # transaction at boot, so a static Wants=network-online.target can't be
+    # gated — only a fresh, additive `systemctl start` issued here, after
+    # the post-udev ISO-aware detector ran, is correct. The start blocks
+    # until network-online.target is reached (wait-online is pulled via the
+    # .wants symlink the builder installs). wait-online sits behind a weak
+    # Wants= of the target, so a wait-online timeout doesn't fail the
+    # target's job — but SuccessExitStatus=0 1 keeps even a non-zero
+    # systemctl result best-effort rather than failing the gate and (via
+    # ignition-fetch's Requires=) wedging boot into emergency. ExecStart is
+    # not shell-parsed, so no `|| true` here — SuccessExitStatus is the hatch.
+    "aos-ignition-network" = {
+      description = "Bring up networking for ignition (network-dependent platforms only)";
+      wantedBy = ["initrd-root-fs.target"];
+      requires = ["aos-platform-detect.service"];
+      after = ["aos-platform-detect.service"];
+      before = ["ignition-fetch.service"];
+      unitConfig = {
+        DefaultDependencies = "no";
+        ConditionPathExists = "/run/ignition/need-network";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.systemd}/bin/systemctl start network-online.target";
+        SuccessExitStatus = "0 1";
+      };
+    };
+
+    # Relocate the GPT backup header to the true end of the boot disk
+    # before ignition's disks stage runs. The server image is built
+    # sized-to-fit (modules/image/_builder.nix): its backup GPT header
+    # sits right after root-a, so the primary header's LastUsableLBA
+    # describes the *image*, not the device it is written to. When that
+    # image lands on a larger disk — bare-metal `dd`, or a custom cloud
+    # image (e.g. DigitalOcean) on a bigger volume — ignition's disks
+    # stage cannot create or grow partitions past the stale boundary and
+    # fails with "Could not create partition N from X to Y" (sgdisk exit
+    # 4). `sgdisk -e` moves the backup header to the real end of the
+    # device and expands LastUsableLBA; it is a no-op when the image
+    # already spans the disk (disk == image size, or the qemu-uefi doc's
+    # host-side `sgdisk -e`). Ignition itself won't do this: its disks
+    # stage is strictly declarative and treats the existing table as
+    # authoritative input — repairing the GPT is the boot pipeline's job.
+    #
+    # Gated to the pre-provisioning boot only: once ignition has laid out
+    # the disk the var partition exists and the backup header is already
+    # at the end, so we skip and never rewrite the GPT on later boots.
+    "aos-gpt-relocate" = {
+      description = "Relocate GPT backup header to end of boot disk";
+      wantedBy = ["initrd-root-fs.target"];
+      before = [
+        "ignition-disks.service"
+        "initrd-root-fs.target"
+      ];
+      requires = ["dev-disk-by\\x2dpartlabel-root\\x2da.device"];
+      after = ["dev-disk-by\\x2dpartlabel-root\\x2da.device"];
+      unitConfig = {
+        DefaultDependencies = "no";
+        ConditionPathExists = "/dev/disk/by-partlabel/root-a";
+      };
+      environment.PATH = ignitionPath;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+      script = ''
+        set -euo pipefail
+        ${lib.optionalString repartEnabled ''
+          # systemd-repart relocates the GPT backup header to the device end
+          # as part of growing the last partition; nothing to do here.
+          echo "aos-gpt-relocate: repart owns GPT relocation; skipping"
+          exit 0
+        ''}
+        # The var partition is created by ignition, never by the image.
+        # Its presence means ignition already provisioned this disk and
+        # the GPT spans the full device — nothing to relocate.
+        if [ -e /dev/disk/by-partlabel/var ]; then
+          echo "aos-gpt-relocate: disk already provisioned (var present); skipping"
+          exit 0
+        fi
+
+        part=$(readlink -f /dev/disk/by-partlabel/root-a)
+        disk=$(lsblk -ndo PKNAME "$part" 2>/dev/null || true)
+        if [ -z "$disk" ]; then
+          echo "aos-gpt-relocate: cannot resolve parent disk of $part; skipping" >&2
+          exit 0
+        fi
+        disk="/dev/$disk"
+
+        echo "aos-gpt-relocate: relocating GPT backup header to end of $disk"
+        sgdisk -e "$disk"
+        sgdisk -v "$disk" || true
+      '';
+    };
+
+    "aos-growfs" = {
+      description = "Grow root-a ext4 filesystem to fill its partition";
+      wantedBy = ["initrd-root-fs.target"];
+      before = [
+        "sysroot.mount"
+        "initrd-root-fs.target"
+      ];
+      requires = ["ignition-disks.service"];
+      after = ["ignition-disks.service"];
+      unitConfig = {
+        DefaultDependencies = "no";
+        ConditionPathExists = "/dev/disk/by-partlabel/root-a";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Only a writable ext4 root is grown to fill its partition, and only
+        # when repart is not the carver. A read-only erofs root is the fixed
+        # immutable base (the writable Nix store layer and all mutable state
+        # live on /var) — growing it would change bytes and, under dm-verity
+        # (RFC-0011 F1), break the root hash; running resize2fs on erofs would
+        # also just fail. When the repart substrate is enabled it grows /var
+        # itself, so this unit becomes a no-op.
+        ExecStart =
+          if config.aos.filesystems.rootFsType == "ext4" && !repartEnabled
+          then "${pkgs.aos-growfs}/bin/aos-growfs"
+          else "${pkgs.coreutils}/bin/true";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+    };
+
+    "ignition-fetch" = {
+      description = "Ignition (fetch)";
+      wantedBy = ["initrd-root-fs.target"];
+      before = [
+        "ignition-disks.service"
+        "initrd-root-fs.target"
+        "sysroot.mount"
+      ];
+      requires = [
+        "systemd-modules-load.service"
+        "systemd-udevd.service"
+        "aos-platform-detect.service"
+        "aos-ignition-network.service"
+      ];
+      after = [
+        "systemd-modules-load.service"
+        "systemd-udevd.service"
+        "aos-platform-detect.service"
+        "aos-ignition-network.service"
+      ];
+      environment.PATH = ignitionPath;
+      serviceConfig = stageServiceConfig {stage = "fetch";};
+    };
+
+    "ignition-disks" = {
+      description = "Ignition (disks)";
+      wantedBy = ["initrd-root-fs.target"];
+      before = [
+        "initrd-root-device.target"
+        "initrd-root-fs.target"
+        "sysroot.mount"
+      ];
+      requires = [
+        "systemd-udevd.service"
+        "aos-platform-detect.service"
+        "aos-gpt-relocate.service"
+      ];
+      after = [
+        "ignition-fetch.service"
+        "systemd-udevd.service"
+        "aos-platform-detect.service"
+        "aos-gpt-relocate.service"
+      ];
+      environment.PATH = ignitionPath;
+      serviceConfig = stageServiceConfig {stage = "disks";};
+    };
+
+    "ignition-mount" = {
+      description = "Ignition (mount)";
+      wantedBy = ["initrd-fs.target"];
+      before = [
+        "ignition-files.service"
+        "initrd-switch-root.target"
+        "initrd-fs.target"
+      ];
+      requires = [
+        "initrd-root-fs.target"
+        "aos-platform-detect.service"
+      ];
+      after = [
+        "ignition-disks.service"
+        "sysroot.mount"
+        "initrd-root-fs.target"
+        "aos-platform-detect.service"
+      ];
+      environment.PATH = ignitionPath;
+      serviceConfig =
+        stageServiceConfig {stage = "mount";}
+        // {
+          # Run umount on service stop (i.e. during initrd-cleanup)
+          # so filesystems ignition mounted are torn down cleanly
+          # before switch_root. Matches upstream ignition-mount.service.
+          ExecStop = "${pkgs.ignition}/bin/ignition --platform=\${PLATFORM_ID} --root=/sysroot --stage=umount --log-to-stdout";
+        };
+    };
+
+    "ignition-files" = {
+      description = "Ignition (files)";
+      wantedBy = ["initrd-fs.target"];
+      before = [
+        "etc-overlay-setup.service"
+        "initrd-switch-root.target"
+        "initrd-fs.target"
+      ];
+      requires = [
+        "aos-platform-detect.service"
+        "mount-var.service"
+        "aos-seed-profiles.service"
+        "run-etc-setup.service"
+      ];
+      after = [
+        "ignition-mount.service"
+        "aos-platform-detect.service"
+        "mount-var.service"
+        "aos-seed-profiles.service"
+        "run-etc-setup.service"
+      ];
+      environment.PATH = ignitionPath;
+      # Write into the per-gen lower under /run/etc/ignition-<gen>/.
+      # Ignition's `--root=$ign` prepends $ign to absolute paths,
+      # so a `storage.links.path = "/etc/foo"` write lands at
+      # `$ign/etc/foo`. The per-gen subtree is created by the
+      # ExecStartPre below; etc-overlay-setup mounts it as the
+      # per-generation lowerdir in the three-layer /etc overlay.
+      #
+      # `--root` and the ExecStartPre target the initrd's own
+      # /run/etc/... (not /sysroot/run/etc/...) so the per-gen
+      # subtree is rooted under the /run tmpfs that
+      # systemd-initrd's switch_root moves to /sysroot/run — i.e.
+      # so the per-gen path remains reachable post-pivot as
+      # /run/etc/ignition-<gen>/ rather than getting shadowed by
+      # the moved /run mount.
+      serviceConfig =
+        stageServiceConfig {
+          stage = "files";
+          root = "/run/etc/ignition-\${AOS_PROFILE_GEN}";
+        }
+        // {
+          EnvironmentFile = [
+            "/run/ignition/platform.env"
+            "/run/aos-profile-gen.env"
+          ];
+          ExecStartPre =
+            "${pkgs.coreutils}/bin/mkdir -p "
+            + "/run/etc/ignition-\${AOS_PROFILE_GEN}/etc";
+        };
+    };
+  };
 
   # The neutral boot-infrastructure units — always emitted, ordered against
   # the active provisioning backend via `disksUnit`/`filesUnit`. Not specific
@@ -505,13 +831,37 @@
     };
   };
 in {
+  options.aos.provisioning.ignition.enable =
+    lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Whether to provision the host at first boot with Ignition (the legacy
+        path). Default true. When false, the Ignition stage units stand down and
+        a new-path system provides the fetch/disks/files backends via the
+        `aos metadata` agent (`aos.metadata.enable`), the `systemd-repart`
+        substrate (`aos.provisioning.repart.enable`), and on-host config
+        evaluation (`aos.config.evalAtBoot.enable`). The neutral boot
+        infrastructure (mount-var, the /etc + /nix overlays, profile seeding,
+        machine-id) is emitted either way and orders against whichever backend
+        is active.
+      '';
+    };
+
   config = {
-    # Neutral boot-infrastructure initrd services. The cpio assembler in
-    # modules/base/initrd-builder.nix picks these up via
-    # `system.build.systemdInitrdUnits`. They order against the active
-    # provisioning backend (`disksUnit` = systemd-repart, `filesUnit` =
-    # aos-config-seed) — see RFC-0011.
-    boot.initrd.systemd.services = neutralBootServices;
+    # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
+    # picks these up via `system.build.systemdInitrdUnits`.
+    #
+    # Ignition runs as a sequence of stages (fetch → disks → mount →
+    # files → umount). Upstream's dracut module splits each stage
+    # into its own unit so they can be ordered around `sysroot.mount`
+    # — disks happens before, mount/files after. Mirror that here.
+    # See ignition/dracut/30ignition/*.service in the ignition repo.
+    boot.initrd.systemd.services =
+      lib.mkMerge [
+        neutralBootServices
+        (lib.mkIf ignitionEnabled ignitionStageServices)
+      ];
 
     # DHCP on every physical NIC in the initrd. Kind=!* excludes virtual
     # links (bridges/bonds/etc.); matching only physical ether devices
