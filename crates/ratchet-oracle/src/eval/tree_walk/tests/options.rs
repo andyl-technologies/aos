@@ -99,6 +99,32 @@ fn heap_memory_budget_option_can_be_configured() {
 }
 
 #[test]
+fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("\"budgeted\"");
+    let outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("string evaluates");
+
+    assert_eq!(outcome.heap().memory_budget(), Some(budget));
+    assert_eq!(outcome.heap().memory_budget_poll_count(), 1);
+    let action = outcome
+        .heap()
+        .last_memory_budget_action()
+        .expect("tree-walk allocation polls configured budget");
+    assert_eq!(action.decision().budget(), budget);
+    assert_eq!(
+        action.decision().worker_stats(),
+        outcome.heap().arena_stats()
+    );
+    assert_eq!(
+        action.decision().permanent_stats(),
+        outcome.heap().permanent_arena_stats()
+    );
+    assert!(action.requests_tier_b());
+}
+
+#[test]
 fn force_cache_materialization_costs_can_be_configured() {
     let costs = MaterializationCosts::new(20, 3, 4, 5);
     let mut options = TreeWalkOptions::new();

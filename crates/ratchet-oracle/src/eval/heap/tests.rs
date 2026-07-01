@@ -100,6 +100,9 @@ fn default_heap_uses_tier_a_runtime_allocator() {
         heap.permanent_allocation_safepoints(),
         AllocationSafepointState::default()
     );
+    assert_eq!(heap.memory_budget(), None);
+    assert_eq!(heap.memory_budget_poll_count(), 0);
+    assert_eq!(heap.last_memory_budget_action(), None);
     assert_eq!(heap.arena_stats(), ArenaStats::default());
     assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
@@ -633,6 +636,65 @@ fn memory_budget_action_advises_unused_tails_before_tier_b_request() {
     assert_eq!(report.chunks(), 2);
     assert_eq!(report.requested_bytes(), unused_tail_bytes);
     assert!(supported_tail_advice_bytes <= report.requested_bytes());
+}
+
+#[test]
+fn configured_heap_memory_budget_polls_successful_allocations() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+
+    heap.set_memory_budget(budget);
+
+    assert_eq!(heap.memory_budget(), Some(budget));
+    assert_eq!(heap.memory_budget_poll_count(), 0);
+    assert_eq!(heap.last_memory_budget_action(), None);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+
+    assert_eq!(heap.memory_budget_poll_count(), 1);
+    let action = heap
+        .last_memory_budget_action()
+        .expect("configured budget polls after allocation");
+    assert_eq!(action.decision().budget(), budget);
+    assert_eq!(action.decision().worker_stats(), heap.arena_stats());
+    assert_eq!(
+        action.decision().permanent_stats(),
+        heap.permanent_arena_stats()
+    );
+    assert!(action.requests_tier_b());
+
+    heap.set_memory_budget(budget);
+    assert_eq!(
+        heap.last_memory_budget_action(),
+        None,
+        "reconfiguring the budget clears stale action metadata"
+    );
+    let first = heap
+        .alloc_string(NixString::from_bytes(b"shared".to_vec()))
+        .expect("first permanent string allocates");
+    assert_eq!(heap.memory_budget_poll_count(), 2);
+    let second = heap
+        .alloc_string(NixString::from_bytes(b"shared".to_vec()))
+        .expect("matching permanent string reuses the consed value");
+    assert!(first.raw_eq(second));
+    assert_eq!(
+        heap.memory_budget_poll_count(),
+        2,
+        "hash-cons reuse is not an allocation safepoint"
+    );
+
+    heap.clear_memory_budget();
+    assert_eq!(heap.memory_budget(), None);
+    assert_eq!(heap.last_memory_budget_action(), None);
+    heap.alloc_lambda(EvalLambda::new(
+        IrId::new(2),
+        IrId::new(3),
+        FrameId::new(0),
+        EvalEnv::default(),
+    ))
+    .expect("lambda allocates with budget polling disabled");
+    assert_eq!(heap.memory_budget_poll_count(), 2);
 }
 
 #[test]

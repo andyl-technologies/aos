@@ -21,7 +21,9 @@ use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats};
-use crate::heap::{GcHeapAddress, GenerationalGcError, HeapGeneration, ResolvedValueGeneration};
+use crate::heap::{
+    GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, ResolvedValueGeneration,
+};
 use crate::list::NixList;
 use crate::runtime::alloc::{
     AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
@@ -177,6 +179,9 @@ pub struct EvalPrimOp {
 pub struct EvalHeap {
     allocator: RuntimeAllocator,
     permanent_allocator: PermanentSharedAllocator,
+    memory_budget: Option<HeapMemoryBudget>,
+    memory_budget_poll_count: u64,
+    last_memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
     records: Vec<HeapRecord>,
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,

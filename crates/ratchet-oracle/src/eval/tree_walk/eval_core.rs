@@ -305,6 +305,10 @@ impl TreeWalk {
     ) -> Self {
         let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
         let parse_cache = options.parse_cache_root().map(ParseCache::new);
+        let mut heap = EvalHeap::new();
+        if let Some(heap_memory_budget) = options.heap_memory_budget() {
+            heap.set_memory_budget(heap_memory_budget);
+        }
         Self {
             modules: vec![TreeWalkModule {
                 ir: ir.clone(),
@@ -314,7 +318,7 @@ impl TreeWalk {
             }],
             current_module: EvalModuleId::ROOT,
             symbols: ir.symbols.clone(),
-            heap: EvalHeap::new(),
+            heap,
             env: Vec::new(),
             with_scopes: Vec::new(),
             scoped_globals: Vec::new(),

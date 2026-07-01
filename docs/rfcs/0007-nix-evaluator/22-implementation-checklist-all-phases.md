@@ -5395,9 +5395,13 @@ and helps the oracle directly.
       aggregation, the three current action paths, and the sub-page/unsupported
       advice-capacity guard. The `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now
       flows through `NixEvalConfig` into native-eval `TreeWalkOptions` as a
-      validated `HeapMemoryBudget`. Daemon policy, live RSS sampling, CA-store
-      spill, cold hash-consed page eviction, and collector installation remain
-      open under the full memory-management rows.
+      validated `HeapMemoryBudget`, and `TreeWalk` installs that budget on
+      `EvalHeap`. Successful typed heap allocations now poll the configured
+      budget automatically, dispatch the implemented unused-tail advice response,
+      and retain the latest action for tests and later daemon policy; hash-cons
+      hits skip the poll because no heap allocation occurred. Daemon policy, live
+      RSS sampling, CA-store spill, cold hash-consed page eviction, and collector
+      installation remain open under the full memory-management rows.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

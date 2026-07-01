@@ -1077,9 +1077,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       action paths, and the sub-page/unsupported advice-capacity guard. The
       `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now flows through
       `NixEvalConfig` into native-eval `TreeWalkOptions` as a validated
-      `HeapMemoryBudget`. Daemon policy, live RSS sampling, actual CA-store
-      spill, and collector installation are not wired yet, so the full row above
-      remains open.
+      `HeapMemoryBudget`, and `TreeWalk` installs that budget on `EvalHeap`.
+      Successful typed heap allocations now poll the configured budget
+      automatically, dispatch the implemented unused-tail advice response, and
+      retain the latest action for tests and later daemon policy; hash-cons hits
+      skip the poll because no heap allocation occurred. Daemon policy, live RSS
+      sampling, actual CA-store spill, and collector installation are not wired
+      yet, so the full row above remains open.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 

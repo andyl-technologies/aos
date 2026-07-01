@@ -218,6 +218,9 @@ impl EvalHeap {
         Self {
             allocator: RuntimeAllocator::tier_a_one_shot(),
             permanent_allocator: PermanentSharedAllocator::new(),
+            memory_budget: None,
+            memory_budget_poll_count: 0,
+            last_memory_budget_action: None,
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
@@ -238,12 +241,46 @@ impl EvalHeap {
                 .map_err(EvalHeapError::Arena)?,
             permanent_allocator: PermanentSharedAllocator::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
+            memory_budget: None,
+            memory_budget_poll_count: 0,
+            last_memory_budget_action: None,
             records: Vec::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
         })
+    }
+
+    /// Returns the configured automatic heap memory budget, if any.
+    pub const fn memory_budget(&self) -> Option<HeapMemoryBudget> {
+        self.memory_budget
+    }
+
+    /// Installs a heap memory budget for later allocation safepoints.
+    ///
+    /// Successful heap-object allocations classify whole-heap mapped bytes
+    /// against this budget and run the currently implemented unused-tail advice
+    /// action when the budget policy asks for reclaim.
+    pub fn set_memory_budget(&mut self, budget: HeapMemoryBudget) {
+        self.memory_budget = Some(budget);
+        self.last_memory_budget_action = None;
+    }
+
+    /// Clears automatic heap memory-budget polling.
+    pub fn clear_memory_budget(&mut self) {
+        self.memory_budget = None;
+        self.last_memory_budget_action = None;
+    }
+
+    /// Returns how many successful heap allocations polled the configured budget.
+    pub const fn memory_budget_poll_count(&self) -> u64 {
+        self.memory_budget_poll_count
+    }
+
+    /// Returns the most recent automatic memory-budget action.
+    pub const fn last_memory_budget_action(&self) -> Option<EvalHeapMemoryBudgetAction> {
+        self.last_memory_budget_action
     }
 
     /// Returns current runtime allocator accounting.
@@ -348,6 +385,15 @@ impl EvalHeap {
                 EvalHeapMemoryBudgetAction::RequestTierB { decision, report }
             }
         }
+    }
+
+    fn poll_memory_budget_after_allocation(&mut self) {
+        let Some(budget) = self.memory_budget else {
+            return;
+        };
+        self.memory_budget_poll_count = self.memory_budget_poll_count.saturating_add(1);
+        self.last_memory_budget_action =
+            Some(self.respond_to_memory_budget_with_unused_tail_advice(budget));
     }
 
     /// Installs one GC-stress polling policy for both worker and permanent
@@ -461,6 +507,7 @@ impl EvalHeap {
             object: HeapObjectValue::String(string),
         });
         self.push_string_cons_value(cons_slot, value);
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -508,6 +555,7 @@ impl EvalHeap {
             object: HeapObjectValue::Path(path),
         });
         self.push_path_cons_value(cons_slot, value);
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -555,6 +603,7 @@ impl EvalHeap {
             object: HeapObjectValue::List(list),
         });
         self.push_list_cons_value(cons_slot, value);
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -605,6 +654,7 @@ impl EvalHeap {
             object: HeapObjectValue::Attrs { shape, attrs },
         });
         self.push_attrs_cons_value(cons_slot, value);
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -634,6 +684,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -663,6 +714,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
@@ -692,6 +744,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
+        self.poll_memory_budget_after_allocation();
         Ok(value)
     }
 
