@@ -8,7 +8,7 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::heap::{
     ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
     MemoryAdviceKind, MemoryAdviceOutcome, ProcessResidentMemorySample,
-    ProcessResidentMemorySource, advise_cold_heap_object_allocation,
+    ProcessResidentMemorySource, RegionPlan, advise_cold_heap_object_allocation,
     advise_evict_heap_object_allocation,
 };
 
@@ -605,6 +605,59 @@ impl EvalHeap {
             reclaimed_records,
             self.records.len(),
         ))
+    }
+
+    /// Retires a worker lexical-region marker without reclaiming its suffix.
+    ///
+    /// The marker must be the current innermost worker-region marker for this
+    /// heap. The operation removes only the marker bookkeeping; allocations,
+    /// typed records, safepoints, and memory-budget telemetry remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::WorkerRegionPopStaleMark`] if `mark` cannot
+    /// describe this heap's current typed record prefix or is not the innermost
+    /// active worker-region marker.
+    pub fn cancel_worker_region_mark(
+        &mut self,
+        mark: EvalHeapWorkerRegionMark,
+    ) -> Result<(), EvalHeapError> {
+        self.validate_worker_region_mark_is_innermost(mark)?;
+        let _ = self.worker_region_mark_stack.pop();
+        Ok(())
+    }
+
+    /// Reclaims a worker lexical region when a region plan permits early pop.
+    ///
+    /// Plans that do not permit early pop retire `mark` with
+    /// [`Self::cancel_worker_region_mark`] and return `Ok(None)` without
+    /// reclaiming allocations. Plans that permit early pop use
+    /// [`Self::pop_worker_region_if_disconnected`], so the existing typed
+    /// side-table validation remains the reclamation safety boundary.
+    ///
+    /// # Errors
+    ///
+    /// When `plan` permits early pop, returns the same errors as
+    /// [`Self::pop_worker_region_if_disconnected`].
+    /// When `plan` does not permit early pop, returns the same stale-marker
+    /// errors as [`Self::cancel_worker_region_mark`].
+    ///
+    /// # Panics
+    ///
+    /// When `plan` permits early pop, panics if the process exhausts all
+    /// evaluator heap region-owner ids while rotating an overflowed worker
+    /// region epoch.
+    pub fn pop_worker_region_if_plan_permits(
+        &mut self,
+        mark: EvalHeapWorkerRegionMark,
+        plan: RegionPlan,
+    ) -> Result<Option<EvalHeapWorkerRegionPopReport>, EvalHeapError> {
+        if !plan.permits_early_pop() {
+            self.cancel_worker_region_mark(mark)?;
+            return Ok(None);
+        }
+
+        self.pop_worker_region_if_disconnected(mark).map(Some)
     }
 
     /// Drops the worker-domain arena when no worker heap records remain live.
@@ -1973,34 +2026,7 @@ impl EvalHeap {
         &self,
         mark: EvalHeapWorkerRegionMark,
     ) -> Result<usize, EvalHeapError> {
-        if mark.owner != self.region_owner {
-            return Err(EvalHeapError::WorkerRegionPopStaleMark {
-                reason: "marker was captured from another heap",
-                marker_records: mark.records,
-                current_records: self.records.len(),
-            });
-        }
-        if mark.allocator_epoch != self.worker_allocator_epoch {
-            return Err(EvalHeapError::WorkerRegionPopStaleMark {
-                reason: "worker allocator epoch changed",
-                marker_records: mark.records,
-                current_records: self.records.len(),
-            });
-        }
-        if self.worker_region_mark_stack.last().copied() != Some(mark.mark_id) {
-            return Err(EvalHeapError::WorkerRegionPopStaleMark {
-                reason: "worker region mark is not innermost",
-                marker_records: mark.records,
-                current_records: self.records.len(),
-            });
-        }
-        if mark.records > self.records.len() {
-            return Err(EvalHeapError::WorkerRegionPopStaleMark {
-                reason: "marker record prefix exceeds current records",
-                marker_records: mark.records,
-                current_records: self.records.len(),
-            });
-        }
+        self.validate_worker_region_mark_is_innermost(mark)?;
 
         let reclaimed = self.records.len() - mark.records;
         let reclaimed_records = &self.records[mark.records..];
@@ -2030,6 +2056,42 @@ impl EvalHeap {
         }
 
         Ok(reclaimed)
+    }
+
+    fn validate_worker_region_mark_is_innermost(
+        &self,
+        mark: EvalHeapWorkerRegionMark,
+    ) -> Result<(), EvalHeapError> {
+        if mark.owner != self.region_owner {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "marker was captured from another heap",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if mark.allocator_epoch != self.worker_allocator_epoch {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "worker allocator epoch changed",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if self.worker_region_mark_stack.last().copied() != Some(mark.mark_id) {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "worker region mark is not innermost",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if mark.records > self.records.len() {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "marker record prefix exceeds current records",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+
+        Ok(())
     }
 
     fn touch_record(&self, record: &HeapRecord) {

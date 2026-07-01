@@ -5,11 +5,12 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget,
-    HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
-    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, ProcessResidentMemorySource,
-    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
+    AllocationRegionFacts, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout,
+    ProcessResidentMemorySource, RegionPlan, RegionRuntimeTier, RememberedEdge, RememberedSet,
+    ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -280,6 +281,138 @@ fn worker_region_pop_reclaims_disconnected_worker_suffix() {
     ));
     assert!(matches!(
         heap.get_lambda(second),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+}
+
+#[test]
+fn worker_region_plan_pop_cancels_until_region_plan_permits() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let retained = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("retained thunk allocates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let temporary = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("temporary lambda allocates");
+    let stats_before_skip = heap.arena_stats();
+    let safepoints_before_skip = heap.allocation_safepoints();
+    let conservative_plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::conservative(),
+    );
+
+    let skipped = heap
+        .pop_worker_region_if_plan_permits(mark, conservative_plan)
+        .expect("non-pop region plan cancels the mark");
+
+    assert_eq!(skipped, None);
+    assert_eq!(heap.arena_stats(), stats_before_skip);
+    assert_eq!(heap.allocation_safepoints(), safepoints_before_skip);
+    assert!(heap.get_thunk(retained).is_ok());
+    assert!(heap.get_lambda(temporary).is_ok());
+
+    let lexical_plan = RegionPlan::classify(
+        RegionRuntimeTier::OneShotArena,
+        AllocationRegionFacts::lexical_no_escape(),
+    );
+    let error = heap
+        .pop_worker_region_if_plan_permits(mark, lexical_plan)
+        .expect_err("cancelled marker cannot be reused");
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopStaleMark {
+            reason: "worker region mark is not innermost",
+            marker_records: mark.records(),
+            current_records: heap.len(),
+        }
+    );
+
+    let lexical_mark = heap
+        .worker_region_mark()
+        .expect("fresh region mark records");
+    let temporary_after_plan = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(5),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("temporary lambda after plan allocates");
+    let report = heap
+        .pop_worker_region_if_plan_permits(lexical_mark, lexical_plan)
+        .expect("lexical no-escape plan routes to region pop")
+        .expect("lexical no-escape plan permits early pop");
+
+    assert_eq!(report.reclaimed_records(), 1);
+    assert_eq!(report.records_after(), lexical_mark.records());
+    assert!(heap.get_thunk(retained).is_ok());
+    assert!(heap.get_lambda(temporary).is_ok());
+    assert!(matches!(
+        heap.get_lambda(temporary_after_plan),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+}
+
+#[test]
+fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let outer = heap
+        .worker_region_mark()
+        .expect("outer region mark records");
+    let outer_value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("outer value allocates");
+    let inner = heap
+        .worker_region_mark()
+        .expect("inner region mark records");
+    let inner_value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(4),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("inner value allocates");
+    let stats_before_cancel = heap.arena_stats();
+    let safepoints_before_cancel = heap.allocation_safepoints();
+
+    heap.cancel_worker_region_mark(inner)
+        .expect("innermost marker cancels");
+
+    assert_eq!(heap.arena_stats(), stats_before_cancel);
+    assert_eq!(heap.allocation_safepoints(), safepoints_before_cancel);
+    assert!(heap.get_lambda(outer_value).is_ok());
+    assert!(heap.get_lambda(inner_value).is_ok());
+    assert!(matches!(
+        heap.cancel_worker_region_mark(inner),
+        Err(EvalHeapError::WorkerRegionPopStaleMark {
+            reason: "worker region mark is not innermost",
+            ..
+        })
+    ));
+
+    let outer_report = heap
+        .pop_worker_region_if_disconnected(outer)
+        .expect("outer marker remains valid after inner cancel");
+    assert_eq!(outer_report.reclaimed_records(), 2);
+    assert_eq!(outer_report.records_after(), outer.records());
+    assert!(matches!(
+        heap.get_lambda(outer_value),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+    assert!(matches!(
+        heap.get_lambda(inner_value),
         Err(EvalHeapError::UnknownPointer { .. })
     ));
 }

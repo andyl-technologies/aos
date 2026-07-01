@@ -1345,7 +1345,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       reclamation, collector-poll scan staleness under address reuse,
       epoch-overflow owner rotation, and safepoint rollback. IR escape/region
       analysis and automatic tree-walk allocation placement remain open, so the
-      full row remains open.
+      full row remains open. `EvalHeap::pop_worker_region_if_plan_permits`
+      connects the existing conservative `RegionPlan` policy to this manual
+      admission boundary: non-pop plans retire the marker without reclaiming
+      heap records, and lexical no-escape plans route through the same typed
+      validation before reclaiming a suffix.
 
 ### Tier B — precise generational copying GC (§4)
 
@@ -1717,8 +1721,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocation-safepoint state back to the marker, truncate typed records,
       advance the collector snapshot epoch, and make reclaimed suffix handles fail as unknown until a
       later bump reuse assigns the address to a new record. Nested LIFO markers
-      remain valid across inner pops. This still does not connect the placement
-      policy to IR allocation sites or escape-analysis proofs.
+      remain valid across inner pops. The plan-gated helper
+      `pop_worker_region_if_plan_permits` now retires conservative
+      `RegionPlan` markers without reclaiming records and routes lexical
+      no-escape plans through the same validation. This connects the allocator
+      primitive and region policy to the tree-walk heap's typed safety boundary,
+      but still does not connect region-placement policy to IR allocation sites
+      or automatic escape-analysis proofs.
 - [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
 
 ### Concurrent, low-pause collection (§6)

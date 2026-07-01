@@ -5678,6 +5678,11 @@ and helps the oracle directly.
       cached-result rejection, foreign-marker rejection, reset-stale marker
       rejection, nested LIFO reclamation, collector-poll scan staleness under
       address reuse, epoch-overflow owner rotation, and safepoint rollback.
+      `EvalHeap::pop_worker_region_if_plan_permits` now connects the
+      conservative `RegionPlan` policy to this manual admission boundary:
+      non-pop plans retire the marker without reclaiming heap records, and
+      lexical no-escape plans route through the same typed validation before
+      reclaiming a suffix.
       Automatic tree-walk allocation placement and IR escape-analysis wiring
       remain open.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
@@ -6511,8 +6516,10 @@ it ships).**
       back to the marker, truncate typed records, advance the collector snapshot
       epoch, and make reclaimed handles fail as unknown until a later bump reuse
       assigns the address to a new record. Nested LIFO markers remain valid
-      across inner pops. This remains disconnected from IR allocation-site
-      placement and escape-analysis proofs.
+      across inner pops. This remains disconnected from automatic IR
+      allocation-site placement and escape-analysis proofs, but
+      `pop_worker_region_if_plan_permits` now routes the existing conservative
+      `RegionPlan` decision into the manual typed admission boundary.
 - [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
       (ZGC/Shenandoah-style colored pointers + load barriers), a committed
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode
