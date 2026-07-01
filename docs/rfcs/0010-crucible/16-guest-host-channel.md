@@ -865,10 +865,26 @@ the transport layer by construction.
   black-box observable-I/O condition firings, and backend fingerprints while
   rejecting any named or guest-marker leaf fallback and any guest-marker event-log
   entry.
-- [ ] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
+- [x] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
   read at the exact trap icount; host→guest direction (if any) obeys the injection
   contract; fingerprint-identical with markers on vs off. — satisfies [GHC-30],
   [GHC-31], [GHC-32]; spec §16.7.
+  Completed by `checks.crucible.phase4.guestHostChannelDeterminism`: the QEMU
+  plugin now routes generic marker traps through the shared trap-icount payload
+  reader, and `whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount`
+  pins the safe callback-core contract to a single `current_icount` snapshot whose
+  decoded marker is unaffected by later guest-memory mutation in the reader
+  backend; the host→guest path is pinned by
+  `whitebox_channel_safety_injects_host_to_guest_only_at_delivery_icount`,
+  `whitebox_channel_safety_ignores_producer_timing_before_delivery_icount`, and
+  the app-random trap-icount reply test, which reject early and late writes and
+  make eager producer attempts produce the same write as a just-in-time producer;
+  `guest_host_channel_determinism` drives the engine scheduler event-log path
+  under `WhiteBoxPolicy::Disabled` and `WhiteBoxPolicy::Enabled` and proves
+  marker-enabled and marker-disabled witnesses keep identical causal event-log and
+  backend fingerprint material while a changed causal boundary or backend workload
+  still moves the witness. Full canonical `gate:any-guest` and
+  `gate:single-vm-fingerprint` wiring remains the T-GHC-15 task.
 - [ ] **T-GHC-13** Run the guest virtual-vs-physical address spike for the payload
   read; default to the conservative physical/identity-mapped shared page until
   resolved. — satisfies [GHC-33]; spec §16.7.
