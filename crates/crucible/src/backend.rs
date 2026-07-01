@@ -31,6 +31,10 @@ pub trait Backend {
 
     /// Delivers deterministic input to the backend.
     ///
+    /// This is a backend delivery surface for already-scheduled model events and
+    /// guest-host channel replies. It is not a host-side workload generator and
+    /// MUST NOT be used to originate application traffic for a scenario.
+    ///
     /// # Errors
     ///
     /// Returns a [`BackendError`] when the input cannot be delivered.
@@ -85,6 +89,10 @@ pub struct ExecutionFingerprint {
 }
 
 /// Deterministic input delivered to a backend.
+///
+/// This payload represents backend delivery for model-controlled inputs, not a
+/// host-side workload generator. Application workload traffic must originate
+/// from guest execution and cross modeled devices as ordinary guest/device I/O.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BackendInput {
     /// The target node.

@@ -1077,6 +1077,11 @@ in rec {
       attrPath = "checks.crucible.phase4.guestHostAppRandomCap";
       taskIds = ["T-GHC-17"];
     };
+    workloadModel = import ./phase4-workload-model.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.workloadModel";
+      taskIds = ["T-WL-1"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

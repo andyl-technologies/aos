@@ -280,7 +280,7 @@ id = "db-0"
 arch = "x86_64"
 kernel = "blake3:9f86d0..."
 root_image = "blake3:store0..."        # unmodified replicated-store image
-cmdline = "console=ttyS0 crucible.workload=store peers=db-1,db-2"
+cmdline = "console=ttyS0 store.peers=db-1,db-2"
 memory_mib = 512
 icount_shift = 7
 ready_point = { kind = "console_marker", marker = "ready to accept connections" }
@@ -645,6 +645,14 @@ that are specific to a guest-VM harness:
   the only layer at which Crucible shapes traffic. *Gate:* `gate:e2e-determinism`.
   *Spec:* §B.1, §B.3.
 
+Implementation note (T-WL-1): the engine exposes a closed `GuestWorkloadBinary`
+model for `httpd`, the client request loop (`httpget`), and benchmark (`bench`)
+guest binaries, and encodes the selected binary only as the hashed
+`crucible.workload=...` scenario parameter on the guest command line. The
+`checks.crucible.phase4.workloadModel` gate also lints that no
+application-traffic origination path exists in the engine: Crucible's workload
+role is observation and steering only.
+
 ### B.2 Deterministic seeding of in-guest load rides the entropy boundary
 
 An in-guest workload that draws on randomness — random request targets, random
@@ -918,11 +926,14 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
 > triggers, 18 assertions, 22 advanced features, 23 CLI) — the examples are the
 > end-to-end fixtures those layers' gates run against.
 
-- [ ] **T-WL-1** Implement and document the in-guest workload model: the supported
+- [x] **T-WL-1** Implement and document the in-guest workload model: the supported
   guest workload binaries (httpd, client loop, benchmark) selected by scenario
   parameter, with NO host-side traffic injector; add a lint/test that no
   application-traffic origination path exists in the engine. — satisfies [WL-1],
   [WL-2], [WL-3]; spec §B.1.
+  Completed by `checks.crucible.phase4.workloadModel`: the engine has a closed
+  `GuestWorkloadBinary` vocabulary, encodes selection as hashed guest cmdline
+  scenario config, and rejects host-side application-traffic injector API shapes.
 - [ ] **T-WL-2** Verify in-guest workload determinism over the seeded firmware
   entropy boundary: a guest workload that draws on guest RNG reproduces
   bit-identically across runs with zero guest modification, and a workload that
