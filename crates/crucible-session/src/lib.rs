@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Configuration, ControlOperation, ControlOperationKind, EngineError, Fault, FaultTag,
-    QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState, SchedulerError,
-    SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
+    Checkpoint, Configuration, ContentHash, ControlOperation, ControlOperationKind, Decision,
+    EngineError, Fault, FaultTag, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
+    Schedule, SchedulerError, SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -33,6 +33,9 @@ pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
 
 /// Maximum number of retained event-log frames cloned by one stream receive.
 pub const SESSION_EVENT_LOG_REPLAY_BATCH_SIZE: usize = 64;
+
+/// Default mailbox capacity for a newly forked child session actor.
+pub const SESSION_FORK_MAILBOX_CAPACITY: usize = 8;
 
 /// Drives the engine quantum loop from the L4 session boundary.
 ///
@@ -534,6 +537,39 @@ pub struct EngineSnapshot {
     pub quanta: u64,
 }
 
+/// Reproducible record for a session-level fork operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionForkRecord {
+    /// Checkpoint/configuration where the branch was forked.
+    pub from_checkpoint: ContentHash,
+    /// Checkpoint recorded for the forked branch.
+    pub branch_checkpoint: ContentHash,
+    /// Decisions appended after `from_checkpoint` to create the branch.
+    pub schedule_delta: Schedule,
+}
+
+/// Result of creating an independent child session from a fork point.
+///
+/// The child is an ordinary [`SessionActor`] loaded at the forked branch
+/// configuration. Starting the child actor realizes that configuration through
+/// the same [`instantiate`] path used by start and resume.
+pub struct SessionFork<L> {
+    /// Parent engine state observed while servicing the fork.
+    pub parent_state: EngineState,
+    /// Configuration id used as the fork point.
+    pub base_configuration: ContentHash,
+    /// Branch configuration produced by appending the fork decisions.
+    pub branch_configuration: Configuration,
+    /// Thin checkpoint recorded for the branch in the temporal graph.
+    pub branch_checkpoint: Checkpoint,
+    /// Structural record of the fork point and branch delta.
+    pub record: SessionForkRecord,
+    /// Command sender for the independent child session actor.
+    pub child_sender: mpsc::Sender<SessionCommand>,
+    /// Independent child session actor loaded at `branch_configuration`.
+    pub child_actor: SessionActor<L>,
+}
+
 /// Lock-free mirror of live session state.
 ///
 /// The session actor is the only writer. Observers clone an [`Arc`] handle and
@@ -936,6 +972,69 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn quanta(&self) -> u64 {
         self.quanta
+    }
+
+    /// Creates an independent child session from `base` plus divergent decisions.
+    ///
+    /// The fork is recorded through [`TemporalGraph::fork`], which realizes
+    /// `base` via [`instantiate`], appends the supplied [`Decision`] values with
+    /// the execution-model step operation, and records the branch as a thin
+    /// checkpoint. The returned child is a normal loaded [`SessionActor`] with
+    /// its own mailbox and live snapshot; starting it realizes the branch
+    /// through the same path as any other session start or resume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::InvalidEngineState`] when called while the parent
+    /// is loaded or running. A running parent must first pause at a quantum
+    /// boundary. Returns [`SessionError::Engine`] when the temporal graph cannot
+    /// realize `base` or record the fork branch.
+    pub fn fork_child<C, I>(
+        &mut self,
+        base: &Configuration,
+        decisions: I,
+        child_quantum_loop: C,
+    ) -> Result<SessionFork<C>, SessionError>
+    where
+        I: IntoIterator<Item = Decision>,
+    {
+        let parent_state = self.state.clone();
+        if !matches!(
+            parent_state,
+            EngineState::Paused { .. } | EngineState::Stopped { .. }
+        ) {
+            return Err(SessionError::InvalidEngineState {
+                state: parent_state,
+                operation: "fork_child",
+            });
+        }
+
+        let fork = self.graph.fork(base, decisions)?;
+        let child_graph = self.graph.clone();
+        let branch_configuration = fork.branch.clone();
+        let branch_checkpoint = fork.branch_checkpoint.clone();
+        let record = SessionForkRecord {
+            from_checkpoint: fork.base.checkpoint,
+            branch_checkpoint: branch_checkpoint.id,
+            schedule_delta: branch_checkpoint.schedule_delta.clone(),
+        };
+        let child_engine = Engine::new(
+            branch_configuration.clone(),
+            child_graph,
+            child_quantum_loop,
+        );
+        let (child_sender, receiver) = mpsc::channel(SESSION_FORK_MAILBOX_CAPACITY);
+        let child_actor = SessionActor::new(child_engine, receiver);
+
+        Ok(SessionFork {
+            parent_state,
+            base_configuration: fork.base.configuration,
+            branch_configuration,
+            branch_checkpoint,
+            record,
+            child_sender,
+            child_actor,
+        })
     }
 
     /// Returns a boundary snapshot of the engine state.
