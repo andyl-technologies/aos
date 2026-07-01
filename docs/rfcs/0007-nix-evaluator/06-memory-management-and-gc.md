@@ -917,15 +917,24 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the future minor
       collection's initial young-object survivor frontier from precise roots
-      plus a caller-supplied remembered set that must be complete for the same
-      collection epoch and target current nursery objects. It filters non-young
-      roots, deduplicates young roots plus remembered targets, validates unique
-      nursery age metadata, and classifies each survivor as copy-to-next-nursery
-      or promote-to-old with an age-threshold policy. This is not yet a copying
-      collector: remembered-set epoch validation, field expansion,
-      relocation/writeback, nursery semispace storage, old-generation
+      plus a caller-supplied remembered-set snapshot whose targets must refer
+      to current nursery objects. It filters non-young roots, deduplicates young
+      roots plus remembered targets, validates unique nursery age metadata, and
+      classifies each survivor as copy-to-next-nursery or promote-to-old with an
+      age-threshold policy. This is not yet a copying collector: field
+      expansion, relocation/writeback, nursery semispace storage, old-generation
       collection, GC-stress mode, and byte-green Tier-B harness execution remain
       open in the full collector row above.
+- [x] Current remembered-set epoch-validation precursor:
+      `ratchet-value::heap::gc::RememberedSetEpoch` and
+      `RememberedSetSnapshot` attach an explicit collection epoch to the
+      deduplicated old/permanent-to-young edge set, and
+      `MinorGcPlan::from_roots_and_remembered` rejects snapshots whose epoch
+      does not match the requested minor-collection epoch before reading
+      remembered targets. Tests pin epoch propagation through `RememberedSet`,
+      successful matching-epoch planning, and mismatch rejection. This validates
+      epoch metadata only; the caller must still supply a complete remembered
+      set for that epoch until the real card table/collector owns the protocol.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

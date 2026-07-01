@@ -221,21 +221,97 @@ pub enum RememberedSetUpdate {
     AlreadyPresent,
 }
 
+/// A collection epoch for remembered-set snapshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RememberedSetEpoch {
+    value: u64,
+}
+
+impl RememberedSetEpoch {
+    /// Creates a remembered-set epoch from its raw counter value.
+    pub const fn new(value: u64) -> Self {
+        Self { value }
+    }
+
+    /// Returns the raw epoch counter value.
+    pub const fn value(self) -> u64 {
+        self.value
+    }
+}
+
+impl std::fmt::Display for RememberedSetEpoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(formatter)
+    }
+}
+
+/// A read-only remembered-set view captured for one minor-GC epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RememberedSetSnapshot<'a> {
+    epoch: RememberedSetEpoch,
+    edges: &'a [RememberedEdge],
+}
+
+impl<'a> RememberedSetSnapshot<'a> {
+    const fn new(epoch: RememberedSetEpoch, edges: &'a [RememberedEdge]) -> Self {
+        Self { epoch, edges }
+    }
+
+    /// Returns the remembered-set epoch this snapshot belongs to.
+    pub const fn epoch(self) -> RememberedSetEpoch {
+        self.epoch
+    }
+
+    /// Returns remembered edges in snapshot order.
+    pub const fn edges(self) -> &'a [RememberedEdge] {
+        self.edges
+    }
+
+    fn validate_epoch(self, expected: RememberedSetEpoch) -> Result<Self, GenerationalGcError> {
+        if self.epoch != expected {
+            return Err(GenerationalGcError::RememberedSetEpochMismatch {
+                expected,
+                actual: self.epoch,
+            });
+        }
+        Ok(self)
+    }
+}
+
 /// A simple remembered set for old-to-young edges.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RememberedSet {
+    epoch: RememberedSetEpoch,
     edges: Vec<RememberedEdge>,
 }
 
 impl RememberedSet {
     /// Creates an empty remembered set.
     pub const fn new() -> Self {
-        Self { edges: Vec::new() }
+        Self::with_epoch(RememberedSetEpoch::new(0))
+    }
+
+    /// Creates an empty remembered set for `epoch`.
+    pub const fn with_epoch(epoch: RememberedSetEpoch) -> Self {
+        Self {
+            epoch,
+            edges: Vec::new(),
+        }
+    }
+
+    /// Returns the collection epoch attached to this remembered set.
+    pub const fn epoch(&self) -> RememberedSetEpoch {
+        self.epoch
     }
 
     /// Returns remembered edges in insertion order.
     pub fn edges(&self) -> &[RememberedEdge] {
         &self.edges
+    }
+
+    /// Returns a read-only snapshot for minor-GC planning.
+    pub fn snapshot(&self) -> RememberedSetSnapshot<'_> {
+        RememberedSetSnapshot::new(self.epoch, &self.edges)
     }
 
     /// Returns the number of remembered edges.
@@ -386,22 +462,26 @@ impl MinorGcPlan {
     /// Inline, old-generation, and permanent roots do not enter the minor-GC
     /// frontier. Young roots and remembered-set targets are deduplicated in
     /// discovery order, then classified according to the promotion policy.
-    /// The caller must pass the remembered set for the same collection epoch:
-    /// it must contain every current old/permanent-to-young edge and its targets
-    /// must refer to objects still present in `nursery_objects`.
+    /// The remembered-set snapshot must belong to `collection_epoch`. The
+    /// caller still owns completeness: the snapshot must contain every current
+    /// old/permanent-to-young edge and its targets must refer to objects still
+    /// present in `nursery_objects`.
     ///
     /// # Errors
     ///
     /// Returns [`GenerationalGcError`] if frontier storage cannot be reserved,
-    /// if the frontier length overflows, if a young frontier object has no
-    /// nursery age metadata, or if duplicate nursery age metadata is supplied.
+    /// if the snapshot epoch does not match `collection_epoch`, if the frontier
+    /// length overflows, if a young frontier object has no nursery age metadata,
+    /// or if duplicate nursery age metadata is supplied.
     pub fn from_roots_and_remembered(
         roots: impl IntoIterator<Item = ResolvedValueGeneration>,
-        remembered_set: &RememberedSet,
+        remembered_set: RememberedSetSnapshot<'_>,
+        collection_epoch: RememberedSetEpoch,
         nursery_objects: &[NurseryObjectAge],
         promotion_policy: MinorGcPromotionPolicy,
     ) -> Result<Self, GenerationalGcError> {
         validate_unique_nursery_objects(nursery_objects)?;
+        let remembered_set = remembered_set.validate_epoch(collection_epoch)?;
         let mut frontier = MinorGcFrontier::new();
         for root in roots {
             if let ResolvedValueGeneration::Heap {
@@ -551,6 +631,15 @@ pub enum GenerationalGcError {
     RememberedSetAllocationFailed {
         /// The requested remembered-set capacity.
         edges: usize,
+    },
+    /// A remembered-set snapshot did not belong to the requested collection
+    /// epoch.
+    #[error("remembered-set snapshot epoch {actual} does not match collection epoch {expected}")]
+    RememberedSetEpochMismatch {
+        /// The minor-GC collection epoch being planned.
+        expected: RememberedSetEpoch,
+        /// The epoch attached to the remembered-set snapshot.
+        actual: RememberedSetEpoch,
     },
     /// The minor-GC frontier length overflowed.
     #[error("minor-GC frontier length overflow")]
@@ -703,6 +792,21 @@ mod tests {
     }
 
     #[test]
+    fn remembered_set_snapshots_carry_collection_epoch() {
+        let epoch = RememberedSetEpoch::new(7);
+        let edge = RememberedEdge::new(address(0x1000), address(0x2000));
+        let mut set = RememberedSet::with_epoch(epoch);
+        set.record(edge).expect("edge records");
+
+        let snapshot = set.snapshot();
+
+        assert_eq!(set.epoch(), epoch);
+        assert_eq!(snapshot.epoch(), epoch);
+        assert_eq!(snapshot.edges(), &[edge]);
+        assert_eq!(epoch.value(), 7);
+    }
+
+    #[test]
     fn record_thunk_resolve_write_barrier_records_only_required_edges() {
         let edge = RememberedEdge::new(address(0x1000), address(0x2000));
         let write = ThunkResolveWrite::new(
@@ -739,6 +843,51 @@ mod tests {
     }
 
     #[test]
+    fn minor_gc_plan_rejects_remembered_set_epoch_mismatches() {
+        let young = address(0x1000);
+        let set = RememberedSet::with_epoch(RememberedSetEpoch::new(3));
+
+        assert_eq!(
+            MinorGcPlan::from_roots_and_remembered(
+                [ResolvedValueGeneration::young(young)],
+                set.snapshot(),
+                RememberedSetEpoch::new(4),
+                &[NurseryObjectAge::new(young, 0)],
+                MinorGcPromotionPolicy::new(2),
+            ),
+            Err(GenerationalGcError::RememberedSetEpochMismatch {
+                expected: RememberedSetEpoch::new(4),
+                actual: RememberedSetEpoch::new(3),
+            })
+        );
+    }
+
+    #[test]
+    fn minor_gc_plan_accepts_non_default_matching_remembered_set_epoch() {
+        let young = address(0x1000);
+        let remembered = address(0x2000);
+        let mut set = RememberedSet::with_epoch(RememberedSetEpoch::new(9));
+        set.record(RememberedEdge::new(address(0x3000), remembered))
+            .expect("remembered edge records");
+
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            set.snapshot(),
+            RememberedSetEpoch::new(9),
+            &[
+                NurseryObjectAge::new(young, 0),
+                NurseryObjectAge::new(remembered, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("matching non-default epoch plans");
+
+        assert_eq!(plan.survivors().len(), 2);
+        assert_eq!(plan.survivors()[0].address(), young);
+        assert_eq!(plan.survivors()[1].address(), remembered);
+    }
+
+    #[test]
     fn minor_gc_plan_uses_young_roots_and_remembered_targets_only() {
         let root = address(0x1000);
         let remembered = address(0x2000);
@@ -755,7 +904,8 @@ mod tests {
                 ResolvedValueGeneration::old(ignored_old),
                 ResolvedValueGeneration::permanent(ignored_permanent),
             ],
-            &remembered_set,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
             &[
                 NurseryObjectAge::new(root, 0),
                 NurseryObjectAge::new(remembered, 0),
@@ -791,7 +941,8 @@ mod tests {
                 ResolvedValueGeneration::young(young),
                 ResolvedValueGeneration::young(young),
             ],
-            &remembered_set,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
             &[NurseryObjectAge::new(young, 0)],
             MinorGcPromotionPolicy::new(2),
         )
@@ -810,7 +961,8 @@ mod tests {
                 ResolvedValueGeneration::young(copy),
                 ResolvedValueGeneration::young(promote),
             ],
-            &RememberedSet::new(),
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
             &[
                 NurseryObjectAge::new(copy, 0),
                 NurseryObjectAge::new(promote, 1),
@@ -838,7 +990,8 @@ mod tests {
         let young = address(0x1000);
         let plan = MinorGcPlan::from_roots_and_remembered(
             [ResolvedValueGeneration::young(young)],
-            &RememberedSet::new(),
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
             &[NurseryObjectAge::new(young, 0)],
             MinorGcPromotionPolicy::new(0),
         )
@@ -857,7 +1010,8 @@ mod tests {
         assert_eq!(
             MinorGcPlan::from_roots_and_remembered(
                 [ResolvedValueGeneration::young(young)],
-                &RememberedSet::new(),
+                RememberedSet::new().snapshot(),
+                RememberedSetEpoch::new(0),
                 &[],
                 MinorGcPromotionPolicy::new(2),
             ),
@@ -866,7 +1020,8 @@ mod tests {
         assert_eq!(
             MinorGcPlan::from_roots_and_remembered(
                 [ResolvedValueGeneration::young(young)],
-                &RememberedSet::new(),
+                RememberedSet::new().snapshot(),
+                RememberedSetEpoch::new(0),
                 &[
                     NurseryObjectAge::new(young, 0),
                     NurseryObjectAge::new(young, 1)

@@ -4950,16 +4950,25 @@ and helps the oracle directly.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the initial young-object
       frontier for a future Tier-B minor collection from precise roots plus a
-      caller-supplied remembered set that must be complete for the same
-      collection epoch and target current nursery objects. It filters inline,
-      old, and permanent roots out of the young frontier, deduplicates young
-      roots and remembered targets in discovery order, validates that every live
-      young seed has unique nursery age metadata, and applies an age-based
-      copy-to-next-nursery vs promote-to-old policy. This is a survivor frontier
-      and promotion plan only; remembered-set epoch validation, object field
-      expansion, relocation/writeback, nursery semispace storage, old-generation
-      collection, GC-stress mode, and byte-green Tier-B harness execution remain
-      open in the full collector row above.
+      caller-supplied remembered-set snapshot whose targets must refer to
+      current nursery objects. It filters inline, old, and permanent roots out
+      of the young frontier, deduplicates young roots and remembered targets in
+      discovery order, validates that every live young seed has unique nursery
+      age metadata, and applies an age-based copy-to-next-nursery vs
+      promote-to-old policy. This is a survivor frontier and promotion plan
+      only; object field expansion, relocation/writeback, nursery semispace
+      storage, old-generation collection, GC-stress mode, and byte-green Tier-B
+      harness execution remain open in the full collector row above.
+- [x] Current remembered-set epoch-validation precursor:
+      `ratchet-value::heap::gc::RememberedSetEpoch` and
+      `RememberedSetSnapshot` attach explicit collection epoch metadata to the
+      deduplicated old/permanent-to-young edge set, and
+      `MinorGcPlan::from_roots_and_remembered` rejects snapshots whose epoch
+      differs from the requested minor-collection epoch before using remembered
+      targets. Unit tests cover epoch propagation through `RememberedSet`,
+      matching-epoch planning, and mismatch rejection. This validates metadata
+      only; complete remembered-set construction by the real card table and
+      collector remains open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
