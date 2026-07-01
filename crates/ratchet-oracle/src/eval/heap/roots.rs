@@ -18,6 +18,11 @@ use std::ptr::NonNull;
 
 use super::*;
 use crate::eval::thunk::ThunkState;
+use crate::heap::{
+    GcHeapAddress, HeapGeneration, MinorGcPlan, MinorGcPromotionPolicy, NurseryObjectAge,
+    NurseryObjectFields, RememberedEdge, RememberedSetEpoch, RememberedSetSnapshot,
+    ResolvedValueGeneration,
+};
 use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
 
@@ -26,6 +31,10 @@ const WORKLIST_TABLE: &str = "worklist";
 const VISITED_TABLE: &str = "visited";
 const OBJECTS_TABLE: &str = "objects";
 const EDGES_TABLE: &str = "edges";
+const MINOR_GC_ROOTS_TABLE: &str = "minor-GC roots";
+const MINOR_GC_NURSERY_OBJECTS_TABLE: &str = "minor-GC nursery objects";
+const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
+const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
 
 /// A precise root slot and the heap value stored in it.
 #[derive(Clone, Debug)]
@@ -689,11 +698,26 @@ impl Eq for PreciseHeapScan {}
 pub struct AllocationCollectorPollScan {
     poll: AllocationCollectorPoll,
     scan: PreciseHeapScan,
+    heap_records: usize,
+    allocation_safepoints: AllocationSafepointState,
+    permanent_allocation_safepoints: AllocationSafepointState,
 }
 
 impl AllocationCollectorPollScan {
-    fn new(poll: AllocationCollectorPoll, scan: PreciseHeapScan) -> Self {
-        Self { poll, scan }
+    fn new(
+        poll: AllocationCollectorPoll,
+        scan: PreciseHeapScan,
+        heap_records: usize,
+        allocation_safepoints: AllocationSafepointState,
+        permanent_allocation_safepoints: AllocationSafepointState,
+    ) -> Self {
+        Self {
+            poll,
+            scan,
+            heap_records,
+            allocation_safepoints,
+            permanent_allocation_safepoints,
+        }
     }
 
     /// Returns the allocation safepoint collector-poll request.
@@ -704,6 +728,97 @@ impl AllocationCollectorPollScan {
     /// Returns the precise heap graph reachable at the poll safepoint.
     pub const fn scan(&self) -> &PreciseHeapScan {
         &self.scan
+    }
+
+    /// Returns the typed heap record count captured with this scan.
+    pub const fn heap_records(&self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns worker allocation-safepoint state captured with this scan.
+    pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
+        self.allocation_safepoints
+    }
+
+    /// Returns permanent allocation-safepoint state captured with this scan.
+    pub const fn permanent_allocation_safepoints(&self) -> AllocationSafepointState {
+        self.permanent_allocation_safepoints
+    }
+}
+
+/// Owned precise field metadata for one young object in a collector-poll plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollNurseryFields {
+    address: GcHeapAddress,
+    fields: Vec<ResolvedValueGeneration>,
+}
+
+impl AllocationCollectorPollNurseryFields {
+    fn new(address: GcHeapAddress, fields: Vec<ResolvedValueGeneration>) -> Self {
+        Self { address, fields }
+    }
+
+    /// Returns the young object whose fields were scanned.
+    pub const fn address(&self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns the object's precise outgoing field metadata.
+    pub fn fields(&self) -> &[ResolvedValueGeneration] {
+        &self.fields
+    }
+}
+
+/// A collector-poll snapshot converted into minor-GC planner inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllocationCollectorPollMinorGcPlan {
+    poll: AllocationCollectorPoll,
+    roots: Vec<ResolvedValueGeneration>,
+    nursery_objects: Vec<NurseryObjectAge>,
+    nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+    plan: MinorGcPlan,
+}
+
+impl AllocationCollectorPollMinorGcPlan {
+    fn new(
+        poll: AllocationCollectorPoll,
+        roots: Vec<ResolvedValueGeneration>,
+        nursery_objects: Vec<NurseryObjectAge>,
+        nursery_fields: Vec<AllocationCollectorPollNurseryFields>,
+        plan: MinorGcPlan,
+    ) -> Self {
+        Self {
+            poll,
+            roots,
+            nursery_objects,
+            nursery_fields,
+            plan,
+        }
+    }
+
+    /// Returns the allocation safepoint collector-poll request.
+    pub const fn poll(&self) -> AllocationCollectorPoll {
+        self.poll
+    }
+
+    /// Returns the root values supplied to the minor-GC planner.
+    pub fn roots(&self) -> &[ResolvedValueGeneration] {
+        &self.roots
+    }
+
+    /// Returns generated age metadata for current young oracle-heap objects.
+    pub fn nursery_objects(&self) -> &[NurseryObjectAge] {
+        &self.nursery_objects
+    }
+
+    /// Returns generated field metadata for current young oracle-heap objects.
+    pub fn nursery_fields(&self) -> &[AllocationCollectorPollNurseryFields] {
+        &self.nursery_fields
+    }
+
+    /// Returns the planned young-generation survivor frontier.
+    pub const fn plan(&self) -> &MinorGcPlan {
+        &self.plan
     }
 }
 
@@ -812,7 +927,66 @@ impl EvalHeap {
         root_set: &EvalRootSet,
     ) -> Result<AllocationCollectorPollScan, EvalHeapError> {
         let scan = self.scan_precise_roots(root_set)?;
-        Ok(AllocationCollectorPollScan::new(poll, scan))
+        Ok(AllocationCollectorPollScan::new(
+            poll,
+            scan,
+            self.records.len(),
+            self.allocation_safepoints(),
+            self.permanent_allocation_safepoints(),
+        ))
+    }
+
+    /// Converts a collector-poll heap graph snapshot into a minor-GC plan.
+    ///
+    /// Worker-domain records are treated as current young-generation objects.
+    /// Permanent shared records are treated as permanent objects and therefore
+    /// enter the plan only through remembered permanent-to-young edges. The
+    /// method validates that the copied poll scan still matches current heap
+    /// record edges before using current worker-domain field metadata for
+    /// transitive minor-GC planning.
+    ///
+    /// This remains a planning bridge: it does not retain mutable root slots,
+    /// rewrite fields, install forwarding pointers, or move object bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the poll scan is stale, if a remembered-set
+    /// edge references an unknown object or is not permanent-to-young, if a
+    /// visible permanent-to-young edge is missing from the remembered set, or if
+    /// the minor-GC planner rejects the generated roots, age metadata, or field
+    /// metadata.
+    pub fn plan_collector_poll_minor_gc(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+        remembered_set: RememberedSetSnapshot<'_>,
+        collection_epoch: RememberedSetEpoch,
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<AllocationCollectorPollMinorGcPlan, EvalHeapError> {
+        self.validate_collector_poll_snapshot_allocation_state(poll_scan)?;
+        self.validate_collector_poll_scan_is_current(poll_scan)?;
+        self.validate_remembered_set_snapshot(remembered_set)?;
+        self.validate_current_permanent_edges_are_remembered(remembered_set)?;
+
+        let roots = self.minor_gc_roots_for_poll_scan(poll_scan)?;
+        let nursery_objects = self.current_nursery_objects()?;
+        let nursery_fields = self.current_nursery_fields()?;
+        let nursery_field_views = nursery_field_views(&nursery_fields)?;
+        let plan = MinorGcPlan::from_roots_remembered_and_fields(
+            roots.iter().copied(),
+            remembered_set,
+            collection_epoch,
+            &nursery_objects,
+            &nursery_field_views,
+            promotion_policy,
+        )?;
+
+        Ok(AllocationCollectorPollMinorGcPlan::new(
+            poll_scan.poll(),
+            roots,
+            nursery_objects,
+            nursery_fields,
+            plan,
+        ))
     }
 
     fn push_interned_table_roots<'a>(
@@ -891,6 +1065,256 @@ impl EvalHeap {
             },
         }
         Ok(edges)
+    }
+
+    fn validate_collector_poll_scan_is_current(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+    ) -> Result<(), EvalHeapError> {
+        for root in poll_scan.scan().roots() {
+            self.record_for_scannable_value(root.value())?;
+        }
+
+        for object in poll_scan.scan().objects() {
+            let record = self.record_for_scannable_value(object.value())?;
+            let current_edges = self.scan_record_edges(record)?;
+            if current_edges != object.edges() {
+                return Err(EvalHeapError::CollectorPollScanStaleObject {
+                    address: gc_address_for_value(object.value())?,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_collector_poll_snapshot_allocation_state(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+    ) -> Result<(), EvalHeapError> {
+        if poll_scan.heap_records() != self.records.len() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "heap record count changed",
+                expected_records: poll_scan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if poll_scan.allocation_safepoints() != self.allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker allocation safepoints changed",
+                expected_records: poll_scan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if poll_scan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "permanent allocation safepoints changed",
+                expected_records: poll_scan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_remembered_set_snapshot(
+        &self,
+        remembered_set: RememberedSetSnapshot<'_>,
+    ) -> Result<(), EvalHeapError> {
+        for edge in remembered_set.edges() {
+            let source_generation = self.generation_for_address(edge.source(), "source")?;
+            let target_generation = self.generation_for_address(edge.target(), "target")?;
+            if source_generation != HeapGeneration::Permanent
+                || target_generation != HeapGeneration::Young
+            {
+                return Err(EvalHeapError::InvalidCollectorPollRememberedEdge {
+                    source_address: edge.source(),
+                    source_generation,
+                    target_address: edge.target(),
+                    target_generation,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_current_permanent_edges_are_remembered(
+        &self,
+        remembered_set: RememberedSetSnapshot<'_>,
+    ) -> Result<(), EvalHeapError> {
+        for record in &self.records {
+            if generation_for_record(record) != HeapGeneration::Permanent {
+                continue;
+            }
+            let source = gc_address_for_record(record)?;
+            let edges = self.scan_record_edges(record)?;
+
+            for edge in edges {
+                let target = self.resolved_generation_for_value(edge.value())?;
+                let ResolvedValueGeneration::Heap {
+                    address: target,
+                    generation: HeapGeneration::Young,
+                } = target
+                else {
+                    continue;
+                };
+                let remembered_edge = RememberedEdge::new(source, target);
+                if !remembered_set.edges().contains(&remembered_edge) {
+                    return Err(EvalHeapError::MissingCollectorPollRememberedEdge {
+                        source_address: source,
+                        target_address: target,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn minor_gc_roots_for_poll_scan(
+        &self,
+        poll_scan: &AllocationCollectorPollScan,
+    ) -> Result<Vec<ResolvedValueGeneration>, EvalHeapError> {
+        let mut roots = Vec::new();
+        roots
+            .try_reserve_exact(poll_scan.scan().roots().len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_ROOTS_TABLE,
+                entries: poll_scan.scan().roots().len(),
+            })?;
+        for root in poll_scan.scan().roots() {
+            roots.push(self.resolved_generation_for_value(root.value())?);
+        }
+        Ok(roots)
+    }
+
+    fn current_nursery_objects(&self) -> Result<Vec<NurseryObjectAge>, EvalHeapError> {
+        let mut nursery_objects = Vec::new();
+        for record in &self.records {
+            if generation_for_record(record) == HeapGeneration::Young {
+                let entries = nursery_objects.len().checked_add(1).ok_or(
+                    EvalHeapError::RootScanLengthOverflow {
+                        table: MINOR_GC_NURSERY_OBJECTS_TABLE,
+                    },
+                )?;
+                nursery_objects.try_reserve_exact(1).map_err(|_| {
+                    EvalHeapError::RootScanAllocationFailed {
+                        table: MINOR_GC_NURSERY_OBJECTS_TABLE,
+                        entries,
+                    }
+                })?;
+                nursery_objects.push(NurseryObjectAge::new(gc_address_for_record(record)?, 0));
+            }
+        }
+        Ok(nursery_objects)
+    }
+
+    fn current_nursery_fields(
+        &self,
+    ) -> Result<Vec<AllocationCollectorPollNurseryFields>, EvalHeapError> {
+        let mut nursery_fields = Vec::new();
+        for record in &self.records {
+            if generation_for_record(record) != HeapGeneration::Young {
+                continue;
+            }
+            let address = gc_address_for_record(record)?;
+            let edges = self.scan_record_edges(record)?;
+            let mut fields = Vec::new();
+            fields.try_reserve_exact(edges.len()).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_NURSERY_FIELD_VALUES_TABLE,
+                    entries: edges.len(),
+                }
+            })?;
+            for edge in edges {
+                fields.push(self.resolved_generation_for_value(edge.value())?);
+            }
+
+            let entries = nursery_fields.len().checked_add(1).ok_or(
+                EvalHeapError::RootScanLengthOverflow {
+                    table: MINOR_GC_NURSERY_FIELDS_TABLE,
+                },
+            )?;
+            nursery_fields.try_reserve_exact(1).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_NURSERY_FIELDS_TABLE,
+                    entries,
+                }
+            })?;
+            nursery_fields.push(AllocationCollectorPollNurseryFields::new(address, fields));
+        }
+        Ok(nursery_fields)
+    }
+
+    fn record_for_scannable_value(&self, value: Value) -> Result<&HeapRecord, EvalHeapError> {
+        let (tag, ptr) = heap_ptr(value)?;
+        let record = self.record_or_unknown(tag, ptr)?;
+        let actual = record.object.tag();
+        if actual == tag {
+            Ok(record)
+        } else {
+            Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+        }
+    }
+
+    fn resolved_generation_for_value(
+        &self,
+        value: Value,
+    ) -> Result<ResolvedValueGeneration, EvalHeapError> {
+        let record = self.record_for_scannable_value(value)?;
+        Ok(ResolvedValueGeneration::Heap {
+            address: gc_address_for_record(record)?,
+            generation: generation_for_record(record),
+        })
+    }
+
+    fn generation_for_address(
+        &self,
+        address: GcHeapAddress,
+        role: &'static str,
+    ) -> Result<HeapGeneration, EvalHeapError> {
+        let record = self.record_for_gc_address(address, role)?;
+        Ok(generation_for_record(record))
+    }
+
+    fn record_for_gc_address(
+        &self,
+        address: GcHeapAddress,
+        role: &'static str,
+    ) -> Result<&HeapRecord, EvalHeapError> {
+        self.records
+            .iter()
+            .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .ok_or(EvalHeapError::UnknownCollectorPollRememberedEdgeAddress { role, address })
+    }
+}
+
+fn nursery_field_views(
+    nursery_fields: &[AllocationCollectorPollNurseryFields],
+) -> Result<Vec<NurseryObjectFields<'_>>, EvalHeapError> {
+    let mut views = Vec::new();
+    views.try_reserve_exact(nursery_fields.len()).map_err(|_| {
+        EvalHeapError::RootScanAllocationFailed {
+            table: MINOR_GC_NURSERY_FIELDS_TABLE,
+            entries: nursery_fields.len(),
+        }
+    })?;
+    for object in nursery_fields {
+        views.push(NurseryObjectFields::new(object.address(), object.fields()));
+    }
+    Ok(views)
+}
+
+fn gc_address_for_value(value: Value) -> Result<GcHeapAddress, EvalHeapError> {
+    let (_tag, ptr) = heap_ptr(value)?;
+    GcHeapAddress::new(ptr.as_ptr() as usize).map_err(EvalHeapError::GenerationalGc)
+}
+
+fn gc_address_for_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapError> {
+    GcHeapAddress::new(record.ptr.as_ptr() as usize).map_err(EvalHeapError::GenerationalGc)
+}
+
+const fn generation_for_record(record: &HeapRecord) -> HeapGeneration {
+    match record.allocation_domain {
+        HeapAllocationDomain::Worker => HeapGeneration::Young,
+        HeapAllocationDomain::PermanentShared => HeapGeneration::Permanent,
     }
 }
 

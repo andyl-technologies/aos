@@ -4980,8 +4980,8 @@ and helps the oracle directly.
       expansion, non-young field filtering, cycle/deduplication behavior,
       post-expansion promotion, and missing/duplicate field metadata rejection.
       This remains a planning surface only; object copying, forwarding-pointer
-      updates, relocation writeback, semispace allocation, and oracle heap-scan
-      integration remain open.
+      updates, relocation writeback, semispace allocation, mutable oracle
+      root/field slot integration, and collector invocation remain open.
 - [x] Current minor-GC destination-allocation planning precursor:
       `ratchet-value::heap::gc::NurseryObjectLayout` and
       `MinorGcDestinationAllocationPlan::from_minor_gc_plan` validate
@@ -5214,6 +5214,23 @@ and helps the oracle directly.
       triggering `aos_alloc_*` entry point. It does not automatically derive
       tree-walk roots from the poll, invoke a collector, expose mutable
       relocation slots, or update references.
+- [x] Current allocation-poll minor-GC planning bridge precursor:
+      `EvalHeap::plan_collector_poll_minor_gc` converts an
+      `AllocationCollectorPollScan` plus a remembered-set snapshot into the
+      existing `MinorGcPlan` survivor frontier. The bridge classifies current
+      oracle worker records as young and permanent-shared records as permanent,
+      rejects stale copied graph snapshots when object edges, heap record count,
+      or allocator safepoint state changes, generates nursery age and precise
+      field metadata from the typed side table, validates remembered-set edges
+      against current oracle generations, and fails closed when any current
+      permanent-to-young edge is missing from the supplied remembered set. Unit
+      tests cover worker-root survivor expansion, permanent-to-worker
+      remembered-edge rejection inside and outside the explicit root graph,
+      remembered-edge success, stale thunk-state snapshots, and heap-growth
+      staleness. It still does not automatically derive tree-walk roots from an
+      allocation poll, retain mutable root/field relocation slots, copy objects,
+      install forwarding pointers, mutate references, or run GC-stress
+      collection.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5282,6 +5299,20 @@ and helps the oracle directly.
       slots; the moving Tier-B collector, full relocation-slot root contract,
       and Cranelift stack-map wiring remain open in the row above and in
       [08](08-execution-tiers-and-cranelift.md).
+- [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
+      `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
+      collector-poll heap graph still matches current typed heap records, maps
+      worker-domain records to young-generation metadata, maps permanent-shared
+      records to permanent metadata, and calls
+      `MinorGcPlan::from_roots_remembered_and_fields` with generated nursery
+      age and field tables. The bridge rejects copied graph snapshots after
+      heap growth or allocator-safepoint changes, rejects remembered-set edges
+      that no longer describe permanent-to-young references, and rejects current
+      permanent-to-young graph edges that were not remembered. This connects
+      precise root scanning to minor-GC survivor planning, but it is still not a
+      mutating collector: mutable relocation slots, root/field writeback,
+      object copying, forwarding pointers, card-table ownership, and JIT
+      stack-map integration remain open.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

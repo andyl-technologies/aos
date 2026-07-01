@@ -881,6 +881,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       preservation of the triggering `aos_alloc_*` entry point. This still does
       not construct tree-walk roots automatically from a poll, invoke a
       collector, produce mutable relocation slots, or update references.
+- [x] Current allocation-poll minor-GC planning bridge precursor:
+      `EvalHeap::plan_collector_poll_minor_gc` converts an
+      `AllocationCollectorPollScan` plus a remembered-set snapshot into the
+      existing `MinorGcPlan` survivor frontier. The bridge classifies current
+      oracle worker records as young and permanent-shared records as permanent,
+      rejects stale copied graph snapshots when object edges, heap record count,
+      or allocator safepoint state changes, generates nursery age and precise
+      field metadata from the typed side table, validates remembered-set edges
+      against current oracle generations, and fails closed when any current
+      permanent-to-young edge is absent from the supplied remembered set. Tests
+      cover worker-root survivor expansion, permanent-to-worker remembered-edge
+      rejection inside and outside the explicit root graph, remembered-edge
+      success, stale thunk-state snapshots, and heap-growth staleness. This
+      still does not construct roots automatically from an allocation poll,
+      retain mutable root/field relocation slots, copy objects, install
+      forwarding pointers, mutate references, or run GC-stress collection.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll
@@ -978,8 +994,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       cycle/deduplication behavior, promotion after expansion, and
       missing/duplicate field metadata rejection. This is still a planning
       surface: no object copy, forwarding-pointer update, relocation writeback,
-      semispace allocation, or integration with the oracle heap scanner is
-      implemented here.
+      semispace allocation, mutable oracle root/field slot integration, or
+      collector invocation is implemented here.
 - [x] Current minor-GC destination-allocation planning precursor:
       `ratchet-value::heap::gc::NurseryObjectLayout` and
       `MinorGcDestinationAllocationPlan::from_minor_gc_plan` validate

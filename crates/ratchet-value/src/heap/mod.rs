@@ -38,9 +38,10 @@ pub use gc::{
     MinorGcRelocation, MinorGcRelocationDestination, MinorGcRelocationDestinationPlan,
     MinorGcRelocationPlan, MinorGcRememberedSetRefresh, MinorGcRememberedSetRefreshAction,
     MinorGcRememberedSetRefreshPlan, MinorGcSurvivor, MinorGcSurvivorAction, NurseryObjectAge,
-    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetUpdate,
-    ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
-    classify_thunk_resolve_write_barrier, record_thunk_resolve_write_barrier,
+    NurseryObjectFields, NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch,
+    RememberedSetSnapshot, RememberedSetUpdate, ResolvedValueGeneration, ThunkResolveWrite,
+    ThunkResolveWriteBarrier, classify_thunk_resolve_write_barrier,
+    record_thunk_resolve_write_barrier,
 };
 pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,

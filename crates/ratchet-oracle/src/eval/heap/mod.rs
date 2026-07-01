@@ -21,6 +21,7 @@ use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats};
+use crate::heap::{GcHeapAddress, GenerationalGcError, HeapGeneration};
 use crate::list::NixList;
 use crate::runtime::alloc::{
     AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
@@ -38,6 +39,7 @@ mod roots;
 mod thunk;
 
 pub use roots::{
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollNurseryFields,
     AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
     EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
     StackMapSlot,
@@ -304,6 +306,67 @@ pub enum EvalHeapError {
         /// The requested side table capacity.
         entries: usize,
     },
+    /// A collector-poll heap graph snapshot no longer matches the current heap
+    /// record.
+    #[error("collector-poll heap graph is stale for 0x{address:x}", address = address.address_bits())]
+    CollectorPollScanStaleObject {
+        /// The object whose current outgoing edges differ from the snapshot.
+        address: GcHeapAddress,
+    },
+    /// A collector-poll heap graph snapshot no longer matches the current heap
+    /// allocation state.
+    #[error(
+        "collector-poll heap graph snapshot is stale: {reason}; record count was {expected_records}, now {actual_records}"
+    )]
+    CollectorPollScanStaleHeapSnapshot {
+        /// The stale snapshot condition that failed.
+        reason: &'static str,
+        /// The typed heap record count captured by the scan.
+        expected_records: usize,
+        /// The current typed heap record count.
+        actual_records: usize,
+    },
+    /// A remembered-set edge referenced an address outside this evaluator heap.
+    #[error("collector-poll remembered-set {role} address does not belong to this heap: 0x{address:x}", address = address.address_bits())]
+    UnknownCollectorPollRememberedEdgeAddress {
+        /// Whether the unknown address was the edge source or target.
+        role: &'static str,
+        /// The unrecognized remembered-set address.
+        address: GcHeapAddress,
+    },
+    /// A remembered-set edge did not describe a permanent-to-young edge in the
+    /// current oracle heap.
+    #[error(
+        "collector-poll remembered-set edge is not permanent-to-young: 0x{source:x} ({source_generation:?}) -> 0x{target:x} ({target_generation:?})",
+        source = source_address.address_bits(),
+        target = target_address.address_bits()
+    )]
+    InvalidCollectorPollRememberedEdge {
+        /// The remembered edge source address.
+        source_address: GcHeapAddress,
+        /// The current generation of the source record.
+        source_generation: HeapGeneration,
+        /// The remembered edge target address.
+        target_address: GcHeapAddress,
+        /// The current generation of the target record.
+        target_generation: HeapGeneration,
+    },
+    /// A visible permanent-to-young edge was absent from the supplied
+    /// remembered-set snapshot.
+    #[error(
+        "collector-poll minor-GC plan is missing remembered permanent-to-young edge: 0x{source:x} -> 0x{target:x}",
+        source = source_address.address_bits(),
+        target = target_address.address_bits()
+    )]
+    MissingCollectorPollRememberedEdge {
+        /// The permanent source object containing the young reference.
+        source_address: GcHeapAddress,
+        /// The young target object that must be remembered.
+        target_address: GcHeapAddress,
+    },
+    /// The generational minor-GC planner rejected the oracle snapshot.
+    #[error("collector-poll minor-GC planning error: {0}")]
+    GenerationalGc(#[from] GenerationalGcError),
 }
 
 impl EvalHeapError {
