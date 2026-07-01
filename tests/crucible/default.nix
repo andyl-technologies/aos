@@ -1040,6 +1040,11 @@ in rec {
       attrPath = "checks.crucible.phase4.guestHostEmitter";
       taskIds = ["T-GHC-10"];
     };
+    guestHostEmitterAbsence = import ./phase4-guest-host-emitter-absence.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase4.guestHostEmitterAbsence";
+      taskIds = ["T-GHC-11"];
+    };
     gates = rec {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.replayOracle";

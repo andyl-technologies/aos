@@ -853,9 +853,18 @@ the transport layer by construction.
   target-specific `target-feature=+crt-static` flags plus an ELF interpreter
   absence check while recording the shared x86_64/aarch64 instruction ABI
   coverage separately from the current packaged guest system.
-- [ ] **T-GHC-11** Prove the emitter's absence changes nothing: full determinism,
+- [x] **T-GHC-11** Prove the emitter's absence changes nothing: full determinism,
   faults, coverage, observable-I/O properties with no in-guest content. —
   satisfies [GHC-2], [GHC-28]; spec §16.6, §16.1.
+  Completed by `checks.crucible.phase4.guestHostEmitterAbsence`: the
+  `guest_host_emitter_absence` test drives both `WhiteBoxPolicy::Disabled` and
+  enabled-but-unused worlds with empty guest command lines and no kernel/root/initrd
+  content additions, then proves no-emitter repeatability and enabled-unused
+  behavioral equivalence for event-log determinism, trigger fault activation/heal
+  snapshots, real host assertion verdicts, coverage projection fingerprints,
+  black-box observable-I/O condition firings, and backend fingerprints while
+  rejecting any named or guest-marker leaf fallback and any guest-marker event-log
+  entry.
 - [ ] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
   read at the exact trap icount; host→guest direction (if any) obeys the injection
   contract; fingerprint-identical with markers on vs off. — satisfies [GHC-30],
