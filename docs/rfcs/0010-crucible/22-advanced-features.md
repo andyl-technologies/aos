@@ -974,10 +974,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   fuzzing is scheduled before coverage/search, where a foundational gate is
   moved too late, or where a future ADV check is wired outside the dependency
   ladder.
-- [ ] **T-ADV-2** Wire pause/resume/stop for exploration drivers as session
+- [x] **T-ADV-2** Wire pause/resume/stop for exploration drivers as session
   commands serviced at quantum boundaries (no engine lock), observation-class, with
   resume+continue bit-identical to an uninterrupted run. — satisfies [ADV-4],
   [ADV-5]; spec §22.2; cross-ref 20 §3.
+  Completed by `checks.crucible.phase6.explorationLifecycle`: the
+  `crucible-session::ExplorationLifecycleDriver` owns only a session actor
+  mailbox sender plus a live quantum-boundary snapshot, routing pause, resume,
+  and stop through `SessionCommand::{Pause, Continue, Stop}`. The gate exercises
+  the driver against a live `SessionActor`, requires every acknowledgement to
+  land within the one-quantum lifecycle bound, asserts lifecycle commands do not
+  appear as scheduler-owned control operations, and compares a paused/resumed run
+  against an uninterrupted run for identical schedule and event-log replay.
 - [ ] **T-ADV-3** Implement fork as `instantiate` of a non-tip configuration plus
   divergent `step`s, CoW-shared with the parent, with no fork-specific realization
   path; assert the child is an independent session actor that cannot mutate the
