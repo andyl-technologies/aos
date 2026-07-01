@@ -1001,10 +1001,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   decision, asserts the branch is a thin checkpoint parented at the fork point,
   runs and stops the child actor, and proves the parent boundary snapshot is
   unchanged.
-- [ ] **T-ADV-4** Validate every fork by the replay oracle (same
+- [x] **T-ADV-4** Validate every fork by the replay oracle (same
   `gate:replay-oracle` as restore), localizing any divergence by bisection; assert
   fork adds no new correctness obligation. — satisfies [ADV-8]; spec §22.3;
   cross-ref 07 §6, 24.
+  Completed by `checks.crucible.phase6.gates.replayOracle`: the Phase 6
+  replay-oracle gate now exercises fork bases and fork branches through the same
+  `TemporalGraph::replay_checkpoint` path used by restore. It proves fork
+  validates any cached base before recording a branch, keeps the branch thin
+  until ordinary materialization, checks the materialized branch with
+  `graph.replay`, rejects corrupt branch caches, evicts them back to thin replay,
+  and feeds the observed mismatch into the existing replay-oracle bisection API
+  to localize the first differing fork decision.
 - [x] **T-ADV-5** Implement the two restore strategies (replay-from-seed as the
   always-correct oracle; snapshot-restore as the validatable fast cache) and the
   oracle check that makes snapshot bugs visible, with divergence localization. —
