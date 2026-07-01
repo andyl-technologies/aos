@@ -1482,21 +1482,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalOutcome::gc_stress_boundary_minor_gc_plans` then delegates those
       stored scans to `EvalHeap::plan_collector_poll_minor_gc` with the outcome
       remembered-set snapshot and a caller-supplied promotion policy, preserving
-      the result as caller-owned planning metadata. `force_value`, lambda-call,
-      import-evaluation, nested numeric-equality, and saturated first-class
-      primop paths push/pop active or suspended safepoint frames on success and
-      error paths, and
+      the result as caller-owned planning metadata.
+      `EvalOutcome::gc_stress_boundary_minor_gc_relocation_destinations` carries
+      those boundary plans one step further by deriving current heap-record
+      layouts and materializing caller-supplied nursery/old destination bases;
+      it still does not reserve semispace storage or commit mutations.
+      `force_value`, lambda-call, import-evaluation, nested numeric-equality,
+      and saturated first-class primop paths push/pop active or suspended
+      safepoint frames on success and error paths, and
       `eval::tree_walk::tests::safepoint_roots` pins root labels,
       suspended-env roots, import-cache roots, interned-root inclusion, heap
       scanning, GC-stress collector-poll scanning with an explicit transient
       root, minor-GC planning from that scan, boundary scans for worker,
       permanent-shared, and attr-path outcomes, boundary minor-GC planning for
-      worker, permanent-shared, and stress-disabled outcomes, stale same-domain
-      poll rejection, and stack cleanup after force/primop failures. This still
-      does not infer arbitrary Rust locals
-      without explicit value-stack registration, bind mutable relocation slots,
-      invoke a collector, or consume JIT stack maps; those remain open in the
-      full precise-root row above.
+      worker, permanent-shared, and stress-disabled outcomes, boundary
+      relocation-destination planning for worker, permanent-shared, and
+      stress-disabled outcomes, stale same-domain poll rejection, and stack
+      cleanup after force/primop failures. This still does not infer arbitrary
+      Rust locals without explicit value-stack registration, bind mutable
+      relocation slots, invoke a collector, or consume JIT stack maps; those
+      remain open in the full precise-root row above.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the

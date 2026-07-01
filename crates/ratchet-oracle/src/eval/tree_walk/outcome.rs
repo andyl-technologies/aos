@@ -95,6 +95,52 @@ impl EvalGcStressBoundaryMinorGcPlans {
     }
 }
 
+/// Relocation destinations derived from GC-stress boundary minor-GC plans.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcRelocationDestinations {
+    worker: Option<AllocationCollectorPollMinorGcRelocationDestinations>,
+    permanent_shared: Option<AllocationCollectorPollMinorGcRelocationDestinations>,
+}
+
+impl EvalGcStressBoundaryMinorGcRelocationDestinations {
+    /// Creates a relocation-destination report from per-allocator results.
+    pub(crate) const fn new(
+        worker: Option<AllocationCollectorPollMinorGcRelocationDestinations>,
+        permanent_shared: Option<AllocationCollectorPollMinorGcRelocationDestinations>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier produced a relocation-destination report.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced relocation-destination reports.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's relocation-destination report, if any.
+    pub const fn worker(&self) -> Option<&AllocationCollectorPollMinorGcRelocationDestinations> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's relocation-destination report, if any.
+    pub const fn permanent_shared(
+        &self,
+    ) -> Option<&AllocationCollectorPollMinorGcRelocationDestinations> {
+        self.permanent_shared.as_ref()
+    }
+}
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 pub struct EvalOutcome {
     pub(crate) value: Value,
@@ -254,6 +300,46 @@ impl EvalOutcome {
             None => None,
         };
         Ok(EvalGcStressBoundaryMinorGcPlans::new(
+            worker,
+            permanent_shared,
+        ))
+    }
+
+    /// Builds relocation destinations from recorded GC-stress boundary scans.
+    ///
+    /// This derives minor-GC plans with the supplied promotion policy, reads the
+    /// outcome heap's current layout metadata for planned survivors, and
+    /// materializes relocation destinations from `bases`. It is planning
+    /// metadata only: it does not reserve semispace storage, copy object bytes,
+    /// install forwarding pointers, rewrite roots or fields, publish remembered
+    /// sets, or invoke a collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if boundary minor-GC planning fails, if the
+    /// outcome heap changed since planning, if survivor layout metadata cannot be
+    /// derived, or if relocation-destination planning rejects the supplied bases.
+    pub fn gc_stress_boundary_minor_gc_relocation_destinations(
+        &self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcRelocationDestinations, EvalHeapError> {
+        let plans = self.gc_stress_boundary_minor_gc_plans(promotion_policy)?;
+        let worker = match plans.worker() {
+            Some(plan) => Some(
+                self.heap
+                    .plan_collector_poll_minor_gc_relocation_destinations(plan, bases)?,
+            ),
+            None => None,
+        };
+        let permanent_shared = match plans.permanent_shared() {
+            Some(plan) => Some(
+                self.heap
+                    .plan_collector_poll_minor_gc_relocation_destinations(plan, bases)?,
+            ),
+            None => None,
+        };
+        Ok(EvalGcStressBoundaryMinorGcRelocationDestinations::new(
             worker,
             permanent_shared,
         ))

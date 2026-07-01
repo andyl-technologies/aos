@@ -5670,7 +5670,11 @@ and helps the oracle directly.
       slot 0. `EvalOutcome::gc_stress_boundary_minor_gc_plans` then delegates
       those stored scans to `EvalHeap::plan_collector_poll_minor_gc` with the
       outcome remembered-set snapshot and a caller-supplied promotion policy,
-      preserving the result as caller-owned planning metadata. The force,
+      preserving the result as caller-owned planning metadata.
+      `EvalOutcome::gc_stress_boundary_minor_gc_relocation_destinations` carries
+      those boundary plans one step further by deriving current heap-record
+      layouts and materializing caller-supplied nursery/old destination bases;
+      it still does not reserve semispace storage or commit mutations. The force,
       lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
       register/unregister active or suspended safepoint frames, including
@@ -5680,12 +5684,13 @@ and helps the oracle directly.
       scanning, GC-stress collector-poll scanning with an explicit transient
       root, minor-GC planning from that scan, boundary scans for worker,
       permanent-shared, and attr-path outcomes, boundary minor-GC planning for
-      worker, permanent-shared, and stress-disabled outcomes, stale same-domain
-      poll rejection, recursive-force cleanup, and first-class primop error
-      cleanup. This remains a root-set precursor: arbitrary Rust locals still
-      need explicit value-stack registration, and mutable relocation slots, collector
-      invocation, and JIT stack maps remain open in the full precise-root row
-      above.
+      worker, permanent-shared, and stress-disabled outcomes, boundary
+      relocation-destination planning for worker, permanent-shared, and
+      stress-disabled outcomes, stale same-domain poll rejection, recursive-force
+      cleanup, and first-class primop error cleanup. This remains a root-set
+      precursor: arbitrary Rust locals still need explicit value-stack
+      registration, and mutable relocation slots, collector invocation, and JIT
+      stack maps remain open in the full precise-root row above.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` classifies the single generational write
       barrier for `Blackhole -> Forced(value)`, records only

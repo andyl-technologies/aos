@@ -2,13 +2,20 @@
 
 use super::*;
 use crate::eval::heap::{AllocationCollectorPollScan, EvalRoot, EvalRootSource, InternedRootTable};
-use crate::heap::{GcHeapAddress, MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration};
+use crate::heap::{
+    GcHeapAddress, HeapGeneration, MinorGcDestinationBases, MinorGcPromotionPolicy, RememberedSet,
+    ResolvedValueGeneration,
+};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
 
 fn gc_address(value: Value) -> GcHeapAddress {
     GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
         .expect("heap pointer is a valid GC address")
+}
+
+fn static_gc_address(address_bits: usize) -> GcHeapAddress {
+    GcHeapAddress::new(address_bits).expect("static address is a valid GC address")
 }
 
 fn scan_has_value_stack_root(scan: &AllocationCollectorPollScan, value: Value) -> bool {
@@ -353,6 +360,93 @@ fn owned_eval_plans_gc_stress_boundary_permanent_minor_gc() {
             .all(|root| *root == permanent_root)
     );
     assert!(permanent_plan.plan().is_empty());
+}
+
+#[test]
+fn owned_eval_plans_gc_stress_boundary_worker_relocation_destinations() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let old_base = static_gc_address(0x2000_0000);
+
+    let destinations = outcome
+        .gc_stress_boundary_minor_gc_relocation_destinations(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, old_base),
+        )
+        .expect("boundary scan plans relocation destinations");
+
+    assert_eq!(destinations.len(), 1);
+    assert!(destinations.permanent_shared().is_none());
+    let worker_destinations = destinations
+        .worker()
+        .expect("worker relocation destinations record");
+    assert_eq!(worker_destinations.destinations().len(), 1);
+    assert_eq!(
+        worker_destinations.destinations()[0].source(),
+        gc_address(outcome.value())
+    );
+    assert_eq!(
+        worker_destinations.destinations()[0].destination(),
+        nursery_base
+    );
+    assert_eq!(
+        worker_destinations.placement_plan().placements()[0].destination_generation(),
+        HeapGeneration::Young
+    );
+    assert!(worker_destinations.allocation_plan().nursery_bytes() > 0);
+    assert_eq!(worker_destinations.allocation_plan().old_bytes(), 0);
+}
+
+#[test]
+fn owned_eval_plans_gc_stress_boundary_permanent_relocation_destinations() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+
+    let destinations = outcome
+        .gc_stress_boundary_minor_gc_relocation_destinations(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("permanent boundary scan plans relocation destinations");
+
+    assert_eq!(destinations.len(), 1);
+    assert!(destinations.worker().is_none());
+    let permanent_destinations = destinations
+        .permanent_shared()
+        .expect("permanent relocation report records");
+    assert!(permanent_destinations.destinations().is_empty());
+    assert_eq!(permanent_destinations.allocation_plan().nursery_bytes(), 0);
+    assert_eq!(permanent_destinations.allocation_plan().old_bytes(), 0);
+}
+
+#[test]
+fn owned_eval_without_gc_stress_has_no_boundary_relocation_destinations() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
+    let destinations = outcome
+        .gc_stress_boundary_minor_gc_relocation_destinations(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("empty boundary scans produce empty destinations");
+
+    assert!(outcome.gc_stress_boundary_scans().is_empty());
+    assert!(destinations.is_empty());
 }
 
 #[test]
