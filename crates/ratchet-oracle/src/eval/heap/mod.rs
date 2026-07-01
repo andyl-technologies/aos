@@ -180,6 +180,7 @@ pub struct EvalPrimOp {
 pub struct EvalHeap {
     allocator: RuntimeAllocator,
     permanent_allocator: PermanentSharedAllocator,
+    access_epoch: Cell<u64>,
     memory_budget: Option<HeapMemoryBudget>,
     resident_memory_mode: EvalHeapResidentMemoryMode,
     memory_budget_poll_count: u64,
@@ -203,6 +204,7 @@ struct HeapRecord {
     layout: HeapRecordLayout,
     structural_hash: Option<HotXxh3Hash>,
     allocation_domain: HeapAllocationDomain,
+    last_touch_epoch: Cell<u64>,
     value_hash: Cell<Option<ValueHash>>,
     captured_value_hash: Cell<Option<ValueHash>>,
     object: HeapObjectValue,

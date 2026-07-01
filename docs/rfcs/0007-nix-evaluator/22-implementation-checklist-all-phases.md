@@ -5406,7 +5406,18 @@ and helps the oracle directly.
       mode, and the resident-source metadata carried by budget decisions. Daemon
       policy, non-Linux live RSS backends, CA-store spill, cold hash-consed page
       eviction, and collector installation remain open under the full
-      memory-management rows.
+      memory-management rows. `EvalHeap` also tracks per-record access epochs
+      and exposes cold hash-consed logical-byte estimates for opt-in budget
+      classification, but the executed unused-tail budget action still credits
+      zero cold reclaim until CA-store spill/rematerialization exists.
+- [x] Current cold hash-cons candidate precursor:
+      `EvalHeap` stamps typed heap records with a monotonic access epoch at
+      allocation time, refreshes successful reusable-value reads and hash-cons
+      hits, and estimates cold permanent-shared hash-consed bytes by idle epoch
+      threshold. The opt-in budget classifier can carry that estimate as
+      `cold_hash_consed_bytes` for future spill planning. This is metadata only:
+      it installs no CA-store handle, evicts or rematerializes no value, advises
+      no live cold page, and does not change automatic memory-budget actions.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with

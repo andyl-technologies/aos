@@ -81,6 +81,16 @@ fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocati
     record.allocation_domain = domain;
 }
 
+fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
+    let address = gc_address(value);
+    heap.records
+        .iter()
+        .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+        .expect("heap record exists")
+        .layout
+        .size_bytes
+}
+
 #[test]
 fn default_heap_uses_tier_a_runtime_allocator() {
     let heap = EvalHeap::new();
@@ -107,6 +117,8 @@ fn default_heap_uses_tier_a_runtime_allocator() {
     );
     assert_eq!(heap.memory_budget_poll_count(), 0);
     assert_eq!(heap.last_memory_budget_action(), None);
+    assert_eq!(heap.access_epoch(), 0);
+    assert_eq!(heap.cold_hash_consed_bytes(0), 0);
     assert_eq!(heap.arena_stats(), ArenaStats::default());
     assert_eq!(heap.permanent_arena_stats(), ArenaStats::default());
 }
@@ -360,6 +372,64 @@ fn allocates_string_values_and_recovers_contents() {
 }
 
 #[test]
+fn cold_hash_consed_bytes_follow_permanent_record_touches() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"cold".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+
+    assert_eq!(heap.access_epoch(), 1);
+    assert_eq!(heap.cold_hash_consed_bytes(0), string_size);
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    assert_eq!(heap.access_epoch(), 2);
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+    assert_eq!(heap.cold_hash_consed_bytes(2), 0);
+
+    assert_eq!(
+        heap.get_string(string).expect("string exists").bytes(),
+        b"cold"
+    );
+
+    assert_eq!(heap.access_epoch(), 3);
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("second thunk allocates");
+
+    assert_eq!(heap.access_epoch(), 4);
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+}
+
+#[test]
+fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let first = heap
+        .alloc_string(NixString::from_bytes(b"shared".to_vec()))
+        .expect("first string allocates");
+    let string_size = record_layout_size(&heap, first);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+
+    let records_before = heap.len();
+    let second = heap
+        .alloc_string(NixString::from_bytes(b"shared".to_vec()))
+        .expect("matching string reuses hash-consed value");
+
+    assert!(first.raw_eq(second));
+    assert_eq!(heap.len(), records_before);
+    assert_eq!(heap.access_epoch(), 3);
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
+}
+
+#[test]
 fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
@@ -436,6 +506,38 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     );
     assert!(tier_b_decision.requires_runtime_action());
     assert!(tier_b_decision.requests_tier_b());
+}
+
+#[test]
+fn cold_hash_consed_estimate_flows_into_opt_in_budget_classification() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"spillable".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let resident_bytes = worker_stats
+        .mapped_bytes
+        .checked_add(permanent_stats.mapped_bytes)
+        .expect("resident bytes fit");
+    let budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
+    let decision = heap.classify_memory_budget_with_cold_hash_consed_estimate(budget, 13, 1);
+
+    assert_eq!(
+        decision.sample(),
+        HeapMemorySample::new(resident_bytes, 13, string_size)
+    );
+    assert_eq!(
+        decision.resident_source(),
+        EvalHeapResidentMemorySource::ArenaMappedBytes
+    );
+    assert_eq!(decision.worker_stats(), worker_stats);
+    assert_eq!(decision.permanent_stats(), permanent_stats);
 }
 
 #[test]
@@ -872,6 +974,36 @@ fn hash_consed_heap_records_share_cached_value_hashes() {
     );
     assert_eq!(heap.cached_value_hash(first), Ok(Some(hash)));
     assert_eq!(heap.cached_value_hash(second), Ok(Some(hash)));
+}
+
+#[test]
+fn cached_value_hash_lookups_refresh_cold_hash_consed_touch_epoch() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let value = heap
+        .alloc_string(NixString::from_bytes(b"cache-key".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, value);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+    assert_eq!(heap.cached_value_hash(value), Ok(None));
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("second thunk allocates");
+
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+    assert_eq!(
+        heap.cache_value_hash(
+            value,
+            ValueHash::from_context_free_string_bytes(b"cache-key")
+        )
+        .expect("value hash caches"),
+        HeapValueHashCacheUpdate::Inserted
+    );
+    assert_eq!(heap.cold_hash_consed_bytes(1), 0);
 }
 
 #[test]

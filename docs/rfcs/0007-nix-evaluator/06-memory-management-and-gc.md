@@ -1088,10 +1088,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       mode, and the resident-source metadata carried by budget decisions. Daemon
       policy, non-Linux live RSS backends, actual CA-store spill, and collector
       installation are not wired yet, so the full row above remains open.
+      `EvalHeap` also records access epochs for typed heap records and exposes
+      cold hash-consed logical-byte estimates for opt-in budget classification,
+      but the executed unused-tail response still passes zero cold reclaim
+      capacity until CA-store spill/rematerialization exists.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 
 - [ ] CA-store-backed spill: evict cold hash-consed values to the `mmap`'d CA store leaving a content-hash handle, rematerialize on demand, write-back-free because the hash is the address (§3.4) — **P3/P8**, `C-17`; depends on the incremental cache's CA store ([12](12-incremental-evaluation-cache.md)).
+- [x] Current cold hash-cons candidate precursor: `EvalHeap` tracks a monotonic
+      access epoch per typed heap record, stamps new records at allocation time,
+      refreshes successful reusable-value reads and hash-cons hits, and exposes
+      `cold_hash_consed_bytes(min_idle_epochs)` over permanent-shared records
+      that carry structural hashes. The opt-in
+      `classify_memory_budget_with_cold_hash_consed_estimate` helper feeds that
+      logical-size estimate into the existing budget classifier for future spill
+      planning. This is metadata only: no CA-store handle is installed, no value
+      is evicted or rematerialized, no live page is advised cold, and automatic
+      budget actions still do not credit cold hash-cons reclaim.
 - [ ] `madvise` portability shim (`advise_dead`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
 - [x] Current `madvise`/arena-tail precursor:
       `ratchet-value::heap::advice` provides the advisory memory API over
