@@ -3754,6 +3754,192 @@ impl ReproductionArtifact {
     }
 }
 
+/// Discovery path that produced an interesting finding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FindingDiscoveryPath {
+    /// Finding was produced by an interactive fork/session operation.
+    InteractiveFork,
+    /// Finding was produced by state-space search.
+    StateSpaceSearch,
+    /// Finding was produced by coverage-guided fuzzing.
+    CoverageGuidedFuzzing,
+    /// Finding is a retained coverage-guided corpus entry.
+    RetainedCorpusEntry,
+}
+
+/// Self-contained reproduction artifact attached to one interesting finding.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FindingReproductionArtifact {
+    /// Discovery path that produced the finding.
+    pub discovery_path: FindingDiscoveryPath,
+    /// Stable finding fingerprint supplied by the discovering oracle.
+    pub finding_fingerprint: ContentHash,
+    /// Content-addressed execution configuration captured by the artifact.
+    pub configuration: ContentHash,
+    /// Self-contained `(seed, scenario, schedule)` artifact.
+    pub artifact: ReproductionArtifact,
+    /// Replay evidence proving the artifact reduces without snapshots.
+    pub replay: ReproductionReplay,
+}
+
+impl FindingReproductionArtifact {
+    /// Captures a finding artifact from a pinned scenario form and configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario` is
+    /// not the concrete form for `configuration`. Returns other [`EngineError`]
+    /// values when artifact capture or replay validation fails.
+    pub fn capture(
+        discovery_path: FindingDiscoveryPath,
+        finding_fingerprint: ContentHash,
+        scenario: &ScenarioDefForm,
+        configuration: &Configuration,
+    ) -> Result<Self, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != configuration.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: configuration.def.id,
+                actual: scenario_def.id,
+            });
+        }
+        let expected_state = reduce(&configuration.def, &configuration.schedule)?.id;
+        let artifact = ReproductionArtifact::capture(scenario, &configuration.schedule)?;
+        let replay = artifact.verify_replay(expected_state)?;
+        Ok(Self {
+            discovery_path,
+            finding_fingerprint,
+            configuration: configuration.id(),
+            artifact,
+            replay,
+        })
+    }
+
+    /// Stores this finding's self-contained artifact bytes in `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DagStoreError`] when `store` cannot persist the artifact bytes.
+    pub fn store_artifact<S>(&self, store: &S) -> Result<ContentHash, DagStoreError>
+    where
+        S: DagStore + ?Sized,
+    {
+        store.put(&self.artifact.to_compact_binary())
+    }
+
+    /// Rebuilds a finding artifact from a stored self-contained artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingReproductionArtifactError::Store`] when the store cannot
+    /// read `artifact_key`. Returns [`FindingReproductionArtifactError::Engine`]
+    /// when the stored artifact bytes are malformed or fail replay validation.
+    pub fn load_from_store<S>(
+        discovery_path: FindingDiscoveryPath,
+        finding_fingerprint: ContentHash,
+        store: &S,
+        artifact_key: ContentHash,
+    ) -> Result<Self, FindingReproductionArtifactError>
+    where
+        S: DagStore + ?Sized,
+    {
+        let bytes =
+            store
+                .get(&artifact_key)
+                .map_err(|source| FindingReproductionArtifactError::Store {
+                    operation: "get-finding-artifact",
+                    source,
+                })?;
+        let artifact = ReproductionArtifact::from_compact_binary(&bytes).map_err(|source| {
+            FindingReproductionArtifactError::Engine {
+                operation: "decode-finding-artifact",
+                source,
+            }
+        })?;
+        let replay =
+            artifact
+                .replay()
+                .map_err(|source| FindingReproductionArtifactError::Engine {
+                    operation: "replay-finding-artifact",
+                    source,
+                })?;
+        let configuration = Configuration {
+            def: artifact.scenario_def(),
+            schedule: artifact.schedule().clone(),
+        };
+        Ok(Self {
+            discovery_path,
+            finding_fingerprint,
+            configuration: configuration.id(),
+            artifact,
+            replay,
+        })
+    }
+}
+
+/// Error returned when rebuilding a finding reproduction artifact from storage.
+#[derive(Debug)]
+pub enum FindingReproductionArtifactError {
+    /// Engine-spine decoding or replay validation failed.
+    Engine {
+        /// Operation that failed.
+        operation: &'static str,
+        /// Underlying engine error.
+        source: EngineError,
+    },
+    /// DAG-store retrieval failed.
+    Store {
+        /// Operation that failed.
+        operation: &'static str,
+        /// Underlying store error.
+        source: DagStoreError,
+    },
+    /// Stored artifact replay did not match retained corpus entry metadata.
+    RetainedCorpusEntryMismatch {
+        /// Retained-entry field whose value diverged.
+        field: &'static str,
+        /// Value recorded in the retained entry metadata.
+        expected: ContentHash,
+        /// Value recomputed from the stored self-contained artifact.
+        actual: ContentHash,
+    },
+}
+
+impl fmt::Display for FindingReproductionArtifactError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine { operation, .. } => {
+                write!(
+                    f,
+                    "finding reproduction artifact operation {operation} failed"
+                )
+            }
+            Self::Store { operation, .. } => {
+                write!(
+                    f,
+                    "finding reproduction artifact store operation {operation} failed"
+                )
+            }
+            Self::RetainedCorpusEntryMismatch { field, .. } => {
+                write!(
+                    f,
+                    "finding reproduction artifact retained corpus entry {field} metadata did not match stored artifact"
+                )
+            }
+        }
+    }
+}
+
+impl Error for FindingReproductionArtifactError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Engine { source, .. } => Some(source),
+            Self::Store { source, .. } => Some(source),
+            Self::RetainedCorpusEntryMismatch { .. } => None,
+        }
+    }
+}
+
 /// Successful replay-oracle verification of a reproduction artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionReplay {
@@ -10451,12 +10637,14 @@ impl TemporalGraph {
         trigger: MaterializationTrigger,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
         let failure_oracle = SearchFailureOracle::none();
-        self.search_with_strategy_and_failure_oracle(
+        self.search_with_strategy_inner(
             root,
             strategy,
             budget,
+            FrontierReductionPolicy::none(),
             materialization_policy,
             trigger,
+            None,
             &failure_oracle,
         )
     }
@@ -10465,18 +10653,23 @@ impl TemporalGraph {
     ///
     /// The oracle is read-only steering/reporting input: it can mark reached
     /// configurations as discovered failures, but it cannot change which graph
-    /// nodes are explored. This keeps failure reporting reproducible while the
-    /// assertion and triage layers own the semantics of what counts as a failure.
-    /// Graph-level symmetry and partial-order reductions are not applied here;
-    /// T-ADV-9 owns reduction soundness for multi-frontier search.
+    /// nodes are explored. `scenario` pins the concrete serialized scenario form
+    /// used to attach self-contained reproduction artifacts to every discovered
+    /// failure. This keeps failure reporting reproducible while the assertion and
+    /// triage layers own the semantics of what counts as a failure. Graph-level
+    /// symmetry and partial-order reductions are not applied here; T-ADV-9 owns
+    /// reduction soundness for multi-frontier search.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError`] when the root or any selected frontier cannot be
-    /// realized, reduced, recorded, or materialized by the single-frontier search
-    /// operation.
+    /// Returns [`EngineError::ReproductionScenarioMismatch`] when `scenario`
+    /// does not describe `root`. Returns other [`EngineError`] values when the
+    /// root or any selected frontier cannot be realized, reduced, recorded, or
+    /// materialized by the single-frontier search operation, or when a discovered
+    /// failure reproduction artifact cannot be captured.
     pub fn search_with_strategy_and_failure_oracle(
         &mut self,
+        scenario: &ScenarioDefForm,
         root: &Configuration,
         strategy: SearchStrategy,
         budget: SearchBudget,
@@ -10484,6 +10677,13 @@ impl TemporalGraph {
         trigger: MaterializationTrigger,
         failure_oracle: &SearchFailureOracle,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
+        let scenario_def = scenario.scenario_def();
+        if scenario_def.id != root.def.id {
+            return Err(EngineError::ReproductionScenarioMismatch {
+                expected: root.def.id,
+                actual: scenario_def.id,
+            });
+        }
         self.search_with_strategy_inner(
             root,
             strategy,
@@ -10491,6 +10691,7 @@ impl TemporalGraph {
             FrontierReductionPolicy::none(),
             materialization_policy,
             trigger,
+            Some(scenario),
             failure_oracle,
         )
     }
@@ -10524,6 +10725,7 @@ impl TemporalGraph {
             reduction_policy,
             materialization_policy,
             trigger,
+            None,
             &failure_oracle,
         )
     }
@@ -10536,6 +10738,7 @@ impl TemporalGraph {
         reduction_policy: FrontierReductionPolicy,
         materialization_policy: MaterializationPolicy,
         trigger: MaterializationTrigger,
+        scenario: Option<&ScenarioDefForm>,
         failure_oracle: &SearchFailureOracle,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
         let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
@@ -10546,11 +10749,12 @@ impl TemporalGraph {
         let mut discovered_failures = Vec::new();
         let mut discovered_failure_configurations = BTreeSet::new();
         record_search_discovered_failure(
-            root.id(),
+            root,
+            scenario,
             failure_oracle,
             &mut discovered_failure_configurations,
             &mut discovered_failures,
-        );
+        )?;
 
         while (expansions.len() as u64) < budget.max_expansions {
             let Some(index) = select_search_frontier_candidate(self, &worklist, strategy) else {
@@ -10571,11 +10775,12 @@ impl TemporalGraph {
                 let child_id = child.configuration.id();
                 explored_graph.insert(child_id);
                 record_search_discovered_failure(
-                    child_id,
+                    &child.configuration,
+                    scenario,
                     failure_oracle,
                     &mut discovered_failure_configurations,
                     &mut discovered_failures,
-                );
+                )?;
                 if scheduled.insert(child_id) {
                     worklist.push(SearchFrontierCandidate::new(child.configuration.clone()));
                 }
@@ -10589,11 +10794,12 @@ impl TemporalGraph {
                     let representative_id = representative.id();
                     explored_graph.insert(representative_id);
                     record_search_discovered_failure(
-                        representative_id,
+                        &representative,
+                        scenario,
                         failure_oracle,
                         &mut discovered_failure_configurations,
                         &mut discovered_failures,
-                    );
+                    )?;
                     if scheduled.insert(representative_id) {
                         worklist.push(SearchFrontierCandidate::new(representative));
                     }
@@ -12045,6 +12251,23 @@ impl CoverageGuidedFuzzIteration {
     pub fn schedule(&self) -> &Schedule {
         &self.configuration.schedule
     }
+
+    /// Emits a self-contained reproduction artifact for this fuzz candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when artifact capture or replay validation fails.
+    pub fn reproduction_artifact(
+        &self,
+        finding_fingerprint: ContentHash,
+    ) -> Result<FindingReproductionArtifact, EngineError> {
+        FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::CoverageGuidedFuzzing,
+            finding_fingerprint,
+            self.scenario.form(),
+            &self.configuration,
+        )
+    }
 }
 
 /// Default deterministic T-ADV-13 smoke target for a local corpus campaign.
@@ -12198,6 +12421,80 @@ pub struct CoverageGuidedCorpusEntry {
     pub parent: Option<ContentHash>,
     /// How this entry entered the corpus.
     pub origin: CoverageGuidedCorpusEntryOrigin,
+}
+
+impl CoverageGuidedCorpusEntry {
+    /// Reloads this retained corpus entry as a self-contained finding artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingReproductionArtifactError::Store`] when `store` cannot
+    /// read this entry's artifact bytes. Returns
+    /// [`FindingReproductionArtifactError::Engine`] when the stored artifact is
+    /// malformed or fails replay validation. Returns
+    /// [`FindingReproductionArtifactError::RetainedCorpusEntryMismatch`] when
+    /// the retained-entry descriptor fields do not match the stored artifact.
+    pub fn reproduction_artifact<S>(
+        &self,
+        store: &S,
+    ) -> Result<FindingReproductionArtifact, FindingReproductionArtifactError>
+    where
+        S: DagStore + ?Sized,
+    {
+        let finding = FindingReproductionArtifact::load_from_store(
+            FindingDiscoveryPath::RetainedCorpusEntry,
+            self.coverage_fingerprint,
+            store,
+            self.store_key,
+        )?;
+        let artifact = finding.artifact.id();
+        if artifact != self.artifact {
+            return Err(
+                FindingReproductionArtifactError::RetainedCorpusEntryMismatch {
+                    field: "artifact",
+                    expected: self.artifact,
+                    actual: artifact,
+                },
+            );
+        }
+        if artifact != self.store_key {
+            return Err(
+                FindingReproductionArtifactError::RetainedCorpusEntryMismatch {
+                    field: "store_key",
+                    expected: self.store_key,
+                    actual: artifact,
+                },
+            );
+        }
+        if finding.replay.scenario != self.scenario {
+            return Err(
+                FindingReproductionArtifactError::RetainedCorpusEntryMismatch {
+                    field: "scenario",
+                    expected: self.scenario,
+                    actual: finding.replay.scenario,
+                },
+            );
+        }
+        if finding.replay.schedule != self.schedule {
+            return Err(
+                FindingReproductionArtifactError::RetainedCorpusEntryMismatch {
+                    field: "schedule",
+                    expected: self.schedule,
+                    actual: finding.replay.schedule,
+                },
+            );
+        }
+        if finding.replay.state != self.replayed_state {
+            return Err(
+                FindingReproductionArtifactError::RetainedCorpusEntryMismatch {
+                    field: "replayed_state",
+                    expected: self.replayed_state,
+                    actual: finding.replay.state,
+                },
+            );
+        }
+        Ok(finding)
+    }
 }
 
 /// Admission result for one generated corpus candidate.
@@ -12724,6 +13021,16 @@ pub struct SearchDiscoveredFailure {
     pub configuration: ContentHash,
     /// Stable failure fingerprint used for deterministic deduplication.
     pub fingerprint: ContentHash,
+    /// Self-contained artifact captured when search discovered the failure.
+    pub reproduction_artifact: FindingReproductionArtifact,
+}
+
+impl SearchDiscoveredFailure {
+    /// Returns the self-contained artifact emitted by the search path.
+    #[must_use]
+    pub fn reproduction_artifact(&self) -> &FindingReproductionArtifact {
+        &self.reproduction_artifact
+    }
 }
 
 /// Read-only failure input for strategy-driven graph search.
@@ -12807,6 +13114,26 @@ pub struct TemporalGraphFork {
     pub branch: Configuration,
     /// Thin checkpoint recorded for the branch.
     pub branch_checkpoint: Checkpoint,
+}
+
+impl TemporalGraphFork {
+    /// Emits a self-contained reproduction artifact for the forked branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when artifact capture or replay validation fails.
+    pub fn reproduction_artifact(
+        &self,
+        scenario: &ScenarioDefForm,
+        finding_fingerprint: ContentHash,
+    ) -> Result<FindingReproductionArtifact, EngineError> {
+        FindingReproductionArtifact::capture(
+            FindingDiscoveryPath::InteractiveFork,
+            finding_fingerprint,
+            scenario,
+            &self.branch,
+        )
+    }
 }
 
 /// Result of a graph-level search frontier expansion.
@@ -13919,19 +14246,33 @@ fn search_candidate_coverage_fingerprint(
 }
 
 fn record_search_discovered_failure(
-    configuration: ContentHash,
+    configuration: &Configuration,
+    scenario: Option<&ScenarioDefForm>,
     failure_oracle: &SearchFailureOracle,
     discovered_configurations: &mut BTreeSet<ContentHash>,
     discovered_failures: &mut Vec<SearchDiscoveredFailure>,
-) {
-    if let Some(fingerprint) = failure_oracle.failure_for(configuration) {
-        if discovered_configurations.insert(configuration) {
-            discovered_failures.push(SearchDiscoveredFailure {
-                configuration,
+) -> Result<(), EngineError> {
+    let configuration_id = configuration.id();
+    if let Some(fingerprint) = failure_oracle.failure_for(configuration_id) {
+        if discovered_configurations.insert(configuration_id) {
+            let scenario = scenario.ok_or(EngineError::ReproductionScenarioMismatch {
+                expected: configuration.def.id,
+                actual: ContentHash::default(),
+            })?;
+            let reproduction_artifact = FindingReproductionArtifact::capture(
+                FindingDiscoveryPath::StateSpaceSearch,
                 fingerprint,
+                scenario,
+                configuration,
+            )?;
+            discovered_failures.push(SearchDiscoveredFailure {
+                configuration: configuration_id,
+                fingerprint,
+                reproduction_artifact,
             });
         }
     }
+    Ok(())
 }
 
 fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFrontierChoice> {
@@ -14486,6 +14827,13 @@ pub enum EngineError {
         /// The content address recomputed from parsed content.
         actual: ContentHash,
     },
+    /// A reproduction artifact was captured with the wrong scenario form.
+    ReproductionScenarioMismatch {
+        /// Scenario id required by the configuration.
+        expected: ContentHash,
+        /// Scenario id carried by the supplied form.
+        actual: ContentHash,
+    },
     /// A schedule contains more app-random decisions than its scenario admits.
     AppRandomDrawCapExceeded {
         /// The scenario whose app-random cap was exceeded.
@@ -14838,6 +15186,9 @@ impl fmt::Display for EngineError {
                     f,
                     "scenario serialized {component} id does not match parsed content"
                 )
+            }
+            Self::ReproductionScenarioMismatch { .. } => {
+                f.write_str("reproduction scenario form does not match configuration")
             }
             Self::AppRandomDrawCapExceeded { cap, actual, .. } => {
                 write!(

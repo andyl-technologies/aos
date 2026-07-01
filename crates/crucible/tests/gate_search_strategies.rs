@@ -7,11 +7,11 @@ use std::error::Error;
 
 use crucible::{
     ChoiceTag, Configuration, ContentHash, Decision, EngineError, FaultDecision, FaultId,
-    GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger, NodeId, NodeTemplate,
-    OverrideDecision, ReadyPoint, RngDecision, RngStreamId, SchedulingPoint, SearchBudget,
-    SearchDiscoveredFailure, SearchFailureOracle, SearchFrontierChoices, SearchStrategy,
-    TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode, bake,
-    try_step,
+    FindingDiscoveryPath, GenesisCheckpoint, Icount, MaterializationPolicy, MaterializationTrigger,
+    NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
+    ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle, SearchFrontierChoices,
+    SearchStrategy, Seed, TemporalGraph, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode, bake, try_step,
 };
 
 #[test]
@@ -133,10 +133,6 @@ fn gate_search_strategies_report_discovered_failures_deterministically()
     );
     let failure_oracle =
         SearchFailureOracle::none().with_failure(failed_configuration, fingerprint);
-    let expected = vec![SearchDiscoveredFailure {
-        configuration: failed_configuration,
-        fingerprint,
-    }];
 
     for strategy in search_strategies() {
         let first = run_strategy_with_coverage_mode(
@@ -154,7 +150,29 @@ fn gate_search_strategies_report_discovered_failures_deterministically()
         )?
         .run;
 
-        assert_eq!(first.discovered_failures, expected);
+        assert_eq!(first.discovered_failures.len(), 1);
+        let failure = first
+            .discovered_failures
+            .first()
+            .ok_or("expected one discovered failure")?;
+        assert_eq!(failure.configuration, failed_configuration);
+        assert_eq!(failure.fingerprint, fingerprint);
+        assert_eq!(
+            failure.reproduction_artifact().discovery_path,
+            FindingDiscoveryPath::StateSpaceSearch
+        );
+        assert_eq!(
+            failure.reproduction_artifact().finding_fingerprint,
+            fingerprint
+        );
+        assert_eq!(
+            failure.reproduction_artifact().configuration,
+            failed_configuration
+        );
+        assert_eq!(
+            failure.reproduction_artifact().artifact.schedule(),
+            &reference.children[1].schedule
+        );
         assert_eq!(first.discovered_failures, second.discovered_failures);
     }
 
@@ -181,6 +199,7 @@ fn run_strategy_with_coverage_mode(
 ) -> Result<StrategyRunFixture, EngineError> {
     let mut fixture = strategy_fixture_with_coverage_mode(coverage_mode)?;
     let run = fixture.graph.search_with_strategy_and_failure_oracle(
+        &fixture.scenario,
         &fixture.root,
         strategy,
         budget,
@@ -238,6 +257,7 @@ struct StrategyRunFixture {
 
 struct StrategyFixture {
     graph: TemporalGraph,
+    scenario: ScenarioDefForm,
     root: Configuration,
     children: Vec<Configuration>,
     covered_children: BTreeSet<ContentHash>,
@@ -257,11 +277,17 @@ fn strategy_fixture_with_coverage_mode(
     coverage_mode: CoverageFixtureMode,
 ) -> Result<StrategyFixture, EngineError> {
     let world = single_node_world("search-strategy")?;
-    let scenario = world.scenario_def();
-    let root = Configuration::genesis(scenario.clone());
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::default(),
+    )?;
+    let scenario_def = scenario.scenario_def();
+    let root = Configuration::genesis(scenario_def.clone());
     let root_decisions = strategy_root_decisions();
     let baked = bake_with_search_frontier_choices(&world, root_decisions.clone())?;
-    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario_def, baked)?;
     let mut children = Vec::new();
     let mut covered_children = BTreeSet::new();
 
@@ -289,6 +315,7 @@ fn strategy_fixture_with_coverage_mode(
 
     Ok(StrategyFixture {
         graph,
+        scenario,
         root,
         children,
         covered_children,
