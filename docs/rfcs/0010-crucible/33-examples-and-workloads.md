@@ -788,6 +788,14 @@ plan that holds the burst node with `NotYetJoined`, then heals that hold and
 fires `StartNode` at virtual time; the correlated-failure fixture is a
 `FaultPlan` campaign. No application-load-generation subsystem is introduced.
 
+Implementation note (T-WL-5): `GuestWorkloadTimeSource` encodes
+`load_time_source=virtual_time` for time-varying load shapes. World validation
+rejects unsupported time-source values, rejects a time source on non-time-varying
+patterns, and requires the virtual-time source for spike and cardinality-growth
+patterns. The spike and cardinality-growth fixtures are asserted reproducible by
+byte-identical world, plan, compact-binary scenario, canonical-TOML scenario, and
+`ScenarioDef::id` material across independent fixture construction.
+
 - **[WL-7]** The classic load shapes (steady, spike, cardinality growth,
   correlated failure) MUST be expressible as properties of the **guest program
   plus scenario parameters**, not as host-side generator subsystems: steady = an
@@ -986,10 +994,16 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   parameters, fixture constructors for every classic pattern, a virtual-time
   rate spike fixture, a `StartNode` burst fixture, and a correlated-failure
   `FaultPlan` campaign without adding a host load-generation subsystem.
-- [ ] **T-WL-5** Enforce that all time-varying load shapes derive from virtual time
+- [x] **T-WL-5** Enforce that all time-varying load shapes derive from virtual time
   (guest VT clock or VT-scheduled events), never host wall-clock; assert spike and
   cardinality-growth fixtures reproduce bit-identically. — satisfies [WL-8]; spec
   §B.3; cross-ref 17a §17a.4.1.
+  Completed by `checks.crucible.phase4.workloadVirtualTimeShapes`:
+  `GuestWorkloadTimeSource` admits only `virtual_time`, fixture nodes render
+  `load_time_source=virtual_time` for spike/cardinality-growth patterns, world
+  validation rejects host-wall-clock or missing/stray time-source configuration,
+  and the spike/cardinality fixtures reproduce byte-identical canonical scenario
+  material across independent construction.
 - [ ] **T-WL-6** Implement content-addressed workload parameterization (cmdline
   scalars + read-only rootfs/9p config tree), part of the scenario hash, read-only
   to the guest; assert a parameter change yields a different `ScenarioDef::id` and

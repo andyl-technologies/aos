@@ -711,6 +711,15 @@ pub const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER: &str = "spike_mode";
 
 const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX: &str = "spike_mode=";
 
+/// Kernel command-line key that declares the clock driving load variation.
+///
+/// Time-varying load shapes use this scenario parameter to make the clock source
+/// explicit. The only supported value is virtual time; host wall-clock time is
+/// not an admissible load-shape input.
+pub const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER: &str = "load_time_source";
+
+const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_time_source=";
+
 /// Whether explicit workload seeds can be delivered without white-box support.
 pub const WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES: bool = true;
 
@@ -722,6 +731,12 @@ pub const WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES: bool = true;
 
 /// Whether load-pattern configuration requires the optional guest-host channel.
 pub const WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX: bool = false;
+
+/// Whether time-varying load shapes must derive from virtual time.
+pub const WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME: bool = true;
+
+/// Whether load shapes may derive their variation from the host wall clock.
+pub const WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED: bool = false;
 
 /// Whether Crucible's application traffic originates inside guest VMs.
 ///
@@ -1033,6 +1048,67 @@ impl GuestWorkloadSpikeMode {
     }
 }
 
+/// The clock source that drives a time-varying in-guest load shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GuestWorkloadTimeSource {
+    /// The load shape derives from guest-visible virtual time or VT-scheduled events.
+    VirtualTime,
+}
+
+impl GuestWorkloadTimeSource {
+    /// The supported load-shape time-source vocabulary.
+    pub const SUPPORTED: [Self; 1] = [Self::VirtualTime];
+
+    /// Returns the scenario-parameter value for this time source.
+    #[must_use]
+    pub const fn scenario_parameter_value(self) -> &'static str {
+        match self {
+            Self::VirtualTime => "virtual_time",
+        }
+    }
+
+    /// Returns the human-readable time-source name used by diagnostics and docs.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::VirtualTime => "virtual time",
+        }
+    }
+
+    /// Parses a load-shape time source from a scenario-parameter value.
+    #[must_use]
+    pub fn from_scenario_parameter_value(value: &str) -> Option<Self> {
+        match value {
+            "virtual_time" => Some(Self::VirtualTime),
+            _ => None,
+        }
+    }
+
+    /// Parses the first supported load-shape time source from a command line.
+    #[must_use]
+    pub fn from_cmdline(cmdline: &str) -> Option<Self> {
+        parse_guest_workload_time_source_parameter(cmdline)
+    }
+
+    /// Renders this time source as a workload scenario parameter.
+    #[must_use]
+    pub fn scenario_parameter(self) -> String {
+        format!(
+            "{WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER}={}",
+            self.scenario_parameter_value()
+        )
+    }
+
+    /// Returns `base_cmdline` with this load-shape time source selected.
+    ///
+    /// Existing `load_time_source=...` tokens are replaced so the command line
+    /// carries one stable clock-source declaration.
+    #[must_use]
+    pub fn selected_cmdline(self, base_cmdline: &str) -> String {
+        cmdline_with_guest_workload_time_source(base_cmdline, self)
+    }
+}
+
 /// A load-pattern fixture assembled from guest program configuration and a plan.
 ///
 /// Fixtures are intentionally small examples of guest-program-plus-scenario-
@@ -1043,6 +1119,7 @@ impl GuestWorkloadSpikeMode {
 pub struct GuestWorkloadLoadPatternFixture {
     pattern: GuestWorkloadPattern,
     spike_mode: Option<GuestWorkloadSpikeMode>,
+    time_source: Option<GuestWorkloadTimeSource>,
     world: World,
     plan: Plan,
 }
@@ -1059,11 +1136,13 @@ impl GuestWorkloadLoadPatternFixture {
             "console=ttyS0 rate_per_sec=100",
             GuestWorkloadPattern::Steady,
             None,
+            None,
         );
         let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
         Ok(Self {
             pattern: GuestWorkloadPattern::Steady,
             spike_mode: None,
+            time_source: None,
             world,
             plan: Plan::empty(),
         })
@@ -1083,11 +1162,13 @@ impl GuestWorkloadLoadPatternFixture {
             ),
             GuestWorkloadPattern::Spike,
             Some(GuestWorkloadSpikeMode::VirtualTimeRate),
+            Some(GuestWorkloadTimeSource::VirtualTime),
         );
         let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
         Ok(Self {
             pattern: GuestWorkloadPattern::Spike,
             spike_mode: Some(GuestWorkloadSpikeMode::VirtualTimeRate),
+            time_source: Some(GuestWorkloadTimeSource::VirtualTime),
             world,
             plan: Plan::empty(),
         })
@@ -1104,11 +1185,13 @@ impl GuestWorkloadLoadPatternFixture {
             "console=ttyS0 base_rate_per_sec=10",
             GuestWorkloadPattern::Spike,
             Some(GuestWorkloadSpikeMode::StartNodeBurst),
+            Some(GuestWorkloadTimeSource::VirtualTime),
         );
         let burst_cmdline = workload_pattern_cmdline(
             "console=ttyS0 burst_rate_per_sec=500",
             GuestWorkloadPattern::Spike,
             Some(GuestWorkloadSpikeMode::StartNodeBurst),
+            Some(GuestWorkloadTimeSource::VirtualTime),
         );
         let burst_node = NodeId {
             name: String::from("client-burst"),
@@ -1146,6 +1229,7 @@ impl GuestWorkloadLoadPatternFixture {
         Ok(Self {
             pattern: GuestWorkloadPattern::Spike,
             spike_mode: Some(GuestWorkloadSpikeMode::StartNodeBurst),
+            time_source: Some(GuestWorkloadTimeSource::VirtualTime),
             world,
             plan,
         })
@@ -1165,11 +1249,13 @@ impl GuestWorkloadLoadPatternFixture {
             ),
             GuestWorkloadPattern::CardinalityGrowth,
             None,
+            Some(GuestWorkloadTimeSource::VirtualTime),
         );
         let world = World::from_nodes(vec![workload_pattern_node("client", cmdline)])?;
         Ok(Self {
             pattern: GuestWorkloadPattern::CardinalityGrowth,
             spike_mode: None,
+            time_source: Some(GuestWorkloadTimeSource::VirtualTime),
             world,
             plan: Plan::empty(),
         })
@@ -1188,6 +1274,7 @@ impl GuestWorkloadLoadPatternFixture {
                 "console=ttyS0 rate_per_sec=50",
                 GuestWorkloadPattern::CorrelatedFailure,
                 None,
+                None,
             ),
         );
         let right = workload_pattern_node(
@@ -1195,6 +1282,7 @@ impl GuestWorkloadLoadPatternFixture {
             workload_pattern_cmdline(
                 "console=ttyS0 rate_per_sec=50",
                 GuestWorkloadPattern::CorrelatedFailure,
+                None,
                 None,
             ),
         );
@@ -1234,6 +1322,7 @@ impl GuestWorkloadLoadPatternFixture {
         Ok(Self {
             pattern: GuestWorkloadPattern::CorrelatedFailure,
             spike_mode: None,
+            time_source: None,
             world,
             plan,
         })
@@ -1249,6 +1338,12 @@ impl GuestWorkloadLoadPatternFixture {
     #[must_use]
     pub fn spike_mode(&self) -> Option<GuestWorkloadSpikeMode> {
         self.spike_mode
+    }
+
+    /// Returns the fixture's load-shape time source, when the pattern varies over time.
+    #[must_use]
+    pub fn time_source(&self) -> Option<GuestWorkloadTimeSource> {
+        self.time_source
     }
 
     /// Returns the content-addressed world assembled by this fixture.
@@ -1998,6 +2093,16 @@ impl NodeTemplate {
     #[must_use]
     pub fn guest_workload_spike_mode(mut self, mode: GuestWorkloadSpikeMode) -> Self {
         self.cmdline = mode.selected_cmdline(&self.cmdline);
+        self
+    }
+
+    /// Selects the time source for a time-varying load pattern by scenario parameter.
+    ///
+    /// The only supported source is virtual time. The source is encoded as
+    /// `load_time_source=virtual_time` in the guest command line.
+    #[must_use]
+    pub fn guest_workload_time_source(mut self, source: GuestWorkloadTimeSource) -> Self {
+        self.cmdline = source.selected_cmdline(&self.cmdline);
         self
     }
 
@@ -4320,6 +4425,12 @@ impl WorldNode {
     #[must_use]
     pub fn guest_workload_spike_mode(&self) -> Option<GuestWorkloadSpikeMode> {
         GuestWorkloadSpikeMode::from_cmdline(&self.cmdline)
+    }
+
+    /// Returns the load-shape time source selected by this node, if any.
+    #[must_use]
+    pub fn guest_workload_time_source(&self) -> Option<GuestWorkloadTimeSource> {
+        GuestWorkloadTimeSource::from_cmdline(&self.cmdline)
     }
 }
 
@@ -11431,6 +11542,28 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
+    /// A world node selected an unsupported load-shape time source.
+    WorldNodeUnsupportedWorkloadTimeSource {
+        /// The invalid node.
+        node: NodeId,
+        /// The unsupported load-shape time-source scenario-parameter value.
+        value: String,
+    },
+    /// A world node selected more than one load-shape time source.
+    WorldNodeDuplicateWorkloadTimeSource {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A time-varying load pattern omitted its virtual-time source declaration.
+    WorldNodeWorkloadTimeVaryingPatternMissingVirtualTimeSource {
+        /// The invalid node.
+        node: NodeId,
+    },
+    /// A non-time-varying load pattern selected a load-shape time source.
+    WorldNodeWorkloadTimeSourceWithoutTimeVaryingPattern {
+        /// The invalid node.
+        node: NodeId,
+    },
     /// A plan membership fault references an undeclared node.
     PlanFaultUnknownNode {
         /// The undeclared node.
@@ -11779,6 +11912,23 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeWorkloadSpikeModeWithoutSpikePattern { .. } => {
                 f.write_str("world node selects a workload spike mode without a spike pattern")
+            }
+            Self::WorldNodeUnsupportedWorkloadTimeSource { value, .. } => {
+                write!(
+                    f,
+                    "world node workload time source value {value} is unsupported"
+                )
+            }
+            Self::WorldNodeDuplicateWorkloadTimeSource { .. } => {
+                f.write_str("world node selects more than one workload time source")
+            }
+            Self::WorldNodeWorkloadTimeVaryingPatternMissingVirtualTimeSource { .. } => f.write_str(
+                "world node selects a time-varying workload pattern without virtual-time source",
+            ),
+            Self::WorldNodeWorkloadTimeSourceWithoutTimeVaryingPattern { .. } => {
+                f.write_str(
+                    "world node selects a workload time source without a time-varying pattern",
+                )
             }
             Self::PlanFaultUnknownNode { .. } => {
                 f.write_str("plan membership fault references an undeclared node")
@@ -12930,6 +13080,8 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
         validate_world_node_workload_pattern(node)?;
         validate_world_node_workload_spike_mode(node)?;
         validate_world_node_workload_pattern_consistency(node)?;
+        validate_world_node_workload_time_source(node)?;
+        validate_world_node_workload_time_source_consistency(node)?;
     }
 
     Ok(())
@@ -13038,6 +13190,53 @@ fn validate_world_node_workload_pattern_consistency(node: &WorldNode) -> Result<
         (_, Some(_)) => Err(EngineError::WorldNodeWorkloadSpikeModeWithoutSpikePattern {
             node: node.id.clone(),
         }),
+    }
+}
+
+fn validate_world_node_workload_time_source(node: &WorldNode) -> Result<(), EngineError> {
+    let mut selected = false;
+    for token in node.cmdline.split_whitespace() {
+        let Some(value) = token.strip_prefix(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX) else {
+            continue;
+        };
+        if selected {
+            return Err(EngineError::WorldNodeDuplicateWorkloadTimeSource {
+                node: node.id.clone(),
+            });
+        }
+        if GuestWorkloadTimeSource::from_scenario_parameter_value(value).is_none() {
+            return Err(EngineError::WorldNodeUnsupportedWorkloadTimeSource {
+                node: node.id.clone(),
+                value: value.to_owned(),
+            });
+        }
+        selected = true;
+    }
+    Ok(())
+}
+
+fn validate_world_node_workload_time_source_consistency(
+    node: &WorldNode,
+) -> Result<(), EngineError> {
+    let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
+    let time_source = GuestWorkloadTimeSource::from_cmdline(&node.cmdline);
+
+    match (pattern, time_source) {
+        (
+            Some(GuestWorkloadPattern::Spike | GuestWorkloadPattern::CardinalityGrowth),
+            Some(GuestWorkloadTimeSource::VirtualTime),
+        ) => Ok(()),
+        (Some(GuestWorkloadPattern::Spike | GuestWorkloadPattern::CardinalityGrowth), None) => Err(
+            EngineError::WorldNodeWorkloadTimeVaryingPatternMissingVirtualTimeSource {
+                node: node.id.clone(),
+            },
+        ),
+        (_, Some(_)) => Err(
+            EngineError::WorldNodeWorkloadTimeSourceWithoutTimeVaryingPattern {
+                node: node.id.clone(),
+            },
+        ),
+        (_, None) => Ok(()),
     }
 }
 
@@ -19450,6 +19649,14 @@ fn parse_guest_workload_spike_mode_parameter(cmdline: &str) -> Option<GuestWorkl
     })
 }
 
+fn parse_guest_workload_time_source_parameter(cmdline: &str) -> Option<GuestWorkloadTimeSource> {
+    cmdline.split_whitespace().find_map(|token| {
+        token
+            .strip_prefix(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX)
+            .and_then(GuestWorkloadTimeSource::from_scenario_parameter_value)
+    })
+}
+
 fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
     let selection = workload.scenario_parameter();
     let mut rendered = String::new();
@@ -19502,15 +19709,36 @@ fn cmdline_with_guest_workload_spike_mode(cmdline: &str, mode: GuestWorkloadSpik
     rendered
 }
 
+fn cmdline_with_guest_workload_time_source(
+    cmdline: &str,
+    source: GuestWorkloadTimeSource,
+) -> String {
+    let selection = source.scenario_parameter();
+    let mut rendered = String::new();
+    for token in cmdline
+        .split_whitespace()
+        .filter(|token| !token.starts_with(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX))
+    {
+        push_cmdline_token(&mut rendered, token);
+    }
+    push_cmdline_token(&mut rendered, &selection);
+    rendered
+}
+
 fn workload_pattern_cmdline(
     base_cmdline: &str,
     pattern: GuestWorkloadPattern,
     spike_mode: Option<GuestWorkloadSpikeMode>,
+    time_source: Option<GuestWorkloadTimeSource>,
 ) -> String {
     let cmdline = GuestWorkloadBinary::ClientLoop.selected_cmdline(base_cmdline);
     let cmdline = pattern.selected_cmdline(&cmdline);
-    match spike_mode {
+    let cmdline = match spike_mode {
         Some(mode) => mode.selected_cmdline(&cmdline),
+        None => cmdline,
+    };
+    match time_source {
+        Some(source) => source.selected_cmdline(&cmdline),
         None => cmdline,
     }
 }
