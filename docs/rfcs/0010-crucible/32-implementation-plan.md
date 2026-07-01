@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:3b11053dbdfcd4ec`
+Checklist sync digest: `rfc0010-checklist-v1:3fd2c9b10726a6c7`
 
 ## The phase ladder
 
@@ -260,10 +260,12 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   violations and divergence bisection points, binds checked event-log projection
   metadata, recorded coverage fingerprints, and violation records to the same
   reproduction artifact, derives coverage classes from those metadata-bound
-  deterministic coverage fingerprints, leaves
-  `causal_slice_hash` absent until the T-TRI-2 cone normalization, and omits
-  discovery campaign/finding-fingerprint state from the signature; `T-TRI-2 …
-  T-TRI-8` remain pending ([`34`](34-failure-triage.md)).
+  deterministic coverage fingerprints, and omits discovery campaign/finding-
+  fingerprint state from the signature. `T-TRI-2` is green through
+  `checks.crucible.phase6.failureNormalization`, which makes absolute icount
+  report-only, applies symmetry-canonical `faulting_node` relabeling, and hashes
+  only the normalized causal cone for `causal_slice_hash`; `T-TRI-3 … T-TRI-8`
+  remain pending ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
 and restores validated continuously), and reproduction artifacts replay

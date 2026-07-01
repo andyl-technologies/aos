@@ -862,16 +862,24 @@ recomputable byte-for-byte from what was already stored.
   kind and node from a bisection point that must exist in the checked recorded
   causal projection. The checked event-log wrapper binds the projection metadata
   and recorded coverage fingerprint to the same reproduction artifact, derives
-  the coverage class from that metadata-bound fingerprint, leaves
-  `causal_slice_hash` absent until the cone-scoped T-TRI-2 normalization, and
-  omits discovery path and finding fingerprint so discovery campaign state cannot
-  perturb the signature.
-- [ ] **T-TRI-2** Implement the three critical normalizations — absolute icount
+  the coverage class from that metadata-bound fingerprint, and omits discovery
+  path and finding fingerprint so discovery campaign state cannot perturb the
+  signature.
+- [x] **T-TRI-2** Implement the three critical normalizations — absolute icount
   report-only, `faulting_node` under the symmetry-canonical relabeling (07 §9),
   and `causal_slice_hash` over the cone (19 §19.6.2) — and prove each prevents its
   failure mode (signature instability under minimization, under-clustering across
   interchangeable entities, out-of-cone shrink sensitivity). — satisfies [TRI-5],
   [TRI-6], [TRI-7]; spec §34.2.2.
+  Completed by `checks.crucible.phase6.failureNormalization`: `FailureSignature`
+  now carries `at_icount_report_only` in report material while excluding it from
+  the default content hash, canonicalizes `faulting_node` through
+  `FailureSignatureNormalization` / `FailureSymmetryCanonicalizer` over
+  `SymmetryReductionClasses`, and computes `causal_slice_hash` from the
+  normalized causal cone ending at the validated first-failing causal entry. The
+  gate proves absolute icount shifts do not perturb the key, symmetric replica
+  nodes collapse to one canonical faulting node, and trailing out-of-cone causal
+  entries do not change the slice hash.
 - [ ] **T-TRI-3** Implement the closed, versioned `SignaturePolicy`
   (coarse/default/fine/exact) selecting key vs detail fields and the
   `coverage_class` bucketing, recorded in the triage result identity for
