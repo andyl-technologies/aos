@@ -10137,6 +10137,7 @@ async fn channel_advance(
     let mut map = read_channel_partition_map(&dir, channel_name)?;
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    ensure_channel_advance_fix_forward(&map, &selected, version)?;
     if selected.is_empty() {
         if printer.mode() == OutputMode::Json {
             let frontier = channel::compute_frontier(&map);
@@ -11389,6 +11390,13 @@ async fn write_full_pack_artifact(
 ) -> Result<String> {
     if let Some(existing) = existing_full_pack(pack_dir)? {
         if resume {
+            let idx = pack_dir.join(existing.trim_end_matches(".pack").to_string() + ".idx");
+            if !idx.exists() {
+                bail!(
+                    "full pack {existing} exists but its index {} is missing; rerun without --resume to regenerate it",
+                    idx.display()
+                );
+            }
             printer.info(&format!("Full pack {existing} already exists; resuming."));
             return Ok(existing);
         }
@@ -11404,11 +11412,12 @@ async fn write_full_pack_artifact(
     fs::copy(&pack_path, pack_dir.join(&pack_name))
         .with_context(|| format!("copying {}", pack_path.display()))?;
     let idx_path = pack_path.with_extension("idx");
-    if idx_path.exists() {
-        let idx_name = file_name_string(&idx_path)?;
-        fs::copy(&idx_path, pack_dir.join(idx_name))
-            .with_context(|| format!("copying {}", idx_path.display()))?;
+    if !idx_path.exists() {
+        bail!("full pack index was not generated: {}", idx_path.display());
     }
+    let idx_name = file_name_string(&idx_path)?;
+    fs::copy(&idx_path, pack_dir.join(idx_name))
+        .with_context(|| format!("copying {}", idx_path.display()))?;
     printer.success(&format!("Generated full pack {pack_name}."));
     Ok(pack_name)
 }
@@ -11524,6 +11533,7 @@ fn channel_advance_dir(
     let mut map = read_channel_partition_map(dir, channel_name)?;
     channel::assert_full_partition_set(&map)?;
     let selected = select_partitions_for_advance(count, partitions, &map, version)?;
+    ensure_channel_advance_fix_forward(&map, &selected, version)?;
     if selected.is_empty() {
         printer.info("No partitions selected for advancement.");
         return Ok(0);
@@ -11690,6 +11700,29 @@ fn select_partitions_for_advance(
         }
         (None, Some(spec)) => parse_partition_list(spec),
     }
+}
+
+/// Refuse producer-side channel rewrites that would lower any selected
+/// partition's semver target.
+fn ensure_channel_advance_fix_forward(
+    map: &PartitionMap,
+    selected: &[u8],
+    version: &semver::Version,
+) -> Result<()> {
+    for bucket in selected {
+        let Some(current) = map.get(*bucket) else {
+            continue;
+        };
+        if version < current {
+            bail!(
+                "channel advance would decrement partition {} from {} to {}; publish a newer fix-forward release instead",
+                channel::bucket_hex(*bucket),
+                current,
+                version,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
@@ -13231,6 +13264,21 @@ mod tests {
             select_partitions_for_advance(Some(3), None, &map, &target).unwrap(),
             vec![0, 1, 2],
         );
+    }
+
+    #[test]
+    fn channel_advance_rejects_selected_partition_decrement() {
+        let mut map = PartitionMap::all(semver::Version::parse("1.1.0").unwrap());
+        map.set(2, semver::Version::parse("1.0.0").unwrap())
+            .unwrap();
+        let older = semver::Version::parse("1.0.0").unwrap();
+        let same = semver::Version::parse("1.1.0").unwrap();
+        let newer = semver::Version::parse("1.2.0").unwrap();
+
+        let err = ensure_channel_advance_fix_forward(&map, &[0], &older).unwrap_err();
+        assert!(format!("{err:#}").contains("decrement partition 00 from 1.1.0 to 1.0.0"));
+        ensure_channel_advance_fix_forward(&map, &[0], &same).unwrap();
+        ensure_channel_advance_fix_forward(&map, &[0, 2], &newer).unwrap();
     }
 
     #[test]
