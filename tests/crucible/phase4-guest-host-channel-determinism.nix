@@ -244,8 +244,8 @@
         needle = "--test guest_host_channel_determinism";
       }
       {
-        label = "canonical wiring deferred";
-        needle = "canonical_gate_wiring_deferred=T-GHC-15";
+        label = "canonical gate wiring pointer";
+        needle = "canonical_gate_wiring=checks.crucible.phase4.guestHostChannelGateWiring";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
@@ -386,7 +386,7 @@ in
             payload_read=trap-icount-snapshot
             host_guest_direction=explicit-delivery-icount-producer-timing-invariant
             marker_fingerprint=scheduler-witness-identical-with-markers-on-vs-off
-            canonical_gate_wiring_deferred=T-GHC-15
+            canonical_gate_wiring=checks.crucible.phase4.guestHostChannelGateWiring
             RESULT
           '';
         }

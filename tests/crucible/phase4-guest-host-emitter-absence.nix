@@ -261,7 +261,7 @@ in
             tasks=${taskList}
             no_guest_content=white-box-disabled,kernel-none,root-image-none,initrd-none
             preserved=determinism,faults,coverage,observable-io,backend-fingerprint
-            canonical_gate_wiring_deferred=T-GHC-15
+            canonical_gate_wiring=checks.crucible.phase4.guestHostChannelGateWiring
             RESULT
           '';
         }
