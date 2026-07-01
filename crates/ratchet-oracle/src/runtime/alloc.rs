@@ -6,6 +6,8 @@
 //! values. Later Phase-3 work can install the precise generational collector
 //! behind the same worker `aos_alloc_*` entry-point surface.
 
+use std::mem;
+
 use crate::heap::arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaStats, BumpArena, HeapObjectKind,
 };
@@ -840,6 +842,27 @@ impl RuntimeAllocator {
         self.safepoints
     }
 
+    /// Drops the installed worker arena and replaces it with an empty arena.
+    ///
+    /// The returned accounting describes the dropped arena. The installed
+    /// GC-stress policy is preserved for the next worker lifetime, while
+    /// allocation-safepoint accounting is reset with the new empty arena. Any
+    /// allocation handles returned before the reset must be considered dead by
+    /// the caller; [`EvalHeap::reset_worker_allocator_if_idle`](crate::eval::heap::EvalHeap::reset_worker_allocator_if_idle)
+    /// is the typed side-table admission boundary for evaluator-owned values.
+    pub(crate) fn reset_to_empty(&mut self) -> ArenaStats {
+        let previous = mem::replace(
+            &mut self.backend,
+            RuntimeAllocatorBackend::TierAOneShot(BumpArena::new()),
+        );
+        let stats = match &previous {
+            RuntimeAllocatorBackend::TierAOneShot(arena) => arena.stats(),
+        };
+        drop(previous);
+        self.safepoints = AllocationSafepointState::default();
+        stats
+    }
+
     /// Allocates a thunk-sized heap object through `aos_alloc_thunk`.
     ///
     /// # Errors
@@ -1401,6 +1424,43 @@ mod tests {
                 + permanent_report.rejected(),
             1
         );
+    }
+
+    #[test]
+    fn worker_allocator_reset_drops_worker_chunks_without_touching_permanent_storage() {
+        let mut worker =
+            RuntimeAllocator::tier_a_with_initial_chunk_bytes(128).expect("worker creates");
+        let mut permanent =
+            PermanentSharedAllocator::with_initial_chunk_bytes(128).expect("permanent creates");
+        worker.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+        worker.aos_alloc_thunk().expect("worker allocates");
+        permanent
+            .aos_alloc_string(5)
+            .expect("permanent string allocates");
+        let worker_stats_before = worker.stats();
+        let permanent_stats_before = permanent.stats();
+        let permanent_safepoints_before = permanent.allocation_safepoints();
+
+        let dropped_worker_stats = worker.reset_to_empty();
+
+        assert_eq!(dropped_worker_stats, worker_stats_before);
+        assert_eq!(worker.stats(), ArenaStats::default());
+        assert_eq!(
+            worker.allocation_safepoints(),
+            AllocationSafepointState::default()
+        );
+        assert_eq!(worker.gc_stress_policy(), GcStressPolicy::every_safepoint());
+        assert_eq!(permanent.stats(), permanent_stats_before);
+        assert_eq!(
+            permanent.allocation_safepoints(),
+            permanent_safepoints_before
+        );
+
+        permanent
+            .aos_alloc_string(7)
+            .expect("permanent allocator remains usable after worker reset");
+        assert_eq!(permanent.allocation_safepoints().count(), 2);
+        assert!(permanent.stats().used_bytes > permanent_stats_before.used_bytes);
     }
 
     #[test]

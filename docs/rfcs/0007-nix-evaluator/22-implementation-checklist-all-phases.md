@@ -5361,7 +5361,7 @@ and helps the oracle directly.
       the live root set, invoking the collector, actually collecting at every
       safepoint, exported C ABI symbols, and write-barrier dispatch integration
       remain open.
-- [x] Current permanent-shared allocation precursor:
+- [x] Current permanent-shared allocation closure:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
       owns both domains. Hash-consed reusable values — strings, paths, list
@@ -5372,10 +5372,12 @@ and helps the oracle directly.
       current collector-poll contract that hash-consed roots are permanent
       minor-GC roots rather than survivor-frontier objects. They also preserve
       the cross-domain caveat that permanent list/attr containers may hold
-      worker-domain child handles visible to precise root scanning. The real
-      daemon lifetime model, worker-arena reset/drop admission policy, exported
-      ABI, and Tier-B collector integration remain open under the broader
-      heap/GC rows.
+      worker-domain child handles visible to precise root scanning.
+      `RuntimeAllocator::reset_to_empty` now drops worker chunks without touching
+      permanent shared storage, and `EvalHeap::reset_worker_allocator_if_idle`
+      rejects that reset while worker-domain records are live. The real daemon
+      lifetime model, exported ABI, and Tier-B collector integration remain
+      open under the broader heap/GC rows.
 - [x] Current high-water budget policy precursor:
       `ratchet-value::heap::budget` provides the single configurable-budget
       classifier for memory pressure: below the derived soft limit it keeps Tier

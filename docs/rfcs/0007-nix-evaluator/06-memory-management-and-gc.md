@@ -1041,8 +1041,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A
       (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first).
-- [ ] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
-- [x] Current permanent-shared arena precursor:
+- [x] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
+- [x] Current permanent-shared arena closure:
       `ratchet-oracle::runtime::alloc::PermanentSharedAllocator` provides a
       separate permanent domain with accounting independent from the Tier-A
       worker allocator, and `EvalHeap` owns both domains. Canonical hash-consed
@@ -1051,9 +1051,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       thunks, lambdas, and primop wrappers stay in the worker domain. Tests pin
       split accounting, worker/permanent placement, and the current caveat that
       permanent list/attr containers may still reference worker-domain child
-      handles that precise root scanning must see. The exported allocator ABI,
-      process-wide daemon lifetime, worker-arena reset/drop admission policy,
-      and Tier-B collector integration remain open in the rows above and below.
+      handles that precise root scanning must see. `RuntimeAllocator::reset_to_empty`
+      now drops worker chunks and resets worker safepoint accounting without
+      touching a separate `PermanentSharedAllocator`; `EvalHeap` admits that
+      reset only when no worker-domain records remain live, preserving
+      permanent records and cons-table reuse. The exported allocator ABI,
+      process-wide daemon lifetime, and Tier-B collector integration remain
+      open in the rows above and below.
 - [ ] Configurable high-water memory budget (one knob) driving the three escalating responses (§3.6) — **P3**, `C-17`.
 - [x] Current high-water budget policy precursor:
       `ratchet-value::heap::budget` defines the single-knob decision table for

@@ -159,6 +159,84 @@ fn gc_stress_policy_installs_across_heap_allocation_domains() {
 }
 
 #[test]
+fn worker_allocator_reset_preserves_permanent_records_when_worker_domain_is_idle() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let value = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("string allocates");
+    let permanent_stats_before = heap.permanent_arena_stats();
+
+    let report = heap
+        .reset_worker_allocator_if_idle()
+        .expect("worker reset is safe without worker records");
+
+    assert_eq!(report.dropped_worker_stats(), ArenaStats::default());
+    assert_eq!(report.worker_stats_after(), ArenaStats::default());
+    assert_eq!(report.permanent_stats(), permanent_stats_before);
+    assert_eq!(heap.arena_stats(), ArenaStats::default());
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
+    assert_eq!(
+        heap.get_string(value)
+            .expect("permanent string survives")
+            .bytes(),
+        b"permanent"
+    );
+    assert_eq!(
+        allocation_domain(&heap, value),
+        HeapAllocationDomain::PermanentShared
+    );
+
+    let reused = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("hash-consed string remains reusable");
+    assert!(reused.raw_eq(value));
+}
+
+#[test]
+fn worker_allocator_reset_rejects_live_worker_domain_records() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    heap.alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("string allocates");
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let worker_stats_before = heap.arena_stats();
+    let permanent_stats_before = heap.permanent_arena_stats();
+
+    let error = heap
+        .reset_worker_allocator_if_idle()
+        .expect_err("live worker records reject reset");
+
+    assert_eq!(error, EvalHeapError::WorkerResetLiveRecords { records: 1 });
+    assert_eq!(heap.arena_stats(), worker_stats_before);
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
+}
+
+#[test]
+fn worker_allocator_reset_rejects_permanent_container_with_worker_child() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let container = heap
+        .alloc_list(NixList::new(vec![child]))
+        .expect("permanent list allocates");
+
+    let error = heap
+        .reset_worker_allocator_if_idle()
+        .expect_err("worker child rejects reset");
+
+    assert_eq!(error, EvalHeapError::WorkerResetLiveRecords { records: 1 });
+    assert_eq!(
+        allocation_domain(&heap, container),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(
+        allocation_domain(&heap, child),
+        HeapAllocationDomain::Worker
+    );
+}
+
+#[test]
 fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let source = heap

@@ -465,6 +465,42 @@ impl EvalHeap {
         self.permanent_allocator.stats()
     }
 
+    /// Drops the worker-domain arena when no worker heap records remain live.
+    ///
+    /// Permanent-shared records, their cons tables, and permanent arena
+    /// accounting are left intact. This is the safe admission boundary for a
+    /// future per-worker arena reset: worker-domain handles must first be absent
+    /// from the evaluator side table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::WorkerResetLiveRecords`] when one or more
+    /// worker-domain records are still registered in this heap.
+    pub fn reset_worker_allocator_if_idle(
+        &mut self,
+    ) -> Result<EvalHeapWorkerResetReport, EvalHeapError> {
+        let live_worker_records = self
+            .records
+            .iter()
+            .filter(|record| record.allocation_domain == HeapAllocationDomain::Worker)
+            .count();
+        if live_worker_records != 0 {
+            return Err(EvalHeapError::WorkerResetLiveRecords {
+                records: live_worker_records,
+            });
+        }
+
+        let permanent_stats = self.permanent_arena_stats();
+        let dropped_worker_stats = self.allocator.reset_to_empty();
+        let worker_stats_after = self.arena_stats();
+        self.last_memory_budget_action = None;
+        Ok(EvalHeapWorkerResetReport::new(
+            dropped_worker_stats,
+            worker_stats_after,
+            permanent_stats,
+        ))
+    }
+
     /// Builds a high-water budget sample for both heap allocation domains.
     ///
     /// This deterministic helper uses the saturating sum of worker and

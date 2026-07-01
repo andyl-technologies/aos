@@ -246,6 +246,43 @@ pub(crate) enum HeapValueHashCacheUpdate {
     AlreadyPresent,
 }
 
+/// Worker-domain allocator reset accounting for an evaluator heap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapWorkerResetReport {
+    dropped_worker_stats: ArenaStats,
+    worker_stats_after: ArenaStats,
+    permanent_stats: ArenaStats,
+}
+
+impl EvalHeapWorkerResetReport {
+    const fn new(
+        dropped_worker_stats: ArenaStats,
+        worker_stats_after: ArenaStats,
+        permanent_stats: ArenaStats,
+    ) -> Self {
+        Self {
+            dropped_worker_stats,
+            worker_stats_after,
+            permanent_stats,
+        }
+    }
+
+    /// Returns the worker-domain arena accounting before the reset.
+    pub const fn dropped_worker_stats(self) -> ArenaStats {
+        self.dropped_worker_stats
+    }
+
+    /// Returns worker-domain arena accounting after the reset.
+    pub const fn worker_stats_after(self) -> ArenaStats {
+        self.worker_stats_after
+    }
+
+    /// Returns permanent-shared arena accounting observed during the reset.
+    pub const fn permanent_stats(self) -> ArenaStats {
+        self.permanent_stats
+    }
+}
+
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),
@@ -323,6 +360,14 @@ pub enum EvalHeapError {
         existing: ValueHash,
         /// The hash the caller attempted to cache.
         attempted: ValueHash,
+    },
+    /// The worker allocator cannot be reset while worker records remain live.
+    #[error(
+        "worker allocator reset rejected while {records} worker-domain heap records remain live"
+    )]
+    WorkerResetLiveRecords {
+        /// The number of worker-domain records still registered in the heap.
+        records: usize,
     },
     /// A thunk-resolution write barrier was requested for a non-thunk source.
     #[error("thunk resolve write barrier source must be a thunk, found {actual:?}")]
