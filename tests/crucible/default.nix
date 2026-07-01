@@ -1653,6 +1653,26 @@ in rec {
         phase4.gates.replayOracle
       ];
     };
+    perClusterReports = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.perClusterReports";
+      gate = import ./phase6-per-cluster-reports.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.perClusterReports";
+        taskIds = ["T-TRI-6"];
+        dependencies = [
+          phase6.signaturePreservingMinimization.rawGate
+          phase6.failureClustering.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.signaturePreservingMinimization
+        phase6.failureClustering
+        phase1.gates.contentAddress
+        phase4.gates.e2eDeterminism
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {

@@ -919,12 +919,26 @@ recomputable byte-for-byte from what was already stored.
   original representative's key, preserves the seeded candidate order and
   replay-validated candidate evidence from 22, and records both target and
   minimized signature keys in canonical result material.
-- [ ] **T-TRI-6** Implement per-cluster reports (cluster id + signature + member
+- [x] **T-TRI-6** Implement per-cluster reports (cluster id + signature + member
   hashes + minimal representative + failing property/bisected first-diff + minimal
   repro artifact + last-N causal log excerpt + causal-cone narrative + exact
   `crucible replay <minimal>`) in two deterministic, idempotent renderings
   (machine json/jsonl + human table/markdown). — satisfies [TRI-13], [TRI-14];
   spec §34.5.
+  Completed by `checks.crucible.phase6.perClusterReports`: the model now exposes
+  `FailureClusterReport`, `FailureClusterReportSet`,
+  `FailureClusterReportFailure`, `FailureClusterReportDivergence`, and
+  `FailureClusterReportFormat`. A report constructor binds the cluster id,
+  active-policy signature, signature-preserving minimization run, minimized
+  artifact event-log evidence, property violation or bisected first-diff detail,
+  minimal `(seed, ScenarioDef, Schedule)` reference, last-N causal excerpt,
+  causal-cone narrative, and exact `crucible replay blake3:<minimal>` command
+  into one content-addressed artifact. Report construction recomputes the full
+  minimized representative signature from checked evidence, not caller-provided
+  signature detail, and rejects minimization evidence that does not use the
+  cluster's content-address-least representative. The same canonical report
+  material drives deterministic `json`, `jsonl`, `table`, and `markdown`
+  renderings, and report sets are emitted in cluster-id order.
 - [ ] **T-TRI-7** Implement the `crucible triage <findings>` thin-driver
   subcommand (flags --policy/--minimize/--report/--format/--recompute-signatures/
   --compare; pipeline cluster→minimize-representative→emit; exit codes uniform
