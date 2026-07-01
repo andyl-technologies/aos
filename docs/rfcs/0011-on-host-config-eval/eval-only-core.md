@@ -356,9 +356,43 @@ take runtime effect:
 
 So both halves of RFC-0011's core mechanism — the eval-only **producer** and the
 materializer **consumer** — are now implemented and validated. What still gates
-**full Ignition removal** is narrower: the *fleet test harness redesign*
-(deliver each VM's per-VM identity as a signed `host.nix` that the metadata
-agent stages and `activate` materializes, instead of an Ignition `storage.files`
-fragment), plus a booted-VM e2e that exercises that signed-`host.nix` → eval →
-materialize path on-box. Those are integration/test-infrastructure work on top
-of the now-existing runtime, not a missing runtime primitive.
+**full Ignition removal** is narrower: the *fleet test harness redesign*, plus a
+booted-VM e2e. Those are integration/test-infrastructure work on top of the
+now-existing runtime, not a missing runtime primitive.
+
+### The fleet-harness redesign (the last mile to deleting Ignition)
+
+`lib/testing/fleet.nix` delivers three things to each test VM through an
+Ignition `storage.files` fragment consumed by the in-image Ignition binary:
+
+1. **identity** — `/etc/hostname`, `/etc/hosts`, `/etc/systemd/network/
+   10-fleet-eth0.network` (its static IP, matched by MAC);
+2. **debug** (interactive mode) — `/etc/ssh/authorized_keys/root` (mode 0600)
+   and a DHCP `.network` on the user-mode NIC;
+3. **packages** — a `mkFleetPackageFragment` writing the desired-packages +
+   registry files.
+
+All three are plain `/etc` content, so none needs Ignition. The redesign, now
+fully de-risked:
+
+- Bake identity + debug directly onto each machine's system with the new
+  `result.extendModules` (validated): `machineSystem = m.system.extendModules {
+  modules = [ identityModule ]; }`, where `identityModule` sets the same paths
+  via `environment.etc` (with `mode = "0600"` for the ssh key). Use
+  `machineSystem`'s image instead of `m.system`'s + Ignition delivery.
+- Route the package fragment through `aos.apm.installAtBoot`, whose desired.toml
+  and registries already bake into `/etc` on the new path (the migration was
+  proven in the reset Phase C attempt).
+- Drop `composeIgnition`, `mkIgnitionConfig`/`mkMetadataIso`, the `fw_cfg`
+  config.json, and the `varProvisioning = "ignition"` branch (no test sets it).
+- Then execute Phase C removal (already validated on the builder up to
+  `pkgs.ignition` gone from every closure) and **re-run the full fleet suite**
+  (`install-from-image`, `apm-e2e`, `k3s-*`, `secure-boot*`, `measured-boot`,
+  `apm-*`, …) — the slow, load-bearing validation, since this rewrites the
+  harness every fleet test depends on.
+
+This is a dedicated, high-blast-radius change to the core VM test infrastructure
+(a prior rushed attempt broke `install-from-image`), so it is scoped as its own
+reviewed change rather than folded in here. The runtime primitives it needs —
+the materializer, `activate` wiring, and `extendModules` — are all in place and
+validated.
