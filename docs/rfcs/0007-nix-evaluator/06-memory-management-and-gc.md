@@ -839,6 +839,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       symbols, and collector/JIT swapping without caller recompilation (§2) —
       **M0** (within **P3**), `S-8`.
 - [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
+- [x] Current allocation-safepoint metadata precursor:
+      `ratchet-oracle::runtime::alloc` records an `AllocationSafepoint` event
+      at every centralized `RuntimeAllocator` `aos_alloc_*` entry point and at
+      every permanent-shared allocation entry point, capturing the allocator
+      tier, entry-point name, object kind, allocation sizes, and post-allocation
+      arena accounting. Tests prove every worker route (`thunk`, `lambda`,
+      `attrs`, `cons`, `list`, `string`, `raw`) and every permanent route
+      (`attrs`, `list`, `string`) records exactly one safepoint. This is
+      metadata only: it does not yet poll a collector, build a live root set,
+      run GC-stress collection, export C ABI symbols, or integrate the
+      thunk-resolve write barrier with allocation dispatch.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 

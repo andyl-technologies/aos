@@ -4957,6 +4957,16 @@ and helps the oracle directly.
       centralized `aos_alloc_*`-shaped methods. The actual exported
       `unsafe extern "C"`/JIT-symbol ABI and multi-strategy GC swapping remain
       open in the row above.
+- [x] Current allocation-safepoint metadata precursor:
+      `runtime::alloc` now records an `AllocationSafepoint` at every
+      centralized worker `aos_alloc_*` route and every permanent-shared
+      allocation route, including allocator tier, entry-point name, object kind,
+      allocation sizes, and post-allocation arena accounting. Tests pin exactly
+      one safepoint for `thunk`, `lambda`, `attrs`, `cons`, `list`, `string`,
+      and `raw` worker allocations plus permanent `attrs`, `list`, and
+      `string` allocations. This remains metadata only; collector polling,
+      live-root construction, GC-stress execution, exported C ABI symbols, and
+      write-barrier dispatch integration remain open.
 - [x] Current permanent-shared allocation precursor:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
