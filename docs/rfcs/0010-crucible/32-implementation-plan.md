@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b4dafff62af9b2ce`
+Checklist sync digest: `rfc0010-checklist-v1:77fd6a7c776a5ef7`
 
 ## The phase ladder
 
@@ -237,7 +237,13 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   exact-icount travel leaves other nodes untouched, whole-world travel lands at a
   prefix/fork-minus-divergence coordinate, and `--checkpoint-stride` remains a
   performance-only cache cadence, including safe fat eviction, defaulting to
-  thin/replay until S3 is green.
+  thin/replay until S3 is green; `T-DBG-6` is green through
+  `checks.crucible.phase6.debugNonCanonicalBranch`, which proves mutating/operator-
+  controlled debugging records a visibly non-canonical branch from the instantiated
+  attach runtime, preserves the canonical graph and canonical-run causal log, emits a
+  causal catalog-kind `fork` marker flagged non-canonical, excludes the branch from
+  replay-oracle and `(seed, scenario, schedule)` artifacts, and stores arbitrary guest
+  edits only in a never-model-reproducible debug-edit script.
 - Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks

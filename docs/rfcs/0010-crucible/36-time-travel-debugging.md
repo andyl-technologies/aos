@@ -977,7 +977,7 @@ touching the canonical run.
   `thin_replay_until_full_s3` hedge records thin replay checkpoints only and may evict
   existing fat cache entries, while a verified hedge may cache fat checkpoints, with
   eviction falling back to bit-identical replay.
-- [ ] **T-DBG-6** Implement the **non-canonical debug branch**: fork on the first
+- [x] **T-DBG-6** Implement the **non-canonical debug branch**: fork on the first
   guest-state mutation or operator-controlled continue, leaving the canonical run
   bit-identical; exclude it from the replay oracle and from
   `(seed, scenario, schedule)` artifacts; visibly mark it in the graph, the event-log
@@ -985,6 +985,19 @@ touching the canonical run.
   path (distinct from [ADV-33], which still stands); record Decision-expressible edits
   per 20 §8 and arbitrary guest edits as a never-model-reproducible debug-edit script.
   — satisfies [DBG-21], [DBG-22], [DBG-23], [DBG-24], [DBG-25], [DBG-26]; spec §36.5.
+  Completed by `checks.crucible.phase6.debugNonCanonicalBranch`:
+  `TemporalGraph::debug_non_canonical_branch` requires the first recorded
+  mutating/operator-controlled action to match the declared branch trigger and records
+  it as non-canonical branch metadata sourced from the already-instantiated attach
+  runtime, not as a canonical `Configuration`. The branch report proves the canonical
+  graph/runtime footprint and canonical-run causal event-log projection are
+  byte-identical, stores schedule-expressible decisions and control-log operations
+  separately from arbitrary guest edits, records arbitrary register/memory/breakpoint
+  edits in a never-model-reproducible debug-edit script, marks the branch in the
+  temporal-graph view, a causal catalog-kind `fork` event-log marker flagged
+  non-canonical, and live status, and keeps the branch inside virtual time plus the
+  single execution path while excluding it from replay-oracle and
+  `(seed, scenario, schedule)` artifacts.
 - [ ] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,

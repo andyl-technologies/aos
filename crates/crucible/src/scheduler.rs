@@ -486,6 +486,36 @@ impl SchedulerEventLogEntry {
         )
     }
 
+    /// Builds a causal catalog `fork` marker with debug-specific attributes.
+    #[must_use]
+    pub(crate) fn fork_marker(
+        sequence: u64,
+        at: VirtualTime,
+        from_checkpoint_id: ContentHash,
+        schedule_delta: ContentHash,
+        mut attributes: BTreeMap<String, EventAttributeValue>,
+    ) -> Self {
+        attributes.insert(
+            String::from("from_checkpoint_id"),
+            EventAttributeValue::String(from_checkpoint_id.to_hex()),
+        );
+        attributes.insert(
+            String::from("schedule_delta"),
+            EventAttributeValue::String(schedule_delta.to_hex()),
+        );
+        scheduler_event_log_entry_with_class(
+            sequence,
+            at,
+            SchedulerEventLogClass::Causal,
+            EventPayload::new("fork", attributes.clone()),
+            SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+                "debug.non_canonical_fork",
+                EventLevel::Info,
+                attributes,
+            )),
+        )
+    }
+
     /// Returns the dense event-log sequence number assigned by scheduler EMIT.
     #[must_use]
     pub fn sequence(&self) -> u64 {

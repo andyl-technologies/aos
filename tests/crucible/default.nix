@@ -1661,6 +1661,24 @@ in rec {
         phase6.debugTimeTravel
       ];
     };
+    debugNonCanonicalBranch = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.debugNonCanonicalBranch";
+      gate = import ./phase6-debug-non-canonical-branch.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.debugNonCanonicalBranch";
+        taskIds = ["T-DBG-6"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.debugScopedTimeTravel.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.debugScopedTimeTravel
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
