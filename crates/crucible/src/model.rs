@@ -24,10 +24,14 @@ use serde::{Deserialize, Serialize};
 use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalProjection,
-    EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, SchedulerEventLogClass,
-    SchedulerEventLogEntry, event_log_causal_projection,
+    EventLogCoverageFeedback, EventLogCoverageFeedbackConsumer, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    event_log_causal_projection,
 };
-use crate::trigger::{Action, Event, EventGraph, EventGraphError, FirePolicy, LogLevel};
+use crate::trigger::{
+    Action, Condition, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
+    EventGraph, EventGraphError, FirePolicy, LogLevel, ObservableEventPayload,
+};
 
 mod canonical;
 
@@ -10846,6 +10850,196 @@ impl TemporalGraph {
         })
     }
 
+    /// Moves an attached debug session to `request.target` using restore-plus-replay.
+    ///
+    /// The selected restore point is the exact target snapshot when one exists,
+    /// otherwise the nearest cached ancestor, otherwise baked genesis. The target
+    /// runtime is then materialized through [`instantiate`] and checked against
+    /// the replay oracle, so a corrupt exact snapshot or cached ancestor cannot
+    /// be accepted as a debugger-only shortcut.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the attached configuration does not match
+    /// `request.current`, when the target belongs to another scenario, when the
+    /// target cannot be instantiated, or when the replay oracle rejects the
+    /// restored path.
+    pub fn debug_goto(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugGotoRequest,
+    ) -> Result<DebugGotoReport, EngineError> {
+        if attach.configuration != request.current.id() {
+            return Err(EngineError::DebugGotoAttachMismatch {
+                attached: attach.configuration,
+                requested_current: request.current.id(),
+            });
+        }
+        let target = self.debug_resolve_coordinate(
+            &request.current,
+            &request.target,
+            &request.event_coordinates,
+        )?;
+        debug_validate_same_scenario(&request.current, &target)?;
+        self.record_checkpoint_closure(&target)?;
+        let restore = self.debug_restore_configuration(&target)?;
+        let restore_checkpoint = self
+            .checkpoint_node(restore.id())
+            .or_else(|| self.cached_snapshot(&restore))
+            .map(|checkpoint| checkpoint.id)
+            .ok_or(EngineError::CheckpointNotRecorded {
+                checkpoint: restore.id(),
+            })?;
+        let replay_suffix = target
+            .schedule
+            .suffix_from(restore.schedule.len())
+            .map_err(EngineError::SchedulePrefix)?;
+
+        let runtime = self
+            .resume(&target)
+            .map_err(|error| self.debug_goto_error(&request.current, &target, &restore, error))?;
+        let target_checkpoint =
+            materialized_checkpoint_for_runtime(&target, runtime.runtime.clone()).map_err(
+                |error| self.debug_goto_error(&request.current, &target, &restore, error),
+            )?;
+        let replay_oracle = self
+            .replay_checkpoint(&target, &target_checkpoint)
+            .map_err(|error| self.debug_goto_error(&request.current, &target, &restore, error))?;
+
+        Ok(DebugGotoReport {
+            current_configuration: request.current.id(),
+            target_coordinate: request.target.clone(),
+            target_configuration: target.id(),
+            restore_configuration: restore.id(),
+            restore_checkpoint,
+            replay_suffix_decisions: replay_suffix.len(),
+            runtime,
+            target_checkpoint: target_checkpoint.id,
+            replay_oracle,
+        })
+    }
+
+    /// Resolves and executes one reverse-step operation.
+    ///
+    /// Reverse stepping only resolves an earlier coordinate and delegates the
+    /// actual movement to [`Self::debug_goto`]. This keeps reverse motion in the
+    /// same restore-plus-replay path as forward instantiation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when no earlier coordinate exists for the
+    /// requested grain, when an event-log coordinate lacks a configuration
+    /// mapping, or when the delegated `goto` fails.
+    pub fn debug_reverse_step(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugReverseStepRequest,
+    ) -> Result<DebugReverseStepReport, EngineError> {
+        let target = debug_reverse_step_target(request)?;
+        let goto = self.debug_goto(
+            attach,
+            &DebugGotoRequest::at_configuration(
+                request.current.clone(),
+                target.configuration.clone(),
+            ),
+        )?;
+        Ok(DebugReverseStepReport {
+            grain: request.grain,
+            target_event_sequence: target.event_sequence,
+            target_configuration: target.configuration.id(),
+            goto,
+        })
+    }
+
+    /// Scans backward to the latest event-log coordinate where `condition` holds.
+    ///
+    /// Named and guest-marker leaves are false by default; callers that need a
+    /// host-side leaf resolver should use
+    /// [`Self::debug_reverse_continue_with_leaf_oracle`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when a checked condition prefix cannot be built,
+    /// a matching event-log coordinate lacks a configuration mapping, or the
+    /// delegated `goto` fails.
+    pub fn debug_reverse_continue(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugReverseContinueRequest,
+    ) -> Result<DebugReverseContinueReport, EngineError> {
+        self.debug_reverse_continue_with_leaf_oracle(attach, request, |_entry, _leaf| false)
+    }
+
+    /// Scans backward with a caller-supplied host-side leaf resolver.
+    ///
+    /// The scan evaluates each candidate through [`ConditionEvaluationPass`]
+    /// over a checked event-log prefix, picks the latest matching coordinate at
+    /// or before the current event limit, and realizes it through
+    /// [`Self::debug_goto`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when a checked condition prefix cannot be built,
+    /// a matching event-log coordinate lacks a configuration mapping, or the
+    /// delegated `goto` fails.
+    pub fn debug_reverse_continue_with_leaf_oracle<F>(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugReverseContinueRequest,
+        mut leaf_oracle: F,
+    ) -> Result<DebugReverseContinueReport, EngineError>
+    where
+        F: for<'leaf> FnMut(&SchedulerEventLogEntry, ConditionLeaf<'leaf>) -> bool,
+    {
+        for index in (0..request.event_log.len()).rev() {
+            let entry = &request.event_log[index];
+            if entry.sequence() > request.current_event_sequence_limit() {
+                continue;
+            }
+            let prefix_entries = request.event_log[..=index].to_vec();
+            let prefix = crate::trigger::ConditionEventLogPrefix::from_scheduler_event_log_entries(
+                prefix_entries,
+            )
+            .map_err(|error| EngineError::DebugReverseContinueInvalidPrefix {
+                sequence: entry.sequence(),
+                reason: format!("{error:?}"),
+            })?;
+            let oracle = DebugReverseContinueLeafOracle {
+                entry,
+                leaf_oracle: &mut leaf_oracle,
+            };
+            let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, oracle);
+            if pass.evaluate_assertion_condition(&request.condition) {
+                let target = request
+                    .event_coordinates
+                    .get(&entry.sequence())
+                    .cloned()
+                    .ok_or_else(|| EngineError::DebugTimeTravelMissingEventCoordinate {
+                        sequence: entry.sequence(),
+                    })?;
+                let goto = self.debug_goto(
+                    attach,
+                    &DebugGotoRequest::at_configuration(request.current.clone(), target.clone()),
+                )?;
+                return Ok(DebugReverseContinueReport {
+                    condition: request.condition.clone(),
+                    searched_entries: request.searched_entries_before(index),
+                    matched: Some(DebugReverseContinueMatch {
+                        event_sequence: entry.sequence(),
+                        target_configuration: target.id(),
+                        goto,
+                    }),
+                });
+            }
+        }
+
+        Ok(DebugReverseContinueReport {
+            condition: request.condition.clone(),
+            searched_entries: request.event_log.len(),
+            matched: None,
+        })
+    }
+
     /// Forks from `base` by instantiating it and appending `decisions`.
     ///
     /// The returned branch is recorded as a thin checkpoint in the same DAG.
@@ -12421,8 +12615,8 @@ impl TemporalGraph {
         let mut checkpoint = Checkpoint::from_recorded_configuration(
             configuration,
             Some(&parent),
-            VirtualTime::default(),
-            BTreeMap::new(),
+            configuration_virtual_time(configuration),
+            self.thin_checkpoint_node_icounts(configuration)?,
             CheckpointKind::Thin,
             BTreeMap::new(),
         )?;
@@ -12471,6 +12665,398 @@ impl TemporalGraph {
         }
 
         Ok(None)
+    }
+
+    fn debug_restore_configuration(
+        &self,
+        target: &Configuration,
+    ) -> Result<Configuration, EngineError> {
+        if target.is_genesis() || self.cached_snapshot(target).is_some() {
+            return Ok(target.clone());
+        }
+        if let Some(ancestor) = self.nearest_cached_ancestor(target)? {
+            return Ok(ancestor);
+        }
+        Ok(Configuration::genesis(target.def.clone()))
+    }
+
+    fn thin_checkpoint_node_icounts(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<BTreeMap<NodeId, Icount>, EngineError> {
+        let genesis =
+            self.genesis_snapshot(&configuration.def)
+                .ok_or(EngineError::MissingBakedGenesis {
+                    scenario: configuration.def.id,
+                })?;
+        Ok(replayed_node_icounts(
+            &genesis.checkpoint.node_icounts,
+            &configuration.schedule,
+        ))
+    }
+
+    fn debug_resolve_coordinate(
+        &self,
+        current: &Configuration,
+        coordinate: &DebugCoordinate,
+        event_coordinates: &BTreeMap<u64, Configuration>,
+    ) -> Result<Configuration, EngineError> {
+        match coordinate {
+            DebugCoordinate::Configuration(configuration) => Ok(configuration.clone()),
+            DebugCoordinate::Checkpoint(checkpoint) => {
+                self.recorded_configurations.get(checkpoint).cloned().ok_or(
+                    EngineError::CheckpointNotRecorded {
+                        checkpoint: *checkpoint,
+                    },
+                )
+            }
+            DebugCoordinate::EventSequence(sequence) => event_coordinates
+                .get(sequence)
+                .cloned()
+                .ok_or(EngineError::DebugTimeTravelMissingEventCoordinate {
+                    sequence: *sequence,
+                }),
+            DebugCoordinate::VirtualTime(time) => self
+                .debug_latest_checkpoint_at_or_before_time(current, *time)
+                .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
+                    coordinate: coordinate.clone(),
+                }),
+            DebugCoordinate::NodeIcount { node, icount } => self
+                .debug_latest_checkpoint_at_or_before_icount(current, node, *icount)
+                .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
+                    coordinate: coordinate.clone(),
+                }),
+        }
+    }
+
+    fn debug_latest_checkpoint_at_or_before_time(
+        &self,
+        current: &Configuration,
+        target: VirtualTime,
+    ) -> Option<Configuration> {
+        self.debug_checkpoint_coordinate_candidates(current)
+            .into_iter()
+            .filter(|candidate| candidate.virtual_time <= target)
+            .max_by_key(|candidate| {
+                (
+                    candidate.virtual_time,
+                    candidate.configuration.schedule.len(),
+                    candidate.configuration.id(),
+                )
+            })
+            .map(|candidate| candidate.configuration)
+    }
+
+    fn debug_latest_checkpoint_at_or_before_icount(
+        &self,
+        current: &Configuration,
+        node: &NodeId,
+        target: Icount,
+    ) -> Option<Configuration> {
+        self.debug_checkpoint_coordinate_candidates(current)
+            .into_iter()
+            .filter_map(|candidate| {
+                let icount = candidate.node_icounts.get(node).copied()?;
+                if icount <= target {
+                    Some((candidate, icount))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(candidate, icount)| {
+                (
+                    *icount,
+                    candidate.virtual_time,
+                    candidate.configuration.schedule.len(),
+                    candidate.configuration.id(),
+                )
+            })
+            .map(|(candidate, _)| candidate.configuration)
+    }
+
+    fn debug_checkpoint_coordinate_candidates(
+        &self,
+        current: &Configuration,
+    ) -> Vec<DebugCheckpointCoordinateCandidate> {
+        let mut candidates = BTreeMap::<ContentHash, DebugCheckpointCoordinateCandidate>::new();
+        for checkpoint in self
+            .checkpoint_nodes
+            .values()
+            .chain(self.cached_snapshots.values())
+        {
+            if checkpoint.scenario_ref != current.def.id {
+                continue;
+            }
+            let Some(configuration) = self.recorded_configurations.get(&checkpoint.configuration)
+            else {
+                continue;
+            };
+            if !debug_configuration_is_ancestor_or_self(configuration, current) {
+                continue;
+            }
+            candidates
+                .entry(checkpoint.configuration)
+                .and_modify(|candidate| {
+                    if candidate.node_icounts.is_empty() && !checkpoint.node_icounts.is_empty() {
+                        candidate.node_icounts = checkpoint.node_icounts.clone();
+                    }
+                    if checkpoint.virtual_time > candidate.virtual_time {
+                        candidate.virtual_time = checkpoint.virtual_time;
+                    }
+                })
+                .or_insert_with(|| DebugCheckpointCoordinateCandidate {
+                    configuration: configuration.clone(),
+                    virtual_time: checkpoint.virtual_time,
+                    node_icounts: checkpoint.node_icounts.clone(),
+                });
+        }
+        candidates.into_values().collect()
+    }
+
+    fn debug_goto_error(
+        &self,
+        current: &Configuration,
+        target: &Configuration,
+        restore: &Configuration,
+        error: EngineError,
+    ) -> EngineError {
+        match error {
+            EngineError::ReplayOracleMismatch {
+                checkpoint,
+                expected,
+                actual,
+            } => EngineError::DebugGotoReplayOracleMismatch {
+                bisection: self.debug_replay_oracle_bisection(current, target, restore),
+                checkpoint,
+                expected,
+                actual,
+            },
+            other => other,
+        }
+    }
+
+    fn debug_replay_oracle_bisection(
+        &self,
+        current: &Configuration,
+        target: &Configuration,
+        restore: &Configuration,
+    ) -> DebugReplayOracleBisectionRequest {
+        let mut low = 0_usize;
+        let mut high = target.schedule.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let prefix = debug_configuration_prefix(target, mid).unwrap_or_else(|_| target.clone());
+            match debug_cached_prefix_matches_replay_oracle(self, &prefix) {
+                Ok(true) => low = mid.saturating_add(1),
+                Ok(false) | Err(_) => high = mid,
+            }
+        }
+        let restore_checkpoint = self
+            .checkpoint_node(restore.id())
+            .or_else(|| self.cached_snapshot(restore))
+            .map(|checkpoint| checkpoint.id)
+            .unwrap_or_else(|| restore.id());
+        DebugReplayOracleBisectionRequest {
+            current_configuration: current.id(),
+            target_configuration: target.id(),
+            restore_configuration: restore.id(),
+            restore_checkpoint,
+            last_matching_schedule_prefix_len: low.checked_sub(1),
+            first_different_schedule_prefix_len: low,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DebugResolvedReverseStepTarget {
+    configuration: Configuration,
+    event_sequence: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DebugCheckpointCoordinateCandidate {
+    configuration: Configuration,
+    virtual_time: VirtualTime,
+    node_icounts: BTreeMap<NodeId, Icount>,
+}
+
+struct DebugReverseContinueLeafOracle<'a, F> {
+    entry: &'a SchedulerEventLogEntry,
+    leaf_oracle: &'a mut F,
+}
+
+impl<F> ConditionLeafOracle for DebugReverseContinueLeafOracle<'_, F>
+where
+    F: for<'leaf> FnMut(&SchedulerEventLogEntry, ConditionLeaf<'leaf>) -> bool,
+{
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        (self.leaf_oracle)(self.entry, leaf)
+    }
+}
+
+fn debug_validate_same_scenario(
+    current: &Configuration,
+    target: &Configuration,
+) -> Result<(), EngineError> {
+    if current.def.id == target.def.id {
+        Ok(())
+    } else {
+        Err(EngineError::DebugGotoScenarioMismatch {
+            current: current.id(),
+            target: target.id(),
+        })
+    }
+}
+
+fn debug_configuration_is_ancestor_or_self(
+    candidate: &Configuration,
+    current: &Configuration,
+) -> bool {
+    candidate.def.id == current.def.id
+        && candidate.schedule.len() <= current.schedule.len()
+        && current
+            .schedule
+            .decisions()
+            .starts_with(candidate.schedule.decisions())
+}
+
+fn debug_configuration_prefix(
+    configuration: &Configuration,
+    len: usize,
+) -> Result<Configuration, EngineError> {
+    Ok(Configuration {
+        def: configuration.def.clone(),
+        schedule: configuration
+            .schedule
+            .prefix(len)
+            .map_err(EngineError::SchedulePrefix)?,
+    })
+}
+
+fn debug_cached_prefix_matches_replay_oracle(
+    graph: &TemporalGraph,
+    configuration: &Configuration,
+) -> Result<bool, EngineError> {
+    let checkpoint = if configuration.is_genesis() {
+        graph
+            .genesis_snapshot(&configuration.def)
+            .map(|genesis| genesis.checkpoint.clone())
+    } else {
+        graph.cached_snapshot(configuration).cloned()
+    };
+    let Some(checkpoint) = checkpoint else {
+        return Ok(true);
+    };
+    match graph.replay_checkpoint(configuration, &checkpoint) {
+        Ok(_) => Ok(true),
+        Err(EngineError::ReplayOracleMismatch { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn debug_reverse_step_target(
+    request: &DebugReverseStepRequest,
+) -> Result<DebugResolvedReverseStepTarget, EngineError> {
+    if request.grain == DebugReverseStepGrain::Instruction {
+        if request.current.schedule.is_empty() {
+            return Err(EngineError::DebugTimeTravelNoEarlierCoordinate {
+                grain: request.grain,
+                current: request.current.id(),
+            });
+        }
+        let target = debug_configuration_prefix(
+            &request.current,
+            request.current.schedule.len().saturating_sub(1),
+        )?;
+        return Ok(DebugResolvedReverseStepTarget {
+            configuration: target,
+            event_sequence: None,
+        });
+    }
+
+    let Some(entry) = request.event_log.iter().rev().find(|entry| {
+        entry.sequence() < request.current_event_sequence_limit()
+            && debug_entry_matches_reverse_grain(entry, request.grain)
+    }) else {
+        return Err(EngineError::DebugTimeTravelNoEarlierCoordinate {
+            grain: request.grain,
+            current: request.current.id(),
+        });
+    };
+    let configuration = request
+        .event_coordinates
+        .get(&entry.sequence())
+        .cloned()
+        .ok_or_else(|| EngineError::DebugTimeTravelMissingEventCoordinate {
+            sequence: entry.sequence(),
+        })?;
+    Ok(DebugResolvedReverseStepTarget {
+        configuration,
+        event_sequence: Some(entry.sequence()),
+    })
+}
+
+fn debug_entry_matches_reverse_grain(
+    entry: &SchedulerEventLogEntry,
+    grain: DebugReverseStepGrain,
+) -> bool {
+    match (grain, entry.payload()) {
+        (
+            DebugReverseStepGrain::Quantum,
+            SchedulerEventLogPayload::EvaluationBoundary(
+                crate::scheduler::SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        ) => true,
+        (DebugReverseStepGrain::Event, payload) => debug_payload_is_event_grain(payload),
+        (DebugReverseStepGrain::Assertion, payload) => debug_payload_is_assertion_grain(payload),
+        (DebugReverseStepGrain::Timer, payload) => debug_payload_is_timer_grain(payload),
+        (DebugReverseStepGrain::Instruction, _) => false,
+        _ => false,
+    }
+}
+
+fn debug_payload_is_event_grain(payload: &SchedulerEventLogPayload) -> bool {
+    matches!(
+        payload,
+        SchedulerEventLogPayload::ResolvedHappening(_)
+            | SchedulerEventLogPayload::Observable(_)
+            | SchedulerEventLogPayload::TriggerFired(_)
+            | SchedulerEventLogPayload::TriggerActionApplied(_)
+    )
+}
+
+fn debug_payload_is_assertion_grain(payload: &SchedulerEventLogPayload) -> bool {
+    match payload {
+        SchedulerEventLogPayload::Observable(observable) => {
+            matches!(
+                observable,
+                ObservableEventPayload::AssertionEvaluated { .. }
+                    | ObservableEventPayload::GuestAssertionMarker { .. }
+            )
+        }
+        SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::TriggerActionApplied(_) => true,
+        _ => false,
+    }
+}
+
+fn debug_payload_is_timer_grain(payload: &SchedulerEventLogPayload) -> bool {
+    match payload {
+        SchedulerEventLogPayload::ResolvedHappening(event) => {
+            matches!(
+                event.payload,
+                ScheduledEventPayload::IoCompletion(_)
+                    | ScheduledEventPayload::FaultActivation(_)
+                    | ScheduledEventPayload::ProbabilisticFault(_)
+            )
+        }
+        SchedulerEventLogPayload::TriggerActionApplied(application) => {
+            matches!(
+                application.action,
+                Action::ArmTimer { .. } | Action::CancelTimer { .. }
+            )
+        }
+        _ => false,
     }
 }
 
@@ -14978,6 +15564,338 @@ impl DebugBreakpointReport {
     }
 }
 
+/// Coordinate accepted by the debug `goto` resolver.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugCoordinate {
+    /// An already-resolved configuration.
+    Configuration(Configuration),
+    /// A checkpoint/configuration content address.
+    Checkpoint(ContentHash),
+    /// A unified event-log sequence with a caller-supplied coordinate mapping.
+    EventSequence(u64),
+    /// The latest checkpoint coordinate at or before a virtual-time point.
+    VirtualTime(VirtualTime),
+    /// The latest checkpoint coordinate where `node` is at or before `icount`.
+    NodeIcount {
+        /// Node whose retired-instruction coordinate is requested.
+        node: NodeId,
+        /// Maximum retired-instruction count.
+        icount: Icount,
+    },
+}
+
+impl DebugCoordinate {
+    /// Builds a configuration coordinate.
+    #[must_use]
+    pub fn configuration(configuration: Configuration) -> Self {
+        Self::Configuration(configuration)
+    }
+
+    /// Builds a checkpoint coordinate.
+    #[must_use]
+    pub const fn checkpoint(checkpoint: ContentHash) -> Self {
+        Self::Checkpoint(checkpoint)
+    }
+
+    /// Builds an event-log coordinate.
+    #[must_use]
+    pub const fn event_sequence(sequence: u64) -> Self {
+        Self::EventSequence(sequence)
+    }
+
+    /// Builds a virtual-time coordinate.
+    #[must_use]
+    pub const fn virtual_time(time: VirtualTime) -> Self {
+        Self::VirtualTime(time)
+    }
+
+    /// Builds a node icount coordinate.
+    #[must_use]
+    pub fn node_icount(node: NodeId, icount: Icount) -> Self {
+        Self::NodeIcount { node, icount }
+    }
+}
+
+/// Request to move a debug session to another temporal-graph coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugGotoRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Coordinate to resolve and realize through restore-plus-replay.
+    pub target: DebugCoordinate,
+    /// Mapping from event-log sequence to temporal-graph coordinate.
+    pub event_coordinates: BTreeMap<u64, Configuration>,
+}
+
+impl DebugGotoRequest {
+    /// Builds a debug `goto` request.
+    #[must_use]
+    pub fn new(current: Configuration, target: DebugCoordinate) -> Self {
+        Self {
+            current,
+            target,
+            event_coordinates: BTreeMap::new(),
+        }
+    }
+
+    /// Builds a debug `goto` request for an already-resolved configuration.
+    #[must_use]
+    pub fn at_configuration(current: Configuration, target: Configuration) -> Self {
+        Self::new(current, DebugCoordinate::configuration(target))
+    }
+
+    /// Adds an event-log sequence to configuration mapping.
+    #[must_use]
+    pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
+        self.event_coordinates.insert(sequence, configuration);
+        self
+    }
+}
+
+/// Replay-oracle bisection coordinates for a failed debug `goto`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReplayOracleBisectionRequest {
+    /// Configuration where the debug session started.
+    pub current_configuration: ContentHash,
+    /// Configuration the debugger attempted to reach.
+    pub target_configuration: ContentHash,
+    /// Restore configuration selected before replay.
+    pub restore_configuration: ContentHash,
+    /// Restore checkpoint selected before replay.
+    pub restore_checkpoint: ContentHash,
+    /// Last matching schedule prefix length, when one was found.
+    pub last_matching_schedule_prefix_len: Option<usize>,
+    /// First differing schedule prefix length found by bisection.
+    pub first_different_schedule_prefix_len: usize,
+}
+
+/// Report proving a debug `goto` used restore-plus-replay.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugGotoReport {
+    /// Configuration where the debug session started.
+    pub current_configuration: ContentHash,
+    /// Coordinate requested by the operator.
+    pub target_coordinate: DebugCoordinate,
+    /// Configuration reached by the operation.
+    pub target_configuration: ContentHash,
+    /// Configuration restored before forward replay.
+    pub restore_configuration: ContentHash,
+    /// Checkpoint restored before forward replay.
+    pub restore_checkpoint: ContentHash,
+    /// Number of schedule decisions replayed after restoring.
+    pub replay_suffix_decisions: usize,
+    /// Runtime realized at the target coordinate.
+    pub runtime: TemporalGraphRuntime,
+    /// Fat checkpoint materialized from the target runtime for oracle checking.
+    pub target_checkpoint: ContentHash,
+    /// Replay-oracle proof that the rewound coordinate matches forward replay.
+    pub replay_oracle: ReplayOracleCheck,
+}
+
+impl DebugGotoReport {
+    /// Returns whether this report proves an exact content-addressed target.
+    #[must_use]
+    pub fn proves_replay_oracle(&self) -> bool {
+        self.runtime.configuration == self.target_configuration
+            && self.runtime.checkpoint == self.target_configuration
+            && self.replay_oracle.configuration == self.target_configuration
+            && self.replay_oracle.fat_checkpoint == self.target_checkpoint
+            && self.replay_oracle.thin_checkpoint == self.target_checkpoint
+    }
+
+    /// Returns whether this `goto` restored a checkpoint then replayed to target.
+    #[must_use]
+    pub fn used_restore_then_replay(&self) -> bool {
+        self.restore_configuration != self.target_configuration && self.replay_suffix_decisions > 0
+    }
+}
+
+/// Reverse-step grain mirrored from the forward debugger step surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DebugReverseStepGrain {
+    /// Mirror of forward instruction stepping.
+    Instruction,
+    /// Mirror of forward quantum stepping.
+    Quantum,
+    /// Mirror of forward event stepping.
+    Event,
+    /// Mirror of forward assertion-state stepping.
+    Assertion,
+    /// Mirror of forward timer stepping.
+    Timer,
+}
+
+impl DebugReverseStepGrain {
+    /// The closed reverse-step set expected by the debug CLI.
+    pub const ALL: [Self; 5] = [
+        Self::Instruction,
+        Self::Quantum,
+        Self::Event,
+        Self::Assertion,
+        Self::Timer,
+    ];
+}
+
+/// Request to reverse-step from one debug coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseStepRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Reverse-step grain requested by the operator.
+    pub grain: DebugReverseStepGrain,
+    /// Event-log entries available for event-like grains.
+    pub event_log: Vec<SchedulerEventLogEntry>,
+    /// Mapping from event-log sequence to temporal-graph coordinate.
+    pub event_coordinates: BTreeMap<u64, Configuration>,
+    /// Exclusive upper bound for event-log entries considered current.
+    pub current_event_sequence: Option<u64>,
+}
+
+impl DebugReverseStepRequest {
+    /// Builds a reverse-step request.
+    #[must_use]
+    pub fn new(
+        current: Configuration,
+        grain: DebugReverseStepGrain,
+        event_log: Vec<SchedulerEventLogEntry>,
+    ) -> Self {
+        Self {
+            current,
+            grain,
+            event_log,
+            event_coordinates: BTreeMap::new(),
+            current_event_sequence: None,
+        }
+    }
+
+    /// Adds an event-log sequence to configuration mapping.
+    #[must_use]
+    pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
+        self.event_coordinates.insert(sequence, configuration);
+        self
+    }
+
+    /// Sets the exclusive current event-log sequence limit.
+    #[must_use]
+    pub const fn with_current_event_sequence(mut self, sequence: u64) -> Self {
+        self.current_event_sequence = Some(sequence);
+        self
+    }
+
+    fn current_event_sequence_limit(&self) -> u64 {
+        self.current_event_sequence.unwrap_or(u64::MAX)
+    }
+}
+
+/// Report for a completed reverse-step operation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseStepReport {
+    /// Reverse-step grain that was resolved.
+    pub grain: DebugReverseStepGrain,
+    /// Event-log sequence selected for event-like grains.
+    pub target_event_sequence: Option<u64>,
+    /// Configuration selected as the target coordinate.
+    pub target_configuration: ContentHash,
+    /// Delegated `goto` report for the resolved coordinate.
+    pub goto: DebugGotoReport,
+}
+
+impl DebugReverseStepReport {
+    /// Returns whether reverse-step resolved to a `goto`.
+    #[must_use]
+    pub fn realized_by_goto(&self) -> bool {
+        self.goto.target_configuration == self.target_configuration
+            && self.goto.proves_replay_oracle()
+    }
+}
+
+/// Request to reverse-continue to the latest prior matching condition.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseContinueRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Condition evaluated over checked event-log prefixes.
+    pub condition: Condition,
+    /// Event-log entries available for the backward scan.
+    pub event_log: Vec<SchedulerEventLogEntry>,
+    /// Mapping from event-log sequence to temporal-graph coordinate.
+    pub event_coordinates: BTreeMap<u64, Configuration>,
+    /// Inclusive upper bound for event-log entries considered current.
+    pub current_event_sequence: Option<u64>,
+}
+
+impl DebugReverseContinueRequest {
+    /// Builds a reverse-continue request.
+    #[must_use]
+    pub fn new(
+        current: Configuration,
+        condition: Condition,
+        event_log: Vec<SchedulerEventLogEntry>,
+    ) -> Self {
+        Self {
+            current,
+            condition,
+            event_log,
+            event_coordinates: BTreeMap::new(),
+            current_event_sequence: None,
+        }
+    }
+
+    /// Adds an event-log sequence to configuration mapping.
+    #[must_use]
+    pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
+        self.event_coordinates.insert(sequence, configuration);
+        self
+    }
+
+    /// Sets the inclusive current event-log sequence limit.
+    #[must_use]
+    pub const fn with_current_event_sequence(mut self, sequence: u64) -> Self {
+        self.current_event_sequence = Some(sequence);
+        self
+    }
+
+    fn current_event_sequence_limit(&self) -> u64 {
+        self.current_event_sequence.unwrap_or(u64::MAX)
+    }
+
+    fn searched_entries_before(&self, matching_index: usize) -> usize {
+        self.event_log.len().saturating_sub(matching_index)
+    }
+}
+
+/// Matching coordinate selected by reverse-continue.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseContinueMatch {
+    /// Event-log sequence whose prefix made the condition true.
+    pub event_sequence: u64,
+    /// Configuration selected for the matching coordinate.
+    pub target_configuration: ContentHash,
+    /// Delegated `goto` report for the selected coordinate.
+    pub goto: DebugGotoReport,
+}
+
+/// Report for a reverse-continue scan.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugReverseContinueReport {
+    /// Condition used for the backward scan.
+    pub condition: Condition,
+    /// Candidate event-log prefixes inspected before completion.
+    pub searched_entries: usize,
+    /// Matching coordinate, or `None` when the condition never held.
+    pub matched: Option<DebugReverseContinueMatch>,
+}
+
+impl DebugReverseContinueReport {
+    /// Returns whether reverse-continue found and realized a matching coordinate.
+    #[must_use]
+    pub fn realized_by_goto(&self) -> bool {
+        self.matched
+            .as_ref()
+            .is_some_and(|matched| matched.goto.proves_replay_oracle())
+    }
+}
+
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphFork {
@@ -16750,6 +17668,55 @@ pub enum EngineError {
         /// Client breakpoint kind that could not be satisfied canonically.
         requested_client_kind: DebugBreakpointClientKind,
     },
+    /// A debug `goto` request did not start at the attached configuration.
+    DebugGotoAttachMismatch {
+        /// Configuration currently attached.
+        attached: ContentHash,
+        /// Configuration supplied as the request's current coordinate.
+        requested_current: ContentHash,
+    },
+    /// A debug `goto` target belongs to a different scenario than the current coordinate.
+    DebugGotoScenarioMismatch {
+        /// Current configuration.
+        current: ContentHash,
+        /// Target configuration.
+        target: ContentHash,
+    },
+    /// A debug `goto` replay-oracle mismatch with bisection coordinates.
+    DebugGotoReplayOracleMismatch {
+        /// Bisection request localizing the first differing prefix.
+        bisection: DebugReplayOracleBisectionRequest,
+        /// The fat checkpoint under test.
+        checkpoint: ContentHash,
+        /// The materialized-state identity reconstructed by thin replay.
+        expected: ContentHash,
+        /// The supplied checkpoint's materialized-state identity.
+        actual: ContentHash,
+    },
+    /// A reverse operation had no earlier coordinate for the requested grain.
+    DebugTimeTravelNoEarlierCoordinate {
+        /// Reverse-step grain being resolved.
+        grain: DebugReverseStepGrain,
+        /// Current configuration.
+        current: ContentHash,
+    },
+    /// A reverse operation selected an event-log entry without a coordinate mapping.
+    DebugTimeTravelMissingEventCoordinate {
+        /// Event-log sequence that lacked a mapping.
+        sequence: u64,
+    },
+    /// A debug coordinate could not be resolved in the temporal graph.
+    DebugTimeTravelCoordinateNotFound {
+        /// Coordinate that had no graph checkpoint at or before it.
+        coordinate: DebugCoordinate,
+    },
+    /// A reverse-continue scan could not build a checked condition prefix.
+    DebugReverseContinueInvalidPrefix {
+        /// Event-log sequence at the attempted prefix boundary.
+        sequence: u64,
+        /// Stable debug rendering of the prefix validation error.
+        reason: String,
+    },
     /// A scenario family has an invalid finite parameter space.
     ScenarioFamilyInvalidSpace {
         /// Stable reason for the parameter-space rejection.
@@ -17119,6 +18086,30 @@ impl fmt::Display for EngineError {
             Self::DebugBreakpointRequiresAllowMutate { .. } => f.write_str(
                 "canonical debug breakpoint requires guest-memory mutation; rerun with --allow-mutate to fork a non-canonical debug branch",
             ),
+            Self::DebugGotoAttachMismatch { .. } => {
+                f.write_str("debug goto current coordinate does not match attached configuration")
+            }
+            Self::DebugGotoScenarioMismatch { .. } => {
+                f.write_str("debug goto target belongs to a different scenario")
+            }
+            Self::DebugGotoReplayOracleMismatch { .. } => f.write_str(
+                "debug goto replay oracle mismatch localized by bisection",
+            ),
+            Self::DebugTimeTravelNoEarlierCoordinate { .. } => {
+                f.write_str("debug reverse operation found no earlier coordinate")
+            }
+            Self::DebugTimeTravelMissingEventCoordinate { sequence } => {
+                write!(
+                    f,
+                    "debug reverse operation has no temporal coordinate for event-log sequence {sequence}"
+                )
+            }
+            Self::DebugTimeTravelCoordinateNotFound { .. } => {
+                f.write_str("debug coordinate did not resolve to a temporal graph checkpoint")
+            }
+            Self::DebugReverseContinueInvalidPrefix { reason, .. } => {
+                write!(f, "debug reverse-continue condition prefix is invalid: {reason}")
+            }
             Self::ScenarioFamilyInvalidSpace { reason } => {
                 write!(f, "scenario family parameter space is invalid: {reason}")
             }
@@ -17265,6 +18256,12 @@ fn scheduler_state_for_configuration(configuration: &Configuration) -> Scheduler
     SchedulerState::from_schedule(&configuration.schedule)
 }
 
+fn configuration_virtual_time(configuration: &Configuration) -> VirtualTime {
+    VirtualTime {
+        ticks: u64::try_from(configuration.schedule.len()).unwrap_or(u64::MAX),
+    }
+}
+
 fn instantiate_thin_replay(
     graph: &TemporalGraph,
     config: &Configuration,
@@ -17319,7 +18316,7 @@ fn materialized_checkpoint_for_runtime(
     let mut checkpoint = Checkpoint::from_recorded_configuration(
         configuration,
         parent.as_ref(),
-        VirtualTime::default(),
+        configuration_virtual_time(configuration),
         runtime.node_icounts,
         CheckpointKind::Fat,
         runtime.node_blobs,

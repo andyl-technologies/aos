@@ -19,9 +19,10 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Checkpoint, Configuration, ContentHash, ControlOperation, ControlOperationKind, Decision,
-    EngineError, Fault, FaultTag, QuantumLoop, QuantumOutcome, QuantumRequest, RuntimeState,
-    Schedule, SchedulerError, SchedulerEventLogEntry, TemporalGraph, VirtualTime, instantiate,
+    Checkpoint, Configuration, ContentHash, ControlOperation, ControlOperationKind,
+    DebugReverseStepGrain, Decision, EngineError, Fault, FaultTag, QuantumLoop, QuantumOutcome,
+    QuantumRequest, RuntimeState, Schedule, SchedulerError, SchedulerEventLogEntry, TemporalGraph,
+    VirtualTime, instantiate,
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -174,8 +175,39 @@ pub enum Outcome {
 /// A bounded step mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StepMode {
+    /// Advance to the next instruction-scale coordinate.
+    Instruction,
     /// Advance exactly one scheduler quantum.
     Quantum,
+    /// Advance to the next scheduler event coordinate.
+    Event,
+    /// Advance to the next assertion-state coordinate.
+    Assertion,
+    /// Advance to the next timer coordinate.
+    Timer,
+}
+
+impl StepMode {
+    /// The closed forward step-mode set mirrored by debug reverse-step.
+    pub const ALL: [Self; 5] = [
+        Self::Instruction,
+        Self::Quantum,
+        Self::Event,
+        Self::Assertion,
+        Self::Timer,
+    ];
+
+    /// Returns the reverse-step grain that mirrors this forward mode.
+    #[must_use]
+    pub const fn reverse_grain(self) -> DebugReverseStepGrain {
+        match self {
+            Self::Instruction => DebugReverseStepGrain::Instruction,
+            Self::Quantum => DebugReverseStepGrain::Quantum,
+            Self::Event => DebugReverseStepGrain::Event,
+            Self::Assertion => DebugReverseStepGrain::Assertion,
+            Self::Timer => DebugReverseStepGrain::Timer,
+        }
+    }
 }
 
 /// A control command consumed by the session actor.
@@ -1193,10 +1225,11 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::Step {
-                mode: StepMode::Quantum,
-            } => {
+            SessionCommand::Step { mode } => {
                 if matches!(self.state, EngineState::Paused { .. }) {
+                    if *mode != StepMode::Quantum {
+                        return Err(SessionError::UnsupportedStepMode { mode: *mode });
+                    }
                     let previous = self.state.clone();
                     self.state = EngineState::Running;
                     if let Err(error) = self.step_quantum() {
@@ -1204,9 +1237,7 @@ impl<L: QuantumLoop> Engine<L> {
                         return Err(error);
                     }
                     self.state = EngineState::Paused {
-                        reason: PauseReason::StepComplete {
-                            mode: StepMode::Quantum,
-                        },
+                        reason: PauseReason::StepComplete { mode: *mode },
                     };
                     Ok(self.snapshot())
                 } else {
@@ -1387,6 +1418,12 @@ pub enum SessionError {
         emitted: u64,
         /// Event-log entry count returned by the scheduler.
         next: u64,
+    },
+    /// A forward step mode is part of the debug vocabulary but has no executor yet.
+    #[error("step mode {mode:?} is not implemented by the forward session executor")]
+    UnsupportedStepMode {
+        /// Step mode that cannot be executed by the forward session actor yet.
+        mode: StepMode,
     },
 }
 
@@ -1598,9 +1635,50 @@ impl<L: QuantumLoop> SessionActor<L> {
 mod tests {
     use super::*;
     use crucible::{
-        Checkpoint, CheckpointKind, Decision, DeliveryOrderDecision, EventKey, GenesisCheckpoint,
-        NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind, Seed, VirtualTime, step,
+        Checkpoint, CheckpointKind, DebugReverseStepGrain, Decision, DeliveryOrderDecision,
+        EventKey, GenesisCheckpoint, NodeId, ScenarioDef, SchedulerNodeId, SchedulingNodeKind,
+        Seed, VirtualTime, step,
     };
+
+    #[test]
+    fn step_modes_mirror_debug_reverse_grains() {
+        let reverse = StepMode::ALL
+            .into_iter()
+            .map(StepMode::reverse_grain)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            reverse,
+            Vec::from(DebugReverseStepGrain::ALL),
+            "forward and reverse debug step vocabularies must stay in lockstep"
+        );
+    }
+
+    #[test]
+    fn non_quantum_step_modes_are_vocabulary_until_forward_executors_exist() {
+        let scenario = generated_scenario(22);
+        let config = Configuration::genesis(scenario.clone());
+        let graph = graph_with_baked_genesis(&scenario);
+        let mut engine = Engine::new(config, graph, StubLoop);
+        if let Err(error) = engine.apply_command(SessionCommand::Start) {
+            panic!("start should instantiate runtime: {error}");
+        }
+        let before = engine.snapshot();
+
+        for mode in [
+            StepMode::Instruction,
+            StepMode::Event,
+            StepMode::Assertion,
+            StepMode::Timer,
+        ] {
+            let error = match engine.apply_command(SessionCommand::Step { mode }) {
+                Ok(_) => panic!("unsupported step mode should not execute as a quantum"),
+                Err(error) => error,
+            };
+            assert_eq!(engine.snapshot(), before);
+            assert_eq!(error, SessionError::UnsupportedStepMode { mode });
+        }
+    }
 
     #[test]
     fn session_driver_delegates_to_quantum_loop() {

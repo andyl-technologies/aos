@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:81859d418e343b71`
+Checklist sync digest: `rfc0010-checklist-v1:abc263c7f31fe69c`
 
 ## The phase ladder
 
@@ -228,7 +228,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   canonical causal event-log subsequence; `T-DBG-3` is green through
   `checks.crucible.phase6.canonicalDebugBreakpoint`, which refuses memory-patch-only
   canonical breakpoints and transparently maps software breakpoint requests to
-  out-of-band mechanisms when available.
+  out-of-band mechanisms when available; `T-DBG-4` is green through
+  `checks.crucible.phase6.debugTimeTravel`, which proves debug `goto` uses
+  restore-nearest-checkpoint-then-replay, reverse-step mirrors the forward
+  `StepMode` set, and reverse-continue resolves the latest prior 17a condition
+  coordinate through the same replay-oracle-checked path.
 - Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks

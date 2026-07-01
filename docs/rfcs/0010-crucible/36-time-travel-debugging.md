@@ -939,13 +939,26 @@ touching the canonical run.
   mutates guest memory, never uses a memory patch, the proxy rewrites real `Z0`
   software-breakpoint packets to `Z1` hardware-breakpoint packets, and the proxy
   refuses `Z0` locally when no hardware breakpoint mechanism is available.
-- [ ] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
+- [x] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
   ancestor-replay branch of `instantiate`), reverse-step grains mirroring the forward
   StepMode set, and reverse-continue as the latest-log-coordinate-≤-now-where-a-17a-
   Condition-held backward scan; assert a rewound coordinate is the same content-
   addressed configuration as the forward one (oracle), localizing any divergence by
   bisection. — satisfies [DBG-14], [DBG-15], [DBG-16], [DBG-17]; spec §36.4.1,
   §36.4.2.
+  Completed by `checks.crucible.phase6.debugTimeTravel`:
+  `TemporalGraph::debug_goto` resolves configuration, checkpoint, event-sequence,
+  virtual-time, and per-node icount coordinates, restores the nearest recorded
+  checkpoint at or before the target, replays the remaining schedule suffix through
+  the ordinary instantiate path, and materializes a target checkpoint for the replay
+  oracle. Reverse-step resolves instruction, quantum, event, assertion, and timer
+  grains to earlier coordinates and delegates motion to `debug_goto`; the session
+  `StepMode` set mirrors the reverse-grain set. Reverse-continue scans checked
+  event-log prefixes backward with the 17a condition evaluator, chooses the latest
+  matching coordinate before the current log limit, and realizes it through the same
+  `goto`. A rewound coordinate must match the forward content-addressed
+  configuration, and replay-oracle mismatch returns a debug bisection coordinate
+  localizing the first differing schedule prefix.
 - [ ] **T-DBG-5** Implement per-node (by icount) and whole-world (prefix
   `(def, schedule[0..k])`, = fork minus divergence) time travel that lands all of a
   node's vCPUs at one deterministic coordinate, plus the opportunistic
