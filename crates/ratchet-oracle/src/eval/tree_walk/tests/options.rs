@@ -133,6 +133,7 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
     }
     assert!(action.requests_tier_b());
+    assert_eq!(outcome.cheap_memory_budget_plan(), None);
 }
 
 #[test]
@@ -157,6 +158,7 @@ fn attr_path_eval_reports_final_heap_memory_budget_action() {
         outcome.heap().permanent_arena_stats()
     );
     assert!(action.decision().requires_runtime_action());
+    assert_eq!(outcome.cheap_memory_budget_plan(), None);
 }
 
 #[test]
@@ -261,6 +263,7 @@ fn heap_cheap_memory_advice_option_reports_after_tree_walk_eval() {
     let ir = lower("\"advised\"");
     let default_outcome = eval_whnf_owned(&ir).expect("string evaluates without advice");
     assert_eq!(default_outcome.cheap_memory_advice_report(), None);
+    assert_eq!(default_outcome.cheap_memory_budget_plan(), None);
 
     let outcome = eval_whnf_owned_with_options(
         &ir,
@@ -291,6 +294,7 @@ fn heap_cheap_memory_advice_option_reports_after_tree_walk_eval() {
     assert!(report.cold_hash_consed().requested_bytes() > 0);
     assert_eq!(outcome.heap().memory_budget_poll_count(), 0);
     assert_eq!(outcome.heap().last_memory_budget_action(), None);
+    assert_eq!(outcome.cheap_memory_budget_plan(), None);
 }
 
 #[test]
@@ -313,6 +317,45 @@ fn heap_cheap_memory_advice_option_reports_after_attr_path_eval() {
     assert_eq!(report.cold_hash_consed().min_idle_epochs(), 0);
     assert_eq!(outcome.heap().memory_budget_poll_count(), 0);
     assert_eq!(outcome.heap().last_memory_budget_action(), None);
+    assert_eq!(outcome.cheap_memory_budget_plan(), None);
+}
+
+#[test]
+fn heap_budget_and_cheap_advice_options_report_cold_aware_plan() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("\"planned\"");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_cheap_memory_advice_min_idle_epochs(0);
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("string evaluates");
+
+    let action = outcome
+        .memory_budget_action()
+        .expect("heap budget still records the automatic action");
+    assert_eq!(action.decision().budget(), budget);
+    assert_eq!(
+        action.decision().sample().cold_hash_consed_bytes(),
+        0,
+        "automatic allocation polling stays on unused-tail action telemetry"
+    );
+    let plan = outcome
+        .cheap_memory_budget_plan()
+        .expect("combined options record a cold-aware budget plan");
+    assert_eq!(plan.decision().budget(), budget);
+    assert!(
+        plan.decision().sample().cold_hash_consed_bytes() > 0,
+        "the opt-in plan carries cold hash-consed spill capacity"
+    );
+    let plan_report = plan
+        .cheap_advice_report()
+        .expect("over-budget cold-aware planning records advice telemetry");
+    assert_eq!(outcome.cheap_memory_advice_report(), Some(plan_report));
+    assert_eq!(plan_report.unused_tails().kind(), MemoryAdviceKind::Dead);
+    assert_eq!(
+        plan_report.cold_hash_consed().kind(),
+        MemoryAdviceKind::Cold
+    );
+    assert_eq!(plan_report.cold_hash_consed().min_idle_epochs(), 0);
 }
 
 #[test]

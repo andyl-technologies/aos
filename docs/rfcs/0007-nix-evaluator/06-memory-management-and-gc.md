@@ -1223,8 +1223,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       retain the latest action for tests and later daemon policy; `EvalOutcome`
       snapshots that final action through `memory_budget_action()` so root and
       attr-path callers can observe the safety-valve decision without reaching
-      into heap internals. Hash-cons hits skip the poll because no heap
-      allocation occurred. Linux budget polls now sample process RSS from
+      into heap internals. When callers configure both a heap budget and the
+      post-evaluation cheap-advice idle threshold, `EvalOutcome` also snapshots
+      the cold-aware planning telemetry through `cheap_memory_budget_plan()`.
+      Hash-cons hits skip the poll because no heap allocation occurred. Linux
+      budget polls now sample process RSS from
       `/proc/self/statm` through
       `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
       unsupported or unreadable platforms; tests pin the parser, the fallback
@@ -1237,8 +1240,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `EvalHeap::plan_memory_budget_with_cheap_memory_advice` now combines
       those cold estimates with supported unused-tail capacity and runs the
       cheap advice hooks for telemetry when reclaim is planned, while the
-      automatic allocation-safepoint response still stays conservative and
-      credits zero cold reclaim until CA-store spill/rematerialization exists.
+      automatic allocation-safepoint response and `memory_budget_action()`
+      still stay conservative and credit zero cold reclaim until CA-store
+      spill/rematerialization exists.
 
 ### Out-of-core spill and OS cooperation (§3.4–§3.5)
 

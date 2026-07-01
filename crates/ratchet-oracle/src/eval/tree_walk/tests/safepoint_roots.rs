@@ -922,6 +922,7 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         memory_budget_action: None,
+        cheap_memory_budget_plan: None,
         cheap_memory_advice_report: None,
         gc_stress_boundary_scans,
     };

@@ -53,9 +53,10 @@ use super::heap::{
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
     AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg,
-    EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport,
+    EvalHeapCheapMemoryBudgetPlan, EvalHeapError, EvalHeapMemoryBudgetAction,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};

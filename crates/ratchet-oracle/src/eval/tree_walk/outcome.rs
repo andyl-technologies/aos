@@ -1054,6 +1054,7 @@ pub struct EvalOutcome {
     pub(crate) derivations: Vec<EvalDerivation>,
     pub(crate) thunk_resolve_remembered_set: RememberedSet,
     pub(crate) memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
+    pub(crate) cheap_memory_budget_plan: Option<EvalHeapCheapMemoryBudgetPlan>,
     pub(crate) cheap_memory_advice_report: Option<EvalHeapCheapMemoryAdviceReport>,
     pub(crate) gc_stress_boundary_scans: EvalGcStressBoundaryScans,
 }
@@ -1079,6 +1080,7 @@ impl std::fmt::Debug for EvalOutcome {
                 &self.thunk_resolve_remembered_set,
             )
             .field("memory_budget_action", &self.memory_budget_action)
+            .field("cheap_memory_budget_plan", &self.cheap_memory_budget_plan)
             .field(
                 "cheap_memory_advice_report",
                 &self.cheap_memory_advice_report,
@@ -1150,6 +1152,15 @@ impl EvalOutcome {
     /// Returns the final high-water heap budget action, if one was configured.
     pub const fn memory_budget_action(&self) -> Option<EvalHeapMemoryBudgetAction> {
         self.memory_budget_action
+    }
+
+    /// Returns the final cold-aware heap budget plan, if one was requested.
+    ///
+    /// This is planning telemetry only. A plan can credit logical cold
+    /// hash-consed bytes for future CA-store spill, but it is not evidence that
+    /// resident bytes were actually reclaimed during evaluation.
+    pub const fn cheap_memory_budget_plan(&self) -> Option<EvalHeapCheapMemoryBudgetPlan> {
+        self.cheap_memory_budget_plan
     }
 
     /// Returns the post-evaluation cheap heap advice report, if one was requested.

@@ -122,10 +122,8 @@ fn eval_whnf_owned_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
     let memory_budget_action = evaluator.heap.last_memory_budget_action();
-    let cheap_memory_advice_report = evaluator
-        .options
-        .heap_cheap_memory_advice_min_idle_epochs()
-        .map(|min_idle_epochs| evaluator.heap.advise_cheap_memory_ranges(min_idle_epochs));
+    let (cheap_memory_budget_plan, cheap_memory_advice_report) =
+        post_eval_cheap_memory_budget_reports(&evaluator);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -139,6 +137,7 @@ fn eval_whnf_owned_with_evaluator(
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         memory_budget_action,
+        cheap_memory_budget_plan,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
     })
@@ -239,10 +238,8 @@ fn eval_instantiation_attr_path_with_evaluator(
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
     let memory_budget_action = evaluator.heap.last_memory_budget_action();
-    let cheap_memory_advice_report = evaluator
-        .options
-        .heap_cheap_memory_advice_min_idle_epochs()
-        .map(|min_idle_epochs| evaluator.heap.advise_cheap_memory_ranges(min_idle_epochs));
+    let (cheap_memory_budget_plan, cheap_memory_advice_report) =
+        post_eval_cheap_memory_budget_reports(&evaluator);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -256,9 +253,34 @@ fn eval_instantiation_attr_path_with_evaluator(
         derivations,
         thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
         memory_budget_action,
+        cheap_memory_budget_plan,
         cheap_memory_advice_report,
         gc_stress_boundary_scans,
     })
+}
+
+fn post_eval_cheap_memory_budget_reports(
+    evaluator: &TreeWalk,
+) -> (
+    Option<EvalHeapCheapMemoryBudgetPlan>,
+    Option<EvalHeapCheapMemoryAdviceReport>,
+) {
+    let Some(min_idle_epochs) = evaluator.options.heap_cheap_memory_advice_min_idle_epochs() else {
+        return (None, None);
+    };
+
+    let cheap_memory_budget_plan = evaluator.options.heap_memory_budget().map(|budget| {
+        evaluator
+            .heap
+            .plan_memory_budget_with_cheap_memory_advice(budget, min_idle_epochs)
+    });
+    let cheap_memory_advice_report = Some(
+        cheap_memory_budget_plan
+            .and_then(EvalHeapCheapMemoryBudgetPlan::cheap_advice_report)
+            .unwrap_or_else(|| evaluator.heap.advise_cheap_memory_ranges(min_idle_epochs)),
+    );
+
+    (cheap_memory_budget_plan, cheap_memory_advice_report)
 }
 
 fn gc_stress_boundary_scans_for_outcome(

@@ -5558,9 +5558,12 @@ and helps the oracle directly.
       and retain the latest action for tests and later daemon policy;
       `EvalOutcome` snapshots that final action through `memory_budget_action()`
       so root and attr-path callers can observe the safety-valve decision
-      without reaching into heap internals. Hash-cons hits skip the poll because
-      no heap allocation occurred. Linux budget polls now sample process RSS
-      from `/proc/self/statm` through
+      without reaching into heap internals. When callers configure both a heap
+      budget and the post-evaluation cheap-advice idle threshold, `EvalOutcome`
+      also snapshots the cold-aware planning telemetry through
+      `cheap_memory_budget_plan()`. Hash-cons hits skip the poll because no heap
+      allocation occurred. Linux budget polls now sample process RSS from
+      `/proc/self/statm` through
       `ProcessResidentMemorySample`, falling back to arena-mapped bytes on
       unsupported or unreadable platforms; tests pin the parser, the fallback
       mode, the resident-source metadata carried by budget decisions, and
@@ -5572,8 +5575,9 @@ and helps the oracle directly.
       classification. `plan_memory_budget_with_cheap_memory_advice` now
       combines those cold estimates with supported unused-tail capacity and runs
       the cheap advice hooks for telemetry when reclaim is planned, while the
-      automatic allocation-safepoint budget action still credits zero cold
-      reclaim until CA-store spill/rematerialization exists.
+      automatic allocation-safepoint budget action and `memory_budget_action()`
+      still credit zero cold reclaim until CA-store spill/rematerialization
+      exists.
 - [x] Current cold hash-cons candidate precursor:
       `EvalHeap` stamps typed heap records with a monotonic access epoch at
       allocation time, refreshes successful reusable-value reads and hash-cons
