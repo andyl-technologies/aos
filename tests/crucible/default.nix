@@ -1633,6 +1633,26 @@ in rec {
         phase4.gates.e2eDeterminism
       ];
     };
+    signaturePreservingMinimization = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.signaturePreservingMinimization";
+      gate = import ./phase6-signature-preserving-minimization.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.signaturePreservingMinimization";
+        taskIds = ["T-TRI-5"];
+        dependencies = [
+          phase6.failureClustering.rawGate
+          phase6.minimization.rawGate
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+        ];
+      };
+      dependencies = [
+        phase6.failureClustering
+        phase6.minimization
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {

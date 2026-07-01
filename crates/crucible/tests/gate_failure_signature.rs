@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::test_support::condition_observation_entry_for_test;
@@ -11,10 +12,11 @@ use crucible::{
     EventSource, FailureCausalCone, FailureClusterFinding, FailureClusteringResult, FailureKind,
     FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
     FailureSignatureNormalization, FailureTriageResultIdentity, FindingDiscoveryPath,
-    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, NodeId, NodeTemplate,
-    ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
-    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MinimizationConfig,
+    NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed,
+    SignaturePolicy, SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -627,6 +629,192 @@ fn failure_clustering_partitions_and_orders_by_signature_key() -> Result<(), Box
 }
 
 #[test]
+fn signature_preserving_minimization_extends_base_pass_per_cluster() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let policy = SignaturePolicy::default_policy();
+    let critical = override_decision("critical-assertion", "fail");
+    let schedule_a = Schedule::from_decisions([
+        override_decision("noise-left", "enabled"),
+        critical.clone(),
+        override_decision("noise-right", "enabled"),
+    ]);
+    let schedule_a_peer =
+        Schedule::from_decisions([override_decision("peer-noise", "enabled"), critical.clone()]);
+    let schedule_b = Schedule::from_decisions([
+        override_decision("other-left", "enabled"),
+        critical.clone(),
+        override_decision("other-right", "enabled"),
+    ]);
+    let schedule_b_peer = Schedule::from_decisions([
+        override_decision("other-peer-noise", "enabled"),
+        critical.clone(),
+    ]);
+
+    let finding_a = finding_artifact(
+        &scenario,
+        schedule_a,
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("signature-minimization-a"),
+    )?;
+    let finding_a_peer = finding_artifact(
+        &scenario,
+        schedule_a_peer,
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("signature-minimization-a-peer"),
+    )?;
+    let finding_b = finding_artifact(
+        &scenario,
+        schedule_b,
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("signature-minimization-b"),
+    )?;
+    let finding_b_peer = finding_artifact(
+        &scenario,
+        schedule_b_peer,
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("signature-minimization-b-peer"),
+    )?;
+
+    let base_signature = signature_for_recorded_decision(&finding_a, critical.clone())?;
+    let mut other_signature = base_signature.clone();
+    other_signature
+        .property
+        .as_mut()
+        .ok_or("property signature must carry a property key")?
+        .quantifier = AssertionQuantifierKind::Sometimes;
+
+    let clustered = FailureClusteringResult::from_findings(
+        policy,
+        [
+            FailureClusterFinding::new(finding_a.artifact.id(), base_signature.clone()),
+            FailureClusterFinding::new(finding_a_peer.artifact.id(), base_signature.clone()),
+            FailureClusterFinding::new(finding_b.artifact.id(), other_signature.clone()),
+            FailureClusterFinding::new(finding_b_peer.artifact.id(), other_signature.clone()),
+        ],
+    )?;
+    assert_eq!(clustered.cluster_count(), 2);
+    assert_eq!(clustered.member_count(), 4);
+
+    let artifacts = BTreeMap::from([
+        (finding_a.artifact.id(), finding_a.clone()),
+        (finding_a_peer.artifact.id(), finding_a_peer.clone()),
+        (finding_b.artifact.id(), finding_b.clone()),
+        (finding_b_peer.artifact.id(), finding_b_peer.clone()),
+    ]);
+    let signatures_by_fingerprint = BTreeMap::from([
+        (finding_a.finding_fingerprint, base_signature.clone()),
+        (finding_a_peer.finding_fingerprint, base_signature),
+        (finding_b.finding_fingerprint, other_signature.clone()),
+        (finding_b_peer.finding_fingerprint, other_signature),
+    ]);
+    let expected_representatives = clustered
+        .clusters
+        .iter()
+        .filter_map(|cluster| {
+            cluster
+                .representative_member()
+                .map(|member| member.reproduction_artifact)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut loaded_representatives = Vec::new();
+    let mut signature_calls = 0usize;
+
+    let minimized = clustered.minimize_representatives(
+        MinimizationConfig::new(Seed::from_u64(0x5452_4935)),
+        |artifact| {
+            loaded_representatives.push(artifact);
+            artifacts
+                .get(&artifact)
+                .cloned()
+                .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization-test",
+                    reason: "missing representative artifact",
+                })
+        },
+        |candidate| {
+            signature_calls += 1;
+            signature_for_minimization_candidate(&signatures_by_fingerprint, candidate)
+        },
+    )?;
+
+    assert_eq!(minimized.cluster_count(), clustered.cluster_count());
+    assert_eq!(minimized.minimized_count(), clustered.cluster_count());
+    assert_eq!(loaded_representatives.len(), clustered.cluster_count());
+    assert_eq!(
+        loaded_representatives.into_iter().collect::<BTreeSet<_>>(),
+        expected_representatives
+    );
+    assert!(
+        signature_calls > minimized.minimized_count(),
+        "per-candidate replay-oracle validation must drive signature checks"
+    );
+    assert!(minimized.runs.iter().all(|run| run.preserves_signature()));
+    assert!(minimized.runs.iter().all(|run| {
+        run.cluster_id == run.target_signature_key.content_hash()
+            && run.cluster_id == run.minimized_signature_key.content_hash()
+    }));
+    assert!(minimized.runs.iter().all(|run| {
+        run.representative_artifact == run.minimization.original.artifact.id()
+            && run.minimization.accepted_attempts() == 1
+            && run.minimization.minimized.artifact.schedule().len() == 1
+    }));
+    assert!(minimized.runs.iter().any(|run| {
+        run.minimization.attempts.iter().any(|attempt| {
+            attempt.sequence == 0
+                && attempt.candidate_schedule == Schedule::from_decisions([]).content_hash()
+                && !attempt.accepted
+                && attempt.observed_fingerprint.is_none()
+        })
+    }));
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.target_signature_key_BEGIN")
+    );
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.0.attempt.0.sequence=")
+    );
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.0.attempt.0.candidate_schedule=")
+    );
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.0.attempt.0.replayed_state=")
+    );
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.0.attempt.0.accepted=")
+    );
+    assert!(
+        minimized
+            .canonical_material()
+            .contains("minimization.signature_preserved=true")
+    );
+    assert_ne!(minimized.content_hash(), ContentHash::default());
+
+    let mut forged_attempt_evidence = minimized.clone();
+    let first_attempt = forged_attempt_evidence
+        .runs
+        .first_mut()
+        .and_then(|run| run.minimization.attempts.first_mut())
+        .ok_or("signature minimization should record at least one attempt")?;
+    first_attempt.replayed_state = finding_hash("forged-signature-minimization-replay");
+    assert_ne!(
+        forged_attempt_evidence.content_hash(),
+        minimized.content_hash(),
+        "canonical result hash must include per-attempt replay evidence"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
@@ -739,6 +927,58 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
     ));
 
     Ok(())
+}
+
+fn signature_for_recorded_decision(
+    finding: &FindingReproductionArtifact,
+    decision: Decision,
+) -> Result<FailureSignature, EngineError> {
+    let entries = recorded_event_log(decision);
+    let recorded_log = recorded_event_log_for_finding(finding, &entries)?;
+    let record = property_violation_record(finding.artifact.id());
+    FailureSignature::from_recorded_property_violation(finding, &recorded_log, &record)
+}
+
+fn signature_for_minimization_candidate(
+    signatures_by_fingerprint: &BTreeMap<ContentHash, FailureSignature>,
+    candidate: &FindingReproductionArtifact,
+) -> Result<Option<FailureSignature>, EngineError> {
+    let template = signatures_by_fingerprint
+        .get(&candidate.finding_fingerprint)
+        .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+            operation: "signature-preserving-minimization-test",
+            reason: "missing signature template",
+        })?;
+    if candidate.artifact.schedule().is_empty() {
+        let mut drifted = template.clone();
+        drifted
+            .property
+            .as_mut()
+            .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "signature-preserving-minimization-test",
+                reason: "missing property key",
+            })?
+            .id = assertion_id("signature-drift");
+        return Ok(Some(drifted));
+    }
+    if !schedule_contains_override(candidate.artifact.schedule(), "critical-assertion", "fail") {
+        return Ok(None);
+    }
+
+    let mut preserved = template.clone();
+    preserved.at_icount_report_only =
+        Some(icount(100 + candidate.artifact.schedule().len() as u64));
+    Ok(Some(preserved))
+}
+
+fn schedule_contains_override(schedule: &Schedule, point: &str, choice: &str) -> bool {
+    schedule.decisions().iter().any(|decision| {
+        matches!(
+            decision,
+            Decision::Override(override_decision)
+                if override_decision.point.key == point && override_decision.choice.name == choice
+        )
+    })
 }
 
 fn recorded_event_log(decision: Decision) -> Vec<crucible::SchedulerEventLogEntry> {

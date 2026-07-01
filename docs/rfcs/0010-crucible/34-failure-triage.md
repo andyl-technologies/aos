@@ -904,12 +904,21 @@ recomputable byte-for-byte from what was already stored.
   ordered `BTreeMap`s, rejects conflicting duplicate artifact evidence, and emits
   canonical clustering material with clusters ordered by id and members ordered
   by reproduction-artifact hash.
-- [ ] **T-TRI-5** Implement signature-preserving minimization by extending 22's
+- [x] **T-TRI-5** Implement signature-preserving minimization by extending 22's
   pass ([ADV-30]) — strengthen the accept predicate to signature equality under
   the active policy, reuse the seeded order + per-candidate replay-oracle
   validation, minimize one representative per cluster (O(clusters)), and assert
   `signature(minimal)==signature(original)`. — satisfies [TRI-9], [TRI-12]; spec
   §34.4; cross-ref 22 §22.8.2.
+  Completed by `checks.crucible.phase6.signaturePreservingMinimization`: the
+  model now exposes `FailureSignaturePreservingMinimizationRun` and
+  `FailureSignaturePreservingMinimizationResult`. `FailureClusteringResult`
+  minimizes only each cluster's content-address-least representative via the
+  existing `FindingReproductionArtifact::minimize` pass, supplies an oracle that
+  accepts only candidates whose active-policy `FailureSignatureKey` equals the
+  original representative's key, preserves the seeded candidate order and
+  replay-validated candidate evidence from 22, and records both target and
+  minimized signature keys in canonical result material.
 - [ ] **T-TRI-6** Implement per-cluster reports (cluster id + signature + member
   hashes + minimal representative + failing property/bisected first-diff + minimal
   repro artifact + last-N causal log excerpt + causal-cone narrative + exact
