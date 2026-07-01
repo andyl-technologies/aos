@@ -5423,7 +5423,7 @@ and helps the oracle directly.
       `cold_hash_consed_bytes` for future spill planning. This is metadata only:
       it installs no CA-store handle, evicts or rematerializes no value, and
       does not change automatic memory-budget actions.
-- [x] Current `madvise` portability precursor:
+- [x] Current `madvise` portability closure:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with
       non-empty raw-range construction kept at an explicit unsafe heap boundary.
@@ -5440,9 +5440,10 @@ and helps the oracle directly.
       policy should invoke them. Tests cover range metadata, zero-length no-op
       behavior, typed helper dispatch, non-Linux unsupported behavior, Linux
       full-page trimming, a Linux anonymous-`mmap` `MADV_DONTNEED` call, Linux
-      flag mapping, empty arenas, complete unused-tail pages, unchanged
-      accounting, post-advice allocation reuse, runtime allocator forwarding,
-      and whole-heap worker/permanent aggregation. Integrating the shim with
+      flag mapping, non-empty sub-page helper dispatch, empty arenas, complete
+      unused-tail pages, unchanged accounting, post-advice allocation reuse,
+      runtime allocator forwarding, and whole-heap worker/permanent
+      aggregation. Integrating the shim with
       live resident-set sampling, CA-store spill, region-pop/dead-page
       selection, full budget-triggered dispatch, and collector-installation
       policy remains open under the full memory-management rows.

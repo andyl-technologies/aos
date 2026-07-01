@@ -361,6 +361,35 @@ mod tests {
     }
 
     #[test]
+    fn typed_helpers_preserve_kind_for_non_empty_subpage_ranges() {
+        fn assert_subpage_outcome(outcome: MemoryAdviceOutcome, kind: MemoryAdviceKind) {
+            #[cfg(target_os = "linux")]
+            assert_eq!(outcome, MemoryAdviceOutcome::EmptyRange { kind });
+            #[cfg(not(target_os = "linux"))]
+            assert_eq!(outcome, MemoryAdviceOutcome::Unsupported { kind });
+        }
+
+        let mut bytes = vec![0_u8; 64];
+        let mut range = || {
+            // SAFETY: The range covers a live heap-owned byte buffer. On Linux
+            // this sub-page range is trimmed to no complete pages before any
+            // syscall; on non-Linux targets it reports `Unsupported`.
+            unsafe {
+                MemoryAdviceRange::from_raw_parts(
+                    NonNull::new(bytes.as_mut_ptr()).expect("non-null byte buffer"),
+                    bytes.len(),
+                )
+            }
+        };
+
+        assert_subpage_outcome(advise_dead(range()), MemoryAdviceKind::Dead);
+        assert_subpage_outcome(advise_free(range()), MemoryAdviceKind::Free);
+        assert_subpage_outcome(advise_cold(range()), MemoryAdviceKind::Cold);
+        assert_subpage_outcome(advise_evict(range()), MemoryAdviceKind::Evict);
+        assert_subpage_outcome(advise_huge(range()), MemoryAdviceKind::Huge);
+    }
+
+    #[test]
     fn cold_heap_object_allocation_helper_uses_cold_kind_for_non_empty_ranges() {
         let mut bytes = vec![0_u8; 4096];
         let ptr = NonNull::new(bytes.as_mut_ptr().cast::<HeapObject>())

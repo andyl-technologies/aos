@@ -366,7 +366,7 @@ The distinction between the pairs is deliberate and load-bearing:
 The portability shim matters: `MADV_PAGEOUT`/`MADV_COLD` need Linux 5.4,
 `MADV_FREE` needs 4.5, and none of these flags exist on macOS or the BSDs with
 the same semantics. The shim presents one internal API
-(`advise_dead`, `advise_cold`, `advise_evict`, `advise_huge`) and lowers each to
+(`advise_dead`, `advise_free`, `advise_cold`, `advise_evict`, `advise_huge`) and lowers each to
 the best available primitive per platform, falling back to no-ops where the
 kernel is too old or the OS differs. Correctness never depends on the advice
 being honored — these only affect *when* the OS reclaims, never *what* the
@@ -1108,8 +1108,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       planning. This is metadata only: no CA-store handle is installed, no value
       is evicted or rematerialized, and automatic budget actions still do not
       credit cold hash-cons reclaim.
-- [ ] `madvise` portability shim (`advise_dead`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
-- [x] Current `madvise`/arena-tail precursor:
+- [x] `madvise` portability shim (`advise_dead`/`advise_free`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
+- [x] Current `madvise`/arena-tail closure:
       `ratchet-value::heap::advice` provides the advisory memory API over
       dead/free/cold/evict/huge hints, with raw non-empty range construction
       kept behind the heap crate's unsafe boundary. Linux trims requests to full
@@ -1120,13 +1120,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       and reports per-arena outcome counts through `ArenaMemoryAdviceReport`;
       `RuntimeAllocator`, `PermanentSharedAllocator`, and `EvalHeap` now expose
       safe unused-tail advice reports for worker and permanent domains without
-      choosing when to run them. Tests cover range metadata, helper dispatch,
-      Linux page trimming and `MADV_DONTNEED`, platform flag mapping, empty
-      arenas, complete unused-tail pages, unchanged arena accounting,
-      post-advice allocation reuse, runtime allocator forwarding, and
-      whole-heap worker/permanent aggregation. Selecting dead regions, CA-store
-      spill/rematerialization, full budget dispatch, and collector installation
-      remain open in the surrounding rows.
+      choosing when to run them. Tests cover range metadata, helper dispatch for
+      empty and non-empty sub-page ranges, Linux page trimming and
+      `MADV_DONTNEED`, platform flag mapping, empty arenas, complete unused-tail
+      pages, unchanged arena accounting, post-advice allocation reuse, runtime
+      allocator forwarding, and whole-heap worker/permanent aggregation.
+      Selecting dead regions, CA-store spill/rematerialization, full budget
+      dispatch, and collector installation remain open in the surrounding rows.
 - [x] Current cold hash-consed page-advice precursor:
       `ratchet-value::heap::advise_cold_heap_object_allocation` exposes a safe
       non-destructive `MADV_COLD` wrapper for typed heap-object allocation
