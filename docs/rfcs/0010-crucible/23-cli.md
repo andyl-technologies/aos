@@ -977,7 +977,7 @@ branch on the verdict without parsing output:
   (`--policy`/`--minimize`/`--report`/`--format`/`--recompute-signatures`/`--compare`),
   with no clustering/minimization policy in the CLI. — satisfies [CLI-26]; spec
   §16; cross-ref 34.
-- [ ] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
+- [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate
   (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
@@ -986,5 +986,12 @@ branch on the verdict without parsing output:
   `--checkpoint-stride`; print the `crucible debug <artifact> --at-failure` footer
   line on a non-passing run. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
   20 §4.4.
+  Completed by `checks.crucible.phase6.debugCliSurface`:
+  `crucible debug` is parsed as a thin session/debugger wrapper with coordinate
+  selection, target-aware coordinate defaults, gdbstub proxy listen/node controls,
+  reverse verbs routed through the debug reverse-step/goto path instead of
+  unsupported forward session step modes, read-only default, explicit
+  `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
+  and the at-failure footer shared with failure artifact emission.
 </content>
 </invoke>

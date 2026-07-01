@@ -1569,6 +1569,7 @@ dependencies = [
  "clap",
  "crucible",
  "crucible-harness",
+ "crucible-session",
  "tempfile",
 ]
 

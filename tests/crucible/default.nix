@@ -1699,6 +1699,32 @@ in rec {
         phase6.debugNonCanonicalBranch
       ];
     };
+    debugCliSurface = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.debugCliSurface";
+      gate = import ./phase6-debug-cli-surface.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.debugCliSurface";
+        taskIds = ["T-DBG-8" "T-CLI-18"];
+        dependencies = [
+          phase1.gates.layer0Determinism.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase5.gates.controlResponsive.rawGate
+          phase6.debugScopedTimeTravel.rawGate
+          phase6.debugNonCanonicalBranch.rawGate
+          phase6.debugTargetResolver.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.layer0Determinism
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase5.gates.controlResponsive
+        phase6.debugScopedTimeTravel
+        phase6.debugNonCanonicalBranch
+        phase6.debugTargetResolver
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
