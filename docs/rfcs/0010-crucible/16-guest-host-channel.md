@@ -883,8 +883,9 @@ the transport layer by construction.
   under `WhiteBoxPolicy::Disabled` and `WhiteBoxPolicy::Enabled` and proves
   marker-enabled and marker-disabled witnesses keep identical causal event-log and
   backend fingerprint material while a changed causal boundary or backend workload
-  still moves the witness. Full canonical `gate:any-guest` and
-  `gate:single-vm-fingerprint` wiring remains the T-GHC-15 task.
+  still moves the witness. Canonical `gate:any-guest` and
+  `gate:single-vm-fingerprint` wiring is bound by
+  `checks.crucible.phase4.guestHostChannelGateWiring`.
 - [x] **T-GHC-13** Run the guest virtual-vs-physical address spike for the payload
   read; default to the conservative physical/identity-mapped shared page until
   resolved. — satisfies [GHC-33]; spec §16.7.
@@ -915,10 +916,23 @@ the transport layer by construction.
   `WhiteboxDoorbellDecodeDiagnostic` before being dropped, while malformed
   app-random frames are turned into typed decode diagnostics and dropped without
   drawing a decision or writing a reply.
-- [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
+- [x] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
   with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30], [G-3]; spec
   §16.1, §16.7.
+  Completed by `checks.crucible.phase4.guestHostChannelGateWiring`: the phase4
+  binding gate now carries the relevant gate definition files in lazy passthru,
+  statically pins the phase2 canonical gate ordering in `tests/crucible/default.nix`
+  including `qemuInert -> singleVmFingerprint -> anyGuest`, enforces their
+  source/result contract text plus the phase4 channel determinism and
+  emitter-absence result contracts, requires black-box no-agent/no-content
+  sufficiency, records white-box as a host/plugin opt-in rather than guest content,
+  and preserves the real QEMU icount/register/RAM fingerprint axis. The gate does
+  not claim a live real-QEMU run with white-box events enabled; instead it binds
+  the explicit `gate_any_guest` host/plugin off/on switch contract to the scheduler
+  marker-neutrality proof, so white-box disabled, enabled-but-unused, and
+  marker-enabled modes are fingerprint-equal except for observational event-log
+  entries.
 - [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
