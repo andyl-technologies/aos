@@ -246,6 +246,279 @@ impl SessionCommand {
     }
 }
 
+/// Maximum lifecycle acknowledgement latency accepted for exploration drivers.
+pub const EXPLORATION_LIFECYCLE_RESPONSE_BOUND_QUANTA: u64 = 1;
+
+/// Default actor-yield budget for lifecycle command acknowledgement polling.
+pub const EXPLORATION_LIFECYCLE_MAX_ACTOR_YIELDS: u64 = 128;
+
+/// A lifecycle command issued by an exploration driver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExplorationLifecycleCommand {
+    /// Pause the running branch at the next quantum boundary.
+    Pause,
+    /// Continue a branch paused at a quantum boundary.
+    Resume,
+    /// Stop the branch cleanly at a quantum boundary.
+    Stop,
+}
+
+/// Evidence that an exploration lifecycle command was acknowledged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplorationLifecycleAcknowledgement {
+    /// Lifecycle command that was issued.
+    pub command: ExplorationLifecycleCommand,
+    /// Live state observed before the command was sent.
+    pub requested_state: LiveStateKind,
+    /// Live state observed when the command was acknowledged.
+    pub acknowledged_state: LiveStateKind,
+    /// Scheduler quantum count visible before the command was sent.
+    pub requested_at_quantum: u64,
+    /// Scheduler quantum count visible when the command was acknowledged.
+    pub acknowledged_at_quantum: u64,
+    /// Canonical event-log length visible before the command was sent.
+    pub requested_event_log_len: u64,
+    /// Canonical event-log length visible when the command was acknowledged.
+    pub acknowledged_event_log_len: u64,
+}
+
+impl ExplorationLifecycleAcknowledgement {
+    /// Returns the acknowledgement latency measured in scheduler quanta.
+    #[must_use]
+    pub fn acknowledgement_delta_quanta(&self) -> Option<u64> {
+        self.acknowledged_at_quantum
+            .checked_sub(self.requested_at_quantum)
+    }
+}
+
+/// Error returned by [`ExplorationLifecycleDriver`].
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ExplorationLifecycleError {
+    /// The command was issued against a state where it is not valid.
+    #[error("exploration lifecycle command {command:?} was issued against {requested_state:?}")]
+    InvalidState {
+        /// Lifecycle command that was issued.
+        command: ExplorationLifecycleCommand,
+        /// State observed before issuing the command.
+        requested_state: LiveStateKind,
+    },
+    /// The session command channel closed before the command was accepted.
+    #[error("exploration lifecycle command {command:?} could not be sent")]
+    CommandChannelClosed {
+        /// Lifecycle command whose session message could not be sent.
+        command: ExplorationLifecycleCommand,
+    },
+    /// The command was not acknowledged within the actor-yield budget.
+    #[error(
+        "exploration lifecycle command {command:?} was not acknowledged after {max_actor_yields} actor yields"
+    )]
+    AcknowledgementTimeout {
+        /// Lifecycle command that timed out.
+        command: ExplorationLifecycleCommand,
+        /// Scheduler quantum count visible before issuing the command.
+        requested_at_quantum: u64,
+        /// Actor-yield budget used while waiting.
+        max_actor_yields: u64,
+    },
+    /// The command acknowledgement exceeded the accepted quantum bound.
+    #[error(
+        "exploration lifecycle command {command:?} took {observed_delta_quanta} quanta, exceeding bound {bound_quanta}"
+    )]
+    AcknowledgementExceededBound {
+        /// Lifecycle command whose acknowledgement exceeded the bound.
+        command: ExplorationLifecycleCommand,
+        /// Observed acknowledgement latency in scheduler quanta.
+        observed_delta_quanta: u64,
+        /// Accepted acknowledgement bound in scheduler quanta.
+        bound_quanta: u64,
+    },
+}
+
+/// Session-command lifecycle adapter used by exploration drivers.
+///
+/// This driver deliberately owns only a session mailbox sender and a lock-free
+/// [`LiveSnapshot`]. Search and fuzz drivers using this type can pause, resume,
+/// and stop a branch without direct access to the engine, scheduler, or backend.
+#[derive(Clone)]
+pub struct ExplorationLifecycleDriver {
+    sender: mpsc::Sender<SessionCommand>,
+    live: Arc<LiveSnapshot>,
+    max_actor_yields: u64,
+    bound_quanta: u64,
+}
+
+impl ExplorationLifecycleDriver {
+    /// Creates a lifecycle driver over a session actor mailbox.
+    #[must_use]
+    pub fn new(sender: mpsc::Sender<SessionCommand>, live: Arc<LiveSnapshot>) -> Self {
+        Self {
+            sender,
+            live,
+            max_actor_yields: EXPLORATION_LIFECYCLE_MAX_ACTOR_YIELDS,
+            bound_quanta: EXPLORATION_LIFECYCLE_RESPONSE_BOUND_QUANTA,
+        }
+    }
+
+    /// Returns a copy of this driver with an explicit actor-yield wait budget.
+    #[must_use]
+    pub fn with_max_actor_yields(mut self, max_actor_yields: u64) -> Self {
+        self.max_actor_yields = max_actor_yields;
+        self
+    }
+
+    /// Returns a copy of this driver with an explicit quantum response bound.
+    #[must_use]
+    pub fn with_bound_quanta(mut self, bound_quanta: u64) -> Self {
+        self.bound_quanta = bound_quanta;
+        self
+    }
+
+    /// Pauses a running exploration branch at the next quantum boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExplorationLifecycleError`] when the session is not running,
+    /// the actor mailbox closes, or the pause does not take effect within the
+    /// configured quantum/yield bounds.
+    pub async fn pause(
+        &self,
+    ) -> Result<ExplorationLifecycleAcknowledgement, ExplorationLifecycleError> {
+        self.issue(
+            ExplorationLifecycleCommand::Pause,
+            SessionCommand::Pause,
+            LiveStateKind::Running,
+            LiveStateKind::Paused,
+        )
+        .await
+    }
+
+    /// Resumes a paused exploration branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExplorationLifecycleError`] when the session is not paused, the
+    /// actor mailbox closes, or resume is not acknowledged within the configured
+    /// quantum/yield bounds.
+    pub async fn resume(
+        &self,
+    ) -> Result<ExplorationLifecycleAcknowledgement, ExplorationLifecycleError> {
+        self.issue(
+            ExplorationLifecycleCommand::Resume,
+            SessionCommand::Continue,
+            LiveStateKind::Paused,
+            LiveStateKind::Running,
+        )
+        .await
+    }
+
+    /// Stops an exploration branch cleanly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExplorationLifecycleError`] when the session is loaded or
+    /// already stopped, the actor mailbox closes, or stop is not acknowledged
+    /// within the configured quantum/yield bounds.
+    pub async fn stop(
+        &self,
+    ) -> Result<ExplorationLifecycleAcknowledgement, ExplorationLifecycleError> {
+        let before = self.live.read();
+        if !matches!(
+            before.state_kind,
+            LiveStateKind::Running | LiveStateKind::Paused
+        ) {
+            return Err(ExplorationLifecycleError::InvalidState {
+                command: ExplorationLifecycleCommand::Stop,
+                requested_state: before.state_kind,
+            });
+        }
+        self.issue_from(
+            ExplorationLifecycleCommand::Stop,
+            SessionCommand::Stop,
+            before,
+            LiveStateKind::Stopped,
+        )
+        .await
+    }
+
+    async fn issue(
+        &self,
+        command: ExplorationLifecycleCommand,
+        session_command: SessionCommand,
+        required_state: LiveStateKind,
+        acknowledged_state: LiveStateKind,
+    ) -> Result<ExplorationLifecycleAcknowledgement, ExplorationLifecycleError> {
+        let before = self.live.read();
+        if before.state_kind != required_state {
+            return Err(ExplorationLifecycleError::InvalidState {
+                command,
+                requested_state: before.state_kind,
+            });
+        }
+        self.issue_from(command, session_command, before, acknowledged_state)
+            .await
+    }
+
+    async fn issue_from(
+        &self,
+        command: ExplorationLifecycleCommand,
+        session_command: SessionCommand,
+        before: LiveSnapshotView,
+        acknowledged_state: LiveStateKind,
+    ) -> Result<ExplorationLifecycleAcknowledgement, ExplorationLifecycleError> {
+        self.sender
+            .send(session_command)
+            .await
+            .map_err(|_| ExplorationLifecycleError::CommandChannelClosed { command })?;
+
+        for _ in 0..self.max_actor_yields {
+            tokio::task::yield_now().await;
+            let after = self.live.read();
+            if after.state_kind == acknowledged_state {
+                let acknowledgement =
+                    lifecycle_acknowledgement(command, before, after, acknowledged_state);
+                let Some(delta) = acknowledgement.acknowledgement_delta_quanta() else {
+                    return Err(ExplorationLifecycleError::AcknowledgementExceededBound {
+                        command,
+                        observed_delta_quanta: u64::MAX,
+                        bound_quanta: self.bound_quanta,
+                    });
+                };
+                if delta > self.bound_quanta {
+                    return Err(ExplorationLifecycleError::AcknowledgementExceededBound {
+                        command,
+                        observed_delta_quanta: delta,
+                        bound_quanta: self.bound_quanta,
+                    });
+                }
+                return Ok(acknowledgement);
+            }
+        }
+
+        Err(ExplorationLifecycleError::AcknowledgementTimeout {
+            command,
+            requested_at_quantum: before.quanta_stepped,
+            max_actor_yields: self.max_actor_yields,
+        })
+    }
+}
+
+fn lifecycle_acknowledgement(
+    command: ExplorationLifecycleCommand,
+    before: LiveSnapshotView,
+    after: LiveSnapshotView,
+    acknowledged_state: LiveStateKind,
+) -> ExplorationLifecycleAcknowledgement {
+    ExplorationLifecycleAcknowledgement {
+        command,
+        requested_state: before.state_kind,
+        acknowledged_state,
+        requested_at_quantum: before.quanta_stepped,
+        acknowledged_at_quantum: after.quanta_stepped,
+        requested_event_log_len: before.event_log_len,
+        acknowledged_event_log_len: after.event_log_len,
+    }
+}
+
 /// A snapshot of state visible at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineSnapshot {

@@ -1176,6 +1176,22 @@ in rec {
         phase5.gates.controlResponsive
       ];
     };
+    explorationLifecycle = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.explorationLifecycle";
+      gate = import ./phase6-exploration-lifecycle.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.explorationLifecycle";
+        taskIds = ["T-ADV-2"];
+        dependencies = [
+          phase5.gates.controlResponsive.rawGate
+          phase6.advancedDependencyLadder.rawGate
+        ];
+      };
+      dependencies = [
+        phase5.gates.controlResponsive
+        phase6.advancedDependencyLadder
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
