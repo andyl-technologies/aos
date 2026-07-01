@@ -4956,9 +4956,9 @@ and helps the oracle directly.
       discovery order, validates that every live young seed has unique nursery
       age metadata, and applies an age-based copy-to-next-nursery vs
       promote-to-old policy. This is a survivor frontier and promotion plan
-      only; object field expansion, relocation/writeback, nursery semispace
-      storage, old-generation collection, GC-stress mode, and byte-green Tier-B
-      harness execution remain open in the full collector row above.
+      only; relocation/writeback, nursery semispace storage, old-generation
+      collection, GC-stress mode, and byte-green Tier-B harness execution remain
+      open in the full collector row above.
 - [x] Current remembered-set epoch-validation precursor:
       `ratchet-value::heap::gc::RememberedSetEpoch` and
       `RememberedSetSnapshot` attach explicit collection epoch metadata to the
@@ -4969,6 +4969,19 @@ and helps the oracle directly.
       matching-epoch planning, and mismatch rejection. This validates metadata
       only; complete remembered-set construction by the real card table and
       collector remains open.
+- [x] Current minor-GC field-expansion precursor:
+      `ratchet-value::heap::gc::NurseryObjectFields` and
+      `MinorGcPlan::from_roots_remembered_and_fields` expand the young survivor
+      frontier through caller-supplied precise nursery fields, recursively
+      adding young fields while filtering inline, old, and permanent fields.
+      The expansion deduplicates shared children and cycles in discovery order,
+      validates unique field metadata for every reached young object, and then
+      applies the same age-based promotion policy. Unit tests cover transitive
+      expansion, non-young field filtering, cycle/deduplication behavior,
+      post-expansion promotion, and missing/duplicate field metadata rejection.
+      This remains a planning surface only; object copying, forwarding-pointer
+      updates, relocation writeback, semispace allocation, and oracle heap-scan
+      integration remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

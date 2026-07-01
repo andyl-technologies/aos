@@ -921,8 +921,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       to current nursery objects. It filters non-young roots, deduplicates young
       roots plus remembered targets, validates unique nursery age metadata, and
       classifies each survivor as copy-to-next-nursery or promote-to-old with an
-      age-threshold policy. This is not yet a copying collector: field
-      expansion, relocation/writeback, nursery semispace storage, old-generation
+      age-threshold policy. This is not yet a copying collector:
+      relocation/writeback, nursery semispace storage, old-generation
       collection, GC-stress mode, and byte-green Tier-B harness execution remain
       open in the full collector row above.
 - [x] Current remembered-set epoch-validation precursor:
@@ -935,6 +935,20 @@ GC must be observationally invisible (§8): every item is gated by the different
       successful matching-epoch planning, and mismatch rejection. This validates
       epoch metadata only; the caller must still supply a complete remembered
       set for that epoch until the real card table/collector owns the protocol.
+- [x] Current minor-GC field-expansion precursor:
+      `ratchet-value::heap::gc::NurseryObjectFields` and
+      `MinorGcPlan::from_roots_remembered_and_fields` expand the initial
+      young-object frontier through caller-supplied precise nursery fields,
+      recursively adding young fields while ignoring inline, old, and permanent
+      fields. The planner deduplicates cycles and shared children in discovery
+      order, validates unique field metadata for every reached young object,
+      and then applies the same survivor age/promotion policy. Tests cover
+      transitive young field expansion, non-young field filtering,
+      cycle/deduplication behavior, promotion after expansion, and
+      missing/duplicate field metadata rejection. This is still a planning
+      surface: no object copy, forwarding-pointer update, relocation writeback,
+      semispace allocation, or integration with the oracle heap scanner is
+      implemented here.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

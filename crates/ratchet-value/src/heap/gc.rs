@@ -378,6 +378,30 @@ impl NurseryObjectAge {
     }
 }
 
+/// Precise outgoing fields for one young-generation object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NurseryObjectFields<'a> {
+    address: GcHeapAddress,
+    fields: &'a [ResolvedValueGeneration],
+}
+
+impl<'a> NurseryObjectFields<'a> {
+    /// Creates field metadata for a nursery object.
+    pub const fn new(address: GcHeapAddress, fields: &'a [ResolvedValueGeneration]) -> Self {
+        Self { address, fields }
+    }
+
+    /// Returns the young-generation object address.
+    pub const fn address(self) -> GcHeapAddress {
+        self.address
+    }
+
+    /// Returns precise outgoing field values.
+    pub const fn fields(self) -> &'a [ResolvedValueGeneration] {
+        self.fields
+    }
+}
+
 /// Age threshold that promotes nursery survivors into the old generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinorGcPromotionPolicy {
@@ -496,29 +520,48 @@ impl MinorGcPlan {
             frontier.insert(edge.target())?;
         }
 
-        let mut survivors = Vec::new();
-        for address in frontier.addresses {
-            let age = nursery_age_for(nursery_objects, address)?;
-            let next_survivals = age.survived_minor_collections.saturating_add(1);
-            let action = promotion_policy.action_for_survivor(next_survivals);
-            let survivors_len = survivors
-                .len()
-                .checked_add(1)
-                .ok_or(GenerationalGcError::MinorGcSurvivorLengthOverflow)?;
-            survivors.try_reserve_exact(1).map_err(|_| {
-                GenerationalGcError::MinorGcSurvivorAllocationFailed {
-                    survivors: survivors_len,
-                }
-            })?;
-            survivors.push(MinorGcSurvivor {
-                address,
-                previous_survivals: age.survived_minor_collections,
-                next_survivals,
-                action,
-            });
-        }
+        survivors_from_frontier(frontier, nursery_objects, promotion_policy)
+    }
 
-        Ok(Self { survivors })
+    /// Builds a transitive young-object survivor plan for a minor collection.
+    ///
+    /// This extends [`MinorGcPlan::from_roots_and_remembered`] by expanding
+    /// each reachable young object's precise outgoing fields. Inline, old, and
+    /// permanent fields do not enter the minor-GC frontier. Young fields are
+    /// deduplicated in discovery order and recursively expanded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if the snapshot epoch does not match
+    /// `collection_epoch`, if frontier or survivor storage cannot be reserved,
+    /// if a live young object has no age or field metadata, or if duplicate
+    /// nursery age or field metadata is supplied.
+    pub fn from_roots_remembered_and_fields(
+        roots: impl IntoIterator<Item = ResolvedValueGeneration>,
+        remembered_set: RememberedSetSnapshot<'_>,
+        collection_epoch: RememberedSetEpoch,
+        nursery_objects: &[NurseryObjectAge],
+        nursery_fields: &[NurseryObjectFields<'_>],
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<Self, GenerationalGcError> {
+        validate_unique_nursery_objects(nursery_objects)?;
+        validate_unique_nursery_fields(nursery_fields)?;
+        let remembered_set = remembered_set.validate_epoch(collection_epoch)?;
+        let mut frontier = MinorGcFrontier::new();
+        for root in roots {
+            if let ResolvedValueGeneration::Heap {
+                address,
+                generation: HeapGeneration::Young,
+            } = root
+            {
+                frontier.insert(address)?;
+            }
+        }
+        for edge in remembered_set.edges() {
+            frontier.insert(edge.target())?;
+        }
+        expand_young_fields(&mut frontier, nursery_fields)?;
+        survivors_from_frontier(frontier, nursery_objects, promotion_policy)
     }
 
     /// Returns planned young-generation survivors in frontier order.
@@ -582,6 +625,22 @@ fn validate_unique_nursery_objects(
     Ok(())
 }
 
+fn validate_unique_nursery_fields(
+    nursery_fields: &[NurseryObjectFields<'_>],
+) -> Result<(), GenerationalGcError> {
+    for (index, object) in nursery_fields.iter().enumerate() {
+        if nursery_fields[index + 1..]
+            .iter()
+            .any(|other| other.address == object.address)
+        {
+            return Err(GenerationalGcError::DuplicateNurseryObjectFields {
+                address: object.address,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn nursery_age_for(
     nursery_objects: &[NurseryObjectAge],
     address: GcHeapAddress,
@@ -591,6 +650,68 @@ fn nursery_age_for(
         .copied()
         .find(|object| object.address == address)
         .ok_or(GenerationalGcError::MissingNurseryObjectAge { address })
+}
+
+fn nursery_fields_for<'a>(
+    nursery_fields: &'a [NurseryObjectFields<'a>],
+    address: GcHeapAddress,
+) -> Result<&'a [ResolvedValueGeneration], GenerationalGcError> {
+    nursery_fields
+        .iter()
+        .copied()
+        .find(|object| object.address == address)
+        .map(NurseryObjectFields::fields)
+        .ok_or(GenerationalGcError::MissingNurseryObjectFields { address })
+}
+
+fn expand_young_fields(
+    frontier: &mut MinorGcFrontier,
+    nursery_fields: &[NurseryObjectFields<'_>],
+) -> Result<(), GenerationalGcError> {
+    let mut index = 0usize;
+    while let Some(address) = frontier.addresses.get(index).copied() {
+        for field in nursery_fields_for(nursery_fields, address)? {
+            if let ResolvedValueGeneration::Heap {
+                address,
+                generation: HeapGeneration::Young,
+            } = *field
+            {
+                frontier.insert(address)?;
+            }
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn survivors_from_frontier(
+    frontier: MinorGcFrontier,
+    nursery_objects: &[NurseryObjectAge],
+    promotion_policy: MinorGcPromotionPolicy,
+) -> Result<MinorGcPlan, GenerationalGcError> {
+    let mut survivors = Vec::new();
+    for address in frontier.addresses {
+        let age = nursery_age_for(nursery_objects, address)?;
+        let next_survivals = age.survived_minor_collections.saturating_add(1);
+        let action = promotion_policy.action_for_survivor(next_survivals);
+        let survivors_len = survivors
+            .len()
+            .checked_add(1)
+            .ok_or(GenerationalGcError::MinorGcSurvivorLengthOverflow)?;
+        survivors.try_reserve_exact(1).map_err(|_| {
+            GenerationalGcError::MinorGcSurvivorAllocationFailed {
+                survivors: survivors_len,
+            }
+        })?;
+        survivors.push(MinorGcSurvivor {
+            address,
+            previous_survivals: age.survived_minor_collections,
+            next_survivals,
+            action,
+        });
+    }
+
+    Ok(MinorGcPlan { survivors })
 }
 
 /// Classifies and records the write barrier for a thunk-resolution write.
@@ -668,6 +789,18 @@ pub enum GenerationalGcError {
     /// A young object appeared more than once in the nursery age table.
     #[error("duplicate nursery age metadata for 0x{address:x}", address = address.address_bits())]
     DuplicateNurseryObjectAge {
+        /// The duplicated young object.
+        address: GcHeapAddress,
+    },
+    /// A live young object had no field metadata.
+    #[error("missing nursery field metadata for 0x{address:x}", address = address.address_bits())]
+    MissingNurseryObjectFields {
+        /// The young object missing field metadata.
+        address: GcHeapAddress,
+    },
+    /// A young object appeared more than once in the nursery field table.
+    #[error("duplicate nursery field metadata for 0x{address:x}", address = address.address_bits())]
+    DuplicateNurseryObjectFields {
         /// The duplicated young object.
         address: GcHeapAddress,
     },
@@ -950,6 +1083,102 @@ mod tests {
 
         assert_eq!(plan.survivors().len(), 1);
         assert_eq!(plan.survivors()[0].address(), young);
+    }
+
+    #[test]
+    fn minor_gc_plan_expands_transitive_young_fields() {
+        let root = address(0x1000);
+        let remembered = address(0x2000);
+        let child = address(0x3000);
+        let grandchild = address(0x4000);
+        let remembered_child = address(0x5000);
+        let ignored_old = address(0x6000);
+        let ignored_permanent = address(0x7000);
+        let mut remembered_set = RememberedSet::with_epoch(RememberedSetEpoch::new(11));
+        remembered_set
+            .record(RememberedEdge::new(address(0x8000), remembered))
+            .expect("remembered edge records");
+        let root_fields = [
+            ResolvedValueGeneration::Inline,
+            ResolvedValueGeneration::young(child),
+            ResolvedValueGeneration::old(ignored_old),
+            ResolvedValueGeneration::permanent(ignored_permanent),
+        ];
+        let remembered_fields = [ResolvedValueGeneration::young(remembered_child)];
+        let child_fields = [ResolvedValueGeneration::young(grandchild)];
+        let remembered_child_fields = [ResolvedValueGeneration::young(root)];
+        let grandchild_fields = [ResolvedValueGeneration::young(root)];
+        let plan = MinorGcPlan::from_roots_remembered_and_fields(
+            [ResolvedValueGeneration::young(root)],
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            &[
+                NurseryObjectAge::new(root, 0),
+                NurseryObjectAge::new(remembered, 0),
+                NurseryObjectAge::new(child, 1),
+                NurseryObjectAge::new(remembered_child, 1),
+                NurseryObjectAge::new(grandchild, 1),
+            ],
+            &[
+                NurseryObjectFields::new(root, &root_fields),
+                NurseryObjectFields::new(remembered, &remembered_fields),
+                NurseryObjectFields::new(child, &child_fields),
+                NurseryObjectFields::new(remembered_child, &remembered_child_fields),
+                NurseryObjectFields::new(grandchild, &grandchild_fields),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("expanded minor GC plan builds");
+
+        assert_eq!(plan.survivors().len(), 5);
+        assert_eq!(plan.survivors()[0].address(), root);
+        assert_eq!(plan.survivors()[1].address(), remembered);
+        assert_eq!(plan.survivors()[2].address(), child);
+        assert_eq!(plan.survivors()[3].address(), remembered_child);
+        assert_eq!(plan.survivors()[4].address(), grandchild);
+        assert_eq!(
+            plan.survivors()[2].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            plan.survivors()[3].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            plan.survivors()[4].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+    }
+
+    #[test]
+    fn minor_gc_field_expansion_rejects_missing_or_duplicate_field_metadata() {
+        let young = address(0x1000);
+        assert_eq!(
+            MinorGcPlan::from_roots_remembered_and_fields(
+                [ResolvedValueGeneration::young(young)],
+                RememberedSet::new().snapshot(),
+                RememberedSetEpoch::new(0),
+                &[NurseryObjectAge::new(young, 0)],
+                &[],
+                MinorGcPromotionPolicy::new(2),
+            ),
+            Err(GenerationalGcError::MissingNurseryObjectFields { address: young })
+        );
+
+        assert_eq!(
+            MinorGcPlan::from_roots_remembered_and_fields(
+                [ResolvedValueGeneration::young(young)],
+                RememberedSet::new().snapshot(),
+                RememberedSetEpoch::new(0),
+                &[NurseryObjectAge::new(young, 0)],
+                &[
+                    NurseryObjectFields::new(young, &[]),
+                    NurseryObjectFields::new(young, &[]),
+                ],
+                MinorGcPromotionPolicy::new(2),
+            ),
+            Err(GenerationalGcError::DuplicateNurseryObjectFields { address: young })
+        );
     }
 
     #[test]
