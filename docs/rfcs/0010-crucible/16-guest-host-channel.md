@@ -933,13 +933,27 @@ the transport layer by construction.
   marker-neutrality proof, so white-box disabled, enabled-but-unused, and
   marker-enabled modes are fingerprint-equal except for observational event-log
   entries.
-- [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
+- [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
   record a `Decision::AppRandom` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
   client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
+  Completed by `checks.crucible.phase4.guestHostAppRandomDoorbell`: the phase4
+  gate binds the existing golden-vectored kind-5 `random_request` protocol
+  surface to the plugin's trap-time guest-memory read and host-to-guest injection
+  path, with width `<=8`, bounded decode diagnostics, and malformed-frame drop
+  behavior inherited from the phase2 app-random doorbell gate. Its focused
+  engine-backed tests drive the full doorbell callback through a test-only
+  `DecisionRecorder` adapter, using a node plus `stream_tag` composite
+  `RngStreamId::from_name(...)` so requests are served from scenario-seed
+  name-hashed decision streams that are isolated across nodes with the same tag,
+  preserving the guest request id and recording `RngDraw` followed by
+  `Decision::AppRandom` before writing the little-endian reply at the trap
+  icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random
+  reply-range client of that guest-memory path, and reruns the random-request
+  doorbell-frame and marker-payload golden-vector tests.
 - [ ] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
   hash; exceeding fails loud) and prove the engine functions with zero app-random
   requests (fingerprint-identical with app-random compiled in vs out); add the

@@ -3143,6 +3143,128 @@ mod tests {
     }
 
     #[test]
+    fn whitebox_app_random_decision_source_uses_engine_seeded_node_stream_name_hash() {
+        let doorbell = PluginWhiteboxDoorbell::new(
+            PluginSwitch::On,
+            WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+            128,
+        );
+        let capability = guest_input_capability(&doorbell);
+        let payload = random_request_frame(0x0bad_f00d, 3, "workload");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(2, 321, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut decisions =
+            EngineAppRandomDecisionSource::from_seed(crucible::Seed::from_u64(0x0010_0016));
+        let mut writer = RecordingGuestInputWriter::default();
+
+        let outcome = match handle_whitebox_app_random_callback(
+            &doorbell,
+            &capability,
+            &mut reader,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("engine-backed app-random request should be served: {error}"),
+        };
+
+        let service = match outcome {
+            AppRandomDoorbellOutcome::Served(service) => service,
+            AppRandomDoorbellOutcome::Dropped { diagnostic } => {
+                panic!("valid engine-backed app-random request should not drop: {diagnostic:?}")
+            }
+        };
+        let stream = EngineAppRandomDecisionSource::stream_id("node-a", "workload");
+        let recorded = decisions.decisions();
+        assert_eq!(recorded.len(), 2);
+        let raw_value = match &recorded[0] {
+            crucible::Decision::RngDraw(crucible::RngDecision {
+                stream: recorded_stream,
+                value,
+            }) if recorded_stream == &stream => *value,
+            decision => panic!("first engine app-random decision should be RNG draw: {decision:?}"),
+        };
+        let app_random = match &recorded[1] {
+            crucible::Decision::AppRandom(decision) => decision,
+            decision => {
+                panic!(
+                    "second engine app-random decision should be Decision::AppRandom: {decision:?}"
+                )
+            }
+        };
+        assert_eq!(reader.calls, vec![(2, 321, range)]);
+        assert_eq!(app_random.node.name.as_str(), "node-a");
+        assert_eq!(&app_random.stream, &stream);
+        assert_eq!(app_random.request_id, 0x0bad_f00d);
+        assert_eq!(app_random.width, 24);
+        assert_eq!(app_random.value, raw_value & ((1_u64 << 24) - 1));
+        assert_eq!(service.request().stream_tag(), "workload");
+        assert_eq!(service.decision().stream_tag(), "workload");
+        assert_eq!(service.decision().request_id(), 0x0bad_f00d);
+        assert_eq!(service.decision().width_bits(), 24);
+        assert_eq!(service.decision().value(), app_random.value);
+        assert_eq!(service.injection().delivery_icount(), 321);
+
+        let reply = app_random.value.to_le_bytes();
+        assert_eq!(
+            writer.writes,
+            vec![(
+                321,
+                GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 3),
+                vec![reply[0], reply[1], reply[2]],
+            )]
+        );
+    }
+
+    #[test]
+    fn whitebox_app_random_decision_source_isolates_same_tag_by_node() {
+        let seed = crucible::Seed::from_u64(0x0010_0016);
+        let node_a_stream = EngineAppRandomDecisionSource::stream_id("node-a", "shared");
+        let node_b_stream = EngineAppRandomDecisionSource::stream_id("node-b", "shared");
+        let request_a1 = app_random_request("node-a", 1, 4, "shared");
+        let request_b = app_random_request("node-b", 1, 4, "shared");
+        let request_a2 = app_random_request("node-a", 2, 4, "shared");
+        let mut mixed = EngineAppRandomDecisionSource::from_seed(seed);
+
+        let mixed_a1 = match mixed.serve_app_random(&request_a1) {
+            Ok(record) => record,
+            Err(error) => panic!("node-a first request should record: {error}"),
+        };
+        let mixed_b = match mixed.serve_app_random(&request_b) {
+            Ok(record) => record,
+            Err(error) => panic!("node-b request should record: {error}"),
+        };
+        let mixed_a2 = match mixed.serve_app_random(&request_a2) {
+            Ok(record) => record,
+            Err(error) => panic!("node-a second request should record: {error}"),
+        };
+
+        let mut node_a_only = EngineAppRandomDecisionSource::from_seed(seed);
+        let expected_a1 = match node_a_only.serve_app_random(&request_a1) {
+            Ok(record) => record,
+            Err(error) => panic!("node-a baseline first request should record: {error}"),
+        };
+        let expected_a2 = match node_a_only.serve_app_random(&request_a2) {
+            Ok(record) => record,
+            Err(error) => panic!("node-a baseline second request should record: {error}"),
+        };
+
+        assert_ne!(node_a_stream, node_b_stream);
+        assert_eq!(mixed_a1.value(), expected_a1.value());
+        assert_eq!(mixed_a2.value(), expected_a2.value());
+        assert_eq!(mixed_a1.stream_tag(), "shared");
+        assert_eq!(mixed_b.stream_tag(), "shared");
+        assert_eq!(mixed_a2.stream_tag(), "shared");
+        assert_eq!(
+            engine_rng_draw_streams(mixed.decisions()),
+            vec![node_a_stream.clone(), node_b_stream, node_a_stream]
+        );
+    }
+
+    #[test]
     fn whitebox_app_random_drops_malformed_request_without_decision_or_reply() {
         let doorbell = PluginWhiteboxDoorbell::new(
             PluginSwitch::On,
@@ -3455,6 +3577,121 @@ mod tests {
         assert!(plan.black_box_remains_functional());
         assert!(decisions.requests.is_empty());
         assert!(writer.writes.is_empty());
+    }
+
+    struct EngineAppRandomDecisionSource {
+        recorder: crucible::DecisionRecorder,
+    }
+
+    impl EngineAppRandomDecisionSource {
+        fn from_seed(seed: crucible::Seed) -> Self {
+            let scenario = crucible::ScenarioDef::from_canonical_material_with_seed(
+                "crucible.test.whitebox-app-random",
+                "scenario=app-random-doorbell",
+                seed,
+            );
+            Self {
+                recorder: crucible::DecisionRecorder::new(crucible::Configuration::genesis(
+                    scenario,
+                )),
+            }
+        }
+
+        fn decisions(&self) -> &[crucible::Decision] {
+            self.recorder.schedule().decisions()
+        }
+
+        fn stream_id(node_name: &str, stream_tag: &str) -> crucible::RngStreamId {
+            crucible::RngStreamId::from_name(Self::stream_name(node_name, stream_tag))
+        }
+
+        fn stream_name(node_name: &str, stream_tag: &str) -> String {
+            format!(
+                "app-random/node:{}:{}/stream:{}:{}",
+                node_name.len(),
+                node_name,
+                stream_tag.len(),
+                stream_tag
+            )
+        }
+    }
+
+    impl AppRandomDecisionSource for EngineAppRandomDecisionSource {
+        fn serve_app_random(
+            &mut self,
+            request: &AppRandomDoorbellRequest,
+        ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError> {
+            let node = crucible::NodeId {
+                name: request.node_name().to_owned(),
+            };
+            let stream = Self::stream_id(request.node_name(), request.stream_tag());
+            self.recorder
+                .serve_app_random_request(
+                    node,
+                    stream,
+                    u64::from(request.guest_request_id()),
+                    request.width_bits(),
+                )
+                .map_err(|error| AppRandomDecisionError::new(error.to_string()))?;
+
+            let app_random = match self.recorder.schedule().decisions().last() {
+                Some(crucible::Decision::AppRandom(decision)) => decision,
+                Some(decision) => {
+                    return Err(AppRandomDecisionError::new(format!(
+                        "last engine decision was not app-random: {decision:?}"
+                    )));
+                }
+                None => {
+                    return Err(AppRandomDecisionError::new(
+                        "engine did not record an app-random decision",
+                    ));
+                }
+            };
+
+            Ok(AppRandomDecisionRecord::new(
+                app_random.node.name.clone(),
+                request.stream_tag().to_owned(),
+                app_random.request_id,
+                app_random.width,
+                app_random.value,
+            ))
+        }
+    }
+
+    fn app_random_request(
+        node_name: &str,
+        request_id: u32,
+        width_bytes: u8,
+        stream_tag: &str,
+    ) -> AppRandomDoorbellRequest {
+        let frame = match WhiteboxDoorbellFrame::decode(&random_request_frame(
+            request_id,
+            width_bytes,
+            stream_tag,
+        )) {
+            Ok(frame) => frame,
+            Err(error) => panic!("test random-request frame should decode: {error:?}"),
+        };
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, 32);
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
+            0,
+            u64::from(request_id),
+            range,
+        );
+        match AppRandomDoorbellRequest::from_frame(node_name, event, frame) {
+            Ok(request) => request,
+            Err(error) => panic!("test random-request should parse: {error:?}"),
+        }
+    }
+
+    fn engine_rng_draw_streams(decisions: &[crucible::Decision]) -> Vec<crucible::RngStreamId> {
+        decisions
+            .iter()
+            .filter_map(|decision| match decision {
+                crucible::Decision::RngDraw(draw) => Some(draw.stream.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn input_at(delivery_icount: u64, payload: &[u8]) -> WhiteboxGuestInput {
