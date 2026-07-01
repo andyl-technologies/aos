@@ -1142,10 +1142,23 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   and replay, stable same-seed corpus results, and no skipped replay validation for
   generated mutants; emitting this artifact form for every failure source remains
   the T-ADV-14 scope.
-- [ ] **T-ADV-14** Implement self-contained reproduction artifacts ((def, seed,
+- [x] **T-ADV-14** Implement self-contained reproduction artifacts ((def, seed,
   schedule) reproducing bit-identically by replay alone, store-references optional)
   for every finding regardless of discovery path. — satisfies [ADV-28], [ADV-29];
   spec §22.8.1; cross-ref 06 §7.1, 23.
+  Completed by `checks.crucible.phase6.reproductionArtifacts`: interesting
+  findings now emit a `FindingReproductionArtifact` wrapper around the existing
+  self-contained `(seed, scenario, schedule)` `ReproductionArtifact`, with explicit
+  discovery-path tags for interactive forks, state-space search failures,
+  coverage-guided fuzzing candidates, and retained corpus entries. Interactive
+  forks and `CoverageGuidedFuzzIteration` expose path-specific emission hooks,
+  state-space search records the artifact directly in each `SearchDiscoveredFailure`,
+  retained corpus artifacts can be reloaded from the `DagStore`, and the gate
+  proves the same configuration yields the same artifact id across
+  interactive/search discovery, artifacts replay without stored snapshots or
+  campaign/family handles, stored artifact bytes reload into the same replay
+  evidence, retained corpus descriptor drift is rejected, and mismatched scenario
+  forms are rejected explicitly.
 - [ ] **T-ADV-15** Implement the deterministic minimization (shrinking) pass that
   reduces the schedule/fault set while preserving the same failure (assertion fold
   predicate), with a seeded candidate order and per-candidate oracle/fingerprint

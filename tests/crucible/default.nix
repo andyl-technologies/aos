@@ -1509,6 +1509,26 @@ in rec {
         phase6.coverageGuidedFuzzing
       ];
     };
+    reproductionArtifacts = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.reproductionArtifacts";
+      gate = import ./phase6-reproduction-artifacts.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.reproductionArtifacts";
+        taskIds = ["T-ADV-14"];
+        dependencies = [
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.coverageGuidedCorpus.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.coverageGuidedCorpus
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
