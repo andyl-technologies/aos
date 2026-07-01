@@ -10373,6 +10373,60 @@ impl TemporalGraph {
         trigger: MaterializationTrigger,
         failure_oracle: &SearchFailureOracle,
     ) -> Result<TemporalGraphSearchRun, EngineError> {
+        self.search_with_strategy_inner(
+            root,
+            strategy,
+            budget,
+            FrontierReductionPolicy::none(),
+            materialization_policy,
+            trigger,
+            failure_oracle,
+        )
+    }
+
+    /// Searches with graph-level symmetry and partial-order reductions enabled.
+    ///
+    /// Reductions are applied by the same single-frontier expansion path as
+    /// [`Self::search`]. Covered partial-order candidates schedule their
+    /// canonical representative instead, making the reduced graph independent of
+    /// which frontier strategy reaches the non-canonical ordering first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the root, a selected frontier, or an admitted
+    /// reduction representative cannot be recorded, realized, reduced, or
+    /// materialized.
+    pub fn search_with_strategy_reduced(
+        &mut self,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+    ) -> Result<TemporalGraphSearchRun, EngineError> {
+        let failure_oracle = SearchFailureOracle::none();
+        self.search_with_strategy_inner(
+            root,
+            strategy,
+            budget,
+            reduction_policy,
+            materialization_policy,
+            trigger,
+            &failure_oracle,
+        )
+    }
+
+    fn search_with_strategy_inner(
+        &mut self,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        reduction_policy: FrontierReductionPolicy,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+    ) -> Result<TemporalGraphSearchRun, EngineError> {
         let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
         let mut scheduled = BTreeSet::from([root.id()]);
         let mut expanded = BTreeSet::new();
@@ -10398,7 +10452,7 @@ impl TemporalGraph {
 
             let search = self.search(
                 &candidate.configuration,
-                FrontierReductionPolicy::none(),
+                reduction_policy.clone(),
                 materialization_policy,
                 trigger,
             )?;
@@ -10413,6 +10467,25 @@ impl TemporalGraph {
                 );
                 if scheduled.insert(child_id) {
                     worklist.push(SearchFrontierCandidate::new(child.configuration.clone()));
+                }
+            }
+            for covered in &search.frontier_report.covered {
+                if let Some(representative) = self
+                    .recorded_configurations
+                    .get(&covered.representative)
+                    .cloned()
+                {
+                    let representative_id = representative.id();
+                    explored_graph.insert(representative_id);
+                    record_search_discovered_failure(
+                        representative_id,
+                        failure_oracle,
+                        &mut discovered_failure_configurations,
+                        &mut discovered_failures,
+                    );
+                    if scheduled.insert(representative_id) {
+                        worklist.push(SearchFrontierCandidate::new(representative));
+                    }
                 }
             }
 
@@ -10691,9 +10764,9 @@ impl TemporalGraph {
     /// Enumerates frontier children while applying graph-level reductions.
     ///
     /// Partial-order reduction is applied before recording a child only when an
-    /// explicit independence proof covers the frontier's last decision and the
-    /// candidate decision, the canonical representative ordering is already in
-    /// the graph, and the candidate appears in non-canonical order. Symmetry
+    /// explicit independence proof covers adjacent schedule decisions and the
+    /// candidate appears in non-canonical order; the canonical representative is
+    /// recorded on demand before the candidate is marked covered. Symmetry
     /// reduction uses explicit interchangeable-node classes plus a loadable
     /// checkpoint's canonicalized materialized state; candidates without such
     /// proof material are explored.
@@ -10721,13 +10794,9 @@ impl TemporalGraph {
         let mut covered = Vec::new();
         for decision in decisions {
             let configuration = try_step(frontier, decision.clone())?;
-            if let Some(cover) = partial_order_cover(
-                self,
-                frontier,
-                decision.clone(),
-                configuration.clone(),
-                &policy,
-            ) {
+            if let Some(cover) =
+                partial_order_cover(self, decision.clone(), configuration.clone(), &policy)?
+            {
                 covered.push(cover);
                 continue;
             }
@@ -10740,10 +10809,25 @@ impl TemporalGraph {
 
         let mut explored = Vec::new();
         let mut symmetry_representatives = BTreeMap::new();
+        let candidate_ids = children.keys().copied().collect::<BTreeSet<_>>();
         for mut child in children.into_values() {
             if let Some(key) =
                 self.symmetry_reduction_key(&child.configuration, &policy.symmetry_classes)
             {
+                if let Some(representative) = self.symmetry_representative_for_key_excluding(
+                    key,
+                    &candidate_ids,
+                    &policy.symmetry_classes,
+                ) {
+                    covered.push(FrontierCoveredChild {
+                        decision: child.decision,
+                        configuration: child.configuration,
+                        representative,
+                        reason: FrontierReductionReason::Symmetry,
+                        reduction_key: key.fingerprint,
+                    });
+                    continue;
+                }
                 match symmetry_representatives.entry(key) {
                     Entry::Vacant(entry) => {
                         entry.insert(child.configuration.id());
@@ -10785,13 +10869,9 @@ impl TemporalGraph {
                 configuration = try_step(&configuration, decision.clone())?;
             }
             let decision = choice.decision().clone();
-            if let Some(cover) = partial_order_cover(
-                self,
-                frontier,
-                decision.clone(),
-                configuration.clone(),
-                &policy,
-            ) {
+            if let Some(cover) =
+                partial_order_cover(self, decision.clone(), configuration.clone(), &policy)?
+            {
                 covered.push(cover);
                 continue;
             }
@@ -10804,10 +10884,25 @@ impl TemporalGraph {
 
         let mut explored = Vec::new();
         let mut symmetry_representatives = BTreeMap::new();
+        let candidate_ids = children.keys().copied().collect::<BTreeSet<_>>();
         for mut child in children.into_values() {
             if let Some(key) =
                 self.symmetry_reduction_key(&child.configuration, &policy.symmetry_classes)
             {
+                if let Some(representative) = self.symmetry_representative_for_key_excluding(
+                    key,
+                    &candidate_ids,
+                    &policy.symmetry_classes,
+                ) {
+                    covered.push(FrontierCoveredChild {
+                        decision: child.decision,
+                        configuration: child.configuration,
+                        representative,
+                        reason: FrontierReductionReason::Symmetry,
+                        reduction_key: key.fingerprint,
+                    });
+                    continue;
+                }
                 match symmetry_representatives.entry(key) {
                     Entry::Vacant(entry) => {
                         entry.insert(child.configuration.id());
@@ -10881,6 +10976,28 @@ impl TemporalGraph {
             .get(&configuration.id())
             .or_else(|| self.checkpoint_nodes.get(&configuration.id()))
             .and_then(|checkpoint| checkpoint.symmetry_reduction_key(classes))
+    }
+
+    fn symmetry_representative_for_key_excluding(
+        &self,
+        key: SymmetryReductionKey,
+        excluded: &BTreeSet<ContentHash>,
+        classes: &SymmetryReductionClasses,
+    ) -> Option<ContentHash> {
+        let mut representatives = BTreeSet::new();
+        for checkpoint in self
+            .checkpoint_nodes
+            .values()
+            .chain(self.cached_snapshots.values())
+        {
+            if excluded.contains(&checkpoint.configuration) {
+                continue;
+            }
+            if checkpoint.symmetry_reduction_key(classes) == Some(key) {
+                representatives.insert(checkpoint.configuration);
+            }
+        }
+        representatives.into_iter().next()
     }
 
     /// Returns the number of deduplicated checkpoint DAG nodes.
@@ -13627,39 +13744,60 @@ fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
 }
 
 fn partial_order_cover(
-    graph: &TemporalGraph,
-    frontier: &Configuration,
+    graph: &mut TemporalGraph,
     decision: Decision,
     configuration: Configuration,
     policy: &FrontierReductionPolicy,
-) -> Option<FrontierCoveredChild> {
-    let last = frontier.schedule.decisions().last()?;
-    if !decision.is_independent_from(last, &policy.partial_order) {
-        return None;
-    }
-    if decision.reduction_order_key() >= last.reduction_order_key() {
-        return None;
-    }
-
-    let prefix = frontier
-        .schedule
-        .prefix(frontier.schedule.len().saturating_sub(1))
-        .ok()?;
-    let representative = Configuration {
-        def: frontier.def.clone(),
-        schedule: prefix.appended(decision.clone()).appended(last.clone()),
+) -> Result<Option<FrontierCoveredChild>, EngineError> {
+    let Some(representative) =
+        partial_order_canonical_representative(&configuration, &policy.partial_order)
+    else {
+        return Ok(None);
     };
-    if !graph.contains_configuration(&representative) {
-        return None;
-    }
+    graph.record_checkpoint_closure(&representative)?;
     let reduction_key = partial_order_reduction_key(&representative, &configuration);
-    Some(FrontierCoveredChild {
+    Ok(Some(FrontierCoveredChild {
         decision,
         configuration,
         representative: representative.id(),
         reason: FrontierReductionReason::PartialOrder,
         reduction_key: reduction_key.fingerprint,
+    }))
+}
+
+fn partial_order_canonical_representative(
+    configuration: &Configuration,
+    policy: &PartialOrderReductionPolicy,
+) -> Option<Configuration> {
+    let mut decisions = configuration.schedule.decisions().to_vec();
+    let mut changed = false;
+    let mut swapped = true;
+    while swapped {
+        swapped = false;
+        for index in 1..decisions.len() {
+            let left = &decisions[index - 1];
+            let right = &decisions[index];
+            if right.reduction_order_key() < left.reduction_order_key()
+                && right.is_independent_from(left, policy)
+            {
+                decisions.swap(index - 1, index);
+                changed = true;
+                swapped = true;
+            }
+        }
+    }
+    changed.then(|| Configuration {
+        def: configuration.def.clone(),
+        schedule: schedule_from_decisions(decisions),
     })
+}
+
+fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
+    decisions
+        .into_iter()
+        .fold(Schedule::empty(), |schedule, decision| {
+            schedule.appended(decision)
+        })
 }
 
 fn partial_order_reduction_key(

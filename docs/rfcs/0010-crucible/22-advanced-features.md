@@ -1066,10 +1066,19 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   and proves same-input reproducibility plus complete-budget graph equivalence in
   the `gate_search_strategies` Rust target, with graph-level reductions deferred
   to T-ADV-9.
-- [ ] **T-ADV-9** Implement symmetry reduction and partial-order reduction as
+- [x] **T-ADV-9** Implement symmetry reduction and partial-order reduction as
   sound graph-level node-deduplication over the content-addressed DAG (07 §9),
   explicitly not a model checker / spec-language evaluator (NG-3). — satisfies
   [ADV-19], [ADV-20]; spec §22.5.3; cross-ref 07 §9, 08.
+  Completed by `checks.crucible.phase6.searchReductions`: reduced strategy
+  search now admits an explicit `FrontierReductionPolicy`, applies the existing
+  single-frontier graph reductions while preserving content-addressed
+  configuration identities, records canonical partial-order representatives on
+  demand before covering non-canonical interleavings, re-queues recorded
+  representatives so strategy order does not decide reachability, finds
+  symmetry representatives at graph scope outside the current candidate set via
+  canonical relabeling keys, and gates the behavior as DAG node deduplication
+  rather than model checking or spec-language evaluation.
 - [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec

@@ -1541,7 +1541,7 @@ fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonica
 }
 
 #[test]
-fn gate_content_address_temporal_graph_partial_order_reduction_explores_without_representative() {
+fn gate_content_address_temporal_graph_partial_order_reduction_records_missing_representative() {
     let world = World::from_content_hash(ContentHash::from_canonical_material(
         "crucible.test.content-address.world",
         "temporal-graph-partial-order-missing-representative",
@@ -1582,10 +1582,16 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_without_
         )
         .unwrap_or_else(|error| panic!("reduced frontier should enumerate: {error}"));
 
-    assert_eq!(report.explored.len(), 1);
-    assert!(report.covered.is_empty());
-    assert_eq!(report.explored[0].configuration.id(), covered.id());
-    assert!(graph.contains_configuration(&covered));
+    assert!(report.explored.is_empty());
+    assert_eq!(report.covered.len(), 1);
+    assert_eq!(
+        report.covered[0].reason,
+        FrontierReductionReason::PartialOrder
+    );
+    assert_eq!(report.covered[0].configuration.id(), covered.id());
+    assert_eq!(report.covered[0].representative, representative.id());
+    assert!(graph.contains_configuration(&representative));
+    assert!(!graph.contains_configuration(&covered));
 }
 
 #[test]
