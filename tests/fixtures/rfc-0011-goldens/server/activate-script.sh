@@ -110,27 +110,13 @@ ign=/run/etc/ignition-${N}
 # reference it if Phase A fails before the tmpfs is mounted.
 upper_root=/run/etc/upper-${N}
 
-# Source platform env. Required vars: PLATFORM_ID, optionally
-# IGNITION_CONFIG_FILE (the `platform=file` provider needs this).
-#
-# On the legacy Ignition path, /run/ignition/platform.env is written at
-# first boot by aos-platform-detect (pkgs/boot/aos-platform-detect.nix)
-# into the initrd's /run, which systemd-initrd moves to stage-2's /run
-# across switch_root, so it persists for the whole boot. A live upgrade
-# runs in that same boot, so the file is present, and per-host /etc writes
-# are rendered by re-running ignition's fetch+files stages below.
-#
-# On the RFC-0011 path there is no Ignition stage, so platform.env is
-# absent here: per-host /etc is materialised by the on-host config-eval
-# (an empty per-generation lower when there is no operator host.nix, in
-# which case the generation's /etc is exactly the baked image /etc). Detect
-# which path we are on by the presence of platform.env and skip the
-# Ignition-specific rendering when it is absent.
-ignition_active=0
-if [ -r /run/ignition/platform.env ]; then
-  ignition_active=1
-  . /run/ignition/platform.env
-fi
+# Per-host /etc for this generation lives in the per-gen lower
+# `$ign` (= /run/etc/ignition-$N; the directory name is retained for
+# overlay-layout compatibility). On the RFC-0011 path it is materialised by
+# the on-host config-eval: an empty lower when there is no operator host.nix,
+# in which case the generation's /etc is exactly the baked image /etc. (The
+# host.nix materializer that renders the config-eval manifest into this lower
+# is tracked separately.)
 
 /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/apm
 /nix/store/<HASH>-coreutils-9.5/bin/chmod 0700 /run/apm
@@ -170,59 +156,15 @@ fi
 # tears down the partial generation and the previous gen stays live.
 STAGE="$STAGE_PREPARE"
 
-# Belt-and-suspenders: re-mount the userdata ISO if it's gone. (The
-# systemd auto-cleanup of /run mounts is bounded by the lifetime of the
-# mounting unit; if the metadata mount was reaped, restore it here so
-# ignition's file provider can read /run/aos-metadata/config.json.)
-# Legacy Ignition `platform=file` only. The `ignition_active` guard
-# short-circuits before `$PLATFORM_ID` is referenced, so this is safe under
-# `set -u` on the RFC-0011 path (where platform.env was never sourced).
-if [ "$ignition_active" = 1 ] && [ "$PLATFORM_ID" = "file" ] && \
-   ! /nix/store/<HASH>-util-linux-2.42.1/bin/mountpoint -q /run/aos-metadata; then
-  /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p /run/aos-metadata
-  /nix/store/<HASH>-util-linux-2.42.1/bin/mount -t iso9660 -o ro,nodev,nosuid \
-    /dev/disk/by-label/aos-metadata /run/aos-metadata
-fi
-
 /nix/store/<HASH>-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
 /nix/store/<HASH>-util-linux-2.42.1/bin/mount --bind \
   "$new_top/etc-basedir" "$sys/content"
 /nix/store/<HASH>-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
-# Legacy Ignition path only: re-run ignition's fetch + files stages to
-# render this generation's per-host /etc writes into the candidate ignition
-# lower. A fresh --config-cache avoids colliding with /run/ignition.json
-# written by the first-boot fetch.
-#
-# IGNITION_CONFIG_FILE is forwarded explicitly: for `platform=file` it
-# carries /run/aos-metadata/config.json (see
-# pkgs/boot/aos-platform-detect.nix), and ignition's file provider reads
-# it from the environment. `env` uses an absolute path so it doesn't
-# rely on the inherited PATH (which we cleared).
-#
-# On the RFC-0011 path (`ignition_active=0`) this is skipped entirely: the
-# candidate `$ign/etc` lower stays empty, so the generation's /etc is the
-# baked image /etc (plus, once the on-host materializer lands, the rendered
-# host.nix writes — tracked separately).
-if [ "$ignition_active" = 1 ]; then
-  /nix/store/<HASH>-coreutils-9.5/bin/env -i \
-      PLATFORM_ID="$PLATFORM_ID" \
-      IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-      PATH="/nix/store/<HASH>-coreutils-9.5/bin" \
-    /nix/store/<HASH>-ignition-2.25.1/bin/ignition --root="$ign" \
-                            --config-cache="/run/aos-ignition-$N.json" \
-                            --platform="$PLATFORM_ID" --stage=fetch \
-                            --log-to-stdout
-  /nix/store/<HASH>-coreutils-9.5/bin/env -i \
-      PLATFORM_ID="$PLATFORM_ID" \
-      IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-      PATH="/nix/store/<HASH>-coreutils-9.5/bin" \
-    /nix/store/<HASH>-ignition-2.25.1/bin/ignition --root="$ign" \
-                            --config-cache="/run/aos-ignition-$N.json" \
-                            --platform="$PLATFORM_ID" --stage=files \
-                            --log-to-stdout
-fi
+# The candidate `$ign/etc` lower is left as materialised by the boot-time
+# config backend (empty when there is no operator host.nix), so this
+# generation's /etc is the baked image /etc metadata + basedir mounted above.
 
 # --- compose ---
 # From here a failure maps to activate exit 2 (EX_COMPOSE: the candidate
