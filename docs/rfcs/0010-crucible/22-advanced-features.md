@@ -1095,10 +1095,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   log, is excluded from the determinism comparison, and compares coverage-off and
   coverage-on single-VM fingerprint streams so the coverage opt-in has no
   execution-fingerprint effect.
-- [ ] **T-ADV-11** Record coverage as observational `coverage` event-log entries
+- [x] **T-ADV-11** Record coverage as observational `coverage` event-log entries
   (19) excluded from the determinism comparison, feeding search/fuzzing and the
   per-checkpoint coverage fingerprint; assert coverage never affects `reduce`. —
   satisfies [ADV-22], [ADV-23]; spec §22.6.2; cross-ref 19 §19.6.3, 07 §2.
+  Completed by `checks.crucible.phase6.coverageFeedback`: the advanced gate now
+  composes the phase-4 unified coverage projection with the phase-6 search
+  strategy path, stamps checkpoints only from event-log coverage, proves
+  `CoverageGuided` search reads those checkpoint coverage fingerprints, exposes
+  the same projection fingerprint through the coverage-guided fuzzing feedback
+  view that T-ADV-12 will sample from, and asserts distinct coverage logs change
+  only the observation fingerprint while `reduce(def, schedule)` and causal
+  event-log determinism remain unchanged.
 - [ ] **T-ADV-12** Implement coverage-guided fuzzing: seeded sampling/mutation of
   the schedule (via `Decision::Override`) and fault plan over a `ScenarioFamily`
   (06 §7), pinning one concrete `ScenarioDef` per iteration, biased by the coverage
