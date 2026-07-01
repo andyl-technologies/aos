@@ -1329,8 +1329,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `ForceGuard` publication through `finish_with_barrier`, with the default
       tree-walk `finish` using a disabled barrier and tests proving barrier
       execution happens while the thunk is still blackholed and before the
-      forced result is published. The real daemon card table, object-generation
-      metadata, and Tier-B collector integration remain open in the row above.
+      forced result is published. `EvalHeap::thunk_resolve_write_barrier` now
+      builds a heap-backed adapter that validates the source thunk against the
+      side table, classifies the forced value's current generation (including
+      inline and external values), delegates remembered-edge insertion to the
+      lower-level barrier helper, and implements the `ThunkResolveBarrier` hook
+      for `ForceGuard::finish_with_barrier`. Tests cover remembered-edge
+      insertion for a permanent-to-young publication, inline/external no-op
+      classification, non-thunk source rejection, and the current caller-owned
+      invariant that the adapter must be paired with the matching force guard.
+      The real daemon card table, mutable runtime generation updates, automatic
+      use by tree-walk forcing, and full Tier-B collector integration remain open
+      in the row above.
 - [ ] Hash-consed values allocated in non-collected permanent space, bypassing promotion churn (§4.3) — **P3**, `M-12` sizing measure-gated.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
 

@@ -17,17 +17,18 @@ use std::collections::{HashSet, VecDeque};
 use std::ptr::NonNull;
 
 use super::*;
-use crate::eval::thunk::ThunkState;
+use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan,
-    MinorGcDestinationAllocationPlan, MinorGcDestinationBases, MinorGcDestinationPlacementPlan,
-    MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
-    MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocationDestination,
-    MinorGcRelocationDestinationPlan, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
-    MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
-    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
+    MinorGcCommitPlan, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
+    MinorGcDestinationPlacementPlan, MinorGcForwardingPointerPlan, MinorGcForwardingSlot,
+    MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan,
+    MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
+    MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
+    MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
+    NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
+    ResolvedValueGeneration, ThunkResolveWrite, ThunkResolveWriteBarrier,
+    record_thunk_resolve_write_barrier,
 };
 use crate::runtime::alloc::{AllocationCollectorPoll, AllocationSafepointState};
 use thiserror::Error;
@@ -48,6 +49,77 @@ const MINOR_GC_FORWARDING_SLOT_BUFFER_TABLE: &str = "minor-GC forwarding slot bu
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
+
+/// A write-barrier adapter for publishing a forced thunk result.
+///
+/// This adapter records edges from the source thunk captured at construction
+/// time. Callers must pass it only to the [`crate::eval::thunk::ForceGuard`]
+/// that owns the same source thunk; the guard API does not re-check that
+/// pairing before publication.
+#[derive(Debug)]
+pub struct EvalHeapThunkResolveBarrier<'a> {
+    heap: &'a EvalHeap,
+    tier: GenerationalGcTier,
+    source: GcHeapAddress,
+    source_generation: HeapGeneration,
+    remembered_set: &'a mut RememberedSet,
+    last_action: Option<ThunkResolveWriteBarrier>,
+}
+
+impl EvalHeapThunkResolveBarrier<'_> {
+    /// Returns the generational tier this barrier evaluates against.
+    pub const fn tier(&self) -> GenerationalGcTier {
+        self.tier
+    }
+
+    /// Returns the thunk object whose cached-result slot is being written.
+    pub const fn source(&self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the source thunk's current generation.
+    pub const fn source_generation(&self) -> HeapGeneration {
+        self.source_generation
+    }
+
+    /// Returns the most recent lower-level barrier action recorded by this adapter.
+    pub const fn last_action(&self) -> Option<ThunkResolveWriteBarrier> {
+        self.last_action
+    }
+
+    /// Returns the remembered set owned by this barrier adapter.
+    pub fn remembered_set(&self) -> &RememberedSet {
+        self.remembered_set
+    }
+
+    /// Records the write barrier for publishing `value` into the source thunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `value` is heap-backed but does not belong to
+    /// this heap, if the value's heap tag disagrees with the side table, or if the
+    /// lower-level remembered set cannot record a required old-to-young edge.
+    pub fn record(&mut self, value: Value) -> Result<ThunkResolveWriteBarrier, EvalHeapError> {
+        let value = self
+            .heap
+            .resolved_generation_for_thunk_resolve_value(value)?;
+        let write = ThunkResolveWrite::new(self.source, self.source_generation, value);
+        let action = record_thunk_resolve_write_barrier(self.tier, write, self.remembered_set)
+            .map_err(EvalHeapError::GenerationalGc)?;
+        self.last_action = Some(action);
+        Ok(action)
+    }
+}
+
+impl ThunkResolveBarrier for EvalHeapThunkResolveBarrier<'_> {
+    fn before_publish_forced(&mut self, value: Value) -> Result<(), ForceError> {
+        self.record(value)
+            .map(|_| ())
+            .map_err(|_| ForceError::WriteBarrierRejected {
+                reason: "evaluator heap thunk resolve write barrier failed",
+            })
+    }
+}
 
 /// A precise root slot and the heap value stored in it.
 #[derive(Clone, Debug)]
@@ -1719,6 +1791,44 @@ impl<'a, 'bytes> AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
 }
 
 impl EvalHeap {
+    /// Creates a thunk-resolution write barrier for a source thunk.
+    ///
+    /// The returned adapter can be passed to
+    /// [`crate::eval::thunk::ForceGuard::finish_with_barrier`] so the safe
+    /// tree-walk thunk publication path records the same
+    /// old-or-permanent to young edge that the future daemon collector needs.
+    /// The adapter is source-specific: callers must pair it with the force guard
+    /// for `source_thunk`, because the guard does not inspect the adapter's
+    /// captured source address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::ThunkResolveBarrierSourceNotThunk`] if
+    /// `source_thunk` is not tagged as a thunk. Returns [`EvalHeapError`] if the
+    /// source thunk does not belong to this heap, or if its runtime tag disagrees
+    /// with the heap side table.
+    pub fn thunk_resolve_write_barrier<'a>(
+        &'a self,
+        tier: GenerationalGcTier,
+        source_thunk: Value,
+        remembered_set: &'a mut RememberedSet,
+    ) -> Result<EvalHeapThunkResolveBarrier<'a>, EvalHeapError> {
+        if source_thunk.tag() != ValueTag::Thunk {
+            return Err(EvalHeapError::ThunkResolveBarrierSourceNotThunk {
+                actual: source_thunk.tag(),
+            });
+        }
+        let source_record = self.record_for_scannable_value(source_thunk)?;
+        Ok(EvalHeapThunkResolveBarrier {
+            heap: self,
+            tier,
+            source: gc_address_for_record(source_record)?,
+            source_generation: generation_for_record(source_record),
+            remembered_set,
+            last_action: None,
+        })
+    }
+
     /// Returns permanent roots held by the heap's hash-cons tables.
     ///
     /// # Errors
@@ -2636,6 +2746,16 @@ impl EvalHeap {
             address: gc_address_for_record(record)?,
             generation: generation_for_record(record),
         })
+    }
+
+    fn resolved_generation_for_thunk_resolve_value(
+        &self,
+        value: Value,
+    ) -> Result<ResolvedValueGeneration, EvalHeapError> {
+        if !is_scannable_eval_heap_value(value) {
+            return Ok(ResolvedValueGeneration::Inline);
+        }
+        self.resolved_generation_for_value(value)
     }
 
     fn generation_for_address(

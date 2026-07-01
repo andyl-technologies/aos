@@ -5,10 +5,10 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
-    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge,
-    RememberedSet, ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcPromotionPolicy, MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout,
+    RememberedEdge, RememberedSet, ResolvedValueGeneration, ThunkResolveWriteBarrier,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -70,6 +70,16 @@ fn replace_list_record(heap: &mut EvalHeap, value: Value, list: NixList) {
     record.object = HeapObjectValue::List(list);
 }
 
+fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocationDomain) {
+    let address = gc_address(value);
+    let record = heap
+        .records
+        .iter_mut()
+        .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+        .expect("heap record exists");
+    record.allocation_domain = domain;
+}
+
 #[test]
 fn default_heap_uses_tier_a_runtime_allocator() {
     let heap = EvalHeap::new();
@@ -126,6 +136,198 @@ fn gc_stress_policy_installs_across_heap_allocation_domains() {
             .gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
+}
+
+#[test]
+fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("source thunk allocates");
+    let forced = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("forced lambda allocates");
+    set_allocation_domain(&mut heap, source, HeapAllocationDomain::PermanentShared);
+    let source_thunk = heap.clone_thunk(source).expect("source thunk exists");
+    let crate::eval::ForceClaim::Claimed(guard) =
+        source_thunk.cell().begin_force().expect("claim succeeds")
+    else {
+        panic!("new thunk should be claimable");
+    };
+    let mut remembered_set = RememberedSet::new();
+    let mut barrier = heap
+        .thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+        )
+        .expect("barrier creates");
+
+    let published = guard
+        .finish_with_barrier(forced, &mut barrier)
+        .expect("barrier allows publish");
+
+    let edge = RememberedEdge::new(gc_address(source), gc_address(forced));
+    assert!(published.raw_eq(forced));
+    assert_eq!(barrier.tier(), GenerationalGcTier::DaemonGenerational);
+    assert_eq!(barrier.source(), edge.source());
+    assert_eq!(barrier.source_generation(), HeapGeneration::Permanent);
+    assert_eq!(
+        barrier.last_action(),
+        Some(ThunkResolveWriteBarrier::Remember { edge })
+    );
+    assert_eq!(barrier.remembered_set().edges(), &[edge]);
+}
+
+#[test]
+fn thunk_resolve_write_barrier_skips_inline_forced_values() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("source thunk allocates");
+    set_allocation_domain(&mut heap, source, HeapAllocationDomain::PermanentShared);
+    let mut remembered_set = RememberedSet::new();
+    let mut barrier = heap
+        .thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+        )
+        .expect("barrier creates");
+
+    let action = barrier
+        .record(Value::int(7))
+        .expect("inline value needs no edge");
+
+    assert_eq!(action, ThunkResolveWriteBarrier::NotRequired);
+    assert_eq!(
+        barrier.last_action(),
+        Some(ThunkResolveWriteBarrier::NotRequired)
+    );
+    assert!(barrier.remembered_set().is_empty());
+}
+
+#[test]
+fn thunk_resolve_write_barrier_skips_external_forced_values() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("source thunk allocates");
+    let external =
+        Value::external(NonNull::<HeapObject>::dangling()).expect("external pointer builds");
+    set_allocation_domain(&mut heap, source, HeapAllocationDomain::PermanentShared);
+    let mut remembered_set = RememberedSet::new();
+    let mut barrier = heap
+        .thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+        )
+        .expect("barrier creates");
+
+    let action = barrier
+        .record(external)
+        .expect("external value needs no edge");
+
+    assert_eq!(action, ThunkResolveWriteBarrier::NotRequired);
+    assert_eq!(
+        barrier.last_action(),
+        Some(ThunkResolveWriteBarrier::NotRequired)
+    );
+    assert!(barrier.remembered_set().is_empty());
+}
+
+#[test]
+fn thunk_resolve_write_barrier_records_its_source_when_guard_is_mispaired() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let barrier_source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("barrier source thunk allocates");
+    let forced_source = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("forced source thunk allocates");
+    let forced = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(4),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("forced lambda allocates");
+    set_allocation_domain(
+        &mut heap,
+        barrier_source,
+        HeapAllocationDomain::PermanentShared,
+    );
+    set_allocation_domain(
+        &mut heap,
+        forced_source,
+        HeapAllocationDomain::PermanentShared,
+    );
+    let forced_thunk = heap
+        .clone_thunk(forced_source)
+        .expect("forced thunk exists");
+    let crate::eval::ForceClaim::Claimed(guard) =
+        forced_thunk.cell().begin_force().expect("claim succeeds")
+    else {
+        panic!("new thunk should be claimable");
+    };
+    let mut remembered_set = RememberedSet::new();
+    let mut barrier = heap
+        .thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            barrier_source,
+            &mut remembered_set,
+        )
+        .expect("barrier creates");
+
+    let published = guard
+        .finish_with_barrier(forced, &mut barrier)
+        .expect("barrier allows publish");
+
+    let edge = RememberedEdge::new(gc_address(barrier_source), gc_address(forced));
+    assert!(published.raw_eq(forced));
+    assert_ne!(barrier.source(), gc_address(forced_source));
+    assert_eq!(
+        barrier.last_action(),
+        Some(ThunkResolveWriteBarrier::Remember { edge })
+    );
+    assert_eq!(barrier.remembered_set().edges(), &[edge]);
+}
+
+#[test]
+fn thunk_resolve_write_barrier_rejects_non_thunk_sources() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let source = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lambda allocates");
+    let mut remembered_set = RememberedSet::new();
+
+    let error = heap
+        .thunk_resolve_write_barrier(
+            GenerationalGcTier::DaemonGenerational,
+            source,
+            &mut remembered_set,
+        )
+        .expect_err("non-thunk source is rejected");
+
+    assert_eq!(
+        error,
+        EvalHeapError::ThunkResolveBarrierSourceNotThunk {
+            actual: ValueTag::Lambda
+        }
+    );
+    assert!(remembered_set.is_empty());
 }
 
 #[test]

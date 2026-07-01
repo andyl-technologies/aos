@@ -47,9 +47,9 @@ pub use roots::{
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
     AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollRootReferenceValue,
     AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
-    AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
-    EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
-    StackMapSlot,
+    AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
+    EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
+    InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -308,6 +308,12 @@ pub enum EvalHeapError {
         existing: ValueHash,
         /// The hash the caller attempted to cache.
         attempted: ValueHash,
+    },
+    /// A thunk-resolution write barrier was requested for a non-thunk source.
+    #[error("thunk resolve write barrier source must be a thunk, found {actual:?}")]
+    ThunkResolveBarrierSourceNotThunk {
+        /// The runtime tag supplied as the source object.
+        actual: ValueTag,
     },
     /// Lexical environment access failed during precise root scanning.
     #[error("heap root scan environment error: {0}")]
