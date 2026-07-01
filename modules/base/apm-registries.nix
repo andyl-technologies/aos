@@ -4,8 +4,10 @@
 ##! and its initial trust anchor into the image:
 ##!
 ##!   - `/etc/apm/registries.d/<name>.toml` — registry URL, priority,
-##!     and `[registry.signing]` with the first trust key as the
-##!     bootstrap anchor.
+##!     optional revision tracking (`channel`/`tag`/…), staleness
+##!     bound, client cache supplements, and `[registry.signing]` with
+##!     the first trust key as the bootstrap anchor. Rendered through
+##!     `lib.formats.toml` (see `_apm-registry-renderer.nix`).
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
 ##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the Secure Boot db
@@ -22,10 +24,11 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.aos.apm.registries;
-  registryRenderer = import ./_apm-registry-renderer.nix {inherit lib;};
+  registryRenderer = import ./_apm-registry-renderer.nix {inherit lib pkgs;};
   inherit
     (registryRenderer)
     registryNamePattern
@@ -38,10 +41,17 @@
 in {
   options.aos.apm.registries = lib.mkOption {
     default.andyl = {
-      url = "https://cdn.aos.andyl.org/";
+      url = "https://cdn.aos.andyl.org/andyl/main/";
       trustKeys = [
         "andyl:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIJiuCf/fX/rsn5ODyT5ebEVtabAmZceKi2aD+cBWjWKL" # louis@
       ];
+      # The andyl CDN publishes releases on the `stable` channel; track it
+      # so deployed machines follow the rolled-out floor rather than raw
+      # default-branch HEAD. apm's 14-day staleness window applies.
+      tracking = {
+        mode = "channel";
+        value = "stable";
+      };
     };
     description = ''
       Package registries baked into the image with their trust anchors.
@@ -61,6 +71,18 @@ in {
               message = ''
                 aos.apm.registries.${name}: registry names must match
                 ${registryNamePattern} (ASCII letters, digits, '-' and '_').
+              '';
+            }
+            {
+              assertion =
+                registry.tracking.mode
+                == "default"
+                || registry.tracking.value != null;
+              message = ''
+                aos.apm.registries.${name}: tracking.mode =
+                "${registry.tracking.mode}" requires tracking.value (the
+                commit/branch/channel/tag/version to track). Only
+                tracking.mode = "default" may leave tracking.value unset.
               '';
             }
           ]

@@ -12,7 +12,7 @@
   ...
 }: let
   cfg = config.aos.apm.installAtBoot;
-  registryRenderer = import ./_apm-registry-renderer.nix {inherit lib;};
+  registryRenderer = import ./_apm-registry-renderer.nix {inherit lib pkgs;};
   inherit (registryRenderer) registryToml trustedKeys trustedSbCerts;
 
   ignitionFormat = lib.formats.ignition {
