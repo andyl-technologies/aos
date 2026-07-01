@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::ops;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -10473,16 +10474,16 @@ impl TemporalGraph {
         if self.genesis_snapshot(&configuration.def).is_some() {
             self.record_thin_checkpoint(configuration)?;
         }
-        if self.cached_snapshot(configuration).is_some()
-            && self.has_replay_oracle_path(configuration)?
-        {
-            self.replay_oracle_admit_cached_snapshot(configuration)?;
-        }
         if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
-            if hedge.allows_checkpoint(&checkpoint) {
+            if !hedge.allows_checkpoint(&checkpoint) {
+                return self.evict_fat_checkpoint_to_thin(configuration);
+            }
+            if self.has_replay_oracle_path(configuration)? {
+                self.replay_oracle_admit_cached_snapshot(configuration)?;
+            }
+            if let Some(checkpoint) = self.cached_snapshot(configuration).cloned() {
                 return Ok(checkpoint);
             }
-            return self.evict_fat_checkpoint_to_thin(configuration);
         }
         if !hedge.fat_snapshot_default() {
             return self.record_thin_checkpoint(configuration);
@@ -11037,6 +11038,157 @@ impl TemporalGraph {
             condition: request.condition.clone(),
             searched_entries: request.event_log.len(),
             matched: None,
+        })
+    }
+
+    /// Moves one debugged node to an exact node-icount coordinate.
+    ///
+    /// The target is resolved from checkpoint metadata on the same linear
+    /// schedule family as the attached configuration. Only the requested node's
+    /// material is derived from the baked source-of-truth restore and target
+    /// replay suffix; all other nodes keep the attached runtime material in the
+    /// returned debugger projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the attached configuration does not match
+    /// `request.current`, the node cannot be found in the attached runtime, the
+    /// target coordinate cannot be resolved exactly, the target node material
+    /// cannot be derived, or the graph lacks baked genesis for the scenario.
+    pub fn debug_per_node_time_travel(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugPerNodeTimeTravelRequest,
+    ) -> Result<DebugPerNodeTimeTravelReport, EngineError> {
+        if attach.configuration != request.current.id() {
+            return Err(EngineError::DebugGotoAttachMismatch {
+                attached: attach.configuration,
+                requested_current: request.current.id(),
+            });
+        }
+        let (current_node_icount, current_node_blob) = debug_runtime_node_material(
+            &attach.runtime.runtime,
+            &request.node,
+            request.current.id(),
+        )?;
+        let target = self
+            .debug_resolve_scoped_node_icount(&request.current, &request.node, request.icount)
+            .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
+                coordinate: DebugCoordinate::node_icount(request.node.clone(), request.icount),
+            })?;
+        let scoped = self.debug_scoped_node_material(
+            &request.current,
+            &target,
+            request.node.clone(),
+            request.icount,
+        )?;
+        let mut final_node_icounts = attach.runtime.runtime.node_icounts.clone();
+        final_node_icounts.insert(request.node.clone(), scoped.node_icount);
+        let mut final_node_blobs = attach.runtime.runtime.node_blobs.clone();
+        final_node_blobs.insert(request.node.clone(), scoped.node_blob.clone());
+
+        Ok(DebugPerNodeTimeTravelReport {
+            current_configuration: request.current.id(),
+            node: request.node.clone(),
+            requested_icount: request.icount,
+            target_configuration: scoped.target_configuration,
+            current_node_icount,
+            landed_node_icount: scoped.node_icount,
+            current_node_blob,
+            landed_node_blob: scoped.node_blob,
+            current_node_icounts: attach.runtime.runtime.node_icounts.clone(),
+            final_node_icounts,
+            current_node_blobs: attach.runtime.runtime.node_blobs.clone(),
+            final_node_blobs,
+            node_goto: scoped.goto,
+        })
+    }
+
+    /// Moves the whole debugged world to a prefix coordinate.
+    ///
+    /// Whole-world time travel is the same operation as a fork before it
+    /// diverges: resolve a prefix configuration, instantiate it through
+    /// [`Self::debug_goto`], and stop without appending any decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the target coordinate cannot be resolved to
+    /// an ancestor/prefix of `request.current`, when the delegated `goto` fails,
+    /// or when the landed runtime lacks node material.
+    pub fn debug_whole_world_time_travel(
+        &mut self,
+        attach: &DebugAttachReport,
+        request: &DebugWholeWorldTimeTravelRequest,
+    ) -> Result<DebugWholeWorldTimeTravelReport, EngineError> {
+        let goto_request = request.goto_request(self)?;
+        let target_configuration = match &goto_request.target {
+            DebugCoordinate::Configuration(configuration) => configuration.clone(),
+            coordinate => self.debug_resolve_coordinate(
+                &goto_request.current,
+                coordinate,
+                &goto_request.event_coordinates,
+            )?,
+        };
+        if !debug_configuration_is_ancestor_or_self(&target_configuration, &request.current) {
+            return Err(EngineError::DebugTimeTravelCoordinateNotFound {
+                coordinate: DebugCoordinate::configuration(target_configuration),
+            });
+        }
+        let goto = self.debug_goto(attach, &goto_request)?;
+
+        Ok(DebugWholeWorldTimeTravelReport {
+            current_configuration: request.current.id(),
+            target: request.target.clone(),
+            target_configuration: goto.target_configuration,
+            landed_node_icounts: goto.runtime.runtime.node_icounts.clone(),
+            landed_node_blobs: goto.runtime.runtime.node_blobs.clone(),
+            goto,
+        })
+    }
+
+    /// Applies an opportunistic debug checkpoint cadence along a schedule prefix.
+    ///
+    /// Cadence materialization is routed through
+    /// [`Self::materialize_checkpoint_with_savevm_hedge`], so the default
+    /// S3-conservative hedge records thin checkpoints and the verified hedge may
+    /// cache fat checkpoints. The denoted configuration identities do not change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when any cadence prefix cannot be constructed,
+    /// recorded, materialized, or replay-oracle checked.
+    pub fn debug_apply_checkpoint_cadence(
+        &mut self,
+        request: &DebugCheckpointCadenceRequest,
+    ) -> Result<DebugCheckpointCadenceReport, EngineError> {
+        let cached_snapshots_before = self.cached_snapshot_count();
+        let mut candidate_configurations = Vec::new();
+        let mut fat_checkpoints = Vec::new();
+        let mut thin_checkpoints = Vec::new();
+
+        for prefix_len in 1..=request.current.schedule.len() {
+            if !request.stride.includes_prefix(prefix_len) {
+                continue;
+            }
+            let candidate = debug_configuration_prefix(&request.current, prefix_len)?;
+            let checkpoint =
+                self.materialize_checkpoint_with_savevm_hedge(&candidate, &request.hedge)?;
+            candidate_configurations.push(candidate.id());
+            match checkpoint.kind {
+                CheckpointKind::Fat => fat_checkpoints.push(checkpoint.id),
+                CheckpointKind::Thin => thin_checkpoints.push(checkpoint.id),
+            }
+        }
+
+        Ok(DebugCheckpointCadenceReport {
+            current_configuration: request.current.id(),
+            stride: request.stride,
+            hedge: request.hedge.clone(),
+            candidate_configurations,
+            fat_checkpoints,
+            thin_checkpoints,
+            cached_snapshots_before,
+            cached_snapshots_after: self.cached_snapshot_count(),
         })
     }
 
@@ -12729,6 +12881,109 @@ impl TemporalGraph {
         }
     }
 
+    fn debug_resolve_scoped_node_icount(
+        &self,
+        current: &Configuration,
+        node: &NodeId,
+        target: Icount,
+    ) -> Option<Configuration> {
+        self.debug_scoped_node_coordinate_candidates(current)
+            .into_iter()
+            .filter_map(|candidate| {
+                let icount = candidate.node_icounts.get(node).copied()?;
+                if icount == target {
+                    Some((candidate, icount))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(candidate, icount)| {
+                (
+                    *icount,
+                    candidate.virtual_time,
+                    candidate.configuration.schedule.len(),
+                    candidate.configuration.id(),
+                )
+            })
+            .map(|(candidate, _)| candidate.configuration)
+    }
+
+    fn debug_scoped_node_material(
+        &mut self,
+        current: &Configuration,
+        target: &Configuration,
+        node: NodeId,
+        requested_icount: Icount,
+    ) -> Result<DebugScopedNodeMaterial, EngineError> {
+        debug_validate_same_scenario(current, target)?;
+        self.record_checkpoint_closure(target)?;
+        let restore = Configuration::genesis(target.def.clone());
+        let restore_checkpoint = self
+            .genesis_snapshot(&target.def)
+            .ok_or(EngineError::MissingBakedGenesis {
+                scenario: target.def.id,
+            })?
+            .checkpoint
+            .clone();
+        let (restore_icount, restore_blob) =
+            debug_checkpoint_node_material(&restore_checkpoint, &node, restore.id())?;
+        let replay_suffix = target
+            .schedule
+            .suffix_from(restore.schedule.len())
+            .map_err(EngineError::SchedulePrefix)?;
+        let (node_icount, node_blob) = if replay_suffix.is_empty() {
+            (restore_icount, restore_blob)
+        } else {
+            let replayed_icounts = replayed_node_icounts(
+                &BTreeMap::from([(node.clone(), restore_icount)]),
+                &replay_suffix,
+            );
+            let replayed_blobs = replayed_node_blobs(
+                &BTreeMap::from([(node.clone(), restore_blob)]),
+                &restore,
+                &replay_suffix,
+                target,
+            );
+            (
+                replayed_icounts.get(&node).copied().ok_or_else(|| {
+                    EngineError::DebugTimeTravelUnknownNode {
+                        node: node.clone(),
+                        configuration: target.id(),
+                    }
+                })?,
+                replayed_blobs.get(&node).cloned().ok_or_else(|| {
+                    EngineError::DebugTimeTravelUnknownNode {
+                        node: node.clone(),
+                        configuration: target.id(),
+                    }
+                })?,
+            )
+        };
+        if node_icount != requested_icount {
+            return Err(EngineError::DebugTimeTravelCoordinateNotFound {
+                coordinate: DebugCoordinate::node_icount(node, requested_icount),
+            });
+        }
+        let mut materialized_nodes = BTreeSet::new();
+        materialized_nodes.insert(node.clone());
+
+        Ok(DebugScopedNodeMaterial {
+            target_configuration: target.id(),
+            node_icount,
+            node_blob,
+            goto: DebugPerNodeGotoReport {
+                current_configuration: current.id(),
+                target_coordinate: DebugCoordinate::node_icount(node, requested_icount),
+                target_configuration: target.id(),
+                restore_configuration: restore.id(),
+                restore_checkpoint: restore_checkpoint.id,
+                replay_suffix_decisions: replay_suffix.len(),
+                replay_oracle: None,
+                materialized_nodes,
+            },
+        })
+    }
+
     fn debug_latest_checkpoint_at_or_before_time(
         &self,
         current: &Configuration,
@@ -12778,6 +13033,28 @@ impl TemporalGraph {
         &self,
         current: &Configuration,
     ) -> Vec<DebugCheckpointCoordinateCandidate> {
+        self.debug_checkpoint_coordinate_candidates_where(current, |configuration| {
+            debug_configuration_is_ancestor_or_self(configuration, current)
+        })
+    }
+
+    fn debug_scoped_node_coordinate_candidates(
+        &self,
+        current: &Configuration,
+    ) -> Vec<DebugCheckpointCoordinateCandidate> {
+        self.debug_checkpoint_coordinate_candidates_where(current, |configuration| {
+            debug_configurations_are_linearly_related(configuration, current)
+        })
+    }
+
+    fn debug_checkpoint_coordinate_candidates_where<F>(
+        &self,
+        current: &Configuration,
+        include: F,
+    ) -> Vec<DebugCheckpointCoordinateCandidate>
+    where
+        F: Fn(&Configuration) -> bool,
+    {
         let mut candidates = BTreeMap::<ContentHash, DebugCheckpointCoordinateCandidate>::new();
         for checkpoint in self
             .checkpoint_nodes
@@ -12791,7 +13068,7 @@ impl TemporalGraph {
             else {
                 continue;
             };
-            if !debug_configuration_is_ancestor_or_self(configuration, current) {
+            if !include(configuration) {
                 continue;
             }
             candidates
@@ -12880,6 +13157,14 @@ struct DebugCheckpointCoordinateCandidate {
     node_icounts: BTreeMap<NodeId, Icount>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DebugScopedNodeMaterial {
+    target_configuration: ContentHash,
+    node_icount: Icount,
+    node_blob: NodeBlobRef,
+    goto: DebugPerNodeGotoReport,
+}
+
 struct DebugReverseContinueLeafOracle<'a, F> {
     entry: &'a SchedulerEventLogEntry,
     leaf_oracle: &'a mut F,
@@ -12918,6 +13203,75 @@ fn debug_configuration_is_ancestor_or_self(
             .schedule
             .decisions()
             .starts_with(candidate.schedule.decisions())
+}
+
+fn debug_configurations_are_linearly_related(
+    candidate: &Configuration,
+    current: &Configuration,
+) -> bool {
+    candidate.def.id == current.def.id
+        && (current
+            .schedule
+            .decisions()
+            .starts_with(candidate.schedule.decisions())
+            || candidate
+                .schedule
+                .decisions()
+                .starts_with(current.schedule.decisions()))
+}
+
+fn debug_runtime_node_material(
+    runtime: &RuntimeState,
+    node: &NodeId,
+    configuration: ContentHash,
+) -> Result<(Icount, NodeBlobRef), EngineError> {
+    let icount = runtime.node_icounts.get(node).copied().ok_or_else(|| {
+        EngineError::DebugTimeTravelUnknownNode {
+            node: node.clone(),
+            configuration,
+        }
+    })?;
+    let blob = runtime.node_blobs.get(node).cloned().ok_or_else(|| {
+        EngineError::DebugTimeTravelUnknownNode {
+            node: node.clone(),
+            configuration,
+        }
+    })?;
+    Ok((icount, blob))
+}
+
+fn debug_checkpoint_node_material(
+    checkpoint: &Checkpoint,
+    node: &NodeId,
+    configuration: ContentHash,
+) -> Result<(Icount, NodeBlobRef), EngineError> {
+    let icount = checkpoint.node_icounts.get(node).copied().ok_or_else(|| {
+        EngineError::DebugTimeTravelUnknownNode {
+            node: node.clone(),
+            configuration,
+        }
+    })?;
+    let blob = checkpoint.node_blobs.get(node).cloned().ok_or_else(|| {
+        EngineError::DebugTimeTravelUnknownNode {
+            node: node.clone(),
+            configuration,
+        }
+    })?;
+    Ok((icount, blob))
+}
+
+fn maps_equal_except_key<T: PartialEq>(
+    left: &BTreeMap<NodeId, T>,
+    right: &BTreeMap<NodeId, T>,
+    excluded: &NodeId,
+) -> bool {
+    left.iter()
+        .filter(|(node, _)| *node != excluded)
+        .all(|(node, value)| right.get(node) == Some(value))
+        && right
+            .iter()
+            .filter(|(node, _)| *node != excluded)
+            .all(|(node, value)| left.get(node) == Some(value))
 }
 
 fn debug_configuration_prefix(
@@ -15896,6 +16250,375 @@ impl DebugReverseContinueReport {
     }
 }
 
+/// Request to move one node to a node-icount debug coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugPerNodeTimeTravelRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Node whose debugger-visible machine state should move.
+    pub node: NodeId,
+    /// Per-node retired-instruction coordinate to land at.
+    pub icount: Icount,
+}
+
+impl DebugPerNodeTimeTravelRequest {
+    /// Builds a per-node time-travel request.
+    #[must_use]
+    pub fn new(current: Configuration, node: NodeId, icount: Icount) -> Self {
+        Self {
+            current,
+            node,
+            icount,
+        }
+    }
+}
+
+/// Evidence for scoped per-node goto over one node's checkpoint material.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugPerNodeGotoReport {
+    /// Configuration where the debug session started.
+    pub current_configuration: ContentHash,
+    /// Exact per-node coordinate requested by the operator.
+    pub target_coordinate: DebugCoordinate,
+    /// Configuration that supplies the target node material.
+    pub target_configuration: ContentHash,
+    /// Restore point used as the source of target node material.
+    pub restore_configuration: ContentHash,
+    /// Checkpoint id loaded for the scoped node restore.
+    pub restore_checkpoint: ContentHash,
+    /// Number of schedule decisions replayed to derive the target node blob.
+    pub replay_suffix_decisions: usize,
+    /// Replay-oracle admission for an exact cached target snapshot, when present.
+    pub replay_oracle: Option<ReplayOracleCheck>,
+    /// Nodes whose material was derived for the scoped landing.
+    pub materialized_nodes: BTreeSet<NodeId>,
+}
+
+impl DebugPerNodeGotoReport {
+    /// Returns whether this goto derived material only for `node`.
+    #[must_use]
+    pub fn proves_scoped_to_node(&self, node: &NodeId) -> bool {
+        self.materialized_nodes.len() == 1 && self.materialized_nodes.contains(node)
+    }
+
+    /// Returns whether any exact cached target snapshot passed replay-oracle admission.
+    #[must_use]
+    pub fn proves_replay_oracle_or_thin_source(&self) -> bool {
+        self.replay_oracle.as_ref().is_none_or(|check| {
+            check.configuration == self.target_configuration
+                && check.fat_checkpoint == self.target_configuration
+                && check.thin_checkpoint == self.target_configuration
+        })
+    }
+}
+
+/// Report proving scoped per-node time travel left other nodes untouched.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugPerNodeTimeTravelReport {
+    /// Configuration where the debug session started.
+    pub current_configuration: ContentHash,
+    /// Node moved by the scoped time-travel operation.
+    pub node: NodeId,
+    /// Icount requested for `node`.
+    pub requested_icount: Icount,
+    /// Configuration that supplied the moved node's checkpoint material.
+    pub target_configuration: ContentHash,
+    /// Node icount before scoped travel.
+    pub current_node_icount: Icount,
+    /// Node icount after scoped travel.
+    pub landed_node_icount: Icount,
+    /// Node material before scoped travel.
+    pub current_node_blob: NodeBlobRef,
+    /// Node material after scoped travel.
+    pub landed_node_blob: NodeBlobRef,
+    /// Attached runtime's per-node icount map.
+    pub current_node_icounts: BTreeMap<NodeId, Icount>,
+    /// Debugger-visible per-node icount map after scoped travel.
+    pub final_node_icounts: BTreeMap<NodeId, Icount>,
+    /// Attached runtime's per-node material map.
+    pub current_node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Debugger-visible per-node material map after scoped travel.
+    pub final_node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Scoped node `goto` evidence used to realize the node material.
+    pub node_goto: DebugPerNodeGotoReport,
+}
+
+impl DebugPerNodeTimeTravelReport {
+    /// Returns whether the operation was realized by a scoped node `goto`.
+    #[must_use]
+    pub fn realized_by_goto(&self) -> bool {
+        self.node_goto.target_configuration == self.target_configuration
+            && self.node_goto.proves_replay_oracle_or_thin_source()
+            && self.node_goto.proves_scoped_to_node(&self.node)
+    }
+
+    /// Returns whether every non-target node retained its attached material.
+    #[must_use]
+    pub fn leaves_other_nodes_unreinstantiated(&self) -> bool {
+        maps_equal_except_key(
+            &self.current_node_icounts,
+            &self.final_node_icounts,
+            &self.node,
+        ) && maps_equal_except_key(&self.current_node_blobs, &self.final_node_blobs, &self.node)
+    }
+
+    /// Returns whether the target node landed at one coherent node icount.
+    #[must_use]
+    pub fn lands_node_coherently(&self) -> bool {
+        self.landed_node_icount == self.requested_icount
+            && self.final_node_icounts.get(&self.node) == Some(&self.landed_node_icount)
+            && self.final_node_blobs.get(&self.node) == Some(&self.landed_node_blob)
+    }
+}
+
+/// Whole-world debug time-travel target.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugWholeWorldTarget {
+    /// A direct schedule prefix length.
+    PrefixLen(usize),
+    /// Latest recorded prefix at or before virtual time.
+    VirtualTime(VirtualTime),
+    /// Event-log sequence with a caller-supplied configuration mapping.
+    EventSequence(u64),
+}
+
+impl DebugWholeWorldTarget {
+    /// Builds a direct prefix target.
+    #[must_use]
+    pub const fn prefix_len(len: usize) -> Self {
+        Self::PrefixLen(len)
+    }
+
+    /// Builds a virtual-time target.
+    #[must_use]
+    pub const fn virtual_time(time: VirtualTime) -> Self {
+        Self::VirtualTime(time)
+    }
+
+    /// Builds an event-sequence target.
+    #[must_use]
+    pub const fn event_sequence(sequence: u64) -> Self {
+        Self::EventSequence(sequence)
+    }
+}
+
+/// Request to move the whole world to a prefix coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugWholeWorldTimeTravelRequest {
+    /// Configuration where the debug session currently sits.
+    pub current: Configuration,
+    /// Whole-world prefix target.
+    pub target: DebugWholeWorldTarget,
+    /// Mapping from event-log sequence to temporal-graph coordinate.
+    pub event_coordinates: BTreeMap<u64, Configuration>,
+}
+
+impl DebugWholeWorldTimeTravelRequest {
+    /// Builds a whole-world time-travel request.
+    #[must_use]
+    pub fn new(current: Configuration, target: DebugWholeWorldTarget) -> Self {
+        Self {
+            current,
+            target,
+            event_coordinates: BTreeMap::new(),
+        }
+    }
+
+    /// Adds an event-log sequence to configuration mapping.
+    #[must_use]
+    pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
+        self.event_coordinates.insert(sequence, configuration);
+        self
+    }
+
+    fn goto_request(&self, graph: &TemporalGraph) -> Result<DebugGotoRequest, EngineError> {
+        let mut request = match self.target {
+            DebugWholeWorldTarget::PrefixLen(len) => DebugGotoRequest::at_configuration(
+                self.current.clone(),
+                debug_configuration_prefix(&self.current, len)?,
+            ),
+            DebugWholeWorldTarget::VirtualTime(time) => {
+                DebugGotoRequest::new(self.current.clone(), DebugCoordinate::virtual_time(time))
+            }
+            DebugWholeWorldTarget::EventSequence(sequence) => DebugGotoRequest::new(
+                self.current.clone(),
+                DebugCoordinate::event_sequence(sequence),
+            ),
+        };
+        for (sequence, configuration) in &self.event_coordinates {
+            request = request.with_event_coordinate(*sequence, configuration.clone());
+        }
+        if matches!(self.target, DebugWholeWorldTarget::PrefixLen(_)) {
+            return Ok(request);
+        }
+        let resolved = graph.debug_resolve_coordinate(
+            &request.current,
+            &request.target,
+            &request.event_coordinates,
+        )?;
+        Ok(DebugGotoRequest::at_configuration(
+            self.current.clone(),
+            resolved,
+        ))
+    }
+}
+
+/// Report proving whole-world time travel landed at one prefix.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugWholeWorldTimeTravelReport {
+    /// Configuration where the debug session started.
+    pub current_configuration: ContentHash,
+    /// Whole-world target requested by the operator.
+    pub target: DebugWholeWorldTarget,
+    /// Prefix configuration that the whole world reached.
+    pub target_configuration: ContentHash,
+    /// Runtime node icounts at the landed prefix.
+    pub landed_node_icounts: BTreeMap<NodeId, Icount>,
+    /// Runtime node material at the landed prefix.
+    pub landed_node_blobs: BTreeMap<NodeId, NodeBlobRef>,
+    /// Delegated `goto` report for the whole-world prefix.
+    pub goto: DebugGotoReport,
+}
+
+impl DebugWholeWorldTimeTravelReport {
+    /// Returns whether the whole-world landing was realized by `goto`.
+    #[must_use]
+    pub fn realized_by_goto(&self) -> bool {
+        self.goto.target_configuration == self.target_configuration
+            && self.goto.proves_replay_oracle()
+    }
+
+    /// Returns whether every landed node has exactly one node icount and material entry.
+    #[must_use]
+    pub fn lands_all_nodes_coherently(&self) -> bool {
+        !self.landed_node_icounts.is_empty()
+            && self
+                .landed_node_icounts
+                .keys()
+                .eq(self.landed_node_blobs.keys())
+    }
+
+    /// Returns whether this landing is a fork before divergent decisions are appended.
+    #[must_use]
+    pub fn is_fork_without_divergence(&self) -> bool {
+        self.goto.current_configuration == self.current_configuration
+            && self.goto.target_configuration == self.target_configuration
+            && self.goto.proves_replay_oracle()
+    }
+}
+
+/// Non-zero opportunistic checkpoint stride for debug time travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DebugCheckpointStride {
+    every: NonZeroUsize,
+}
+
+impl DebugCheckpointStride {
+    /// Builds a non-zero checkpoint stride.
+    #[must_use]
+    pub fn new(every: usize) -> Option<Self> {
+        NonZeroUsize::new(every).map(|every| Self { every })
+    }
+
+    /// Returns the stride interval.
+    #[must_use]
+    pub const fn every(self) -> usize {
+        self.every.get()
+    }
+
+    fn includes_prefix(self, prefix_len: usize) -> bool {
+        prefix_len > 0 && prefix_len % self.every() == 0
+    }
+}
+
+/// Request to apply an opportunistic checkpoint cadence.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugCheckpointCadenceRequest {
+    /// Configuration whose prefix region should receive cadence checkpoints.
+    pub current: Configuration,
+    /// Non-zero checkpoint stride.
+    pub stride: DebugCheckpointStride,
+    /// Savevm hedge that decides whether cadence points may be fat.
+    pub hedge: SavevmCompletenessHedge,
+}
+
+impl DebugCheckpointCadenceRequest {
+    /// Builds a checkpoint-cadence request with an explicit savevm hedge.
+    #[must_use]
+    pub fn with_hedge(
+        current: Configuration,
+        stride: DebugCheckpointStride,
+        hedge: SavevmCompletenessHedge,
+    ) -> Self {
+        Self {
+            current,
+            stride,
+            hedge,
+        }
+    }
+
+    /// Builds the default S3-conservative cadence request.
+    #[must_use]
+    pub fn thin_replay_until_full_s3(
+        current: Configuration,
+        stride: DebugCheckpointStride,
+    ) -> Self {
+        Self::with_hedge(
+            current,
+            stride,
+            SavevmCompletenessHedge::thin_replay_until_full_s3(),
+        )
+    }
+}
+
+/// Report for opportunistic checkpoint cadence application.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugCheckpointCadenceReport {
+    /// Configuration whose prefix region was considered.
+    pub current_configuration: ContentHash,
+    /// Non-zero stride that selected candidate prefixes.
+    pub stride: DebugCheckpointStride,
+    /// Savevm hedge used for every candidate prefix.
+    pub hedge: SavevmCompletenessHedge,
+    /// Candidate prefix configuration ids selected by the stride.
+    pub candidate_configurations: Vec<ContentHash>,
+    /// Candidate ids cached as fat checkpoints.
+    pub fat_checkpoints: Vec<ContentHash>,
+    /// Candidate ids kept as thin replay checkpoints.
+    pub thin_checkpoints: Vec<ContentHash>,
+    /// Fat cache count before applying the cadence.
+    pub cached_snapshots_before: usize,
+    /// Fat cache count after applying the cadence.
+    pub cached_snapshots_after: usize,
+}
+
+impl DebugCheckpointCadenceReport {
+    /// Returns whether the S3-conservative default kept all cadence points thin.
+    #[must_use]
+    pub fn defaults_to_thin_replay_until_full_s3(&self) -> bool {
+        !self.hedge.fat_snapshot_default()
+            && self.fat_checkpoints.is_empty()
+            && self.thin_checkpoints.len() == self.candidate_configurations.len()
+    }
+
+    /// Returns whether checkpoint cadence only changed cache materialization.
+    #[must_use]
+    pub fn is_performance_only_cache_decision(&self) -> bool {
+        let classified = self
+            .fat_checkpoints
+            .iter()
+            .chain(self.thin_checkpoints.iter())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let candidates = self
+            .candidate_configurations
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        classified == candidates
+    }
+}
+
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphFork {
@@ -17710,6 +18433,13 @@ pub enum EngineError {
         /// Coordinate that had no graph checkpoint at or before it.
         coordinate: DebugCoordinate,
     },
+    /// A debug time-travel operation named a node absent from the runtime.
+    DebugTimeTravelUnknownNode {
+        /// Node that lacked runtime material.
+        node: NodeId,
+        /// Configuration whose runtime was inspected.
+        configuration: ContentHash,
+    },
     /// A reverse-continue scan could not build a checked condition prefix.
     DebugReverseContinueInvalidPrefix {
         /// Event-log sequence at the attempted prefix boundary.
@@ -18106,6 +18836,9 @@ impl fmt::Display for EngineError {
             }
             Self::DebugTimeTravelCoordinateNotFound { .. } => {
                 f.write_str("debug coordinate did not resolve to a temporal graph checkpoint")
+            }
+            Self::DebugTimeTravelUnknownNode { .. } => {
+                f.write_str("debug time-travel node is absent from runtime material")
             }
             Self::DebugReverseContinueInvalidPrefix { reason, .. } => {
                 write!(f, "debug reverse-continue condition prefix is invalid: {reason}")

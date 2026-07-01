@@ -7,10 +7,13 @@ use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, DebugAttachRequest,
-    DebugCoordinate, DebugGotoRequest, DebugReverseContinueRequest, DebugReverseStepGrain,
-    DebugReverseStepRequest, Decision, EngineError, Icount, NodeBlobRef, NodeId, NodeLifecycle,
-    NodeTemplate, ObservableEvent, OverrideDecision, Predicate, ReadyPoint, SchedulingPoint,
-    TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    DebugCheckpointCadenceRequest, DebugCheckpointStride, DebugCoordinate, DebugGotoRequest,
+    DebugPerNodeTimeTravelRequest, DebugReverseContinueRequest, DebugReverseStepGrain,
+    DebugReverseStepRequest, DebugWholeWorldTarget, DebugWholeWorldTimeTravelRequest, Decision,
+    EngineError, Icount, NodeBlobRef, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
+    OverrideDecision, Predicate, ReadyPoint, SavevmCompletenessHedge, SchedulingPoint,
+    TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
+    instantiate, try_step,
 };
 
 #[test]
@@ -265,6 +268,200 @@ fn debug_goto_replay_oracle_mismatch_carries_bisection_coordinate() -> Result<()
     Ok(())
 }
 
+#[test]
+fn debug_per_node_and_whole_world_time_travel_land_coherently() -> Result<(), Box<dyn Error>> {
+    let world = two_node_world("debug-scoped")?;
+    let scenario = world.scenario_def();
+    let root = Configuration::genesis(scenario.clone());
+    let first = try_step(&root, override_decision("debug/scoped", "first"))?;
+    let second = try_step(&first, override_decision("debug/scoped", "second"))?;
+    let third = try_step(&second, override_decision("debug/scoped", "third"))?;
+    let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    graph.record_thin_checkpoint(&first)?;
+    graph.record_thin_checkpoint(&second)?;
+    graph.record_thin_checkpoint(&third)?;
+    let attach = graph.debug_attach(&attach_request(&third)?)?;
+    let attach_second = graph.debug_attach(&attach_request(&second)?)?;
+
+    let forward_per_node = graph.debug_per_node_time_travel(
+        &attach_second,
+        &DebugPerNodeTimeTravelRequest::new(
+            second.clone(),
+            node_id("guest-a"),
+            Icount { retired: 103 },
+        ),
+    )?;
+
+    assert_eq!(forward_per_node.target_configuration, third.id());
+    assert_eq!(
+        forward_per_node.current_node_icount,
+        Icount { retired: 102 }
+    );
+    assert_eq!(forward_per_node.landed_node_icount, Icount { retired: 103 });
+    assert_eq!(
+        forward_per_node.final_node_icounts.get(&node_id("guest-b")),
+        attach_second
+            .runtime
+            .runtime
+            .node_icounts
+            .get(&node_id("guest-b"))
+    );
+    assert_eq!(forward_per_node.node_goto.materialized_nodes.len(), 1);
+    assert!(
+        forward_per_node
+            .node_goto
+            .materialized_nodes
+            .contains(&node_id("guest-a"))
+    );
+    assert!(forward_per_node.realized_by_goto());
+    assert!(forward_per_node.lands_node_coherently());
+    assert!(forward_per_node.leaves_other_nodes_unreinstantiated());
+
+    let per_node = graph.debug_per_node_time_travel(
+        &attach,
+        &DebugPerNodeTimeTravelRequest::new(
+            third.clone(),
+            node_id("guest-a"),
+            Icount { retired: 102 },
+        ),
+    )?;
+
+    assert_eq!(per_node.target_configuration, second.id());
+    assert_eq!(per_node.current_node_icount, Icount { retired: 103 });
+    assert_eq!(per_node.landed_node_icount, Icount { retired: 102 });
+    assert_eq!(
+        per_node.final_node_icounts.get(&node_id("guest-a")),
+        Some(&Icount { retired: 102 })
+    );
+    assert_eq!(
+        per_node.final_node_icounts.get(&node_id("guest-b")),
+        attach.runtime.runtime.node_icounts.get(&node_id("guest-b"))
+    );
+    assert!(per_node.realized_by_goto());
+    assert!(per_node.lands_node_coherently());
+    assert!(per_node.leaves_other_nodes_unreinstantiated());
+
+    let unknown_node = graph
+        .debug_per_node_time_travel(
+            &attach,
+            &DebugPerNodeTimeTravelRequest::new(
+                third.clone(),
+                node_id("missing"),
+                Icount { retired: 1 },
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        unknown_node,
+        EngineError::DebugTimeTravelUnknownNode { .. }
+    ));
+
+    let whole_prefix = graph.debug_whole_world_time_travel(
+        &attach,
+        &DebugWholeWorldTimeTravelRequest::new(third.clone(), DebugWholeWorldTarget::prefix_len(2)),
+    )?;
+
+    assert_eq!(whole_prefix.target_configuration, second.id());
+    assert_eq!(
+        whole_prefix.landed_node_icounts.get(&node_id("guest-a")),
+        Some(&Icount { retired: 102 })
+    );
+    assert_eq!(
+        whole_prefix.landed_node_icounts.get(&node_id("guest-b")),
+        Some(&Icount { retired: 202 })
+    );
+    assert!(whole_prefix.realized_by_goto());
+    assert!(whole_prefix.is_fork_without_divergence());
+    assert!(whole_prefix.lands_all_nodes_coherently());
+
+    let whole_event = graph.debug_whole_world_time_travel(
+        &attach,
+        &DebugWholeWorldTimeTravelRequest::new(
+            third.clone(),
+            DebugWholeWorldTarget::event_sequence(7),
+        )
+        .with_event_coordinate(7, first.clone()),
+    )?;
+
+    assert_eq!(whole_event.target_configuration, first.id());
+    assert!(whole_event.realized_by_goto());
+    assert!(whole_event.lands_all_nodes_coherently());
+
+    Ok(())
+}
+
+#[test]
+fn debug_checkpoint_stride_is_performance_only_and_defaults_to_thin_replay()
+-> Result<(), Box<dyn Error>> {
+    let world = single_node_world("debug-stride")?;
+    let scenario = world.scenario_def();
+    let root = Configuration::genesis(scenario.clone());
+    let first = try_step(&root, override_decision("debug/stride", "first"))?;
+    let second = try_step(&first, override_decision("debug/stride", "second"))?;
+    let third = try_step(&second, override_decision("debug/stride", "third"))?;
+    let fourth = try_step(&third, override_decision("debug/stride", "fourth"))?;
+    let stride = DebugCheckpointStride::new(2).ok_or("stride must be non-zero")?;
+
+    let mut thin_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    let thin_report = thin_graph.debug_apply_checkpoint_cadence(
+        &DebugCheckpointCadenceRequest::thin_replay_until_full_s3(fourth.clone(), stride),
+    )?;
+    let thin_runtime = instantiate(&thin_graph, &fourth)?;
+
+    assert_eq!(
+        thin_report.candidate_configurations,
+        vec![second.id(), fourth.id()]
+    );
+    assert!(thin_report.defaults_to_thin_replay_until_full_s3());
+    assert!(thin_report.is_performance_only_cache_decision());
+    assert!(thin_report.fat_checkpoints.is_empty());
+    assert_eq!(thin_report.thin_checkpoints.len(), 2);
+    assert_eq!(thin_graph.cached_snapshot_count(), 0);
+    assert_eq!(thin_runtime.configuration, fourth.id());
+
+    let mut verified_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    let fat_report = verified_graph.debug_apply_checkpoint_cadence(
+        &DebugCheckpointCadenceRequest::with_hedge(
+            fourth.clone(),
+            stride,
+            SavevmCompletenessHedge::verified(),
+        ),
+    )?;
+    let exact_runtime = instantiate(&verified_graph, &fourth)?;
+    verified_graph.evict_fat_checkpoint_to_thin(&second)?;
+    verified_graph.evict_fat_checkpoint_to_thin(&fourth)?;
+    let replay_runtime = instantiate(&verified_graph, &fourth)?;
+
+    assert_eq!(fat_report.fat_checkpoints, vec![second.id(), fourth.id()]);
+    assert!(fat_report.thin_checkpoints.is_empty());
+    assert!(fat_report.is_performance_only_cache_decision());
+    assert_eq!(exact_runtime.id, replay_runtime.id);
+    assert_eq!(exact_runtime.configuration, replay_runtime.configuration);
+    assert_eq!(exact_runtime.node_icounts, replay_runtime.node_icounts);
+
+    let mut eviction_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    eviction_graph.debug_apply_checkpoint_cadence(&DebugCheckpointCadenceRequest::with_hedge(
+        fourth.clone(),
+        stride,
+        SavevmCompletenessHedge::verified(),
+    ))?;
+    let before_eviction = instantiate(&eviction_graph, &fourth)?;
+    let eviction_report = eviction_graph.debug_apply_checkpoint_cadence(
+        &DebugCheckpointCadenceRequest::thin_replay_until_full_s3(fourth.clone(), stride),
+    )?;
+    let after_eviction = instantiate(&eviction_graph, &fourth)?;
+
+    assert_eq!(eviction_report.cached_snapshots_before, 2);
+    assert_eq!(eviction_report.cached_snapshots_after, 0);
+    assert!(eviction_report.defaults_to_thin_replay_until_full_s3());
+    assert!(eviction_report.is_performance_only_cache_decision());
+    assert_eq!(before_eviction.id, after_eviction.id);
+    assert_eq!(before_eviction.configuration, after_eviction.configuration);
+    assert_eq!(before_eviction.node_icounts, after_eviction.node_icounts);
+
+    Ok(())
+}
+
 fn single_node_world(label: &str) -> Result<World, EngineError> {
     World::from_nodes(vec![WorldNode {
         id: node_id("guest-a"),
@@ -281,6 +478,41 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         root_image: None,
         initrd: None,
     }])
+}
+
+fn two_node_world(label: &str) -> Result<World, EngineError> {
+    World::from_nodes(vec![
+        WorldNode {
+            id: node_id("guest-a"),
+            arch: VmArchitecture::X86_64,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: format!("crucible-debug-time-travel={label}-a"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 100 },
+            },
+            white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        },
+        WorldNode {
+            id: node_id("guest-b"),
+            arch: VmArchitecture::X86_64,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: format!("crucible-debug-time-travel={label}-b"),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 200 },
+            },
+            white_box: WhiteBoxPolicy::Enabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        },
+    ])
 }
 
 fn node_id(name: &str) -> NodeId {

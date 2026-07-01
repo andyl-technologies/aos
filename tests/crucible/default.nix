@@ -1643,6 +1643,24 @@ in rec {
         phase6.canonicalDebugBreakpoint
       ];
     };
+    debugScopedTimeTravel = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.debugScopedTimeTravel";
+      gate = import ./phase6-debug-scoped-time-travel.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.debugScopedTimeTravel";
+        taskIds = ["T-DBG-5"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.debugTimeTravel.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.debugTimeTravel
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
