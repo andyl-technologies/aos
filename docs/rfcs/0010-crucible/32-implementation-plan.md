@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:7ba9fdcfbe1a4c92`
+Checklist sync digest: `rfc0010-checklist-v1:1c4ebbdc6a65122a`
 
 ## The phase ladder
 
@@ -271,7 +271,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   result identity keyed by findings ledger plus policy. `T-TRI-4` is green
   through `checks.crucible.phase6.failureClustering`, which partitions findings
   by policy signature key, uses the key hash as the cluster id, and emits
-  content-address ordered clusters and members; `T-TRI-5 … T-TRI-8` remain
+  content-address ordered clusters and members. `T-TRI-5` is green through
+  `checks.crucible.phase6.signaturePreservingMinimization`, which minimizes the
+  content-address-least representative of each cluster through the existing
+  replay-validated minimization pass while strengthening the accept predicate to
+  active-policy signature-key equality; `T-TRI-6 … T-TRI-8` remain
   pending ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks

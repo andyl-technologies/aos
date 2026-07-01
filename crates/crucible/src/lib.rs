@@ -112,6 +112,7 @@ pub use model::{
     FailureClusterMember, FailureClusteringResult, FailureCoverageClass, FailureFirstFailingPoint,
     FailureKind, FailurePropertyKey, FailurePropertyViolationRecord, FailureRecordedEventLog,
     FailureSignature, FailureSignatureKey, FailureSignatureNormalization,
+    FailureSignaturePreservingMinimizationResult, FailureSignaturePreservingMinimizationRun,
     FailureSymmetryCanonicalizer, FailureTriageResultIdentity, FamilyParams, FamilySpace, Fault,
     FaultBandwidthBitsPerSecond, FaultCaps, FaultDecision, FaultDensity, FaultDensityRange,
     FaultDuration, FaultId, FaultPlan, FaultPlanEntry, FaultRateBasisPoints,

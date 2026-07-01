@@ -74,6 +74,8 @@ const FAILURE_SIGNATURE_KEY_DOMAIN: &str = "crucible.failure-signature.key.v1";
 const FAILURE_CAUSAL_SLICE_DOMAIN: &str = "crucible.failure-signature.causal-slice.v1";
 const FAILURE_TRIAGE_RESULT_IDENTITY_DOMAIN: &str = "crucible.failure-triage.result-identity.v1";
 const FAILURE_CLUSTERING_RESULT_DOMAIN: &str = "crucible.failure-triage.clustering-result.v1";
+const FAILURE_SIGNATURE_MINIMIZATION_RESULT_DOMAIN: &str =
+    "crucible.failure-triage.signature-preserving-minimization.v1";
 const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
 const SIGNATURE_POLICY_SCHEMA_VERSION: u16 = 1;
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
@@ -4439,12 +4441,171 @@ impl FailureClusteringResult {
             &self.canonical_material(),
         )
     }
+
+    /// Minimizes the content-address-least representative from each cluster.
+    ///
+    /// This extends [`FindingReproductionArtifact::minimize`] by using
+    /// `signature` as the failure oracle: a replay-validated candidate is
+    /// accepted only when `signature(candidate, policy) ==
+    /// signature(original, policy)` under this result's active policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] when cluster
+    /// evidence is internally inconsistent, a representative cannot be loaded,
+    /// or the minimized artifact does not preserve the original signature key.
+    /// Returns other [`EngineError`] values from representative loading,
+    /// candidate replay, or signature recomputation.
+    pub fn minimize_representatives<L, F>(
+        &self,
+        config: MinimizationConfig,
+        mut load_representative: L,
+        mut signature: F,
+    ) -> Result<FailureSignaturePreservingMinimizationResult, EngineError>
+    where
+        L: FnMut(ContentHash) -> Result<FindingReproductionArtifact, EngineError>,
+        F: FnMut(&FindingReproductionArtifact) -> Result<Option<FailureSignature>, EngineError>,
+    {
+        let mut runs = Vec::new();
+        for cluster in &self.clusters {
+            if cluster.id != cluster.signature_key.content_hash() {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization",
+                    reason: "cluster id does not match signature key",
+                });
+            }
+            let representative = cluster.representative_member().ok_or(
+                EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization",
+                    reason: "cluster has no representative",
+                },
+            )?;
+            let target_signature_key = representative.signature.signature_key(self.policy)?;
+            if target_signature_key != cluster.signature_key {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization",
+                    reason: "representative signature key does not match cluster",
+                });
+            }
+
+            let original = load_representative(representative.reproduction_artifact)?;
+            expect_content_hash(
+                original.artifact.id(),
+                representative.reproduction_artifact,
+                "signature-preserving-representative-artifact",
+            )?;
+            let target_fingerprint = original.finding_fingerprint;
+            let policy = self.policy;
+            let target_key_for_oracle = target_signature_key.clone();
+            let minimization = original.minimize(config, |candidate| {
+                let Some(candidate_signature) = signature(candidate)? else {
+                    return Ok(None);
+                };
+                let candidate_key = candidate_signature.signature_key(policy)?;
+                Ok((candidate_key == target_key_for_oracle).then_some(target_fingerprint))
+            })?;
+
+            let minimized_signature = signature(&minimization.minimized)?.ok_or(
+                EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization",
+                    reason: "minimal representative has no failure signature",
+                },
+            )?;
+            let minimized_signature_key = minimized_signature.signature_key(self.policy)?;
+            if minimized_signature_key != target_signature_key {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "signature-preserving-minimization",
+                    reason: "minimal representative signature changed",
+                });
+            }
+
+            runs.push(FailureSignaturePreservingMinimizationRun {
+                cluster_id: cluster.id,
+                representative_artifact: representative.reproduction_artifact,
+                target_signature_key,
+                minimized_signature_key,
+                minimization,
+            });
+        }
+
+        Ok(FailureSignaturePreservingMinimizationResult {
+            policy: self.policy,
+            runs,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FailureClusterBuilder {
     signature_key: FailureSignatureKey,
     members: BTreeMap<ContentHash, FailureClusterMember>,
+}
+
+/// Signature-preserving minimization evidence for one failure cluster.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureSignaturePreservingMinimizationRun {
+    /// Cluster whose representative was minimized.
+    pub cluster_id: ContentHash,
+    /// Content-address-least reproduction artifact selected from the cluster.
+    pub representative_artifact: ContentHash,
+    /// Signature key that must be preserved by every accepted candidate.
+    pub target_signature_key: FailureSignatureKey,
+    /// Signature key observed for the emitted minimal representative.
+    pub minimized_signature_key: FailureSignatureKey,
+    /// Underlying replay-validated minimization run from the base shrink pass.
+    pub minimization: MinimizationRun,
+}
+
+impl FailureSignaturePreservingMinimizationRun {
+    /// Returns whether the emitted minimal representative preserves the target key.
+    #[must_use]
+    pub fn preserves_signature(&self) -> bool {
+        self.target_signature_key == self.minimized_signature_key
+    }
+
+    /// Returns the content hash of the emitted minimal reproduction artifact.
+    #[must_use]
+    pub fn minimized_artifact(&self) -> ContentHash {
+        self.minimization.minimized.artifact.id()
+    }
+}
+
+/// Signature-preserving minimization output for a clustering result.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureSignaturePreservingMinimizationResult {
+    /// Active signature policy used as the candidate accept predicate.
+    pub policy: SignaturePolicy,
+    /// One minimized representative per cluster, ordered by cluster id.
+    pub runs: Vec<FailureSignaturePreservingMinimizationRun>,
+}
+
+impl FailureSignaturePreservingMinimizationResult {
+    /// Returns the number of clusters minimized.
+    #[must_use]
+    pub fn cluster_count(&self) -> usize {
+        self.runs.len()
+    }
+
+    /// Returns the number of minimal representatives emitted.
+    #[must_use]
+    pub fn minimized_count(&self) -> usize {
+        self.runs.len()
+    }
+
+    /// Returns canonical result material with runs in cluster-id order.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_signature_preserving_minimization_result_material(self)
+    }
+
+    /// Returns the content address of the deterministic minimization result.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_SIGNATURE_MINIMIZATION_RESULT_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
 }
 
 /// Full canonical causal-cone material retained for exact policy keys.
@@ -5457,6 +5618,115 @@ fn failure_clustering_result_material(result: &FailureClusteringResult) -> Strin
         }
     }
     lines.join("\n")
+}
+
+fn failure_signature_preserving_minimization_result_material(
+    result: &FailureSignaturePreservingMinimizationResult,
+) -> String {
+    let mut lines = vec![
+        result.policy.canonical_material(),
+        format!("cluster_count={}", result.cluster_count()),
+        format!("minimized_count={}", result.minimized_count()),
+    ];
+    for (run_index, run) in result.runs.iter().enumerate() {
+        lines.push(format!("minimization.index={run_index}"));
+        lines.push(format!(
+            "minimization.cluster_id={}",
+            content_hash_hex(run.cluster_id)
+        ));
+        lines.push(format!(
+            "minimization.representative_artifact={}",
+            content_hash_hex(run.representative_artifact)
+        ));
+        lines.push(String::from("minimization.target_signature_key_BEGIN"));
+        lines.push(run.target_signature_key.canonical_material().to_owned());
+        lines.push(String::from("minimization.target_signature_key_END"));
+        lines.push(String::from("minimization.minimized_signature_key_BEGIN"));
+        lines.push(run.minimized_signature_key.canonical_material().to_owned());
+        lines.push(String::from("minimization.minimized_signature_key_END"));
+        lines.push(format!(
+            "minimization.seed={}",
+            run.minimization.seed.to_hex()
+        ));
+        lines.push(format!(
+            "minimization.target_fingerprint={}",
+            content_hash_hex(run.minimization.target_fingerprint)
+        ));
+        lines.push(format!(
+            "minimization.original_artifact={}",
+            content_hash_hex(run.minimization.original.artifact.id())
+        ));
+        lines.push(format!(
+            "minimization.minimized_artifact={}",
+            content_hash_hex(run.minimized_artifact())
+        ));
+        lines.push(format!(
+            "minimization.attempt_count={}",
+            run.minimization.attempts.len()
+        ));
+        lines.push(format!(
+            "minimization.accepted_attempt_count={}",
+            run.minimization.accepted_attempts()
+        ));
+        for (attempt_index, attempt) in run.minimization.attempts.iter().enumerate() {
+            push_minimization_attempt_lines(run_index, attempt_index, attempt, &mut lines);
+        }
+        lines.push(format!(
+            "minimization.signature_preserved={}",
+            run.preserves_signature()
+        ));
+    }
+    lines.join("\n")
+}
+
+fn push_minimization_attempt_lines(
+    run_index: usize,
+    attempt_index: usize,
+    attempt: &MinimizationAttempt,
+    lines: &mut Vec<String>,
+) {
+    let prefix = format!("minimization.{run_index}.attempt.{attempt_index}");
+    lines.push(format!("{prefix}.sequence={}", attempt.sequence));
+    lines.push(format!(
+        "{prefix}.removed_index_count={}",
+        attempt.removed_indices.len()
+    ));
+    for (removed_index_index, removed_index) in attempt.removed_indices.iter().enumerate() {
+        lines.push(format!(
+            "{prefix}.removed_index.{removed_index_index}={removed_index}"
+        ));
+    }
+    lines.push(format!(
+        "{prefix}.removed_decision_count={}",
+        attempt.removed_decisions.len()
+    ));
+    for (decision_index, decision) in attempt.removed_decisions.iter().enumerate() {
+        let mut decision_lines = Vec::new();
+        push_decision_lines(decision_index, decision, &mut decision_lines);
+        for decision_line in decision_lines {
+            lines.push(format!("{prefix}.removed_{decision_line}"));
+        }
+    }
+    lines.push(format!(
+        "{prefix}.candidate_artifact={}",
+        content_hash_hex(attempt.candidate_artifact)
+    ));
+    lines.push(format!(
+        "{prefix}.candidate_schedule={}",
+        content_hash_hex(attempt.candidate_schedule)
+    ));
+    lines.push(format!(
+        "{prefix}.replayed_state={}",
+        content_hash_hex(attempt.replayed_state)
+    ));
+    match attempt.observed_fingerprint {
+        Some(observed_fingerprint) => lines.push(format!(
+            "{prefix}.observed_fingerprint={}",
+            content_hash_hex(observed_fingerprint)
+        )),
+        None => lines.push(format!("{prefix}.observed_fingerprint=none")),
+    }
+    lines.push(format!("{prefix}.accepted={}", attempt.accepted));
 }
 
 fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {
