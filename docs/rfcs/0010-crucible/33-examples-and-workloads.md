@@ -713,6 +713,13 @@ seeded `virtio-rng` device, consumes the phase-1 booted guest's selected
 `crucible-httpget-workload` `WORKLOAD_RNG_HEX` transcript, and verifies that a
 host entropy source fails loudly before QEMU spawn.
 
+Implementation note (T-WL-3): `GuestWorkloadSeed` delivers an explicit workload
+seed as plain black-box scenario configuration with `wseed=0x...` on the guest
+command line. That command line is already part of the content-addressed
+`WorldNode` material, so changing the workload seed changes the scenario
+identity without changing the global `Seed`; the white-box path is never required
+for this delivery mode.
+
 ### B.3 Expressing load patterns with Crucible primitives
 
 The four classic load shapes a distributed test wants — **steady**, **spike**,
@@ -952,10 +959,15 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `WORKLOAD_RNG_HEX` transcripts are byte-identical, changed scenario seeds
   change the guest RNG stream, the phase-1 booted guest entropy gate remains
   wired in, and host/unseeded entropy mutations fail loudly.
-- [ ] **T-WL-3** Implement explicit-workload-seed delivery via plain content-
+- [x] **T-WL-3** Implement explicit-workload-seed delivery via plain content-
   addressed config (cmdline/file) and, optionally, the white-box channel; assert
   the black-box config path always suffices and the white-box path is never
   required. — satisfies [WL-6]; spec §B.2, §B.4.
+  Completed by `checks.crucible.phase4.workloadSeed`: `GuestWorkloadSeed`
+  renders as the plain `wseed=0x...` guest cmdline parameter, is validated in
+  `WorldNode` parsing, changes scenario identity through content-addressed world
+  material while leaving global `Seed` unchanged, and builds with
+  `WhiteBoxPolicy::Disabled`.
 - [ ] **T-WL-4** Implement the four load-pattern mappings (steady / spike via
   VT-rate or `StartNode` burst / cardinality growth / correlated-failure campaign)
   as guest-program-plus-scenario-parameter constructions with no load-generation
