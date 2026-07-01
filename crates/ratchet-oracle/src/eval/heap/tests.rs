@@ -5,9 +5,10 @@ use super::*;
 use crate::attrs::{AttrEntry, AttrPosition};
 use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcPromotionPolicy,
-    MinorGcRelocationDestination, MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge,
-    RememberedSet, ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcForwardingSlot,
+    MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy, MinorGcRelocationDestination,
+    MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge, RememberedSet,
+    ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
 use crate::runtime::builtins::lookup_builtin;
@@ -1604,6 +1605,187 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
             .expect("epoch advances")
     );
     assert!(commit.commit_plan().next_remembered_set().is_empty());
+
+    let short_commit = planned
+        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .expect("short-buffer commit plan builds");
+    let mut no_object_byte_copies: Vec<MinorGcObjectByteCopyBuffer<'_>> = Vec::new();
+    let mut no_forwarding_slots = Vec::new();
+    let mut short_references = [planned.reference_slots()[0].value()];
+    let mut short_remembered_set = remembered_set.clone();
+    assert_eq!(
+        short_commit
+            .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+                &mut no_object_byte_copies,
+                &mut no_forwarding_slots,
+                &mut short_references,
+                &mut short_remembered_set,
+            ))
+            .expect_err("short reference buffer is rejected before lower-level buffers"),
+        EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
+            expected: planned.reference_slots().len(),
+            actual: short_references.len(),
+        }
+    );
+    assert_eq!(short_references, [planned.reference_slots()[0].value()]);
+    assert_eq!(short_remembered_set, remembered_set);
+
+    let occupied_commit = planned
+        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .expect("occupied-slot commit plan builds");
+    let occupied_lambda_source_bytes = [9u8; 16];
+    let occupied_child_source_bytes = [8u8; 16];
+    let occupied_sibling_source_bytes = [7u8; 16];
+    let mut occupied_lambda_destination_bytes = [0u8; 16];
+    let mut occupied_child_destination_bytes = [0u8; 16];
+    let mut occupied_sibling_destination_bytes = [0u8; 16];
+    let mut occupied_object_byte_copies = [
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(lambda),
+            lambda_destination,
+            &occupied_lambda_source_bytes,
+            &mut occupied_lambda_destination_bytes,
+        ),
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(child),
+            child_destination,
+            &occupied_child_source_bytes,
+            &mut occupied_child_destination_bytes,
+        ),
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(sibling),
+            sibling_destination,
+            &occupied_sibling_source_bytes,
+            &mut occupied_sibling_destination_bytes,
+        ),
+    ];
+    let occupied_forwarded_value = ResolvedValueGeneration::Heap {
+        address: lambda_destination,
+        generation: HeapGeneration::Young,
+    };
+    let mut occupied_forwarding_slots = [
+        MinorGcForwardingSlot::with_forwarded_value(gc_address(lambda), occupied_forwarded_value),
+        MinorGcForwardingSlot::new(gc_address(child)),
+        MinorGcForwardingSlot::new(gc_address(sibling)),
+    ];
+    let mut occupied_references = planned.reference_values().collect::<Vec<_>>();
+    let mut occupied_remembered_set = remembered_set.clone();
+    assert_eq!(
+        occupied_commit
+            .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+                &mut occupied_object_byte_copies,
+                &mut occupied_forwarding_slots,
+                &mut occupied_references,
+                &mut occupied_remembered_set,
+            ))
+            .expect_err("occupied forwarding slot is rejected"),
+        EvalHeapError::GenerationalGc(GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+            index: 0,
+            address: gc_address(lambda),
+            actual: occupied_forwarded_value,
+        })
+    );
+    assert_eq!(occupied_lambda_destination_bytes, [0u8; 16]);
+    assert_eq!(occupied_child_destination_bytes, [0u8; 16]);
+    assert_eq!(occupied_sibling_destination_bytes, [0u8; 16]);
+    assert_eq!(
+        occupied_forwarding_slots[0].forwarded_value(),
+        Some(occupied_forwarded_value)
+    );
+    assert!(occupied_forwarding_slots[1].is_empty());
+    assert!(occupied_forwarding_slots[2].is_empty());
+    assert_eq!(
+        occupied_references,
+        planned.reference_values().collect::<Vec<_>>()
+    );
+    assert_eq!(occupied_remembered_set, remembered_set);
+
+    let expected_next_remembered_set = commit.commit_plan().next_remembered_set().clone();
+    let lambda_source_bytes = [1u8; 16];
+    let child_source_bytes = [2u8; 16];
+    let sibling_source_bytes = [3u8; 16];
+    let mut lambda_destination_bytes = [0u8; 16];
+    let mut child_destination_bytes = [0u8; 16];
+    let mut sibling_destination_bytes = [0u8; 16];
+    let mut object_byte_copies = [
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(lambda),
+            lambda_destination,
+            &lambda_source_bytes,
+            &mut lambda_destination_bytes,
+        ),
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(child),
+            child_destination,
+            &child_source_bytes,
+            &mut child_destination_bytes,
+        ),
+        MinorGcObjectByteCopyBuffer::new(
+            gc_address(sibling),
+            sibling_destination,
+            &sibling_source_bytes,
+            &mut sibling_destination_bytes,
+        ),
+    ];
+    let mut forwarding_slots = [
+        MinorGcForwardingSlot::new(gc_address(lambda)),
+        MinorGcForwardingSlot::new(gc_address(child)),
+        MinorGcForwardingSlot::new(gc_address(sibling)),
+    ];
+    let mut references = planned.reference_values().collect::<Vec<_>>();
+    let mut commit_remembered_set = remembered_set.clone();
+
+    commit
+        .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+            &mut object_byte_copies,
+            &mut forwarding_slots,
+            &mut references,
+            &mut commit_remembered_set,
+        ))
+        .expect("collector-poll commit buffers apply");
+
+    assert_eq!(lambda_destination_bytes, lambda_source_bytes);
+    assert_eq!(child_destination_bytes, child_source_bytes);
+    assert_eq!(sibling_destination_bytes, sibling_source_bytes);
+    assert_eq!(
+        forwarding_slots[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: lambda_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        forwarding_slots[1].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        forwarding_slots[2].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: sibling_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        references,
+        vec![
+            ResolvedValueGeneration::Heap {
+                address: lambda_destination,
+                generation: HeapGeneration::Young,
+            },
+            ResolvedValueGeneration::Heap {
+                address: child_destination,
+                generation: HeapGeneration::Young,
+            },
+            ResolvedValueGeneration::Heap {
+                address: sibling_destination,
+                generation: HeapGeneration::Young,
+            },
+        ]
+    );
+    assert_eq!(commit_remembered_set, expected_next_remembered_set);
 }
 
 #[test]
@@ -1794,6 +1976,96 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
         commit.commit_plan().next_remembered_set().edges(),
         &[RememberedEdge::new(gc_address(root), child_destination)]
     );
+
+    let mismatch_commit = planned
+        .commit_plan(&relocation_destinations, &nursery_layouts)
+        .expect("reference-mismatch commit plan builds");
+    let mismatch_child_source_bytes = [5u8; 16];
+    let mut mismatch_child_destination_bytes = [0u8; 16];
+    let mut mismatch_object_byte_copies = [MinorGcObjectByteCopyBuffer::new(
+        gc_address(child),
+        child_destination,
+        &mismatch_child_source_bytes,
+        &mut mismatch_child_destination_bytes,
+    )];
+    let mut mismatch_forwarding_slots = [MinorGcForwardingSlot::new(gc_address(child))];
+    let mut mismatch_references = planned.reference_values().collect::<Vec<_>>();
+    let expected_root_reference = mismatch_references[0];
+    mismatch_references[0] = ResolvedValueGeneration::Inline;
+    let mut mismatch_remembered_set = remembered_set.clone();
+    assert_eq!(
+        mismatch_commit
+            .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+                &mut mismatch_object_byte_copies,
+                &mut mismatch_forwarding_slots,
+                &mut mismatch_references,
+                &mut mismatch_remembered_set,
+            ))
+            .expect_err("same-length reference mismatch is rejected"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 0,
+            expected: expected_root_reference,
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(mismatch_child_destination_bytes, [0u8; 16]);
+    assert!(mismatch_forwarding_slots[0].is_empty());
+    assert_eq!(
+        mismatch_references,
+        vec![
+            ResolvedValueGeneration::Inline,
+            ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+        ]
+    );
+    assert_eq!(mismatch_remembered_set, remembered_set);
+
+    let expected_next_remembered_set = commit.commit_plan().next_remembered_set().clone();
+    let child_source_bytes = [4u8; 16];
+    let mut child_destination_bytes = [0u8; 16];
+    let mut object_byte_copies = [MinorGcObjectByteCopyBuffer::new(
+        gc_address(child),
+        child_destination,
+        &child_source_bytes,
+        &mut child_destination_bytes,
+    )];
+    let mut forwarding_slots = [MinorGcForwardingSlot::new(gc_address(child))];
+    let mut references = planned.reference_values().collect::<Vec<_>>();
+    let mut commit_remembered_set = remembered_set.clone();
+
+    commit
+        .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+            &mut object_byte_copies,
+            &mut forwarding_slots,
+            &mut references,
+            &mut commit_remembered_set,
+        ))
+        .expect("remembered-edge commit buffers apply");
+
+    assert_eq!(child_destination_bytes, child_source_bytes);
+    assert_eq!(
+        forwarding_slots[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        })
+    );
+    assert_eq!(
+        references,
+        vec![
+            ResolvedValueGeneration::Heap {
+                address: gc_address(root),
+                generation: HeapGeneration::Permanent,
+            },
+            ResolvedValueGeneration::Heap {
+                address: child_destination,
+                generation: HeapGeneration::Young,
+            },
+        ]
+    );
+    assert_eq!(commit_remembered_set, expected_next_remembered_set);
 }
 
 #[test]

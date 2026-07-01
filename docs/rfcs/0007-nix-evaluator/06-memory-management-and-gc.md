@@ -924,6 +924,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocate destination storage, bind byte buffers to real objects, install
       forwarding values, mutate live roots or fields, identify remembered source
       fields, publish remembered sets, or manage semispaces.
+- [x] Current allocation-poll commit-buffer bridge precursor:
+      `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` and
+      `AllocationCollectorPollMinorGcCommitBuffers` connect the allocation-poll
+      wrapper to the lower-level `MinorGcCommitPlan::apply_to_buffers` helper.
+      The bridge first checks that caller-owned reference values still match
+      every copied poll reference label/value, then delegates byte-copy buffers,
+      forwarding slots, reference rewrites, and remembered-set publication to
+      the validated commit plan. Tests cover successful empty-remembered-set
+      application, retained copied-young remembered-edge publication,
+      incomplete or mismatched reference-buffer rejection before lower-level
+      mutation, and lower-level stale-buffer error mapping without partial
+      mutation. This is still a caller-buffer application surface only: it does
+      not allocate destination storage, bind buffers to live heap objects or
+      headers, mutate tree-walk roots/fields in place, identify remembered
+      source fields, or manage semispaces.
 - [x] Current GC-stress safepoint-poll precursor:
       `ratchet-oracle::runtime::alloc::GcStressPolicy` lets worker and
       permanent-shared allocators mark allocation safepoints as collector-poll

@@ -21,7 +21,7 @@ use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
 use crate::heap::arena::{ArenaError, ArenaStats};
-use crate::heap::{GcHeapAddress, GenerationalGcError, HeapGeneration};
+use crate::heap::{GcHeapAddress, GenerationalGcError, HeapGeneration, ResolvedValueGeneration};
 use crate::list::NixList;
 use crate::runtime::alloc::{
     AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
@@ -39,12 +39,12 @@ mod roots;
 mod thunk;
 
 pub use roots::{
-    AllocationCollectorPollMinorGcCommitPlan, AllocationCollectorPollMinorGcPlan,
-    AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
-    AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
-    AllocationCollectorPollScan, CapturedRootOwner, EvalRoot, EvalRootSet, EvalRootSetError,
-    EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan,
-    StackMapSlot,
+    AllocationCollectorPollMinorGcCommitBuffers, AllocationCollectorPollMinorGcCommitPlan,
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollNurseryField,
+    AllocationCollectorPollNurseryFields, AllocationCollectorPollReferenceSlot,
+    AllocationCollectorPollReferenceSource, AllocationCollectorPollScan, CapturedRootOwner,
+    EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource,
+    HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -365,6 +365,30 @@ pub enum EvalHeapError {
         source_address: GcHeapAddress,
         /// The young target object that must be remembered.
         target_address: GcHeapAddress,
+    },
+    /// A collector-poll commit application did not receive one reference value
+    /// per copied reference-slot label.
+    #[error(
+        "collector-poll minor-GC commit reference buffer length {actual} does not match copied slot count {expected}"
+    )]
+    CollectorPollCommitReferenceSlotLengthMismatch {
+        /// The copied allocation-poll reference-slot count.
+        expected: usize,
+        /// The caller-supplied reference buffer length.
+        actual: usize,
+    },
+    /// A collector-poll commit application found a reference value that no
+    /// longer matches the copied reference-slot label.
+    #[error(
+        "collector-poll minor-GC commit reference slot {index} expected {expected:?}, found {actual:?}"
+    )]
+    CollectorPollCommitReferenceSlotMismatch {
+        /// The copied allocation-poll reference-slot index.
+        index: usize,
+        /// The reference value captured with the poll plan.
+        expected: ResolvedValueGeneration,
+        /// The caller-supplied reference value.
+        actual: ResolvedValueGeneration,
     },
     /// The generational minor-GC planner rejected the oracle snapshot.
     #[error("collector-poll minor-GC planning error: {0}")]

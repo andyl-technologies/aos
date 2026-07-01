@@ -5259,6 +5259,21 @@ and helps the oracle directly.
       forwarding-slot installation, live root/object-field mutation, concrete
       remembered-source field identity, remembered-set publication, and semispace
       management remain open.
+- [x] Current allocation-poll commit-buffer bridge precursor:
+      `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` and
+      `AllocationCollectorPollMinorGcCommitBuffers` expose a caller-buffer
+      application boundary at the allocation-poll layer. The bridge verifies
+      that caller-owned reference values still match every copied poll reference
+      label/value before delegating object-byte copies, forwarding-slot
+      installation, reference rewrites, and remembered-set publication to the
+      already validated lower-level `MinorGcCommitPlan`. Unit tests cover
+      successful empty-remembered-set application, retained copied-young
+      remembered-edge publication, incomplete or mismatched reference-buffer
+      rejection before lower-level mutation, and lower-level stale-buffer error
+      mapping without partial mutation. This remains a caller-buffer application
+      surface only; destination storage allocation, binding buffers to live heap
+      objects or object headers, tree-walk root/object-field mutation, concrete
+      remembered-source field identity, and semispace management remain open.
 - [x] Current GC-stress safepoint-poll precursor:
       `runtime::alloc::GcStressPolicy` classifies centralized worker and
       permanent-shared allocation safepoints under disabled, every-safepoint, or
@@ -5359,6 +5374,16 @@ and helps the oracle directly.
       commit plan, but still does not provide mutable tree-walk roots, copied
       object-field slots, old/permanent field slots, or stack-map writeback
       slots.
+- [x] Current `heap/roots.rs` commit-buffer bridge precursor:
+      `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` checks that
+      caller-owned reference values still match copied
+      `AllocationCollectorPollReferenceSlot` label values, then applies the
+      validated lower-level commit plan to caller-owned byte-copy buffers,
+      forwarding slots, reference values, and remembered-set state. This
+      connects the roots bridge to commit-buffer preflight/application tests,
+      but still does not provide live tree-walk root writeback, object-field
+      writeback, remembered-source field identity, old/permanent field mutation,
+      or JIT stack-map writeback slots.
 - [x] Current tree-walk safepoint root-set builder precursor:
       `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
       precise roots from explicit evaluator state: active lexical frame slots,

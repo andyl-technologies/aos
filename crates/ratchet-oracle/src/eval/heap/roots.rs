@@ -19,12 +19,12 @@ use std::ptr::NonNull;
 use super::*;
 use crate::eval::thunk::ThunkState;
 use crate::heap::{
-    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitPlan,
-    MinorGcForwardingPointerPlan, MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy,
-    MinorGcReferenceRewritePlan, MinorGcRelocationDestination, MinorGcRelocationPlan,
-    MinorGcRememberedSetRefreshPlan, NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout,
-    RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
-    ResolvedValueGeneration,
+    GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcCommitBuffers, MinorGcCommitPlan,
+    MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
+    MinorGcObjectCopyPlan, MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewritePlan,
+    MinorGcRelocationDestination, MinorGcRelocationPlan, MinorGcRememberedSetRefreshPlan,
+    NurseryObjectAge, NurseryObjectFields, NurseryObjectLayout, RememberedEdge, RememberedSet,
+    RememberedSetEpoch, RememberedSetSnapshot, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::AllocationCollectorPoll;
 use thiserror::Error;
@@ -1010,6 +1010,84 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     /// Returns the ordered lower-level minor-GC commit plan.
     pub const fn commit_plan(&self) -> &MinorGcCommitPlan {
         &self.commit_plan
+    }
+
+    /// Applies this allocation-poll commit plan to caller-owned buffers.
+    ///
+    /// The allocation-poll layer first checks that the caller supplied the same
+    /// reference values captured with the copied poll reference labels. It then
+    /// delegates byte-copy buffers, forwarding slots, reference values, and
+    /// remembered-set state to the lower-level validated commit plan. This
+    /// remains a caller-buffer bridge and does not bind those buffers to live
+    /// evaluator roots, heap-object fields, object headers, or semispace
+    /// storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the reference buffer no longer matches the
+    /// copied allocation-poll reference labels, or if any lower-level commit
+    /// buffer no longer matches the validated minor-GC commit plan.
+    pub fn apply_to_buffers(
+        self,
+        buffers: AllocationCollectorPollMinorGcCommitBuffers<'_, '_>,
+    ) -> Result<(), EvalHeapError> {
+        if buffers.references.len() != self.reference_slots.len() {
+            return Err(
+                EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
+                    expected: self.reference_slots.len(),
+                    actual: buffers.references.len(),
+                },
+            );
+        }
+        for (index, (slot, actual)) in self
+            .reference_slots
+            .iter()
+            .zip(buffers.references.iter().copied())
+            .enumerate()
+        {
+            let expected = slot.value();
+            if actual != expected {
+                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                    index,
+                    expected,
+                    actual,
+                });
+            }
+        }
+
+        self.commit_plan
+            .apply_to_buffers(MinorGcCommitBuffers::new(
+                buffers.object_byte_copies,
+                buffers.forwarding_slots,
+                buffers.references,
+                buffers.remembered_set,
+            ))
+            .map_err(EvalHeapError::from)
+    }
+}
+
+/// Caller-owned buffers for applying an allocation-poll minor-GC commit plan.
+pub struct AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
+    object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+    forwarding_slots: &'a mut [MinorGcForwardingSlot],
+    references: &'a mut [ResolvedValueGeneration],
+    remembered_set: &'a mut RememberedSet,
+}
+
+impl<'a, 'bytes> AllocationCollectorPollMinorGcCommitBuffers<'a, 'bytes> {
+    /// Creates caller-owned buffers for an allocation-poll commit application.
+    pub fn new(
+        object_byte_copies: &'a mut [MinorGcObjectByteCopyBuffer<'bytes>],
+        forwarding_slots: &'a mut [MinorGcForwardingSlot],
+        references: &'a mut [ResolvedValueGeneration],
+        remembered_set: &'a mut RememberedSet,
+    ) -> Self {
+        Self {
+            object_byte_copies,
+            forwarding_slots,
+            references,
+            remembered_set,
+        }
     }
 }
 
