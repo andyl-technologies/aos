@@ -95,6 +95,90 @@ pub struct ArenaStats {
     pub used_bytes: usize,
 }
 
+/// A LIFO marker for a future lexical allocation subregion.
+///
+/// Markers are produced by [`BumpArena::region_mark`] and can be passed back to
+/// [`BumpArena::pop_region_to_mark`] once the caller has proven that every
+/// allocation above the marker is dead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaRegionMark {
+    chunk_count: usize,
+    cursor: usize,
+    next_chunk_bytes: usize,
+}
+
+impl ArenaRegionMark {
+    /// Returns the number of chunks present when the marker was captured.
+    pub const fn chunk_count(self) -> usize {
+        self.chunk_count
+    }
+
+    /// Returns the bump cursor in the last retained chunk.
+    pub const fn cursor(self) -> usize {
+        self.cursor
+    }
+}
+
+/// Accounting returned after popping a lexical allocation subregion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaRegionPopReport {
+    before: ArenaStats,
+    after: ArenaStats,
+    used_bytes_released: usize,
+    released_mapped_bytes: usize,
+    dead_range_bytes: usize,
+    dead_range_outcome: MemoryAdviceOutcome,
+}
+
+impl ArenaRegionPopReport {
+    const fn new(
+        before: ArenaStats,
+        after: ArenaStats,
+        released_mapped_bytes: usize,
+        dead_range_bytes: usize,
+        dead_range_outcome: MemoryAdviceOutcome,
+    ) -> Self {
+        Self {
+            before,
+            after,
+            used_bytes_released: before.used_bytes.saturating_sub(after.used_bytes),
+            released_mapped_bytes,
+            dead_range_bytes,
+            dead_range_outcome,
+        }
+    }
+
+    /// Returns arena accounting before the region pop.
+    pub const fn before_stats(self) -> ArenaStats {
+        self.before
+    }
+
+    /// Returns arena accounting after the region pop.
+    pub const fn after_stats(self) -> ArenaStats {
+        self.after
+    }
+
+    /// Returns used bytes made unavailable by cursor rewind or chunk release.
+    pub const fn used_bytes_released(self) -> usize {
+        self.used_bytes_released
+    }
+
+    /// Returns mapped bytes released by dropping whole chunks above the marker.
+    pub const fn released_mapped_bytes(self) -> usize {
+        self.released_mapped_bytes
+    }
+
+    /// Returns retained-chunk bytes made dead by rewinding the bump cursor.
+    pub const fn dead_range_bytes(self) -> usize {
+        self.dead_range_bytes
+    }
+
+    /// Returns the advisory outcome for the retained-chunk dead range.
+    pub const fn dead_range_outcome(self) -> MemoryAdviceOutcome {
+        self.dead_range_outcome
+    }
+}
+
 /// Summary of memory advice applied to one bump arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArenaMemoryAdviceReport {
@@ -238,6 +322,86 @@ impl BumpArena {
     /// Returns whether no allocation has been served yet.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
+    }
+
+    /// Captures the current bump position for a future lexical subregion pop.
+    pub fn region_mark(&self) -> ArenaRegionMark {
+        let (chunk_count, cursor) = self
+            .chunks
+            .last()
+            .map(|chunk| (self.chunks.len(), chunk.cursor))
+            .unwrap_or((0, 0));
+        ArenaRegionMark {
+            chunk_count,
+            cursor,
+            next_chunk_bytes: self.next_chunk_bytes,
+        }
+    }
+
+    /// Rewinds this arena to a previously captured lexical subregion marker.
+    ///
+    /// The retained chunk's newly-dead suffix receives
+    /// [`MemoryAdviceKind::Dead`] advice. Whole chunks above the marker are
+    /// dropped, which releases their mappings through [`Drop`] instead of
+    /// issuing advice first. The marker also restores the arena's geometric
+    /// next-chunk size so temporary large regions do not perturb later growth.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove that `mark` was captured from this arena, describes
+    /// the current innermost live region in LIFO order, and has not been made
+    /// stale by an intervening pop. The caller must also prove that no live
+    /// [`HeapObject`] handle, [`Value`], or typed heap side-table entry still
+    /// refers to any allocation performed after `mark` was captured. Structural
+    /// validation does not prove marker freshness, arena identity, or LIFO
+    /// discipline. Passing a stale or cross-arena marker, or continuing to use a
+    /// rewound allocation, can produce dangling logical heap references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::InvalidRegionMark`] if the marker cannot describe
+    /// the arena's current prefix.
+    pub unsafe fn pop_region_to_mark(
+        &mut self,
+        mark: ArenaRegionMark,
+    ) -> Result<ArenaRegionPopReport, ArenaError> {
+        self.validate_region_mark(mark)?;
+
+        let before = self.stats();
+        let released_mapped_bytes = self.chunks[mark.chunk_count..]
+            .iter()
+            .fold(0usize, |bytes, chunk| {
+                bytes.saturating_add(chunk.mapped_bytes())
+            });
+        let mut dead_range_bytes = 0usize;
+        let mut dead_range_outcome = MemoryAdviceOutcome::EmptyRange {
+            kind: MemoryAdviceKind::Dead,
+        };
+
+        if mark.chunk_count == 0 {
+            self.chunks.clear();
+        } else {
+            let retained_index = mark.chunk_count - 1;
+            let retained_cursor = self.chunks[retained_index].cursor;
+            dead_range_bytes = retained_cursor.saturating_sub(mark.cursor);
+            if dead_range_bytes != 0 {
+                let range = self.chunks[retained_index].range_between(mark.cursor, retained_cursor);
+                dead_range_outcome = advise_range(MemoryAdviceKind::Dead, range);
+            }
+            self.chunks.truncate(mark.chunk_count);
+            if let Some(chunk) = self.chunks.last_mut() {
+                chunk.cursor = mark.cursor;
+            }
+        }
+        self.next_chunk_bytes = mark.next_chunk_bytes;
+
+        Ok(ArenaRegionPopReport::new(
+            before,
+            self.stats(),
+            released_mapped_bytes,
+            dead_range_bytes,
+            dead_range_outcome,
+        ))
     }
 
     /// Advises unused bytes at the end of every arena chunk.
@@ -422,6 +586,23 @@ impl BumpArena {
         }
         Ok(())
     }
+
+    fn validate_region_mark(&self, mark: ArenaRegionMark) -> Result<(), ArenaError> {
+        if mark.chunk_count == 0 {
+            if mark.cursor == 0 {
+                return Ok(());
+            }
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        if mark.chunk_count > self.chunks.len() {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let retained = &self.chunks[mark.chunk_count - 1];
+        if mark.cursor > retained.cursor {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        Ok(())
+    }
 }
 
 /// Access to the Tier-A arena owned by the current evaluator worker thread.
@@ -597,6 +778,20 @@ impl Chunk {
     fn supported_unused_tail_advice_bytes(&self, page_size: usize) -> usize {
         supported_advice_bytes_in_range(self.unused_tail_range(), page_size)
     }
+
+    fn range_between(&self, start: usize, end: usize) -> MemoryAdviceRange {
+        if start >= end || end > self.mapped_bytes {
+            return MemoryAdviceRange::empty();
+        }
+        let ptr = self.ptr.as_ptr().wrapping_add(start);
+        let Some(ptr) = std::ptr::NonNull::new(ptr) else {
+            return MemoryAdviceRange::empty();
+        };
+        // SAFETY: `start..end` has been validated to lie within this chunk's
+        // live anonymous mapping. Callers use this only for allocation ranges
+        // proven dead by a region-pop marker.
+        unsafe { MemoryAdviceRange::from_raw_parts(ptr, end - start) }
+    }
 }
 
 impl Drop for Chunk {
@@ -653,6 +848,9 @@ pub enum ArenaError {
     /// A chunk base pointer was unexpectedly null.
     #[error("arena chunk base pointer was null")]
     NullChunkPointer,
+    /// A lexical subregion marker did not match the current arena prefix.
+    #[error("invalid arena region mark")]
+    InvalidRegionMark,
 }
 
 fn validate_align(align: usize) -> Result<(), ArenaError> {
@@ -800,6 +998,117 @@ mod tests {
             .aos_alloc_raw(page_size, 1, 8)
             .expect("advised tail remains allocatable");
         assert!(second.ptr.as_ptr() as usize > first.ptr.as_ptr() as usize);
+    }
+
+    #[test]
+    fn region_pop_rewinds_current_chunk_and_advises_dead_range() {
+        let page_size = system_page_size().expect("page size");
+        let chunk_bytes = page_size.checked_mul(3).expect("three pages fit");
+        let mut arena = BumpArena::with_initial_chunk_bytes(chunk_bytes).expect("arena creates");
+        arena
+            .aos_alloc_raw(page_size, 8, 1)
+            .expect("prefix allocation succeeds");
+        let mark = arena.region_mark();
+        let dead = arena
+            .aos_alloc_raw(page_size, 8, 2)
+            .expect("region allocation succeeds");
+        let before = arena.stats();
+
+        // SAFETY: the test never observes `dead` after popping the region, and
+        // no typed side table exists for this raw arena allocation.
+        let report = unsafe { arena.pop_region_to_mark(mark) }.expect("region pop succeeds");
+
+        assert_eq!(report.before_stats(), before);
+        assert_eq!(report.after_stats(), arena.stats());
+        assert_eq!(report.after_stats().chunks, 1);
+        assert_eq!(report.after_stats().used_bytes, page_size);
+        assert_eq!(report.used_bytes_released(), page_size);
+        assert_eq!(report.released_mapped_bytes(), 0);
+        assert_eq!(report.dead_range_bytes(), page_size);
+        match report.dead_range_outcome() {
+            MemoryAdviceOutcome::Applied {
+                kind: MemoryAdviceKind::Dead,
+            }
+            | MemoryAdviceOutcome::Unsupported {
+                kind: MemoryAdviceKind::Dead,
+            }
+            | MemoryAdviceOutcome::EmptyRange {
+                kind: MemoryAdviceKind::Dead,
+            }
+            | MemoryAdviceOutcome::Rejected {
+                kind: MemoryAdviceKind::Dead,
+                ..
+            } => {}
+            other => panic!("unexpected dead-range advice outcome: {other:?}"),
+        }
+
+        let reused = arena
+            .aos_alloc_raw(page_size, 8, 3)
+            .expect("rewound space is reusable");
+        assert_eq!(reused.ptr, dead.ptr);
+    }
+
+    #[test]
+    fn region_pop_drops_later_chunks_and_restores_growth_state() {
+        let mut arena = BumpArena::with_initial_chunk_bytes(16).expect("arena creates");
+        arena
+            .aos_alloc_raw(16, 8, 1)
+            .expect("first chunk allocation succeeds");
+        let mark = arena.region_mark();
+        arena
+            .aos_alloc_raw(24, 8, 2)
+            .expect("second chunk allocation succeeds");
+        let before = arena.stats();
+        assert_eq!(before.chunks, 2);
+        assert_eq!(before.reserved_bytes, 48);
+
+        // SAFETY: the allocation in the second chunk is not used after this
+        // point, so the marker describes a dead suffix of the arena.
+        let report = unsafe { arena.pop_region_to_mark(mark) }.expect("region pop succeeds");
+
+        assert_eq!(report.before_stats(), before);
+        assert_eq!(report.after_stats().chunks, 1);
+        assert_eq!(report.after_stats().reserved_bytes, 16);
+        assert_eq!(report.after_stats().used_bytes, 16);
+        assert_eq!(report.used_bytes_released(), 24);
+        assert!(report.released_mapped_bytes() >= 32);
+        assert_eq!(report.dead_range_bytes(), 0);
+        assert_eq!(
+            report.dead_range_outcome(),
+            MemoryAdviceOutcome::EmptyRange {
+                kind: MemoryAdviceKind::Dead,
+            }
+        );
+
+        arena
+            .aos_alloc_raw(24, 8, 3)
+            .expect("post-pop allocation succeeds");
+        let after_reuse = arena.stats();
+        assert_eq!(after_reuse.chunks, 2);
+        assert_eq!(
+            after_reuse.reserved_bytes, 48,
+            "region pop restores next chunk growth to the marker state"
+        );
+    }
+
+    #[test]
+    fn invalid_region_mark_is_rejected_without_side_effects() {
+        let mut arena = BumpArena::with_initial_chunk_bytes(64).expect("arena creates");
+        arena.aos_alloc_raw(8, 8, 1).expect("allocation succeeds");
+        let before = arena.stats();
+        let invalid = ArenaRegionMark {
+            chunk_count: 1,
+            cursor: before.used_bytes + 8,
+            next_chunk_bytes: 64,
+        };
+
+        // SAFETY: this intentionally invalid marker must be rejected before any
+        // arena mutation can invalidate allocations.
+        assert_eq!(
+            unsafe { arena.pop_region_to_mark(invalid) },
+            Err(ArenaError::InvalidRegionMark)
+        );
+        assert_eq!(arena.stats(), before);
     }
 
     #[test]

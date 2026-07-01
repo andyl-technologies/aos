@@ -5472,6 +5472,17 @@ and helps the oracle directly.
       telemetry only: allocation-time budget polling, force-cache identity,
       output values, `.drv` materialization, cold-reclaim accounting,
       `MADV_PAGEOUT`, and CA-store spill/rematerialization remain unchanged.
+- [x] Current arena region-pop primitive precursor:
+      `ratchet-value::heap::arena` now exposes `ArenaRegionMark` and
+      `BumpArena::pop_region_to_mark` for proof-gated lexical subregion
+      reclamation. The primitive rewinds the retained chunk to the marker,
+      drops later chunks, restores the saved next-chunk growth state, and
+      reports released used bytes, unmapped bytes, and the dead-advice outcome
+      for the newly-dead retained-chunk range. Linux lowers that advice to
+      `MADV_DONTNEED`; non-Linux and sub-page ranges remain advisory skip
+      outcomes. This is not yet
+      tree-walk allocation placement or IR escape-analysis wiring; the caller
+      must still prove allocations above the marker are dead.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for
@@ -6214,6 +6225,15 @@ it ships).**
       speculable-effect, and bounded-lexical-lifetime proofs before selecting a
       pop-safe lexical subregion; permanent shared values bypass region pop; all
       missing proofs fall back to the active root arena or daemon GC heap.
+- [x] Current arena region-pop primitive precursor: `BumpArena` can capture a
+      lexical subregion marker and, behind an explicit caller proof, pop back to
+      it by rewinding the retained chunk, unmapping later chunks, restoring the
+      arena growth state, and advising the newly-dead retained range as dead.
+      Linux lowers that hint to `MADV_DONTNEED`; unsupported and sub-page ranges
+      remain advisory outcomes. The primitive is covered by same-chunk
+      rewind/reuse, whole-chunk release, growth restoration, and invalid-marker
+      tests, but remains disconnected from IR allocation-site placement and
+      typed heap side-table invalidation.
 - [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
       (ZGC/Shenandoah-style colored pointers + load barriers), a committed
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode

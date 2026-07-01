@@ -1155,6 +1155,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       `.drv` materialization, cold-reclaim accounting, `MADV_PAGEOUT`, or
       CA-store spill/rematerialization.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
+- [x] Current arena region-pop primitive precursor:
+      `ratchet-value::heap::arena` exposes `ArenaRegionMark` plus the
+      proof-gated `BumpArena::pop_region_to_mark` primitive. The pop rewinds the
+      retained chunk to the marker, drops whole chunks allocated above the
+      marker, restores the arena's next-chunk growth state, and reports released
+      used bytes, unmapped bytes, and the dead-advice outcome for the newly-dead
+      retained-chunk byte range. Linux lowers that advice to `MADV_DONTNEED`;
+      non-Linux and sub-page ranges remain advisory skip outcomes. This is an
+      allocator primitive only:
+      IR escape/region analysis, tree-walk allocation placement, and typed heap
+      side-table invalidation are not wired yet, so the full row remains open.
 
 ### Tier B — precise generational copying GC (§4)
 
@@ -1439,6 +1450,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       no-latent-force, speculable-effect, bounded-lexical-lifetime proofs select
       `LexicalSubregion`; permanent shared values bypass region pop, and every
       missing proof falls back to the active root arena or daemon GC heap.
+- [x] Current arena region-pop primitive precursor: `BumpArena` can capture
+      `ArenaRegionMark`s and, behind an explicit caller proof, pop back to a
+      marker by rewinding the retained chunk, dropping later chunks, restoring
+      growth state, and advising the newly-dead retained-chunk range as
+      dead. Linux lowers that hint to `MADV_DONTNEED`; unsupported and sub-page
+      ranges remain advisory outcomes. Tests pin same-chunk rewind/reuse,
+      whole-chunk release, growth restoration, invalid-marker rejection, and
+      platform-independent advice accounting. This does not yet connect the
+      placement policy to IR allocation sites or typed heap side-table
+      invalidation.
 - [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
 
 ### Concurrent, low-pause collection (§6)

@@ -19,8 +19,8 @@ pub use advice::{
     advise_range,
 };
 pub use arena::{
-    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaStats, BumpArena, HeapObjectKind,
-    ThreadLocalBumpArena,
+    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
+    ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
 };
 pub use budget::{
     DEFAULT_BUDGET_HEADROOM_DENOMINATOR, HeapMemoryBudget, HeapMemoryBudgetError,
