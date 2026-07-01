@@ -2520,15 +2520,23 @@ fn extract_sb_signer_cert_sha256(uki: &Path) -> Result<Option<String>> {
         .with_context(|| format!("running sbverify --list {}", uki.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // An unsigned binary carries no Authenticode facts to catalog, so treat it
+    // as "no facts" rather than a publish failure. sbverify signals this with a
+    // "No signature table present" notice, but its *exit status* is not a
+    // reliable discriminator: some sbsigntools builds exit non-zero, while the
+    // AOS build prints the notice on stdout and exits 0. Match the message on
+    // either stream, independent of exit status, before treating a non-zero
+    // exit as a genuine failure.
+    if stdout.contains("No signature")
+        || stderr.contains("No signature")
+        || stdout.contains("no signature")
+        || stderr.contains("no signature")
+    {
+        return Ok(None);
+    }
+
     if !output.status.success() {
-        // sbverify reports an unsigned binary; treat that as "no facts"
-        // rather than a publish failure.
-        if stderr.contains("No signature")
-            || stdout.contains("No signature")
-            || stderr.contains("no signature")
-        {
-            return Ok(None);
-        }
         bail!(
             "sbverify --list {} failed: {}",
             uki.display(),
