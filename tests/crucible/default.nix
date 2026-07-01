@@ -1251,16 +1251,23 @@ in rec {
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
-        gate = redGate {
+        gate = import ./phase6-fork-replay-oracle.nix {
+          inherit pkgs lib;
           attrPath = "checks.crucible.phase6.gates.replayOracle";
-          gateName = "gate:replay-oracle";
-          owner = "crucible";
-          phase = "phase6";
-          taskIds = ["T-PLAN-3" "T-HARN-12"];
-          reason = "advanced replay oracle workload gate is intentionally pending";
-          dependencies = [phase5.gates.controlResponsive.rawGate];
+          taskIds = ["T-ADV-4"];
+          dependencies = [
+            phase4.gates.replayOracle.rawGate
+            phase4.gates.e2eDeterminism.rawGate
+            phase6.explorationFork.rawGate
+            phase6.restoreStrategies.rawGate
+          ];
         };
-        dependencies = [phase5.gates.controlResponsive];
+        dependencies = [
+          phase4.gates.replayOracle
+          phase4.gates.e2eDeterminism
+          phase6.explorationFork
+          phase6.restoreStrategies
+        ];
       };
     };
   };
