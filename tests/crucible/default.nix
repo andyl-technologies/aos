@@ -1549,6 +1549,34 @@ in rec {
         phase6.reproductionArtifacts
       ];
     };
+    failureSignature = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.failureSignature";
+      gate = import ./phase6-failure-signature.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.failureSignature";
+        taskIds = ["T-TRI-1"];
+        dependencies = [
+          phase1.gates.contentAddress.rawGate
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase4.assertionViolationRecords
+          phase4.assertionViolationReproduction
+          phase4.eventLogUnified
+          phase6.reproductionArtifacts.rawGate
+          phase6.minimization.rawGate
+        ];
+      };
+      dependencies = [
+        phase1.gates.contentAddress
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase4.assertionViolationRecords
+        phase4.assertionViolationReproduction
+        phase4.eventLogUnified
+        phase6.reproductionArtifacts
+        phase6.minimization
+      ];
+    };
     unifyingView = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.unifyingView";
       gate = import ./phase6-unifying-view.nix {

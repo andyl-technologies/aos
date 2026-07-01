@@ -26,12 +26,14 @@ use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
     EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, ScheduledEventPayload, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, event_log_causal_projection,
+    EventLogCoverageFeedbackConsumer, EventSource, ScheduledEventPayload, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, coverage_fingerprint_from_event_log,
+    event_log_causal_projection,
 };
 use crate::trigger::{
-    Action, Condition, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event,
-    EventGraph, EventGraphError, FirePolicy, LogLevel, ObservableEventPayload,
+    Action, AssertionQuantifierKind, Condition, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, Event, EventGraph, EventGraphError, FirePolicy, HostAssertionViolation,
+    LogLevel, ObservableEventPayload,
 };
 
 mod canonical;
@@ -67,6 +69,8 @@ const FAULT_PLAN_BINARY_SENTINEL: u64 = u64::MAX - 1;
 const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.v1";
 const COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN: &str = "crucible.coverage-guided-fuzz.sample.v1";
 const COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN: &str = "crucible.coverage-guided-fuzz.override.v1";
+const FAILURE_SIGNATURE_DOMAIN: &str = "crucible.failure-signature.v1";
+const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
 const ADAPTIVE_CONFIRMED_FAILURE_REWARD: u64 = 1_000_000_000_000;
 
@@ -3718,12 +3722,14 @@ impl ReproductionArtifact {
         I: IntoIterator<Item = ContentHash>,
     {
         let projection = crate::scheduler::event_log_causal_projection(entries);
+        let coverage_fingerprint = coverage_fingerprint_from_event_log(entries);
         ReproductionEventLogArtifact::from_causal_projection(
             self.id,
             fork_point,
             projection.content_hash(),
             projection.canonical_bytes().len(),
             projection.len(),
+            coverage_fingerprint,
             shared_store_segments,
         )
     }
@@ -3748,6 +3754,8 @@ impl ReproductionArtifact {
         let reduction = self.replay()?;
         let reproduced_entries = replay_log(self, &reduction)?;
         let reproduced = crate::scheduler::event_log_causal_projection(&reproduced_entries);
+        let reproduced_coverage_fingerprint =
+            coverage_fingerprint_from_event_log(&reproduced_entries);
         Ok(ReproductionEventLogReplay {
             reduction,
             event_log_artifact: event_log.id(),
@@ -3759,6 +3767,8 @@ impl ReproductionArtifact {
             reproduced_causal_bytes: reproduced.canonical_bytes().len(),
             expected_causal_events: event_log.causal_subsequence_events,
             reproduced_causal_events: reproduced.len(),
+            expected_coverage_fingerprint: event_log.coverage_fingerprint,
+            reproduced_coverage_fingerprint,
             shared_store_segments: event_log.shared_store_segments.clone(),
         })
     }
@@ -3997,6 +4007,461 @@ impl FindingReproductionArtifact {
     }
 }
 
+/// Closed failure discriminant carried by a triage signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FailureKind {
+    /// The recorded run contains a failed assertion or property violation.
+    PropertyViolation,
+    /// The recorded run diverged from deterministic replay and was localized by bisection.
+    Divergence,
+}
+
+/// Stable property identity carried by a property-violation signature.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailurePropertyKey {
+    /// Stable assertion or property identifier read from the violation record.
+    pub id: AssertionId,
+    /// Quantifier or guest marker flavor read from the violation record.
+    pub quantifier: AssertionQuantifierKind,
+}
+
+/// First attributable point for one recorded failure.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailureFirstFailingPoint {
+    /// Open-set event kind attached to the violation site or bisection point.
+    pub event_kind: String,
+    /// Scenario node that owns the failure site, when the record is node-local.
+    pub faulting_node: Option<NodeId>,
+}
+
+/// Bucketed coverage class used by the first failure-signature model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FailureCoverageClass {
+    /// Versioned bucketing algorithm used for this class.
+    pub algorithm: &'static str,
+    /// Coarse deterministic bucket derived from the coverage fingerprint.
+    pub bucket: u16,
+}
+
+impl FailureCoverageClass {
+    /// Builds a bucketed class from a deterministic coverage fingerprint.
+    #[must_use]
+    pub fn from_coverage_fingerprint(coverage_fingerprint: ContentHash) -> Self {
+        Self {
+            algorithm: FAILURE_COVERAGE_CLASS_ALGORITHM,
+            bucket: u16::from_be_bytes([
+                coverage_fingerprint.bytes[0],
+                coverage_fingerprint.bytes[1],
+            ]),
+        }
+    }
+}
+
+/// Checked event-log evidence for failure-signature construction.
+///
+/// This value binds the supplied event-log entries to the
+/// [`ReproductionEventLogArtifact`] recorded for the same reproduction artifact,
+/// and caches only deterministic projections used by signature construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureRecordedEventLog {
+    artifact: ContentHash,
+    event_log_artifact: ContentHash,
+    causal_subsequence: ContentHash,
+    causal_subsequence_events: usize,
+    coverage_fingerprint: ContentHash,
+    projection: EventLogCausalProjection,
+}
+
+impl FailureRecordedEventLog {
+    /// Builds checked signature evidence from recorded event-log entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when `finding`,
+    /// `event_log_artifact`, and the supplied `event_log` do not identify the
+    /// same reproduction artifact and causal subsequence. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when non-hash projection
+    /// metadata is inconsistent.
+    pub fn from_recorded_artifact(
+        finding: &FindingReproductionArtifact,
+        event_log_artifact: &ReproductionEventLogArtifact,
+        event_log: &[SchedulerEventLogEntry],
+    ) -> Result<Self, EngineError> {
+        validate_finding_static_identity(finding)?;
+        let artifact = finding.artifact.id();
+        if event_log_artifact.reproduction_artifact != artifact {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: artifact,
+                actual: event_log_artifact.reproduction_artifact,
+            });
+        }
+
+        let projection = event_log_causal_projection(event_log);
+        if projection.content_hash() != event_log_artifact.causal_subsequence {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: event_log_artifact.causal_subsequence,
+                actual: projection.content_hash(),
+            });
+        }
+        if projection.canonical_bytes().len() != event_log_artifact.causal_subsequence_bytes {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-signature.event-log",
+                reason: "causal subsequence byte length does not match recorded metadata",
+            });
+        }
+        if projection.len() != event_log_artifact.causal_subsequence_events {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-signature.event-log",
+                reason: "causal subsequence event count does not match recorded metadata",
+            });
+        }
+        let coverage_fingerprint = coverage_fingerprint_from_event_log(event_log);
+        if coverage_fingerprint != event_log_artifact.coverage_fingerprint {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: event_log_artifact.coverage_fingerprint,
+                actual: coverage_fingerprint,
+            });
+        }
+
+        Ok(Self {
+            artifact,
+            event_log_artifact: event_log_artifact.id(),
+            causal_subsequence: projection.content_hash(),
+            causal_subsequence_events: projection.len(),
+            coverage_fingerprint: event_log_artifact.coverage_fingerprint,
+            projection,
+        })
+    }
+
+    /// Returns the reproduction artifact this checked log belongs to.
+    #[must_use]
+    pub fn artifact(&self) -> ContentHash {
+        self.artifact
+    }
+
+    /// Returns the content address of the event-log metadata record.
+    #[must_use]
+    pub fn event_log_artifact(&self) -> ContentHash {
+        self.event_log_artifact
+    }
+
+    /// Returns the recorded causal-subsequence hash.
+    #[must_use]
+    pub fn causal_subsequence(&self) -> ContentHash {
+        self.causal_subsequence
+    }
+
+    /// Returns the number of causal events retained by the projection.
+    #[must_use]
+    pub fn causal_subsequence_events(&self) -> usize {
+        self.causal_subsequence_events
+    }
+
+    /// Returns the recorded deterministic coverage fingerprint validated against the log.
+    #[must_use]
+    pub fn coverage_fingerprint(&self) -> ContentHash {
+        self.coverage_fingerprint
+    }
+
+    /// Returns the bucketed failure coverage class for this recorded log.
+    #[must_use]
+    pub fn coverage_class(&self) -> FailureCoverageClass {
+        FailureCoverageClass::from_coverage_fingerprint(self.coverage_fingerprint)
+    }
+}
+
+/// Property-violation source record consumed by failure-signature construction.
+///
+/// This wraps the deterministic host assertion violation record. The signature
+/// constructor reads the property id, quantifier, node, and site kind from this
+/// value rather than replaying the guest.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailurePropertyViolationRecord {
+    /// Deterministic assertion violation produced from the retained assertion log.
+    pub violation: HostAssertionViolation,
+}
+
+impl FailurePropertyViolationRecord {
+    /// Builds a signature input record from an assertion violation.
+    #[must_use]
+    pub fn new(violation: HostAssertionViolation) -> Self {
+        Self { violation }
+    }
+
+    /// Returns the property key read from the violation record.
+    #[must_use]
+    pub fn property_key(&self) -> FailurePropertyKey {
+        FailurePropertyKey {
+            id: self.violation.assertion.clone(),
+            quantifier: self.violation.quantifier,
+        }
+    }
+
+    /// Returns the first failing point read from the violation record.
+    #[must_use]
+    pub fn first_failing_point(&self) -> FailureFirstFailingPoint {
+        FailureFirstFailingPoint {
+            event_kind: self.violation.event_kind.clone(),
+            faulting_node: self.violation.node.clone(),
+        }
+    }
+}
+
+/// Deterministic, content-addressed root-cause signature for one finding.
+///
+/// The tuple is computed from stored finding artifacts, violation records, and
+/// recorded event-log projections only. It deliberately omits discovery path,
+/// discovering campaign, finding fingerprint, wall-clock data, and raw
+/// observational log entries.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureSignature {
+    /// Closed failure kind for this finding.
+    pub failure_kind: FailureKind,
+    /// Violated property identity for property failures, or `None` for divergence.
+    pub property: Option<FailurePropertyKey>,
+    /// First attributable point read from the violation record or bisection point.
+    pub first_failing_point: FailureFirstFailingPoint,
+    /// Bucketed class derived from the deterministic coverage fingerprint.
+    pub coverage_class: FailureCoverageClass,
+    /// Optional digest of the cone-scoped recorded causal slice.
+    ///
+    /// This remains `None` until the T-TRI-2 cone normalization defines the
+    /// stable slice boundary.
+    pub causal_slice_hash: Option<ContentHash>,
+}
+
+impl FailureSignature {
+    /// Builds a property-violation signature from recorded artifacts only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] if the finding's embedded
+    /// artifact, event-log metadata, violation record, replay metadata, and
+    /// configuration id disagree before any signature field is read.
+    pub fn from_recorded_property_violation(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        violation: &FailurePropertyViolationRecord,
+    ) -> Result<Self, EngineError> {
+        validate_finding_static_identity(finding)?;
+        validate_recorded_event_log_for_finding(finding, event_log)?;
+        validate_violation_for_finding(finding, violation)?;
+        Ok(Self {
+            failure_kind: FailureKind::PropertyViolation,
+            property: Some(violation.property_key()),
+            first_failing_point: violation.first_failing_point(),
+            coverage_class: event_log.coverage_class(),
+            causal_slice_hash: None,
+        })
+    }
+
+    /// Builds a divergence signature from a recorded bisection point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] if the finding's embedded
+    /// artifact, event-log metadata, replay metadata, and configuration id
+    /// disagree before any signature field is read. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when `divergence` is not
+    /// present in the checked recorded causal projection.
+    pub fn from_recorded_divergence(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        divergence: &EventLogCausalDivergencePoint,
+    ) -> Result<Self, EngineError> {
+        validate_finding_static_identity(finding)?;
+        validate_recorded_event_log_for_finding(finding, event_log)?;
+        validate_divergence_point(event_log, divergence)?;
+        Ok(Self {
+            failure_kind: FailureKind::Divergence,
+            property: None,
+            first_failing_point: FailureFirstFailingPoint {
+                event_kind: divergence.kind.clone(),
+                faulting_node: divergence_faulting_node(divergence),
+            },
+            coverage_class: event_log.coverage_class(),
+            causal_slice_hash: None,
+        })
+    }
+
+    /// Returns the deterministic content address of this signature tuple.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(FAILURE_SIGNATURE_DOMAIN, &self.canonical_material())
+    }
+
+    /// Returns the canonical material hashed by [`Self::content_hash`].
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_signature_material(self)
+    }
+}
+
+fn validate_finding_static_identity(
+    finding: &FindingReproductionArtifact,
+) -> Result<(), EngineError> {
+    let artifact = finding.artifact.id();
+    if finding.replay.artifact != artifact {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: artifact,
+            actual: finding.replay.artifact,
+        });
+    }
+
+    let scenario = finding.artifact.scenario_form().id();
+    if finding.replay.scenario != scenario {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: scenario,
+            actual: finding.replay.scenario,
+        });
+    }
+
+    let schedule = finding.artifact.schedule().content_hash();
+    if finding.replay.schedule != schedule {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: schedule,
+            actual: finding.replay.schedule,
+        });
+    }
+
+    let configuration = Configuration {
+        def: finding.artifact.scenario_def(),
+        schedule: finding.artifact.schedule().clone(),
+    };
+    let configuration_id = configuration.id();
+    if finding.configuration != configuration_id {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: configuration_id,
+            actual: finding.configuration,
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_recorded_event_log_for_finding(
+    finding: &FindingReproductionArtifact,
+    event_log: &FailureRecordedEventLog,
+) -> Result<(), EngineError> {
+    let artifact = finding.artifact.id();
+    if event_log.artifact != artifact {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: artifact,
+            actual: event_log.artifact,
+        });
+    }
+    Ok(())
+}
+
+fn validate_violation_for_finding(
+    finding: &FindingReproductionArtifact,
+    violation: &FailurePropertyViolationRecord,
+) -> Result<(), EngineError> {
+    let artifact = finding.artifact.id();
+    if violation.violation.reproduction_artifact != artifact {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: artifact,
+            actual: violation.violation.reproduction_artifact,
+        });
+    }
+    Ok(())
+}
+
+fn validate_divergence_point(
+    event_log: &FailureRecordedEventLog,
+    divergence: &EventLogCausalDivergencePoint,
+) -> Result<(), EngineError> {
+    if event_log.projection.entries().iter().any(|entry| {
+        entry.raw_index == divergence.raw_index
+            && &entry.entry.time().icount == &divergence.at
+            && entry.entry.source() == &divergence.source
+            && entry.entry.event_payload().kind() == divergence.kind
+    }) {
+        return Ok(());
+    }
+
+    Err(EngineError::UnifiedOperationEvidenceMismatch {
+        operation: "failure-signature.divergence",
+        reason: "divergence bisection point is absent from recorded causal projection",
+    })
+}
+
+fn divergence_faulting_node(divergence: &EventLogCausalDivergencePoint) -> Option<NodeId> {
+    match &divergence.source {
+        EventSource::Node { node } | EventSource::Guest { node } => Some(node.clone()),
+        EventSource::Scenario { .. } | EventSource::Engine | EventSource::Command { .. } => {
+            divergence.at.node.clone()
+        }
+    }
+}
+
+fn failure_signature_material(signature: &FailureSignature) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "failure_kind={}",
+        failure_kind_label(signature.failure_kind)
+    ));
+    match &signature.property {
+        Some(property) => {
+            lines.push(String::from("property=some"));
+            lines.push(assertion_id_material(&property.id));
+            lines.push(format!(
+                "property_quantifier={}",
+                failure_assertion_quantifier_label(property.quantifier)
+            ));
+        }
+        None => lines.push(String::from("property=none")),
+    }
+    lines.push(format!(
+        "first_failing_event_kind_len={}",
+        signature.first_failing_point.event_kind.len()
+    ));
+    lines.push(format!(
+        "first_failing_event_kind={}",
+        signature.first_failing_point.event_kind
+    ));
+    match &signature.first_failing_point.faulting_node {
+        Some(node) => lines.push(node_ref_material("faulting_node", node)),
+        None => lines.push(String::from("faulting_node=none")),
+    }
+    lines.push(format!(
+        "coverage_class_algorithm={}",
+        signature.coverage_class.algorithm
+    ));
+    lines.push(format!(
+        "coverage_class_bucket={}",
+        signature.coverage_class.bucket
+    ));
+    lines.push(
+        signature
+            .causal_slice_hash
+            .map(|hash| format!("causal_slice_hash={}", hash.to_hex()))
+            .unwrap_or_else(|| String::from("causal_slice_hash=none")),
+    );
+    lines.join("\n")
+}
+
+fn failure_kind_label(kind: FailureKind) -> &'static str {
+    match kind {
+        FailureKind::PropertyViolation => "property-violation",
+        FailureKind::Divergence => "divergence",
+    }
+}
+
+fn failure_assertion_quantifier_label(quantifier: AssertionQuantifierKind) -> &'static str {
+    match quantifier {
+        AssertionQuantifierKind::Always => "always",
+        AssertionQuantifierKind::Sometimes => "sometimes",
+        AssertionQuantifierKind::Eventually => "eventually",
+        AssertionQuantifierKind::AfterQuiescence => "after-quiescence",
+        AssertionQuantifierKind::Reachable => "reachable",
+        AssertionQuantifierKind::GuestAlways => "guest-always",
+        AssertionQuantifierKind::GuestSometimes => "guest-sometimes",
+        AssertionQuantifierKind::GuestReachable => "guest-reachable",
+        AssertionQuantifierKind::GuestUnreachable => "guest-unreachable",
+    }
+}
+
 /// Error returned when rebuilding a finding reproduction artifact from storage.
 #[derive(Debug)]
 pub enum FindingReproductionArtifactError {
@@ -4152,9 +4617,9 @@ pub struct ReproductionReplay {
 /// Compact event-log debugging artifact attached to a reproduction artifact.
 ///
 /// This record is the event-log fork-point index plus a digest of the original
-/// causal subsequence. It deliberately omits the full log bytes: replay
-/// recomputes the log from `(seed, scenario, schedule)` and compares the
-/// recomputed causal projection to this metadata.
+/// causal subsequence and coverage projection. It deliberately omits the full
+/// log bytes: replay recomputes the log from `(seed, scenario, schedule)` and
+/// compares the recomputed projections to this metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionEventLogArtifact {
     id: ContentHash,
@@ -4168,6 +4633,8 @@ pub struct ReproductionEventLogArtifact {
     pub causal_subsequence_bytes: usize,
     /// Number of causal entries retained by the original run's causal projection.
     pub causal_subsequence_events: usize,
+    /// Content hash of the original run's coverage-observation projection.
+    pub coverage_fingerprint: ContentHash,
     /// Shared-store event-log segment keys, when retained by content address.
     pub shared_store_segments: Vec<ContentHash>,
 }
@@ -4181,6 +4648,7 @@ impl ReproductionEventLogArtifact {
         causal_subsequence: ContentHash,
         causal_subsequence_bytes: usize,
         causal_subsequence_events: usize,
+        coverage_fingerprint: ContentHash,
         shared_store_segments: I,
     ) -> Self
     where
@@ -4194,6 +4662,7 @@ impl ReproductionEventLogArtifact {
             causal_subsequence,
             causal_subsequence_bytes,
             causal_subsequence_events,
+            coverage_fingerprint,
             &shared_store_segments,
         );
         Self {
@@ -4203,6 +4672,7 @@ impl ReproductionEventLogArtifact {
             causal_subsequence,
             causal_subsequence_bytes,
             causal_subsequence_events,
+            coverage_fingerprint,
             shared_store_segments,
         }
     }
@@ -4237,6 +4707,10 @@ pub struct ReproductionEventLogReplay {
     pub expected_causal_events: usize,
     /// Recomputed causal event count.
     pub reproduced_causal_events: usize,
+    /// Expected coverage fingerprint from the original run.
+    pub expected_coverage_fingerprint: ContentHash,
+    /// Coverage fingerprint recomputed by replay.
+    pub reproduced_coverage_fingerprint: ContentHash,
     /// Shared-store event-log segment keys named by the metadata.
     pub shared_store_segments: Vec<ContentHash>,
 }
@@ -4249,6 +4723,7 @@ impl ReproductionEventLogReplay {
             && self.expected_causal_subsequence == self.reproduced_causal_subsequence
             && self.expected_causal_bytes == self.reproduced_causal_bytes
             && self.expected_causal_events == self.reproduced_causal_events
+            && self.expected_coverage_fingerprint == self.reproduced_coverage_fingerprint
     }
 }
 
@@ -29695,6 +30170,7 @@ fn reproduction_event_log_artifact_id(
     causal_subsequence: ContentHash,
     causal_subsequence_bytes: usize,
     causal_subsequence_events: usize,
+    coverage_fingerprint: ContentHash,
     shared_store_segments: &[ContentHash],
 ) -> ContentHash {
     let mut lines = vec![
@@ -29718,6 +30194,10 @@ fn reproduction_event_log_artifact_id(
         ),
         format!("causal_subsequence_bytes={causal_subsequence_bytes}"),
         format!("causal_subsequence_events={causal_subsequence_events}"),
+        format!(
+            "coverage_fingerprint={}",
+            content_hash_hex(coverage_fingerprint)
+        ),
         format!("shared_store_segments={}", shared_store_segments.len()),
     ];
     for segment in shared_store_segments {
