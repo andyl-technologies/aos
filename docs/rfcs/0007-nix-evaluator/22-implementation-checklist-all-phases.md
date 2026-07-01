@@ -5587,7 +5587,11 @@ and helps the oracle directly.
       `EvalHeap::collector_poll_minor_gc_reference_writeback_plan`
       returns both partitions together for callers that need complete reference
       writeback metadata, and
-      `EvalHeap::collector_poll_minor_gc_reference_buffer` merges external root
+      `AllocationCollectorPollReferenceWritebackPlan::apply_to_slots` validates
+      both caller-owned root and heap-field slot partitions before rewriting
+      either partition, so a stale heap-field slot cannot partially rewrite root
+      slots. `EvalHeap::collector_poll_minor_gc_reference_buffer`
+      merges external root
       values with live heap-field reads into one caller-owned reference buffer.
       This connects the roots bridge to commit-buffer preflight/application tests,
       but still does not provide live object-byte slices, destination storage,

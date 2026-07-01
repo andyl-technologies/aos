@@ -1636,40 +1636,55 @@ impl AllocationCollectorPollRootWritebackPlan {
         &self,
         slots: &mut [AllocationCollectorPollRootWritebackSlot],
     ) -> Result<AllocationCollectorPollRootWritebackReport, EvalHeapError> {
-        if slots.len() != self.writebacks.len() {
-            return Err(
-                EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
-                    expected: self.writebacks.len(),
-                    actual: slots.len(),
-                },
-            );
-        }
-
-        for (writeback, slot) in self.writebacks.iter().zip(slots.iter()) {
-            if slot.source() != writeback.source() {
-                return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
-                    index: writeback.slot(),
-                    expected: writeback.source().clone(),
-                    actual: slot.source().clone(),
-                });
-            }
-            let actual = slot.value();
-            if actual != writeback.expected() {
-                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
-                    index: writeback.slot(),
-                    expected: writeback.expected(),
-                    actual,
-                });
-            }
-        }
-
-        for (writeback, slot) in self.writebacks.iter().zip(slots.iter_mut()) {
-            slot.value = writeback.replacement();
-        }
+        validate_root_writeback_slots(self, slots)?;
+        apply_root_writeback_slots(self, slots);
 
         Ok(AllocationCollectorPollRootWritebackReport {
             writebacks: self.writebacks.len(),
         })
+    }
+}
+
+fn validate_root_writeback_slots(
+    plan: &AllocationCollectorPollRootWritebackPlan,
+    slots: &[AllocationCollectorPollRootWritebackSlot],
+) -> Result<(), EvalHeapError> {
+    if slots.len() != plan.writebacks.len() {
+        return Err(
+            EvalHeapError::CollectorPollRootWritebackSlotLengthMismatch {
+                expected: plan.writebacks.len(),
+                actual: slots.len(),
+            },
+        );
+    }
+
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter()) {
+        if slot.source() != writeback.source() {
+            return Err(EvalHeapError::CollectorPollRootReferenceSourceMismatch {
+                index: writeback.slot(),
+                expected: writeback.source().clone(),
+                actual: slot.source().clone(),
+            });
+        }
+        let actual = slot.value();
+        if actual != writeback.expected() {
+            return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                index: writeback.slot(),
+                expected: writeback.expected(),
+                actual,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_root_writeback_slots(
+    plan: &AllocationCollectorPollRootWritebackPlan,
+    slots: &mut [AllocationCollectorPollRootWritebackSlot],
+) {
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter_mut()) {
+        slot.value = writeback.replacement();
     }
 }
 
@@ -1746,6 +1761,59 @@ impl AllocationCollectorPollReferenceWritebackPlan {
     /// Returns whether there are no reference writebacks.
     pub fn is_empty(&self) -> bool {
         self.root_writebacks.is_empty() && self.heap_field_writebacks.is_empty()
+    }
+
+    /// Applies root and heap-field writebacks to caller-owned slot buffers.
+    ///
+    /// Both partitions are validated before either partition is rewritten. This
+    /// prevents a stale heap-field slot from partially rewriting root slots, and
+    /// vice versa. The method mutates only the supplied buffers; it does not bind
+    /// to active tree-walk/JIT roots, live evaluator object fields, object bytes,
+    /// object headers, or semispace storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if either caller-owned slot buffer no longer
+    /// matches its derived writeback plan.
+    pub fn apply_to_slots(
+        &self,
+        root_slots: &mut [AllocationCollectorPollRootWritebackSlot],
+        heap_field_slots: &mut [AllocationCollectorPollHeapFieldWritebackSlot],
+    ) -> Result<AllocationCollectorPollReferenceWritebackReport, EvalHeapError> {
+        validate_root_writeback_slots(&self.root_writebacks, root_slots)?;
+        validate_heap_field_writeback_slots(&self.heap_field_writebacks, heap_field_slots)?;
+
+        apply_root_writeback_slots(&self.root_writebacks, root_slots);
+        apply_heap_field_writeback_slots(&self.heap_field_writebacks, heap_field_slots);
+
+        Ok(AllocationCollectorPollReferenceWritebackReport {
+            root_writebacks: self.root_writebacks.len(),
+            heap_field_writebacks: self.heap_field_writebacks.len(),
+        })
+    }
+}
+
+/// A summary of caller-owned reference slots rewritten by a combined plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllocationCollectorPollReferenceWritebackReport {
+    root_writebacks: usize,
+    heap_field_writebacks: usize,
+}
+
+impl AllocationCollectorPollReferenceWritebackReport {
+    /// Returns the number of caller-owned root slots rewritten.
+    pub const fn root_writebacks(self) -> usize {
+        self.root_writebacks
+    }
+
+    /// Returns the number of caller-owned heap-field slots rewritten.
+    pub const fn heap_field_writebacks(self) -> usize {
+        self.heap_field_writebacks
+    }
+
+    /// Returns the total number of caller-owned reference slots rewritten.
+    pub const fn writebacks(self) -> usize {
+        self.root_writebacks + self.heap_field_writebacks
     }
 }
 
@@ -1895,58 +1963,72 @@ impl AllocationCollectorPollHeapFieldWritebackPlan {
         &self,
         slots: &mut [AllocationCollectorPollHeapFieldWritebackSlot],
     ) -> Result<AllocationCollectorPollHeapFieldWritebackReport, EvalHeapError> {
-        if slots.len() != self.writebacks.len() {
-            return Err(
-                EvalHeapError::CollectorPollHeapFieldWritebackSlotLengthMismatch {
-                    expected: self.writebacks.len(),
-                    actual: slots.len(),
-                },
-            );
-        }
-
-        for (writeback, slot) in self.writebacks.iter().zip(slots.iter()) {
-            if slot.validation_object() != writeback.validation_object()
-                || slot.writeback_object() != writeback.writeback_object()
-            {
-                return Err(
-                    EvalHeapError::CollectorPollHeapFieldWritebackSlotObjectMismatch {
-                        index: writeback.slot(),
-                        expected_validation_object: writeback.validation_object(),
-                        actual_validation_object: slot.validation_object(),
-                        expected_writeback_object: writeback.writeback_object(),
-                        actual_writeback_object: slot.writeback_object(),
-                    },
-                );
-            }
-            if slot.field_index() != writeback.field_index() || slot.source() != writeback.source()
-            {
-                return Err(
-                    EvalHeapError::CollectorPollHeapFieldWritebackSlotFieldMismatch {
-                        index: writeback.slot(),
-                        expected_field_index: writeback.field_index(),
-                        actual_field_index: slot.field_index(),
-                        expected_source: writeback.source().clone(),
-                        actual_source: slot.source().clone(),
-                    },
-                );
-            }
-            let actual = slot.value();
-            if actual != writeback.expected() {
-                return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
-                    index: writeback.slot(),
-                    expected: writeback.expected(),
-                    actual,
-                });
-            }
-        }
-
-        for (writeback, slot) in self.writebacks.iter().zip(slots.iter_mut()) {
-            slot.value = writeback.replacement();
-        }
+        validate_heap_field_writeback_slots(self, slots)?;
+        apply_heap_field_writeback_slots(self, slots);
 
         Ok(AllocationCollectorPollHeapFieldWritebackReport {
             writebacks: self.writebacks.len(),
         })
+    }
+}
+
+fn validate_heap_field_writeback_slots(
+    plan: &AllocationCollectorPollHeapFieldWritebackPlan,
+    slots: &[AllocationCollectorPollHeapFieldWritebackSlot],
+) -> Result<(), EvalHeapError> {
+    if slots.len() != plan.writebacks.len() {
+        return Err(
+            EvalHeapError::CollectorPollHeapFieldWritebackSlotLengthMismatch {
+                expected: plan.writebacks.len(),
+                actual: slots.len(),
+            },
+        );
+    }
+
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter()) {
+        if slot.validation_object() != writeback.validation_object()
+            || slot.writeback_object() != writeback.writeback_object()
+        {
+            return Err(
+                EvalHeapError::CollectorPollHeapFieldWritebackSlotObjectMismatch {
+                    index: writeback.slot(),
+                    expected_validation_object: writeback.validation_object(),
+                    actual_validation_object: slot.validation_object(),
+                    expected_writeback_object: writeback.writeback_object(),
+                    actual_writeback_object: slot.writeback_object(),
+                },
+            );
+        }
+        if slot.field_index() != writeback.field_index() || slot.source() != writeback.source() {
+            return Err(
+                EvalHeapError::CollectorPollHeapFieldWritebackSlotFieldMismatch {
+                    index: writeback.slot(),
+                    expected_field_index: writeback.field_index(),
+                    actual_field_index: slot.field_index(),
+                    expected_source: writeback.source().clone(),
+                    actual_source: slot.source().clone(),
+                },
+            );
+        }
+        let actual = slot.value();
+        if actual != writeback.expected() {
+            return Err(EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+                index: writeback.slot(),
+                expected: writeback.expected(),
+                actual,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_heap_field_writeback_slots(
+    plan: &AllocationCollectorPollHeapFieldWritebackPlan,
+    slots: &mut [AllocationCollectorPollHeapFieldWritebackSlot],
+) {
+    for (writeback, slot) in plan.writebacks.iter().zip(slots.iter_mut()) {
+        slot.value = writeback.replacement();
     }
 }
 

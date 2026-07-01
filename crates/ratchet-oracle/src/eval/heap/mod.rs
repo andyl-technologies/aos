@@ -53,12 +53,12 @@ pub use roots::{
     AllocationCollectorPollNurseryField, AllocationCollectorPollNurseryFields,
     AllocationCollectorPollObjectByteCopyPlan, AllocationCollectorPollObjectByteCopyRequest,
     AllocationCollectorPollReferenceSlot, AllocationCollectorPollReferenceSource,
-    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollRootReferenceValue,
-    AllocationCollectorPollRootWriteback, AllocationCollectorPollRootWritebackPlan,
-    AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, CapturedRootOwner, EvalHeapThunkResolveBarrier, EvalRoot,
-    EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge, HeapEdgeSource, HeapObjectScan,
-    InternedRootTable, PreciseHeapScan, StackMapSlot,
+    AllocationCollectorPollReferenceWritebackPlan, AllocationCollectorPollReferenceWritebackReport,
+    AllocationCollectorPollRootReferenceValue, AllocationCollectorPollRootWriteback,
+    AllocationCollectorPollRootWritebackPlan, AllocationCollectorPollRootWritebackReport,
+    AllocationCollectorPollRootWritebackSlot, AllocationCollectorPollScan, CapturedRootOwner,
+    EvalHeapThunkResolveBarrier, EvalRoot, EvalRootSet, EvalRootSetError, EvalRootSource, HeapEdge,
+    HeapEdgeSource, HeapObjectScan, InternedRootTable, PreciseHeapScan, StackMapSlot,
 };
 
 const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
@@ -472,6 +472,17 @@ pub enum EvalHeapError {
         expected: EvalRootSource,
         /// The caller-supplied root source.
         actual: EvalRootSource,
+    },
+    /// A root writeback application did not receive one caller-owned slot per
+    /// derived root writeback.
+    #[error(
+        "collector-poll minor-GC root writeback slot count {actual} does not match root writeback count {expected}"
+    )]
+    CollectorPollRootWritebackSlotLengthMismatch {
+        /// The derived root writeback count.
+        expected: usize,
+        /// The caller-supplied root writeback slot count.
+        actual: usize,
     },
     /// A live reference buffer cannot be derived for copied root-only slots yet.
     #[error(

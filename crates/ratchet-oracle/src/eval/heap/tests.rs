@@ -3489,6 +3489,108 @@ fn collector_poll_minor_gc_writeback_plans_filter_mixed_root_and_heap_rewrites()
         1
     );
 
+    let mut stale_root_slots = [AllocationCollectorPollRootWritebackSlot::new(
+        EvalRootSource::ValueStack { slot: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    let mut stale_heap_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(permanent_parent),
+        gc_address(permanent_parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Inline,
+    )];
+    let unchanged_stale_root_slots = stale_root_slots.clone();
+    let unchanged_stale_heap_slots = stale_heap_slots.clone();
+    assert_eq!(
+        reference_writeback_plan
+            .apply_to_slots(&mut stale_root_slots, &mut stale_heap_slots)
+            .expect_err("stale heap field rejects combined writeback"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 1,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(stale_root_slots, unchanged_stale_root_slots);
+    assert_eq!(stale_heap_slots, unchanged_stale_heap_slots);
+
+    let mut stale_root_slots = [AllocationCollectorPollRootWritebackSlot::new(
+        EvalRootSource::ValueStack { slot: 0 },
+        ResolvedValueGeneration::Inline,
+    )];
+    let mut stale_heap_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(permanent_parent),
+        gc_address(permanent_parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    let unchanged_stale_root_slots = stale_root_slots.clone();
+    let unchanged_stale_heap_slots = stale_heap_slots.clone();
+    assert_eq!(
+        reference_writeback_plan
+            .apply_to_slots(&mut stale_root_slots, &mut stale_heap_slots)
+            .expect_err("stale root rejects combined writeback"),
+        EvalHeapError::CollectorPollCommitReferenceSlotMismatch {
+            index: 0,
+            expected: ResolvedValueGeneration::Heap {
+                address: gc_address(child),
+                generation: HeapGeneration::Young,
+            },
+            actual: ResolvedValueGeneration::Inline,
+        }
+    );
+    assert_eq!(stale_root_slots, unchanged_stale_root_slots);
+    assert_eq!(stale_heap_slots, unchanged_stale_heap_slots);
+
+    let mut root_slots = [AllocationCollectorPollRootWritebackSlot::new(
+        EvalRootSource::ValueStack { slot: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    let mut heap_slots = [AllocationCollectorPollHeapFieldWritebackSlot::new(
+        gc_address(permanent_parent),
+        gc_address(permanent_parent),
+        0,
+        HeapEdgeSource::ListElement { index: 0 },
+        ResolvedValueGeneration::Heap {
+            address: gc_address(child),
+            generation: HeapGeneration::Young,
+        },
+    )];
+    let report = reference_writeback_plan
+        .apply_to_slots(&mut root_slots, &mut heap_slots)
+        .expect("combined reference writebacks apply");
+    assert_eq!(report.root_writebacks(), 1);
+    assert_eq!(report.heap_field_writebacks(), 1);
+    assert_eq!(report.writebacks(), 2);
+    assert_eq!(
+        root_slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+    assert_eq!(
+        heap_slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: child_destination,
+            generation: HeapGeneration::Young,
+        }
+    );
+
     let reference_buffer = heap
         .collector_poll_minor_gc_reference_buffer(
             &commit,
@@ -3587,7 +3689,7 @@ fn collector_poll_minor_gc_root_writeback_plan_applies_caller_owned_slots() {
         root_writeback_plan
             .apply_to_slots(&mut no_slots)
             .expect_err("short root writeback buffer rejects"),
-        EvalHeapError::CollectorPollRootReferenceValueLengthMismatch {
+        EvalHeapError::CollectorPollRootWritebackSlotLengthMismatch {
             expected: 2,
             actual: 0,
         }
