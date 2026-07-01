@@ -53,6 +53,7 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 const EVENT_GRAPH_PLAN_BINARY_SENTINEL: u64 = u64::MAX;
 const FAULT_PLAN_BINARY_SENTINEL: u64 = u64::MAX - 1;
+const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.v1";
 
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -10314,6 +10315,126 @@ impl TemporalGraph {
         )
     }
 
+    /// Searches a graph by repeatedly expanding frontiers selected by `strategy`.
+    ///
+    /// Strategy selection is deterministic: breadth-first and depth-first use
+    /// schedule depth, priority uses a seeded score, coverage-guided uses
+    /// checkpoint coverage feedback, and every tie is broken by configuration
+    /// content address. The underlying single-frontier expansion remains
+    /// [`Self::search`], so strategies order the work-list without changing the
+    /// graph semantics. Graph-level symmetry and partial-order reductions are
+    /// deliberately not applied by this T-ADV-8 driver; T-ADV-9 owns reduction
+    /// soundness for multi-frontier search.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the root or any selected frontier cannot be
+    /// realized, reduced, recorded, or materialized by the single-frontier search
+    /// operation.
+    pub fn search_with_strategy(
+        &mut self,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+    ) -> Result<TemporalGraphSearchRun, EngineError> {
+        let failure_oracle = SearchFailureOracle::none();
+        self.search_with_strategy_and_failure_oracle(
+            root,
+            strategy,
+            budget,
+            materialization_policy,
+            trigger,
+            &failure_oracle,
+        )
+    }
+
+    /// Searches with an explicit deterministic failure oracle.
+    ///
+    /// The oracle is read-only steering/reporting input: it can mark reached
+    /// configurations as discovered failures, but it cannot change which graph
+    /// nodes are explored. This keeps failure reporting reproducible while the
+    /// assertion and triage layers own the semantics of what counts as a failure.
+    /// Graph-level symmetry and partial-order reductions are not applied here;
+    /// T-ADV-9 owns reduction soundness for multi-frontier search.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the root or any selected frontier cannot be
+    /// realized, reduced, recorded, or materialized by the single-frontier search
+    /// operation.
+    pub fn search_with_strategy_and_failure_oracle(
+        &mut self,
+        root: &Configuration,
+        strategy: SearchStrategy,
+        budget: SearchBudget,
+        materialization_policy: MaterializationPolicy,
+        trigger: MaterializationTrigger,
+        failure_oracle: &SearchFailureOracle,
+    ) -> Result<TemporalGraphSearchRun, EngineError> {
+        let mut worklist = vec![SearchFrontierCandidate::new(root.clone())];
+        let mut scheduled = BTreeSet::from([root.id()]);
+        let mut expanded = BTreeSet::new();
+        let mut explored_graph = BTreeSet::from([root.id()]);
+        let mut expansions = Vec::new();
+        let mut discovered_failures = Vec::new();
+        let mut discovered_failure_configurations = BTreeSet::new();
+        record_search_discovered_failure(
+            root.id(),
+            failure_oracle,
+            &mut discovered_failure_configurations,
+            &mut discovered_failures,
+        );
+
+        while (expansions.len() as u64) < budget.max_expansions {
+            let Some(index) = select_search_frontier_candidate(self, &worklist, strategy) else {
+                break;
+            };
+            let candidate = worklist.remove(index);
+            if !expanded.insert(candidate.id()) {
+                continue;
+            }
+
+            let search = self.search(
+                &candidate.configuration,
+                FrontierReductionPolicy::none(),
+                materialization_policy,
+                trigger,
+            )?;
+            for child in &search.frontier_report.explored {
+                let child_id = child.configuration.id();
+                explored_graph.insert(child_id);
+                record_search_discovered_failure(
+                    child_id,
+                    failure_oracle,
+                    &mut discovered_failure_configurations,
+                    &mut discovered_failures,
+                );
+                if scheduled.insert(child_id) {
+                    worklist.push(SearchFrontierCandidate::new(child.configuration.clone()));
+                }
+            }
+
+            expansions.push(SearchExpansion {
+                sequence: expansions.len() as u64,
+                frontier: candidate.id(),
+                depth: candidate.depth,
+                search,
+            });
+        }
+
+        Ok(TemporalGraphSearchRun {
+            root: root.id(),
+            strategy,
+            budget,
+            explored_graph,
+            expansions,
+            discovered_failures,
+            exhausted: worklist.is_empty(),
+        })
+    }
+
     /// Searches one frontier while sampling fat checkpoints through the replay oracle.
     ///
     /// Each explored child is materialized according to `materialization_policy`.
@@ -11593,6 +11714,107 @@ pub struct FrontierReductionReport {
     pub covered: Vec<FrontierCoveredChild>,
 }
 
+/// How a graph search chooses the next frontier checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchStrategy {
+    /// Expands the shallowest pending checkpoint first.
+    BreadthFirst,
+    /// Expands the deepest pending checkpoint first.
+    DepthFirst,
+    /// Expands by a seeded deterministic priority score.
+    Priority {
+        /// Strategy-local seed used only to order the frontier.
+        seed: Seed,
+    },
+    /// Expands by deterministic coverage feedback stored on checkpoints.
+    CoverageGuided,
+}
+
+/// A finite budget for a strategy-driven graph search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SearchBudget {
+    /// Maximum number of frontier checkpoints to expand.
+    pub max_expansions: u64,
+}
+
+impl SearchBudget {
+    /// Builds a budget capped at `max_expansions` frontier expansions.
+    #[must_use]
+    pub const fn new(max_expansions: u64) -> Self {
+        Self { max_expansions }
+    }
+}
+
+/// One frontier expansion in a strategy-driven graph search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchExpansion {
+    /// Zero-based deterministic expansion sequence number.
+    pub sequence: u64,
+    /// Checkpoint expanded at this sequence number.
+    pub frontier: ContentHash,
+    /// Number of recorded decisions in `frontier`.
+    pub depth: usize,
+    /// Single-frontier search result produced for `frontier`.
+    pub search: TemporalGraphSearch,
+}
+
+/// A failure discovered by a strategy-driven graph search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SearchDiscoveredFailure {
+    /// Configuration where the failure was observed.
+    pub configuration: ContentHash,
+    /// Stable failure fingerprint used for deterministic deduplication.
+    pub fingerprint: ContentHash,
+}
+
+/// Read-only failure input for strategy-driven graph search.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SearchFailureOracle {
+    failures: BTreeMap<ContentHash, ContentHash>,
+}
+
+impl SearchFailureOracle {
+    /// Builds an oracle that reports no failures.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            failures: BTreeMap::new(),
+        }
+    }
+
+    /// Adds a deterministic failure fingerprint for one configuration id.
+    #[must_use]
+    pub fn with_failure(mut self, configuration: ContentHash, fingerprint: ContentHash) -> Self {
+        self.failures.insert(configuration, fingerprint);
+        self
+    }
+
+    /// Returns the configured failure fingerprint for `configuration`, if any.
+    #[must_use]
+    pub fn failure_for(&self, configuration: ContentHash) -> Option<ContentHash> {
+        self.failures.get(&configuration).copied()
+    }
+}
+
+/// Result of a deterministic strategy-driven graph search.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalGraphSearchRun {
+    /// Root checkpoint supplied to the search.
+    pub root: ContentHash,
+    /// Strategy used to order frontier expansion.
+    pub strategy: SearchStrategy,
+    /// Finite expansion budget used by the run.
+    pub budget: SearchBudget,
+    /// Deduplicated content-addressed graph reached during the run.
+    pub explored_graph: BTreeSet<ContentHash>,
+    /// Frontier expansions in exact deterministic order.
+    pub expansions: Vec<SearchExpansion>,
+    /// Failures discovered by the run.
+    pub discovered_failures: Vec<SearchDiscoveredFailure>,
+    /// Whether the work-list was exhausted before the budget stopped the run.
+    pub exhausted: bool,
+}
+
 /// Result of a graph-level save operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TemporalGraphSave {
@@ -11832,6 +12054,108 @@ fn count_app_random_decisions(schedule: &Schedule) -> u64 {
         .iter()
         .filter(|decision| matches!(decision, Decision::AppRandom(_)))
         .count() as u64
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SearchFrontierCandidate {
+    configuration: Configuration,
+    depth: usize,
+}
+
+impl SearchFrontierCandidate {
+    fn new(configuration: Configuration) -> Self {
+        let depth = configuration.schedule.len();
+        Self {
+            configuration,
+            depth,
+        }
+    }
+
+    fn id(&self) -> ContentHash {
+        self.configuration.id()
+    }
+}
+
+fn select_search_frontier_candidate(
+    graph: &TemporalGraph,
+    worklist: &[SearchFrontierCandidate],
+    strategy: SearchStrategy,
+) -> Option<usize> {
+    worklist
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            compare_search_frontier_candidates(graph, left, right, strategy)
+        })
+        .map(|(index, _)| index)
+}
+
+fn compare_search_frontier_candidates(
+    graph: &TemporalGraph,
+    left: &SearchFrontierCandidate,
+    right: &SearchFrontierCandidate,
+    strategy: SearchStrategy,
+) -> std::cmp::Ordering {
+    match strategy {
+        SearchStrategy::BreadthFirst => left
+            .depth
+            .cmp(&right.depth)
+            .then_with(|| left.id().cmp(&right.id())),
+        SearchStrategy::DepthFirst => right
+            .depth
+            .cmp(&left.depth)
+            .then_with(|| left.id().cmp(&right.id())),
+        SearchStrategy::Priority { seed } => search_priority_score(seed, left)
+            .cmp(&search_priority_score(seed, right))
+            .then_with(|| left.id().cmp(&right.id())),
+        SearchStrategy::CoverageGuided => search_coverage_guided_key(graph, left)
+            .cmp(&search_coverage_guided_key(graph, right))
+            .then_with(|| left.id().cmp(&right.id())),
+    }
+}
+
+fn search_priority_score(seed: Seed, candidate: &SearchFrontierCandidate) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fold_fnv_bytes(hash, SEARCH_PRIORITY_SCORE_DOMAIN);
+    hash = fold_fnv_bytes(hash, &seed.bytes());
+    fold_fnv_bytes(hash, &(candidate.depth as u64).to_le_bytes())
+}
+
+fn search_coverage_guided_key(
+    graph: &TemporalGraph,
+    candidate: &SearchFrontierCandidate,
+) -> (u8, ContentHash) {
+    let coverage = search_candidate_coverage_fingerprint(graph, &candidate.configuration);
+    let unknown_coverage = u8::from(coverage == ContentHash::default());
+    (unknown_coverage, coverage)
+}
+
+fn search_candidate_coverage_fingerprint(
+    graph: &TemporalGraph,
+    configuration: &Configuration,
+) -> ContentHash {
+    graph
+        .cached_snapshots
+        .get(&configuration.id())
+        .or_else(|| graph.checkpoint_nodes.get(&configuration.id()))
+        .map(|checkpoint| checkpoint.coverage_fingerprint)
+        .unwrap_or_default()
+}
+
+fn record_search_discovered_failure(
+    configuration: ContentHash,
+    failure_oracle: &SearchFailureOracle,
+    discovered_configurations: &mut BTreeSet<ContentHash>,
+    discovered_failures: &mut Vec<SearchDiscoveredFailure>,
+) {
+    if let Some(fingerprint) = failure_oracle.failure_for(configuration) {
+        if discovered_configurations.insert(configuration) {
+            discovered_failures.push(SearchDiscoveredFailure {
+                configuration,
+                fingerprint,
+            });
+        }
+    }
 }
 
 fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFrontierChoice> {

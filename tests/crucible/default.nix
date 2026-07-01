@@ -1270,6 +1270,26 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
+    searchStrategies = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.searchStrategies";
+      gate = import ./phase6-search-strategies.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.searchStrategies";
+        taskIds = ["T-ADV-8"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.stateSpaceSearch.rawGate
+          phase6.gates.replayOracle.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.stateSpaceSearch
+        phase6.gates.replayOracle
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
