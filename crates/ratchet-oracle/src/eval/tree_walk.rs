@@ -46,8 +46,9 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapResidentMemoryMode,
-    EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
+    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -74,7 +75,7 @@ use crate::compile::{
 };
 use crate::heap::{GenerationalGcTier, HeapMemoryBudget, RememberedSet};
 use crate::list::{NixList, NixListError};
-use crate::runtime::alloc::GcStressPolicy;
+use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
 use crate::runtime::builtins::*;
 use crate::string::{
     ContextElement, ContextKind, NixString, NixStringError, StringContext, try_clone_bytes,

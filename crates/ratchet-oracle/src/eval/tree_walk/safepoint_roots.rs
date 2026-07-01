@@ -37,6 +37,16 @@ pub enum TreeWalkSafepointScanError {
     /// Root-set construction failed before the heap scan began.
     #[error("failed to build tree-walk safepoint roots: {0}")]
     Roots(#[from] TreeWalkSafepointRootError),
+    /// The supplied allocation poll is no longer current for its allocator tier.
+    #[error(
+        "allocation collector poll {poll:?} is stale for its allocator tier; current poll is {current:?}"
+    )]
+    StaleCollectorPoll {
+        /// The stale collector poll supplied by the caller.
+        poll: AllocationCollectorPoll,
+        /// The current collector poll for the same allocation tier, if any.
+        current: Option<AllocationCollectorPoll>,
+    },
     /// The precise heap scanner rejected the constructed root graph.
     #[error("failed to scan tree-walk safepoint roots: {0}")]
     Heap(#[from] EvalHeapError),
@@ -134,6 +144,31 @@ impl TreeWalk {
         Ok(roots)
     }
 
+    /// Builds the explicit safepoint roots with caller-owned value-stack slots.
+    ///
+    /// Scannable heap values yielded by `value_stack` are recorded as
+    /// [`EvalRootSource::ValueStack`](crate::eval::heap::EvalRootSource::ValueStack)
+    /// roots in iteration order. Inline values are skipped as non-roots, but
+    /// slot indexes still reflect the original iterator position. This gives
+    /// allocation-safepoint callers an explicit place to publish transient Rust
+    /// locals or allocation return values before a precise collector-poll scan,
+    /// without relying on conservative stack discovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootError`] if the base tree-walk root set
+    /// cannot be built or if recording an additional value-stack root fails.
+    pub fn safepoint_root_set_with_value_stack(
+        &self,
+        value_stack: impl IntoIterator<Item = Value>,
+    ) -> Result<EvalRootSet, TreeWalkSafepointRootError> {
+        let mut roots = self.safepoint_root_set()?;
+        for (slot, value) in value_stack.into_iter().enumerate() {
+            roots.try_push_value_stack(slot, value)?;
+        }
+        Ok(roots)
+    }
+
     /// Scans the precise heap graph reachable at the current tree-walk
     /// safepoint.
     ///
@@ -144,6 +179,59 @@ impl TreeWalk {
     pub fn safepoint_heap_scan(&self) -> Result<PreciseHeapScan, TreeWalkSafepointScanError> {
         let roots = self.safepoint_root_set()?;
         Ok(self.heap.scan_precise_roots(&roots)?)
+    }
+
+    /// Scans the precise heap graph for a supplied allocation collector poll.
+    ///
+    /// The caller supplies the exact poll observed at the allocation safepoint
+    /// and any transient value-stack roots that are live but not yet stored in
+    /// the evaluator's explicit environment, force-continuation, primop, import,
+    /// or intern tables. This method first rejects `poll` unless it is still
+    /// the current collector poll for its allocator tier. It then validates and
+    /// scans the same explicit roots used by [`Self::safepoint_heap_scan`],
+    /// pairs the scan with `poll`, and does not invoke a collector or mutate
+    /// heap state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointScanError`] if `poll` is stale for its
+    /// allocator tier, if root-set construction fails, or if the heap rejects
+    /// the precise collector-poll scan.
+    pub fn safepoint_collector_poll_scan(
+        &self,
+        poll: AllocationCollectorPoll,
+        value_stack: impl IntoIterator<Item = Value>,
+    ) -> Result<AllocationCollectorPollScan, TreeWalkSafepointScanError> {
+        self.validate_current_collector_poll(poll)?;
+        let roots = self.safepoint_root_set_with_value_stack(value_stack)?;
+        Ok(self.heap.scan_collector_poll_roots(poll, &roots)?)
+    }
+
+    fn validate_current_collector_poll(
+        &self,
+        poll: AllocationCollectorPoll,
+    ) -> Result<(), TreeWalkSafepointScanError> {
+        let current = self.current_collector_poll_for_tier(poll.tier());
+        if current == Some(poll) {
+            return Ok(());
+        }
+        Err(TreeWalkSafepointScanError::StaleCollectorPoll { poll, current })
+    }
+
+    fn current_collector_poll_for_tier(
+        &self,
+        tier: RuntimeAllocatorTier,
+    ) -> Option<AllocationCollectorPoll> {
+        match tier {
+            RuntimeAllocatorTier::TierAOneShot => self
+                .heap
+                .allocation_safepoints()
+                .last_safepoint_collector_poll(),
+            RuntimeAllocatorTier::PermanentShared => self
+                .heap
+                .permanent_allocation_safepoints()
+                .last_safepoint_collector_poll(),
+        }
     }
 
     pub(in crate::eval::tree_walk) fn push_active_force_root(

@@ -1420,16 +1420,26 @@ GC must be observationally invisible (§8): every item is gated by the different
       active lexical frame slots, dynamic `with` scopes, scoped-import globals,
       caller env/with/scoped-global stacks suspended by nested evaluation,
       active force continuations, first-class primop arguments, ready import
-      cache values, and permanent interned/hash-cons roots. `force_value`,
-      lambda-call, import-evaluation, nested numeric-equality, and saturated
-      first-class primop paths push/pop active or suspended safepoint frames on
-      success and error paths, and
+      cache values, and permanent interned/hash-cons roots.
+      `TreeWalk::safepoint_root_set_with_value_stack` adds caller-supplied
+      transient value-stack roots for Rust locals or allocation return values
+      that are live at a safepoint but not yet stored in evaluator state
+      (skipping inline non-root values), and
+      `TreeWalk::safepoint_collector_poll_scan` pairs a supplied, still-current
+      `AllocationCollectorPoll` with those tree-walk roots through the
+      existing heap collector-poll scan, rejecting polls that are no longer
+      current for their allocator tier. `force_value`, lambda-call,
+      import-evaluation, nested numeric-equality, and saturated first-class
+      primop paths push/pop active or suspended safepoint frames on success and
+      error paths, and
       `eval::tree_walk::tests::safepoint_roots` pins root labels,
       suspended-env roots, import-cache roots, interned-root inclusion, heap
-      scanning, and stack cleanup after force/primop failures.
-      This still does not infer arbitrary Rust locals, direct-IR primop
-      temporaries, mutable relocation slots, collector invocation, or JIT stack
-      maps; those remain open in the full precise-root row above.
+      scanning, GC-stress collector-poll scanning with an explicit transient
+      root, minor-GC planning from that scan, and stack cleanup after
+      force/primop failures. This still does not infer arbitrary Rust locals
+      without explicit value-stack registration, bind mutable relocation slots,
+      invoke a collector, or consume JIT stack maps; those remain open in the
+      full precise-root row above.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the
@@ -1516,8 +1526,14 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [x] Current tree-walk GC-stress option precursor: `TreeWalkOptions` can
       configure the existing `GcStressPolicy` for evaluator heap allocations,
       and worker/permanent allocation safepoints record collector-poll reasons
-      under that policy. This is still a safepoint-poll hook only: no collector
-      is invoked at those polls and no root/field relocation is applied.
+      under that policy. Tree-walk can now convert a supplied GC-stress
+      `AllocationCollectorPoll` plus explicit transient value-stack roots into
+      an `AllocationCollectorPollScan` when the poll is still current for its
+      allocator tier, and tests prove a worker-domain lambda allocation can be
+      planned as a minor-GC survivor from that scan while a stale same-domain
+      poll is rejected. This is still a poll/scan/planning hook only: no
+      collector is invoked at those polls and no root/field relocation is
+      applied.
 
 ## References
 

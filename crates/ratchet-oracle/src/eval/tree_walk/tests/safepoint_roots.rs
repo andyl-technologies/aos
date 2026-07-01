@@ -2,7 +2,14 @@
 
 use super::*;
 use crate::eval::heap::{EvalRoot, EvalRootSource, InternedRootTable};
+use crate::heap::{GcHeapAddress, MinorGcPromotionPolicy, RememberedSet};
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
+
+fn gc_address(value: Value) -> GcHeapAddress {
+    GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
+        .expect("heap pointer is a valid GC address")
+}
 
 #[test]
 fn safepoint_roots_include_active_tree_walk_state_and_interned_roots() {
@@ -134,4 +141,112 @@ fn active_safepoint_roots_are_removed_after_force_and_primop_errors() {
                 | EvalRootSource::SuspendedScopedGlobal { .. }
         )
     }));
+}
+
+#[test]
+fn gc_stress_poll_scan_uses_tree_walk_roots_plus_transient_value_stack() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let root = evaluator.eval_root().expect("lambda evaluates");
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+
+    assert_eq!(
+        poll.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert_eq!(
+        poll.reason(),
+        AllocationGcPollReason::GcStressEverySafepoint
+    );
+
+    let remembered_set = RememberedSet::new();
+    let empty_scan = evaluator
+        .safepoint_collector_poll_scan(poll, [])
+        .expect("collector poll scan accepts empty transient roots");
+    assert!(empty_scan.scan().roots().is_empty());
+    let empty_minor_gc = evaluator
+        .heap()
+        .plan_collector_poll_minor_gc(
+            &empty_scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("empty collector poll scan plans");
+    assert!(empty_minor_gc.plan().survivors().is_empty());
+
+    let scan = evaluator
+        .safepoint_collector_poll_scan(poll, [root])
+        .expect("collector poll roots scan");
+    let stack_root = scan
+        .scan()
+        .roots()
+        .iter()
+        .find(|scan_root| scan_root.source() == &EvalRootSource::ValueStack { slot: 0 })
+        .expect("transient value-stack root records");
+    assert!(stack_root.value().raw_eq(root));
+    assert!(
+        scan.scan()
+            .objects()
+            .iter()
+            .any(|object| { object.value().raw_eq(root) })
+    );
+
+    let minor_gc = evaluator
+        .heap()
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("collector poll minor-GC planning accepts the tree-walk scan");
+    assert_eq!(minor_gc.plan().survivors().len(), 1);
+    assert_eq!(minor_gc.plan().survivors()[0].address(), gc_address(root));
+}
+
+#[test]
+fn gc_stress_poll_scan_rejects_stale_allocator_poll() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let first_root = evaluator.eval_root().expect("first lambda evaluates");
+    let first_poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("first lambda allocation requested a collector poll");
+    let _second_root = evaluator.eval_root().expect("second lambda evaluates");
+
+    let error = evaluator
+        .safepoint_collector_poll_scan(first_poll, [first_root])
+        .expect_err("stale collector poll is rejected");
+
+    match error {
+        TreeWalkSafepointScanError::StaleCollectorPoll {
+            poll,
+            current: Some(current),
+        } => {
+            assert_eq!(poll, first_poll);
+            assert_ne!(current, first_poll);
+            assert_eq!(
+                current.entrypoint(),
+                RuntimeAllocationEntryPoint::AosAllocLambda
+            );
+            assert_eq!(
+                current.reason(),
+                AllocationGcPollReason::GcStressEverySafepoint
+            );
+        }
+        other => panic!("unexpected stale poll error: {other:?}"),
+    }
 }

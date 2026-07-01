@@ -5227,7 +5227,9 @@ and helps the oracle directly.
       precise traversal of the reachable object graph, and preservation of the
       triggering `aos_alloc_*` entry point. It does not automatically derive
       tree-walk roots from the poll, invoke a collector, expose mutable
-      relocation slots, or update references.
+      relocation slots, or update references. The tree-walk safepoint bridge
+      below now supplies evaluator roots and transient value-stack roots for
+      callers that already captured the exact poll to scan.
 - [x] Current allocation-poll minor-GC planning bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` converts an
       `AllocationCollectorPollScan` plus a remembered-set snapshot into the
@@ -5358,7 +5360,9 @@ and helps the oracle directly.
       poll-intent metadata only. `TreeWalkOptions` can now install the policy on
       the evaluator heap, and tree-walk tests cover worker-domain lambda
       allocation and permanent-shared string allocation poll reasons. Building
-      the live root set, invoking the collector, actually collecting at every
+      the live root set for an observed poll that is still current for its
+      allocator tier is now possible through the tree-walk collector-poll scan
+      bridge below. Invoking the collector, actually collecting at every
       safepoint, exported C ABI symbols, and write-barrier dispatch integration
       remain open.
 - [x] Current permanent-shared allocation closure:
@@ -5608,17 +5612,27 @@ and helps the oracle directly.
       active dynamic `with` scopes, scoped-import globals,
       caller env/with/scoped-global stacks suspended by nested evaluation,
       active force continuations, first-class primop arguments, ready import
-      cache values, and permanent interned/hash-cons roots. The force,
-      lambda-call, import-evaluation, nested numeric-equality, and saturated
-      first-class primop paths register/unregister active or suspended
-      safepoint frames, including error-path cleanup, and
+      cache values, and permanent interned/hash-cons roots.
+      `TreeWalk::safepoint_root_set_with_value_stack` adds caller-supplied
+      transient value-stack roots for Rust locals or allocation return values
+      that are live at a safepoint but not yet stored in evaluator state
+      (skipping inline non-root values), and
+      `TreeWalk::safepoint_collector_poll_scan` pairs a supplied, still-current
+      `AllocationCollectorPoll` with those tree-walk roots through the existing
+      heap collector-poll scan, rejecting polls that are no longer current for
+      their allocator tier. The force, lambda-call, import-evaluation, nested
+      numeric-equality, and saturated first-class primop paths
+      register/unregister active or suspended safepoint frames, including
+      error-path cleanup, and
       `eval::tree_walk::tests::safepoint_roots` covers stable root labels,
       suspended-env roots, import-cache roots, interned-root inclusion, heap
-      scanning, recursive-force cleanup, and first-class primop error cleanup.
-      This remains a root-set precursor:
-      arbitrary Rust locals, direct-IR primop temporaries, mutable relocation
-      slots, collector invocation, and JIT stack maps remain open in the full
-      precise-root row above.
+      scanning, GC-stress collector-poll scanning with an explicit transient
+      root, minor-GC planning from that scan, stale same-domain poll rejection,
+      recursive-force cleanup, and first-class primop error cleanup. This
+      remains a root-set precursor: arbitrary Rust locals still need explicit
+      value-stack registration, and mutable relocation slots, collector
+      invocation, and JIT stack maps remain open in the full precise-root row
+      above.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` classifies the single generational write
       barrier for `Blackhole -> Forced(value)`, records only
