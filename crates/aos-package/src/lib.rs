@@ -531,6 +531,29 @@ pub enum PackageCommand {
         #[arg(long = "allow-unsigned-host-nix")]
         allow_unsigned_host_nix: bool,
     },
+    /// Apply a converged config manifest's `/etc` tree into a per-generation
+    /// lower (RFC-0011 materializer). Called by `activate` on the new path.
+    ///
+    /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
+    /// `etc` entries (text files with modes, relative + store symlinks) under
+    /// `--etc-root`, materializes its job scripts under
+    /// `<etc-root>/aos-job-scripts/`, and rewrites `#aos-jobscript:<key>#`
+    /// unit-body placeholders to the job scripts' runtime paths. Idempotent.
+    #[command(name = "__materialize", hide = true)]
+    Materialize {
+        /// The converged manifest (`aos.config-manifest/v1` JSON).
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The per-generation `/etc` lower to write into.
+        #[arg(long = "etc-root")]
+        etc_root: PathBuf,
+        /// Runtime directory job scripts resolve to once the lower is `/etc`.
+        #[arg(
+            long = "job-scripts-runtime-dir",
+            default_value = config_eval::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR
+        )]
+        job_scripts_runtime_dir: String,
+    },
     /// Evaluate the config and diff it against the live generation (RFC-0011).
     ///
     /// `--dry-run` runs the evaluator, loads the current generation's
@@ -2162,6 +2185,22 @@ pub async fn run(
         });
     }
 
+    // `apm __materialize` (RFC-0011 materializer): apply a converged manifest's
+    // /etc tree into a per-generation lower. Called by `activate` on the new
+    // path in place of re-running Ignition.
+    if let PackageCommand::Materialize {
+        manifest,
+        etc_root,
+        job_scripts_runtime_dir,
+    } = command
+    {
+        return config_eval::materialize::materialize_manifest(
+            manifest,
+            etc_root,
+            job_scripts_runtime_dir,
+        );
+    }
+
     // `apm switch [--dry-run]` (RFC-0011 operability.md). Eval-only diff against
     // the live generation; the eval is a pure function of its inputs, so the
     // same codepath runs off-host (CI) and on-host.
@@ -2611,6 +2650,9 @@ pub async fn run(
         }
         PackageCommand::Eval { .. } => {
             unreachable!("Eval is handled before ApmConfig::load")
+        }
+        PackageCommand::Materialize { .. } => {
+            unreachable!("Materialize is handled before ApmConfig::load")
         }
         PackageCommand::Switch { .. } => {
             unreachable!("Switch is handled before ApmConfig::load")

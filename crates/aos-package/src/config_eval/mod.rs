@@ -39,6 +39,7 @@
 pub mod classify;
 pub mod diagnostics;
 pub mod dry_run;
+pub mod materialize;
 pub mod stock;
 
 use std::collections::BTreeSet;
