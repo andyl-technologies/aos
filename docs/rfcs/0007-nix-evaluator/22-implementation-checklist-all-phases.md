@@ -5454,6 +5454,15 @@ and helps the oracle directly.
       hot-record exclusion after a value read. This is not budget-triggered,
       does not issue `MADV_PAGEOUT`, installs no CA-store handle, and
       rematerializes no value.
+- [x] Current cheap-advice aggregation precursor:
+      `EvalHeap::advise_cheap_memory_ranges(min_idle_epochs)` runs the two
+      implemented page-advice passes together: dead advice for unused worker and
+      permanent arena tails, and cold advice for idle permanent hash-consed
+      records. `EvalHeapCheapMemoryAdviceReport` returns both underlying
+      reports without turning cold hints into reclaim accounting. This is an
+      integration hook only; automatic budget dispatch still credits zero cold
+      reclaim, does not issue `MADV_PAGEOUT`, does not request Tier B from this
+      helper, and does not spill or rematerialize CA-store values.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

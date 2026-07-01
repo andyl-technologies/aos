@@ -467,6 +467,63 @@ fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
 }
 
 #[test]
+fn cheap_memory_range_advice_combines_tails_and_cold_hash_consed_hints() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"combined-cold".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let unused_tail_bytes = (worker_stats.mapped_bytes - worker_stats.used_bytes)
+        + (permanent_stats.mapped_bytes - permanent_stats.used_bytes);
+
+    let report = heap.advise_cheap_memory_ranges(1);
+    let unused_tails = report.unused_tails();
+    let cold_hash_consed = report.cold_hash_consed();
+
+    assert_eq!(unused_tails.kind(), MemoryAdviceKind::Dead);
+    assert_eq!(unused_tails.chunks(), 2);
+    assert_eq!(unused_tails.requested_bytes(), unused_tail_bytes);
+    assert_eq!(
+        unused_tails.applied()
+            + unused_tails.unsupported()
+            + unused_tails.empty_ranges()
+            + unused_tails.rejected(),
+        unused_tails.chunks()
+    );
+    assert_eq!(cold_hash_consed.kind(), MemoryAdviceKind::Cold);
+    assert_eq!(cold_hash_consed.min_idle_epochs(), 1);
+    assert_eq!(cold_hash_consed.records(), 1);
+    assert_eq!(cold_hash_consed.requested_bytes(), string_size);
+    assert_eq!(
+        cold_hash_consed.applied()
+            + cold_hash_consed.unsupported()
+            + cold_hash_consed.empty_ranges()
+            + cold_hash_consed.rejected(),
+        cold_hash_consed.records()
+    );
+    assert_eq!(heap.cold_hash_consed_bytes(1), string_size);
+    assert_eq!(heap.last_memory_budget_action(), None);
+
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    heap.set_memory_budget(budget);
+    heap.alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("budgeted thunk allocates");
+    let poll_count = heap.memory_budget_poll_count();
+    let previous_action = heap
+        .last_memory_budget_action()
+        .expect("budgeted allocation records an action");
+
+    heap.advise_cheap_memory_ranges(1);
+
+    assert_eq!(heap.memory_budget_poll_count(), poll_count);
+    assert_eq!(heap.last_memory_budget_action(), Some(previous_action));
+}
+
+#[test]
 fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     heap.alloc_thunk(EvalThunk::new(IrId::new(1)))

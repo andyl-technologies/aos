@@ -1138,6 +1138,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       exclusion after a normal value read. This does not issue `MADV_PAGEOUT`,
       install CA-store handles, rematerialize values, or change automatic budget
       actions.
+- [x] Current cheap-advice aggregation precursor:
+      `EvalHeap::advise_cheap_memory_ranges(min_idle_epochs)` combines the
+      implemented `MADV_DONTNEED` unused-tail advice with the explicit
+      `MADV_COLD` cold hash-consed record hint and returns both reports through
+      `EvalHeapCheapMemoryAdviceReport`. This gives later policy code a single
+      integration point while preserving today's budget semantics: it does not
+      classify a memory budget, credit cold reclaim, request Tier B, issue
+      `MADV_PAGEOUT`, or spill/rematerialize CA-store values.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

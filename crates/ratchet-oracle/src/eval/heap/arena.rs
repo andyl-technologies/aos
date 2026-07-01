@@ -276,6 +276,40 @@ impl EvalHeapColdHashConsedAdviceReport {
     }
 }
 
+/// Memory-advice reports for all currently implemented cheap heap hints.
+///
+/// This combines destructive advice over unused arena tails with
+/// non-destructive cold advice over idle hash-consed records. It is an explicit
+/// helper for future budget policy; automatic budget actions still account only
+/// for implemented reclaim capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapCheapMemoryAdviceReport {
+    unused_tails: EvalHeapMemoryAdviceReport,
+    cold_hash_consed: EvalHeapColdHashConsedAdviceReport,
+}
+
+impl EvalHeapCheapMemoryAdviceReport {
+    const fn new(
+        unused_tails: EvalHeapMemoryAdviceReport,
+        cold_hash_consed: EvalHeapColdHashConsedAdviceReport,
+    ) -> Self {
+        Self {
+            unused_tails,
+            cold_hash_consed,
+        }
+    }
+
+    /// Returns the unused arena-tail advice report.
+    pub const fn unused_tails(self) -> EvalHeapMemoryAdviceReport {
+        self.unused_tails
+    }
+
+    /// Returns the cold hash-consed record advice report.
+    pub const fn cold_hash_consed(self) -> EvalHeapColdHashConsedAdviceReport {
+        self.cold_hash_consed
+    }
+}
+
 /// The budget-policy action currently executable by [`EvalHeap`].
 ///
 /// This action only covers the cheap arena-tail advice that is implemented
@@ -541,6 +575,24 @@ impl EvalHeap {
             kind,
             self.allocator.advise_unused_tail(kind),
             self.permanent_allocator.advise_unused_tail(kind),
+        )
+    }
+
+    /// Advises all cheap heap ranges currently implemented by the oracle heap.
+    ///
+    /// Unused arena tails receive destructive [`MemoryAdviceKind::Dead`] advice
+    /// because no live allocation has reached them. Cold hash-consed records
+    /// receive non-destructive [`MemoryAdviceKind::Cold`] advice through
+    /// [`Self::advise_cold_hash_consed_values`]. This method does not classify
+    /// a memory budget, credit cold reclaim capacity, request Tier B, or execute
+    /// CA-store spill.
+    pub fn advise_cheap_memory_ranges(
+        &self,
+        min_idle_epochs: u64,
+    ) -> EvalHeapCheapMemoryAdviceReport {
+        EvalHeapCheapMemoryAdviceReport::new(
+            self.advise_unused_tails(MemoryAdviceKind::Dead),
+            self.advise_cold_hash_consed_values(min_idle_epochs),
         )
     }
 
