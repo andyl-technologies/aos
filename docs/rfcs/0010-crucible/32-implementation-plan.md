@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:1c4ebbdc6a65122a`
+Checklist sync digest: `rfc0010-checklist-v1:b190d986c948b3b8`
 
 ## The phase ladder
 
@@ -275,8 +275,13 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   `checks.crucible.phase6.signaturePreservingMinimization`, which minimizes the
   content-address-least representative of each cluster through the existing
   replay-validated minimization pass while strengthening the accept predicate to
-  active-policy signature-key equality; `T-TRI-6 … T-TRI-8` remain
-  pending ([`34`](34-failure-triage.md)).
+  active-policy signature-key equality. `T-TRI-6` is green through
+  `checks.crucible.phase6.perClusterReports`, which emits content-addressed
+  per-cluster reports binding the full signature, ordered member hashes, minimal
+  representative, failing property or bisected first-diff detail, minimal
+  reproduction tuple, causal-log excerpt, causal-cone narrative, and exact replay
+  command through deterministic `json`, `jsonl`, `table`, and `markdown`
+  renderings; `T-TRI-7 … T-TRI-8` remain pending ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
 and restores validated continuously), and reproduction artifacts replay

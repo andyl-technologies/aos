@@ -26,9 +26,9 @@ use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
     EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, EventSource, ScheduledEventPayload, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, coverage_fingerprint_from_event_log,
-    event_log_causal_projection,
+    EventLogCoverageFeedbackConsumer, EventLogIcountStamp, EventSource, ScheduledEventPayload,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    coverage_fingerprint_from_event_log, event_log_causal_projection,
 };
 use crate::trigger::{
     Action, AssertionQuantifierKind, Condition, ConditionEvaluationPass, ConditionLeaf,
@@ -76,6 +76,8 @@ const FAILURE_TRIAGE_RESULT_IDENTITY_DOMAIN: &str = "crucible.failure-triage.res
 const FAILURE_CLUSTERING_RESULT_DOMAIN: &str = "crucible.failure-triage.clustering-result.v1";
 const FAILURE_SIGNATURE_MINIMIZATION_RESULT_DOMAIN: &str =
     "crucible.failure-triage.signature-preserving-minimization.v1";
+const FAILURE_CLUSTER_REPORT_DOMAIN: &str = "crucible.failure-triage.cluster-report.v1";
+const FAILURE_CLUSTER_REPORT_SET_DOMAIN: &str = "crucible.failure-triage.cluster-report-set.v1";
 const FAILURE_COVERAGE_CLASS_ALGORITHM: &str = "crucible.failure-signature.coverage-class.top16.v1";
 const SIGNATURE_POLICY_SCHEMA_VERSION: u16 = 1;
 const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
@@ -4608,6 +4610,400 @@ impl FailureSignaturePreservingMinimizationResult {
     }
 }
 
+/// Deterministic rendering formats for per-cluster triage reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FailureClusterReportFormat {
+    /// Machine-readable JSON object rendering.
+    Json,
+    /// Machine-readable JSON Lines rendering with one report per line.
+    JsonLines,
+    /// Human-readable tabular key/value rendering.
+    Table,
+    /// Human-readable Markdown rendering.
+    Markdown,
+}
+
+/// Divergence detail carried by a per-cluster report.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusterReportDivergence {
+    /// Raw unified-log index of the bisected first differing causal entry.
+    pub raw_index: usize,
+    /// Node attributed to the first difference, when node-local.
+    pub node: Option<NodeId>,
+    /// Node carried by the original icount stamp, when node-local.
+    pub icount_node: Option<NodeId>,
+    /// Retired-instruction coordinate of the first difference.
+    pub icount: Icount,
+    /// Closed source that emitted the first differing entry.
+    pub source: EventSource,
+    /// Open-set event kind of the first differing entry.
+    pub kind: String,
+    /// Deterministic summary of the expected-side state at the difference.
+    pub expected_state_summary: String,
+    /// Deterministic summary of the reproduced-side state at the difference.
+    pub reproduced_state_summary: String,
+}
+
+impl FailureClusterReportDivergence {
+    /// Builds reportable divergence detail from a replay-oracle bisection point.
+    #[must_use]
+    pub fn from_bisected_first_diff(
+        point: &EventLogCausalDivergencePoint,
+        expected_state_summary: impl Into<String>,
+        reproduced_state_summary: impl Into<String>,
+    ) -> Self {
+        Self {
+            raw_index: point.raw_index,
+            node: divergence_faulting_node(point),
+            icount_node: point.at.node.clone(),
+            icount: point.at.icount,
+            source: point.source.clone(),
+            kind: point.kind.clone(),
+            expected_state_summary: expected_state_summary.into(),
+            reproduced_state_summary: reproduced_state_summary.into(),
+        }
+    }
+
+    fn to_divergence_point(&self) -> EventLogCausalDivergencePoint {
+        EventLogCausalDivergencePoint {
+            raw_index: self.raw_index,
+            at: EventLogIcountStamp {
+                node: self.icount_node.clone(),
+                icount: self.icount,
+            },
+            source: self.source.clone(),
+            kind: self.kind.clone(),
+        }
+    }
+}
+
+/// Failure-specific detail carried by a per-cluster report.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FailureClusterReportFailure {
+    /// Property-violation record read from the stored assertion result.
+    Property(FailurePropertyViolationRecord),
+    /// Replay-oracle divergence localized by causal-log bisection.
+    Divergence(FailureClusterReportDivergence),
+}
+
+impl FailureClusterReportFailure {
+    /// Builds report detail for a failed property.
+    #[must_use]
+    pub fn property(record: FailurePropertyViolationRecord) -> Self {
+        Self::Property(record)
+    }
+
+    /// Builds report detail for a determinism divergence.
+    #[must_use]
+    pub fn divergence(detail: FailureClusterReportDivergence) -> Self {
+        Self::Divergence(detail)
+    }
+}
+
+/// One causal-log step rendered in a per-cluster report.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusterReportCausalStep {
+    /// Index of this entry in the original unified log before causal filtering.
+    pub raw_index: usize,
+    /// Renumbered causal-log sequence after filtering observational noise.
+    pub sequence: u64,
+    /// Canonical node attributed to this step, when node-local.
+    pub node: Option<NodeId>,
+    /// Retired-instruction coordinate for the step.
+    pub icount: Icount,
+    /// Open-set event kind.
+    pub kind: String,
+    /// Closed source rendered under the report's canonical relabeling.
+    pub source: String,
+    /// Content address of the canonical event-log entry.
+    pub entry: ContentHash,
+}
+
+/// Minimal reproduction tuple referenced by a per-cluster report.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureClusterReportReproduction {
+    /// Self-contained reproduction artifact content hash.
+    pub artifact: ContentHash,
+    /// Root seed embedded in the scenario form.
+    pub seed: Seed,
+    /// Scenario definition content hash.
+    pub scenario: ContentHash,
+    /// Schedule content hash.
+    pub schedule: ContentHash,
+}
+
+/// Deterministic per-cluster triage report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureClusterReport {
+    /// Active policy used for the cluster and minimized representative.
+    pub policy: SignaturePolicy,
+    /// Cluster id, the content hash of the policy-projected signature key.
+    pub cluster_id: ContentHash,
+    /// Full failure signature for the minimized representative.
+    pub signature: FailureSignature,
+    /// Member reproduction-artifact hashes in content-address order.
+    pub member_hashes: Vec<ContentHash>,
+    /// Count of member reproduction artifacts.
+    pub member_count: usize,
+    /// Original representative selected from the cluster.
+    pub representative_artifact: ContentHash,
+    /// Signature-preserving minimal representative artifact.
+    pub minimal_representative: ContentHash,
+    /// Minimal self-contained reproduction tuple.
+    pub minimal_reproduction: FailureClusterReportReproduction,
+    /// Property-violation or divergence detail for the report.
+    pub failure: FailureClusterReportFailure,
+    /// Last-N causal entries leading to the first failing point.
+    pub event_log_excerpt: Vec<FailureClusterReportCausalStep>,
+    /// Ordered causal-cone narrative leading to the failure.
+    pub causal_chain: Vec<FailureClusterReportCausalStep>,
+    /// Exact replay command for the minimized artifact.
+    pub replay_command: String,
+}
+
+impl FailureClusterReport {
+    /// Builds a deterministic report for one minimized cluster representative.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if the cluster,
+    /// minimization run, failure detail, or event-log evidence are not all bound
+    /// to the same minimized representative. Returns other [`EngineError`]
+    /// values if the minimized representative's signature cannot be recomputed
+    /// or projected under `policy`.
+    pub fn from_cluster(
+        policy: SignaturePolicy,
+        cluster: &FailureCluster,
+        minimization: &FailureSignaturePreservingMinimizationRun,
+        failure: FailureClusterReportFailure,
+        event_log: &FailureRecordedEventLog,
+        normalization: &FailureSignatureNormalization,
+        excerpt_len: usize,
+    ) -> Result<Self, EngineError> {
+        if cluster.id != cluster.signature_key.content_hash() {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "cluster id does not match signature key",
+            });
+        }
+        if minimization.cluster_id != cluster.id {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "minimization run does not belong to cluster",
+            });
+        }
+        let representative = cluster.representative_member().ok_or(
+            EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "cluster has no representative",
+            },
+        )?;
+        if minimization.representative_artifact != representative.reproduction_artifact {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "minimization run does not use cluster representative",
+            });
+        }
+        if minimization.minimization.original.artifact.id() != representative.reproduction_artifact
+        {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "minimization original does not match cluster representative",
+            });
+        }
+        if minimization.target_signature_key != cluster.signature_key {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "minimization target signature key does not match cluster",
+            });
+        }
+        if !minimization.preserves_signature() {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "minimization run did not preserve signature",
+            });
+        }
+
+        let minimal_representative = minimization.minimized_artifact();
+        if event_log.artifact() != minimal_representative {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: minimal_representative,
+                actual: event_log.artifact(),
+            });
+        }
+        let signature = failure_signature_for_report_failure(
+            &minimization.minimization.minimized,
+            event_log,
+            &failure,
+            normalization,
+        )?;
+        let signature_key = signature.signature_key(policy)?;
+        if signature_key != cluster.signature_key
+            || signature_key != minimization.minimized_signature_key
+        {
+            return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-cluster-report",
+                reason: "report signature key does not match cluster",
+            });
+        }
+
+        let causal_index = failure_report_anchor_index(&failure, event_log)?;
+        let canonicalizer = event_log.symmetry_canonicalizer(normalization);
+        let event_log_excerpt =
+            failure_report_excerpt(event_log, causal_index, excerpt_len, &canonicalizer);
+        let causal_chain = failure_causal_cone_entries(event_log, causal_index, &canonicalizer)
+            .into_iter()
+            .map(|entry| failure_cluster_report_causal_step(entry, &canonicalizer))
+            .collect::<Vec<_>>();
+
+        let minimized = &minimization.minimization.minimized.artifact;
+        let minimal_reproduction = FailureClusterReportReproduction {
+            artifact: minimized.id(),
+            seed: minimized.seed(),
+            scenario: minimized.scenario_def().id,
+            schedule: minimized.schedule().content_hash(),
+        };
+        let replay_command = format!(
+            "crucible replay {}",
+            format_content_hash_ref(minimized.id())
+        );
+
+        Ok(Self {
+            policy,
+            cluster_id: cluster.id,
+            signature,
+            member_hashes: cluster.member_hashes(),
+            member_count: cluster.members.len(),
+            representative_artifact: minimization.representative_artifact,
+            minimal_representative,
+            minimal_reproduction,
+            failure,
+            event_log_excerpt,
+            causal_chain,
+            replay_command,
+        })
+    }
+
+    /// Returns canonical report material shared by every rendering.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_cluster_report_material(self)
+    }
+
+    /// Returns the content address of this per-cluster report.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_CLUSTER_REPORT_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
+
+    /// Renders this report in one deterministic output format.
+    #[must_use]
+    pub fn render(&self, format: FailureClusterReportFormat) -> String {
+        match format {
+            FailureClusterReportFormat::Json => failure_cluster_report_json(self),
+            FailureClusterReportFormat::JsonLines => {
+                format!("{}\n", failure_cluster_report_json(self))
+            }
+            FailureClusterReportFormat::Table => failure_cluster_report_table(self),
+            FailureClusterReportFormat::Markdown => failure_cluster_report_markdown(self),
+        }
+    }
+}
+
+/// Deterministically ordered per-cluster report collection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureClusterReportSet {
+    /// Active policy shared by every report.
+    pub policy: SignaturePolicy,
+    /// Reports ordered by cluster id.
+    pub reports: Vec<FailureClusterReport>,
+}
+
+impl FailureClusterReportSet {
+    /// Builds a content-address ordered report set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::UnifiedOperationEvidenceMismatch`] if reports from
+    /// different policies are mixed or two reports claim the same cluster id.
+    pub fn from_reports(
+        policy: SignaturePolicy,
+        reports: impl IntoIterator<Item = FailureClusterReport>,
+    ) -> Result<Self, EngineError> {
+        let mut ordered = BTreeMap::new();
+        for report in reports {
+            if report.policy != policy {
+                return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-cluster-report-set",
+                    reason: "report policy does not match report set",
+                });
+            }
+            match ordered.entry(report.cluster_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(report);
+                }
+                Entry::Occupied(_) => {
+                    return Err(EngineError::UnifiedOperationEvidenceMismatch {
+                        operation: "failure-cluster-report-set",
+                        reason: "duplicate cluster report",
+                    });
+                }
+            }
+        }
+
+        Ok(Self {
+            policy,
+            reports: ordered.into_values().collect(),
+        })
+    }
+
+    /// Returns canonical report-set material.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        failure_cluster_report_set_material(self)
+    }
+
+    /// Returns the content address of this report set.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            FAILURE_CLUSTER_REPORT_SET_DOMAIN,
+            &self.canonical_material(),
+        )
+    }
+
+    /// Renders every report in one deterministic output format.
+    #[must_use]
+    pub fn render(&self, format: FailureClusterReportFormat) -> String {
+        match format {
+            FailureClusterReportFormat::Json => failure_cluster_report_set_json(self),
+            FailureClusterReportFormat::JsonLines => {
+                self.reports
+                    .iter()
+                    .map(failure_cluster_report_json)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n"
+            }
+            FailureClusterReportFormat::Table => self
+                .reports
+                .iter()
+                .map(failure_cluster_report_table)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            FailureClusterReportFormat::Markdown => self
+                .reports
+                .iter()
+                .map(failure_cluster_report_markdown)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        }
+    }
+}
+
 /// Full canonical causal-cone material retained for exact policy keys.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FailureCausalCone {
@@ -5727,6 +6123,389 @@ fn push_minimization_attempt_lines(
         None => lines.push(format!("{prefix}.observed_fingerprint=none")),
     }
     lines.push(format!("{prefix}.accepted={}", attempt.accepted));
+}
+
+fn failure_report_anchor_index(
+    failure: &FailureClusterReportFailure,
+    event_log: &FailureRecordedEventLog,
+) -> Result<usize, EngineError> {
+    match failure {
+        FailureClusterReportFailure::Property(record) => {
+            if record.violation.reproduction_artifact != event_log.artifact() {
+                return Err(EngineError::ReplayTargetMismatch {
+                    expected: event_log.artifact(),
+                    actual: record.violation.reproduction_artifact,
+                });
+            }
+            validate_violation_point(event_log, record)
+        }
+        FailureClusterReportFailure::Divergence(divergence) => {
+            validate_divergence_point(event_log, &divergence.to_divergence_point())
+        }
+    }
+}
+
+fn failure_signature_for_report_failure(
+    finding: &FindingReproductionArtifact,
+    event_log: &FailureRecordedEventLog,
+    failure: &FailureClusterReportFailure,
+    normalization: &FailureSignatureNormalization,
+) -> Result<FailureSignature, EngineError> {
+    match failure {
+        FailureClusterReportFailure::Property(record) => {
+            FailureSignature::from_recorded_property_violation_with_normalization(
+                finding,
+                event_log,
+                record,
+                normalization,
+            )
+        }
+        FailureClusterReportFailure::Divergence(divergence) => {
+            FailureSignature::from_recorded_divergence_with_normalization(
+                finding,
+                event_log,
+                &divergence.to_divergence_point(),
+                normalization,
+            )
+        }
+    }
+}
+
+fn failure_report_excerpt(
+    event_log: &FailureRecordedEventLog,
+    causal_index: usize,
+    excerpt_len: usize,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> Vec<FailureClusterReportCausalStep> {
+    if excerpt_len == 0 {
+        return Vec::new();
+    }
+    let start = causal_index.saturating_add(1).saturating_sub(excerpt_len);
+    event_log.projection.entries()[start..=causal_index]
+        .iter()
+        .map(|entry| failure_cluster_report_causal_step(entry, canonicalizer))
+        .collect()
+}
+
+fn failure_cluster_report_causal_step(
+    entry: &crate::scheduler::EventLogCausalProjectionEntry,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> FailureClusterReportCausalStep {
+    let node = entry
+        .entry
+        .time()
+        .icount
+        .node
+        .as_ref()
+        .map(|node| canonicalizer.canonical_node(node))
+        .or_else(|| match entry.entry.source() {
+            EventSource::Node { node } | EventSource::Guest { node } => {
+                Some(canonicalizer.canonical_node(node))
+            }
+            EventSource::Scenario { .. } | EventSource::Engine | EventSource::Command { .. } => {
+                None
+            }
+        });
+    let source = failure_event_source_material("source", entry.entry.source(), canonicalizer)
+        .strip_prefix("source=")
+        .unwrap_or("unknown")
+        .to_owned();
+    FailureClusterReportCausalStep {
+        raw_index: entry.raw_index,
+        sequence: entry.entry.sequence(),
+        node,
+        icount: entry.entry.time().icount.icount,
+        kind: entry.entry.event_payload().kind().to_owned(),
+        source,
+        entry: entry.entry.content_hash(),
+    }
+}
+
+fn failure_cluster_report_material(report: &FailureClusterReport) -> String {
+    let mut lines = vec![
+        report.policy.canonical_material(),
+        format!("cluster_id={}", content_hash_hex(report.cluster_id)),
+        String::from("signature_BEGIN"),
+        report.signature.report_material(),
+        String::from("signature_END"),
+        format!("member_count={}", report.member_count),
+    ];
+    for (index, member) in report.member_hashes.iter().enumerate() {
+        lines.push(format!(
+            "member.{index}.reproduction_artifact={}",
+            content_hash_hex(*member)
+        ));
+    }
+    lines.push(format!(
+        "representative_artifact={}",
+        content_hash_hex(report.representative_artifact)
+    ));
+    lines.push(format!(
+        "minimal_representative={}",
+        content_hash_hex(report.minimal_representative)
+    ));
+    push_failure_report_reproduction_lines(
+        "minimal_reproduction",
+        &report.minimal_reproduction,
+        &mut lines,
+    );
+    push_failure_report_failure_lines("failure", &report.failure, &mut lines);
+    lines.push(format!(
+        "event_log_excerpt_count={}",
+        report.event_log_excerpt.len()
+    ));
+    for (index, step) in report.event_log_excerpt.iter().enumerate() {
+        push_failure_report_step_lines(&format!("event_log_excerpt.{index}"), step, &mut lines);
+    }
+    lines.push(format!("causal_chain_count={}", report.causal_chain.len()));
+    for (index, step) in report.causal_chain.iter().enumerate() {
+        push_failure_report_step_lines(&format!("causal_chain.{index}"), step, &mut lines);
+    }
+    lines.push(format!(
+        "replay_command_len={}",
+        report.replay_command.len()
+    ));
+    lines.push(format!("replay_command={}", report.replay_command));
+    lines.join("\n")
+}
+
+fn push_failure_report_reproduction_lines(
+    prefix: &str,
+    reproduction: &FailureClusterReportReproduction,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!(
+        "{prefix}.artifact={}",
+        content_hash_hex(reproduction.artifact)
+    ));
+    lines.push(format!("{prefix}.seed={}", reproduction.seed.to_hex()));
+    lines.push(format!(
+        "{prefix}.scenario={}",
+        content_hash_hex(reproduction.scenario)
+    ));
+    lines.push(format!(
+        "{prefix}.schedule={}",
+        content_hash_hex(reproduction.schedule)
+    ));
+}
+
+fn push_failure_report_failure_lines(
+    prefix: &str,
+    failure: &FailureClusterReportFailure,
+    lines: &mut Vec<String>,
+) {
+    match failure {
+        FailureClusterReportFailure::Property(record) => {
+            lines.push(format!("{prefix}.kind=property-violation"));
+            lines.push(assertion_id_material(&record.violation.assertion));
+            lines.push(format!(
+                "{prefix}.property_message_len={}",
+                record.violation.message.len()
+            ));
+            lines.push(format!(
+                "{prefix}.property_message={}",
+                record.violation.message
+            ));
+            lines.push(format!(
+                "{prefix}.property_quantifier={}",
+                failure_assertion_quantifier_label(record.violation.quantifier)
+            ));
+            lines.push(format!(
+                "{prefix}.event_kind_len={}",
+                record.violation.event_kind.len()
+            ));
+            lines.push(format!(
+                "{prefix}.event_kind={}",
+                record.violation.event_kind
+            ));
+            lines.push(
+                record
+                    .violation
+                    .at_icount
+                    .map(|icount| format!("{prefix}.at_icount={}", icount.retired))
+                    .unwrap_or_else(|| format!("{prefix}.at_icount=none")),
+            );
+            match &record.violation.node {
+                Some(node) => lines.push(node_ref_material(&format!("{prefix}.node"), node)),
+                None => lines.push(format!("{prefix}.node=none")),
+            }
+            lines.push(format!(
+                "{prefix}.detail_len={}",
+                record.violation.detail.len()
+            ));
+            lines.push(format!("{prefix}.detail={}", record.violation.detail));
+            lines.push(format!(
+                "{prefix}.reproduction_artifact={}",
+                content_hash_hex(record.violation.reproduction_artifact)
+            ));
+        }
+        FailureClusterReportFailure::Divergence(divergence) => {
+            lines.push(format!("{prefix}.kind=divergence"));
+            lines.push(format!("{prefix}.raw_index={}", divergence.raw_index));
+            match &divergence.node {
+                Some(node) => lines.push(node_ref_material(&format!("{prefix}.node"), node)),
+                None => lines.push(format!("{prefix}.node=none")),
+            }
+            match &divergence.icount_node {
+                Some(node) => lines.push(node_ref_material(&format!("{prefix}.icount_node"), node)),
+                None => lines.push(format!("{prefix}.icount_node=none")),
+            }
+            lines.push(format!("{prefix}.icount={}", divergence.icount.retired));
+            lines.push(failure_event_source_material(
+                &format!("{prefix}.source"),
+                &divergence.source,
+                &FailureSymmetryCanonicalizer::identity(ContentHash::default()),
+            ));
+            lines.push(format!("{prefix}.kind_len={}", divergence.kind.len()));
+            lines.push(format!("{prefix}.event_kind={}", divergence.kind));
+            lines.push(format!(
+                "{prefix}.expected_state_summary_len={}",
+                divergence.expected_state_summary.len()
+            ));
+            lines.push(format!(
+                "{prefix}.expected_state_summary={}",
+                divergence.expected_state_summary
+            ));
+            lines.push(format!(
+                "{prefix}.reproduced_state_summary_len={}",
+                divergence.reproduced_state_summary.len()
+            ));
+            lines.push(format!(
+                "{prefix}.reproduced_state_summary={}",
+                divergence.reproduced_state_summary
+            ));
+        }
+    }
+}
+
+fn push_failure_report_step_lines(
+    prefix: &str,
+    step: &FailureClusterReportCausalStep,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("{prefix}.raw_index={}", step.raw_index));
+    lines.push(format!("{prefix}.sequence={}", step.sequence));
+    match &step.node {
+        Some(node) => lines.push(node_ref_material(&format!("{prefix}.node"), node)),
+        None => lines.push(format!("{prefix}.node=none")),
+    }
+    lines.push(format!("{prefix}.icount={}", step.icount.retired));
+    lines.push(format!("{prefix}.kind_len={}", step.kind.len()));
+    lines.push(format!("{prefix}.kind={}", step.kind));
+    lines.push(format!("{prefix}.source_len={}", step.source.len()));
+    lines.push(format!("{prefix}.source={}", step.source));
+    lines.push(format!("{prefix}.entry={}", content_hash_hex(step.entry)));
+}
+
+fn failure_cluster_report_set_material(report_set: &FailureClusterReportSet) -> String {
+    let mut lines = vec![
+        report_set.policy.canonical_material(),
+        format!("report_count={}", report_set.reports.len()),
+    ];
+    for (index, report) in report_set.reports.iter().enumerate() {
+        lines.push(format!("report.index={index}"));
+        lines.push(format!(
+            "report.cluster_id={}",
+            content_hash_hex(report.cluster_id)
+        ));
+        lines.push(format!(
+            "report.content_hash={}",
+            content_hash_hex(report.content_hash())
+        ));
+    }
+    lines.join("\n")
+}
+
+fn failure_cluster_report_json(report: &FailureClusterReport) -> String {
+    let members = report
+        .member_hashes
+        .iter()
+        .map(|hash| json_string(&format_content_hash_ref(*hash)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema\":{},\"cluster_id\":{},\"policy\":{},\"report_hash\":{},\"signature_hash\":{},\"member_count\":{},\"member_hashes\":[{}],\"minimal_representative\":{},\"replay_command\":{},\"canonical_material\":{}}}",
+        json_string(FAILURE_CLUSTER_REPORT_DOMAIN),
+        json_string(&format_content_hash_ref(report.cluster_id)),
+        json_string(signature_policy_level_label(report.policy.level())),
+        json_string(&format_content_hash_ref(report.content_hash())),
+        json_string(&format_content_hash_ref(report.signature.content_hash())),
+        report.member_count,
+        members,
+        json_string(&format_content_hash_ref(report.minimal_representative)),
+        json_string(&report.replay_command),
+        json_string(&report.canonical_material()),
+    )
+}
+
+fn failure_cluster_report_set_json(report_set: &FailureClusterReportSet) -> String {
+    let reports = report_set
+        .reports
+        .iter()
+        .map(failure_cluster_report_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema\":{},\"policy\":{},\"report_set_hash\":{},\"report_count\":{},\"reports\":[{}],\"canonical_material\":{}}}",
+        json_string(FAILURE_CLUSTER_REPORT_SET_DOMAIN),
+        json_string(signature_policy_level_label(report_set.policy.level())),
+        json_string(&format_content_hash_ref(report_set.content_hash())),
+        report_set.reports.len(),
+        reports,
+        json_string(&report_set.canonical_material()),
+    )
+}
+
+fn failure_cluster_report_table(report: &FailureClusterReport) -> String {
+    let mut lines = vec![
+        String::from("field\tvalue"),
+        format!("cluster_id\t{}", format_content_hash_ref(report.cluster_id)),
+        format!(
+            "minimal_representative\t{}",
+            format_content_hash_ref(report.minimal_representative)
+        ),
+        format!("member_count\t{}", report.member_count),
+        format!("replay_command\t{}", report.replay_command),
+    ];
+    for line in report.canonical_material().lines() {
+        let (field, value) = line.split_once('=').unwrap_or((line, ""));
+        lines.push(format!("canonical.{field}\t{value}"));
+    }
+    lines.join("\n")
+}
+
+fn failure_cluster_report_markdown(report: &FailureClusterReport) -> String {
+    format!(
+        "# Crucible Triage Cluster {}\n\n- Policy: {}\n- Members: {}\n- Minimal representative: {}\n- Replay: `{}`\n\n## Canonical Report\n\n```text\n{}\n```",
+        format_content_hash_ref(report.cluster_id),
+        signature_policy_level_label(report.policy.level()),
+        report.member_count,
+        format_content_hash_ref(report.minimal_representative),
+        report.replay_command,
+        report.canonical_material(),
+    )
+}
+
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0c}' => escaped.push_str("\\f"),
+            ch if ch.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", u32::from(ch)));
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
 }
 
 fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {

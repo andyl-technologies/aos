@@ -9,14 +9,17 @@ use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
     Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp, EventLogOffset,
-    EventSource, FailureCausalCone, FailureClusterFinding, FailureClusteringResult, FailureKind,
-    FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
-    FailureSignatureNormalization, FailureTriageResultIdentity, FindingDiscoveryPath,
+    EventPayload, EventSource, FailureCausalCone, FailureClusterFinding, FailureClusterReport,
+    FailureClusterReportDivergence, FailureClusterReportFailure, FailureClusterReportFormat,
+    FailureClusterReportSet, FailureClusteringResult, FailureKind, FailurePropertyViolationRecord,
+    FailureRecordedEventLog, FailureSignature, FailureSignatureNormalization,
+    FailureSignaturePreservingMinimizationRun, FailureTriageResultIdentity, FindingDiscoveryPath,
     FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MinimizationConfig,
-    NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint,
-    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulingPoint, Seed,
-    SignaturePolicy, SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode,
+    MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OverrideDecision, Plan,
+    Properties, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogClass, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
+    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 #[test]
@@ -815,6 +818,282 @@ fn signature_preserving_minimization_extends_base_pass_per_cluster() -> Result<(
 }
 
 #[test]
+fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let policy = SignaturePolicy::default_policy();
+    let property_decision = override_decision("triage-decision", "fail");
+    let property_finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([property_decision.clone()]),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("cluster-report-property"),
+    )?;
+    let property_entries = recorded_event_log(property_decision);
+    let property_log = recorded_event_log_for_finding(&property_finding, &property_entries)?;
+    let property_record = property_violation_record(property_finding.artifact.id());
+    let property_signature = FailureSignature::from_recorded_property_violation(
+        &property_finding,
+        &property_log,
+        &property_record,
+    )?;
+    let mut stale_property_signature = property_signature.clone();
+    stale_property_signature.at_icount_report_only = Some(icount(999));
+    stale_property_signature.causal_cone = Some(FailureCausalCone::from_canonical_material(
+        "causal_cone_events=1\nentry.cone_index=0\nentry.kind=stale-report-detail",
+    ));
+    assert_eq!(
+        stale_property_signature
+            .signature_key(policy)?
+            .content_hash(),
+        property_signature.signature_key(policy)?.content_hash(),
+        "default policy must let the stale full-signature details share the cluster key"
+    );
+    assert_ne!(
+        stale_property_signature.report_material(),
+        property_signature.report_material()
+    );
+    let property_cluster = one_member_cluster(policy, &property_finding, stale_property_signature)?;
+    let property_run = no_op_minimization_run(policy, &property_cluster, &property_finding)?;
+    let property_report = FailureClusterReport::from_cluster(
+        policy,
+        &property_cluster,
+        &property_run,
+        FailureClusterReportFailure::property(property_record.clone()),
+        &property_log,
+        &FailureSignatureNormalization::identity(),
+        8,
+    )?;
+
+    assert_eq!(
+        property_report.signature.report_material(),
+        property_signature.report_material(),
+        "report construction must recompute the full minimized signature from checked evidence"
+    );
+    assert!(
+        !property_report
+            .signature
+            .report_material()
+            .contains("stale-report-detail")
+    );
+    assert_eq!(property_report.member_count, 1);
+    assert_eq!(
+        property_report.minimal_representative,
+        property_finding.artifact.id()
+    );
+    assert!(
+        property_report
+            .replay_command
+            .starts_with("crucible replay blake3:")
+    );
+    assert!(
+        property_report
+            .canonical_material()
+            .contains("failure.kind=property-violation")
+    );
+    assert!(
+        property_report
+            .canonical_material()
+            .contains("failure.property_message=forbidden marker must stay absent")
+    );
+    assert!(
+        property_report
+            .canonical_material()
+            .contains("failure.detail=observed forbidden marker")
+    );
+    assert!(
+        property_report
+            .canonical_material()
+            .contains("event_log_excerpt.")
+    );
+    assert!(
+        property_report
+            .canonical_material()
+            .contains("causal_chain.")
+    );
+    assert!(
+        !property_report
+            .canonical_material()
+            .contains("coverage_marker"),
+        "report excerpts must use the causal projection, not observational noise"
+    );
+
+    let json = property_report.render(FailureClusterReportFormat::Json);
+    let jsonl = property_report.render(FailureClusterReportFormat::JsonLines);
+    let table = property_report.render(FailureClusterReportFormat::Table);
+    let markdown = property_report.render(FailureClusterReportFormat::Markdown);
+    assert_eq!(
+        json,
+        property_report.render(FailureClusterReportFormat::Json)
+    );
+    assert_eq!(
+        jsonl,
+        property_report.render(FailureClusterReportFormat::JsonLines)
+    );
+    assert_eq!(
+        table,
+        property_report.render(FailureClusterReportFormat::Table)
+    );
+    assert_eq!(
+        markdown,
+        property_report.render(FailureClusterReportFormat::Markdown)
+    );
+    for rendered in [&json, &jsonl, &table, &markdown] {
+        assert!(rendered.contains("crucible replay blake3:"));
+        assert!(rendered.to_ascii_lowercase().contains("canonical"));
+        assert!(rendered.contains("causal_chain"));
+    }
+    assert_eq!(jsonl.lines().count(), 1);
+
+    let mut wrong_representative_run = property_run.clone();
+    wrong_representative_run.representative_artifact = finding_hash("wrong-cluster-representative");
+    let wrong_representative = FailureClusterReport::from_cluster(
+        policy,
+        &property_cluster,
+        &wrong_representative_run,
+        FailureClusterReportFailure::property(property_record.clone()),
+        &property_log,
+        &FailureSignatureNormalization::identity(),
+        8,
+    )
+    .expect_err("report must reject a minimization run for a different representative");
+    assert!(matches!(
+        wrong_representative,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+
+    let wrong_original_finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([override_decision("wrong-report-original", "noise")]),
+        FindingDiscoveryPath::InteractiveFork,
+        finding_hash("wrong-report-original"),
+    )?;
+    let mut wrong_original_run = property_run.clone();
+    wrong_original_run.minimization.original = wrong_original_finding;
+    let wrong_original = FailureClusterReport::from_cluster(
+        policy,
+        &property_cluster,
+        &wrong_original_run,
+        FailureClusterReportFailure::property(property_record.clone()),
+        &property_log,
+        &FailureSignatureNormalization::identity(),
+        8,
+    )
+    .expect_err("report must reject a minimization run whose original is not the representative");
+    assert!(matches!(
+        wrong_original,
+        EngineError::UnifiedOperationEvidenceMismatch { .. }
+    ));
+
+    let divergence_decision = override_decision("triage-divergence", "left");
+    let divergence_finding = finding_artifact(
+        &scenario,
+        Schedule::from_decisions([divergence_decision.clone()]),
+        FindingDiscoveryPath::InteractiveFork,
+        finding_hash("cluster-report-divergence"),
+    )?;
+    let divergence_entries = recorded_node_divergence_event_log(divergence_decision);
+    let divergence_log = recorded_event_log_for_finding(&divergence_finding, &divergence_entries)?;
+    let divergence_point = EventLogCausalDivergencePoint {
+        raw_index: 1,
+        at: EventLogIcountStamp {
+            node: Some(node("triage-node")),
+            icount: icount(8),
+        },
+        source: EventSource::Node {
+            node: node("triage-node"),
+        },
+        kind: "node_state".to_owned(),
+    };
+    let divergence_signature = FailureSignature::from_recorded_divergence(
+        &divergence_finding,
+        &divergence_log,
+        &divergence_point,
+    )?;
+    let divergence_cluster =
+        one_member_cluster(policy, &divergence_finding, divergence_signature.clone())?;
+    let divergence_run = no_op_minimization_run(policy, &divergence_cluster, &divergence_finding)?;
+    let divergence_report = FailureClusterReport::from_cluster(
+        policy,
+        &divergence_cluster,
+        &divergence_run,
+        FailureClusterReportFailure::divergence(
+            FailureClusterReportDivergence::from_bisected_first_diff(
+                &divergence_point,
+                "expected_state=stable-before-divergence",
+                "reproduced_state=changed-after-divergence",
+            ),
+        ),
+        &divergence_log,
+        &FailureSignatureNormalization::identity(),
+        4,
+    )?;
+    assert!(
+        divergence_report
+            .canonical_material()
+            .contains("failure.kind=divergence")
+    );
+    assert!(
+        divergence_report
+            .canonical_material()
+            .contains("failure.icount_node")
+    );
+    assert!(
+        divergence_report
+            .canonical_material()
+            .contains("failure.expected_state_summary=expected_state=stable-before-divergence")
+    );
+    assert!(
+        divergence_report
+            .canonical_material()
+            .contains("failure.reproduced_state_summary=reproduced_state=changed-after-divergence")
+    );
+
+    let report_set = FailureClusterReportSet::from_reports(
+        policy,
+        [divergence_report.clone(), property_report.clone()],
+    )?;
+    let report_ids = report_set
+        .reports
+        .iter()
+        .map(|report| report.cluster_id)
+        .collect::<Vec<_>>();
+    let mut sorted_report_ids = report_ids.clone();
+    sorted_report_ids.sort();
+    assert_eq!(report_ids, sorted_report_ids);
+    assert_eq!(
+        report_set
+            .render(FailureClusterReportFormat::JsonLines)
+            .lines()
+            .count(),
+        report_set.reports.len()
+    );
+    assert!(
+        report_set
+            .render(FailureClusterReportFormat::Json)
+            .contains("\"reports\"")
+    );
+    assert!(
+        report_set
+            .render(FailureClusterReportFormat::Markdown)
+            .contains("Canonical Report")
+    );
+
+    let mut forged = property_report.clone();
+    forged
+        .event_log_excerpt
+        .first_mut()
+        .ok_or("report must retain causal excerpt evidence")?
+        .entry = finding_hash("forged-report-excerpt-entry");
+    assert_ne!(
+        forged.content_hash(),
+        property_report.content_hash(),
+        "report identity must include causal excerpt evidence"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
@@ -929,6 +1208,53 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+fn one_member_cluster(
+    policy: SignaturePolicy,
+    finding: &FindingReproductionArtifact,
+    signature: FailureSignature,
+) -> Result<crucible::FailureCluster, EngineError> {
+    let clustered = FailureClusteringResult::from_findings(
+        policy,
+        [FailureClusterFinding::new(finding.artifact.id(), signature)],
+    )?;
+    clustered
+        .clusters
+        .into_iter()
+        .next()
+        .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+            operation: "failure-report-test",
+            reason: "one-member cluster was not produced",
+        })
+}
+
+fn no_op_minimization_run(
+    policy: SignaturePolicy,
+    cluster: &crucible::FailureCluster,
+    finding: &FindingReproductionArtifact,
+) -> Result<FailureSignaturePreservingMinimizationRun, EngineError> {
+    let representative =
+        cluster
+            .representative_member()
+            .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "failure-report-test",
+                reason: "cluster has no representative",
+            })?;
+    let signature_key = representative.signature.signature_key(policy)?;
+    Ok(FailureSignaturePreservingMinimizationRun {
+        cluster_id: cluster.id,
+        representative_artifact: finding.artifact.id(),
+        target_signature_key: signature_key.clone(),
+        minimized_signature_key: signature_key,
+        minimization: MinimizationRun {
+            seed: Seed::from_u64(0x5452_4936),
+            target_fingerprint: finding.finding_fingerprint,
+            original: finding.clone(),
+            minimized: finding.clone(),
+            attempts: Vec::new(),
+        },
+    })
+}
+
 fn signature_for_recorded_decision(
     finding: &FindingReproductionArtifact,
     decision: Decision,
@@ -1008,6 +1334,28 @@ fn recorded_event_log_with_assertion_time(
                 assertion_id("no-forbidden-marker"),
                 AssertionPhase::Violated,
             ),
+        ),
+    ]
+}
+
+fn recorded_node_divergence_event_log(decision: Decision) -> Vec<crucible::SchedulerEventLogEntry> {
+    let node_state = ObservableEvent::node_state(
+        VirtualTime { ticks: 8 },
+        node("triage-node"),
+        NodeLifecycle::Started,
+    );
+    vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 1 },
+            SchedulerEventLogPayload::Decision(decision),
+        ),
+        crucible::test_support::condition_open_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 8 },
+            SchedulerEventLogClass::Causal,
+            EventPayload::new("node_state", BTreeMap::new()),
+            SchedulerEventLogPayload::Observable(node_state.payload().clone()),
         ),
     ]
 }
