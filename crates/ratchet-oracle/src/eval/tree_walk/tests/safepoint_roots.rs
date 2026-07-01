@@ -672,6 +672,9 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
     assert_eq!(summary.object_copies(), 1);
     assert_eq!(summary.copied_to_nursery(), 1);
     assert_eq!(summary.promoted_to_old(), 0);
+    assert!(summary.object_copy_bytes() > 0);
+    assert_eq!(summary.object_copy_bytes(), summary.copy_to_nursery_bytes());
+    assert_eq!(summary.promote_to_old_bytes(), 0);
     assert_eq!(summary.forwarding_pointers(), 1);
     assert_eq!(summary.reference_rewrites(), 1);
     assert_eq!(summary.root_writebacks(), 1);
@@ -694,6 +697,12 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         .expect("worker dry-run commit records");
 
     assert_eq!(preflight.object_byte_copy_plan().len(), 1);
+    assert_eq!(
+        preflight.object_copy_bytes(),
+        preflight.object_byte_copy_plan().copy_to_nursery_bytes()
+    );
+    assert_eq!(preflight.promote_to_old_bytes(), 0);
+    assert_eq!(summary.object_copy_bytes(), preflight.object_copy_bytes());
     assert_eq!(
         writeback_application.report().root_writebacks(),
         preflight.reference_writeback_plan().root_writebacks().len()
@@ -752,6 +761,63 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
 }
 
 #[test]
+fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let old_base = static_gc_address(0x2000_0000);
+
+    let dry_run = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run(
+            MinorGcPromotionPolicy::new(0),
+            MinorGcDestinationBases::new(static_gc_address(0x1000_0000), old_base),
+        )
+        .expect("boundary scan runs promoted owned commit dry-run");
+
+    let summary = dry_run.summary();
+    assert_eq!(summary.tiers(), 1);
+    assert_eq!(summary.object_copies(), 1);
+    assert_eq!(summary.copied_to_nursery(), 0);
+    assert_eq!(summary.promoted_to_old(), 1);
+    assert!(summary.object_copy_bytes() > 0);
+    assert_eq!(summary.copy_to_nursery_bytes(), 0);
+    assert_eq!(summary.object_copy_bytes(), summary.promote_to_old_bytes());
+
+    let preflight = dry_run
+        .preflights()
+        .worker()
+        .expect("worker promoted dry-run preflight records");
+    assert_eq!(preflight.copy_to_nursery_bytes(), 0);
+    assert_eq!(
+        summary.promote_to_old_bytes(),
+        preflight.promote_to_old_bytes()
+    );
+    let commit_application = dry_run
+        .commit_applications()
+        .worker()
+        .expect("worker promoted dry-run commit records");
+    assert_eq!(commit_application.report().copied_to_nursery(), 0);
+    assert_eq!(commit_application.report().promoted_to_old(), 1);
+    assert_eq!(
+        commit_application.forwarding_slots()[0].forwarded_value(),
+        Some(ResolvedValueGeneration::Heap {
+            address: old_base,
+            generation: HeapGeneration::Old,
+        })
+    );
+    assert_eq!(
+        commit_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: old_base,
+            generation: HeapGeneration::Old,
+        }]
+    );
+}
+
+#[test]
 fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     let ir = lower("\"stress\"");
     let outcome = eval_whnf_owned_with_options(
@@ -780,6 +846,9 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     assert_eq!(summary.object_copies(), 0);
     assert_eq!(summary.copied_to_nursery(), 0);
     assert_eq!(summary.promoted_to_old(), 0);
+    assert_eq!(summary.object_copy_bytes(), 0);
+    assert_eq!(summary.copy_to_nursery_bytes(), 0);
+    assert_eq!(summary.promote_to_old_bytes(), 0);
     assert_eq!(summary.forwarding_pointers(), 0);
     assert_eq!(summary.reference_rewrites(), 0);
     assert_eq!(summary.root_writebacks(), 0);
@@ -852,6 +921,9 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     let preflight = preflights.worker().expect("worker preflight records");
     assert_eq!(preflight.root_writeback_slots().len(), 1);
     assert!(!preflight.heap_field_writeback_slots().is_empty());
+    let expected_object_copy_bytes = preflight.object_copy_bytes();
+    let expected_copy_to_nursery_bytes = preflight.copy_to_nursery_bytes();
+    let expected_promote_to_old_bytes = preflight.promote_to_old_bytes();
 
     let application = preflight
         .apply_reference_writebacks_to_owned_slots()
@@ -909,6 +981,15 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
     assert_eq!(summary.root_writebacks(), 1);
     assert!(summary.heap_field_writebacks() > 0);
     assert_eq!(summary.reference_rewrites(), summary.reference_writebacks());
+    assert_eq!(summary.object_copy_bytes(), expected_object_copy_bytes);
+    assert_eq!(
+        summary.copy_to_nursery_bytes(),
+        expected_copy_to_nursery_bytes
+    );
+    assert_eq!(
+        summary.promote_to_old_bytes(),
+        expected_promote_to_old_bytes
+    );
     assert_eq!(
         summary.object_copies(),
         dry_run
@@ -1007,6 +1088,14 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         .commit_applications()
         .permanent_shared()
         .expect("permanent empty dry-run commit records");
+    let worker_preflight = dry_run
+        .preflights()
+        .worker()
+        .expect("worker remembered dry-run preflight records");
+    let permanent_preflight = dry_run
+        .preflights()
+        .permanent_shared()
+        .expect("permanent empty dry-run preflight records");
     let worker_report = worker_commit.report();
     let permanent_report = permanent_commit.report();
 
@@ -1016,6 +1105,24 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         worker_report
             .object_copies()
             .saturating_add(permanent_report.object_copies())
+    );
+    assert_eq!(
+        summary.object_copy_bytes(),
+        worker_preflight
+            .object_copy_bytes()
+            .saturating_add(permanent_preflight.object_copy_bytes())
+    );
+    assert_eq!(
+        summary.copy_to_nursery_bytes(),
+        worker_preflight
+            .copy_to_nursery_bytes()
+            .saturating_add(permanent_preflight.copy_to_nursery_bytes())
+    );
+    assert_eq!(
+        summary.promote_to_old_bytes(),
+        worker_preflight
+            .promote_to_old_bytes()
+            .saturating_add(permanent_preflight.promote_to_old_bytes())
     );
     assert_eq!(
         summary.reference_rewrites(),

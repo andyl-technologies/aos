@@ -1127,13 +1127,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       boundary pipeline from the recorded GC-stress scans in one checked call,
       and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates
       per-tier dry-run counts for copies, promotions, forwarding installs,
-      reference rewrites, root/heap-field writebacks, and remembered-set
-      publication. Tests cover the worker dry-run path, including copy,
+      reference rewrites, root/heap-field writebacks, remembered-set
+      publication, and object-payload byte totals from the preserved preflight
+      metadata. Tests cover the worker dry-run path, including copy, promotion,
       forwarding, reference-rewrite, owned-buffer byte equality, and summary
-      counts; permanent-shared empty dry-run partitioning; mixed root/heap-field
-      summary aggregation; plus the stress-disabled empty path. This is still an
-      owned dry-run telemetry surface only: it does not bind raw bytes to live
-      heap objects, install real object-header forwarding slots, mutate live
+      counts/bytes; permanent-shared empty dry-run partitioning; mixed
+      root/heap-field summary aggregation; plus the stress-disabled empty path.
+      This is still an owned dry-run telemetry surface only: it does not bind
+      raw bytes to live heap objects, install real object-header forwarding
+      slots, mutate live
       tree-walk roots or heap fields, mutate remembered source fields, publish
       the evaluator-owned remembered set, or manage semispace storage.
 - [x] Current GC-stress safepoint-poll precursor:
@@ -1646,11 +1648,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       paired plans. Boundary preflights can now apply those reference writebacks
       to owned slot-buffer copies and can apply the complete lower-level commit
       to boundary-owned synthetic byte, forwarding-slot, reference, and
-      remembered-set buffers, reporting the rewritten root/heap-field counts and
-      the lower-level commit counts. These helpers still do not bind live
-      object-byte buffers, live root/field storage, live forwarding slots, or
-      evaluator-owned remembered-set storage; reserve semispace storage; or
-      commit live mutations.
+      remembered-set buffers. Boundary preflights expose per-generation
+      object-payload byte totals, and the dry-run summary reports those totals
+      alongside rewritten root/heap-field counts and lower-level commit counts.
+      These helpers still do not bind live object-byte buffers, live root/field
+      storage, live forwarding slots, or evaluator-owned remembered-set storage;
+      reserve semispace storage; or commit live mutations.
       `force_value`, lambda-call, import-evaluation, nested numeric-equality,
       and saturated first-class primop paths push/pop active or suspended
       safepoint frames on success and error paths, and

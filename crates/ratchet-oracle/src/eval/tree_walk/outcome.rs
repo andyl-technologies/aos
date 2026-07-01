@@ -304,6 +304,31 @@ impl EvalGcStressBoundaryMinorGcCommitPreflight {
         &self.object_byte_copy_plan
     }
 
+    /// Returns total object payload bytes requested by this preflight.
+    ///
+    /// This excludes destination-space alignment padding; use the paired
+    /// relocation placement plan for reserved-byte sizing.
+    pub fn object_copy_bytes(&self) -> usize {
+        self.copy_to_nursery_bytes()
+            .saturating_add(self.promote_to_old_bytes())
+    }
+
+    /// Returns object payload bytes copied into the next nursery.
+    ///
+    /// This excludes destination-space alignment padding; use the paired
+    /// relocation placement plan for reserved-byte sizing.
+    pub fn copy_to_nursery_bytes(&self) -> usize {
+        self.object_byte_copy_plan.copy_to_nursery_bytes()
+    }
+
+    /// Returns object payload bytes promoted into old generation.
+    ///
+    /// This excludes destination-space alignment padding; use the paired
+    /// relocation placement plan for reserved-byte sizing.
+    pub fn promote_to_old_bytes(&self) -> usize {
+        self.object_byte_copy_plan.promote_to_old_bytes()
+    }
+
     /// Returns empty forwarding slots in forwarding-pointer order.
     pub fn forwarding_slots(&self) -> &[MinorGcForwardingSlot] {
         &self.forwarding_slots
@@ -871,14 +896,15 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
 
     /// Returns aggregate counts for the owned dry-run applications.
     pub fn summary(&self) -> EvalGcStressBoundaryMinorGcCommitDryRunSummary {
-        EvalGcStressBoundaryMinorGcCommitDryRunSummary::from_applications(
+        EvalGcStressBoundaryMinorGcCommitDryRunSummary::from_preflights_and_applications(
+            &self.preflights,
             &self.reference_writebacks,
             &self.commit_applications,
         )
     }
 }
 
-/// Aggregate counts from owned boundary minor-GC dry-run applications.
+/// Aggregate counts and payload bytes from owned boundary minor-GC dry runs.
 ///
 /// The summary is telemetry for the synthetic dry-run boundary only. It does
 /// not imply that live roots, heap fields, object bytes, forwarding headers,
@@ -889,6 +915,8 @@ pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     object_copies: usize,
     copied_to_nursery: usize,
     promoted_to_old: usize,
+    copy_to_nursery_bytes: usize,
+    promote_to_old_bytes: usize,
     forwarding_pointers: usize,
     reference_rewrites: usize,
     root_writebacks: usize,
@@ -898,14 +926,34 @@ pub struct EvalGcStressBoundaryMinorGcCommitDryRunSummary {
 }
 
 impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
-    fn from_applications(
+    fn from_preflights_and_applications(
+        preflights: &EvalGcStressBoundaryMinorGcCommitPreflights,
         reference_writebacks: &EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
         commit_applications: &EvalGcStressBoundaryMinorGcCommitApplications,
     ) -> Self {
         let mut summary = Self::default();
+        summary.add_preflights(preflights);
         summary.add_reference_writeback_applications(reference_writebacks);
         summary.add_commit_applications(commit_applications);
         summary
+    }
+
+    fn add_preflights(&mut self, preflights: &EvalGcStressBoundaryMinorGcCommitPreflights) {
+        if let Some(preflight) = preflights.worker() {
+            self.add_preflight(preflight);
+        }
+        if let Some(preflight) = preflights.permanent_shared() {
+            self.add_preflight(preflight);
+        }
+    }
+
+    fn add_preflight(&mut self, preflight: &EvalGcStressBoundaryMinorGcCommitPreflight) {
+        self.copy_to_nursery_bytes = self
+            .copy_to_nursery_bytes
+            .saturating_add(preflight.copy_to_nursery_bytes());
+        self.promote_to_old_bytes = self
+            .promote_to_old_bytes
+            .saturating_add(preflight.promote_to_old_bytes());
     }
 
     fn add_reference_writeback_applications(
@@ -985,6 +1033,29 @@ impl EvalGcStressBoundaryMinorGcCommitDryRunSummary {
     /// Returns the number of survivors promoted to old generation.
     pub const fn promoted_to_old(self) -> usize {
         self.promoted_to_old
+    }
+
+    /// Returns total object payload bytes requested by all dry-run preflights.
+    ///
+    /// This excludes destination-space alignment padding; use the relocation
+    /// placement plans for reserved-byte sizing.
+    pub const fn object_copy_bytes(self) -> usize {
+        self.copy_to_nursery_bytes
+            .saturating_add(self.promote_to_old_bytes)
+    }
+
+    /// Returns object payload bytes copied into next nursery spaces.
+    ///
+    /// This excludes destination-space alignment padding.
+    pub const fn copy_to_nursery_bytes(self) -> usize {
+        self.copy_to_nursery_bytes
+    }
+
+    /// Returns object payload bytes promoted into old-generation space.
+    ///
+    /// This excludes destination-space alignment padding.
+    pub const fn promote_to_old_bytes(self) -> usize {
+        self.promote_to_old_bytes
     }
 
     /// Returns the number of forwarding slots populated.
