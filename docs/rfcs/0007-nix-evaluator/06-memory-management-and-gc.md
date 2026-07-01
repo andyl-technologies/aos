@@ -832,12 +832,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocation through the centralized `aos_alloc_*`-shaped methods. The only
       current backend is Tier-A `BumpArena`, so the frozen exported runtime/JIT
       ABI row below remains open.
+- [x] Current allocation-symbol binding precursor:
+      `RuntimeAllocationEntryPoint` exposes the frozen `aos_alloc_*` symbol name
+      for every centralized runtime allocation route plus reverse lookup from a
+      symbol name back to the safe Rust entry point. Tests cross-check that this
+      runtime allocation inventory exactly matches the `ratchet-core`
+      `RuntimeHelperRole::Allocation` symbol table and rejects non-allocation
+      helpers. This pins the dispatch inventory only; it does not export
+      `unsafe extern "C"` functions, register Cranelift symbols, select a
+      startup allocator vtable, or swap in the Tier-B collector body.
 - [ ] Frozen runtime allocation ABI still open: actual exported
-      `unsafe extern "C"` `aos_alloc_thunk` / `aos_alloc_attrs` /
-      `aos_alloc_cons` / `aos_alloc_string` / `aos_alloc_raw` symbols, startup
-      allocator vtable selection, every-tier/every-primop routing through those
-      symbols, and collector/JIT swapping without caller recompilation (§2) —
-      **M0** (within **P3**), `S-8`.
+      `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
+      `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
+      `aos_alloc_string` / `aos_alloc_thunk` symbols, startup allocator vtable
+      selection, every-tier/every-primop routing through those symbols, and
+      collector/JIT swapping without caller recompilation (§2) — **M0** (within
+      **P3**), `S-8`.
 - [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
 - [x] Current allocation-safepoint metadata precursor:
       `ratchet-oracle::runtime::alloc` records an `AllocationSafepoint` event

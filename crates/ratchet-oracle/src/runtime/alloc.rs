@@ -36,6 +36,51 @@ pub enum RuntimeAllocationEntryPoint {
     AosAllocRaw,
 }
 
+/// Frozen allocation entry points registered by future native runtimes.
+pub const RUNTIME_ALLOCATION_ENTRYPOINTS: &[RuntimeAllocationEntryPoint] = &[
+    RuntimeAllocationEntryPoint::AosAllocAttrs,
+    RuntimeAllocationEntryPoint::AosAllocCons,
+    RuntimeAllocationEntryPoint::AosAllocLambda,
+    RuntimeAllocationEntryPoint::AosAllocList,
+    RuntimeAllocationEntryPoint::AosAllocRaw,
+    RuntimeAllocationEntryPoint::AosAllocString,
+    RuntimeAllocationEntryPoint::AosAllocThunk,
+];
+
+/// Returns the frozen allocation entry-point inventory.
+pub const fn runtime_allocation_entrypoints() -> &'static [RuntimeAllocationEntryPoint] {
+    RUNTIME_ALLOCATION_ENTRYPOINTS
+}
+
+impl RuntimeAllocationEntryPoint {
+    /// Returns the stable runtime symbol name for this allocation entry point.
+    pub const fn symbol_name(self) -> &'static str {
+        match self {
+            Self::AosAllocThunk => "aos_alloc_thunk",
+            Self::AosAllocLambda => "aos_alloc_lambda",
+            Self::AosAllocAttrs => "aos_alloc_attrs",
+            Self::AosAllocCons => "aos_alloc_cons",
+            Self::AosAllocList => "aos_alloc_list",
+            Self::AosAllocString => "aos_alloc_string",
+            Self::AosAllocRaw => "aos_alloc_raw",
+        }
+    }
+
+    /// Returns the allocation entry point for a frozen runtime symbol name.
+    pub fn from_symbol_name(symbol_name: &str) -> Option<Self> {
+        match symbol_name {
+            "aos_alloc_thunk" => Some(Self::AosAllocThunk),
+            "aos_alloc_lambda" => Some(Self::AosAllocLambda),
+            "aos_alloc_attrs" => Some(Self::AosAllocAttrs),
+            "aos_alloc_cons" => Some(Self::AosAllocCons),
+            "aos_alloc_list" => Some(Self::AosAllocList),
+            "aos_alloc_string" => Some(Self::AosAllocString),
+            "aos_alloc_raw" => Some(Self::AosAllocRaw),
+            _ => None,
+        }
+    }
+}
+
 /// GC-stress polling policy evaluated at allocation safepoints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GcStressPolicy {
@@ -782,6 +827,11 @@ mod tests {
             .filter(|symbol| symbol.role() == RuntimeHelperRole::Allocation)
             .map(|symbol| symbol.name())
             .collect::<BTreeSet<_>>();
+        let runtime_entrypoint_symbols = runtime_allocation_entrypoints()
+            .iter()
+            .copied()
+            .map(RuntimeAllocationEntryPoint::symbol_name)
+            .collect::<BTreeSet<_>>();
 
         assert_eq!(
             allocation_symbols,
@@ -794,6 +844,46 @@ mod tests {
                 "aos_alloc_string",
                 "aos_alloc_thunk",
             ])
+        );
+        assert_eq!(runtime_entrypoint_symbols, allocation_symbols);
+    }
+
+    #[test]
+    fn allocation_entrypoint_symbols_round_trip() {
+        assert_eq!(
+            runtime_allocation_entrypoints(),
+            [
+                RuntimeAllocationEntryPoint::AosAllocAttrs,
+                RuntimeAllocationEntryPoint::AosAllocCons,
+                RuntimeAllocationEntryPoint::AosAllocLambda,
+                RuntimeAllocationEntryPoint::AosAllocList,
+                RuntimeAllocationEntryPoint::AosAllocRaw,
+                RuntimeAllocationEntryPoint::AosAllocString,
+                RuntimeAllocationEntryPoint::AosAllocThunk,
+            ]
+        );
+
+        for entrypoint in runtime_allocation_entrypoints() {
+            assert_eq!(
+                RuntimeAllocationEntryPoint::from_symbol_name(entrypoint.symbol_name()),
+                Some(*entrypoint)
+            );
+        }
+        for symbol in runtime_helper_symbols()
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.role() != RuntimeHelperRole::Allocation)
+        {
+            assert_eq!(
+                RuntimeAllocationEntryPoint::from_symbol_name(symbol.name()),
+                None,
+                "{} is not an allocation entry point",
+                symbol.name()
+            );
+        }
+        assert_eq!(
+            RuntimeAllocationEntryPoint::from_symbol_name("nix.builtin.derivationStrict"),
+            None
         );
     }
 

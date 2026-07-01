@@ -912,6 +912,13 @@ harness, never cut for scope.
       routed through every tier/primop allocation path, and swappable between
       bump-arena and generational bodies with byte-identical compiled code
       ([§7.2](#72-the-runtime-symbol-table)) — P3/P6, `S-8`.
+- [x] Current allocation-symbol binding precursor:
+      `ratchet-oracle::runtime::alloc::RuntimeAllocationEntryPoint` exposes and
+      round-trips the frozen `aos_alloc_*` symbol name for each safe tree-walk
+      allocation route, with tests cross-checking the inventory against
+      `ratchet-core`'s allocation helper symbol table. This prevents drift
+      between the oracle allocator surface and future JIT registration metadata,
+      but it is not yet exported C ABI glue or Cranelift registration.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT

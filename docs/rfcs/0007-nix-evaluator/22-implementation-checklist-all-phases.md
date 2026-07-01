@@ -4992,6 +4992,15 @@ and helps the oracle directly.
       centralized `aos_alloc_*`-shaped methods. The actual exported
       `unsafe extern "C"`/JIT-symbol ABI and multi-strategy GC swapping remain
       open in the row above.
+- [x] Current allocation-symbol binding precursor:
+      `RuntimeAllocationEntryPoint` now carries the frozen `aos_alloc_*` symbol
+      name for every centralized runtime allocation route and supports reverse
+      lookup from symbol name back to the safe Rust entry point. Tests prove the
+      runtime allocation inventory exactly matches `ratchet-core`'s
+      `RuntimeHelperRole::Allocation` table and rejects non-allocation symbols.
+      This is symbol inventory and dispatch metadata only; no unsafe C exports,
+      Cranelift symbol registration, startup allocator vtable selection, or
+      Tier-B collector body swap is implemented here.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared
