@@ -237,6 +237,363 @@ fn worker_allocator_reset_rejects_permanent_container_with_worker_child() {
 }
 
 #[test]
+fn worker_region_pop_reclaims_disconnected_worker_suffix() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let retained = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("retained thunk allocates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let first = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("first region lambda allocates");
+    let second = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(5),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("second region lambda allocates");
+    let stats_before_pop = heap.arena_stats();
+    let safepoints_before_pop = heap.allocation_safepoints();
+
+    let report = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect("disconnected worker suffix pops");
+
+    assert_eq!(report.reclaimed_records(), 2);
+    assert_eq!(report.records_after(), mark.records());
+    assert_eq!(report.arena_report().before_stats(), stats_before_pop);
+    assert!(report.arena_report().used_bytes_released() > 0);
+    assert!(heap.arena_stats().used_bytes < stats_before_pop.used_bytes);
+    assert_eq!(heap.allocation_safepoints().count(), 1);
+    assert_ne!(heap.allocation_safepoints(), safepoints_before_pop);
+    assert!(heap.get_thunk(retained).is_ok());
+    assert!(matches!(
+        heap.get_lambda(first),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+    assert!(matches!(
+        heap.get_lambda(second),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+}
+
+#[test]
+fn worker_region_pop_rejects_permanent_records_above_marker() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let permanent = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let stats_before = heap.arena_stats();
+    let permanent_stats_before = heap.permanent_arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect_err("permanent suffix record rejects worker region pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopNonWorkerRecords { records: 1 }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
+    assert_eq!(
+        heap.get_string(permanent)
+            .expect("permanent record remains")
+            .bytes(),
+        b"permanent"
+    );
+}
+
+#[test]
+fn worker_region_pop_rejects_retained_edge_into_suffix() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let retained = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("retained thunk allocates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let forced = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("forced value allocates above marker");
+    let retained_thunk = heap.clone_thunk(retained).expect("retained thunk exists");
+    let crate::eval::ForceClaim::Claimed(guard) =
+        retained_thunk.cell().begin_force().expect("claim succeeds")
+    else {
+        panic!("retained thunk should be claimable");
+    };
+    guard
+        .finish(forced)
+        .expect("forced result publishes into retained thunk");
+    let stats_before = heap.arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect_err("retained edge rejects worker region pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopRetainedEdge {
+            source_address: gc_address(retained),
+            edge_source: HeapEdgeSource::ThunkCachedResult,
+            target_address: gc_address(forced),
+        }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert!(heap.get_lambda(forced).is_ok());
+}
+
+#[test]
+fn worker_region_pop_rejects_marker_from_another_heap() {
+    let mut other_heap = EvalHeap::with_initial_chunk_bytes(128).expect("other heap creates");
+    let foreign_mark = other_heap
+        .worker_region_mark()
+        .expect("foreign region mark records");
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lambda allocates");
+    let stats_before = heap.arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(foreign_mark)
+        .expect_err("foreign marker rejects region pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopStaleMark {
+            reason: "marker was captured from another heap",
+            marker_records: foreign_mark.records(),
+            current_records: heap.len(),
+        }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert!(heap.get_lambda(value).is_ok());
+}
+
+#[test]
+fn worker_region_pop_rejects_marker_after_worker_epoch_change() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    heap.reset_worker_allocator_if_idle()
+        .expect("empty worker reset succeeds");
+    let value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("lambda allocates after reset");
+    let stats_before = heap.arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect_err("epoch-stale marker rejects region pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopStaleMark {
+            reason: "worker allocator epoch changed",
+            marker_records: mark.records(),
+            current_records: heap.len(),
+        }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert!(heap.get_lambda(value).is_ok());
+}
+
+#[test]
+fn worker_region_pop_preserves_outer_lifo_mark_after_inner_pop() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let outer = heap
+        .worker_region_mark()
+        .expect("outer region mark records");
+    let outer_value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(2),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("outer value allocates");
+    let inner = heap
+        .worker_region_mark()
+        .expect("inner region mark records");
+    let inner_value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(4),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("inner value allocates");
+
+    let inner_report = heap
+        .pop_worker_region_if_disconnected(inner)
+        .expect("inner region pops");
+    assert_eq!(inner_report.reclaimed_records(), 1);
+    assert!(heap.get_lambda(outer_value).is_ok());
+    assert!(matches!(
+        heap.get_lambda(inner_value),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+
+    let outer_report = heap
+        .pop_worker_region_if_disconnected(outer)
+        .expect("outer marker remains valid after inner pop");
+    assert_eq!(outer_report.reclaimed_records(), 1);
+    assert_eq!(outer_report.records_after(), outer.records());
+    assert!(matches!(
+        heap.get_lambda(outer_value),
+        Err(EvalHeapError::UnknownPointer { .. })
+    ));
+}
+
+#[test]
+fn worker_region_pop_rejects_outer_mark_while_inner_mark_is_active() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let outer = heap
+        .worker_region_mark()
+        .expect("outer region mark records");
+    let outer_value = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("outer value allocates");
+    let _inner = heap
+        .worker_region_mark()
+        .expect("inner region mark records");
+    let inner_value = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("inner value allocates");
+    let stats_before = heap.arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(outer)
+        .expect_err("outer marker is not innermost");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopStaleMark {
+            reason: "worker region mark is not innermost",
+            marker_records: outer.records(),
+            current_records: heap.len(),
+        }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert!(heap.get_thunk(outer_value).is_ok());
+    assert!(heap.get_lambda(inner_value).is_ok());
+}
+
+#[test]
+fn worker_region_pop_invalidates_existing_collector_poll_scan_epoch() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let retained = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("retained thunk allocates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let reclaimed = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(3),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("reclaimed lambda allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, retained)
+        .expect("retained root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll scan records");
+
+    heap.pop_worker_region_if_disconnected(mark)
+        .expect("disconnected suffix pops");
+    let replacement = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(5),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("replacement lambda allocates after pop");
+
+    assert!(
+        reclaimed.raw_eq(replacement),
+        "rewound bump slot is reused by the replacement allocation"
+    );
+    assert!(heap.get_lambda(replacement).is_ok());
+    assert_eq!(scan.heap_records(), heap.len());
+    let remembered_set = RememberedSet::new();
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect_err("region pop makes poll scan stale"),
+        EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "worker region epoch changed",
+            expected_records: scan.heap_records(),
+            actual_records: heap.len(),
+        }
+    );
+}
+
+#[test]
+fn worker_region_epoch_overflow_rotates_region_owner() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let owner = heap.region_owner;
+    heap.worker_region_epoch = u64::MAX;
+
+    heap.advance_worker_region_epoch();
+
+    assert_ne!(heap.region_owner, owner);
+    assert_eq!(heap.worker_region_epoch, 0);
+    assert_eq!(heap.worker_allocator_epoch, 0);
+}
+
+#[test]
+fn worker_allocator_epoch_overflow_rotates_region_owner() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let owner = heap.region_owner;
+    heap.worker_allocator_epoch = u64::MAX;
+
+    heap.advance_worker_allocator_epoch();
+
+    assert_ne!(heap.region_owner, owner);
+    assert_eq!(heap.worker_allocator_epoch, 0);
+    assert_eq!(heap.worker_region_epoch, 0);
+}
+
+#[test]
 fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let source = heap

@@ -784,6 +784,8 @@ pub struct AllocationCollectorPollScan {
     poll: AllocationCollectorPoll,
     scan: PreciseHeapScan,
     heap_records: usize,
+    worker_region_owner: u64,
+    worker_region_epoch: u64,
     allocation_safepoints: AllocationSafepointState,
     permanent_allocation_safepoints: AllocationSafepointState,
 }
@@ -793,6 +795,8 @@ impl AllocationCollectorPollScan {
         poll: AllocationCollectorPoll,
         scan: PreciseHeapScan,
         heap_records: usize,
+        worker_region_owner: u64,
+        worker_region_epoch: u64,
         allocation_safepoints: AllocationSafepointState,
         permanent_allocation_safepoints: AllocationSafepointState,
     ) -> Self {
@@ -800,6 +804,8 @@ impl AllocationCollectorPollScan {
             poll,
             scan,
             heap_records,
+            worker_region_owner,
+            worker_region_epoch,
             allocation_safepoints,
             permanent_allocation_safepoints,
         }
@@ -818,6 +824,16 @@ impl AllocationCollectorPollScan {
     /// Returns the typed heap record count captured with this scan.
     pub const fn heap_records(&self) -> usize {
         self.heap_records
+    }
+
+    /// Returns the heap-region owner captured with this scan.
+    pub const fn worker_region_owner(&self) -> u64 {
+        self.worker_region_owner
+    }
+
+    /// Returns the worker-region epoch captured with this scan.
+    pub const fn worker_region_epoch(&self) -> u64 {
+        self.worker_region_epoch
     }
 
     /// Returns worker allocation-safepoint state captured with this scan.
@@ -962,6 +978,8 @@ impl AllocationCollectorPollReferenceSlot {
 pub struct AllocationCollectorPollMinorGcPlan {
     poll: AllocationCollectorPoll,
     heap_records: usize,
+    worker_region_owner: u64,
+    worker_region_epoch: u64,
     allocation_safepoints: AllocationSafepointState,
     permanent_allocation_safepoints: AllocationSafepointState,
     remembered_set: RememberedSet,
@@ -976,6 +994,8 @@ impl AllocationCollectorPollMinorGcPlan {
     fn new(
         poll: AllocationCollectorPoll,
         heap_records: usize,
+        worker_region_owner: u64,
+        worker_region_epoch: u64,
         allocation_safepoints: AllocationSafepointState,
         permanent_allocation_safepoints: AllocationSafepointState,
         remembered_set: RememberedSet,
@@ -988,6 +1008,8 @@ impl AllocationCollectorPollMinorGcPlan {
         Self {
             poll,
             heap_records,
+            worker_region_owner,
+            worker_region_epoch,
             allocation_safepoints,
             permanent_allocation_safepoints,
             remembered_set,
@@ -1007,6 +1029,16 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns the typed heap record count captured when this plan was built.
     pub const fn heap_records(&self) -> usize {
         self.heap_records
+    }
+
+    /// Returns the heap-region owner captured by this plan.
+    pub const fn worker_region_owner(&self) -> u64 {
+        self.worker_region_owner
+    }
+
+    /// Returns the worker-region epoch captured by this plan.
+    pub const fn worker_region_epoch(&self) -> u64 {
+        self.worker_region_epoch
     }
 
     /// Returns the worker allocation-safepoint state captured by this plan.
@@ -1144,6 +1176,8 @@ impl AllocationCollectorPollMinorGcPlan {
         Ok(AllocationCollectorPollMinorGcCommitPlan {
             reference_slots: &self.reference_slots,
             heap_records: self.heap_records,
+            worker_region_owner: self.worker_region_owner,
+            worker_region_epoch: self.worker_region_epoch,
             allocation_safepoints: self.allocation_safepoints,
             permanent_allocation_safepoints: self.permanent_allocation_safepoints,
             commit_plan,
@@ -1265,6 +1299,8 @@ fn validate_object_byte_copy_record_layout(
 pub struct AllocationCollectorPollMinorGcCommitPlan<'a> {
     reference_slots: &'a [AllocationCollectorPollReferenceSlot],
     heap_records: usize,
+    worker_region_owner: u64,
+    worker_region_epoch: u64,
     allocation_safepoints: AllocationSafepointState,
     permanent_allocation_safepoints: AllocationSafepointState,
     commit_plan: MinorGcCommitPlan,
@@ -1284,6 +1320,16 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
     /// Returns the typed heap record count captured when this commit was planned.
     pub const fn heap_records(&self) -> usize {
         self.heap_records
+    }
+
+    /// Returns the heap-region owner captured when this commit was planned.
+    pub const fn worker_region_owner(&self) -> u64 {
+        self.worker_region_owner
+    }
+
+    /// Returns the worker-region epoch captured when this commit was planned.
+    pub const fn worker_region_epoch(&self) -> u64 {
+        self.worker_region_epoch
     }
 
     /// Returns the worker allocation-safepoint state captured by this commit.
@@ -2271,6 +2317,8 @@ impl EvalHeap {
             poll,
             scan,
             self.records.len(),
+            self.region_owner,
+            self.worker_region_epoch,
             self.allocation_safepoints(),
             self.permanent_allocation_safepoints(),
         ))
@@ -2330,6 +2378,8 @@ impl EvalHeap {
         Ok(AllocationCollectorPollMinorGcPlan::new(
             poll_scan.poll(),
             poll_scan.heap_records(),
+            poll_scan.worker_region_owner(),
+            poll_scan.worker_region_epoch(),
             poll_scan.allocation_safepoints(),
             poll_scan.permanent_allocation_safepoints(),
             remembered_set_from_snapshot(remembered_set)?,
@@ -2663,7 +2713,10 @@ impl EvalHeap {
         Ok(())
     }
 
-    fn scan_record_edges(&self, record: &HeapRecord) -> Result<Vec<HeapEdge>, EvalHeapError> {
+    pub(super) fn scan_record_edges(
+        &self,
+        record: &HeapRecord,
+    ) -> Result<Vec<HeapEdge>, EvalHeapError> {
         let mut edges = Vec::new();
         match &record.object {
             HeapObjectValue::String(_) | HeapObjectValue::Path(_) => {}
@@ -2744,6 +2797,20 @@ impl EvalHeap {
         if poll_scan.heap_records() != self.records.len() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "heap record count changed",
+                expected_records: poll_scan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if poll_scan.worker_region_owner() != self.region_owner {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region owner changed",
+                expected_records: poll_scan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if poll_scan.worker_region_epoch() != self.worker_region_epoch {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region epoch changed",
                 expected_records: poll_scan.heap_records(),
                 actual_records: self.records.len(),
             });
@@ -3150,6 +3217,20 @@ impl EvalHeap {
                 actual_records: self.records.len(),
             });
         }
+        if plan.worker_region_owner() != self.region_owner {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region owner changed since minor-GC planning",
+                expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if plan.worker_region_epoch() != self.worker_region_epoch {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region epoch changed since minor-GC planning",
+                expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
         if plan.allocation_safepoints() != self.allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker allocation safepoints changed since minor-GC planning",
@@ -3174,6 +3255,20 @@ impl EvalHeap {
         if commit_plan.heap_records() != self.records.len() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "heap record count changed since minor-GC commit planning",
+                expected_records: commit_plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if commit_plan.worker_region_owner() != self.region_owner {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region owner changed since minor-GC commit planning",
+                expected_records: commit_plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if commit_plan.worker_region_epoch() != self.worker_region_epoch {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker region epoch changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
                 actual_records: self.records.len(),
             });

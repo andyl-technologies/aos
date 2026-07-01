@@ -1181,9 +1181,28 @@ GC must be observationally invisible (§8): every item is gated by the different
       used bytes, unmapped bytes, and the dead-advice outcome for the newly-dead
       retained-chunk byte range. Linux lowers that advice to `MADV_DONTNEED`;
       non-Linux and sub-page ranges remain advisory skip outcomes. This is an
-      allocator primitive only:
-      IR escape/region analysis, tree-walk allocation placement, and typed heap
-      side-table invalidation are not wired yet, so the full row remains open.
+      allocator primitive only.
+- [x] Current tree-walk region-pop admission precursor:
+      `EvalHeap::worker_region_mark` and
+      `EvalHeap::pop_worker_region_if_disconnected` wire the raw arena marker to
+      the typed heap side table for manually admitted worker regions. The pop
+      gate accepts only worker-domain records above the marker, uses the precise
+      heap-field scanner to reject retained edges into that suffix, rejects
+      foreign or allocator-reset-stale markers, allows nested LIFO markers,
+      confines the unsafe value-layer arena rewind to the runtime allocator
+      after typed validation, restores worker allocation-safepoint accounting to
+      the marker, and truncates the typed records. Reclaimed suffix handles fail as unknown
+      immediately after truncation, while later bump reuse may assign the same
+      address to a new record; the no-retained-edge gate is therefore the safety
+      boundary. Poll snapshots also capture the heap region owner/epoch so a
+      region pop invalidates old collector-poll scans even after safepoint
+      rollback and address reuse. Tests cover disconnected suffix reclamation,
+      permanent-record rejection, retained-thunk cached-result rejection,
+      foreign-marker rejection, reset-stale marker rejection, nested LIFO
+      reclamation, collector-poll scan staleness under address reuse,
+      epoch-overflow owner rotation, and safepoint rollback. IR escape/region
+      analysis and automatic tree-walk allocation placement remain open, so the
+      full row remains open.
 
 ### Tier B — precise generational copying GC (§4)
 
@@ -1507,9 +1526,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       dead. Linux lowers that hint to `MADV_DONTNEED`; unsupported and sub-page
       ranges remain advisory outcomes. Tests pin same-chunk rewind/reuse,
       whole-chunk release, growth restoration, invalid-marker rejection, and
-      platform-independent advice accounting. This does not yet connect the
-      placement policy to IR allocation sites or typed heap side-table
-      invalidation.
+      platform-independent advice accounting.
+- [x] Current tree-walk region-pop admission precursor: `EvalHeap` can now
+      capture worker-region markers and pop a manually admitted suffix only
+      after typed side-table validation proves every record above the marker is
+      worker-owned, no retained precise edge targets that suffix, and the marker
+      belongs to the current heap/worker allocator lifetime. Successful pops
+      call the unsafe arena rewind only after that validation, roll worker
+      allocation-safepoint state back to the marker, truncate typed records,
+      advance the collector snapshot epoch, and make reclaimed suffix handles fail as unknown until a
+      later bump reuse assigns the address to a new record. Nested LIFO markers
+      remain valid across inner pops. This still does not connect the placement
+      policy to IR allocation sites or escape-analysis proofs.
 - [ ] Full effect-based region inference (Tofte–Talpin) accounting for latent forcing effects under laziness — the research-grade tail, now IN SCOPE (§5.2) — **P8**, `R-5`; built in dependency order after the lexical pass, gated by the differential harness; not cut for scope.
 
 ### Concurrent, low-pause collection (§6)

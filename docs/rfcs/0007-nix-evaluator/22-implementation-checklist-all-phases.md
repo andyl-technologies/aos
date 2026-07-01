@@ -2076,9 +2076,9 @@ alone (`M-1`/`Q-A`).
       `#![deny(unsafe_op_in_unsafe_fn)]`, and `store::ReadOnlyMmap` wraps Unix
       read-only `mmap` behind an explicitly unsafe constructor, documented file
       immutability contract, and `// SAFETY:` comments for every unsafe block.
-      `ratchet-oracle` remains `#![forbid(unsafe_code)]` and does not call this
-      primitive directly. This is the unsafe fence and raw mapping substrate
-      only; full durable lease protocol, LMDB/redb metadata, full mmap
+      `ratchet-oracle` does not call this primitive directly. This is the
+      unsafe fence and raw mapping substrate only; full durable lease protocol,
+      LMDB/redb metadata, full mmap
       maintenance/repack paths, out-of-core value rematerialization,
       cross-process writer coordination, and harness proof remain open
       (`C-13`/`R-14`).
@@ -5504,9 +5504,26 @@ and helps the oracle directly.
       reports released used bytes, unmapped bytes, and the dead-advice outcome
       for the newly-dead retained-chunk range. Linux lowers that advice to
       `MADV_DONTNEED`; non-Linux and sub-page ranges remain advisory skip
-      outcomes. This is not yet
-      tree-walk allocation placement or IR escape-analysis wiring; the caller
-      must still prove allocations above the marker are dead.
+      outcomes.
+- [x] Current tree-walk region-pop admission precursor:
+      `EvalHeap::worker_region_mark` and
+      `EvalHeap::pop_worker_region_if_disconnected` connect manually admitted
+      worker-region markers to typed side-table invalidation. The gate rejects
+      non-worker suffix records, retained precise edges into the suffix, and
+      foreign or allocator-reset-stale markers; preserves nested LIFO markers
+      across inner pops; confines the unsafe value-layer arena rewind to the
+      runtime allocator after typed validation; restores worker allocation-safepoint accounting to
+      the marker; and truncates typed records. Reclaimed handles fail as unknown
+      immediately after truncation, while later bump reuse may assign the same
+      address to a new record. Collector-poll scans and minor-GC plan metadata
+      capture the heap region owner/epoch so region pops stale old snapshots
+      even after safepoint rollback and address reuse. Tests cover disconnected
+      suffix reclamation, permanent suffix rejection, retained-thunk
+      cached-result rejection, foreign-marker rejection, reset-stale marker
+      rejection, nested LIFO reclamation, collector-poll scan staleness under
+      address reuse, epoch-overflow owner rotation, and safepoint rollback.
+      Automatic tree-walk allocation placement and IR escape-analysis wiring
+      remain open.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for
@@ -5671,10 +5688,12 @@ and helps the oracle directly.
       card table, mutable generation updates, and Tier-B collector integration
       remain open
       under `heap/gc.rs`.
-- [x] Current safe-crate prerequisite already in place: the monolithic
-      `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`
-      and checks/source scans show no Rust `unsafe` forms in the evaluator
-      crate (`S-17`, [14](14-integration-with-aos.md) §10).
+- [x] Current unsafe-policy precursor: the oracle/frontend/glue layer keeps
+      `unsafe_code` denied by default, with the current exception limited to the
+      typed region-pop handoff into `BumpArena::pop_region_to_mark` after
+      `EvalHeap` side-table validation. Broader heap/GC unsafe code still
+      belongs behind explicit unsafe fences, documented `// SAFETY:` comments,
+      and dedicated tooling (`S-17`, [14](14-integration-with-aos.md) §10).
 - [ ] Future heap/GC unsafe policy and tooling remain: `heap/` or later unsafe
       crates under `#![deny(unsafe_op_in_unsafe_fn)]`, per-block `// SAFETY:`,
       GC fuzz target, and miri/ASan/UBSan/TSan/loom CI as applicable (`S-17`,
@@ -6288,8 +6307,18 @@ it ships).**
       Linux lowers that hint to `MADV_DONTNEED`; unsupported and sub-page ranges
       remain advisory outcomes. The primitive is covered by same-chunk
       rewind/reuse, whole-chunk release, growth restoration, and invalid-marker
-      tests, but remains disconnected from IR allocation-site placement and
-      typed heap side-table invalidation.
+      tests.
+- [x] Current tree-walk region-pop admission precursor: `EvalHeap` can capture
+      worker-region markers and reclaim a manually admitted suffix only after
+      proving all suffix records are worker-owned, retained precise heap edges
+      do not target them, and the marker belongs to the current heap/worker
+      allocator lifetime. Successful pops call the caller-validated arena
+      rewind only after typed validation, roll worker allocation-safepoint state
+      back to the marker, truncate typed records, advance the collector snapshot
+      epoch, and make reclaimed handles fail as unknown until a later bump reuse
+      assigns the address to a new record. Nested LIFO markers remain valid
+      across inner pops. This remains disconnected from IR allocation-site
+      placement and escape-analysis proofs.
 - [ ] `heap/concurrent_gc.rs` — **concurrent *moving* GC** for daemon mode
       (ZGC/Shenandoah-style colored pointers + load barriers), a committed
       deliverable; **daemon-only**, sidestepped by the bump arena in CLI mode

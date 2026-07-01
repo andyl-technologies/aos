@@ -1,6 +1,7 @@
 //! Allocation, lookup, and cons-table machinery for the [`EvalHeap`] arena.
 
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -11,6 +12,8 @@ use crate::heap::{
 };
 
 use super::*;
+
+static NEXT_HEAP_REGION_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// A whole-heap high-water memory-budget decision.
 ///
@@ -366,10 +369,19 @@ impl EvalHeapMemoryBudgetAction {
 
 impl EvalHeap {
     /// Creates an empty evaluator heap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exhausts all evaluator heap region-owner ids.
     pub fn new() -> Self {
         Self {
             allocator: RuntimeAllocator::tier_a_one_shot(),
             permanent_allocator: PermanentSharedAllocator::new(),
+            region_owner: next_heap_region_owner(),
+            worker_allocator_epoch: 0,
+            worker_region_epoch: 0,
+            next_worker_region_mark: 1,
+            worker_region_mark_stack: Vec::new(),
             access_epoch: Cell::new(0),
             memory_budget: None,
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
@@ -389,12 +401,21 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError::Arena`] if the requested chunk size is invalid
     /// or overflows while being rounded to the arena word size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exhausts all evaluator heap region-owner ids.
     pub fn with_initial_chunk_bytes(chunk_bytes: usize) -> Result<Self, EvalHeapError> {
         Ok(Self {
             allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             permanent_allocator: PermanentSharedAllocator::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
+            region_owner: next_heap_region_owner(),
+            worker_allocator_epoch: 0,
+            worker_region_epoch: 0,
+            next_worker_region_mark: 1,
+            worker_region_mark_stack: Vec::new(),
             access_epoch: Cell::new(0),
             memory_budget: None,
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
@@ -465,6 +486,86 @@ impl EvalHeap {
         self.permanent_allocator.stats()
     }
 
+    /// Captures the current worker-domain heap position for lexical region pop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::WorkerRegionMarkLengthOverflow`] if the mark
+    /// stack length overflows, [`EvalHeapError::WorkerRegionMarkAllocationFailed`]
+    /// if the stack cannot reserve another marker, or
+    /// [`EvalHeapError::WorkerRegionMarkIdExhausted`] if the per-heap marker id
+    /// space is exhausted.
+    pub fn worker_region_mark(&mut self) -> Result<EvalHeapWorkerRegionMark, EvalHeapError> {
+        let marks = self
+            .worker_region_mark_stack
+            .len()
+            .checked_add(1)
+            .ok_or(EvalHeapError::WorkerRegionMarkLengthOverflow)?;
+        self.worker_region_mark_stack
+            .try_reserve_exact(1)
+            .map_err(|_| EvalHeapError::WorkerRegionMarkAllocationFailed { marks })?;
+        let mark_id = self.next_worker_region_mark;
+        self.next_worker_region_mark = self
+            .next_worker_region_mark
+            .checked_add(1)
+            .ok_or(EvalHeapError::WorkerRegionMarkIdExhausted)?;
+        self.worker_region_mark_stack.push(mark_id);
+
+        Ok(EvalHeapWorkerRegionMark::new(
+            self.allocator.region_mark(),
+            self.region_owner,
+            self.worker_allocator_epoch,
+            mark_id,
+            self.records.len(),
+        ))
+    }
+
+    /// Reclaims worker-domain allocations above `mark` when no retained record
+    /// points into that region.
+    ///
+    /// This is the typed side-table admission boundary for future lexical region
+    /// inference. The suffix above `mark` must contain only worker-domain
+    /// records, and precise edges from retained records must not target any
+    /// suffix record. On success the method rewinds the worker arena, restores
+    /// worker allocation-safepoint accounting to the marker, removes the suffix
+    /// records from the typed side table, and clears cached memory-budget
+    /// action telemetry. Reclaimed raw handles are invalid after the pop; a
+    /// later bump allocation may reuse the same address for a new typed record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::WorkerRegionPopStaleMark`] if `mark` cannot
+    /// describe this heap's current typed record prefix. Returns
+    /// [`EvalHeapError::WorkerRegionPopNonWorkerRecords`] if permanent records
+    /// were allocated above the marker. Returns
+    /// [`EvalHeapError::WorkerRegionPopRetainedEdge`] if a retained record still
+    /// references a record above the marker. Returns [`EvalHeapError::Arena`] if
+    /// the lower-level arena marker is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exhausts all evaluator heap region-owner ids while
+    /// rotating an overflowed worker-region epoch.
+    pub fn pop_worker_region_if_disconnected(
+        &mut self,
+        mark: EvalHeapWorkerRegionMark,
+    ) -> Result<EvalHeapWorkerRegionPopReport, EvalHeapError> {
+        let reclaimed_records = self.validate_worker_region_pop(mark)?;
+        let arena_report = self
+            .allocator
+            .pop_caller_validated_region(mark.allocator, reclaimed_records)
+            .map_err(EvalHeapError::Arena)?;
+        self.records.truncate(mark.records);
+        let _ = self.worker_region_mark_stack.pop();
+        self.advance_worker_region_epoch();
+        self.last_memory_budget_action = None;
+        Ok(EvalHeapWorkerRegionPopReport::new(
+            arena_report,
+            reclaimed_records,
+            self.records.len(),
+        ))
+    }
+
     /// Drops the worker-domain arena when no worker heap records remain live.
     ///
     /// Permanent-shared records, their cons tables, and permanent arena
@@ -476,6 +577,11 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError::WorkerResetLiveRecords`] when one or more
     /// worker-domain records are still registered in this heap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exhausts all evaluator heap region-owner ids while
+    /// rotating an overflowed worker allocator or region epoch.
     pub fn reset_worker_allocator_if_idle(
         &mut self,
     ) -> Result<EvalHeapWorkerResetReport, EvalHeapError> {
@@ -493,6 +599,9 @@ impl EvalHeap {
         let permanent_stats = self.permanent_arena_stats();
         let dropped_worker_stats = self.allocator.reset_to_empty();
         let worker_stats_after = self.arena_stats();
+        self.worker_region_mark_stack.clear();
+        self.advance_worker_allocator_epoch();
+        self.advance_worker_region_epoch();
         self.last_memory_budget_action = None;
         Ok(EvalHeapWorkerResetReport::new(
             dropped_worker_stats,
@@ -1742,8 +1851,94 @@ impl EvalHeap {
         Ok(())
     }
 
+    fn validate_worker_region_pop(
+        &self,
+        mark: EvalHeapWorkerRegionMark,
+    ) -> Result<usize, EvalHeapError> {
+        if mark.owner != self.region_owner {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "marker was captured from another heap",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if mark.allocator_epoch != self.worker_allocator_epoch {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "worker allocator epoch changed",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if self.worker_region_mark_stack.last().copied() != Some(mark.mark_id) {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "worker region mark is not innermost",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+        if mark.records > self.records.len() {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "marker record prefix exceeds current records",
+                marker_records: mark.records,
+                current_records: self.records.len(),
+            });
+        }
+
+        let reclaimed = self.records.len() - mark.records;
+        let reclaimed_records = &self.records[mark.records..];
+        let non_worker_records = reclaimed_records
+            .iter()
+            .filter(|record| record.allocation_domain != HeapAllocationDomain::Worker)
+            .count();
+        if non_worker_records != 0 {
+            return Err(EvalHeapError::WorkerRegionPopNonWorkerRecords {
+                records: non_worker_records,
+            });
+        }
+
+        for record in &self.records[..mark.records] {
+            let source_address = gc_address_for_heap_record(record)?;
+            for edge in self.scan_record_edges(record)? {
+                let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
+                if Self::record_in(reclaimed_records, target_ptr).is_some() {
+                    return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
+                        source_address,
+                        edge_source: edge.source().clone(),
+                        target_address: GcHeapAddress::new(target_ptr.as_ptr() as usize)
+                            .map_err(EvalHeapError::GenerationalGc)?,
+                    });
+                }
+            }
+        }
+
+        Ok(reclaimed)
+    }
+
     fn touch_record(&self, record: &HeapRecord) {
         record.last_touch_epoch.set(self.next_access_epoch());
+    }
+
+    pub(super) fn advance_worker_region_epoch(&mut self) {
+        if let Some(next) = self.worker_region_epoch.checked_add(1) {
+            self.worker_region_epoch = next;
+        } else {
+            self.rotate_region_owner();
+        }
+    }
+
+    pub(super) fn advance_worker_allocator_epoch(&mut self) {
+        if let Some(next) = self.worker_allocator_epoch.checked_add(1) {
+            self.worker_allocator_epoch = next;
+        } else {
+            self.rotate_region_owner();
+        }
+    }
+
+    fn rotate_region_owner(&mut self) {
+        self.region_owner = next_heap_region_owner();
+        self.worker_allocator_epoch = 0;
+        self.worker_region_epoch = 0;
+        self.worker_region_mark_stack.clear();
     }
 
     fn next_access_epoch(&self) -> u64 {
@@ -1842,6 +2037,29 @@ fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), E
             expected: "evaluator heap value",
             actual,
         })),
+    }
+}
+
+fn gc_address_for_heap_record(record: &HeapRecord) -> Result<GcHeapAddress, EvalHeapError> {
+    GcHeapAddress::new(record.ptr.as_ptr() as usize).map_err(EvalHeapError::GenerationalGc)
+}
+
+fn next_heap_region_owner() -> u64 {
+    let mut current = NEXT_HEAP_REGION_OWNER.load(Ordering::Relaxed);
+    loop {
+        if current == 0 || current == u64::MAX {
+            panic!("evaluator heap region-owner id space exhausted");
+        }
+        let next = current + 1;
+        match NEXT_HEAP_REGION_OWNER.compare_exchange_weak(
+            current,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(owner) => return owner,
+            Err(observed) => current = observed,
+        }
     }
 }
 

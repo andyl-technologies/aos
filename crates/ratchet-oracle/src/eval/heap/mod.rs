@@ -20,14 +20,14 @@ use crate::attrs::FlatAttrs;
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
-use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats};
+use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaRegionPopReport, ArenaStats};
 use crate::heap::{
     GcHeapAddress, GenerationalGcError, HeapGeneration, HeapMemoryBudget, ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{
     AllocationSafepointState, GcStressPolicy, PermanentSharedAllocator, RuntimeAllocator,
-    RuntimeAllocatorTier,
+    RuntimeAllocatorRegionMark, RuntimeAllocatorTier,
 };
 use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
@@ -183,6 +183,11 @@ pub struct EvalPrimOp {
 pub struct EvalHeap {
     allocator: RuntimeAllocator,
     permanent_allocator: PermanentSharedAllocator,
+    region_owner: u64,
+    worker_allocator_epoch: u64,
+    worker_region_epoch: u64,
+    next_worker_region_mark: u64,
+    worker_region_mark_stack: Vec<u64>,
     access_epoch: Cell<u64>,
     memory_budget: Option<HeapMemoryBudget>,
     resident_memory_mode: EvalHeapResidentMemoryMode,
@@ -283,6 +288,79 @@ impl EvalHeapWorkerResetReport {
     }
 }
 
+/// Worker-domain heap position captured for lexical region reclamation.
+///
+/// A marker is valid only for the [`EvalHeap`] that produced it and only while
+/// allocations above the marker remain the innermost worker region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapWorkerRegionMark {
+    allocator: RuntimeAllocatorRegionMark,
+    owner: u64,
+    allocator_epoch: u64,
+    mark_id: u64,
+    records: usize,
+}
+
+impl EvalHeapWorkerRegionMark {
+    const fn new(
+        allocator: RuntimeAllocatorRegionMark,
+        owner: u64,
+        allocator_epoch: u64,
+        mark_id: u64,
+        records: usize,
+    ) -> Self {
+        Self {
+            allocator,
+            owner,
+            allocator_epoch,
+            mark_id,
+            records,
+        }
+    }
+
+    /// Returns the typed heap record count captured at the marker.
+    pub const fn records(self) -> usize {
+        self.records
+    }
+}
+
+/// Accounting returned after reclaiming one worker lexical region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapWorkerRegionPopReport {
+    arena: ArenaRegionPopReport,
+    reclaimed_records: usize,
+    records_after: usize,
+}
+
+impl EvalHeapWorkerRegionPopReport {
+    const fn new(
+        arena: ArenaRegionPopReport,
+        reclaimed_records: usize,
+        records_after: usize,
+    ) -> Self {
+        Self {
+            arena,
+            reclaimed_records,
+            records_after,
+        }
+    }
+
+    /// Returns the lower-level arena reclamation report.
+    pub const fn arena_report(self) -> ArenaRegionPopReport {
+        self.arena
+    }
+
+    /// Returns the number of typed worker records removed from the side table.
+    pub const fn reclaimed_records(self) -> usize {
+        self.reclaimed_records
+    }
+
+    /// Returns the typed heap record count after reclamation.
+    pub const fn records_after(self) -> usize {
+        self.records_after
+    }
+}
+
 #[derive(Debug)]
 enum HeapObjectValue {
     String(NixString),
@@ -368,6 +446,52 @@ pub enum EvalHeapError {
     WorkerResetLiveRecords {
         /// The number of worker-domain records still registered in the heap.
         records: usize,
+    },
+    /// A worker-region marker referred to more records than the heap currently
+    /// contains.
+    #[error(
+        "worker region pop marker is stale: {reason}; marker record count was {marker_records}, current record count is {current_records}"
+    )]
+    WorkerRegionPopStaleMark {
+        /// The stale marker condition that failed.
+        reason: &'static str,
+        /// The typed heap record count captured by the marker.
+        marker_records: usize,
+        /// The current typed heap record count.
+        current_records: usize,
+    },
+    /// The worker-region mark stack length overflowed.
+    #[error("worker region mark stack length overflow")]
+    WorkerRegionMarkLengthOverflow,
+    /// The worker-region mark stack could not reserve another marker.
+    #[error("evaluator heap failed to reserve {marks} worker region marks")]
+    WorkerRegionMarkAllocationFailed {
+        /// The requested mark capacity.
+        marks: usize,
+    },
+    /// The worker-region mark id space was exhausted.
+    #[error("worker region mark id space exhausted")]
+    WorkerRegionMarkIdExhausted,
+    /// A worker-region pop would reclaim non-worker records.
+    #[error("worker region pop rejected while {records} non-worker records exist above the marker")]
+    WorkerRegionPopNonWorkerRecords {
+        /// The number of non-worker records allocated above the marker.
+        records: usize,
+    },
+    /// A retained heap record still references an object above the region
+    /// marker.
+    #[error(
+        "worker region pop rejected because retained object 0x{source_address:x} field {edge_source:?} points at reclaimed object 0x{target_address:x}",
+        source_address = source_address.address_bits(),
+        target_address = target_address.address_bits()
+    )]
+    WorkerRegionPopRetainedEdge {
+        /// The retained source object containing the edge.
+        source_address: GcHeapAddress,
+        /// The precise source label on the retained object.
+        edge_source: HeapEdgeSource,
+        /// The worker object above the marker that would be reclaimed.
+        target_address: GcHeapAddress,
     },
     /// A thunk-resolution write barrier was requested for a non-thunk source.
     #[error("thunk resolve write barrier source must be a thunk, found {actual:?}")]
