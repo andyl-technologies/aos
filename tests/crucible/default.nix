@@ -1210,6 +1210,24 @@ in rec {
         phase6.advancedDependencyLadder
       ];
     };
+    savevmCompleteness = greenBeforeAdvance {
+      attrPath = "checks.crucible.phase6.savevmCompleteness";
+      gate = import ./phase6-savevm-completeness.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase6.savevmCompleteness";
+        taskIds = ["T-ADV-6"];
+        dependencies = [
+          phase4.gates.replayOracle.rawGate
+          phase4.gates.e2eDeterminism.rawGate
+          phase6.restoreStrategies.rawGate
+        ];
+      };
+      dependencies = [
+        phase4.gates.replayOracle
+        phase4.gates.e2eDeterminism
+        phase6.restoreStrategies
+      ];
+    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";

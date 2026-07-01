@@ -1009,10 +1009,16 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   thin replay. The gate feeds the observed `ReplayOracleMismatch` into the
   replay-oracle bisection API and asserts the first differing decision is
   localized for the fat/thin disagreement.
-- [ ] **T-ADV-6** Implement the savevm-completeness hedge (keep unreliable-snapshot
+- [x] **T-ADV-6** Implement the savevm-completeness hedge (keep unreliable-snapshot
   checkpoints thin; degrade to slow replay, never to wrong) and wire save as a
   fat-checkpoint materialize keyed by config.id with thin-as-source-of-truth. —
   satisfies [ADV-12], [ADV-13]; spec §22.4; cross-ref 07 §4, 30.
+  Completed by `checks.crucible.phase6.savevmCompleteness`: the savevm hedge
+  gate proves device-marked unreliable snapshots are evicted to thin checkpoints
+  and still replay through `instantiate`, global thin-replay fallback evicts hot
+  fat caches without changing runtime identity, and the user-facing `save` path
+  persists a fat checkpoint keyed by the configuration id while retaining the
+  thin source-of-truth DAG node.
 - [ ] **T-ADV-7** Implement state-space search as systematic frontier expansion of
   the temporal graph (enumerate genuine `Decision`s, step each child, dedup by
   content address), realizing each frontier node via `instantiate` from the
