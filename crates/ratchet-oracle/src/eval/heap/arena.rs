@@ -153,6 +153,7 @@ impl EvalHeap {
         };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
@@ -199,6 +200,7 @@ impl EvalHeap {
         };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
@@ -245,6 +247,7 @@ impl EvalHeap {
         };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
@@ -294,6 +297,7 @@ impl EvalHeap {
         };
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: Some(hash),
             allocation_domain: HeapAllocationDomain::PermanentShared,
             value_hash: Cell::new(None),
@@ -323,6 +327,7 @@ impl EvalHeap {
         let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),
@@ -351,6 +356,7 @@ impl EvalHeap {
         let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),
@@ -379,6 +385,7 @@ impl EvalHeap {
         let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            layout: HeapRecordLayout::from_allocation(allocation),
             structural_hash: None,
             allocation_domain: HeapAllocationDomain::Worker,
             value_hash: Cell::new(None),

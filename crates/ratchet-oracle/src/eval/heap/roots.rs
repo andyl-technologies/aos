@@ -28,7 +28,7 @@ use crate::heap::{
     RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
     ResolvedValueGeneration,
 };
-use crate::runtime::alloc::AllocationCollectorPoll;
+use crate::runtime::alloc::{AllocationCollectorPoll, AllocationSafepointState};
 use thiserror::Error;
 
 const ROOTS_TABLE: &str = "roots";
@@ -40,6 +40,7 @@ const MINOR_GC_ROOTS_TABLE: &str = "minor-GC roots";
 const MINOR_GC_NURSERY_OBJECTS_TABLE: &str = "minor-GC nursery objects";
 const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
 const MINOR_GC_NURSERY_FIELD_VALUES_TABLE: &str = "minor-GC nursery field values";
+const MINOR_GC_NURSERY_LAYOUTS_TABLE: &str = "minor-GC nursery layouts";
 const MINOR_GC_REFERENCE_SLOTS_TABLE: &str = "minor-GC reference slots";
 
 /// A precise root slot and the heap value stored in it.
@@ -871,6 +872,9 @@ impl AllocationCollectorPollReferenceSlot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllocationCollectorPollMinorGcPlan {
     poll: AllocationCollectorPoll,
+    heap_records: usize,
+    allocation_safepoints: AllocationSafepointState,
+    permanent_allocation_safepoints: AllocationSafepointState,
     remembered_set: RememberedSet,
     roots: Vec<ResolvedValueGeneration>,
     nursery_objects: Vec<NurseryObjectAge>,
@@ -882,6 +886,9 @@ pub struct AllocationCollectorPollMinorGcPlan {
 impl AllocationCollectorPollMinorGcPlan {
     fn new(
         poll: AllocationCollectorPoll,
+        heap_records: usize,
+        allocation_safepoints: AllocationSafepointState,
+        permanent_allocation_safepoints: AllocationSafepointState,
         remembered_set: RememberedSet,
         roots: Vec<ResolvedValueGeneration>,
         nursery_objects: Vec<NurseryObjectAge>,
@@ -891,6 +898,9 @@ impl AllocationCollectorPollMinorGcPlan {
     ) -> Self {
         Self {
             poll,
+            heap_records,
+            allocation_safepoints,
+            permanent_allocation_safepoints,
             remembered_set,
             roots,
             nursery_objects,
@@ -903,6 +913,21 @@ impl AllocationCollectorPollMinorGcPlan {
     /// Returns the allocation safepoint collector-poll request.
     pub const fn poll(&self) -> AllocationCollectorPoll {
         self.poll
+    }
+
+    /// Returns the typed heap record count captured when this plan was built.
+    pub const fn heap_records(&self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns the worker allocation-safepoint state captured by this plan.
+    pub const fn allocation_safepoints(&self) -> AllocationSafepointState {
+        self.allocation_safepoints
+    }
+
+    /// Returns the permanent allocation-safepoint state captured by this plan.
+    pub const fn permanent_allocation_safepoints(&self) -> AllocationSafepointState {
+        self.permanent_allocation_safepoints
     }
 
     /// Returns the remembered-set snapshot consumed by this minor-GC plan.
@@ -1390,6 +1415,9 @@ impl EvalHeap {
 
         Ok(AllocationCollectorPollMinorGcPlan::new(
             poll_scan.poll(),
+            poll_scan.heap_records(),
+            poll_scan.allocation_safepoints(),
+            poll_scan.permanent_allocation_safepoints(),
             remembered_set_from_snapshot(remembered_set)?,
             roots,
             nursery_objects,
@@ -1397,6 +1425,33 @@ impl EvalHeap {
             reference_slots,
             plan,
         ))
+    }
+
+    /// Builds relocation destinations for a collector-poll minor-GC plan from
+    /// current heap-record layout metadata.
+    ///
+    /// The helper rejects allocations after the minor-GC plan was built, derives
+    /// one [`NurseryObjectLayout`] per planned survivor from the side table's
+    /// recorded allocation size and alignment, then delegates destination
+    /// allocation, placement, and materialization to the poll plan. It still does
+    /// not reserve semispace pages, allocate destination objects, copy bytes, or
+    /// update live evaluator slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the heap record count or allocation-safepoint
+    /// state changed after planning, if a planned survivor no longer belongs to
+    /// this heap, if survivor-layout storage cannot be reserved, or if the
+    /// lower-level relocation-destination planner rejects the derived layouts or
+    /// destination bases.
+    pub fn plan_collector_poll_minor_gc_relocation_destinations(
+        &self,
+        plan: &AllocationCollectorPollMinorGcPlan,
+        bases: MinorGcDestinationBases,
+    ) -> Result<AllocationCollectorPollMinorGcRelocationDestinations, EvalHeapError> {
+        self.validate_collector_poll_plan_allocation_state(plan)?;
+        let nursery_layouts = self.nursery_layouts_for_minor_gc_plan(plan.plan())?;
+        Ok(plan.relocation_destination_plan(&nursery_layouts, bases)?)
     }
 
     fn push_interned_table_roots<'a>(
@@ -1656,6 +1711,28 @@ impl EvalHeap {
         Ok(nursery_fields)
     }
 
+    fn nursery_layouts_for_minor_gc_plan(
+        &self,
+        plan: &MinorGcPlan,
+    ) -> Result<Vec<NurseryObjectLayout>, EvalHeapError> {
+        let mut nursery_layouts = Vec::new();
+        nursery_layouts
+            .try_reserve_exact(plan.survivors().len())
+            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_NURSERY_LAYOUTS_TABLE,
+                entries: plan.survivors().len(),
+            })?;
+        for survivor in plan.survivors() {
+            let record = self.record_for_minor_gc_survivor(survivor.address())?;
+            nursery_layouts.push(NurseryObjectLayout::new(
+                survivor.address(),
+                record.layout.size_bytes,
+                record.layout.align,
+            ));
+        }
+        Ok(nursery_layouts)
+    }
+
     fn minor_gc_reference_slots_for_plan(
         &self,
         poll_scan: &AllocationCollectorPollScan,
@@ -1743,6 +1820,51 @@ impl EvalHeap {
             .iter()
             .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
             .ok_or(EvalHeapError::UnknownCollectorPollRememberedEdgeAddress { role, address })
+    }
+
+    fn record_for_minor_gc_survivor(
+        &self,
+        address: GcHeapAddress,
+    ) -> Result<&HeapRecord, EvalHeapError> {
+        let record = self
+            .records
+            .iter()
+            .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .ok_or(EvalHeapError::UnknownCollectorPollSurvivorAddress { address })?;
+        if generation_for_record(record) != HeapGeneration::Young {
+            return Err(EvalHeapError::GenerationalGc(
+                GenerationalGcError::StaleNurseryObjectLayout { address },
+            ));
+        }
+        Ok(record)
+    }
+
+    fn validate_collector_poll_plan_allocation_state(
+        &self,
+        plan: &AllocationCollectorPollMinorGcPlan,
+    ) -> Result<(), EvalHeapError> {
+        if plan.heap_records() != self.records.len() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "heap record count changed since minor-GC planning",
+                expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if plan.allocation_safepoints() != self.allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "worker allocation safepoints changed since minor-GC planning",
+                expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        if plan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
+            return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+                reason: "permanent allocation safepoints changed since minor-GC planning",
+                expected_records: plan.heap_records(),
+                actual_records: self.records.len(),
+            });
+        }
+        Ok(())
     }
 }
 

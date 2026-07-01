@@ -20,7 +20,7 @@ use crate::attrs::FlatAttrs;
 use crate::cache::{HotXxh3Hash, ValueHash};
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::hashcons::{HashConsError, HashConsReservation, HashConsSlot, HashConsTable};
-use crate::heap::arena::{ArenaError, ArenaStats};
+use crate::heap::arena::{ArenaAllocation, ArenaError, ArenaStats};
 use crate::heap::{GcHeapAddress, GenerationalGcError, HeapGeneration, ResolvedValueGeneration};
 use crate::list::NixList;
 use crate::runtime::alloc::{
@@ -186,11 +186,27 @@ impl Default for EvalHeap {
 #[derive(Debug)]
 struct HeapRecord {
     ptr: NonNull<HeapObject>,
+    layout: HeapRecordLayout,
     structural_hash: Option<HotXxh3Hash>,
     allocation_domain: HeapAllocationDomain,
     value_hash: Cell<Option<ValueHash>>,
     captured_value_hash: Cell<Option<ValueHash>>,
     object: HeapObjectValue,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeapRecordLayout {
+    size_bytes: usize,
+    align: usize,
+}
+
+impl HeapRecordLayout {
+    const fn from_allocation(allocation: ArenaAllocation) -> Self {
+        Self {
+            size_bytes: allocation.requested_size,
+            align: allocation.align,
+        }
+    }
 }
 
 /// The allocation domain that owns a typed evaluator heap record.
@@ -366,6 +382,12 @@ pub enum EvalHeapError {
         source_address: GcHeapAddress,
         /// The young target object that must be remembered.
         target_address: GcHeapAddress,
+    },
+    /// A planned minor-GC survivor no longer belongs to this evaluator heap.
+    #[error("collector-poll minor-GC survivor address does not belong to this heap: 0x{address:x}", address = address.address_bits())]
+    UnknownCollectorPollSurvivorAddress {
+        /// The unrecognized survivor address.
+        address: GcHeapAddress,
     },
     /// A collector-poll commit application did not receive one reference value
     /// per copied reference-slot label.

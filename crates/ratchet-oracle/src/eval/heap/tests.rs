@@ -1927,6 +1927,116 @@ fn collector_poll_minor_gc_commit_plan_rejects_destination_plan_with_foreign_act
 }
 
 #[test]
+fn collector_poll_minor_gc_relocation_destinations_derive_layouts_from_heap_records() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+
+    let base = static_gc_address(0x1000_0000);
+    let destinations = heap
+        .plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(base, static_gc_address(0x2000_0000)),
+        )
+        .expect("destination plan derives heap layouts");
+    let expected_thunk_bytes = std::mem::size_of::<u64>() * 3;
+    let expected_align = std::mem::align_of::<u64>();
+
+    assert_eq!(
+        destinations.allocation_plan().nursery_bytes(),
+        expected_thunk_bytes
+    );
+    assert_eq!(destinations.allocation_plan().old_bytes(), 0);
+    assert_eq!(
+        destinations.placement_plan().nursery_reserved_bytes(),
+        expected_thunk_bytes
+    );
+    assert_eq!(destinations.destinations()[0].destination(), base);
+    assert_eq!(
+        destinations.placement_plan().placements()[0].align(),
+        expected_align
+    );
+    let commit = planned
+        .commit_plan(&destinations)
+        .expect("commit plan builds from derived layouts");
+    assert_eq!(
+        commit.commit_plan().object_copies().copies()[0].size_bytes(),
+        expected_thunk_bytes
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_relocation_destinations_reject_post_plan_allocation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let child = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("child thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let mut roots = EvalRootSet::new();
+    roots
+        .try_push_value_stack(0, child)
+        .expect("child root records");
+    let scan = heap
+        .scan_collector_poll_roots(poll, &roots)
+        .expect("collector-poll root scan succeeds");
+    let remembered_set = RememberedSet::new();
+    let planned = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor-GC plan builds");
+    let expected_records = planned.heap_records();
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("post-plan thunk allocates");
+
+    assert_eq!(
+        heap.plan_collector_poll_minor_gc_relocation_destinations(
+            &planned,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect_err("post-plan allocation is rejected"),
+        EvalHeapError::CollectorPollScanStaleHeapSnapshot {
+            reason: "heap record count changed since minor-GC planning",
+            expected_records,
+            actual_records: expected_records + 1,
+        }
+    );
+}
+
+#[test]
 fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());

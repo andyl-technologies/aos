@@ -917,11 +917,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       planners. It takes caller-supplied nursery layouts plus caller-chosen
       nursery/old destination bases, keeps each intermediate plan together, and
       validates materialized destinations against the poll plan's survivor
-      frontier. Tests now derive copied-young and promoted-old relocation
-      destinations through this bridge and assert allocation/reserved byte
-      accounting. This is still metadata only: it does not reserve semispace
-      pages, choose destination bases, allocate object storage, bind byte
-      buffers to real objects, or manage nursery/old generation spaces.
+      frontier. `EvalHeap::plan_collector_poll_minor_gc_relocation_destinations`
+      now derives survivor nursery layouts from allocator-recorded heap side-table
+      size/alignment metadata and rejects heap record or allocation-safepoint
+      changes after minor-GC planning before materializing destinations. Tests
+      cover caller-supplied copied-young/promoted-old destination planning,
+      heap-derived layout sizes, and post-plan allocation rejection. This is still
+      metadata only: it does not reserve semispace pages, choose destination
+      bases, allocate object storage, bind byte buffers to real objects, or
+      manage nursery/old generation spaces.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level

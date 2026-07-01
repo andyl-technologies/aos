@@ -5251,10 +5251,14 @@ and helps the oracle directly.
       lower-level destination allocation, aligned placement, and materialized
       relocation-destination plans. The wrapper preserves all three
       intermediate plans so tests can assert copied-young and promoted-old
-      allocation/reserved-byte accounting before commit metadata is built. This
-      remains destination metadata only; semispace page reservation, base
-      selection, object storage allocation, buffer binding to real heap objects,
-      and generation-space management remain open.
+      allocation/reserved-byte accounting before commit metadata is built.
+      `EvalHeap::plan_collector_poll_minor_gc_relocation_destinations` derives
+      survivor layouts from allocator-recorded heap side-table size/alignment
+      metadata and rejects heap record or allocation-safepoint changes after
+      planning before materializing destinations. This remains destination
+      metadata only; semispace page reservation, base selection, object storage
+      allocation, buffer binding to real heap objects, and generation-space
+      management remain open.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot used by the poll plan and composes the existing lower-level
@@ -5385,9 +5389,12 @@ and helps the oracle directly.
       `AllocationCollectorPollMinorGcPlan::relocation_destination_plan` derives
       destination allocation requirements, aligned placements, and materialized
       relocation destinations from the copied poll survivor plan and
-      caller-provided layouts/bases. This connects precise-root minor-GC
-      planning to lower-level destination metadata, but still does not allocate
-      or bind live destination storage.
+      caller-provided layouts/bases. `EvalHeap` also exposes a heap-record-backed
+      bridge that derives survivor layouts from recorded allocation size/alignment
+      metadata and rejects post-plan heap allocation before destination
+      materialization. This connects precise-root minor-GC planning to
+      lower-level destination metadata, but still does not allocate or bind live
+      destination storage.
 - [x] Current `heap/roots.rs` commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` stores the remembered-set
       snapshot captured during allocation-poll planning and composes it with the
