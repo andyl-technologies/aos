@@ -474,6 +474,133 @@ impl MinorGcSurvivor {
     }
 }
 
+/// Destination metadata for one live minor-GC survivor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcRelocationDestination {
+    source: GcHeapAddress,
+    destination: GcHeapAddress,
+}
+
+impl MinorGcRelocationDestination {
+    /// Creates destination metadata for one young survivor.
+    pub const fn new(source: GcHeapAddress, destination: GcHeapAddress) -> Self {
+        Self {
+            source,
+            destination,
+        }
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(self) -> GcHeapAddress {
+        self.source
+    }
+
+    /// Returns the allocated destination address.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.destination
+    }
+}
+
+/// One planned minor-GC survivor relocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MinorGcRelocation {
+    survivor: MinorGcSurvivor,
+    destination: GcHeapAddress,
+}
+
+impl MinorGcRelocation {
+    /// Returns the source nursery survivor.
+    pub const fn survivor(self) -> MinorGcSurvivor {
+        self.survivor
+    }
+
+    /// Returns the source nursery object address.
+    pub const fn source(self) -> GcHeapAddress {
+        self.survivor.address()
+    }
+
+    /// Returns the allocated destination address.
+    pub const fn destination(self) -> GcHeapAddress {
+        self.destination
+    }
+
+    /// Returns whether this survivor is copied or promoted.
+    pub const fn action(self) -> MinorGcSurvivorAction {
+        self.survivor.action()
+    }
+}
+
+/// A relocation map for a planned minor collection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcRelocationPlan {
+    relocations: Vec<MinorGcRelocation>,
+}
+
+impl MinorGcRelocationPlan {
+    /// Builds a relocation map from a survivor plan and destination table.
+    ///
+    /// Relocations are emitted in survivor-frontier order. The destination
+    /// table must contain exactly one destination for each survivor source and
+    /// no stale non-survivor source entries. Destination addresses must be
+    /// unique so two survivors cannot be assigned the same copied/promoted
+    /// address. Destination addresses must also be outside the live survivor
+    /// source set, because from-space addresses cannot be reused as relocation
+    /// targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if relocation storage cannot be
+    /// reserved, if a survivor has no destination, if a destination source is
+    /// duplicated or not present in the survivor plan, if two survivors share a
+    /// destination address, or if any destination points at a live survivor
+    /// source address.
+    pub fn from_minor_gc_plan(
+        plan: &MinorGcPlan,
+        destinations: &[MinorGcRelocationDestination],
+    ) -> Result<Self, GenerationalGcError> {
+        validate_unique_relocation_sources(destinations)?;
+        validate_unique_relocation_destinations(destinations)?;
+        validate_relocation_sources_are_live(plan, destinations)?;
+        validate_relocation_destinations_are_not_sources(plan, destinations)?;
+
+        let mut relocations = Vec::new();
+        for survivor in plan.survivors() {
+            let destination =
+                relocation_destination_for(destinations, survivor.address())?.destination();
+            let relocations_len = relocations
+                .len()
+                .checked_add(1)
+                .ok_or(GenerationalGcError::MinorGcRelocationLengthOverflow)?;
+            relocations.try_reserve_exact(1).map_err(|_| {
+                GenerationalGcError::MinorGcRelocationAllocationFailed {
+                    relocations: relocations_len,
+                }
+            })?;
+            relocations.push(MinorGcRelocation {
+                survivor: *survivor,
+                destination,
+            });
+        }
+
+        Ok(Self { relocations })
+    }
+
+    /// Returns relocations in survivor-frontier order.
+    pub fn relocations(&self) -> &[MinorGcRelocation] {
+        &self.relocations
+    }
+
+    /// Returns the number of planned relocations.
+    pub fn len(&self) -> usize {
+        self.relocations.len()
+    }
+
+    /// Returns whether the relocation plan is empty.
+    pub fn is_empty(&self) -> bool {
+        self.relocations.is_empty()
+    }
+}
+
 /// A minor-collection frontier plan for the young generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinorGcPlan {
@@ -641,6 +768,77 @@ fn validate_unique_nursery_fields(
     Ok(())
 }
 
+fn validate_unique_relocation_sources(
+    destinations: &[MinorGcRelocationDestination],
+) -> Result<(), GenerationalGcError> {
+    for (index, destination) in destinations.iter().enumerate() {
+        if destinations[index + 1..]
+            .iter()
+            .any(|other| other.source == destination.source)
+        {
+            return Err(GenerationalGcError::DuplicateMinorGcRelocationSource {
+                address: destination.source,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_relocation_destinations(
+    destinations: &[MinorGcRelocationDestination],
+) -> Result<(), GenerationalGcError> {
+    for (index, destination) in destinations.iter().enumerate() {
+        if destinations[index + 1..]
+            .iter()
+            .any(|other| other.destination == destination.destination)
+        {
+            return Err(GenerationalGcError::DuplicateMinorGcRelocationDestination {
+                address: destination.destination,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_relocation_sources_are_live(
+    plan: &MinorGcPlan,
+    destinations: &[MinorGcRelocationDestination],
+) -> Result<(), GenerationalGcError> {
+    for destination in destinations {
+        if !plan
+            .survivors()
+            .iter()
+            .any(|survivor| survivor.address() == destination.source)
+        {
+            return Err(GenerationalGcError::StaleMinorGcRelocationSource {
+                address: destination.source,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_relocation_destinations_are_not_sources(
+    plan: &MinorGcPlan,
+    destinations: &[MinorGcRelocationDestination],
+) -> Result<(), GenerationalGcError> {
+    for destination in destinations {
+        if plan
+            .survivors()
+            .iter()
+            .any(|survivor| survivor.address() == destination.destination)
+        {
+            return Err(
+                GenerationalGcError::MinorGcRelocationDestinationInFromSpace {
+                    from: destination.source,
+                    destination: destination.destination,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn nursery_age_for(
     nursery_objects: &[NurseryObjectAge],
     address: GcHeapAddress,
@@ -650,6 +848,17 @@ fn nursery_age_for(
         .copied()
         .find(|object| object.address == address)
         .ok_or(GenerationalGcError::MissingNurseryObjectAge { address })
+}
+
+fn relocation_destination_for(
+    destinations: &[MinorGcRelocationDestination],
+    address: GcHeapAddress,
+) -> Result<MinorGcRelocationDestination, GenerationalGcError> {
+    destinations
+        .iter()
+        .copied()
+        .find(|destination| destination.source == address)
+        .ok_or(GenerationalGcError::MissingMinorGcRelocationDestination { address })
 }
 
 fn nursery_fields_for<'a>(
@@ -780,6 +989,15 @@ pub enum GenerationalGcError {
         /// The requested survivor-plan capacity.
         survivors: usize,
     },
+    /// The minor-GC relocation plan length overflowed.
+    #[error("minor-GC relocation length overflow")]
+    MinorGcRelocationLengthOverflow,
+    /// The minor-GC relocation plan could not reserve storage.
+    #[error("failed to reserve {relocations} minor-GC relocations")]
+    MinorGcRelocationAllocationFailed {
+        /// The requested relocation-plan capacity.
+        relocations: usize,
+    },
     /// A young frontier object had no age metadata.
     #[error("missing nursery age metadata for 0x{address:x}", address = address.address_bits())]
     MissingNurseryObjectAge {
@@ -803,6 +1021,38 @@ pub enum GenerationalGcError {
     DuplicateNurseryObjectFields {
         /// The duplicated young object.
         address: GcHeapAddress,
+    },
+    /// A live survivor had no relocation destination metadata.
+    #[error("missing minor-GC relocation destination for 0x{address:x}", address = address.address_bits())]
+    MissingMinorGcRelocationDestination {
+        /// The survivor missing relocation metadata.
+        address: GcHeapAddress,
+    },
+    /// A survivor source appeared more than once in the relocation table.
+    #[error("duplicate minor-GC relocation source for 0x{address:x}", address = address.address_bits())]
+    DuplicateMinorGcRelocationSource {
+        /// The duplicated survivor source.
+        address: GcHeapAddress,
+    },
+    /// Two survivor sources were assigned the same relocation destination.
+    #[error("duplicate minor-GC relocation destination 0x{address:x}", address = address.address_bits())]
+    DuplicateMinorGcRelocationDestination {
+        /// The duplicated relocation destination.
+        address: GcHeapAddress,
+    },
+    /// A relocation source referenced an object outside the survivor plan.
+    #[error("minor-GC relocation source is not live: 0x{address:x}", address = address.address_bits())]
+    StaleMinorGcRelocationSource {
+        /// The non-survivor source address.
+        address: GcHeapAddress,
+    },
+    /// A survivor was assigned a destination that is still in from-space.
+    #[error("minor-GC relocation for 0x{from:x} points into from-space at 0x{destination:x}", from = from.address_bits(), destination = destination.address_bits())]
+    MinorGcRelocationDestinationInFromSpace {
+        /// The source survivor being relocated.
+        from: GcHeapAddress,
+        /// The invalid destination address.
+        destination: GcHeapAddress,
     },
 }
 
@@ -1211,6 +1461,165 @@ mod tests {
         assert_eq!(
             plan.survivors()[1].action(),
             MinorGcSurvivorAction::PromoteToOld
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_plan_maps_survivors_in_frontier_order() {
+        let copy = address(0x1000);
+        let promote = address(0x2000);
+        let copy_destination = address(0x9000);
+        let promote_destination = address(0xa000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(copy),
+                ResolvedValueGeneration::young(promote),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(copy, 0),
+                NurseryObjectAge::new(promote, 1),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        let relocation_plan = MinorGcRelocationPlan::from_minor_gc_plan(
+            &plan,
+            &[
+                MinorGcRelocationDestination::new(promote, promote_destination),
+                MinorGcRelocationDestination::new(copy, copy_destination),
+            ],
+        )
+        .expect("relocation plan builds");
+
+        assert_eq!(relocation_plan.len(), 2);
+        assert!(!relocation_plan.is_empty());
+        assert_eq!(relocation_plan.relocations()[0].source(), copy);
+        assert_eq!(
+            relocation_plan.relocations()[0].destination(),
+            copy_destination
+        );
+        assert_eq!(
+            relocation_plan.relocations()[0].action(),
+            MinorGcSurvivorAction::CopyToNursery
+        );
+        assert_eq!(relocation_plan.relocations()[1].source(), promote);
+        assert_eq!(
+            relocation_plan.relocations()[1].destination(),
+            promote_destination
+        );
+        assert_eq!(
+            relocation_plan.relocations()[1].action(),
+            MinorGcSurvivorAction::PromoteToOld
+        );
+        assert_eq!(
+            relocation_plan.relocations()[1].survivor(),
+            plan.survivors()[1]
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_plan_rejects_incomplete_or_stale_metadata() {
+        let young = address(0x1000);
+        let other = address(0x2000);
+        let destination = address(0x9000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [ResolvedValueGeneration::young(young)],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[NurseryObjectAge::new(young, 0)],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(&plan, &[]),
+            Err(GenerationalGcError::MissingMinorGcRelocationDestination { address: young })
+        );
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    MinorGcRelocationDestination::new(young, destination),
+                    MinorGcRelocationDestination::new(young, address(0xa000)),
+                ],
+            ),
+            Err(GenerationalGcError::DuplicateMinorGcRelocationSource { address: young })
+        );
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    MinorGcRelocationDestination::new(young, destination),
+                    MinorGcRelocationDestination::new(other, destination),
+                ],
+            ),
+            Err(GenerationalGcError::DuplicateMinorGcRelocationDestination {
+                address: destination,
+            },)
+        );
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    MinorGcRelocationDestination::new(young, destination),
+                    MinorGcRelocationDestination::new(other, address(0xa000)),
+                ],
+            ),
+            Err(GenerationalGcError::StaleMinorGcRelocationSource { address: other })
+        );
+    }
+
+    #[test]
+    fn minor_gc_relocation_plan_rejects_destinations_in_from_space() {
+        let first = address(0x1000);
+        let second = address(0x2000);
+        let plan = MinorGcPlan::from_roots_and_remembered(
+            [
+                ResolvedValueGeneration::young(first),
+                ResolvedValueGeneration::young(second),
+            ],
+            RememberedSet::new().snapshot(),
+            RememberedSetEpoch::new(0),
+            &[
+                NurseryObjectAge::new(first, 0),
+                NurseryObjectAge::new(second, 0),
+            ],
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("minor GC plan builds");
+
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    MinorGcRelocationDestination::new(first, first),
+                    MinorGcRelocationDestination::new(second, address(0x9000)),
+                ],
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationInFromSpace {
+                    from: first,
+                    destination: first,
+                }
+            )
+        );
+        assert_eq!(
+            MinorGcRelocationPlan::from_minor_gc_plan(
+                &plan,
+                &[
+                    MinorGcRelocationDestination::new(first, second),
+                    MinorGcRelocationDestination::new(second, address(0x9000)),
+                ],
+            ),
+            Err(
+                GenerationalGcError::MinorGcRelocationDestinationInFromSpace {
+                    from: first,
+                    destination: second,
+                }
+            )
         );
     }
 

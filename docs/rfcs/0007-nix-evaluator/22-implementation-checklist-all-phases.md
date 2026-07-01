@@ -4982,6 +4982,18 @@ and helps the oracle directly.
       This remains a planning surface only; object copying, forwarding-pointer
       updates, relocation writeback, semispace allocation, and oracle heap-scan
       integration remain open.
+- [x] Current minor-GC relocation-map precursor:
+      `ratchet-value::heap::gc::MinorGcRelocationDestination` and
+      `MinorGcRelocationPlan::from_minor_gc_plan` validate collector-supplied
+      destination metadata for a survivor plan. Relocations keep survivor
+      frontier order, preserve copy-vs-promote actions, require one destination
+      per live survivor source, reject stale non-survivor sources, and reject
+      duplicate destination addresses or any destination that still points into
+      the live from-space survivor set. Unit tests cover ordering/action
+      preservation plus missing, duplicate-source, duplicate-destination,
+      stale-source, and from-space destination rejection. This is still only map
+      construction; destination allocation, object copying, forwarding pointers,
+      root/field writeback, and semispace management remain open.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

@@ -980,6 +980,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       surface: no object copy, forwarding-pointer update, relocation writeback,
       semispace allocation, or integration with the oracle heap scanner is
       implemented here.
+- [x] Current minor-GC relocation-map precursor:
+      `ratchet-value::heap::gc::MinorGcRelocationDestination` and
+      `MinorGcRelocationPlan::from_minor_gc_plan` validate a caller-supplied
+      destination table for a survivor plan. The plan emits relocations in
+      survivor-frontier order, preserves each survivor's copy-vs-promote action,
+      requires exactly one destination per live survivor source, rejects stale
+      non-survivor sources, rejects duplicate destination addresses, and rejects
+      destinations that still point into the live from-space survivor set. Tests
+      cover order/action preservation plus missing, duplicate-source,
+      duplicate-destination, stale-source, and from-space destination rejection.
+      This is only relocation mapping: it does not allocate destination storage,
+      copy object bytes, install forwarding pointers, rewrite roots/fields, or
+      manage semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit
