@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::eval::heap::{AllocationCollectorPollScan, EvalRoot, EvalRootSource, InternedRootTable};
-use crate::heap::{GcHeapAddress, MinorGcPromotionPolicy, RememberedSet};
+use crate::heap::{GcHeapAddress, MinorGcPromotionPolicy, RememberedSet, ResolvedValueGeneration};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use std::path::PathBuf;
 
@@ -299,6 +299,72 @@ fn attr_path_eval_records_gc_stress_boundary_scan() {
     );
     assert!(scan_has_value_stack_root(worker_scan, outcome.value()));
     assert!(scan_has_object(worker_scan, outcome.value()));
+}
+
+#[test]
+fn owned_eval_plans_gc_stress_boundary_worker_minor_gc() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("lambda evaluates under GC stress");
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_plans(MinorGcPromotionPolicy::new(2))
+        .expect("boundary scan plans as minor GC");
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans.permanent_shared().is_none());
+    let worker_plan = plans.worker().expect("worker boundary plan records");
+    assert_eq!(
+        worker_plan.roots(),
+        &[ResolvedValueGeneration::young(gc_address(outcome.value()))]
+    );
+    assert_eq!(worker_plan.plan().survivors().len(), 1);
+    assert_eq!(
+        worker_plan.plan().survivors()[0].address(),
+        gc_address(outcome.value())
+    );
+}
+
+#[test]
+fn owned_eval_plans_gc_stress_boundary_permanent_minor_gc() {
+    let ir = lower("\"stress\"");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("string evaluates under GC stress");
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_plans(MinorGcPromotionPolicy::new(2))
+        .expect("boundary scan plans as minor GC");
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans.worker().is_none());
+    let permanent_plan = plans
+        .permanent_shared()
+        .expect("permanent boundary plan records");
+    let permanent_root = ResolvedValueGeneration::permanent(gc_address(outcome.value()));
+    assert_eq!(permanent_plan.roots().len(), 2);
+    assert!(
+        permanent_plan
+            .roots()
+            .iter()
+            .all(|root| *root == permanent_root)
+    );
+    assert!(permanent_plan.plan().is_empty());
+}
+
+#[test]
+fn owned_eval_without_gc_stress_has_no_boundary_minor_gc_plans() {
+    let ir = lower("x: x");
+    let outcome = eval_whnf_owned(&ir).expect("lambda evaluates without GC stress");
+    let plans = outcome
+        .gc_stress_boundary_minor_gc_plans(MinorGcPromotionPolicy::new(2))
+        .expect("empty boundary scans produce empty plans");
+
+    assert!(outcome.gc_stress_boundary_scans().is_empty());
+    assert!(plans.is_empty());
 }
 
 #[test]

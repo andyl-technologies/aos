@@ -1039,9 +1039,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       boundaries: current worker and permanent-shared polls are scanned
       separately with the produced value published as transient value-stack slot
       0, and tests cover lambda, string, and attr-path outcomes under
-      every-safepoint stress. This is still poll/scan intent only: tree-walk
-      does not invoke a collector at each allocation safepoint or perform
-      mutating GC-stress collection yet.
+      every-safepoint stress. `EvalOutcome::gc_stress_boundary_minor_gc_plans`
+      can convert those recorded scans into caller-owned
+      `AllocationCollectorPollMinorGcPlan` metadata using the outcome's
+      remembered-set snapshot and a caller-supplied promotion policy; tests cover
+      worker young-survivor planning, permanent-root/no-survivor planning, and
+      empty reports when stress is disabled. This is still poll/scan/planning
+      intent only: tree-walk does not invoke a collector at each allocation
+      safepoint or perform mutating GC-stress collection yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
@@ -1469,7 +1474,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       runs that scan at successful owned evaluation boundaries for each current
       worker and permanent-shared poll, exposing
       `EvalGcStressBoundaryScans` on `EvalOutcome` with the produced WHNF value
-      rooted as transient value-stack slot 0. `force_value`, lambda-call,
+      rooted as transient value-stack slot 0.
+      `EvalOutcome::gc_stress_boundary_minor_gc_plans` then delegates those
+      stored scans to `EvalHeap::plan_collector_poll_minor_gc` with the outcome
+      remembered-set snapshot and a caller-supplied promotion policy, preserving
+      the result as caller-owned planning metadata. `force_value`, lambda-call,
       import-evaluation, nested numeric-equality, and saturated first-class
       primop paths push/pop active or suspended safepoint frames on success and
       error paths, and
@@ -1477,9 +1486,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       suspended-env roots, import-cache roots, interned-root inclusion, heap
       scanning, GC-stress collector-poll scanning with an explicit transient
       root, minor-GC planning from that scan, boundary scans for worker,
-      permanent-shared, and attr-path outcomes, stale same-domain poll
-      rejection, and stack cleanup after force/primop failures. This still does
-      not infer arbitrary Rust locals
+      permanent-shared, and attr-path outcomes, boundary minor-GC planning for
+      worker, permanent-shared, and stress-disabled outcomes, stale same-domain
+      poll rejection, and stack cleanup after force/primop failures. This still
+      does not infer arbitrary Rust locals
       without explicit value-stack registration, bind mutable relocation slots,
       invoke a collector, or consume JIT stack maps; those remain open in the
       full precise-root row above.
@@ -1587,9 +1597,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       value-stack slot 0. Tests prove a worker-domain lambda allocation can be
       planned as a minor-GC survivor from an explicit scan, a permanent-shared
       string result is rooted in the boundary scan, attr-path owned evaluation
-      records a boundary scan, and a stale same-domain poll is rejected. This is
-      still a poll/scan/planning hook only: no collector is invoked at those
-      polls and no root/field relocation is applied.
+      records a boundary scan, recorded boundary scans can be converted into
+      minor-GC plans with a caller-supplied promotion policy, and a stale
+      same-domain poll is rejected. This is still a poll/scan/planning hook
+      only: no collector is invoked at those polls and no root/field relocation
+      is applied.
 
 ## References
 

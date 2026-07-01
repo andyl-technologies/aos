@@ -46,9 +46,9 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    AllocationCollectorPollScan, EvalHeap, EvalHeapCheapMemoryAdviceReport, EvalHeapError,
-    EvalHeapResidentMemoryMode, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, PreciseHeapScan,
+    AllocationCollectorPollMinorGcPlan, AllocationCollectorPollScan, EvalHeap,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapError, EvalHeapResidentMemoryMode, EvalLambda,
+    EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -73,7 +73,7 @@ use crate::compile::{
     IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind, IrLowerOptions, IrNode,
     IrShape, IrShapeId, ResolverOptions, ScopeResolver, resolve,
 };
-use crate::heap::{GenerationalGcTier, HeapMemoryBudget, RememberedSet};
+use crate::heap::{GenerationalGcTier, HeapMemoryBudget, MinorGcPromotionPolicy, RememberedSet};
 use crate::list::{NixList, NixListError};
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
 use crate::runtime::builtins::*;
@@ -317,9 +317,9 @@ pub(crate) use options::{
     search_path_literal_lookup, search_path_suffix, store_path_root,
 };
 pub use outcome::{
-    EvalDerivation, EvalGcStressBoundaryScans, EvalOutcome, EvalStats, EvalTraceKind,
-    EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError,
-    IfdRealizer,
+    EvalDerivation, EvalGcStressBoundaryMinorGcPlans, EvalGcStressBoundaryScans, EvalOutcome,
+    EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,
+    IfdRealizationError, IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{

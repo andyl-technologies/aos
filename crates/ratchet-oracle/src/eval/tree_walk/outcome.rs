@@ -51,6 +51,50 @@ impl EvalGcStressBoundaryScans {
     }
 }
 
+/// Minor-GC plans derived from GC-stress boundary scans.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcPlans {
+    worker: Option<AllocationCollectorPollMinorGcPlan>,
+    permanent_shared: Option<AllocationCollectorPollMinorGcPlan>,
+}
+
+impl EvalGcStressBoundaryMinorGcPlans {
+    /// Creates a boundary-plan report from per-allocator plan results.
+    pub(crate) const fn new(
+        worker: Option<AllocationCollectorPollMinorGcPlan>,
+        permanent_shared: Option<AllocationCollectorPollMinorGcPlan>,
+    ) -> Self {
+        Self {
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns whether no allocator tier produced a boundary minor-GC plan.
+    pub const fn is_empty(&self) -> bool {
+        self.worker.is_none() && self.permanent_shared.is_none()
+    }
+
+    /// Returns how many allocator tiers produced a boundary minor-GC plan.
+    pub const fn len(&self) -> usize {
+        match (self.worker.is_some(), self.permanent_shared.is_some()) {
+            (false, false) => 0,
+            (true, false) | (false, true) => 1,
+            (true, true) => 2,
+        }
+    }
+
+    /// Returns the worker allocator's boundary minor-GC plan, if any.
+    pub const fn worker(&self) -> Option<&AllocationCollectorPollMinorGcPlan> {
+        self.worker.as_ref()
+    }
+
+    /// Returns the permanent-shared allocator's boundary minor-GC plan, if any.
+    pub const fn permanent_shared(&self) -> Option<&AllocationCollectorPollMinorGcPlan> {
+        self.permanent_shared.as_ref()
+    }
+}
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 pub struct EvalOutcome {
     pub(crate) value: Value,
@@ -164,6 +208,48 @@ impl EvalOutcome {
     /// Returns GC-stress scans recorded at the successful evaluation boundary.
     pub const fn gc_stress_boundary_scans(&self) -> &EvalGcStressBoundaryScans {
         &self.gc_stress_boundary_scans
+    }
+
+    /// Builds minor-GC plans from the recorded GC-stress boundary scans.
+    ///
+    /// This uses the outcome's remembered-set snapshot and the caller-supplied
+    /// promotion policy. It is planning metadata only: it does not choose
+    /// semispace destinations, install forwarding pointers, rewrite roots or
+    /// fields, publish remembered sets, or invoke a collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if a recorded boundary scan is stale relative
+    /// to the outcome heap, if the remembered set is incomplete or invalid for
+    /// the current heap graph, or if minor-GC planning fails.
+    pub fn gc_stress_boundary_minor_gc_plans(
+        &self,
+        promotion_policy: MinorGcPromotionPolicy,
+    ) -> Result<EvalGcStressBoundaryMinorGcPlans, EvalHeapError> {
+        let remembered_set = self.thunk_resolve_remembered_set.snapshot();
+        let collection_epoch = self.thunk_resolve_remembered_set.epoch();
+        let worker = match self.gc_stress_boundary_scans.worker() {
+            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc(
+                scan,
+                remembered_set,
+                collection_epoch,
+                promotion_policy,
+            )?),
+            None => None,
+        };
+        let permanent_shared = match self.gc_stress_boundary_scans.permanent_shared() {
+            Some(scan) => Some(self.heap.plan_collector_poll_minor_gc(
+                scan,
+                remembered_set,
+                collection_epoch,
+                promotion_policy,
+            )?),
+            None => None,
+        };
+        Ok(EvalGcStressBoundaryMinorGcPlans::new(
+            worker,
+            permanent_shared,
+        ))
     }
 
     /// Consumes the outcome into its value and heap.

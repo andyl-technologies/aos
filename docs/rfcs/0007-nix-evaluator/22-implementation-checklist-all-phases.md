@@ -5378,9 +5378,15 @@ and helps the oracle directly.
       `EvalGcStressBoundaryScans` at successful evaluation boundaries: current
       worker and permanent-shared polls are scanned separately with the produced
       value published as transient value-stack slot 0, and tests cover lambda,
-      string, and attr-path outcomes under every-safepoint stress. Invoking the
-      collector, actually collecting at every safepoint, exported C ABI symbols,
-      and write-barrier dispatch integration remain open.
+      string, and attr-path outcomes under every-safepoint stress.
+      `EvalOutcome::gc_stress_boundary_minor_gc_plans` can convert those
+      recorded scans into caller-owned `AllocationCollectorPollMinorGcPlan`
+      metadata using the outcome's remembered-set snapshot and a caller-supplied
+      promotion policy; tests cover worker young-survivor planning,
+      permanent-root/no-survivor planning, and empty reports when stress is
+      disabled. Invoking the collector, actually collecting at every safepoint,
+      exported C ABI symbols, and write-barrier dispatch integration remain
+      open.
 - [x] Current permanent-shared allocation closure:
       `runtime::alloc::PermanentSharedAllocator` exposes a permanent domain
       with accounting separate from the Tier-A worker allocator, and `EvalHeap`
@@ -5657,7 +5663,11 @@ and helps the oracle directly.
       at successful owned evaluation boundaries for each current worker and
       permanent-shared poll, exposing `EvalGcStressBoundaryScans` on
       `EvalOutcome` with the produced WHNF value rooted as transient value-stack
-      slot 0. The force, lambda-call, import-evaluation, nested
+      slot 0. `EvalOutcome::gc_stress_boundary_minor_gc_plans` then delegates
+      those stored scans to `EvalHeap::plan_collector_poll_minor_gc` with the
+      outcome remembered-set snapshot and a caller-supplied promotion policy,
+      preserving the result as caller-owned planning metadata. The force,
+      lambda-call, import-evaluation, nested
       numeric-equality, and saturated first-class primop paths
       register/unregister active or suspended safepoint frames, including
       error-path cleanup, and
@@ -5665,10 +5675,11 @@ and helps the oracle directly.
       suspended-env roots, import-cache roots, interned-root inclusion, heap
       scanning, GC-stress collector-poll scanning with an explicit transient
       root, minor-GC planning from that scan, boundary scans for worker,
-      permanent-shared, and attr-path outcomes, stale same-domain poll rejection,
-      recursive-force cleanup, and first-class primop error cleanup. This
-      remains a root-set precursor: arbitrary Rust locals still need explicit
-      value-stack registration, and mutable relocation slots, collector
+      permanent-shared, and attr-path outcomes, boundary minor-GC planning for
+      worker, permanent-shared, and stress-disabled outcomes, stale same-domain
+      poll rejection, recursive-force cleanup, and first-class primop error
+      cleanup. This remains a root-set precursor: arbitrary Rust locals still
+      need explicit value-stack registration, and mutable relocation slots, collector
       invocation, and JIT stack maps remain open in the full precise-root row
       above.
 - [x] Current thunk-resolve write-barrier precursor:
