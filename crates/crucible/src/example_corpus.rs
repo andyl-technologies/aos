@@ -11,16 +11,19 @@ use std::fmt;
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, ChoiceTag, CodePoint, ContentAddressedBlobRef,
-    ContentHash, Decision, EngineError, FaultTag, FramePredicate, GuestWorkloadBinary,
-    GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, LinkId, LinkLossProbability,
-    MembershipFault, NodeId, NodeLifecycle, NodeTemplate, OverrideDecision, Plan, Predicate,
-    Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ScenarioDefForm,
-    Schedule, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TimerId, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    ContentHash, Decision, EngineError, EventId, FaultTag, FramePredicate, GuestWorkloadBinary,
+    GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, IoEventKind, LinkId,
+    LinkLossProbability, MembershipFault, NodeCounter, NodeId, NodeLifecycle, NodeTemplate,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
+    ReproductionArtifact, RestartPolicy, ScenarioDefForm, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TimerId,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crate::scheduler::{
-    SchedulerError, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
-    SchedulerQuiescence, SingleScheduler,
+    ExactLocalEvent, NetworkLookahead, SchedulerError, SchedulerEvaluationBoundaryKind,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity,
+    SchedulerNodeCrashApplication, SchedulerNodeRestartApplication, SchedulerScenarioNode,
+    SchedulerTopologyChangeApplication, SingleScheduler, TriggerActionApplication,
 };
 use crate::trigger::{
     Action, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle,
@@ -37,6 +40,9 @@ pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
 /// Stable corpus name for the RFC-0010 A.2 partition-recovery example.
 pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
+/// Stable corpus name for the RFC-0010 A.3 crash+restart example.
+pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
+
 /// Whether the built-in example corpus requires a Crucible guest-side component.
 pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = false;
 
@@ -48,6 +54,9 @@ const HAPPY_PATH_DEADLINE_TICKS: u64 = 60_000_000_000;
 const HAPPY_PATH_TERMINAL_TICKS: u64 = 38;
 const PARTITION_HEAL_DELAY_TICKS: u64 = 10_000_000_000;
 const PARTITION_CONVERGENCE_DEADLINE_TICKS: u64 = 30_000_000_000;
+const CRASH_RESTART_DELAY_TICKS: u64 = 5_000_000_000;
+const CRASH_RESTART_DEADLINE_TICKS: u64 = 40_000_000_000;
+const CRASH_RESTART_COMMIT_TICKS: u64 = 30;
 const HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX: &str = "example-corpus/happy-path/observation/";
 const HAPPY_PATH_REPLAY_BOUNDARY_POINT: &str = "example-corpus/happy-path/boundary";
 const EXAMPLE_REPLAY_STEP_POINT_PREFIX: &str = "example-corpus/replay-step/";
@@ -105,6 +114,12 @@ pub struct ExampleScenarioRunReport {
     pub replayed_fingerprint_stream: Vec<u8>,
     /// Event graph firings observed at the passing boundary.
     pub firings: EventFirings,
+    /// Scheduler node-crash applications produced by the run proof.
+    pub scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
+    /// Scheduler node-restart applications produced by the run proof.
+    pub scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
+    /// Scheduler topology-change applications produced by the run proof.
+    pub scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
 
 /// Deterministic multi-run verification result for a built-in example fixture.
@@ -241,7 +256,11 @@ impl From<SchedulerError> for ExampleCorpusError {
 /// Returns [`ExampleCorpusError::Engine`] if a shipped scenario fixture no
 /// longer validates or serializes.
 pub fn built_in_example_corpus() -> Result<Vec<ExampleScenarioFixture>, ExampleCorpusError> {
-    Ok(vec![happy_path_scenario()?, partition_recovery_scenario()?])
+    Ok(vec![
+        happy_path_scenario()?,
+        partition_recovery_scenario()?,
+        crash_restart_scenario()?,
+    ])
 }
 
 /// Builds the RFC-0010 A.1 happy-path client/server scenario fixture.
@@ -372,6 +391,49 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
     })
 }
 
+/// Builds the RFC-0010 A.3 node crash+restart scenario fixture.
+///
+/// # Errors
+///
+/// Returns [`ExampleCorpusError::Engine`] if the scenario's world, event graph,
+/// properties, or canonical form fail validation.
+pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusError> {
+    let kernel = example_blob("crash-restart-any-kernel");
+    let root = example_blob("crash-restart-unmodified-store-root-image");
+    let world = World::from_nodes_and_links(
+        vec![
+            crash_restart_node("db-0", kernel.clone(), root.clone()),
+            crash_restart_node("db-1", kernel.clone(), root.clone()),
+            crash_restart_node("db-2", kernel, root),
+        ],
+        vec![
+            partition_link("db-0", "db-1")?,
+            partition_link("db-1", "db-2")?,
+            partition_link("db-0", "db-2")?,
+        ],
+    )?;
+    let properties = crash_restart_properties(&world)?;
+    let plan = crash_restart_plan(&world, &properties)?;
+    let scenario = ScenarioDefForm::from_components_with_app_random_draw_cap(
+        &world,
+        &plan,
+        &properties,
+        Seed::from_u64(7),
+        10,
+    )?;
+    let steps = crash_restart_replay_steps();
+
+    Ok(ExampleScenarioFixture {
+        name: CRASH_RESTART_SCENARIO_NAME.to_owned(),
+        rfc_section: String::from("33.A.3"),
+        scenario,
+        zero_guest_components: true,
+        requires_white_box: false,
+        observations: flatten_observations(&steps),
+        steps,
+    })
+}
+
 /// Runs a built-in example fixture through the deterministic local proof path.
 ///
 /// # Errors
@@ -400,6 +462,10 @@ pub fn run_example_scenario(
         || replayed.fingerprint_stream != primary.fingerprint_stream
         || replayed.assertion_report != primary.assertion_report
         || replayed.firings != primary.firings
+        || replayed.scheduler_crash_applications != primary.scheduler_crash_applications
+        || replayed.scheduler_restart_applications != primary.scheduler_restart_applications
+        || replayed.scheduler_topology_change_applications
+            != primary.scheduler_topology_change_applications
     {
         return Err(ExampleCorpusError::ReplayDiverged {
             scenario: fixture.name.clone(),
@@ -416,6 +482,9 @@ pub fn run_example_scenario(
         replayed_canonical_event_log: replayed.canonical_event_log,
         replayed_fingerprint_stream: replayed.fingerprint_stream,
         firings: primary.firings,
+        scheduler_crash_applications: primary.scheduler_crash_applications,
+        scheduler_restart_applications: primary.scheduler_restart_applications,
+        scheduler_topology_change_applications: primary.scheduler_topology_change_applications,
     })
 }
 
@@ -484,6 +553,18 @@ pub fn verify_partition_recovery_default_runs()
     verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
 }
 
+/// Verifies the crash+restart example with the RFC sketch's default count.
+///
+/// # Errors
+///
+/// Returns the errors documented by [`crash_restart_scenario`] and
+/// [`verify_example_scenario_runs`].
+pub fn verify_crash_restart_default_runs() -> Result<ExampleScenarioVerifyReport, ExampleCorpusError>
+{
+    let fixture = crash_restart_scenario()?;
+    verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
+}
+
 fn partition_node(
     name: &str,
     kernel: ContentAddressedBlobRef,
@@ -506,6 +587,28 @@ fn partition_node(
     }
 }
 
+fn crash_restart_node(
+    name: &str,
+    kernel: ContentAddressedBlobRef,
+    root_image: ContentAddressedBlobRef,
+) -> WorldNode {
+    WorldNode {
+        id: node(name),
+        arch: VmArchitecture::X86_64,
+        memory_mib: 512,
+        cmdline: String::from("console=ttyS0 quiet store.role=replica cluster=crucible-a3"),
+        ready_point: ReadyPoint::ConsoleMarker {
+            marker: String::from("ready to accept connections"),
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: 7,
+        kernel: Some(kernel),
+        root_image: Some(root_image),
+        initrd: None,
+    }
+}
+
 fn partition_link(from: &str, to: &str) -> Result<crate::model::LinkDef, EngineError> {
     crate::model::LinkDef::with_transport(
         node(from),
@@ -514,6 +617,99 @@ fn partition_link(from: &str, to: &str) -> Result<crate::model::LinkDef, EngineE
         SimDuration { nanos: 1_000_000 },
         LinkLossProbability::ZERO,
         None,
+    )
+}
+
+fn crash_restart_properties(world: &World) -> Result<Properties, EngineError> {
+    let crash_trigger = Predicate::node_state(node("db-1"), NodeLifecycle::Crashed);
+    Properties::from_assertions_for_world(
+        world,
+        vec![
+            AssertionDef {
+                id: AssertionId::from_name("data-not-lost"),
+                message: String::from("the committed write must survive db-1 crash and restart"),
+                property: Property::Always {
+                    predicate: Predicate::not(Predicate::network_match(
+                        None,
+                        FramePredicate::contains(b"data_lost=true".to_vec()),
+                    )),
+                },
+            },
+            AssertionDef {
+                id: AssertionId::from_name("reconverges"),
+                message: String::from("replicas must reconcile after db-1 restarts"),
+                property: Property::Eventually {
+                    trigger: crash_trigger,
+                    property: Predicate::network_match(
+                        Some(LinkId::from_name("db-0--db-1")),
+                        FramePredicate::contains(b"raft_log_match".to_vec()),
+                    ),
+                    deadline: VirtualTime {
+                        ticks: CRASH_RESTART_DEADLINE_TICKS,
+                    },
+                },
+            },
+        ],
+    )
+}
+
+fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, EngineError> {
+    let graph = EventGraph::builder()
+        .event("crash-after-commit")
+        .when(Predicate::all_of(vec![
+            Predicate::node_state(node("db-1"), NodeLifecycle::Started),
+            Predicate::once(Predicate::io_pattern(node("db-1"), IoEventKind::BlockWrite)),
+        ]))
+        .action(Action::inject_fault(
+            crash_fault_tag(),
+            MembershipFault::Crash {
+                node: node("db-1"),
+                restart: RestartPolicy::FromReadyPoint,
+            },
+        ))
+        .event("restart")
+        .when(Predicate::after(
+            SimDuration {
+                nanos: CRASH_RESTART_DELAY_TICKS,
+            },
+            EventId::from_name("crash-after-commit"),
+        ))
+        .action(Action::group(vec![
+            Action::heal_fault(crash_fault_tag()),
+            Action::start_node(node("db-1")),
+        ]))
+        .event("pass-on-reconverge")
+        .when(Predicate::all_of(vec![
+            Predicate::once(Predicate::node_state(node("db-1"), NodeLifecycle::Started)),
+            Predicate::not(Predicate::fault_active(crash_fault_tag())),
+            Predicate::once(Predicate::network_match(
+                Some(LinkId::from_name("db-0--db-1")),
+                FramePredicate::contains(b"committed_write_survived=true".to_vec()),
+            )),
+            Predicate::once(Predicate::network_match(
+                Some(LinkId::from_name("db-0--db-1")),
+                FramePredicate::contains(b"raft_log_match".to_vec()),
+            )),
+            Predicate::quiescent(),
+        ]))
+        .action(Action::pass())
+        .build_with_assertions_for_world(
+            properties
+                .assertions()
+                .iter()
+                .map(|assertion| assertion.id.clone()),
+            world,
+        )
+        .map_err(|source| EngineError::ScenarioSerialization {
+            reason: source.to_string(),
+        })?;
+    Plan::from_event_graph_with_assertions_for_world(
+        world,
+        properties
+            .assertions()
+            .iter()
+            .map(|assertion| assertion.id.clone()),
+        graph,
     )
 }
 
@@ -772,6 +968,37 @@ fn partition_recovery_replay_steps() -> Vec<ExampleReplayStep> {
     ]
 }
 
+fn crash_restart_replay_steps() -> Vec<ExampleReplayStep> {
+    let restart_ticks = CRASH_RESTART_COMMIT_TICKS + CRASH_RESTART_DELAY_TICKS;
+    vec![
+        ExampleReplayStep::Observations(vec![
+            ObservableEvent::node_state(
+                VirtualTime {
+                    ticks: CRASH_RESTART_COMMIT_TICKS,
+                },
+                node("db-1"),
+                NodeLifecycle::Started,
+            ),
+            ObservableEvent::io_completion(
+                VirtualTime {
+                    ticks: CRASH_RESTART_COMMIT_TICKS,
+                },
+                node("db-1"),
+                IoEventKind::BlockWrite,
+                b"region=wal commit_index=42 durable=true".to_vec(),
+            ),
+        ]),
+        ExampleReplayStep::QuantumBoundary(restart_ticks),
+        ExampleReplayStep::Observations(vec![ObservableEvent::network_delivered(
+            VirtualTime {
+                ticks: restart_ticks + 10,
+            },
+            Some(LinkId::from_name("db-0--db-1")),
+            b"committed_write_survived=true raft_log_match term=9 index=42".to_vec(),
+        )]),
+    ]
+}
+
 fn flatten_observations(steps: &[ExampleReplayStep]) -> Vec<ObservableEvent> {
     steps
         .iter()
@@ -786,6 +1013,10 @@ fn partition_fault_tag() -> FaultTag {
     FaultTag::from_name("split")
 }
 
+fn crash_fault_tag() -> FaultTag {
+    FaultTag::from_name("kill")
+}
+
 fn partition_heal_timer() -> TimerId {
     TimerId {
         name: String::from("heal-after"),
@@ -798,6 +1029,9 @@ struct ExampleScenarioRunCore {
     fingerprint_stream: Vec<u8>,
     assertion_report: HostAssertionReport,
     firings: EventFirings,
+    scheduler_crash_applications: Vec<SchedulerNodeCrashApplication>,
+    scheduler_restart_applications: Vec<SchedulerNodeRestartApplication>,
+    scheduler_topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -817,6 +1051,8 @@ fn run_example_scenario_material(
         .ok_or_else(|| ExampleCorpusError::DidNotPass {
             scenario: scenario_name.to_owned(),
         })?;
+    let scheduler_nodes = example_scheduler_nodes(scenario.world());
+    let scheduler_edges = example_scheduler_edges(scenario.world());
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             scenario_name,
@@ -825,16 +1061,18 @@ fn run_example_scenario_material(
             SimInstant {
                 nanos: scenario_run_time_limit(steps),
             },
-            Vec::new(),
+            scheduler_nodes,
             Vec::new(),
         )
-        .with_trigger_world(scenario.world()),
+        .with_trigger_world(scenario.world())
+        .with_effective_topology_edges(scheduler_edges),
     )?;
     let mut canonical_event_log = Vec::new();
     let mut assertion_oracle = BlackBoxHostOracle;
     let mut assertion_evaluator = HostAssertionEvaluator::new(scenario.properties())
         .with_world_white_box_policies(scenario.world());
     let mut state = EventGraphState::new();
+    let mut observed_trigger_actions = 0;
     let mut pass_firings = None;
 
     for step in steps {
@@ -856,6 +1094,7 @@ fn run_example_scenario_material(
             &mut assertion_evaluator,
             &mut assertion_oracle,
             &mut canonical_event_log,
+            &mut observed_trigger_actions,
         )? {
             pass_firings = Some(firings);
         }
@@ -884,6 +1123,9 @@ fn run_example_scenario_material(
         fingerprint_stream,
         assertion_report,
         firings,
+        scheduler_crash_applications: scheduler.node_crash_applications().to_vec(),
+        scheduler_restart_applications: scheduler.node_restart_applications().to_vec(),
+        scheduler_topology_change_applications: scheduler.topology_change_applications().to_vec(),
     })
 }
 
@@ -895,6 +1137,7 @@ fn settle_example_step(
     assertion_evaluator: &mut HostAssertionEvaluator,
     assertion_oracle: &mut BlackBoxHostOracle,
     canonical_event_log: &mut Vec<u8>,
+    observed_trigger_actions: &mut usize,
 ) -> Result<Option<EventFirings>, ExampleCorpusError> {
     let mut pass_firings = None;
     loop {
@@ -904,7 +1147,7 @@ fn settle_example_step(
             assertion_evaluator,
             assertion_oracle,
         )?;
-        let firings = evaluate_example_graph(scheduler, graph, state, world);
+        let firings = evaluate_example_graph(scheduler, graph, state, world)?;
         if firings.is_empty() {
             break;
         }
@@ -913,8 +1156,59 @@ fn settle_example_step(
         }
         let action_append = scheduler.apply_trigger_firings(&firings)?;
         canonical_event_log.extend_from_slice(&action_append.segment_bytes);
+        scheduler.apply_queued_topology_changes_at_boundary()?;
+        append_trigger_lifecycle_events(scheduler, canonical_event_log, observed_trigger_actions)?;
     }
     Ok(pass_firings)
+}
+
+fn append_trigger_lifecycle_events(
+    scheduler: &mut SingleScheduler,
+    canonical_event_log: &mut Vec<u8>,
+    observed_trigger_actions: &mut usize,
+) -> Result<(), ExampleCorpusError> {
+    let applications = scheduler.trigger_actions().applications.clone();
+    let events = applications
+        .iter()
+        .skip(*observed_trigger_actions)
+        .filter_map(trigger_lifecycle_event)
+        .collect::<Vec<_>>();
+    *observed_trigger_actions = applications.len();
+    if events.is_empty() {
+        return Ok(());
+    }
+    let append = scheduler.append_observable_events(events)?;
+    canonical_event_log.extend_from_slice(&append.segment_bytes);
+    Ok(())
+}
+
+fn trigger_lifecycle_event(application: &TriggerActionApplication) -> Option<ObservableEvent> {
+    match &application.action {
+        Action::InjectFault {
+            fault: MembershipFault::Crash { node, .. },
+            ..
+        } => Some(ObservableEvent::node_state(
+            application.at,
+            node.clone(),
+            NodeLifecycle::Crashed,
+        )),
+        Action::StartNode { node } => Some(ObservableEvent::node_state(
+            application.at,
+            node.clone(),
+            NodeLifecycle::Started,
+        )),
+        Action::Group(_)
+        | Action::InjectFault { .. }
+        | Action::HealFault { .. }
+        | Action::ArmTimer { .. }
+        | Action::CancelTimer { .. }
+        | Action::StopNode { .. }
+        | Action::CreateSavepoint { .. }
+        | Action::Fork { .. }
+        | Action::Pass
+        | Action::Fail { .. }
+        | Action::Log { .. } => None,
+    }
 }
 
 fn observe_assertions_and_append_state_events(
@@ -961,15 +1255,15 @@ fn evaluate_example_graph(
     graph: &EventGraph,
     state: &mut EventGraphState,
     world: &World,
-) -> EventFirings {
+) -> Result<EventFirings, ExampleCorpusError> {
     let mut pass = ConditionEvaluationPass::from_log_prefix(
         scheduler.condition_event_log_prefix().clone(),
         NoNamedLeaves,
     )
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
-    .with_scheduler_quiescence(SchedulerQuiescence::default())
+    .with_scheduler_quiescence(scheduler.quiescence()?)
     .with_world_white_box_policies(world);
-    pass.evaluate_event_graph(graph, state)
+    Ok(pass.evaluate_event_graph(graph, state))
 }
 
 fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {
@@ -986,6 +1280,43 @@ fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {
         .max()
         .unwrap_or(0)
         .saturating_add(1)
+}
+
+fn example_scheduler_nodes(world: &World) -> Vec<SchedulerScenarioNode> {
+    world
+        .nodes()
+        .iter()
+        .map(|node| SchedulerScenarioNode {
+            id: example_scheduler_node(&node.id),
+            counter: NodeCounter { ticks: 0 },
+            activity: SchedulerNodeActivity::Idle,
+            network_lookahead: NetworkLookahead::Infinite,
+            exact_local_event: ExactLocalEvent::NoArmedTimer,
+        })
+        .collect()
+}
+
+fn example_scheduler_edges(world: &World) -> Vec<SchedulerLookaheadEdge> {
+    world
+        .links()
+        .iter()
+        .flat_map(|link| {
+            let (left, right) = link.endpoints();
+            let left = example_scheduler_node(left);
+            let right = example_scheduler_node(right);
+            [
+                SchedulerLookaheadEdge::new(left.clone(), right.clone(), link.latency()),
+                SchedulerLookaheadEdge::new(right, left, link.latency()),
+            ]
+        })
+        .collect()
+}
+
+fn example_scheduler_node(node: &NodeId) -> SchedulerNodeId {
+    SchedulerNodeId {
+        node: node.clone(),
+        kind: SchedulingNodeKind::Vm,
+    }
 }
 
 fn replay_example_scenario_artifact(
@@ -1206,6 +1537,17 @@ fn encode_observation(
             "coverage-block|{}|{}|{}|{}",
             execution_icount.retired, node.name, guest_pc, block_len
         )),
+        ObservableEventPayload::IoCompletion {
+            node,
+            kind,
+            payload,
+        } => Ok(format!(
+            "io-completion|{}|{}|{}|{}",
+            observation.at().ticks,
+            node.name,
+            encode_io_event_kind(*kind),
+            bytes_hex(payload)
+        )),
         ObservableEventPayload::NodeState { node, state } => Ok(format!(
             "node-state|{}|{}|{}",
             observation.at().ticks,
@@ -1220,7 +1562,6 @@ fn encode_observation(
         )),
         ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
-        | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
         | ObservableEventPayload::GuestMarker { .. }
@@ -1269,6 +1610,12 @@ fn decode_observation(
                 decode_u32(scenario_name, block_len, "coverage block length")?,
             ))
         }
+        ["io-completion", ticks, node_name, kind, payload] => Ok(ObservableEvent::io_completion(
+            decode_ticks(scenario_name, ticks)?,
+            node(node_name),
+            decode_io_event_kind(scenario_name, kind)?,
+            bytes_from_hex(scenario_name, payload)?,
+        )),
         ["assertion-state-changed", ticks, assertion_name, state] => {
             Ok(ObservableEvent::assertion_state_changed(
                 decode_ticks(scenario_name, ticks)?,
@@ -1324,6 +1671,35 @@ fn encode_node_lifecycle(state: NodeLifecycle) -> &'static str {
         NodeLifecycle::Crashed => "crashed",
         NodeLifecycle::Hung => "hung",
         NodeLifecycle::Exited => "exited",
+    }
+}
+
+fn encode_io_event_kind(kind: IoEventKind) -> &'static str {
+    match kind {
+        IoEventKind::Any => "any",
+        IoEventKind::BlockRead => "block-read",
+        IoEventKind::BlockWrite => "block-write",
+        IoEventKind::Fsync => "fsync",
+        IoEventKind::NineP => "ninep",
+        IoEventKind::Network => "network",
+    }
+}
+
+fn decode_io_event_kind(
+    scenario_name: &str,
+    kind: &str,
+) -> Result<IoEventKind, ExampleCorpusError> {
+    match kind {
+        "any" => Ok(IoEventKind::Any),
+        "block-read" => Ok(IoEventKind::BlockRead),
+        "block-write" => Ok(IoEventKind::BlockWrite),
+        "fsync" => Ok(IoEventKind::Fsync),
+        "ninep" => Ok(IoEventKind::NineP),
+        "network" => Ok(IoEventKind::Network),
+        _ => Err(invalid_replay_schedule(
+            scenario_name,
+            format!("unknown I/O event kind `{kind}`"),
+        )),
     }
 }
 
