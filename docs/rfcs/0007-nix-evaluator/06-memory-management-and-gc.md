@@ -929,8 +929,9 @@ GC must be observationally invisible (§8): every item is gated by the different
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit
-      `EvalRootSet` descriptors for value-stack slots, force continuations,
-      primop arguments, permanent interned/hash-cons roots, and future
+      `EvalRootSet` descriptors for value-stack slots, active and suspended
+      tree-walk lexical/dynamic scopes, force continuations, primop arguments,
+      import-cache entries, permanent interned/hash-cons roots, and future
       stack-map slots supplied by tests or future safepoint builders;
       `EvalHeap::scan_precise_roots` validates evaluator-owned heap tags
       against the typed side table before deduplication, filters inline and
@@ -939,9 +940,25 @@ GC must be observationally invisible (§8): every item is gated by the different
       lambda/thunk captured environments, primop arguments, suspended thunk
       captures, blackholed thunk captures, and forced-thunk cached results. This
       is a copied-value graph report, not relocation-writeback slots, and the
-      production tree-walk safepoint root builder, real Tier-B collector, and
+      full relocation-slot collector contract, real Tier-B collector, and
       Cranelift stack-map emission/consumption remain open in the row above and
       in [08](08-execution-tiers-and-cranelift.md).
+- [x] Current tree-walk safepoint root-set builder precursor:
+      `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
+      a precise root set from the evaluator state that is explicit today:
+      active lexical frame slots, dynamic `with` scopes, scoped-import globals,
+      caller env/with/scoped-global stacks suspended by nested evaluation,
+      active force continuations, first-class primop arguments, ready import
+      cache values, and permanent interned/hash-cons roots. `force_value`,
+      lambda-call, import-evaluation, nested numeric-equality, and saturated
+      first-class primop paths push/pop active or suspended safepoint frames on
+      success and error paths, and
+      `eval::tree_walk::tests::safepoint_roots` pins root labels,
+      suspended-env roots, import-cache roots, interned-root inclusion, heap
+      scanning, and stack cleanup after force/primop failures.
+      This still does not infer arbitrary Rust locals, direct-IR primop
+      temporaries, mutable relocation slots, collector invocation, or JIT stack
+      maps; those remain open in the full precise-root row above.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the

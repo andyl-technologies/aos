@@ -821,6 +821,20 @@ pub enum TreeWalkErrorKind {
         /// The requested number of active with scopes.
         scopes: usize,
     },
+    /// The active safepoint-root stack length overflowed.
+    #[error("active safepoint root stack overflow at node {id:?}")]
+    SafepointRootStackLengthOverflow {
+        /// The node id that attempted to register another safepoint root.
+        id: IrId,
+    },
+    /// The active safepoint-root stack could not reserve another entry.
+    #[error("failed to reserve {roots} active safepoint roots at node {id:?}")]
+    SafepointRootStackAllocationFailed {
+        /// The node id that attempted to register another safepoint root.
+        id: IrId,
+        /// The requested number of active safepoint roots.
+        roots: usize,
+    },
     /// A heap-backed value was produced by the non-owning convenience API.
     #[error("heap-backed {tag:?} value at node {id:?} requires an owning evaluation result")]
     HeapValueRequiresOwner {

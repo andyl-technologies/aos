@@ -8,9 +8,10 @@
 //! work captures or their forced result depending on the thunk state.
 //!
 //! This is a tree-walk graph-reporting substrate. It intentionally returns
-//! copied [`Value`] handles, not mutable relocation slots, and the production
-//! evaluator does not yet build complete safepoint root sets from live Rust
-//! stack state.
+//! copied [`Value`] handles, not mutable relocation slots. The production
+//! evaluator can build safepoint root sets for its explicit tree-walk state, but
+//! arbitrary Rust locals still need explicit safepoint registration before they
+//! are collector-visible.
 
 use std::collections::{HashSet, VecDeque};
 use std::ptr::NonNull;
@@ -64,6 +65,50 @@ pub enum EvalRootSource {
         /// The slot index in the active value stack.
         slot: usize,
     },
+    /// A slot in the tree-walk evaluator's active lexical frame stack.
+    TreeWalkFrame {
+        /// The active frame index, ordered outermost to innermost.
+        frame: usize,
+        /// The slot index inside the frame.
+        slot: usize,
+    },
+    /// A slot in a tree-walk lexical frame stack suspended by nested
+    /// evaluation.
+    SuspendedTreeWalkFrame {
+        /// The suspended evaluator context depth, with zero nearest the active
+        /// evaluation.
+        depth: usize,
+        /// The suspended frame index, ordered outermost to innermost.
+        frame: usize,
+        /// The slot index inside the suspended frame.
+        slot: usize,
+    },
+    /// An active dynamic `with` scope in the tree-walk evaluator.
+    WithScope {
+        /// The active with-scope depth, ordered outermost to innermost.
+        depth: usize,
+    },
+    /// A dynamic `with` scope suspended by nested tree-walk evaluation.
+    SuspendedWithScope {
+        /// The suspended evaluator context depth, with zero nearest the active
+        /// evaluation.
+        depth: usize,
+        /// The suspended with-scope depth, ordered outermost to innermost.
+        scope_depth: usize,
+    },
+    /// An active scoped-import global in the tree-walk evaluator.
+    ScopedGlobal {
+        /// The active scoped-global depth, ordered outermost to innermost.
+        depth: usize,
+    },
+    /// A scoped-import global suspended by nested tree-walk evaluation.
+    SuspendedScopedGlobal {
+        /// The suspended evaluator context depth, with zero nearest the active
+        /// evaluation.
+        depth: usize,
+        /// The suspended scoped-global depth, ordered outermost to innermost.
+        scope_depth: usize,
+    },
     /// An in-flight force continuation root.
     ForceContinuation {
         /// The continuation depth, with zero nearest the active force.
@@ -74,11 +119,23 @@ pub enum EvalRootSource {
         /// The argument index in application order.
         index: usize,
     },
+    /// A first-class primop argument active in the tree-walk evaluator.
+    TreeWalkPrimopArgument {
+        /// The active primop-call depth, with zero nearest the active call.
+        call_depth: usize,
+        /// The argument index in application order for that call.
+        index: usize,
+    },
     /// A permanent hash-cons table entry, sorted by structural hash.
     Interned {
         /// The table that owns the permanent root.
         table: InternedRootTable,
         /// The stable table-local index after sorting committed entries.
+        index: usize,
+    },
+    /// A heap value retained by the in-process import cache.
+    ImportCache {
+        /// The stable ready-entry index after sorting cache paths.
         index: usize,
     },
     /// A compiled-frame stack-map entry.
@@ -164,6 +221,124 @@ impl EvalRootSet {
         self.try_push_heap_root(EvalRootSource::ValueStack { slot }, value)
     }
 
+    /// Records an active tree-walk lexical frame slot when it contains a heap
+    /// value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_tree_walk_frame(
+        &mut self,
+        frame: usize,
+        slot: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::TreeWalkFrame { frame, slot }, value)
+    }
+
+    /// Records a suspended tree-walk lexical frame slot when it contains a heap
+    /// value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_suspended_tree_walk_frame(
+        &mut self,
+        depth: usize,
+        frame: usize,
+        slot: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot },
+            value,
+        )
+    }
+
+    /// Records an active dynamic `with` scope when it contains a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_with_scope(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::WithScope { depth }, value)
+    }
+
+    /// Records a suspended dynamic `with` scope when it contains a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_suspended_with_scope(
+        &mut self,
+        depth: usize,
+        scope_depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::SuspendedWithScope { depth, scope_depth },
+            value,
+        )
+    }
+
+    /// Records an active scoped-import global when it contains a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_scoped_global(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::ScopedGlobal { depth }, value)
+    }
+
+    /// Records a suspended scoped-import global when it contains a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_suspended_scoped_global(
+        &mut self,
+        depth: usize,
+        scope_depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::SuspendedScopedGlobal { depth, scope_depth },
+            value,
+        )
+    }
+
     /// Records an in-flight force continuation when it contains a heap value.
     ///
     /// Returns `true` when the value was recorded, and `false` when the value is
@@ -198,6 +373,28 @@ impl EvalRootSet {
         self.try_push_heap_root(EvalRootSource::PrimopArgument { index }, value)
     }
 
+    /// Records an active tree-walk first-class primop argument when it contains
+    /// a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_tree_walk_primop_argument(
+        &mut self,
+        call_depth: usize,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::TreeWalkPrimopArgument { call_depth, index },
+            value,
+        )
+    }
+
     /// Records a permanent hash-cons table root when it contains a heap value.
     ///
     /// Returns `true` when the value was recorded, and `false` when the value is
@@ -214,6 +411,23 @@ impl EvalRootSet {
         value: Value,
     ) -> Result<bool, EvalRootSetError> {
         self.try_push_heap_root(EvalRootSource::Interned { table, index }, value)
+    }
+
+    /// Records an import-cache root when it contains a heap value.
+    ///
+    /// Returns `true` when the value was recorded, and `false` when the value is
+    /// inline and therefore not a GC root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_import_cache(
+        &mut self,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::ImportCache { index }, value)
     }
 
     /// Records a compiled-frame stack-map root when it contains a heap value.
@@ -240,6 +454,23 @@ impl EvalRootSet {
             },
             value,
         )
+    }
+
+    /// Appends roots from another root set, preserving insertion order.
+    ///
+    /// Inline values are filtered again, so this method is safe to use with
+    /// root sets built by another component that may later gain broader source
+    /// labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_extend(&mut self, other: &EvalRootSet) -> Result<(), EvalRootSetError> {
+        for root in other.roots() {
+            self.try_push_heap_root(root.source().clone(), root.value())?;
+        }
+        Ok(())
     }
 
     fn try_push_heap_root(

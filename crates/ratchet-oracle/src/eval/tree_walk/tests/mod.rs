@@ -263,6 +263,7 @@ mod parse;
 mod path_store;
 mod properties;
 mod regex;
+mod safepoint_roots;
 mod search_path;
 mod source_path_surfaces;
 mod stats;

@@ -46,7 +46,8 @@ use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
-    EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk, EvalThunkKind,
+    EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -768,6 +769,33 @@ struct AttrUpdateTelemetryState {
 
 type AttrUpdateTelemetryNodeKey = (u32, u32);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActivePrimopArgFrame {
+    start: usize,
+    len: usize,
+}
+
+#[derive(Debug)]
+struct SuspendedTreeWalkEnv {
+    env: Vec<Rc<EvalFrame>>,
+    with_scopes: Vec<EvalWithScope>,
+    scoped_globals: Vec<Value>,
+}
+
+impl SuspendedTreeWalkEnv {
+    fn new(
+        env: Vec<Rc<EvalFrame>>,
+        with_scopes: Vec<EvalWithScope>,
+        scoped_globals: Vec<Value>,
+    ) -> Self {
+        Self {
+            env,
+            with_scopes,
+            scoped_globals,
+        }
+    }
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk {
@@ -806,6 +834,10 @@ pub struct TreeWalk {
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     order_sensitive_binding_depth: usize,
+    active_force_roots: Vec<Value>,
+    active_primop_arg_roots: Vec<EvalPrimOpArg>,
+    active_primop_arg_frames: Vec<ActivePrimopArgFrame>,
+    suspended_env_roots: Vec<SuspendedTreeWalkEnv>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
@@ -952,7 +984,10 @@ mod fetch_tree_args;
 mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
+mod safepoint_roots;
 mod serialize_xml;
+
+pub use safepoint_roots::{TreeWalkSafepointRootError, TreeWalkSafepointScanError};
 
 #[cfg(test)]
 mod tests;

@@ -5034,7 +5034,8 @@ and helps the oracle directly.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for
-      value-stack slots, force continuations, primop arguments, permanent
+      value-stack slots, active and suspended tree-walk lexical/dynamic scopes,
+      force continuations, primop arguments, import-cache entries, permanent
       interned/hash-cons roots, and future stack-map slots supplied by tests or
       later safepoint builders; `EvalHeap` can build stable sorted interned root
       sets and scan reachable typed records from a caller-supplied explicit root
@@ -5044,9 +5045,26 @@ and helps the oracle directly.
       shape-qualified attr edges, list edges, lambda/thunk captured-env edges,
       primop-arg edges, and state-sensitive suspended/blackholed/forced thunk
       edges. This is a copied-value graph report, not relocation-writeback
-      slots; production tree-walk safepoint enumeration, the moving Tier-B
-      collector, and Cranelift stack-map wiring remain open in the row above and
-      in [08](08-execution-tiers-and-cranelift.md).
+      slots; the moving Tier-B collector, full relocation-slot root contract,
+      and Cranelift stack-map wiring remain open in the row above and in
+      [08](08-execution-tiers-and-cranelift.md).
+- [x] Current tree-walk safepoint root-set builder precursor:
+      `TreeWalk::safepoint_root_set` and `TreeWalk::safepoint_heap_scan` build
+      precise roots from explicit evaluator state: active lexical frame slots,
+      active dynamic `with` scopes, scoped-import globals,
+      caller env/with/scoped-global stacks suspended by nested evaluation,
+      active force continuations, first-class primop arguments, ready import
+      cache values, and permanent interned/hash-cons roots. The force,
+      lambda-call, import-evaluation, nested numeric-equality, and saturated
+      first-class primop paths register/unregister active or suspended
+      safepoint frames, including error-path cleanup, and
+      `eval::tree_walk::tests::safepoint_roots` covers stable root labels,
+      suspended-env roots, import-cache roots, interned-root inclusion, heap
+      scanning, recursive-force cleanup, and first-class primop error cleanup.
+      This remains a root-set precursor:
+      arbitrary Rust locals, direct-IR primop temporaries, mutable relocation
+      slots, collector invocation, and JIT stack maps remain open in the full
+      precise-root row above.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` classifies the single generational write
       barrier for `Blackhole -> Forced(value)`, records only

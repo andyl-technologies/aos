@@ -762,7 +762,11 @@ impl TreeWalk {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                self.force_memoized_claimed_thunk(id, span, forced_payload, &thunk, guard)
+                self.push_active_force_root(id, span, value)?;
+                let result =
+                    self.force_memoized_claimed_thunk(id, span, forced_payload, &thunk, guard);
+                self.pop_active_force_root(value);
+                result
             }
         }
     }
@@ -814,16 +818,26 @@ impl TreeWalk {
                     let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
                     let thunk_scoped_globals =
                         self.clone_scoped_globals(id, scoped_globals, span)?;
+                    self.reserve_suspended_env_root_frame(id, span)?;
                     let saved_env = std::mem::replace(&mut self.env, thunk_env);
                     let saved_with_scopes =
                         std::mem::replace(&mut self.with_scopes, thunk_with_env);
                     let saved_scoped_globals =
                         std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
+                    self.push_suspended_env_roots(
+                        saved_env,
+                        saved_with_scopes,
+                        saved_scoped_globals,
+                    );
                     let result =
                         self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
-                    self.env = saved_env;
-                    self.with_scopes = saved_with_scopes;
-                    self.scoped_globals = saved_scoped_globals;
+                    if let Some(saved) = self.pop_suspended_env_roots() {
+                        self.env = saved.env;
+                        self.with_scopes = saved.with_scopes;
+                        self.scoped_globals = saved.scoped_globals;
+                    } else {
+                        debug_assert!(false, "suspended env root stack is unbalanced");
+                    }
                     result
                 }
                 EvalThunkKind::Apply {

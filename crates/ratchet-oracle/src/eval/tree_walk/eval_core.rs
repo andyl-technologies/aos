@@ -346,6 +346,10 @@ impl TreeWalk {
             ifd_realizer: None,
             call_depth: 0,
             order_sensitive_binding_depth: 0,
+            active_force_roots: Vec::new(),
+            active_primop_arg_roots: Vec::new(),
+            active_primop_arg_frames: Vec::new(),
+            suspended_env_roots: Vec::new(),
             lazy_identity_thunks: BTreeSet::new(),
             lazy_foldl_initial_thunks: BTreeSet::new(),
         }

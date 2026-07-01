@@ -238,11 +238,13 @@ impl TreeWalk {
                 )
             })?;
             call_env.push(call_frame);
+            eval.reserve_suspended_env_root_frame(id, span)?;
             eval.enter_call(id, span)?;
             let saved_env = std::mem::replace(&mut eval.env, call_env);
             let saved_with_scopes = std::mem::replace(&mut eval.with_scopes, call_with_env);
             let saved_scoped_globals =
                 std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
+            eval.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
             let result = (|| {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
@@ -262,9 +264,13 @@ impl TreeWalk {
                 bind_result?;
                 eval.eval_node(lambda.body())
             })();
-            eval.env = saved_env;
-            eval.with_scopes = saved_with_scopes;
-            eval.scoped_globals = saved_scoped_globals;
+            if let Some(saved) = eval.pop_suspended_env_roots() {
+                eval.env = saved.env;
+                eval.with_scopes = saved.with_scopes;
+                eval.scoped_globals = saved.scoped_globals;
+            } else {
+                debug_assert!(false, "suspended env root stack is unbalanced");
+            }
             eval.leave_call();
             result
         })
@@ -406,9 +412,14 @@ impl TreeWalk {
         }
 
         self.enter_call(id, span)?;
+        if let Err(error) = self.push_active_primop_arg_roots(id, span, &args) {
+            self.leave_call();
+            return Err(error);
+        }
         let impure_trace_cursor = memoization_admitted.then(|| self.impure_input_trace_cursor());
         let thunks_forced_before = self.stats.thunks_forced;
         let result = builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args);
+        self.pop_active_primop_arg_roots();
         self.leave_call();
         let value = result?;
         if let Some(subject) = &cache_subject {
