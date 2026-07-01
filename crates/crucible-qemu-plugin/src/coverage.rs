@@ -7,6 +7,9 @@
 
 use std::os::raw::{c_uint, c_void};
 
+use crucible_protocol::{
+    PluginBasicBlockCoverageObservation, PluginBasicBlockCoverageObservationError,
+};
 use thiserror::Error;
 
 use crate::{PluginSwitch, QemuRegisterTcgExecCbFn};
@@ -392,6 +395,26 @@ impl CoverageObservation {
     pub const fn was_new(self) -> bool {
         self.was_new
     }
+
+    /// Converts this callback observation into the host/plugin protocol payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoverageError::ProtocolObservation`] when the observation cannot
+    /// be represented on the protocol boundary.
+    pub fn to_protocol_observation(
+        self,
+    ) -> Result<PluginBasicBlockCoverageObservation, CoverageError> {
+        PluginBasicBlockCoverageObservation::new(
+            self.current_icount,
+            self.vcpu_index,
+            self.guest_pc,
+            self.block_len,
+            self.map_index as u64,
+            self.was_new,
+        )
+        .map_err(|source| CoverageError::ProtocolObservation { source })
+    }
 }
 
 /// A sink for observational coverage entries.
@@ -478,6 +501,12 @@ pub enum CoverageError {
         map_index: usize,
         /// Sink failure.
         source: CoverageSinkError,
+    },
+    /// The callback observation could not be represented for the host.
+    #[error("coverage protocol observation could not be built: {source}")]
+    ProtocolObservation {
+        /// Protocol boundary validation failure.
+        source: PluginBasicBlockCoverageObservationError,
     },
 }
 
@@ -685,6 +714,38 @@ mod tests {
         );
         assert!(map.entries().iter().all(|entry| *entry == 0));
         assert!(sink.observations.is_empty());
+    }
+
+    #[test]
+    fn coverage_exec_callback_exports_protocol_basic_block_observation() {
+        let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 1024));
+        let mut map = CoverageMap::new(1024)
+            .unwrap_or_else(|error| panic!("coverage map should build: {error}"));
+        let mut sink = RecordingCoverageSink::default();
+
+        let plugin_observation = handle_coverage_exec_callback(
+            &callback,
+            &mut map,
+            &mut sink,
+            CoverageBlockEvent::new(77, 2, 0x4010, 16),
+        )
+        .unwrap_or_else(|error| panic!("plugin callback should record coverage: {error}"));
+        let protocol_observation =
+            plugin_observation
+                .to_protocol_observation()
+                .unwrap_or_else(|error| {
+                    panic!("plugin observation should export to protocol: {error}")
+                });
+
+        assert_eq!(protocol_observation.current_icount(), 77);
+        assert_eq!(protocol_observation.vcpu_index(), 2);
+        assert_eq!(protocol_observation.guest_pc(), 0x4010);
+        assert_eq!(protocol_observation.block_len(), 16);
+        assert_eq!(
+            protocol_observation.map_index(),
+            fold_basic_block_pc(0x4010, 1024) as u64
+        );
+        assert!(protocol_observation.was_new());
     }
 
     #[derive(Default)]

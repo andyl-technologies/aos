@@ -733,6 +733,18 @@ impl QemuLaunchPluginConfig {
         self.slot
     }
 
+    /// Returns the white-box hook switch passed to the plugin.
+    #[must_use]
+    pub const fn whitebox(&self) -> QemuLaunchPluginSwitch {
+        self.whitebox
+    }
+
+    /// Returns the basic-block coverage hook switch passed to the plugin.
+    #[must_use]
+    pub const fn coverage(&self) -> QemuLaunchPluginSwitch {
+        self.coverage
+    }
+
     /// Returns the fixed inherited setup descriptors.
     #[must_use]
     pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {

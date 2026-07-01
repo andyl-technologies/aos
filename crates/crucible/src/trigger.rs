@@ -387,6 +387,336 @@ impl BlackBoxObservationContract {
     }
 }
 
+/// Default number of entries in the basic-block coverage feedback map.
+pub const DEFAULT_BASIC_BLOCK_COVERAGE_MAP_ENTRIES: usize = 65_536;
+
+/// Registration-time switch for plugin TCG-exec basic-block coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BasicBlockCoverageMode {
+    /// Coverage is disabled and no TCG-exec callback is registered.
+    Off,
+    /// Coverage is enabled and the plugin registers the TCG-exec callback.
+    On,
+}
+
+/// Engine-side policy for consuming plugin TCG-exec basic-block coverage.
+///
+/// This policy is intentionally not part of [`crate::model::World`] or
+/// [`crate::model::ScenarioDef`]: it controls observational feedback collection
+/// only, so toggling it cannot change scenario, configuration, or checkpoint
+/// identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BasicBlockCoverageConfig {
+    mode: BasicBlockCoverageMode,
+    map_entries: usize,
+}
+
+impl BasicBlockCoverageConfig {
+    /// Builds a coverage policy with an explicit registration-time mode.
+    #[must_use]
+    pub const fn new(mode: BasicBlockCoverageMode, map_entries: usize) -> Self {
+        Self { mode, map_entries }
+    }
+
+    /// Builds the default off policy.
+    #[must_use]
+    pub const fn off() -> Self {
+        Self::new(
+            BasicBlockCoverageMode::Off,
+            DEFAULT_BASIC_BLOCK_COVERAGE_MAP_ENTRIES,
+        )
+    }
+
+    /// Builds the default on policy.
+    #[must_use]
+    pub const fn on() -> Self {
+        Self::new(
+            BasicBlockCoverageMode::On,
+            DEFAULT_BASIC_BLOCK_COVERAGE_MAP_ENTRIES,
+        )
+    }
+
+    /// Returns the registration-time coverage mode.
+    #[must_use]
+    pub const fn mode(self) -> BasicBlockCoverageMode {
+        self.mode
+    }
+
+    /// Returns the fixed coverage-map entry count.
+    #[must_use]
+    pub const fn map_entries(self) -> usize {
+        self.map_entries
+    }
+
+    /// Returns whether this policy can affect execution fingerprints.
+    #[must_use]
+    pub const fn affects_execution_fingerprint(self) -> bool {
+        false
+    }
+
+    /// Returns whether this policy requires guest instrumentation or an agent.
+    #[must_use]
+    pub const fn requires_guest_instrumentation(self) -> bool {
+        false
+    }
+
+    /// Builds the registration-time plan for this coverage policy.
+    ///
+    /// Disabled coverage returns [`BasicBlockCoverageRegistrationPlan::Disabled`]
+    /// before validating coverage-only settings, so the engine creates no
+    /// coverage consumer token. The plugin-side T-PLUG-15 registration plan owns
+    /// the corresponding proof that QEMU receives no TCG-exec callback when the
+    /// launch switch is off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BasicBlockCoverageError::InvalidMapEntries`] when coverage is
+    /// enabled with a zero or non-power-of-two map size.
+    pub fn registration_plan(
+        self,
+    ) -> Result<BasicBlockCoverageRegistrationPlan, BasicBlockCoverageError> {
+        if self.mode == BasicBlockCoverageMode::Off {
+            return Ok(BasicBlockCoverageRegistrationPlan::Disabled);
+        }
+        validate_basic_block_coverage_map_entries(self.map_entries)?;
+        Ok(BasicBlockCoverageRegistrationPlan::RegisterTcgExec {
+            map_entries: self.map_entries,
+        })
+    }
+}
+
+/// Registration-time plan for TCG-exec basic-block coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BasicBlockCoverageRegistrationPlan {
+    /// Coverage is disabled and no engine coverage consumer may be created.
+    Disabled,
+    /// Coverage is enabled and the QEMU launch layer should request TCG-exec coverage.
+    RegisterTcgExec {
+        /// Fixed coverage-map entry count.
+        map_entries: usize,
+    },
+}
+
+impl BasicBlockCoverageRegistrationPlan {
+    /// Returns whether the plan requests TCG-exec coverage from the QEMU launch layer.
+    #[must_use]
+    pub const fn requests_tcg_exec_coverage(self) -> bool {
+        matches!(self, Self::RegisterTcgExec { .. })
+    }
+
+    /// Returns whether the plan creates no engine-side hot-path coverage consumer.
+    #[must_use]
+    pub const fn has_no_engine_hot_path_consumer(self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    /// Returns whether this plan can affect execution fingerprints.
+    #[must_use]
+    pub const fn affects_execution_fingerprint(self) -> bool {
+        false
+    }
+
+    /// Returns a consumer token for one node when coverage is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BasicBlockCoverageError::CallbackWhileDisabled`] when this plan
+    /// is disabled.
+    pub fn require_consumer(
+        self,
+        node: NodeId,
+    ) -> Result<BasicBlockCoverageConsumer, BasicBlockCoverageError> {
+        match self {
+            Self::Disabled => Err(BasicBlockCoverageError::CallbackWhileDisabled),
+            Self::RegisterTcgExec { map_entries } => {
+                Ok(BasicBlockCoverageConsumer { node, map_entries })
+            }
+        }
+    }
+}
+
+/// One TCG-exec basic-block callback observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TcgExecBasicBlock {
+    execution_icount: Icount,
+    guest_pc: u64,
+    block_len: u32,
+}
+
+impl TcgExecBasicBlock {
+    /// Builds a basic-block observation from plugin callback metadata.
+    #[must_use]
+    pub const fn new(execution_icount: Icount, guest_pc: u64, block_len: u32) -> Self {
+        Self {
+            execution_icount,
+            guest_pc,
+            block_len,
+        }
+    }
+
+    /// Returns the exact instruction count at which the block executed.
+    #[must_use]
+    pub const fn execution_icount(self) -> Icount {
+        self.execution_icount
+    }
+
+    /// Returns the guest program counter for the translated block.
+    #[must_use]
+    pub const fn guest_pc(self) -> u64 {
+        self.guest_pc
+    }
+
+    /// Returns the translated block length supplied by QEMU.
+    #[must_use]
+    pub const fn block_len(self) -> u32 {
+        self.block_len
+    }
+}
+
+/// Proof that coverage was enabled for one node at registration time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BasicBlockCoverageConsumer {
+    node: NodeId,
+    map_entries: usize,
+}
+
+impl BasicBlockCoverageConsumer {
+    /// Returns the node whose TCG-exec callback stream this consumer accepts.
+    #[must_use]
+    pub fn node(&self) -> &NodeId {
+        &self.node
+    }
+
+    /// Returns the fixed coverage-map entry count.
+    #[must_use]
+    pub const fn map_entries(&self) -> usize {
+        self.map_entries
+    }
+
+    /// Converts one TCG-exec basic-block callback into an observational event.
+    ///
+    /// The conversion depends only on callback metadata and the registration-time
+    /// node binding. It does not require guest source, symbols, an in-guest
+    /// agent, or a runtime coverage switch branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BasicBlockCoverageError::InvalidMapEntries`] when the consumer
+    /// carries an invalid fixed map size, or
+    /// [`BasicBlockCoverageError::InvalidBlockLength`] when QEMU reports a zero
+    /// block length.
+    pub fn consume_tcg_exec_block(
+        &self,
+        block: TcgExecBasicBlock,
+    ) -> Result<ConsumedBasicBlockCoverage, BasicBlockCoverageError> {
+        if block.block_len == 0 {
+            return Err(BasicBlockCoverageError::InvalidBlockLength {
+                block_len: block.block_len,
+            });
+        }
+        let map_index = basic_block_coverage_map_index(block.guest_pc, self.map_entries)?;
+        Ok(ConsumedBasicBlockCoverage {
+            map_index,
+            event: ObservableEvent::coverage_block(
+                block.execution_icount,
+                self.node.clone(),
+                block.guest_pc,
+                block.block_len,
+            ),
+        })
+    }
+}
+
+/// One consumed basic-block coverage event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsumedBasicBlockCoverage {
+    map_index: usize,
+    event: ObservableEvent,
+}
+
+impl ConsumedBasicBlockCoverage {
+    /// Returns the fixed-map index touched by this basic block.
+    #[must_use]
+    pub const fn map_index(&self) -> usize {
+        self.map_index
+    }
+
+    /// Returns the observational event-log payload for this coverage block.
+    #[must_use]
+    pub const fn event(&self) -> &ObservableEvent {
+        &self.event
+    }
+
+    /// Consumes this value and returns the observational event.
+    #[must_use]
+    pub fn into_event(self) -> ObservableEvent {
+        self.event
+    }
+}
+
+/// An error produced while registering or consuming basic-block coverage.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BasicBlockCoverageError {
+    /// The fixed coverage map size is invalid.
+    InvalidMapEntries {
+        /// Rejected entry count.
+        entries: usize,
+    },
+    /// A coverage consumer was requested while coverage was disabled.
+    CallbackWhileDisabled,
+    /// QEMU reported an impossible basic-block length.
+    InvalidBlockLength {
+        /// Rejected block length.
+        block_len: u32,
+    },
+}
+
+impl fmt::Display for BasicBlockCoverageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMapEntries { entries } => {
+                write!(
+                    f,
+                    "coverage map entries {entries} must be a nonzero power of two"
+                )
+            }
+            Self::CallbackWhileDisabled => {
+                f.write_str("basic-block coverage callback requested while disabled")
+            }
+            Self::InvalidBlockLength { block_len } => {
+                write!(f, "coverage block length {block_len} is invalid")
+            }
+        }
+    }
+}
+
+impl Error for BasicBlockCoverageError {}
+
+/// Folds a guest basic-block PC into a fixed-size coverage map.
+///
+/// # Errors
+///
+/// Returns [`BasicBlockCoverageError::InvalidMapEntries`] when `map_entries` is
+/// zero or not a power of two.
+pub fn basic_block_coverage_map_index(
+    guest_pc: u64,
+    map_entries: usize,
+) -> Result<usize, BasicBlockCoverageError> {
+    validate_basic_block_coverage_map_entries(map_entries)?;
+    let folded = guest_pc ^ guest_pc.rotate_right(17) ^ (guest_pc >> 32);
+    Ok((folded as usize) & (map_entries - 1))
+}
+
+fn validate_basic_block_coverage_map_entries(
+    entries: usize,
+) -> Result<(), BasicBlockCoverageError> {
+    if entries == 0 || !entries.is_power_of_two() {
+        Err(BasicBlockCoverageError::InvalidMapEntries { entries })
+    } else {
+        Ok(())
+    }
+}
+
 impl BlackBoxObservationKind {
     /// Returns the OS-agnostic contract for this black-box observation category.
     #[must_use]
