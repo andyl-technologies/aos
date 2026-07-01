@@ -5416,8 +5416,8 @@ and helps the oracle directly.
       hits, and estimates cold permanent-shared hash-consed bytes by idle epoch
       threshold. The opt-in budget classifier can carry that estimate as
       `cold_hash_consed_bytes` for future spill planning. This is metadata only:
-      it installs no CA-store handle, evicts or rematerializes no value, advises
-      no live cold page, and does not change automatic memory-budget actions.
+      it installs no CA-store handle, evicts or rematerializes no value, and
+      does not change automatic memory-budget actions.
 - [x] Current `madvise` portability precursor:
       `ratchet-value::heap::advice` provides an advisory-memory API over
       `MemoryAdviceRange` and the dead/free/cold/evict/huge heap hints, with
@@ -5438,10 +5438,22 @@ and helps the oracle directly.
       flag mapping, empty arenas, complete unused-tail pages, unchanged
       accounting, post-advice allocation reuse, runtime allocator forwarding,
       and whole-heap worker/permanent aggregation. Integrating the shim with
-      live resident-set sampling, CA-store spill, live cold hash-consed page
-      selection, region-pop/dead-page selection, full budget-triggered dispatch,
-      and collector-installation policy remains open under the full
-      memory-management rows.
+      live resident-set sampling, CA-store spill, region-pop/dead-page
+      selection, full budget-triggered dispatch, and collector-installation
+      policy remains open under the full memory-management rows.
+- [x] Current cold hash-consed page-advice precursor:
+      `ratchet-value::heap::advise_cold_heap_object_allocation` provides a safe,
+      non-destructive typed heap-object wrapper for `MemoryAdviceKind::Cold`,
+      keeping raw destructive range construction inside the heap crate's unsafe
+      boundary. `EvalHeap::advise_cold_hash_consed_values(min_idle_epochs)`
+      applies that hint to permanent-shared structurally hash-consed records
+      selected by the idle-epoch coldness predicate and reports record counts,
+      requested logical bytes, and advisory outcomes through
+      `EvalHeapColdHashConsedAdviceReport`. Tests pin cold-record selection,
+      advisory outcome accounting, non-destructive coldness preservation, and
+      hot-record exclusion after a value read. This is not budget-triggered,
+      does not issue `MADV_PAGEOUT`, installs no CA-store handle, and
+      rematerializes no value.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for

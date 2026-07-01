@@ -430,6 +430,43 @@ fn hash_cons_reuse_refreshes_cold_hash_consed_touch_epoch() {
 }
 
 #[test]
+fn cold_hash_consed_advice_reports_selected_records_without_reclaiming() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"advise-cold".to_vec()))
+        .expect("string allocates");
+    let string_size = record_layout_size(&heap, string);
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+
+    let report = heap.advise_cold_hash_consed_values(1);
+
+    assert_eq!(report.kind(), MemoryAdviceKind::Cold);
+    assert_eq!(report.min_idle_epochs(), 1);
+    assert_eq!(report.records(), 1);
+    assert_eq!(report.requested_bytes(), string_size);
+    assert_eq!(
+        report.applied() + report.unsupported() + report.empty_ranges() + report.rejected(),
+        report.records()
+    );
+    assert_eq!(
+        heap.cold_hash_consed_bytes(1),
+        string_size,
+        "advice is non-destructive and does not refresh coldness"
+    );
+
+    heap.get_string(string)
+        .expect("string read refreshes touch");
+
+    let hot_report = heap.advise_cold_hash_consed_values(1);
+    assert_eq!(hot_report.kind(), MemoryAdviceKind::Cold);
+    assert_eq!(hot_report.min_idle_epochs(), 1);
+    assert_eq!(hot_report.records(), 0);
+    assert_eq!(hot_report.requested_bytes(), 0);
+}
+
+#[test]
 fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     heap.alloc_thunk(EvalThunk::new(IrId::new(1)))

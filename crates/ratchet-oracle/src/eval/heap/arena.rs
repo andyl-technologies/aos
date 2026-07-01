@@ -6,7 +6,8 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::heap::{
     ArenaMemoryAdviceReport, HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample,
-    MemoryAdviceKind, ProcessResidentMemorySample, ProcessResidentMemorySource,
+    MemoryAdviceKind, MemoryAdviceOutcome, ProcessResidentMemorySample,
+    ProcessResidentMemorySource, advise_cold_heap_object_allocation,
 };
 
 use super::*;
@@ -182,6 +183,96 @@ impl EvalHeapMemoryAdviceReport {
         self.worker
             .rejected()
             .saturating_add(self.permanent.rejected())
+    }
+}
+
+/// Memory-advice report for cold permanent hash-consed heap records.
+///
+/// This report is advisory metadata only. A successful advice call does not
+/// evict values from the evaluator heap or install CA-store handles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapColdHashConsedAdviceReport {
+    kind: MemoryAdviceKind,
+    min_idle_epochs: u64,
+    records: usize,
+    requested_bytes: usize,
+    applied: usize,
+    unsupported: usize,
+    empty: usize,
+    rejected: usize,
+}
+
+impl EvalHeapColdHashConsedAdviceReport {
+    const fn new(kind: MemoryAdviceKind, min_idle_epochs: u64) -> Self {
+        Self {
+            kind,
+            min_idle_epochs,
+            records: 0,
+            requested_bytes: 0,
+            applied: 0,
+            unsupported: 0,
+            empty: 0,
+            rejected: 0,
+        }
+    }
+
+    fn record(&mut self, requested_bytes: usize, outcome: MemoryAdviceOutcome) {
+        self.records = self.records.saturating_add(1);
+        self.requested_bytes = self.requested_bytes.saturating_add(requested_bytes);
+        match outcome {
+            MemoryAdviceOutcome::Applied { .. } => {
+                self.applied = self.applied.saturating_add(1);
+            }
+            MemoryAdviceOutcome::Unsupported { .. } => {
+                self.unsupported = self.unsupported.saturating_add(1);
+            }
+            MemoryAdviceOutcome::EmptyRange { .. } => {
+                self.empty = self.empty.saturating_add(1);
+            }
+            MemoryAdviceOutcome::Rejected { .. } => {
+                self.rejected = self.rejected.saturating_add(1);
+            }
+        }
+    }
+
+    /// Returns the advice kind requested for each cold hash-consed record.
+    pub const fn kind(self) -> MemoryAdviceKind {
+        self.kind
+    }
+
+    /// Returns the idle-epoch threshold used to select records.
+    pub const fn min_idle_epochs(self) -> u64 {
+        self.min_idle_epochs
+    }
+
+    /// Returns how many cold hash-consed records were considered.
+    pub const fn records(self) -> usize {
+        self.records
+    }
+
+    /// Returns the logical bytes passed to the advice shim.
+    pub const fn requested_bytes(self) -> usize {
+        self.requested_bytes
+    }
+
+    /// Returns how many record advice calls the operating system accepted.
+    pub const fn applied(self) -> usize {
+        self.applied
+    }
+
+    /// Returns how many record advice calls had no platform lowering.
+    pub const fn unsupported(self) -> usize {
+        self.unsupported
+    }
+
+    /// Returns how many record ranges contained no complete page to advise.
+    pub const fn empty_ranges(self) -> usize {
+        self.empty
+    }
+
+    /// Returns how many record advice calls the platform rejected.
+    pub const fn rejected(self) -> usize {
+        self.rejected
     }
 }
 
@@ -390,13 +481,7 @@ impl EvalHeap {
     pub fn cold_hash_consed_bytes(&self, min_idle_epochs: u64) -> usize {
         let current_epoch = self.access_epoch();
         self.records.iter().fold(0usize, |bytes, record| {
-            if record.allocation_domain != HeapAllocationDomain::PermanentShared
-                || record.structural_hash.is_none()
-            {
-                return bytes;
-            }
-            let idle_epochs = current_epoch.saturating_sub(record.last_touch_epoch.get());
-            if idle_epochs < min_idle_epochs {
+            if !Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs) {
                 return bytes;
             }
             bytes.saturating_add(record.layout.size_bytes)
@@ -418,6 +503,33 @@ impl EvalHeap {
             dead_arena_bytes,
             self.cold_hash_consed_bytes(min_idle_epochs),
         )
+    }
+
+    /// Advises cold permanent hash-consed record pages to the operating system.
+    ///
+    /// This uses non-destructive [`MemoryAdviceKind::Cold`] hints over record
+    /// byte ranges selected by the same idle-epoch policy as
+    /// [`Self::cold_hash_consed_bytes`]. The advice shim trims each record range
+    /// to complete contained pages before making a platform call. This does not
+    /// evict values from the heap, install CA-store handles, or rematerialize
+    /// values on demand.
+    pub fn advise_cold_hash_consed_values(
+        &self,
+        min_idle_epochs: u64,
+    ) -> EvalHeapColdHashConsedAdviceReport {
+        let kind = MemoryAdviceKind::Cold;
+        let current_epoch = self.access_epoch();
+        let mut report = EvalHeapColdHashConsedAdviceReport::new(kind, min_idle_epochs);
+        for record in &self.records {
+            if !Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs) {
+                continue;
+            }
+            report.record(
+                record.layout.size_bytes,
+                advise_cold_heap_object_allocation(record.ptr, record.layout.size_bytes),
+            );
+        }
+        report
     }
 
     /// Advises unused bytes at the end of both heap allocation domains.
@@ -1521,6 +1633,20 @@ impl EvalHeap {
         let next_epoch = self.access_epoch.get().saturating_add(1);
         self.access_epoch.set(next_epoch);
         next_epoch
+    }
+
+    fn is_cold_hash_consed_record(
+        record: &HeapRecord,
+        current_epoch: u64,
+        min_idle_epochs: u64,
+    ) -> bool {
+        if record.allocation_domain != HeapAllocationDomain::PermanentShared
+            || record.structural_hash.is_none()
+        {
+            return false;
+        }
+        let idle_epochs = current_epoch.saturating_sub(record.last_touch_epoch.get());
+        idle_epochs >= min_idle_epochs
     }
 
     pub(super) fn record_or_unknown(

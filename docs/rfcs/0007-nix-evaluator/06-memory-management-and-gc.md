@@ -1104,8 +1104,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       `classify_memory_budget_with_cold_hash_consed_estimate` helper feeds that
       logical-size estimate into the existing budget classifier for future spill
       planning. This is metadata only: no CA-store handle is installed, no value
-      is evicted or rematerialized, no live page is advised cold, and automatic
-      budget actions still do not credit cold hash-cons reclaim.
+      is evicted or rematerialized, and automatic budget actions still do not
+      credit cold hash-cons reclaim.
 - [ ] `madvise` portability shim (`advise_dead`/`advise_cold`/`advise_evict`/`advise_huge` → `DONTNEED`/`FREE`/`COLD`/`PAGEOUT`/`HUGEPAGE`), no-op fallback off-Linux; correctness never depends on advice being honored (§3.5) — **P3/P8**, `C-17`; benchmark-gated.
 - [x] Current `madvise`/arena-tail precursor:
       `ratchet-value::heap::advice` provides the advisory memory API over
@@ -1122,9 +1122,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       Linux page trimming and `MADV_DONTNEED`, platform flag mapping, empty
       arenas, complete unused-tail pages, unchanged arena accounting,
       post-advice allocation reuse, runtime allocator forwarding, and
-      whole-heap worker/permanent aggregation. Selecting dead regions, advising
-      live cold hash-consed pages, CA-store spill/rematerialization, full budget
-      dispatch, and collector installation remain open in the surrounding rows.
+      whole-heap worker/permanent aggregation. Selecting dead regions, CA-store
+      spill/rematerialization, full budget dispatch, and collector installation
+      remain open in the surrounding rows.
+- [x] Current cold hash-consed page-advice precursor:
+      `ratchet-value::heap::advise_cold_heap_object_allocation` exposes a safe
+      non-destructive `MADV_COLD` wrapper for typed heap-object allocation
+      ranges while keeping destructive raw-range construction inside the heap
+      crate. `EvalHeap::advise_cold_hash_consed_values(min_idle_epochs)` applies
+      that cold hint to the same permanent-shared structural-hash records
+      selected by the idle-epoch coldness policy and reports record counts,
+      requested logical bytes, and advisory outcomes through
+      `EvalHeapColdHashConsedAdviceReport`. Tests pin cold-record selection,
+      report accounting, non-destructive coldness preservation, and hot-record
+      exclusion after a normal value read. This does not issue `MADV_PAGEOUT`,
+      install CA-store handles, rematerialize values, or change automatic budget
+      actions.
 - [ ] Region-pop reclamation within arena mode (intra-run dead sub-arena pop) (§3.3 item 2, §5) — see region inference below.
 
 ### Tier B — precise generational copying GC (§4)

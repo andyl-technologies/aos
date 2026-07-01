@@ -8,6 +8,8 @@
 
 use std::ptr::NonNull;
 
+use crate::value::HeapObject;
+
 /// A non-null byte range eligible for operating-system memory advice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MemoryAdviceRange {
@@ -144,6 +146,28 @@ pub fn advise_free(range: MemoryAdviceRange) -> MemoryAdviceOutcome {
 /// Advises that a range is cold and can be deprioritized for residency.
 pub fn advise_cold(range: MemoryAdviceRange) -> MemoryAdviceOutcome {
     advise_range(MemoryAdviceKind::Cold, range)
+}
+
+/// Advises that a typed heap-object allocation is cold.
+///
+/// This is the safe heap-object wrapper for non-destructive cold advice. The
+/// caller supplies the exact allocation pointer and allocation byte length; the
+/// advice shim still trims the range to complete contained pages before making a
+/// platform call.
+pub fn advise_cold_heap_object_allocation(
+    ptr: NonNull<HeapObject>,
+    len: usize,
+) -> MemoryAdviceOutcome {
+    if len == 0 {
+        return MemoryAdviceOutcome::EmptyRange {
+            kind: MemoryAdviceKind::Cold,
+        };
+    }
+    // SAFETY: the caller provides a typed heap-object allocation pointer and
+    // its allocation length. `Cold` advice is non-destructive; the platform may
+    // deprioritize residency but must preserve contents.
+    let range = unsafe { MemoryAdviceRange::from_raw_parts(ptr.cast(), len) };
+    advise_cold(range)
 }
 
 /// Advises that a range is a good candidate for OS eviction or pageout.
@@ -317,6 +341,12 @@ mod tests {
             }
         );
         assert_eq!(
+            advise_cold_heap_object_allocation(NonNull::<HeapObject>::dangling(), 0),
+            MemoryAdviceOutcome::EmptyRange {
+                kind: MemoryAdviceKind::Cold
+            }
+        );
+        assert_eq!(
             advise_evict(MemoryAdviceRange::empty()),
             MemoryAdviceOutcome::EmptyRange {
                 kind: MemoryAdviceKind::Evict
@@ -328,6 +358,22 @@ mod tests {
                 kind: MemoryAdviceKind::Huge
             }
         );
+    }
+
+    #[test]
+    fn cold_heap_object_allocation_helper_uses_cold_kind_for_non_empty_ranges() {
+        let mut bytes = vec![0_u8; 4096];
+        let ptr = NonNull::new(bytes.as_mut_ptr().cast::<HeapObject>())
+            .expect("non-null heap-object pointer");
+        let outcome = advise_cold_heap_object_allocation(ptr, bytes.len());
+
+        let kind = match outcome {
+            MemoryAdviceOutcome::Applied { kind }
+            | MemoryAdviceOutcome::Unsupported { kind }
+            | MemoryAdviceOutcome::EmptyRange { kind }
+            | MemoryAdviceOutcome::Rejected { kind, .. } => kind,
+        };
+        assert_eq!(kind, MemoryAdviceKind::Cold);
     }
 
     #[cfg(not(target_os = "linux"))]
