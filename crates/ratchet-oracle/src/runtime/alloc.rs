@@ -222,6 +222,12 @@ impl RuntimeAllocationAbiSignature {
         }
     }
 
+    /// Returns the allocation ABI signature for a frozen runtime symbol name.
+    pub fn from_symbol_name(symbol_name: &str) -> Option<Self> {
+        RuntimeAllocationEntryPoint::from_symbol_name(symbol_name)
+            .map(RuntimeAllocationEntryPoint::abi_signature)
+    }
+
     /// Returns the allocation entry point served by this signature.
     pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
         self.entrypoint
@@ -1164,6 +1170,10 @@ mod tests {
                 RuntimeAllocationEntryPoint::from_symbol_name(entrypoint.symbol_name()),
                 Some(*entrypoint)
             );
+            assert_eq!(
+                RuntimeAllocationAbiSignature::from_symbol_name(entrypoint.symbol_name()),
+                Some(entrypoint.abi_signature())
+            );
         }
         for symbol in runtime_helper_symbols()
             .iter()
@@ -1176,9 +1186,19 @@ mod tests {
                 "{} is not an allocation entry point",
                 symbol.name()
             );
+            assert_eq!(
+                RuntimeAllocationAbiSignature::from_symbol_name(symbol.name()),
+                None,
+                "{} has no allocation ABI signature",
+                symbol.name()
+            );
         }
         assert_eq!(
             RuntimeAllocationEntryPoint::from_symbol_name("nix.builtin.derivationStrict"),
+            None
+        );
+        assert_eq!(
+            RuntimeAllocationAbiSignature::from_symbol_name("nix.builtin.derivationStrict"),
             None
         );
     }

@@ -919,6 +919,14 @@ harness, never cut for scope.
       `ratchet-core`'s allocation helper symbol table. This prevents drift
       between the oracle allocator surface and future JIT registration metadata,
       but it is not yet exported C ABI glue or Cranelift registration.
+- [x] Current allocation ABI-signature precursor:
+      `RuntimeAllocationAbiSignature` records the success-path native parameter
+      and typed pointer-result shape for each `aos_alloc_*` helper, preserves the
+      same order as the allocation entry-point inventory, and resolves from the
+      frozen symbol name for future registration code. This remains metadata only;
+      exported `unsafe extern "C"` wrappers, allocation-failure/trap behavior,
+      `JITBuilder::symbol` registration, startup vtable selection, and Tier-B body
+      swapping remain open.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.
 
 ### Tier 1 — the Cranelift baseline JIT

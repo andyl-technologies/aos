@@ -849,10 +849,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       pointer result kind. Tests prove the signature table stays in the same order
       as `RuntimeAllocationEntryPoint`, maps back to the frozen `ratchet-core`
       allocation helper symbols, and preserves the parameter/result shape of each
-      helper. This is signature metadata only; it still does not export
-      `unsafe extern "C"` functions, define the allocation-failure/trap
-      convention, register symbols with Cranelift, choose the startup allocator
-      vtable, or swap in the Tier-B collector body.
+      helper. The signature descriptor also resolves from a frozen symbol name so
+      future registration code can consume the same inventory. This is signature
+      metadata only; it still does not export `unsafe extern "C"` functions, define
+      the allocation-failure/trap convention, register symbols with Cranelift,
+      choose the startup allocator vtable, or swap in the Tier-B collector body.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /

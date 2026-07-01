@@ -775,6 +775,14 @@ harness, never cut for scope.
       string-keyed JIT registration. This is safe metadata only; no
       `unsafe extern "C"` wrappers, `JITBuilder::symbol` registration, compiled
       artifact relinking, or native ABI entrypoints are claimed here.
+- [x] Current allocation ABI-signature precursor:
+      `ratchet-oracle::runtime::alloc::RuntimeAllocationAbiSignature` records the
+      success-path native parameter and typed pointer-result shape for every
+      `aos_alloc_*` helper and resolves from the frozen symbol name. Tests keep
+      that signature inventory aligned with `ratchet-core`'s allocation helper
+      symbols. This remains metadata only; no exported wrappers,
+      allocation-failure/trap convention, Cranelift registration, startup
+      allocator selection, or compiled-symbol relinking is implemented here.
 
 ### Perfect-hash builtin dispatch
 

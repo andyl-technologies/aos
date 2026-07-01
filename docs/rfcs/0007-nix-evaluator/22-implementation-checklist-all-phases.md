@@ -5192,10 +5192,12 @@ and helps the oracle directly.
       allocation pointer result kind. Tests assert the signature table remains
       ordered with `RuntimeAllocationEntryPoint`, matches the `ratchet-core`
       allocation helper symbol inventory, and pins the parameter/result shape for
-      every helper. This is metadata only; actual exported `unsafe extern "C"`
-      functions, the allocation-failure/trap convention, Cranelift symbol
-      registration, startup allocator vtable selection, every-tier/primop routing,
-      and Tier-B collector body swapping remain open.
+      every helper. The signature descriptor also resolves from a frozen symbol
+      name so future registration code can consume the same inventory. This is
+      metadata only; actual exported `unsafe extern "C"` functions, the
+      allocation-failure/trap convention, Cranelift symbol registration, startup
+      allocator vtable selection, every-tier/primop routing, and Tier-B collector
+      body swapping remain open.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared
