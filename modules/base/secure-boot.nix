@@ -312,13 +312,13 @@ in {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         wantedBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
-        # Only ORDER after ignition-disks, don't Require it: on a reboot
-        # (var already provisioned) ignition-disks is condition-skipped, and
-        # Requires would not pull it in. No ConditionPathExists on the var
-        # device either — for a crypto_LUKS partition udev surfaces
-        # /dev/disk/by-partlabel/var late, which would condition-skip this
-        # whole unit on the unlock boot; the script waits for it instead.
-        after = ["ignition-disks.service" "systemd-udev-settle.service"];
+        # Only ORDER after the disk carver (aos-repart), don't Require it: on a
+        # reboot (var already provisioned) repart is a no-op. No
+        # ConditionPathExists on the var device either — for a crypto_LUKS
+        # partition udev surfaces /dev/disk/by-partlabel/var late, which would
+        # condition-skip this whole unit on the unlock boot; the script waits
+        # for it instead.
+        after = ["aos-repart.service" "systemd-udev-settle.service"];
         environment.PATH = lib.mkForce (lib.concatStringsSep ":" [
           "${pkgs.coreutils}/bin"
           "${pkgs.util-linux}/bin"

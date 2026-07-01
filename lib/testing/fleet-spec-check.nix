@@ -87,25 +87,7 @@
     })
     .success;
 
-  # 4. Malformed ignition (unknown key) fails via the strict format.
-  malformedIgnitionRejected =
-    !(tryEval {
-      name = "malformed";
-      machines.solo = {
-        system = stubSystem;
-        instanceMetadata = {
-          format = "ignition";
-          config = {
-            ignition.version = "3.5.0";
-            storage.this-key-does-not-exist = 42;
-          };
-        };
-      };
-      testScript = "true";
-    })
-    .success;
-
-  # 5. Defined-but-unbundled entries (`bundle = false`) reject — the
+  # 4. Defined-but-unbundled entries (`bundle = false`) reject — the
   # enum filters must exclude them.
   unbundledPackageRejected =
     !(tryEval {
@@ -125,11 +107,9 @@
       "fleet-spec: spec with declared package failed to evaluate"
       (lib.throwIfNot bogusPackageRejected
         "fleet-spec: spec with undeclared package should be rejected"
-        (lib.throwIfNot malformedIgnitionRejected
-          "fleet-spec: spec with malformed ignition fragment should be rejected"
-          (lib.throwIfNot unbundledPackageRejected
-            "fleet-spec: spec listing a package with bundle = false should be rejected"
-            true))));
+        (lib.throwIfNot unbundledPackageRejected
+          "fleet-spec: spec listing a package with bundle = false should be rejected"
+          true)));
 in
   pkgs.mkDerivation {
     pname = "fleet-spec-check";

@@ -125,6 +125,11 @@
         in {
           config = evaluated.config;
           options = evaluated.options;
+          # Re-expose `extendModules` so callers holding a discovered system
+          # (e.g. the fleet harness, which bakes per-VM identity via
+          # `environment.etc`) can overlay a fragment without rebuilding the
+          # module list. Inherits this variant's baseLib wiring.
+          inherit (evaluated) extendModules;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -333,7 +338,6 @@ in {
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
-    ignition-format = import ./lib/testing/ignition-format.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};

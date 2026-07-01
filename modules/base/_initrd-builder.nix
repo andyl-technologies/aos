@@ -58,7 +58,6 @@
     findutils
     gptfdisk
     grep
-    ignition
     iproute2
     kmod
     less
@@ -79,7 +78,6 @@
       e2fsprogs
       grep
       gptfdisk
-      ignition
       iproute2
       kmod
       less
@@ -229,11 +227,6 @@
       pkg = cryptsetup;
       bin = "cryptsetup";
       src = "sbin";
-    }
-    {
-      pkg = ignition;
-      bin = "ignition";
-      src = "bin";
     }
     {
       pkg = aos-platform-detect;
@@ -679,10 +672,6 @@ in
                 find "{}/lib" -maxdepth 1 -name "*.a" -delete 2>/dev/null
                 rm -f "{}/bin/c_rehash"
               ' _
-
-          # ignition-validate: pre-boot config validator. Not invoked at
-          # runtime; ignition itself does the actual provisioning.
-          rm -f root/nix/store/*-ignition-*/bin/ignition-validate
 
           # ukify + its Python dependency closure: only needed at image-
           # build time to assemble the UKI, never in the initrd. Since

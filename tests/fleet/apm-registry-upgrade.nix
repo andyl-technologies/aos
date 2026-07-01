@@ -42,7 +42,8 @@
   systems,
 }: let
   fleetSystem = evaluated: {
-    inherit (evaluated) config options;
+    # Re-expose extendModules so the new-path harness can bake per-VM identity.
+    inherit (evaluated) config options extendModules;
     build = {
       toplevel = evaluated.config.system.build.toplevel;
       kernel = evaluated.config.system.build.kernel;
@@ -52,9 +53,10 @@
     checks = evaluated.config.system.build.checks;
   };
 
-  # Both machines use ignition /var provisioning, so neither bakes a /var
-  # agent seed — the harness delivers aos-test-agent via its package fragment,
-  # and they hand-seed the registry (git) and probe HTTP/firewall (curl/nft).
+  # Both machines boot the new path (Ignition-free) with a baked /var, so the
+  # guest agent rides the /var seed; identity + the seeded package list are
+  # baked into /etc. They hand-seed the registry (git) and probe HTTP/firewall
+  # (curl/nft).
   # server-test provides the bundled agent + those CLI tools (the production
   # server keeps both out of the slim image). The registry additionally
   # re-bundles its fixtures.
@@ -94,11 +96,12 @@ in {
       # cache (~540 MiB) alongside it, so /var needs well over 1.5 GiB free.
       # 1536 MiB (the old baked size) overflowed mid-generation; 3072 MiB
       # matches install-from-image.nix's headroom for the same workload.
-      # With "ignition" provisioning ignition creates and formats /var at
-      # this size on first boot, so the base disk image stays var-less and
-      # shared — sizing it up no longer forks the (deduplicated) image.
+      # New path: identity baked into /etc, /var baked into the per-machine
+      # disk at this size (baking identity already forks the image per machine,
+      # so a shared var-less base buys nothing here).
+      provisioning = "newpath";
       varSizeMiB = 3072;
-      varProvisioning = "ignition";
+      varProvisioning = "baked";
     };
 
     target = {
@@ -107,8 +110,9 @@ in {
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on
       # the var partition). Sized to match the registry for headroom.
+      provisioning = "newpath";
       varSizeMiB = 3072;
-      varProvisioning = "ignition";
+      varProvisioning = "baked";
     };
   };
 

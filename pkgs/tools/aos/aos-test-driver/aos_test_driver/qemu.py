@@ -236,12 +236,14 @@ class QemuMachine(Machine):
             log.info("  Firmware: %s", self.firmware_code)
             log.info("  fw_cfg:   %s", self.fw_cfg_path)
         else:
-            if self.metadata_src is None:
-                raise RuntimeError(
-                    f"[{self.name}] kernel boot requires a metadata ISO"
-                )
-            shutil.copyfile(self.metadata_src, self.metadata_copy)
-            os.chmod(self.metadata_copy, 0o644)
+            # A metadata ISO is optional on the RFC-0011 new path: fleet
+            # identity is baked into the image's /etc (via extendModules), so a
+            # kernel-boot machine may carry no metadata channel at all. When
+            # absent, no SCSI CD-ROM is attached (see the argv block below) and
+            # aos-metadata-detect falls through to the `metal` platform.
+            if self.metadata_src is not None:
+                shutil.copyfile(self.metadata_src, self.metadata_copy)
+                os.chmod(self.metadata_copy, 0o644)
 
             # Kernel-boot "ignition" var: the base image ships no /var, so
             # grow the per-run copy by var_size_mib to open trailing free
@@ -446,11 +448,16 @@ class QemuMachine(Machine):
                     "net.ifnames=0"
                 ),
                 "-drive", f"file={self.disk_copy},format=raw,if=virtio",
-                "-drive",
-                f"id=metadata,file={self.metadata_copy},if=none,format=raw,readonly=on",
-                "-device", "virtio-scsi-pci,id=scsi0",
-                "-device", "scsi-cd,drive=metadata,bus=scsi0.0",
             ]
+            # Attach the metadata ISO as a SCSI CD-ROM only when present; the
+            # new path bakes identity into /etc and ships no metadata channel.
+            if self.metadata_src is not None:
+                argv += [
+                    "-drive",
+                    f"id=metadata,file={self.metadata_copy},if=none,format=raw,readonly=on",
+                    "-device", "virtio-scsi-pci,id=scsi0",
+                    "-device", "scsi-cd,drive=metadata,bus=scsi0.0",
+                ]
 
         # vTPM device — connects QEMU's emulated tpm-tis to the swtpm
         # control socket launched in start(). Present on every (re)launch
