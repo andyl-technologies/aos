@@ -926,13 +926,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level
       object-copy, forwarding-pointer, reference-rewrite, and remembered-set
-      refresh subplans into a `MinorGcCommitPlan` from caller-supplied relocation
-      destinations and nursery-layout metadata, rebuilding the relocation map
-      against the poll plan's own survivor frontier. The bridge keeps the poll
-      plan's labeled reference slots beside the validated commit plan so tests
-      can relate low-level rewrites back to copied roots, remembered edges, and
-      nursery fields. Tests cover empty remembered-set commits plus copied-young
-      remembered-edge retention. This is still metadata only: it does not
+      refresh subplans into a `MinorGcCommitPlan` from the materialized
+      allocation-poll destination wrapper. It validates the wrapper's placement
+      count, survivor source order, and copy/promote actions against the poll
+      plan's own survivor frontier, rebuilds the relocation map against that
+      frontier, and derives object-copy sizes from the validated placement plan.
+      The bridge keeps the poll plan's labeled
+      reference slots beside the validated commit plan so tests can relate
+      low-level rewrites back to copied roots, remembered edges, and nursery
+      fields. Tests cover empty remembered-set commits, copied-young
+      remembered-edge retention, and rejection of a destination plan built for a
+      different poll survivor frontier or promotion policy. This is still
+      metadata only: it does not
       allocate destination storage, bind byte buffers to real objects, install
       forwarding values, mutate live roots or fields, identify remembered source
       fields, publish remembered sets, or manage semispaces.

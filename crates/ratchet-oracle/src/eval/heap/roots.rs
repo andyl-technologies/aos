@@ -989,23 +989,30 @@ impl AllocationCollectorPollMinorGcPlan {
     /// The returned value keeps this plan's copied reference-slot labels next to
     /// the validated lower-level commit plan. It still does not own mutable
     /// evaluator roots, object fields, object bytes, forwarding slots, or
-    /// remembered-set storage.
+    /// remembered-set storage. The destination wrapper must preserve this poll
+    /// plan's survivor count, source order, and copy/promote actions.
     ///
     /// # Errors
     ///
-    /// Returns [`GenerationalGcError`] if relocation destinations or nursery
-    /// layouts do not match this poll plan, if any subplan cannot reserve
+    /// Returns [`GenerationalGcError`] if destination placements or relocation
+    /// destinations do not match this poll plan, if any subplan cannot reserve
     /// storage or detects byte-size overflow, if the remembered-set refresh
     /// cannot be built, or if the subplans are not mutually consistent.
     pub fn commit_plan(
         &self,
-        relocation_destinations: &[MinorGcRelocationDestination],
-        nursery_layouts: &[NurseryObjectLayout],
+        relocation_destinations: &AllocationCollectorPollMinorGcRelocationDestinations,
     ) -> Result<AllocationCollectorPollMinorGcCommitPlan<'_>, GenerationalGcError> {
-        let relocation_plan =
-            MinorGcRelocationPlan::from_minor_gc_plan(&self.plan, relocation_destinations)?;
-        let object_copies =
-            MinorGcObjectCopyPlan::from_relocation_plan(&relocation_plan, nursery_layouts)?;
+        validate_destination_placements_match_plan(
+            &self.plan,
+            relocation_destinations.placement_plan(),
+        )?;
+        let relocation_plan = relocation_destinations
+            .relocation_destinations()
+            .relocation_plan(&self.plan)?;
+        let object_copies = object_copy_plan_from_destination_placements(
+            &relocation_plan,
+            relocation_destinations.placement_plan(),
+        )?;
         let forwarding_pointers =
             MinorGcForwardingPointerPlan::from_object_copy_plan(&object_copies)?;
         let reference_rewrites = self.reference_rewrite_plan(&relocation_plan)?;
@@ -1059,6 +1066,64 @@ impl AllocationCollectorPollMinorGcRelocationDestinations {
     pub fn destinations(&self) -> &[MinorGcRelocationDestination] {
         self.relocation_destinations.destinations()
     }
+}
+
+fn validate_destination_placements_match_plan(
+    plan: &MinorGcPlan,
+    placement_plan: &MinorGcDestinationPlacementPlan,
+) -> Result<(), GenerationalGcError> {
+    let survivors = plan.survivors();
+    let placements = placement_plan.placements();
+    if survivors.len() != placements.len() {
+        return Err(
+            GenerationalGcError::MinorGcRelocationDestinationPlacementLengthMismatch {
+                survivors: survivors.len(),
+                placements: placements.len(),
+            },
+        );
+    }
+
+    for (survivor, placement) in survivors.iter().zip(placements) {
+        if survivor.address() != placement.source() {
+            return Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementSourceMismatch {
+                    expected: survivor.address(),
+                    actual: placement.source(),
+                },
+            );
+        }
+        if survivor.action() != placement.action() {
+            return Err(
+                GenerationalGcError::MinorGcRelocationDestinationPlacementActionMismatch {
+                    address: survivor.address(),
+                    expected: survivor.action(),
+                    actual: placement.action(),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn object_copy_plan_from_destination_placements(
+    relocation_plan: &MinorGcRelocationPlan,
+    placement_plan: &MinorGcDestinationPlacementPlan,
+) -> Result<MinorGcObjectCopyPlan, GenerationalGcError> {
+    let mut nursery_layouts = Vec::new();
+    nursery_layouts
+        .try_reserve_exact(placement_plan.len())
+        .map_err(|_| GenerationalGcError::MinorGcObjectCopyAllocationFailed {
+            copies: placement_plan.len(),
+        })?;
+    for placement in placement_plan.placements() {
+        nursery_layouts.push(NurseryObjectLayout::new(
+            placement.source(),
+            placement.size_bytes(),
+            placement.align(),
+        ));
+    }
+    MinorGcObjectCopyPlan::from_relocation_plan(relocation_plan, &nursery_layouts)
 }
 
 /// Commit metadata for an allocation-poll minor-GC plan.

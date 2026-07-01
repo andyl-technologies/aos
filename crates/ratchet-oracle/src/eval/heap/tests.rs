@@ -7,7 +7,7 @@ use crate::eval::{EvalFrame, EvalWithScope};
 use crate::heap::{
     GcHeapAddress, GenerationalGcError, HeapGeneration, MinorGcDestinationBases,
     MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcPromotionPolicy,
-    MinorGcRelocationDestination, MinorGcRelocationPlan, NurseryObjectLayout, RememberedEdge,
+    MinorGcRelocationPlan, MinorGcSurvivorAction, NurseryObjectLayout, RememberedEdge,
     RememberedSet, ResolvedValueGeneration,
 };
 use crate::runtime::alloc::{AllocationGcPollReason, RuntimeAllocationEntryPoint};
@@ -1572,7 +1572,7 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         sibling_destination
     );
     let commit = planned
-        .commit_plan(relocation_destinations, &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("commit plan builds");
     assert_eq!(commit.reference_slots(), planned.reference_slots());
     assert_eq!(commit.commit_plan().object_copies().copies().len(), 3);
@@ -1619,7 +1619,7 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert!(commit.commit_plan().next_remembered_set().is_empty());
 
     let short_commit = planned
-        .commit_plan(relocation_destinations, &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("short-buffer commit plan builds");
     let mut no_object_byte_copies: Vec<MinorGcObjectByteCopyBuffer<'_>> = Vec::new();
     let mut no_forwarding_slots = Vec::new();
@@ -1643,7 +1643,7 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     assert_eq!(short_remembered_set, remembered_set);
 
     let occupied_commit = planned
-        .commit_plan(relocation_destinations, &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("occupied-slot commit plan builds");
     let occupied_lambda_source_bytes = [9u8; 16];
     let occupied_child_source_bytes = [8u8; 16];
@@ -1801,7 +1801,75 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
 }
 
 #[test]
-fn collector_poll_minor_gc_commit_plan_rejects_stale_relocation_destinations() {
+fn collector_poll_minor_gc_commit_plan_rejects_foreign_destination_plan() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("first thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("second thunk allocates");
+    let poll = heap
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("worker allocation requests a collector poll");
+    let remembered_set = RememberedSet::new();
+    let mut first_roots = EvalRootSet::new();
+    first_roots
+        .try_push_value_stack(0, first)
+        .expect("first root records");
+    let first_scan = heap
+        .scan_collector_poll_roots(poll, &first_roots)
+        .expect("first collector-poll root scan succeeds");
+    let first_plan = heap
+        .plan_collector_poll_minor_gc(
+            &first_scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("first minor-GC plan builds");
+
+    let mut second_roots = EvalRootSet::new();
+    second_roots
+        .try_push_value_stack(0, second)
+        .expect("second root records");
+    let second_scan = heap
+        .scan_collector_poll_roots(poll, &second_roots)
+        .expect("second collector-poll root scan succeeds");
+    let second_plan = heap
+        .plan_collector_poll_minor_gc(
+            &second_scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(2),
+        )
+        .expect("second minor-GC plan builds");
+    let second_layouts = [NurseryObjectLayout::new(gc_address(second), 16, 8)];
+    let second_destinations = second_plan
+        .relocation_destination_plan(
+            &second_layouts,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("second destination plan builds");
+
+    assert_eq!(
+        first_plan
+            .commit_plan(&second_destinations)
+            .expect_err("foreign destination plan is rejected"),
+        GenerationalGcError::MinorGcRelocationDestinationPlacementSourceMismatch {
+            expected: gc_address(first),
+            actual: gc_address(second),
+        }
+    );
+}
+
+#[test]
+fn collector_poll_minor_gc_commit_plan_rejects_destination_plan_with_foreign_action() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
     let child = heap
@@ -1819,28 +1887,41 @@ fn collector_poll_minor_gc_commit_plan_rejects_stale_relocation_destinations() {
         .scan_collector_poll_roots(poll, &roots)
         .expect("collector-poll root scan succeeds");
     let remembered_set = RememberedSet::new();
-    let planned = heap
+    let copy_plan = heap
         .plan_collector_poll_minor_gc(
             &scan,
             remembered_set.snapshot(),
             remembered_set.epoch(),
             MinorGcPromotionPolicy::new(2),
         )
-        .expect("minor-GC plan builds");
-
-    let stale_source = static_gc_address(0x2000_0000);
-    let relocation_destinations = [MinorGcRelocationDestination::new(
-        stale_source,
-        static_gc_address(0x3000_0000),
-    )];
-    let nursery_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
+        .expect("copy minor-GC plan builds");
+    let promote_plan = heap
+        .plan_collector_poll_minor_gc(
+            &scan,
+            remembered_set.snapshot(),
+            remembered_set.epoch(),
+            MinorGcPromotionPolicy::new(0),
+        )
+        .expect("promote minor-GC plan builds");
+    let copy_layouts = [NurseryObjectLayout::new(gc_address(child), 16, 8)];
+    let copy_destinations = copy_plan
+        .relocation_destination_plan(
+            &copy_layouts,
+            MinorGcDestinationBases::new(
+                static_gc_address(0x1000_0000),
+                static_gc_address(0x2000_0000),
+            ),
+        )
+        .expect("copy destination plan builds");
 
     assert_eq!(
-        planned
-            .commit_plan(&relocation_destinations, &nursery_layouts)
-            .expect_err("stale relocation source is rejected"),
-        GenerationalGcError::StaleMinorGcRelocationSource {
-            address: stale_source,
+        promote_plan
+            .commit_plan(&copy_destinations)
+            .expect_err("foreign-action destination plan is rejected"),
+        GenerationalGcError::MinorGcRelocationDestinationPlacementActionMismatch {
+            address: gc_address(child),
+            expected: MinorGcSurvivorAction::PromoteToOld,
+            actual: MinorGcSurvivorAction::CopyToNursery,
         }
     );
 }
@@ -1897,7 +1978,7 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
         HeapGeneration::Old
     );
     let commit = planned
-        .commit_plan(destinations.destinations(), &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("commit plan builds");
     assert_eq!(
         commit.commit_plan().object_copies().copies()[0].destination_generation(),
@@ -2049,7 +2130,7 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
 
     assert_eq!(planned.remembered_set(), &remembered_set);
     let commit = planned
-        .commit_plan(relocation_destinations, &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("commit plan builds");
     assert_eq!(commit.reference_slots(), planned.reference_slots());
     assert_eq!(
@@ -2062,7 +2143,7 @@ fn collector_poll_minor_gc_plan_uses_remembered_permanent_edge() {
     );
 
     let mismatch_commit = planned
-        .commit_plan(relocation_destinations, &nursery_layouts)
+        .commit_plan(&destinations)
         .expect("reference-mismatch commit plan builds");
     let mismatch_child_source_bytes = [5u8; 16];
     let mut mismatch_child_destination_bytes = [0u8; 16];

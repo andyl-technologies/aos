@@ -5259,17 +5259,22 @@ and helps the oracle directly.
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot used by the poll plan and composes the existing lower-level
       object-copy, forwarding-pointer, reference-rewrite, and remembered-set
-      refresh subplans into a `MinorGcCommitPlan` from caller-supplied relocation
-      destinations and nursery-layout metadata, rebuilding the relocation map
-      against the poll plan's own survivor frontier. The bridge preserves the
-      poll plan's labeled reference slots beside the commit metadata, so tests
-      can connect lower-level rewrites back to copied roots, remembered edges,
-      and survivor fields. Unit tests cover empty remembered-set commit metadata
-      and retained copied-young remembered edges. This remains metadata only;
+      refresh subplans into a `MinorGcCommitPlan` from the materialized
+      allocation-poll destination wrapper. It validates the wrapper's placement
+      count, survivor source order, and copy/promote actions against the poll
+      plan's own survivor frontier, rebuilds the relocation map against that
+      frontier, and derives object-copy sizes from the validated placement plan.
+      The bridge preserves the poll plan's
+      labeled reference slots beside the commit metadata, so tests can connect
+      lower-level rewrites back to copied roots, remembered edges, and survivor
+      fields. Unit tests cover empty remembered-set commit metadata, retained
+      copied-young remembered edges, and rejection of a destination plan built
+      for a different poll survivor frontier or promotion policy. This remains
+      metadata only;
       destination storage allocation, binding byte buffers to real objects,
       forwarding-slot installation, live root/object-field mutation, concrete
-      remembered-source field identity, remembered-set publication, and semispace
-      management remain open.
+      remembered-source field identity, remembered-set publication, and
+      semispace management remain open.
 - [x] Current allocation-poll commit-buffer bridge precursor:
       `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers` and
       `AllocationCollectorPollMinorGcCommitBuffers` expose a caller-buffer
@@ -5385,9 +5390,10 @@ and helps the oracle directly.
       or bind live destination storage.
 - [x] Current `heap/roots.rs` commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` stores the remembered-set
-      snapshot captured during allocation-poll planning and composes it with a
-      caller-supplied relocation-destination table and nursery layouts to produce
-      `MinorGcCommitPlan` metadata. The wrapper keeps the copied
+      snapshot captured during allocation-poll planning and composes it with the
+      allocation-poll destination wrapper to produce `MinorGcCommitPlan`
+      metadata after validating the wrapper's placement count, survivor order,
+      and copy/promote actions against the poll plan. The wrapper keeps the copied
       `AllocationCollectorPollReferenceSlot` labels next to the lower-level
       commit plan, but still does not provide mutable tree-walk roots, copied
       object-field slots, old/permanent field slots, or stack-map writeback
