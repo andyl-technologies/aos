@@ -5184,6 +5184,18 @@ and helps the oracle directly.
       This is symbol inventory and dispatch metadata only; no unsafe C exports,
       Cranelift symbol registration, startup allocator vtable selection, or
       Tier-B collector body swap is implemented here.
+- [x] Current allocation ABI-signature precursor:
+      `RuntimeAllocationAbiSignature` records success-path helper signature
+      metadata for each `aos_alloc_*` entry point: a leading runtime context
+      parameter, entry-specific native payload parameters (`code_ptr`/`env`,
+      `shape`/`slots`, `head`/`tail`, lengths, raw size/align/tag), and a typed
+      allocation pointer result kind. Tests assert the signature table remains
+      ordered with `RuntimeAllocationEntryPoint`, matches the `ratchet-core`
+      allocation helper symbol inventory, and pins the parameter/result shape for
+      every helper. This is metadata only; actual exported `unsafe extern "C"`
+      functions, the allocation-failure/trap convention, Cranelift symbol
+      registration, startup allocator vtable selection, every-tier/primop routing,
+      and Tier-B collector body swapping remain open.
 - [x] Current allocation-safepoint metadata precursor:
       `runtime::alloc` now records an `AllocationSafepoint` at every
       centralized worker `aos_alloc_*` route and every permanent-shared

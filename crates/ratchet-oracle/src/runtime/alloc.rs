@@ -47,9 +47,88 @@ pub const RUNTIME_ALLOCATION_ENTRYPOINTS: &[RuntimeAllocationEntryPoint] = &[
     RuntimeAllocationEntryPoint::AosAllocThunk,
 ];
 
+const ALLOC_ATTRS_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("shape", RuntimeAllocationAbiParameterKind::ShapeId),
+    RuntimeAllocationAbiParameter::new("slots", RuntimeAllocationAbiParameterKind::U32),
+];
+const ALLOC_CONS_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("head", RuntimeAllocationAbiParameterKind::Value),
+    RuntimeAllocationAbiParameter::new("tail", RuntimeAllocationAbiParameterKind::ListPointer),
+];
+const ALLOC_LAMBDA_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("code_ptr", RuntimeAllocationAbiParameterKind::CodePointer),
+    RuntimeAllocationAbiParameter::new("env", RuntimeAllocationAbiParameterKind::EnvPointer),
+];
+const ALLOC_LIST_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("len", RuntimeAllocationAbiParameterKind::Usize),
+];
+const ALLOC_RAW_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("size", RuntimeAllocationAbiParameterKind::Usize),
+    RuntimeAllocationAbiParameter::new("align", RuntimeAllocationAbiParameterKind::Usize),
+    RuntimeAllocationAbiParameter::new("type_tag", RuntimeAllocationAbiParameterKind::TypeTag),
+];
+const ALLOC_STRING_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("len", RuntimeAllocationAbiParameterKind::Usize),
+];
+const ALLOC_THUNK_PARAMETERS: &[RuntimeAllocationAbiParameter] = &[
+    RuntimeAllocationAbiParameter::new("rt", RuntimeAllocationAbiParameterKind::RuntimeContext),
+    RuntimeAllocationAbiParameter::new("code_ptr", RuntimeAllocationAbiParameterKind::CodePointer),
+    RuntimeAllocationAbiParameter::new("env", RuntimeAllocationAbiParameterKind::EnvPointer),
+];
+
+/// Frozen allocation-helper ABI signatures for future native runtimes.
+pub const RUNTIME_ALLOCATION_ABI_SIGNATURES: &[RuntimeAllocationAbiSignature] = &[
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocAttrs,
+        ALLOC_ATTRS_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::AttrsPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocCons,
+        ALLOC_CONS_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::ListPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocLambda,
+        ALLOC_LAMBDA_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::LambdaPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocList,
+        ALLOC_LIST_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::ListPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocRaw,
+        ALLOC_RAW_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::RawPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocString,
+        ALLOC_STRING_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::StringHeaderPointer,
+    ),
+    RuntimeAllocationAbiSignature::new(
+        RuntimeAllocationEntryPoint::AosAllocThunk,
+        ALLOC_THUNK_PARAMETERS,
+        RuntimeAllocationAbiReturnKind::ThunkPointer,
+    ),
+];
+
 /// Returns the frozen allocation entry-point inventory.
 pub const fn runtime_allocation_entrypoints() -> &'static [RuntimeAllocationEntryPoint] {
     RUNTIME_ALLOCATION_ENTRYPOINTS
+}
+
+/// Returns the frozen allocation-helper ABI signature inventory.
+pub const fn runtime_allocation_abi_signatures() -> &'static [RuntimeAllocationAbiSignature] {
+    RUNTIME_ALLOCATION_ABI_SIGNATURES
 }
 
 impl RuntimeAllocationEntryPoint {
@@ -79,6 +158,152 @@ impl RuntimeAllocationEntryPoint {
             _ => None,
         }
     }
+
+    /// Returns the frozen ABI signature for this allocation entry point.
+    pub const fn abi_signature(self) -> RuntimeAllocationAbiSignature {
+        match self {
+            Self::AosAllocThunk => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_THUNK_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::ThunkPointer,
+            ),
+            Self::AosAllocLambda => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_LAMBDA_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::LambdaPointer,
+            ),
+            Self::AosAllocAttrs => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_ATTRS_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::AttrsPointer,
+            ),
+            Self::AosAllocCons => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_CONS_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::ListPointer,
+            ),
+            Self::AosAllocList => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_LIST_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::ListPointer,
+            ),
+            Self::AosAllocString => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_STRING_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::StringHeaderPointer,
+            ),
+            Self::AosAllocRaw => RuntimeAllocationAbiSignature::new(
+                self,
+                ALLOC_RAW_PARAMETERS,
+                RuntimeAllocationAbiReturnKind::RawPointer,
+            ),
+        }
+    }
+}
+
+/// A frozen allocation-helper ABI signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationAbiSignature {
+    entrypoint: RuntimeAllocationEntryPoint,
+    parameters: &'static [RuntimeAllocationAbiParameter],
+    return_kind: RuntimeAllocationAbiReturnKind,
+}
+
+impl RuntimeAllocationAbiSignature {
+    const fn new(
+        entrypoint: RuntimeAllocationEntryPoint,
+        parameters: &'static [RuntimeAllocationAbiParameter],
+        return_kind: RuntimeAllocationAbiReturnKind,
+    ) -> Self {
+        Self {
+            entrypoint,
+            parameters,
+            return_kind,
+        }
+    }
+
+    /// Returns the allocation entry point served by this signature.
+    pub const fn entrypoint(self) -> RuntimeAllocationEntryPoint {
+        self.entrypoint
+    }
+
+    /// Returns the stable runtime symbol name for this signature.
+    pub const fn symbol_name(self) -> &'static str {
+        self.entrypoint.symbol_name()
+    }
+
+    /// Returns the ordered ABI parameters for this signature.
+    pub const fn parameters(self) -> &'static [RuntimeAllocationAbiParameter] {
+        self.parameters
+    }
+
+    /// Returns the ABI result kind produced by this signature.
+    pub const fn return_kind(self) -> RuntimeAllocationAbiReturnKind {
+        self.return_kind
+    }
+}
+
+/// A parameter accepted by a frozen allocation-helper ABI signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeAllocationAbiParameter {
+    name: &'static str,
+    kind: RuntimeAllocationAbiParameterKind,
+}
+
+impl RuntimeAllocationAbiParameter {
+    const fn new(name: &'static str, kind: RuntimeAllocationAbiParameterKind) -> Self {
+        Self { name, kind }
+    }
+
+    /// Returns the stable ABI parameter name.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the machine-level kind carried by this parameter.
+    pub const fn kind(self) -> RuntimeAllocationAbiParameterKind {
+        self.kind
+    }
+}
+
+/// A machine-level parameter kind accepted by allocation-helper symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeAllocationAbiParameterKind {
+    /// The evaluator runtime context that owns the installed allocator strategy.
+    RuntimeContext,
+    /// A pointer to native code for a thunk or lambda body.
+    CodePointer,
+    /// A pointer to a captured environment frame.
+    EnvPointer,
+    /// A by-value runtime value word pair.
+    Value,
+    /// A pointer to a runtime list object.
+    ListPointer,
+    /// A hidden-class shape identifier.
+    ShapeId,
+    /// A target-pointer-sized unsigned integer.
+    Usize,
+    /// A runtime-specific raw allocation type tag.
+    TypeTag,
+    /// A 32-bit unsigned integer.
+    U32,
+}
+
+/// The success-path machine-level result kind returned by allocation-helper symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeAllocationAbiReturnKind {
+    /// A pointer to a thunk object.
+    ThunkPointer,
+    /// A pointer to a lambda closure object.
+    LambdaPointer,
+    /// A pointer to an attrset object.
+    AttrsPointer,
+    /// A pointer to a list object.
+    ListPointer,
+    /// A pointer to a string header object.
+    StringHeaderPointer,
+    /// A pointer to raw heap storage.
+    RawPointer,
 }
 
 /// GC-stress polling policy evaluated at allocation safepoints.
@@ -897,6 +1122,11 @@ mod tests {
             .copied()
             .map(RuntimeAllocationEntryPoint::symbol_name)
             .collect::<BTreeSet<_>>();
+        let runtime_signature_symbols = runtime_allocation_abi_signatures()
+            .iter()
+            .copied()
+            .map(RuntimeAllocationAbiSignature::symbol_name)
+            .collect::<BTreeSet<_>>();
 
         assert_eq!(
             allocation_symbols,
@@ -911,6 +1141,7 @@ mod tests {
             ])
         );
         assert_eq!(runtime_entrypoint_symbols, allocation_symbols);
+        assert_eq!(runtime_signature_symbols, allocation_symbols);
     }
 
     #[test]
@@ -949,6 +1180,163 @@ mod tests {
         assert_eq!(
             RuntimeAllocationEntryPoint::from_symbol_name("nix.builtin.derivationStrict"),
             None
+        );
+    }
+
+    #[test]
+    fn allocation_abi_signatures_pin_runtime_parameters() {
+        fn assert_signature(
+            entrypoint: RuntimeAllocationEntryPoint,
+            parameters: &[RuntimeAllocationAbiParameter],
+            return_kind: RuntimeAllocationAbiReturnKind,
+        ) {
+            let signature = entrypoint.abi_signature();
+            assert_eq!(signature.entrypoint(), entrypoint);
+            assert_eq!(signature.parameters(), parameters);
+            assert_eq!(signature.return_kind(), return_kind);
+        }
+
+        assert_eq!(
+            runtime_allocation_abi_signatures()
+                .iter()
+                .copied()
+                .map(RuntimeAllocationAbiSignature::entrypoint)
+                .collect::<Vec<_>>(),
+            runtime_allocation_entrypoints()
+        );
+
+        for signature in runtime_allocation_abi_signatures().iter().copied() {
+            assert_eq!(signature.entrypoint().abi_signature(), signature);
+            assert_eq!(
+                signature.symbol_name(),
+                signature.entrypoint().symbol_name()
+            );
+            assert_eq!(
+                signature.parameters().first().copied(),
+                Some(RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                )),
+                "{} takes the runtime context first",
+                signature.symbol_name()
+            );
+        }
+
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocThunk,
+            &[
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "code_ptr",
+                    RuntimeAllocationAbiParameterKind::CodePointer,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "env",
+                    RuntimeAllocationAbiParameterKind::EnvPointer,
+                ),
+            ],
+            RuntimeAllocationAbiReturnKind::ThunkPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocLambda,
+            &[
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "code_ptr",
+                    RuntimeAllocationAbiParameterKind::CodePointer,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "env",
+                    RuntimeAllocationAbiParameterKind::EnvPointer,
+                ),
+            ],
+            RuntimeAllocationAbiReturnKind::LambdaPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocAttrs,
+            [
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "shape",
+                    RuntimeAllocationAbiParameterKind::ShapeId,
+                ),
+                RuntimeAllocationAbiParameter::new("slots", RuntimeAllocationAbiParameterKind::U32),
+            ]
+            .as_slice(),
+            RuntimeAllocationAbiReturnKind::AttrsPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocCons,
+            &[
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "head",
+                    RuntimeAllocationAbiParameterKind::Value,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "tail",
+                    RuntimeAllocationAbiParameterKind::ListPointer,
+                ),
+            ],
+            RuntimeAllocationAbiReturnKind::ListPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocList,
+            [
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new("len", RuntimeAllocationAbiParameterKind::Usize),
+            ]
+            .as_slice(),
+            RuntimeAllocationAbiReturnKind::ListPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocString,
+            [
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new("len", RuntimeAllocationAbiParameterKind::Usize),
+            ]
+            .as_slice(),
+            RuntimeAllocationAbiReturnKind::StringHeaderPointer,
+        );
+        assert_signature(
+            RuntimeAllocationEntryPoint::AosAllocRaw,
+            &[
+                RuntimeAllocationAbiParameter::new(
+                    "rt",
+                    RuntimeAllocationAbiParameterKind::RuntimeContext,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "size",
+                    RuntimeAllocationAbiParameterKind::Usize,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "align",
+                    RuntimeAllocationAbiParameterKind::Usize,
+                ),
+                RuntimeAllocationAbiParameter::new(
+                    "type_tag",
+                    RuntimeAllocationAbiParameterKind::TypeTag,
+                ),
+            ],
+            RuntimeAllocationAbiReturnKind::RawPointer,
         );
     }
 

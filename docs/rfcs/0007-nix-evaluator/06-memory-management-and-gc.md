@@ -841,6 +841,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       helpers. This pins the dispatch inventory only; it does not export
       `unsafe extern "C"` functions, register Cranelift symbols, select a
       startup allocator vtable, or swap in the Tier-B collector body.
+- [x] Current allocation ABI-signature precursor:
+      `RuntimeAllocationAbiSignature` pins success-path helper signature metadata
+      for every `aos_alloc_*` route: the runtime context parameter first,
+      entry-specific native payload parameters (`code_ptr`/`env`, `shape`/`slots`,
+      `head`/`tail`, lengths, raw size/align/tag) after it, and a typed allocation
+      pointer result kind. Tests prove the signature table stays in the same order
+      as `RuntimeAllocationEntryPoint`, maps back to the frozen `ratchet-core`
+      allocation helper symbols, and preserves the parameter/result shape of each
+      helper. This is signature metadata only; it still does not export
+      `unsafe extern "C"` functions, define the allocation-failure/trap
+      convention, register symbols with Cranelift, choose the startup allocator
+      vtable, or swap in the Tier-B collector body.
 - [ ] Frozen runtime allocation ABI still open: actual exported
       `unsafe extern "C"` `aos_alloc_attrs` / `aos_alloc_cons` /
       `aos_alloc_lambda` / `aos_alloc_list` / `aos_alloc_raw` /
