@@ -2581,8 +2581,8 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
     let mut references = planned.reference_values().collect::<Vec<_>>();
     let mut commit_remembered_set = remembered_set.clone();
 
-    commit
-        .apply_to_buffers(AllocationCollectorPollMinorGcCommitBuffers::new(
+    let report = commit
+        .apply_to_buffers_with_report(AllocationCollectorPollMinorGcCommitBuffers::new(
             &mut object_byte_copies,
             &mut forwarding_slots,
             &mut references,
@@ -2590,6 +2590,21 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
         ))
         .expect("collector-poll commit buffers apply");
 
+    assert_eq!(report.object_copies(), 3);
+    assert_eq!(report.copied_to_nursery(), 3);
+    assert_eq!(report.promoted_to_old(), 0);
+    assert_eq!(report.forwarding_pointers(), 3);
+    assert_eq!(report.reference_rewrites(), 3);
+    assert_eq!(report.remembered_set_source_epoch(), remembered_set.epoch());
+    assert_eq!(
+        report.remembered_set_next_epoch(),
+        remembered_set
+            .epoch()
+            .checked_next()
+            .expect("epoch advances")
+    );
+    assert_eq!(report.remembered_set_source_edges(), 0);
+    assert_eq!(report.remembered_set_published_edges(), 0);
     assert_eq!(lambda_destination_bytes, lambda_source_bytes);
     assert_eq!(child_destination_bytes, child_source_bytes);
     assert_eq!(sibling_destination_bytes, sibling_source_bytes);

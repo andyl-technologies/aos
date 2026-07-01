@@ -1375,17 +1375,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       boundary: it does not copy object bytes, install forwarding pointers,
       mutate live root/field slots, own the card table, or manage semispaces.
 - [x] Current minor-GC commit-buffer application precursor:
-      `MinorGcCommitBuffers` and `MinorGcCommitPlan::apply_to_buffers` apply a
-      validated commit plan to caller-owned byte-copy buffers, forwarding slots,
-      reference slots, and remembered-set state. The helper validates every
-      supplied buffer first, then performs the ordered commit steps: copy object
-      bytes, install forwarding values, rewrite references, and publish the next
-      remembered set. Tests cover successful cross-buffer application and a late
-      remembered-set mismatch that leaves byte destinations, forwarding slots,
-      references, and remembered-set state unchanged. This is still a
-      caller-buffer application surface only: it does not allocate destination
-      objects, bind buffers to real heap storage or object headers, own the card
-      table, scan/rescan old fields, or manage semispaces.
+      `MinorGcCommitBuffers`, `MinorGcCommitPlan::apply_to_buffers`, and
+      `MinorGcCommitPlan::apply_to_buffers_with_report` apply a validated
+      commit plan to caller-owned byte-copy buffers, forwarding slots, reference
+      slots, and remembered-set state. The helper validates every supplied buffer
+      first, then performs the ordered commit steps: copy object bytes, install
+      forwarding values, rewrite references, and publish the next remembered set.
+      The report-returning variant summarizes committed copy, promotion,
+      forwarding, reference-rewrite, and remembered-set publication counts after
+      a successful commit. Tests cover successful cross-buffer application,
+      commit-report counts, and a late remembered-set mismatch that leaves byte
+      destinations, forwarding slots, references, and remembered-set state
+      unchanged. This is still a caller-buffer application surface only: it does
+      not allocate destination objects, bind buffers to real heap storage or
+      object headers, own the card table, scan/rescan old fields, or manage
+      semispaces.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

@@ -5554,6 +5554,10 @@ and helps the oracle directly.
       `AllocationCollectorPollReferenceSlot` label values, then applies the
       validated lower-level commit plan to caller-owned byte-copy buffers,
       forwarding slots, reference values, and remembered-set state.
+      `AllocationCollectorPollMinorGcCommitPlan::apply_to_buffers_with_report`
+      performs the same validation and buffer commit while returning the
+      lower-level `MinorGcCommitReport` for committed copy, promotion,
+      forwarding, reference-rewrite, and remembered-set publication counts.
       The commit wrapper carries the heap record and allocation-safepoint
       snapshot from the poll plan, and
       `EvalHeap::collector_poll_minor_gc_object_byte_copy_plan` rejects stale

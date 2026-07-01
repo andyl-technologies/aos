@@ -1723,6 +1723,96 @@ impl<'a, 'bytes> MinorGcCommitBuffers<'a, 'bytes> {
     }
 }
 
+/// A summary of mutations applied by a minor-GC commit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MinorGcCommitReport {
+    object_copies: usize,
+    copied_to_nursery: usize,
+    promoted_to_old: usize,
+    forwarding_pointers: usize,
+    reference_rewrites: usize,
+    remembered_set_source_epoch: RememberedSetEpoch,
+    remembered_set_next_epoch: RememberedSetEpoch,
+    remembered_set_source_edges: usize,
+    remembered_set_published_edges: usize,
+}
+
+impl MinorGcCommitReport {
+    fn from_commit_parts(
+        object_copies: &MinorGcObjectCopyPlan,
+        forwarding_pointers: &MinorGcForwardingPointerPlan,
+        reference_rewrites: &MinorGcReferenceRewritePlan,
+        remembered_set_refresh: &MinorGcRememberedSetRefreshPlan,
+        next_remembered_set: &RememberedSet,
+    ) -> Self {
+        let mut copied_to_nursery = 0;
+        let mut promoted_to_old = 0;
+        for copy in object_copies.copies() {
+            match copy.action() {
+                MinorGcSurvivorAction::CopyToNursery => copied_to_nursery += 1,
+                MinorGcSurvivorAction::PromoteToOld => promoted_to_old += 1,
+            }
+        }
+
+        Self {
+            object_copies: object_copies.len(),
+            copied_to_nursery,
+            promoted_to_old,
+            forwarding_pointers: forwarding_pointers.len(),
+            reference_rewrites: reference_rewrites.len(),
+            remembered_set_source_epoch: remembered_set_refresh.source_epoch(),
+            remembered_set_next_epoch: next_remembered_set.epoch(),
+            remembered_set_source_edges: remembered_set_refresh.len(),
+            remembered_set_published_edges: next_remembered_set.len(),
+        }
+    }
+
+    /// Returns the number of object byte copies committed.
+    pub const fn object_copies(self) -> usize {
+        self.object_copies
+    }
+
+    /// Returns the number of survivors copied to the next nursery.
+    pub const fn copied_to_nursery(self) -> usize {
+        self.copied_to_nursery
+    }
+
+    /// Returns the number of survivors promoted to old generation.
+    pub const fn promoted_to_old(self) -> usize {
+        self.promoted_to_old
+    }
+
+    /// Returns the number of forwarding pointers installed.
+    pub const fn forwarding_pointers(self) -> usize {
+        self.forwarding_pointers
+    }
+
+    /// Returns the number of root or field references rewritten.
+    pub const fn reference_rewrites(self) -> usize {
+        self.reference_rewrites
+    }
+
+    /// Returns the remembered-set epoch consumed by the commit.
+    pub const fn remembered_set_source_epoch(self) -> RememberedSetEpoch {
+        self.remembered_set_source_epoch
+    }
+
+    /// Returns the remembered-set epoch published by the commit.
+    pub const fn remembered_set_next_epoch(self) -> RememberedSetEpoch {
+        self.remembered_set_next_epoch
+    }
+
+    /// Returns the number of remembered edges examined from the source epoch.
+    pub const fn remembered_set_source_edges(self) -> usize {
+        self.remembered_set_source_edges
+    }
+
+    /// Returns the number of remembered edges published for the next epoch.
+    pub const fn remembered_set_published_edges(self) -> usize {
+        self.remembered_set_published_edges
+    }
+}
+
 impl MinorGcCommitPlan {
     /// Builds a minor-GC commit plan from already validated subplans.
     ///
@@ -1803,6 +1893,24 @@ impl MinorGcCommitPlan {
         self,
         buffers: MinorGcCommitBuffers<'_, '_>,
     ) -> Result<(), GenerationalGcError> {
+        self.apply_to_buffers_with_report(buffers).map(|_| ())
+    }
+
+    /// Applies this commit plan and reports the committed mutation counts.
+    ///
+    /// This has the same validation and mutation order as
+    /// [`Self::apply_to_buffers`], but returns a summary after the byte-copy,
+    /// forwarding-pointer, reference-rewrite, and remembered-set publication
+    /// steps have all succeeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GenerationalGcError`] if any caller-owned buffer no longer
+    /// matches this commit plan.
+    pub fn apply_to_buffers_with_report(
+        self,
+        buffers: MinorGcCommitBuffers<'_, '_>,
+    ) -> Result<MinorGcCommitReport, GenerationalGcError> {
         let Self {
             object_copies,
             forwarding_pointers,
@@ -1817,6 +1925,14 @@ impl MinorGcCommitPlan {
             remembered_set,
         } = buffers;
 
+        let report = MinorGcCommitReport::from_commit_parts(
+            &object_copies,
+            &forwarding_pointers,
+            &reference_rewrites,
+            &remembered_set_refresh,
+            &next_remembered_set,
+        );
+
         validate_object_byte_copy_buffers_match_plan(&object_copies, object_byte_copies)?;
         validate_forwarding_slots_match_plan(&forwarding_pointers, forwarding_slots)?;
         validate_reference_rewrite_slots_match_plan(&reference_rewrites, references)?;
@@ -1826,7 +1942,7 @@ impl MinorGcCommitPlan {
         install_forwarding_slots(&forwarding_pointers, forwarding_slots);
         apply_reference_rewrites(&reference_rewrites, references);
         *remembered_set = next_remembered_set;
-        Ok(())
+        Ok(report)
     }
 
     /// Publishes the rebuilt remembered set into caller-owned collector state.
@@ -5717,8 +5833,8 @@ mod tests {
             MinorGcForwardingSlot::new(promote),
         ];
 
-        commit_plan
-            .apply_to_buffers(MinorGcCommitBuffers::new(
+        let report = commit_plan
+            .apply_to_buffers_with_report(MinorGcCommitBuffers::new(
                 &mut object_byte_copies,
                 &mut forwarding_slots,
                 &mut references,
@@ -5726,6 +5842,21 @@ mod tests {
             ))
             .expect("commit applies");
 
+        assert_eq!(report.object_copies(), 2);
+        assert_eq!(report.copied_to_nursery(), 1);
+        assert_eq!(report.promoted_to_old(), 1);
+        assert_eq!(report.forwarding_pointers(), 2);
+        assert_eq!(report.reference_rewrites(), 2);
+        assert_eq!(
+            report.remembered_set_source_epoch(),
+            RememberedSetEpoch::new(7)
+        );
+        assert_eq!(
+            report.remembered_set_next_epoch(),
+            RememberedSetEpoch::new(8)
+        );
+        assert_eq!(report.remembered_set_source_edges(), 2);
+        assert_eq!(report.remembered_set_published_edges(), 1);
         assert_eq!(object_byte_copies[0].destination_bytes(), copy_source);
         assert_eq!(object_byte_copies[1].destination_bytes(), promote_source);
         assert_eq!(

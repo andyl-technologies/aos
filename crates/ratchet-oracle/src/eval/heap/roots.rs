@@ -20,10 +20,10 @@ use super::*;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::heap::{
     GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration, MinorGcCommitBuffers,
-    MinorGcCommitPlan, MinorGcDestinationAllocationPlan, MinorGcDestinationBases,
-    MinorGcDestinationPlacementPlan, MinorGcForwardingPointerPlan, MinorGcForwardingSlot,
-    MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcPlan,
-    MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
+    MinorGcCommitPlan, MinorGcCommitReport, MinorGcDestinationAllocationPlan,
+    MinorGcDestinationBases, MinorGcDestinationPlacementPlan, MinorGcForwardingPointerPlan,
+    MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer, MinorGcObjectCopy, MinorGcObjectCopyPlan,
+    MinorGcPlan, MinorGcPromotionPolicy, MinorGcReferenceRewrite, MinorGcReferenceRewritePlan,
     MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,
     MinorGcRememberedSetRefreshPlan, MinorGcSurvivorAction, NurseryObjectAge, NurseryObjectFields,
     NurseryObjectLayout, RememberedEdge, RememberedSet, RememberedSetEpoch, RememberedSetSnapshot,
@@ -1391,6 +1391,27 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
         self,
         buffers: AllocationCollectorPollMinorGcCommitBuffers<'_, '_>,
     ) -> Result<(), EvalHeapError> {
+        self.apply_to_buffers_with_report(buffers).map(|_| ())
+    }
+
+    /// Applies this allocation-poll commit plan and reports committed counts.
+    ///
+    /// This has the same reference-label validation and lower-level commit
+    /// order as [`Self::apply_to_buffers`], but returns the lower-level
+    /// [`MinorGcCommitReport`] after all caller-owned buffers have been
+    /// mutated. The report describes the validated buffer commit only; this
+    /// method still does not mutate live evaluator roots, heap fields, object
+    /// headers, or semispace storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the reference buffer no longer matches the
+    /// copied allocation-poll reference labels, or if any lower-level commit
+    /// buffer no longer matches the validated minor-GC commit plan.
+    pub fn apply_to_buffers_with_report(
+        self,
+        buffers: AllocationCollectorPollMinorGcCommitBuffers<'_, '_>,
+    ) -> Result<MinorGcCommitReport, EvalHeapError> {
         if buffers.references.len() != self.reference_slots.len() {
             return Err(
                 EvalHeapError::CollectorPollCommitReferenceSlotLengthMismatch {
@@ -1416,7 +1437,7 @@ impl<'a> AllocationCollectorPollMinorGcCommitPlan<'a> {
         }
 
         self.commit_plan
-            .apply_to_buffers(MinorGcCommitBuffers::new(
+            .apply_to_buffers_with_report(MinorGcCommitBuffers::new(
                 buffers.object_byte_copies,
                 buffers.forwarding_slots,
                 buffers.references,
